@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.mahype.workspace-setups",
+  "name": "Workspace Setups",
+  "version": "0.1.0",
+  "author": "Sven Wagener",
+  "homepage": "https://github.com/mahype/workspace-setups",
+  "description": "Save and restore named Hyprland workspace profiles",
+  "keepLoaded": true,
+  "kinds": [
+    "service",
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Workspace Setups",
+    "description": "Save, restore, and manage workspace profiles",
+    "category": "Compositor",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
