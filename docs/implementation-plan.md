@@ -1,351 +1,113 @@
 # Technischer Umsetzungsplan
 
-Status: Die beschriebenen Kernphasen sind implementiert. Optionale Vorschaubilder, Browser-Tab-Erfassung und Profil-Synchronisation bleiben Erweiterungen fuer spaetere Versionen.
+Stand: Version 0.2 (Workspace-Vorlagen)
 
 ## Architektur
 
-Das Projekt wird als ein Omarchy-Plugin ausgeliefert, intern jedoch in Oberflaeche und Backend getrennt.
-
 ```text
-workspace-setups/
-├── manifest.json
-├── BarWidget.qml
-├── Panel.qml
-├── Service.qml
-├── Model.js
-├── bin/
-│   └── workspace-setups
-├── tests/
-└── docs/
+BarWidget.qml ── Panel.qml ── ChoiceDialog.qml
+      │              │
+      └──── Service.qml (IPC "workspace-setups", Startdienst, Rueckfragen)
+                     │  Process
+                     ▼
+            bin/workspace-setups (Python, nur Standardbibliothek)
+              cli.py      Befehle, JSON-Ausgabe, Exit-Codes
+              capture.py  aktiven Workspace erfassen
+              restore.py  Vorlage in Ziel-Workspace aufbauen
+              storage.py  Schema-Validierung, Vorlagen, Tastenplaetze
+              commands.py Startbefehle, Adapter, Standardstrategien
+              bindings.py Einbindung der Tastenkuerzel in Hyprland
+              layout.py   Kachelbaum aus Fensterrechtecken
+              hyprland.py hyprctl-Abfragen und Lua-Dispatcher
 ```
 
-Das Manifest deklariert mindestens ein `bar-widget` und einen `service`. Der Service bleibt waehrend der Omarchy-Shell-Sitzung geladen und steuert das Verhalten nach der Anmeldung. Das Widget oeffnet ein in das Plugin integriertes Panel.
-
-Die QML-Seite bleibt fuer Darstellung, Eingaben und Prozessfortschritt verantwortlich. Ein Python-Backend ohne externe Bibliotheken uebernimmt Dateizugriffe, Prozessanalyse und Hyprland-IPC. Diese Trennung haelt komplexe Wiederherstellungslogik testbar und verhindert, dass langfristige Prozesse an den Lebenszyklus eines Panels gekoppelt werden.
+`I18n.js` enthaelt alle Oberflaechentexte auf Englisch und Deutsch; `Model.js` normalisiert die Backend-Ausgaben.
 
 ## Omarchy-Integration
 
-Stabile Plugin-ID:
-
-```text
-io.github.mahype.workspace-setups
-```
-
-Installationspfad:
-
-```text
-~/.config/omarchy/plugins/io.github.mahype.workspace-setups/
-```
-
-Das Plugin veraendert keine Dateien unter `/usr/share/omarchy/`. Es wird ueber `omarchy plugin validate`, `omarchy plugin enable` und die bestehenden Bar-Befehle integriert.
+- `Service.qml` wird mit der Omarchy Shell geladen und stellt das IPC-Ziel `workspace-setups` mit `loadSlot`, `saveSlot` und `refresh` bereit.
+- Braucht das Backend eine Entscheidung, setzt der Service `pendingChoice` und oeffnet das Panel ueber `shell.summon`.
+- Die Shell laedt `Service.qml` bei Dateiaenderungen nicht neu; dafuer ist `omarchy-restart-shell` noetig.
+- Tastenkuerzel: `hypr/bindings.lua` bindet `SUPER + F<n>` und `SUPER + SHIFT + F<n>` an `omarchy-shell -q workspace-setups loadSlot|saveSlot <n>`. `install-bindings` haengt einen durch einen Marker erkennbaren Block an `~/.config/hypr/bindings.lua` an, der diese Datei nur einbindet, wenn sie existiert, und ruft `hyprctl reload` auf. Die Belegung der Plaetze liegt in den Vorlagen, daher muss die Hyprland-Konfiguration bei Aenderungen nicht neu erzeugt werden.
 
 ## Backend-Schnittstelle
 
-Die erste CLI-Schnittstelle:
+| Befehl | Zweck |
+|---|---|
+| `list --json` | Vorlagen, Sprache, Status der Tastenkuerzel |
+| `inspect --json` | aktiven Workspace erfassen, ohne zu speichern |
+| `save <name>` / `update <name>` | aktiven Workspace speichern |
+| `save-slot <F1..F10> [--force]` | speichern auf Tastenplatz |
+| `load <name>` / `load-slot <F..>` | `--mode ask\|add\|replace`, `--workspace` |
+| `set-shortcut`, `set-startup`, `set-strategy`, `set-language` | Einstellungen |
+| `startup [--force]` | Start-Vorlagen einmal pro Hyprland-Sitzung laden |
+| `bindings-status`, `install-bindings` | Tastenkuerzel |
+| `status --json`, `cancel` | Fortschritt und Abbruch |
 
-```bash
-workspace-setups list --json
-workspace-setups inspect --json
-workspace-setups save NAME
-workspace-setups update NAME
-workspace-setups load NAME --mode empty
-workspace-setups delete NAME
-workspace-setups rename OLD NEW
-workspace-setups set-startup MODE [NAME]
-workspace-setups status --json
-workspace-setups cancel
-```
-
-QML startet Befehle ueber Quickshell `Process` mit getrennten Argumenten und wertet JSON-Ausgaben aus. Es werden keine aus Benutzereingaben zusammengesetzten Shell-Befehle ausgefuehrt.
-
-Laenger laufende Ladeprozesse schreiben strukturierte Fortschrittsereignisse, beispielsweise als JSON Lines. Die Oberflaeche kann dadurch einzelne Fenster als wartend, erfolgreich oder fehlgeschlagen darstellen.
+Fehler erscheinen als JSON auf stderr. Fehler mit `code` `workspace_not_empty`, `slot_taken` oder `exists` enden mit Exit-Code 3 und werden im Panel als Rueckfrage angeboten. Der Service wiederholt danach den Befehl mit `--mode replace|add` beziehungsweise `--force`.
 
 ## Datenspeicherung
 
 ```text
-~/.config/workspace-setups/config.json
-~/.local/share/workspace-setups/profiles/<slug>.json
-~/.local/state/workspace-setups/restore.json
-~/.local/state/workspace-setups/workspace-setups.log
+~/.config/workspace-setups/config.json           Sprache, Zeitlimit
+~/.local/share/workspace-setups/templates/*.json  Vorlagen
+~/.local/share/workspace-setups/backups/          letzte fuenf Staende je Vorlage
+~/.local/state/workspace-setups/restore.json      Fortschritt
+~/.local/state/workspace-setups/restore.lock      Restore-Lock
+~/.local/state/workspace-setups/startup.json      Hyprland-Instanz des letzten Startlaufs
 ```
 
-- `config.json` enthaelt Startmodus, Standardprofil und Zeitlimits.
-- `profiles/` enthaelt nutzergenerierte Setups.
-- `restore.json` beschreibt nur einen aktiven oder zuletzt abgeschlossenen Ladevorgang.
-- Das Log enthaelt technische Diagnoseinformationen ohne sensible Umgebungsvariablen.
-
-Alle Profildateien erhalten ein `schemaVersion`-Feld. Schreibvorgaenge erfolgen atomar ueber eine temporaere Datei und anschliessendes Umbenennen. Vor dem Aktualisieren wird eine begrenzte Sicherung der vorherigen Version angelegt.
-
-## Vorlaeufiges Profilformat
+## Vorlagenformat (Schema 2)
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "entwicklung",
   "name": "Entwicklung",
-  "createdAt": "2026-09-19T12:00:00Z",
-  "updatedAt": "2026-09-19T12:00:00Z",
-  "environment": {
-    "hyprlandLayout": "dwindle",
-    "monitors": [
-      {
-        "name": "DP-1",
-        "width": 3840,
-        "height": 1080,
-        "scale": 1.0,
-        "x": 0,
-        "y": 0
-      }
-    ]
-  },
-  "workspaces": [
-    {
-      "id": 1,
-      "name": "1",
-      "monitor": "DP-1",
-      "layout": "dwindle",
-      "tree": {}
-    }
-  ],
-  "windows": [
-    {
-      "id": "window-1",
-      "application": "foot",
-      "command": ["foot", "--working-directory", "/home/user/Projects"],
-      "initialClass": "foot",
-      "titleHint": "Projects",
-      "workspace": "1",
-      "monitor": "DP-1",
-      "floating": false,
-      "fullscreen": false,
-      "pinned": false,
-      "geometry": {
-        "x": 12,
-        "y": 12,
-        "width": 701,
-        "height": 611
-      }
-    }
-  ]
+  "source": {"workspace": "3", "monitor": "DP-1", "monitorSize": {"width": 7680, "height": 2160, "scale": 2}},
+  "shortcut": 3,
+  "restoreOnStartup": true,
+  "startupWorkspace": "3",
+  "tree": {"split": "vertical", "ratio": 0.5, "first": {"window": "window-1"}, "second": {"window": "window-2"}},
+  "windows": [{
+    "id": "window-1", "application": "chromium", "command": ["/usr/bin/chromium"],
+    "initialClass": "chromium", "class": "chromium", "titleHint": "…",
+    "strategy": "new", "floating": false, "fullscreen": false, "fullscreenMode": "fullscreen", "pinned": false,
+    "geometry": {"x": 12, "y": 32, "width": 1901, "height": 1036}
+  }]
 }
 ```
 
-Das Format speichert keine vollstaendigen Umgebungsvariablen, Zugriffstoken oder Session-Cookies.
+`geometry` ist relativ zum Ursprung des Monitors. Der Baum muss jedes gekachelte Fenster genau einmal enthalten; `shortcut` ist eindeutig ueber alle Vorlagen.
 
 ## Erfassung
 
-### Hyprland-Zustand
-
-Das Backend liest mindestens:
-
-```bash
-hyprctl -j monitors
-hyprctl -j workspaces
-hyprctl -j clients
-hyprctl -j activeworkspace
-```
-
-Layer-Shell-Oberflaechen wie die Omarchy-Bar sind keine normalen Clients und werden nicht als Anwendungsfenster gespeichert. Zusaetzliche Ausschlussregeln koennen Plugin-eigene Fenster, Launcher und temporaere Dialoge filtern.
-
-### Startbefehle
-
-Die generische Aufloesung verwendet:
-
-1. PID und Prozesshierarchie des Fensters,
-2. `/proc/<pid>/cmdline`,
-3. passende Desktop-Datei anhand von `StartupWMClass` oder Programmname,
-4. bekannte sichere Startargumente,
-5. programmspezifischen Adapter als bevorzugte Quelle.
-
-Argumente mit Tokens, temporaeren Dateien oder internen Prozessschaltern muessen herausgefiltert werden. Kann kein sicherer Startbefehl bestimmt werden, wird das Fenster im Speicherdialog markiert.
-
-### Kachelbaum
-
-`hyprctl clients` liefert Fenstergeometrien, aber keinen vollstaendigen serialisierten `dwindle`-Baum. Der Baum wird deshalb aus den Rechtecken eines Workspaces rekonstruiert:
-
-1. Gesamtflaeche des Workspaces bestimmen.
-2. Nach einer vollstaendigen horizontalen oder vertikalen Trennlinie suchen.
-3. Fenster in zwei Teilmengen aufteilen.
-4. Vorgang rekursiv fortsetzen.
-5. Trennrichtung und relatives Teilungsverhaeltnis speichern.
-
-Kann kein eindeutiger Baum bestimmt werden, bleibt die Geometrie als Fallback erhalten und die Oberflaeche zeigt eine Warnung.
+- `activeworkspace` bestimmt Workspace und Monitor; nur dessen normale Fenster werden erfasst. Portal- und Polkit-Dialoge werden ignoriert.
+- Startbefehle stammen bevorzugt aus Desktop-Eintraegen, sonst aus `/proc/<pid>/cmdline`, bereinigt um Platzhalter, interne Flags und moegliche Geheimnisse.
+- `default_strategy` waehlt `new` fuer Terminals, Browser, Dateimanager und Web-Apps, `move` fuer bekannte Einzelinstanz-Programme und sonst `auto`.
+- Beim Aktualisieren bleiben Tastenplatz, Start-Einstellungen und je Fenstertitel gewaehlte Strategien erhalten.
 
 ## Wiederherstellung
 
-### Vorpruefung
-
-- Profilversion validieren.
-- benoetigte Programme aufloesen,
-- aktuelle Monitore mit dem gespeicherten Fingerabdruck vergleichen,
-- bestehenden Ladeprozess ausschliessen,
-- Ladeoption fuer vorhandene Fenster anwenden.
-
-### Programme starten
-
-Programme werden ueber die UWSM-Sitzung gestartet. Das Backend wartet parallel auf den Hyprland-Event-Socket und verarbeitet neue Fensterereignisse, statt mit festen Pausen zu arbeiten.
-
-Jedes erwartete Fenster erhaelt Matching-Merkmale:
-
-- PID oder Nachfahre des gestarteten Prozesses,
-- `initialClass`,
-- aktuelle Klasse,
-- Titelhinweis,
-- erwartete Reihenfolge innerhalb derselben Anwendung,
-- erwarteter Workspace.
-
-Die Kombination ist notwendig, weil Chromium und andere Anwendungen mehrere Fenster in einem gemeinsamen Prozess oeffnen koennen.
-
-### Fenster platzieren
-
-Nach erfolgreichem Matching:
-
-1. Fenster auf gespeicherten Workspace und Monitor verschieben.
-2. Floating- oder Tiling-Zustand herstellen.
-3. Gekachelte Fenster in Baumreihenfolge einfuegen.
-4. Split-Richtung und Teilungsverhaeltnisse anwenden.
-5. Floating-Fenster auf absolute Position und Groesse setzen.
-6. Vollbild- und Pin-Zustand zuletzt anwenden.
-
-Alle Hyprland-Aktionen adressieren nach Moeglichkeit die konkrete Fensteradresse, nicht nur die Fensterklasse.
-
-### Fehlerbehandlung
-
-- Jedes Fenster besitzt ein eigenes Zeitlimit.
-- Ein Fehler stoppt nicht die restliche Wiederherstellung.
-- Ein Abbruch verhindert weitere Starts, schliesst aber bereits gestartete Fenster nicht automatisch.
-- Das Endergebnis unterscheidet erfolgreich, fehlgeschlagen, uebersprungen und manuell abgebrochen.
-
-## Anwendungsadapter
-
-### Generisch
-
-Startet eine Anwendung ueber einen bereinigten Desktop-Eintrag oder einen gespeicherten Argumentvektor. Der interne Anwendungszustand bleibt der Anwendung ueberlassen.
-
-### Chromium
-
-Erste Version:
-
-- Chromium einmal starten,
-- eigene Sitzungswiederherstellung verwenden,
-- erscheinende Browserfenster den gespeicherten Fenstern zuordnen,
-- Fenster auf Workspaces verteilen.
-
-Spaeter optional: Browser-Erweiterung zur expliziten Erfassung von Fenster- und Tab-URLs.
-
-### Visual Studio Code
-
-- gespeicherte Ordner- oder Workspace-Datei bevorzugt per CLI oeffnen,
-- andernfalls die VS-Code-Sitzungswiederherstellung verwenden,
-- mehrere Fenster einzeln zuordnen.
-
-### foot
-
-- Arbeitsverzeichnis des aktiven Shell-Kindprozesses ermitteln,
-- neues Fenster mit diesem Arbeitsverzeichnis starten,
-- keine laufenden Shell-Prozesse oder Terminalpuffer versprechen,
-- optional spaeter `tmux`- und `zellij`-Sitzungen erkennen.
-
-## Startdienst
-
-`Service.qml` wird zusammen mit der Omarchy-Shell geladen. Abhaengig von der Konfiguration:
-
-- beendet er sich logisch ohne Aktion,
-- wartet auf Hyprland und laedt das Standardprofil,
-- laedt das zuletzt verwendete Profil,
-- oder oeffnet nach kurzer Bereitschaftspruefung die Profilauswahl.
-
-Der Dienst muss einen Restore-Lock verwenden, damit Hot-Reload oder ein zweiter Klick keinen parallelen Ladevorgang startet.
+1. Ziel-Workspace bestimmen (aktiv oder `--workspace`) und festhalten.
+2. Im Modus `ask` bei vorhandenen Fenstern mit `workspace_not_empty` abbrechen, bevor etwas veraendert wird.
+3. Restore-Lock setzen; bei `replace` nur die Fenster des Ziel-Workspace schliessen und auf ihr Verschwinden warten.
+4. Fenster in Baumreihenfolge beschaffen: je nach Strategie herholen, starten oder starten mit Rueckfall aufs Herholen nach hoechstens 3 Sekunden. Neu gestartete Fenster werden nur unter Fenstern gesucht, die vor dem Laden nicht existierten.
+5. Floating-Fenster sofort in den Ziel-Workspace verschieben und relativ zum Zielmonitor platzieren.
+6. Gekachelte Fenster auf einen temporaeren Staging-Workspace legen und in Baumreihenfolge mit `preselect` und `splitratio` in den Ziel-Workspace einfuegen. Bei Fehlern werden gestagte Fenster in den Ziel-Workspace zurueckgelegt.
+7. Nur bei gleicher Monitorgroesse feste Groessen fuer gekachelte Fenster setzen; danach Pin und Vollbild anwenden.
+8. Ziel-Workspace fokussieren (beim Startlauf am Ende den urspruenglich aktiven).
 
 ## Sicherheitsanforderungen
 
-- Nie ungefragt Fenster oder Prozesse beenden.
-- Der Modus `replace` benoetigt eine ausdrueckliche Bestaetigung.
-- Keine Shell-Interpolation fuer Profilnamen oder Startargumente.
-- Keine Secrets oder vollstaendigen Prozessumgebungen speichern.
-- Profildateien vor Pfadmanipulation und symbolischen Link-Angriffen schuetzen.
-- Ein Profil darf nur bekannte schema-validierte Felder ausfuehren.
-- Technische Logs muessen Startargumente mit moeglichen Geheimnissen maskieren.
+- Nie ungefragt Fenster beenden; `replace` betrifft nur den Ziel-Workspace und wird im Panel bestaetigt.
+- Keine Shell-Interpolation fuer Namen oder Startargumente; Lua-Dispatcher erhalten ausschliesslich escapte Zeichenketten und normalisierte Fensteradressen.
+- Keine Secrets oder Prozessumgebungen speichern; eingebettete Shell- und Interpreter-Befehle werden abgelehnt.
+- Vorlagendateien atomar schreiben und symbolische Links ablehnen.
+- Die Aenderung an `~/.config/hypr/bindings.lua` erfolgt nur auf ausdruecklichen Klick und ist idempotent.
 
 ## Tests
 
-### Unit-Tests
+`python3 -m unittest discover` deckt ab: Validierung und Tastenplaetze, Erfassung nur des aktiven Workspace, relative Geometrie, Standardstrategien, alle drei Strategien einschliesslich Rueckfall, die Modi `ask`/`add`/`replace`, benannte und explizite Ziel-Workspaces, Kachelbaum-Plan, Abbruch, Fehlerpfade beim Staging, CLI-Exit-Codes, einmaligen Startlauf und die Einbindung der Tastenkuerzel.
 
-- Profilvalidierung und Migration,
-- atomare Speicherung,
-- Rekonstruktion des Kachelbaums aus Fensterrechtecken,
-- Matching mehrerer Fenster derselben Klasse,
-- Bereinigung von Desktop-Startbefehlen,
-- Adapter fuer Chromium, VS Code und `foot`,
-- Verhalten bei fehlenden oder geaenderten Monitoren.
-
-### Integrationstests
-
-- Speichern und Laden eines Workspaces mit zwei Fenstern,
-- drei ungleich breite gekachelte Fenster,
-- verschachtelte horizontale und vertikale Splits,
-- mehrere `foot`-Fenster,
-- mehrere Chromium-Fenster in einem Prozess,
-- langsam startende und fehlende Anwendung,
-- Abbruch waehrend einer Wiederherstellung,
-- automatisches Laden nach Start der Omarchy-Shell.
-
-### Manuelle Abnahme
-
-Das aktuelle Referenzszenario besteht aus drei Workspaces und acht Fenstern auf einem Monitor im `dwindle`-Layout. Nach einer frischen Anmeldung muessen dieselben Anwendungen auf denselben Workspaces mit denselben wesentlichen Teilungsverhaeltnissen erscheinen. Einzelne nicht wiederherstellbare interne Anwendungszustaende muessen transparent ausgewiesen werden.
-
-## Entwicklungsphasen
-
-### Phase 1: Plugin-Grundgeruest
-
-- Manifest, Bar-Icon, Panel und Hintergrunddienst,
-- CLI-Grundstruktur und XDG-Verzeichnisse,
-- Profil-Liste und leere Zustandsanzeigen,
-- Plugin-Validierung und Basistests.
-
-### Phase 2: Speichern
-
-- Hyprland-Zustand erfassen,
-- generische Startbefehle bestimmen,
-- Profile atomar schreiben,
-- Speichern, Aktualisieren, Umbenennen und Loeschen im Panel.
-
-### Phase 3: Wiederherstellen
-
-- Event-basierter Programmstart,
-- Fenstermatching,
-- Workspace-Zuordnung,
-- Floating-Geometrie,
-- Fortschritt, Abbruch und Fehlerzusammenfassung.
-
-### Phase 4: Exaktes Tiling
-
-- `dwindle`-Baum rekonstruieren,
-- Einfuegereihenfolge und Split-Richtung wiederherstellen,
-- Teilungsverhaeltnisse angleichen,
-- Geometrie nach Abschluss validieren.
-
-### Phase 5: Anwendungsadapter und Autostart
-
-- Chromium, Visual Studio Code und `foot`,
-- Standardprofil, letztes Profil und Startauswahl,
-- Verhalten bei geaenderter Monitorkonfiguration.
-
-### Phase 6: Stabilisierung
-
-- Integrations- und Regressionstests,
-- Diagnoseansicht und Logbereinigung,
-- Installations- und Benutzeranleitung,
-- Vorbereitung einer veroeffentlichbaren Plugin-ID.
-
-## Definition der ersten fertigen Version
-
-Die erste Version gilt als fertig, wenn:
-
-- das Plugin mit Omarchy 4.x validiert und aktiviert werden kann,
-- ein Setup ueber die Bar gespeichert und geladen werden kann,
-- mehrere gleichartige Fenster korrekt zugeordnet werden,
-- Workspace-Zuordnung und `dwindle`-Teilungsverhaeltnisse im Referenzszenario wiederhergestellt werden,
-- ein Setup optional nach der Anmeldung geladen werden kann,
-- Fehler keine Daten verlieren und im Panel sichtbar sind,
-- die Grenzen bei internem Anwendungszustand dokumentiert bleiben.
+Manuelle Abnahme: Workspace mit mehreren gekachelten Fenstern speichern, auf einem leeren Workspace laden, auf einem belegten Workspace die Rueckfrage pruefen, ein Einzelinstanz-Programm von einem anderen Workspace herholen, Tastenkuerzel und Startlauf nach einer frischen Anmeldung pruefen.

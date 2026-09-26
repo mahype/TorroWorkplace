@@ -26,8 +26,8 @@ class Paths:
         )
 
     @property
-    def profiles(self) -> Path:
-        return self.data_dir / "profiles"
+    def templates(self) -> Path:
+        return self.data_dir / "templates"
 
     @property
     def backups(self) -> Path:
@@ -48,3 +48,7 @@ class Paths:
     @property
     def cancel(self) -> Path:
         return self.state_dir / "cancel"
+
+    @property
+    def startup_marker(self) -> Path:
+        return self.state_dir / "startup.json"

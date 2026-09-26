@@ -15,27 +15,33 @@ def store(root: Path) -> Store:
     return Store(paths(root))
 
 
-def profile(name: str = "Test") -> dict[str, Any]:
+def template(name: str = "Test") -> dict[str, Any]:
     return {
-        "schemaVersion": 1, "id": name.lower(), "name": name,
+        "schemaVersion": 2, "id": name.lower(), "name": name,
         "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
-        "environment": {"hyprlandLayout": "dwindle", "monitors": [
-            {"name": "DP-1", "width": 1920, "height": 1080, "x": 0, "y": 0, "scale": 1.0}
-        ]},
-        "workspaces": [{"id": 1, "name": "1", "monitor": "DP-1", "layout": "dwindle", "tree": {"window": "window-1"}}],
+        "source": {"workspace": "1", "monitor": "DP-1", "monitorSize": {"width": 1920, "height": 1080, "scale": 1.0}},
+        "shortcut": None, "restoreOnStartup": False, "startupWorkspace": "1",
+        "tree": {"window": "window-1"},
         "windows": [{
             "id": "window-1", "application": "foot", "command": ["foot"], "initialClass": "foot", "class": "foot",
-            "titleHint": "Terminal", "workspace": "1", "monitor": "DP-1", "floating": False,
+            "titleHint": "Terminal", "strategy": "new", "floating": False,
             "fullscreen": False, "pinned": False, "geometry": {"x": 0, "y": 0, "width": 900, "height": 700},
         }],
     }
+
+
+def client(address: str = "0x1", title: str = "Terminal", workspace: int = 1, cls: str = "foot") -> dict[str, Any]:
+    return {"address": address, "class": cls, "initialClass": cls, "title": title, "pid": 100,
+            "mapped": True, "hidden": False, "workspace": {"id": workspace, "name": str(workspace)},
+            "at": [0, 0], "size": [900, 700], "floating": False, "fullscreen": 0, "monitor": 0}
 
 
 class FakeHyprland:
     def __init__(self, clients: list[dict[str, Any]] | None = None):
         self.clients = clients or []
         self.dispatched: list[tuple[str, str]] = []
-        self.monitors = [{"name": "DP-1", "width": 1920, "height": 1080, "x": 0, "y": 0, "scale": 1.0}]
+        self.monitors = [{"name": "DP-1", "width": 1920, "height": 1080, "x": 0, "y": 0, "scale": 1.0, "focused": True}]
+        self.active = {"id": 1, "name": "1", "monitor": "DP-1"}
 
     def query(self, resource: str) -> Any:
         if resource == "clients":
@@ -43,9 +49,11 @@ class FakeHyprland:
         if resource == "monitors":
             return self.monitors
         if resource == "workspaces":
-            return [{"id": 1, "name": "1", "monitor": "DP-1"}]
+            names = {(item.get("workspace") or {}).get("name") for item in self.clients} | {self.active["name"]}
+            return [{"id": int(name) if str(name).isdigit() else -1337, "name": name, "monitor": "DP-1"}
+                    for name in sorted(filter(None, names))]
         if resource == "activeworkspace":
-            return {"id": 1, "name": "1"}
+            return self.active
         raise AssertionError(resource)
 
     def dispatch(self, expression: str) -> None:
@@ -64,6 +72,10 @@ class FakeHyprland:
                     x: int | None = None, y: int | None = None) -> None:
         argument = workspace if workspace is not None else f"{x},{y}"
         self.dispatched.append(("move_window", f"{address}:{argument}"))
+        for item in self.clients:
+            if workspace is not None and item.get("address") == address:
+                name = workspace.removeprefix("name:")
+                item["workspace"] = {"id": int(name) if name.isdigit() else -1337, "name": name}
 
     def focus_window(self, address: str) -> None:
         self.dispatched.append(("focus_window", address))
@@ -83,6 +95,9 @@ class FakeHyprland:
     def close_window(self, address: str) -> None:
         self.dispatched.append(("close_window", address))
         self.clients = [item for item in self.clients if item.get("address") != address]
+
+    def reload(self) -> None:
+        self.dispatched.append(("reload", ""))
 
     def layout(self, message: str) -> None:
         self.dispatched.append(("layout", message))

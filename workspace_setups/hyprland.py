@@ -32,6 +32,12 @@ class Hyprland:
         except (OSError, subprocess.SubprocessError) as error:
             raise HyprlandError(f"Hyprland dispatch failed: {expression}") from error
 
+    def reload(self) -> None:
+        try:
+            self.run(["hyprctl", "reload"], check=True, text=True, capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise HyprlandError("hyprctl reload failed") from error
+
     def move_workspace(self, workspace: str, monitor: str) -> None:
         self.dispatch(
             f"hl.dsp.workspace.move({{ workspace = {_lua_string(workspace)}, monitor = {_lua_string(monitor)} }})"

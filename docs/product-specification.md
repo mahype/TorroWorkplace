@@ -2,151 +2,109 @@
 
 ## Ziel
 
-Workspace Setups soll auf Omarchy den aktuell sichtbaren Desktopzustand als benanntes Setup speichern und nach einer Anmeldung oder auf Anforderung moeglichst originalgetreu rekonstruieren.
+Workspace Setups speichert auf Omarchy einen einzelnen, gerade sichtbaren Workspace als **Workspace-Vorlage** und baut ihn auf Anforderung, per Tastenkuerzel oder nach der Anmeldung auf einem beliebigen Workspace wieder auf.
 
-Das Produkt richtet sich an Personen, die wiederkehrende Arbeitsumgebungen verwenden, beispielsweise Entwicklung, Kommunikation oder Freizeit, und diese nicht nach jedem Neustart manuell aufbauen wollen.
+Das Produkt richtet sich an Personen, die wiederkehrende Arbeitsbereiche verwenden, beispielsweise Entwicklung, Kommunikation oder 3D-Druck, und diese nicht jedes Mal manuell zusammenstellen wollen. Anders als Version 0.1 stellt es nicht mehr alle Workspaces auf einmal an festen Nummern wieder her.
 
 ## Begriffe
 
-- **Setup:** Gespeicherte Beschreibung von Anwendungen, Fenstern, Workspaces, Monitoren und Layout.
-- **Speichern:** Ein neues Setup aus dem aktuellen Hyprland-Zustand erzeugen.
-- **Aktualisieren:** Ein vorhandenes Setup mit dem aktuellen Zustand ueberschreiben.
-- **Laden:** Anwendungen starten und deren Fenster anhand des Setups anordnen.
-- **Anwendungsadapter:** Optionale programmspezifische Logik, die mehr Zustand als ein generischer Prozessstart wiederherstellen kann.
+- **Workspace-Vorlage** (englisch *workspace template*): Gespeicherte Beschreibung der Anwendungen, Fenster und Anordnung eines Workspace.
+- **Speichern:** Eine neue Vorlage aus dem aktiven Workspace erzeugen.
+- **Aktualisieren:** Eine vorhandene Vorlage mit dem aktiven Workspace ueberschreiben; Einstellungen der Vorlage bleiben erhalten.
+- **Laden:** Anwendungen starten oder herholen und ihre Fenster im Ziel-Workspace anordnen.
+- **Ziel-Workspace:** Der beim Laden aktive Workspace, beim Start der fuer die Vorlage eingestellte Workspace.
+- **Platz (Slot):** Eine der Tasten F1 bis F10, die einer Vorlage zugeordnet werden kann.
+- **Strategie:** Wie ein gespeichertes Fenster zurueckkommt: neu oeffnen, herholen oder automatisch.
 
 ## Hauptfunktionen
 
-### Setup speichern
+### Vorlage speichern
 
 Das Plugin muss:
 
-- einen Namen fuer das Setup abfragen,
-- Monitore, Workspaces und normale Anwendungsfenster erfassen,
+- nur die Fenster des aktiven Workspace erfassen,
 - Startinformationen fuer jede Anwendung bestimmen,
 - Kachelstruktur und Teilungsverhaeltnisse speichern,
-- Floating-Positionen und -Groessen speichern,
-- unvollstaendig erkannte Anwendungen vor dem Speichern anzeigen,
-- ein vorhandenes gleichnamiges Setup nur nach Bestaetigung ersetzen.
+- Floating-Positionen relativ zum Monitor speichern,
+- fuer jedes Fenster eine Standardstrategie vorschlagen,
+- eine gleichnamige Vorlage nur nach Rueckfrage ueberschreiben,
+- beim Speichern per `SUPER + SHIFT + F<n>` warnen, wenn auf F<n> bereits eine Vorlage liegt.
 
-### Setup laden
+### Vorlage laden
 
 Das Plugin muss:
 
-- die Monitorkonfiguration vor dem Laden pruefen,
-- Anwendungen kontrolliert und in der notwendigen Reihenfolge starten,
-- auf neu erscheinende Fenster warten,
-- Fenster eindeutig einem gespeicherten Eintrag zuordnen,
-- Fenster auf gespeicherte Workspaces und Monitore verschieben,
+- den Ziel-Workspace zu Beginn festhalten, auch wenn startende Programme den Fokus verschieben,
+- bei einem nicht leeren Ziel-Workspace fragen: **Schliessen & laden**, **Hinzufuegen** oder **Abbrechen**,
+- je Fenster die Strategie anwenden:
+  - **neu:** Programm immer starten,
+  - **herholen:** ein bereits offenes, passendes Fenster von einem anderen Workspace verschieben und nur starten, wenn keines existiert,
+  - **automatisch:** Programm starten und, wenn in kurzer Zeit kein neues Fenster erscheint, das laufende Fenster herholen,
+- auf neu erscheinende Fenster warten und sie eindeutig einem gespeicherten Eintrag zuordnen,
 - Kachelstruktur, Teilungsverhaeltnisse und Fensterzustaende anwenden,
 - Fortschritt und Fehler im Panel darstellen,
 - bei einzelnen Fehlern mit den verbleibenden Fenstern fortfahren.
 
-### Setups verwalten
+### Vorlagen verwalten
 
 Das Bar-Panel bietet:
 
-- Liste aller Setups,
-- Laden,
-- aktuellen Zustand als neues Setup speichern,
-- vorhandenes Setup aktualisieren,
-- Umbenennen,
-- Loeschen mit Bestaetigung,
-- Anzeige von Fenster- und Workspace-Anzahl,
-- Kennzeichnung des Standard- und zuletzt geladenen Setups.
+- Liste aller Vorlagen mit Tastenkuerzel- und Start-Kennzeichnung,
+- aktiven Workspace als neue Vorlage speichern,
+- Hier laden, Aktualisieren, Umbenennen, Loeschen mit Bestaetigung,
+- Einstellungen je Vorlage: Tastenkuerzel F1–F10, Beim Start wiederherstellen samt Workspace, Strategie je Fenster,
+- Sprache: Systemsprache, Englisch oder Deutsch,
+- Knopf zum Aktivieren der Tastenkuerzel.
+
+### Tastenkuerzel
+
+- `SUPER + F1` bis `SUPER + F10` laden die zugeordnete Vorlage in den aktiven Workspace.
+- `SUPER + SHIFT + F1` bis `F10` speichern den aktiven Workspace auf diese Taste. Ist die Taste frei, entsteht eine neue Vorlage `Template F<n>`; ist sie belegt, fragt das Panel vor dem Ueberschreiben.
+- Rueckfragen oeffnen das Panel; Ergebnisse von Tastenkuerzeln erscheinen zusaetzlich als Desktop-Benachrichtigung.
+- Jede Taste gehoert hoechstens einer Vorlage. Das Umhaengen einer belegten Taste erfordert eine Rueckfrage.
 
 ### Verhalten beim Anmelden
 
-Folgende Modi werden angeboten:
-
-- nichts automatisch laden,
-- ein festes Standard-Setup laden,
-- das zuletzt verwendete Setup laden,
-- nach der Anmeldung eine Setup-Auswahl anzeigen.
-
-Der Hintergrunddienst darf erst laden, wenn Hyprland und die Monitore bereit sind.
-
-## Bedienoberflaeche
-
-Workspace Setups erscheint als einzelnes Icon in der Omarchy-Bar. Ein Linksklick oeffnet das Panel.
-
-Beispiel:
-
-```text
-WORKSPACE SETUPS
-
-● Entwicklung
-  3 Workspaces · 8 Fenster
-
-  Laden       Aktualisieren
-  Umbenennen  Loeschen
-
-+ Aktuellen Zustand speichern
-
-Beim Anmelden:
-[ Letztes Setup laden      v ]
-```
-
-Beim Laden zeigt das Panel den Status pro Anwendung:
-
-```text
-Entwicklung wird geladen
-
-✓ Chromium        Workspace 1
-✓ Terminal oben   Workspace 1
-✓ Visual Studio   Workspace 3
-! Terminal 3      Zeitueberschreitung
-
-7 von 8 Fenstern wiederhergestellt
-```
-
-## Laden bei vorhandenen Fenstern
-
-Das Produkt unterscheidet drei Modi:
-
-- **Leere Sitzung:** Empfohlener und zuverlaessigster Modus.
-- **Ergaenzen:** Vorhandene Fenster bleiben bestehen; Setup-Fenster werden hinzugefuegt.
-- **Ersetzen:** Vorhandene normale Anwendungsfenster werden nur nach ausdruecklicher Bestaetigung geschlossen.
-
-Der Standardmodus darf niemals ungefragt Fenster schliessen.
+- Jede Vorlage kann **Beim Start wiederherstellen** mit einem festen Workspace (1–10) aktivieren.
+- Nach der Anmeldung werden alle so markierten Vorlagen nacheinander auf ihren Workspace geladen; vorhandene Fenster bleiben erhalten.
+- Das passiert einmal pro Hyprland-Sitzung, auch wenn die Omarchy Shell neu gestartet wird.
 
 ## Wiederherstellbarer Zustand
 
-Das Setup speichert, soweit verfuegbar:
+Eine Vorlage speichert, soweit verfuegbar:
 
-- Monitorname, Aufloesung, Position und Skalierung,
-- Workspace-ID oder -Name,
-- Hyprland-Layout,
+- Quell-Workspace und Monitorgroesse (zur Information und fuer exakte Groessen),
 - Fensterklasse und urspruengliche Fensterklasse,
 - Startbefehl als Argumentliste,
-- Position und Groesse,
+- Strategie je Fenster,
+- Position relativ zum Monitor und Groesse,
 - Tiling- oder Floating-Zustand,
 - Kachelbaum und Teilungsverhaeltnisse,
 - Vollbild- und Pin-Zustand,
-- Anwendungstitel als zusaetzliches Zuordnungsmerkmal,
+- Fenstertitel als zusaetzliches Zuordnungsmerkmal,
 - Projektpfad oder Arbeitsverzeichnis ueber Anwendungsadapter.
 
 ## Grenzen
 
-- Chromium muss Tabs grundsaetzlich selbst wiederherstellen. Eine spaetere Browser-Erweiterung kann einzelne Fenster und URLs erfassen.
+- Die Tabs von Chromium-, Chrome- und Brave-Fenstern werden beim Speichern aus der Sitzungsdatei des Browsers gelesen und beim Laden mit `--new-window` geoeffnet. Das Fenster wird ueber den Titel des aktiven Tabs zugeordnet; der zuletzt aktive Tab wird nicht wiederhergestellt. Firefox wird nicht unterstuetzt.
 - Visual Studio Code stellt Editorzustand und nicht gespeicherte Dateien ueber seine eigene Sitzungslogik wieder her.
-- `foot` kann mit einem Arbeitsverzeichnis gestartet werden; laufende Shell-Prozesse benoetigen `tmux` oder `zellij`.
-- Nicht gespeicherte Dokumente und beliebiger Prozessspeicher sind nicht Teil eines Setups.
-- Pixelgenaue Wiederherstellung wird fuer dieselbe Monitorkonfiguration angestrebt. Bei geaenderter Aufloesung wird eine angepasste oder teilweise Wiederherstellung notwendig.
+- `foot` wird mit Arbeitsverzeichnis und, falls es auf der Liste interaktiver Programme steht, mit dem Vordergrundprogramm (`-e herdr`) gestartet. Andere Terminals speichern nur sich selbst.
+- Beim Hinzufuegen zu vorhandenen Fenstern ist die Anordnung nur naeherungsweise exakt.
+- Auf einem Monitor anderer Groesse werden Teilungsverhaeltnisse uebernommen, feste Groessen gekachelter Fenster aber nicht erzwungen.
 
 ## Qualitaetsziele
 
 - Ein fehlendes Programm darf den restlichen Ladevorgang nicht blockieren.
 - Mehrere Fenster derselben Anwendung muessen unterscheidbar sein.
-- Ein Ladeprozess muss abbrechbar sein.
-- Gleichzeitige Ladeprozesse muessen verhindert werden.
-- Profile muessen versioniert und vor inkompatiblen Aenderungen migrierbar sein.
-- Fehler muessen im Panel verstaendlich und in technischen Logs detailliert erscheinen.
+- Ein Ladeprozess muss abbrechbar sein; gleichzeitige Ladeprozesse muessen verhindert werden.
+- Fenster werden niemals ungefragt geschlossen.
+- Vorlagen sind versioniert (Schema 2).
+- Die Oberflaeche ist vollstaendig auf Englisch und Deutsch verfuegbar.
 
-## Nichtziele der ersten Version
+## Nichtziele
 
-- Speicherabbilder laufender Prozesse,
-- Wiederherstellung nicht gespeicherter Dokumente,
+- Wiederherstellung aller Workspaces auf einmal,
+- Speicherabbilder laufender Prozesse oder nicht gespeicherter Dokumente,
+- Uebernahme der Profile aus Version 0.1,
 - Synchronisation zwischen mehreren Rechnern,
-- Unterstuetzung anderer Desktopumgebungen oder Window Manager,
-- automatische Erfassung aller Chromium-Tabs,
-- beliebige Umrechnung komplexer Layouts zwischen unterschiedlichen Monitorlandschaften.
+- Unterstuetzung anderer Desktopumgebungen oder Window Manager.

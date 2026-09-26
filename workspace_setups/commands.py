@@ -104,6 +104,60 @@ def descendant_cwd(pid: int, proc: Path = Path("/proc")) -> str | None:
     return None
 
 
+# Interactive terminal programs that are safe to start again on restore.
+# Anything else running in a terminal (ssh, sudo, one-off commands) is dropped.
+TERMINAL_PROGRAMS = {
+    "herdr", "tmux", "zellij", "screen", "nvim", "vim", "vi", "hx", "helix", "micro", "nano",
+    "btop", "htop", "top", "lazygit", "lazydocker", "gitui", "tig", "yazi", "ranger", "lf", "nnn",
+    "mc", "k9s", "claude", "codex", "opencode", "aider", "ncspot", "cmus", "newsboat", "weechat",
+}
+
+
+def proc_children(pid: int, proc: Path = Path("/proc")) -> list[int]:
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return []
+    children = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            status = (entry / "status").read_text(errors="replace").splitlines()
+            parent = int(next(line.split()[1] for line in status if line.startswith("PPid:")))
+        except (OSError, StopIteration, ValueError):
+            continue
+        if parent == pid:
+            children.append(int(entry.name))
+    return sorted(children)
+
+
+def foreground_pid(pid: int, proc: Path = Path("/proc")) -> int | None:
+    """Return the process group leader in the foreground of ``pid``'s terminal."""
+    try:
+        fields = (proc / str(pid) / "stat").read_text(errors="replace").rsplit(")", 1)[1].split()
+        tpgid = int(fields[5])
+    except (OSError, IndexError, ValueError):
+        return None
+    return tpgid if tpgid > 0 else None
+
+
+def terminal_program(pid: int, proc: Path = Path("/proc")) -> list[str]:
+    """The allowlisted program a terminal window currently shows, if any.
+
+    The terminal's direct child owns the pty; its foreground process group is
+    what the user sees, whether it was started with ``-e`` or from a shell.
+    """
+    for child in proc_children(pid, proc):
+        foreground = foreground_pid(child, proc) or child
+        command = proc_command(foreground, proc)
+        if not command or has_embedded_shell(command):
+            continue
+        if Path(command[0]).name in TERMINAL_PROGRAMS:
+            return command
+    return []
+
+
 def vscode_workspace(title: str, env: dict[str, str] | None = None) -> str | None:
     """Match a VS Code window title to Code's persisted folder/window state."""
     env = os.environ if env is None else env
@@ -193,9 +247,11 @@ def resolve_command(client: dict[str, Any], proc: Path = Path("/proc"), entries:
 def adapt_command(client: dict[str, Any], command: list[str], proc: Path = Path("/proc")) -> list[str]:
     application = str(client.get("initialClass") or client.get("class") or Path(command[0]).name).casefold()
     if "foot" in application:
-        cwd = descendant_cwd(int(client.get("pid") or 0), proc)
+        pid = int(client.get("pid") or 0)
+        cwd = descendant_cwd(pid, proc)
+        program = terminal_program(pid, proc) if pid else []
         base = [command[0]]
-        return base + (["--working-directory", cwd] if cwd else [])
+        return base + (["--working-directory", cwd] if cwd else []) + (["-e", *program] if program else [])
     if application in {"code", "code-oss", "visual studio code"} or "vscode" in application:
         for arg in command[1:]:
             if (arg.endswith((".code-workspace",)) or os.path.isdir(arg)) and os.path.isabs(arg):
@@ -217,3 +273,33 @@ def _executable_available(executable: str) -> bool:
     if os.path.isabs(executable):
         return os.path.isfile(executable) and os.access(executable, os.X_OK)
     return shutil.which(executable) is not None
+
+
+# Applications that happily open another window when launched again.
+MULTI_WINDOW = {
+    "foot", "footclient", "alacritty", "kitty", "ghostty", "com.mitchellh.ghostty", "wezterm",
+    "org.wezfurlong.wezterm", "xterm", "konsole", "org.gnome.terminal", "gnome-terminal",
+    "chromium", "google-chrome", "brave-browser", "firefox", "org.gnome.nautilus", "thunar",
+}
+# Applications that only ever run once; launching them again just raises the
+# existing window, so it has to be moved to the target workspace instead.
+SINGLE_INSTANCE = {
+    "spotify", "slack", "signal", "discord", "vesktop", "obsidian", "thunderbird",
+    "org.mozilla.thunderbird", "org.telegram.desktop", "telegramdesktop", "1password", "steam",
+    "anytype", "com.anthropic.claude", "localsend", "typora", "zoom",
+}
+
+
+def default_strategy(window: dict[str, Any]) -> str:
+    """Pick how a saved window is brought back: always launch, move, or try both."""
+    classes = {str(window.get(key, "")).casefold() for key in ("initialClass", "class", "application")} - {""}
+    command = window.get("command") or []
+    if classes & SINGLE_INSTANCE:
+        return "move"
+    if classes & MULTI_WINDOW or any(name.startswith(("chrome-", "brave-")) for name in classes):
+        return "new"
+    if any(argument.startswith("--app") for argument in command[1:]):
+        return "new"
+    # VS Code focuses an already open window for the same folder, otherwise it
+    # opens a new one, so it needs the launch-then-move fallback.
+    return "auto"

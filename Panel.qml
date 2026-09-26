@@ -17,24 +17,23 @@ Panel {
   property int selectedIndex: 0
   property bool cursorActive: false
   property string renameTarget: ""
-  property string deleteTarget: ""
-  property string overwriteTarget: ""
-  property string replaceTarget: ""
-  property string saveWarningTarget: ""
-  property string saveWarningExisting: ""
-  property int saveWarningUnresolved: 0
-  property int saveWarningFallback: 0
-  property string loadMode: "empty"
+  property string expandedId: ""
+  property int openPopups: 0
   readonly property var barIdentity: hostWidget || root
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property var profiles: backend ? backend.profiles : []
-  readonly property var selectedProfile: profiles.length > 0
-    ? profiles[Math.max(0, Math.min(selectedIndex, profiles.length - 1))] : null
-  readonly property bool editing: saveField.activeFocus || renameField.activeFocus
-    || startupMode.popupOpen || defaultProfile.popupOpen
+  readonly property var templates: backend ? backend.templates : []
+  readonly property var selectedTemplate: templates.length > 0
+    ? templates[Math.max(0, Math.min(selectedIndex, templates.length - 1))] : null
+  readonly property bool busy: !backend || backend.busy
+  readonly property bool bindingsActive: backend !== null && backend.bindingsInstalled
+  readonly property bool choiceOpen: backend !== null && backend.pendingChoice !== null
+  property int focusedFields: 0
+  readonly property bool editing: saveField.activeFocus || renameField.activeFocus || focusedFields > 0 || openPopups > 0
+
+  function t(key, args) { return backend ? backend.tr(key, args) : key }
 
   function open() {
     root.controller.show()
@@ -44,33 +43,27 @@ Panel {
 
   function close() {
     renameTarget = ""
-    deleteTarget = ""
-    overwriteTarget = ""
-    replaceTarget = ""
-    saveWarningTarget = ""
-    saveWarningExisting = ""
+    if (backend) backend.pendingChoice = null
     root.controller.hide()
   }
 
   function moveSelection(delta) {
-    if (profiles.length === 0) return
+    if (templates.length === 0) return
     cursorActive = true
-    selectedIndex = Math.max(0, Math.min(profiles.length - 1, selectedIndex + delta))
+    selectedIndex = Math.max(0, Math.min(templates.length - 1, selectedIndex + delta))
     scrollSelectedIntoView()
   }
 
-  function selectProfile(index) {
+  function selectTemplate(index) {
     cursorActive = true
     selectedIndex = index
-    scrollSelectedIntoView()
   }
 
   function scrollSelectedIntoView() {
     Qt.callLater(function() {
-      if (!profileColumn || selectedIndex < 0 || selectedIndex >= profileColumn.children.length) return
-      var item = profileColumn.children[selectedIndex]
-      var point = item.mapToItem(panelFlick.contentItem, 0, 0)
-      var top = point.y
+      if (!templateColumn || selectedIndex < 0 || selectedIndex >= templateColumn.children.length) return
+      var item = templateColumn.children[selectedIndex]
+      var top = item.mapToItem(panelFlick.contentItem, 0, 0).y
       var bottom = top + item.height
       if (top < panelFlick.contentY) panelFlick.contentY = top
       else if (bottom > panelFlick.contentY + panelFlick.height)
@@ -78,132 +71,47 @@ Panel {
     })
   }
 
-  function beginRename(profile) {
-    if (!profile || !backend || backend.busy) return
-    renameTarget = profile.name
-    renameField.text = profile.name
+  function beginRename(template) {
+    if (!template || busy) return
+    renameTarget = template.name
+    renameField.text = template.name
     Qt.callLater(function() { renameField.selectAll(); renameField.forceActiveFocus() })
   }
 
   function commitRename() {
-    var next = renameField.text.trim()
-    if (renameTarget !== "" && next !== "" && next !== renameTarget && backend)
-      backend.renameProfile(renameTarget, next)
+    if (renameTarget !== "" && backend) backend.renameTemplate(renameTarget, renameField.text)
     renameTarget = ""
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  function requestDelete(profile) {
-    if (!profile || !backend || backend.busy) return
-    deleteTarget = profile.name
-    deleteDialog.selectedIndex = 0
-    Qt.callLater(function() { deleteFocus.forceActiveFocus() })
+  function save() {
+    if (busy || saveField.text.trim() === "") return
+    if (backend.saveNew(saveField.text)) saveField.text = ""
+    keyCatcher.forceActiveFocus()
   }
 
-  function requestLoad(profile) {
-    if (!profile || !backend || backend.busy) return
-    if (loadMode === "replace") {
-      replaceTarget = profile.name
-      deleteDialog.selectedIndex = 0
-      Qt.callLater(function() { deleteFocus.forceActiveFocus() })
-      return
-    }
-    backend.loadProfile(profile.name, loadMode, false)
+  function load(template) {
+    if (template && !busy) backend.loadTemplate(template.name, "ask")
   }
 
-  function requestSave(name) {
-    var value = String(name || "").trim()
-    if (value === "" || !backend || backend.busy) return
-    var existing = ""
-    for (var i = 0; i < profiles.length; i++) {
-      if (profiles[i].name.toLowerCase() === value.toLowerCase()
-          || profiles[i].id.toLowerCase() === value.toLowerCase()) {
-        existing = profiles[i].name
-        break
-      }
-    }
-    backend.inspectForSave(value, existing)
-  }
-
-  function completeInspectedSave(name, existing, snapshot) {
-    var warnings = Model.snapshotWarnings(snapshot)
-    if (existing !== "" || warnings.unresolved > 0 || warnings.fallback > 0) {
-      saveWarningTarget = name
-      saveWarningExisting = existing
-      saveWarningUnresolved = warnings.unresolved
-      saveWarningFallback = warnings.fallback
-      deleteDialog.selectedIndex = 0
-      Qt.callLater(function() { deleteFocus.forceActiveFocus() })
-      return
-    }
-    if (backend && backend.save(name)) saveField.text = ""
-  }
-
-  function finishDelete(confirm) {
-    var target = deleteTarget
-    deleteTarget = ""
-    if (confirm && backend) backend.deleteProfile(target)
+  function choose(id) {
+    if (backend) backend.resolveChoice(id)
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
-  function finishConfirmation(confirm) {
-    if (saveWarningTarget !== "") {
-      var saveName = saveWarningTarget
-      var existingName = saveWarningExisting
-      saveWarningTarget = ""
-      saveWarningExisting = ""
-      if (confirm && backend) {
-        if (existingName !== "") backend.updateProfile(existingName)
-        else backend.save(saveName)
-        saveField.text = ""
-      }
-      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-      return
-    }
-    if (replaceTarget !== "") {
-      var replaceName = replaceTarget
-      replaceTarget = ""
-      if (confirm && backend) backend.loadProfile(replaceName, "replace", true)
-      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-      return
-    }
-    if (overwriteTarget !== "") {
-      var target = overwriteTarget
-      overwriteTarget = ""
-      if (confirm && backend) {
-        backend.updateProfile(target)
-        saveField.text = ""
-      }
-      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-      return
-    }
-    finishDelete(confirm)
+  onTemplatesChanged: {
+    // The list is rebuilt after every change, destroying any open dropdowns.
+    openPopups = 0
+    if (selectedIndex >= templates.length) selectedIndex = Math.max(0, templates.length - 1)
   }
 
-  function startupChanged(mode) {
-    if (!backend || backend.busy) return
-    if (mode === "default" && backend.defaultProfile === "") {
-      if (selectedProfile) backend.setStartup("default", selectedProfile.id)
-      return
-    }
-    backend.setStartup(mode, backend.defaultProfile)
-  }
+  onChoiceOpenChanged: if (choiceOpen) Qt.callLater(function() { choiceFocus.forceActiveFocus() })
 
-  onProfilesChanged: {
-    if (selectedIndex >= profiles.length) selectedIndex = Math.max(0, profiles.length - 1)
-  }
-
-  Connections {
-    target: root.backend
-    function onInspectionReady(requestedName, existingName, snapshot) {
-      root.completeInspectedSave(requestedName, existingName, snapshot)
-    }
-  }
   onOpenedChanged: if (opened) {
     cursorActive = false
     panelFlick.contentY = 0
     if (backend) backend.refresh()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(function() { (root.choiceOpen ? choiceFocus : keyCatcher).forceActiveFocus() })
   }
 
   KeyboardPanel {
@@ -213,17 +121,17 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(520))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(720))
+    contentWidth: panel.fittedContentWidth(Style.space(540))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(760))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: root.editing || root.deleteTarget !== "" || root.overwriteTarget !== "" || root.replaceTarget !== "" || root.saveWarningTarget !== ""
+      blocked: root.editing || root.choiceOpen
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveSelection(dy) }
-      onActivateRequested: root.requestLoad(root.selectedProfile)
+      onActivateRequested: root.load(root.selectedTemplate)
       onCloseRequested: root.close()
-      onDeleteRequested: root.requestDelete(root.selectedProfile)
+      onDeleteRequested: if (root.selectedTemplate && !root.busy) root.backend.requestDelete(root.selectedTemplate.name)
       onTabRequested: function(direction) {
         if (root.bar && typeof root.bar.switchPanelFrom === "function")
           root.bar.switchPanelFrom(root.barIdentity, direction)
@@ -232,8 +140,8 @@ Panel {
         var key = text.toLowerCase()
         if (key === "r" && root.backend) root.backend.refresh()
         else if (key === "s") saveField.forceActiveFocus()
-        else if (key === "u" && root.selectedProfile && root.backend) root.requestSave(root.selectedProfile.name)
-        else if (key === "n") root.beginRename(root.selectedProfile)
+        else if (key === "u" && root.selectedTemplate && !root.busy) root.backend.updateTemplate(root.selectedTemplate.name)
+        else if (key === "n") root.beginRename(root.selectedTemplate)
         else if (key === "c" && root.backend && root.backend.busy) root.backend.cancelRestore()
       }
 
@@ -254,11 +162,11 @@ Panel {
 
           PanelHero {
             width: parent.width
-            title: "Workspace Setups"
+            title: root.t("title")
             meta: root.backend && root.backend.restoreActive
-              ? ((root.backend.restoreProfile || "Profile") + " · " + root.backend.restorePhase)
-              : (root.profiles.length + " saved profile" + (root.profiles.length === 1 ? "" : "s"))
-            detail: root.backend && root.backend.restoreTotal > 0
+              ? root.backend.restoreTemplate + " · " + root.t("phase." + root.backend.restorePhase)
+              : root.t("templates.count", { count: root.templates.length })
+            detail: root.backend && root.backend.restoreActive && root.backend.restoreTotal > 0
               ? root.backend.restoreCompleted + "/" + root.backend.restoreTotal : ""
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -297,7 +205,7 @@ Panel {
             visible: root.backend && root.backend.progressRows.length > 0
             width: parent.width
             spacing: Style.space(6)
-            PanelSectionHeader { text: "RESTORE PROGRESS"; foreground: root.foreground; fontFamily: root.fontFamily }
+            PanelSectionHeader { text: root.t("section.progress"); foreground: root.foreground; fontFamily: root.fontFamily }
             Repeater {
               model: root.backend ? root.backend.progressRows : []
               Row {
@@ -307,7 +215,7 @@ Panel {
                 Text {
                   width: Style.space(18)
                   text: Model.progressGlyph(modelData.state)
-                  color: modelData.state === "failed" || modelData.state === "error" ? root.urgent : root.foreground
+                  color: modelData.state === "failed" ? root.urgent : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
                 }
@@ -323,7 +231,7 @@ Panel {
             }
             Button {
               visible: root.backend && root.backend.restoreActive
-              text: "Cancel restore"
+              text: root.t("action.cancelRestore")
               iconText: "󰜺"
               bordered: true
               focusable: true
@@ -333,74 +241,36 @@ Panel {
             }
           }
 
-          PanelSeparator { foreground: root.foreground }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(8)
-            PanelSectionHeader { text: "LOAD BEHAVIOR"; foreground: root.foreground; fontFamily: root.fontFamily }
-            Dropdown {
-              width: parent.width
-              showLabel: false
-              value: root.loadMode
-              options: [
-                { value: "empty", label: "Require an empty session" },
-                { value: "add", label: "Add to open windows" },
-                { value: "replace", label: "Close open windows and replace" }
-              ]
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { root.loadMode = value }
-            }
-            Text {
-              width: parent.width
-              text: root.loadMode === "empty"
-                ? "Safest and most exact. Loading stops if application windows are already open."
-                : (root.loadMode === "add"
-                  ? "Keeps existing windows and adds the saved setup."
-                  : "Closes normal application windows after an explicit confirmation.")
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-          }
-
-          PanelSeparator { foreground: root.foreground }
-
           Row {
             width: parent.width
             spacing: Style.space(8)
             TextField {
               id: saveField
               width: parent.width - saveButton.width - parent.spacing
-              placeholderText: "New profile name"
+              placeholderText: root.t("save.placeholder")
               foreground: root.foreground
               font.family: root.fontFamily
-              enabled: !root.backend || !root.backend.busy
-              onAccepted: {
-                root.requestSave(text)
-                if (root.overwriteTarget === "") keyCatcher.forceActiveFocus()
-              }
+              enabled: !root.busy
+              onAccepted: root.save()
               Keys.onEscapePressed: { text = ""; keyCatcher.forceActiveFocus() }
             }
             Button {
               id: saveButton
-              text: "Save current"
+              text: root.t("save.button")
               iconText: "󰆓"
               bordered: true
               focusable: true
-              enabled: saveField.text.trim() !== "" && root.backend && !root.backend.busy
+              enabled: saveField.text.trim() !== "" && !root.busy
               foreground: root.foreground
               fontFamily: root.fontFamily
-              onClicked: root.requestSave(saveField.text)
+              onClicked: root.save()
             }
           }
 
           Text {
-            visible: root.profiles.length === 0 && !(root.backend && root.backend.refreshing)
+            visible: root.templates.length === 0 && !(root.backend && root.backend.refreshing)
             width: parent.width
-            text: "No saved workspace profiles yet.\nName the current desktop above to create one."
+            text: root.t("templates.empty")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -411,16 +281,18 @@ Panel {
           }
 
           Column {
-            id: profileColumn
+            id: templateColumn
             width: parent.width
             spacing: Style.space(8)
             Repeater {
-              model: root.profiles
+              model: root.templates
               BorderSurface {
+                id: card
                 required property var modelData
                 required property int index
-                width: profileColumn.width
-                implicitHeight: profileBody.implicitHeight + Style.space(20)
+                readonly property bool expanded: root.expandedId === modelData.id
+                width: templateColumn.width
+                implicitHeight: cardBody.implicitHeight + Style.space(20)
                 color: root.cursorActive && root.selectedIndex === index
                   ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
                 borderSpec: Border.controlSpec(root.cursorActive && root.selectedIndex === index
@@ -428,7 +300,7 @@ Panel {
                 radius: Style.cornerRadius
 
                 Column {
-                  id: profileBody
+                  id: cardBody
                   anchors.left: parent.left
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
@@ -436,9 +308,9 @@ Panel {
                   spacing: Style.space(8)
                   Item {
                     width: parent.width
-                    implicitHeight: Math.max(profileName.implicitHeight, badges.implicitHeight)
+                    implicitHeight: Math.max(templateName.implicitHeight, badges.implicitHeight)
                     Text {
-                      id: profileName
+                      id: templateName
                       anchors.left: parent.left
                       anchors.right: badges.left
                       anchors.rightMargin: Style.space(8)
@@ -452,24 +324,139 @@ Panel {
                     Row {
                       id: badges
                       anchors.right: parent.right
-                      spacing: Style.space(6)
-                      Text { visible: modelData.isDefault || (root.backend && root.backend.defaultProfile === modelData.id); text: "DEFAULT"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
-                      Text { visible: modelData.isLast || (root.backend && root.backend.lastProfile === modelData.id); text: "LAST"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true }
+                      spacing: Style.space(8)
+                      Text {
+                        visible: modelData.restoreOnStartup
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.t("badge.startup", { workspace: modelData.startupWorkspace })
+                        color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; font.bold: true
+                      }
+                      Dropdown {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Style.space(240)
+                        showLabel: false
+                        enabled: !root.busy
+                        value: String(modelData.shortcut)
+                        options: Model.slotOptions(root.t("shortcuts.chipNone"), root.templates, modelData.name)
+                        foreground: modelData.shortcut > 0 ? Color.accent : root.dim
+                        fontFamily: root.fontFamily
+                        onPopupOpenChanged: root.openPopups += popupOpen ? 1 : -1
+                        onChanged: function(value) { root.backend.setShortcut(modelData.name, Number(value)) }
+                      }
                     }
                   }
                   Text {
-                    text: Model.profileLabel(modelData)
+                    width: parent.width
+                    text: [root.t("label.windows", { count: modelData.windowCount })]
+                      .concat(modelData.sourceWorkspace ? [root.t("label.source", { workspace: modelData.sourceWorkspace })] : [])
+                      .concat(modelData.unrestorable > 0 ? [root.t("label.unrestorable", { count: modelData.unrestorable })] : [])
+                      .join(" · ")
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
+                    wrapMode: Text.WordWrap
                   }
-                  Row {
+                  Flow {
                     width: parent.width
                     spacing: Style.space(6)
-                    Button { text: "Load"; bordered: true; focusable: true; enabled: root.backend && !root.backend.busy; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.requestLoad(modelData) }
-                    Button { text: "Update"; bordered: true; focusable: true; enabled: root.backend && !root.backend.busy; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.requestSave(modelData.name) }
-                    Button { text: "Rename"; bordered: true; focusable: true; enabled: root.backend && !root.backend.busy; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.beginRename(modelData) }
-                    Button { text: "Delete"; bordered: true; focusable: true; enabled: root.backend && !root.backend.busy; foreground: root.urgent; fontFamily: root.fontFamily; onClicked: root.requestDelete(modelData) }
+                    Button { text: root.t("action.load"); bordered: true; focusable: true; enabled: !root.busy; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.load(modelData) }
+                    Button { text: root.t("action.update"); bordered: true; focusable: true; enabled: !root.busy; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.backend.updateTemplate(modelData.name) }
+                    Button { text: root.t("action.rename"); bordered: true; focusable: true; enabled: !root.busy; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.beginRename(modelData) }
+                    Button { text: root.t("action.settings"); iconText: card.expanded ? "󰅃" : "󰅀"; bordered: true; focusable: true; selected: card.expanded; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.expandedId = card.expanded ? "" : modelData.id }
+                    Button { text: root.t("action.delete"); bordered: true; focusable: true; enabled: !root.busy; foreground: root.urgent; fontFamily: root.fontFamily; onClicked: root.backend.requestDelete(modelData.name) }
+                  }
+
+                  Column {
+                    visible: card.expanded
+                    width: parent.width
+                    spacing: Style.space(10)
+                    topPadding: Style.space(4)
+
+                    Toggle {
+                      width: parent.width
+                      label: root.t("settings.startup")
+                      description: root.t("settings.startupDescription", { workspace: modelData.startupWorkspace || "1" })
+                      checked: modelData.restoreOnStartup
+                      foreground: root.foreground
+                      fontFamily: root.fontFamily
+                      onClicked: root.backend.setStartup(modelData.name, !modelData.restoreOnStartup, modelData.startupWorkspace || "1")
+                    }
+                    Dropdown {
+                      visible: modelData.restoreOnStartup
+                      width: parent.width
+                      label: root.t("settings.startupWorkspace")
+                      value: modelData.startupWorkspace
+                      options: Model.workspaceOptions()
+                      foreground: root.foreground
+                      fontFamily: root.fontFamily
+                      onPopupOpenChanged: root.openPopups += popupOpen ? 1 : -1
+                      onChanged: function(value) { root.backend.setStartup(modelData.name, true, value) }
+                    }
+                    PanelSectionHeader { text: root.t("settings.windows"); foreground: root.foreground; fontFamily: root.fontFamily }
+                    Repeater {
+                      model: modelData.windows
+                      Column {
+                        id: windowRow
+                        required property var modelData
+                        width: parent.width
+                        spacing: Style.space(4)
+                        Item {
+                          property var modelData: windowRow.modelData
+                          width: parent.width
+                          implicitHeight: strategy.implicitHeight
+                          Text {
+                            anchors.left: parent.left
+                            anchors.right: strategy.left
+                            anchors.rightMargin: Style.space(8)
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.application + (modelData.restorable ? "" : " (!)")
+                            color: modelData.restorable ? root.foreground : root.urgent
+                            font.family: root.fontFamily
+                            font.pixelSize: Style.font.bodySmall
+                            elide: Text.ElideRight
+                          }
+                          Dropdown {
+                            id: strategy
+                            anchors.right: parent.right
+                            width: parent.width * 0.58
+                            showLabel: false
+                            value: modelData.strategy
+                            options: [
+                              { value: "auto", label: root.t("strategy.auto") },
+                              { value: "new", label: root.t("strategy.new") },
+                              { value: "move", label: root.t("strategy.move") }
+                            ]
+                            foreground: root.foreground
+                            fontFamily: root.fontFamily
+                            onPopupOpenChanged: root.openPopups += popupOpen ? 1 : -1
+                            onChanged: function(value) { root.backend.setStrategy(card.modelData.name, modelData.id, value) }
+                          }
+                        }
+                        TextField {
+                          visible: windowRow.modelData.browser
+                          width: parent.width
+                          text: windowRow.modelData.urls.join(" ")
+                          placeholderText: root.t("settings.urlsPlaceholder")
+                          foreground: root.foreground
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          enabled: !root.busy
+                          onActiveFocusChanged: root.focusedFields += activeFocus ? 1 : -1
+                          Component.onDestruction: if (activeFocus) root.focusedFields = Math.max(0, root.focusedFields - 1)
+                          onAccepted: { root.backend.setUrls(card.modelData.name, windowRow.modelData.id, text); keyCatcher.forceActiveFocus() }
+                          Keys.onEscapePressed: { text = windowRow.modelData.urls.join(" "); keyCatcher.forceActiveFocus() }
+                        }
+                        Text {
+                          visible: windowRow.modelData.browser
+                          width: parent.width
+                          text: root.t("settings.urlsHint", { count: windowRow.modelData.urls.length })
+                          color: root.dim
+                          font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption
+                          wrapMode: Text.WordWrap
+                        }
+                      }
+                    }
                   }
                 }
                 MouseArea {
@@ -477,7 +464,7 @@ Panel {
                   z: -1
                   acceptedButtons: Qt.NoButton
                   hoverEnabled: true
-                  onEntered: root.selectProfile(index)
+                  onEntered: root.selectTemplate(index)
                 }
               }
             }
@@ -495,46 +482,134 @@ Panel {
               onAccepted: root.commitRename()
               Keys.onEscapePressed: { root.renameTarget = ""; keyCatcher.forceActiveFocus() }
             }
-            Button { id: renameButton; text: "Rename"; bordered: true; focusable: true; enabled: renameField.text.trim() !== ""; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.commitRename() }
+            Button { id: renameButton; text: root.t("action.rename"); bordered: true; focusable: true; enabled: renameField.text.trim() !== ""; foreground: root.foreground; fontFamily: root.fontFamily; onClicked: root.commitRename() }
           }
 
           PanelSeparator { foreground: root.foreground }
 
           Column {
             width: parent.width
-            spacing: Style.space(10)
-            PanelSectionHeader { text: "AT LOGIN"; foreground: root.foreground; fontFamily: root.fontFamily }
+            spacing: Style.space(8)
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(shortcutsHeader.implicitHeight, shortcutsState.implicitHeight)
+              PanelSectionHeader {
+                id: shortcutsHeader
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.t("section.shortcuts")
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+              Text {
+                id: shortcutsState
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.t(root.bindingsActive ? "shortcuts.active" : "shortcuts.inactive")
+                color: root.bindingsActive ? Color.accent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+            }
+            Repeater {
+              model: Model.assignedSlots(root.templates)
+              Item {
+                required property var modelData
+                width: parent.width
+                implicitHeight: removeShortcut.implicitHeight
+                Text {
+                  id: slotKey
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(160)
+                  text: Model.slotLabel(modelData.slot)
+                  color: Color.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                }
+                Text {
+                  anchors.left: slotKey.right
+                  anchors.right: removeShortcut.left
+                  anchors.rightMargin: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: modelData.name
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  elide: Text.ElideRight
+                }
+                Button {
+                  id: removeShortcut
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.t("shortcuts.remove")
+                  bordered: true
+                  focusable: true
+                  enabled: !root.busy
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.backend.setShortcut(modelData.name, 0)
+                }
+              }
+            }
+            Text {
+              visible: Model.assignedSlots(root.templates).length === 0
+              width: parent.width
+              text: root.t("shortcuts.none", { slot: Model.firstFreeSlot(root.templates) || 1 })
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: root.t("shortcuts.help") + (root.bindingsActive ? "" : " " + root.t("shortcuts.inactiveDetail"))
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Button {
+              visible: !root.bindingsActive
+              text: root.t("bindings.install")
+              iconText: "󰌌"
+              bordered: true
+              focusable: true
+              enabled: !root.busy
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.backend.installBindings()
+            }
+          }
+
+          PanelSeparator { foreground: root.foreground }
+
+          Column {
+            width: parent.width
+            spacing: Style.space(8)
+            PanelSectionHeader { text: root.t("section.language"); foreground: root.foreground; fontFamily: root.fontFamily }
             Dropdown {
-              id: startupMode
               width: parent.width
               showLabel: false
-              value: root.backend ? root.backend.startupMode : "none"
+              value: root.backend ? root.backend.languageSetting : "auto"
               options: [
-                { value: "none", label: "Do nothing" },
-                { value: "default", label: "Load default profile" },
-                { value: "last", label: "Load last profile" },
-                { value: "chooser", label: "Open profile chooser" }
+                { value: "auto", label: root.t("language.auto") },
+                { value: "en", label: "English" },
+                { value: "de", label: "Deutsch" }
               ]
               foreground: root.foreground
               fontFamily: root.fontFamily
-              onChanged: function(value) { root.startupChanged(value) }
-            }
-            Dropdown {
-              id: defaultProfile
-              visible: root.backend && root.backend.startupMode === "default"
-              width: parent.width
-              label: "Default profile"
-              value: root.backend ? root.backend.defaultProfile : ""
-              options: root.profiles.map(function(profile) { return { value: profile.id, label: profile.name } })
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onChanged: function(value) { if (root.backend) root.backend.setStartup("default", value) }
+              onPopupOpenChanged: root.openPopups += popupOpen ? 1 : -1
+              onChanged: function(value) { if (root.backend) root.backend.setLanguage(value) }
             }
           }
 
           Text {
             width: parent.width
-            text: "↑/↓ select · Enter load · S save · U update · N rename · X delete · R refresh"
+            text: root.t("hint.keys")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -545,33 +620,24 @@ Panel {
       }
 
       FocusScope {
-        id: deleteFocus
+        id: choiceFocus
         anchors.fill: parent
-        visible: root.deleteTarget !== "" || root.overwriteTarget !== "" || root.replaceTarget !== "" || root.saveWarningTarget !== ""
+        visible: root.choiceOpen
         z: 20
         Keys.onPressed: function(event) {
-          if (deleteDialog.handleKey(event)) event.accepted = true
+          if (choiceDialog.handleKey(event)) event.accepted = true
         }
-        ConfirmDialog {
-          id: deleteDialog
+        ChoiceDialog {
+          id: choiceDialog
           anchors.fill: parent
-          opened: deleteFocus.visible
-          message: root.saveWarningTarget !== ""
-            ? ((root.saveWarningExisting !== "" ? "Update existing profile '" + root.saveWarningExisting + "'? " : "Save profile '" + root.saveWarningTarget + "'? ")
-              + (root.saveWarningUnresolved > 0 ? root.saveWarningUnresolved + " window(s) cannot be relaunched. " : "")
-              + (root.saveWarningFallback > 0 ? root.saveWarningFallback + " workspace layout(s) can only be restored approximately." : ""))
-            : (root.replaceTarget !== ""
-            ? "Close all normal application windows and load workspace profile '" + root.replaceTarget + "'? Unsaved work may be lost."
-            : (root.overwriteTarget !== ""
-              ? "A workspace profile named '" + root.overwriteTarget + "' already exists. Update it from the current desktop?"
-              : "Delete workspace profile '" + root.deleteTarget + "'? This cannot be undone."))
-          confirmText: root.saveWarningTarget !== "" ? (root.saveWarningExisting !== "" ? "Update" : "Save")
-            : (root.replaceTarget !== "" ? "Replace" : (root.overwriteTarget !== "" ? "Update" : "Delete"))
+          opened: root.choiceOpen
+          message: root.choiceOpen ? root.backend.pendingChoice.message : ""
+          options: root.choiceOpen ? root.backend.pendingChoice.options : []
+          cancelText: root.t("action.cancel")
           background: Color.popups.background
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onCanceled: root.finishConfirmation(false)
-          onConfirmed: root.finishConfirmation(true)
+          onChosen: function(id) { root.choose(id) }
         }
       }
     }

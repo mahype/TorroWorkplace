@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "io.github.mahype.workspace-setups",
   "name": "Workspace Setups",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Sven Wagener",
   "homepage": "https://github.com/mahype/workspace-setups",
-  "description": "Save and restore named Hyprland workspace profiles",
+  "description": "Save a single Hyprland workspace as a template and restore it on any workspace",
   "keepLoaded": true,
   "kinds": [
     "service",
@@ -17,7 +17,7 @@
   },
   "barWidget": {
     "displayName": "Workspace Setups",
-    "description": "Save, restore, and manage workspace profiles",
+    "description": "Save, restore, and manage workspace templates",
     "category": "Compositor",
     "allowMultiple": false,
     "defaultSection": "right"

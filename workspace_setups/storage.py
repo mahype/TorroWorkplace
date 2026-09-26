@@ -10,10 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import SCHEMA_VERSION
+from . import SCHEMA_VERSION, SLOTS, STRATEGIES
+from .browser import browser_family, restorable_url
 from .paths import Paths
 
-PROFILE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+TEMPLATE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+WORKSPACE_NAME = re.compile(r"^[1-9][0-9]*$")
+LANGUAGES = ("auto", "en", "de")
 UNSAFE_ARGUMENT = re.compile(r"(?i)(token|password|passwd|secret|api[-_]?key|auth)")
 SHELLS = {"sh", "bash", "zsh", "fish", "dash"}
 INTERPRETER_FLAGS = {
@@ -21,16 +24,19 @@ INTERPRETER_FLAGS = {
     "perl": {"-e", "-E"}, "ruby": {"-e"}, "node": {"-e", "--eval"},
 }
 DEFAULT_CONFIG = {
-    "schemaVersion": 1,
-    "startupMode": "none",
-    "startupProfile": None,
-    "lastProfile": None,
+    "schemaVersion": 2,
+    "language": "auto",
     "windowTimeoutSeconds": 12,
 }
 
 
 class StorageError(ValueError):
-    pass
+    """Backend error; ``code`` marks errors the UI can resolve with a choice."""
+
+    def __init__(self, message: str, code: str | None = None, **details: Any):
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 def now() -> str:
@@ -39,8 +45,8 @@ def now() -> str:
 
 def slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    if not slug or not PROFILE_ID.fullmatch(slug):
-        raise StorageError("profile name must contain letters or numbers")
+    if not slug or not TEMPLATE_ID.fullmatch(slug):
+        raise StorageError("template name must contain letters or numbers")
     return slug
 
 
@@ -81,36 +87,35 @@ def read_json(path: Path, default: Any = None) -> Any:
         raise StorageError(f"cannot read {path.name}: {error}") from error
 
 
-def validate_profile(profile: Any) -> dict[str, Any]:
-    if not isinstance(profile, dict) or profile.get("schemaVersion") != SCHEMA_VERSION:
-        raise StorageError("unsupported profile schema")
-    required = {"id": str, "name": str, "environment": dict, "workspaces": list, "windows": list}
+def validate_template(template: Any) -> dict[str, Any]:
+    if not isinstance(template, dict) or template.get("schemaVersion") != SCHEMA_VERSION:
+        raise StorageError("unsupported template schema")
+    required = {"id": str, "name": str, "windows": list, "tree": dict}
     for key, kind in required.items():
-        if not isinstance(profile.get(key), kind):
-            raise StorageError(f"invalid profile field: {key}")
-    if not PROFILE_ID.fullmatch(profile["id"]):
-        raise StorageError("invalid profile id")
-    monitors = profile["environment"].get("monitors")
-    if not isinstance(monitors, list):
-        raise StorageError("invalid monitor list")
-    for monitor in monitors:
-        if not isinstance(monitor, dict) or not isinstance(monitor.get("name"), str):
-            raise StorageError("invalid monitor")
-        if any(not _number(monitor.get(field)) for field in ("width", "height", "x", "y", "scale")):
-            raise StorageError("invalid monitor geometry")
+        if not isinstance(template.get(key), kind):
+            raise StorageError(f"invalid template field: {key}")
+    if not TEMPLATE_ID.fullmatch(template["id"]):
+        raise StorageError("invalid template id")
+    shortcut = template.get("shortcut")
+    if shortcut is not None and (isinstance(shortcut, bool) or shortcut not in SLOTS):
+        raise StorageError("invalid shortcut slot")
+    if not isinstance(template.get("restoreOnStartup", False), bool):
+        raise StorageError("invalid startup flag")
+    startup_workspace = template.get("startupWorkspace")
+    if startup_workspace is not None and not (isinstance(startup_workspace, str) and WORKSPACE_NAME.fullmatch(startup_workspace)):
+        raise StorageError("startup workspace must be a workspace number")
+    if template.get("restoreOnStartup") and startup_workspace is None:
+        raise StorageError("startup restore requires a startup workspace")
     ids: set[str] = set()
-    for window in profile["windows"]:
+    for window in template["windows"]:
         if not isinstance(window, dict) or not isinstance(window.get("id"), str):
             raise StorageError("invalid window")
         if window["id"] in ids:
             raise StorageError("duplicate window id")
         ids.add(window["id"])
     tree_ids: set[str] = set()
-    for workspace in profile["workspaces"]:
-        if not isinstance(workspace, dict) or not isinstance(workspace.get("name"), str) or not isinstance(workspace.get("tree", {}), dict):
-            raise StorageError("invalid workspace")
-        _validate_tree(workspace.get("tree", {}), ids, tree_ids)
-    for window in profile["windows"]:
+    _validate_tree(template["tree"], ids, tree_ids)
+    for window in template["windows"]:
         command = window.get("command")
         if not isinstance(command, list) or not all(isinstance(arg, str) and "\0" not in arg for arg in command):
             raise StorageError(f"invalid command for {window['id']}")
@@ -124,9 +129,13 @@ def validate_profile(profile: Any) -> dict[str, Any]:
                 raise StorageError(f"unsafe argument for {window['id']}")
             if _has_embedded_interpreter(command):
                 raise StorageError(f"embedded shell command for {window['id']}")
-        for field in ("application", "workspace", "monitor"):
-            if not isinstance(window.get(field), str):
-                raise StorageError(f"invalid {field} for {window['id']}")
+        if not isinstance(window.get("application"), str):
+            raise StorageError(f"invalid application for {window['id']}")
+        urls = window.get("urls", [])
+        if not isinstance(urls, list) or not all(restorable_url(url) for url in urls):
+            raise StorageError(f"invalid urls for {window['id']}")
+        if window.get("strategy", "auto") not in STRATEGIES:
+            raise StorageError(f"invalid strategy for {window['id']}")
         if any(not isinstance(window.get(field, False), bool) for field in ("floating", "fullscreen", "pinned")):
             raise StorageError(f"invalid state for {window['id']}")
         if window.get("fullscreenMode", "fullscreen") not in {"fullscreen", "maximized"}:
@@ -136,10 +145,10 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             raise StorageError(f"invalid geometry for {window['id']}")
         if geometry["width"] < 0 or geometry["height"] < 0:
             raise StorageError(f"invalid geometry for {window['id']}")
-    tiled_ids = {window["id"] for window in profile["windows"] if not window.get("floating")}
+    tiled_ids = {window["id"] for window in template["windows"] if not window.get("floating")}
     if tree_ids != tiled_ids:
-        raise StorageError("workspace trees must contain every tiled window exactly once")
-    return profile
+        raise StorageError("the workspace tree must contain every tiled window exactly once")
+    return template
 
 
 def _number(value: Any) -> bool:
@@ -196,48 +205,52 @@ class Store:
         self.paths = paths or Paths.from_env()
         self.backup_limit = backup_limit
 
-    def profile_path(self, identifier: str) -> Path:
-        if not PROFILE_ID.fullmatch(identifier):
-            raise StorageError("invalid profile id")
-        return self.paths.profiles / f"{identifier}.json"
+    def template_path(self, identifier: str) -> Path:
+        if not TEMPLATE_ID.fullmatch(identifier):
+            raise StorageError("invalid template id")
+        return self.paths.templates / f"{identifier}.json"
 
     def get(self, name: str) -> dict[str, Any]:
-        identifier = name if PROFILE_ID.fullmatch(name) else slugify(name)
-        profile = read_json(self.profile_path(identifier))
-        if profile is None:
-            raise StorageError(f"profile not found: {name}")
-        validated = validate_profile(profile)
+        identifier = name if TEMPLATE_ID.fullmatch(name) else slugify(name)
+        template = read_json(self.template_path(identifier))
+        if template is None:
+            raise StorageError(f"template not found: {name}", "not_found")
+        validated = validate_template(template)
         if validated["id"] != identifier:
-            raise StorageError("profile id does not match its filename")
+            raise StorageError("template id does not match its filename")
         return validated
 
-    def list(self) -> list[dict[str, Any]]:
-        config = self.config()
-        if not self.paths.profiles.exists():
+    def exists(self, name: str) -> bool:
+        try:
+            return self.template_path(slugify(name)).exists()
+        except StorageError:
+            return False
+
+    def all(self) -> list[dict[str, Any]]:
+        if not self.paths.templates.exists():
             return []
         result = []
-        for path in sorted(self.paths.profiles.glob("*.json")):
-            profile = validate_profile(read_json(path))
-            if profile["id"] != path.stem:
-                raise StorageError("profile id does not match its filename")
-            result.append({
-                "id": profile["id"], "name": profile["name"],
-                "updatedAt": profile.get("updatedAt"),
-                "workspaceCount": len(profile["workspaces"]), "windowCount": len(profile["windows"]),
-                "startup": config.get("startupProfile") == profile["id"],
-                "lastUsed": config.get("lastProfile") == profile["id"],
-                "unrestorableCount": sum(not window.get("command") for window in profile["windows"]),
-            })
+        for path in sorted(self.paths.templates.glob("*.json")):
+            template = validate_template(read_json(path))
+            if template["id"] != path.stem:
+                raise StorageError("template id does not match its filename")
+            result.append(template)
         return result
 
-    def save(self, profile: dict[str, Any], replace: bool = False) -> None:
-        validate_profile(profile)
-        path = self.profile_path(profile["id"])
+    def by_slot(self, slot: int) -> dict[str, Any] | None:
+        return next((template for template in self.all() if template.get("shortcut") == slot), None)
+
+    def list(self) -> list[dict[str, Any]]:
+        return [summary(template) for template in self.all()]
+
+    def save(self, template: dict[str, Any], replace: bool = False) -> None:
+        validate_template(template)
+        path = self.template_path(template["id"])
         if path.exists() and not replace:
-            raise StorageError("profile already exists; use update")
+            raise StorageError("template already exists; use update", "exists", template=template["name"])
         if path.exists():
             self._backup(path)
-        atomic_json(path, profile)
+        atomic_json(path, template)
 
     def _backup(self, path: Path) -> None:
         folder = self.paths.backups / path.stem
@@ -252,29 +265,45 @@ class Store:
             stale.unlink()
 
     def delete(self, name: str) -> None:
-        profile = self.get(name)
-        self.profile_path(profile["id"]).unlink()
-        config = self.config()
-        for key in ("startupProfile", "lastProfile"):
-            if config.get(key) == profile["id"]:
-                config[key] = None
-        self.write_config(config)
+        template = self.get(name)
+        self.template_path(template["id"]).unlink()
 
     def rename(self, old: str, new: str) -> dict[str, Any]:
-        profile = self.get(old)
-        old_id, new_id = profile["id"], slugify(new)
-        if self.profile_path(new_id).exists() and new_id != old_id:
-            raise StorageError("target profile already exists")
-        profile.update({"id": new_id, "name": new.strip(), "updatedAt": now()})
-        atomic_json(self.profile_path(new_id), profile)
+        template = self.get(old)
+        old_id, new_id = template["id"], slugify(new)
+        if self.template_path(new_id).exists() and new_id != old_id:
+            raise StorageError("target template already exists")
+        template.update({"id": new_id, "name": new.strip(), "updatedAt": now()})
+        atomic_json(self.template_path(new_id), template)
         if new_id != old_id:
-            self.profile_path(old_id).unlink()
-        config = self.config()
-        for key in ("startupProfile", "lastProfile"):
-            if config.get(key) == old_id:
-                config[key] = new_id
-        self.write_config(config)
-        return profile
+            self.template_path(old_id).unlink()
+        return template
+
+    def update_settings(self, name: str, **changes: Any) -> dict[str, Any]:
+        template = self.get(name)
+        template.update(changes)
+        validate_template(template)
+        atomic_json(self.template_path(template["id"]), template)
+        return template
+
+    def assign_shortcut(self, name: str, slot: int | None, force: bool = False) -> dict[str, Any]:
+        template = self.get(name)
+        if slot is not None:
+            holder = self.by_slot(slot)
+            if holder and holder["id"] != template["id"]:
+                if not force:
+                    raise StorageError(
+                        f"F{slot} is already assigned to {holder['name']}", "slot_taken",
+                        slot=slot, template=holder["name"],
+                    )
+                self.update_settings(holder["id"], shortcut=None)
+        return self.update_settings(template["id"], shortcut=slot)
+
+    def unique_name(self, base: str) -> str:
+        name, counter = base, 2
+        while self.exists(name):
+            name, counter = f"{base} ({counter})", counter + 1
+        return name
 
     def config(self) -> dict[str, Any]:
         data = read_json(self.paths.config, {})
@@ -284,3 +313,21 @@ class Store:
 
     def write_config(self, config: dict[str, Any]) -> None:
         atomic_json(self.paths.config, config)
+
+
+def summary(template: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": template["id"], "name": template["name"], "updatedAt": template.get("updatedAt"),
+        "windowCount": len(template["windows"]),
+        "unrestorableCount": sum(not window.get("command") for window in template["windows"]),
+        "shortcut": template.get("shortcut"),
+        "restoreOnStartup": bool(template.get("restoreOnStartup")),
+        "startupWorkspace": template.get("startupWorkspace"),
+        "sourceWorkspace": (template.get("source") or {}).get("workspace"),
+        "windows": [
+            {"id": window["id"], "application": window.get("application", ""),
+             "strategy": window.get("strategy", "auto"), "restorable": bool(window.get("command")),
+             "urls": list(window.get("urls") or []), "browser": browser_family(window) is not None}
+            for window in template["windows"]
+        ],
+    }
