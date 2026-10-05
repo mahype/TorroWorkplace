@@ -1,0 +1,14 @@
+[package]
+name = "torro-pim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Calendar and task model, provider traits, offline cache and sync for TorroWorkplace."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true

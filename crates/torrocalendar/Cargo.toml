@@ -1,0 +1,17 @@
+[package]
+name = "torrocalendar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Calendar for the tiled desktop: CalDAV events as a TUI, a status/ctl CLI and an MCP server."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+torro-pim.workspace = true
+torro-pim-caldav.workspace = true
+torro-tui.workspace = true

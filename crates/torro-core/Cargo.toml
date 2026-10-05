@@ -1,0 +1,11 @@
+[package]
+name = "torro-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Shared ground for every TorroWorkplace app: app ids, per-OS paths, theme tokens."
+
+[lints]
+workspace = true

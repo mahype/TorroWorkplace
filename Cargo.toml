@@ -1,0 +1,31 @@
+[workspace]
+members = [
+    "crates/torro-core",
+    "crates/torro-pim",
+    "crates/torro-pim-caldav",
+    "crates/torro-tui",
+    "crates/torrotasks",
+    "crates/torrocalendar",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["TorroWorkplace contributors"]
+repository = "https://github.com/mahype/TorroWorkplace"
+
+[workspace.dependencies]
+torro-core = { path = "crates/torro-core" }
+torro-pim = { path = "crates/torro-pim" }
+torro-pim-caldav = { path = "crates/torro-pim-caldav" }
+torro-tui = { path = "crates/torro-tui" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"

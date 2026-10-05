@@ -1,0 +1,14 @@
+[package]
+name = "torro-pim-caldav"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CalDAV/iCalendar provider (VEVENT, VTODO) for torro-pim: Nextcloud, iCloud, Radicale and others."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-pim.workspace = true
