@@ -1,5 +1,7 @@
 # Roadmap
 
+Die Arbeitspakete stehen als Issues in den [Meilensteinen](https://github.com/mahype/TorroWorkplace/milestones) auf GitHub, eine Phase pro Meilenstein.
+
 ## Phase 0: Planung und Gerüst ✅
 
 - Repository, Lizenz (MIT OR Apache-2.0), Dokumente unter `docs/`
