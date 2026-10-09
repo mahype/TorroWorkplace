@@ -28,6 +28,7 @@ mit der eigenen Nextcloud synchronisieren und workspace-setups sie wiederherstel
 
 - `gui/torrotasks-gui`, `gui/torrocalendar-gui` auf demselben Kern
 - gemeinsames Iced-Theme aus den Torro-Tokens
+- Kalender-Darstellung: Ideen und Prototypen (Tagesspirale, Jahresring) in [calendar-views.md](calendar-views.md)
 - Paketierung als `.app` (macOS, signiert) und mit `.desktop` und Icon (Linux)
 
 ## Phase 3: workspace-setups für AeroSpace

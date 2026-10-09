@@ -8,7 +8,7 @@ Status: **MVP** = erste Version · **nächste** = direkt danach · **Idee** = ge
 | App | Frage | Datenquelle | Status |
 |---|---|---|---|
 | **Aufgaben** (`torrotasks`) | Was muss ich tun? | CalDAV-VTODO (Nextcloud Tasks, iCloud Erinnerungen über CalDAV …); später Todoist | **MVP** |
-| **Kalender** (`torrocalendar`) | Was steht an? | CalDAV-VEVENT; später Google Calendar | **MVP** |
+| **Kalender** (`torrocalendar`) | Was steht an? | CalDAV-VEVENT; später Google Calendar. Darstellungsideen: [calendar-views.md](calendar-views.md) | **MVP** |
 | Tagesplan | Was ist heute dran, Termine und Aufgaben zusammen? | Kalender und Aufgaben | Idee |
 | Fokus / Pomodoro / Zeiterfassung | Woran arbeite ich gerade und wie lange schon? | lokal; Export nach CalDAV | Idee |
 | Notizen / Scratchpad | Wo lege ich schnell etwas ab, auch für Agenten? | Markdown-Dateien | Idee |
