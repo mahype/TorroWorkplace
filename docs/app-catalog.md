@@ -1,14 +1,16 @@
 # App-Katalog
 
 Ideensammlung. Jede App beantwortet **eine Frage** und läuft in ihrem eigenen Fenster.
-Status: **MVP** = erste Version · **nächste** = direkt danach · **Idee** = gesammelt.
+Status: **Kern** = Phase 1 · **v0.1** = erste Version (Phase 2) · **nächste** = direkt danach · **Idee** = gesammelt.
+
+Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerzentrale, Konten, Sync, MCP).
 
 ## Planen
 
 | App | Frage | Datenquelle | Status |
 |---|---|---|---|
-| **Aufgaben** (`torrotasks`) | Was muss ich tun? | CalDAV-VTODO (Nextcloud Tasks, iCloud Erinnerungen über CalDAV …); später Todoist | **MVP** |
-| **Kalender** (`torrocalendar`) | Was steht an? | CalDAV-VEVENT; später Google Calendar | **MVP** |
+| **Aufgaben** (`torrotasks`) | Was muss ich tun? | CalDAV-VTODO (Nextcloud Tasks, iCloud Erinnerungen über CalDAV …); später Todoist | **v0.1** |
+| **Kalender** (`torrocalendar`) | Was steht an? | CalDAV-VEVENT; später Google Calendar. Darstellungsideen: [calendar-views.md](calendar-views.md) | **v0.1** |
 | Tagesplan | Was ist heute dran, Termine und Aufgaben zusammen? | Kalender und Aufgaben | Idee |
 | Fokus / Pomodoro / Zeiterfassung | Woran arbeite ich gerade und wie lange schon? | lokal; Export nach CalDAV | Idee |
 | Notizen / Scratchpad | Wo lege ich schnell etwas ab, auch für Agenten? | Markdown-Dateien | Idee |
@@ -45,7 +47,8 @@ macOS-Menüleisten-Apps oder tmux-TUIs (siehe [research.md](research.md)).
 
 | Baustein | Status |
 |---|---|
-| workspace-setups (Fenster-Sets speichern und laden) | übernommen; AeroSpace-Backend geplant |
-| Installer (`install.sh`, AUR-Metapaket, Homebrew-Tap) | MVP |
-| Omarchy-Leistenwidgets pro App (`status --json` + QML) | nach dem MVP |
-| Gemeinsamer Launcher / „Suite starten“ | Idee; übernimmt zum Teil workspace-setups |
+| workspace-setups (Fenster-Sets speichern und laden) | übernommen; aus dem Tray-Menü bedienbar (Kern), AeroSpace-Backend in Phase 4 |
+| **Kern `torroworkplace`**: Dienst, Tray-Icon, Steuerzentrale, Konten, Sync, MCP | **Kern** |
+| Installer (`install.sh`, AUR-Metapaket, Homebrew-Tap) | v0.1 |
+| Omarchy-Leistenwidgets pro App (`status --json` + QML) | Phase 5 |
+

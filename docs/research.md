@@ -11,7 +11,8 @@ Stand: 2026-10-05. Zahlen zum Speicherbedarf sind grobe Richtwerte aus gemischte
 - **Lücke:** Werkzeuge für den Überblick über KI-Agenten sind fast nur macOS-Menüleisten-Apps
   oder tmux-TUIs. Ein kachelbares Fenster „Agenten“ und eines für „Verbrauch“ gibt es
   plattformübergreifend nicht.
-- **Technik:** Rust-Kern + ratatui-TUI (sehr leicht), danach eine native GUI mit **Iced**.
+- **Technik:** Rust-Kern + ratatui-TUI (sehr leicht) als Grundlage für alle Systeme. Die GUI kommt danach; Favorit ist **Iced**, entschieden wird nach einem Vergleich (Phase 3).
+- **Tray-Icon:** Omarchy 4 hat eine Tray-Leiste (Quickshell, StatusNotifierItem). Linux: `ksni` (ohne GTK), macOS/Windows: `tray-icon`.
 
 ## 1. Suiten und „Desktop als Dashboard“
 
@@ -57,8 +58,8 @@ Benchmark-Sammlung: https://github.com/GoldStrikeArch/rust-gui-desktop-ecosystem
 
 | Option | ca. RAM | Wayland/Hyprland | Bewertung |
 |---|---|---|---|
-| **ratatui (TUI)** | 5–20 MB + Terminal | perfekt (Terminal-Fenster) | **Phase 1.** Überall gleich, kachelt ideal, passt zu TorroMail und TorroCast |
-| **Iced** | 40–100 MB | sehr gut (COSMIC) | **Phase 2 (GUI).** Elm-Architektur, macOS und Windows ok |
+| **ratatui (TUI)** | 5–20 MB + Terminal | perfekt (Terminal-Fenster) | **Grundlage.** Überall gleich, kachelt ideal, passt zu TorroMail und TorroCast |
+| **Iced** | 40–100 MB | sehr gut (COSMIC) | **Favorit für die GUI (Phase 3).** Elm-Architektur, macOS und Windows ok |
 | Slint | sehr gering | gut (winit) | Leichteste Alternative, eigene Markup-Sprache, Lizenzmodell beachten |
 | egui | 30–60 MB | gut | Schnell gebaut, wirkt weniger nativ |
 | GPUI (Zed) | gering | gut | Release-Stand unsicher, als Abhängigkeit riskant |
@@ -68,7 +69,18 @@ Benchmark-Sammlung: https://github.com/GoldStrikeArch/rust-gui-desktop-ecosystem
 | Electron | 100–300 MB | ok | Verworfen |
 | Quickshell / AGS / eww | — | nur Hyprland | Für Leisten und Overlays, nicht für normale Fenster; passt für Omarchy-Widgets |
 
-## 5. Alles auf einmal installieren
+## 5. Tray-Icon für den Kern
+
+| Weg | Plattform | Notiz |
+|---|---|---|
+| Omarchy 4-Leiste | Linux (Omarchy) | Die Leiste läuft auf Quickshell und hat einen System-Tray (StatusNotifierItem): https://quickshell.org/docs/master/types/Quickshell.Services.SystemTray, Release-Notes: https://github.com/basecamp/omarchy/releases/tag/v4.0.0. Laut Quickshell ist die SNI-Umsetzung „roughly conforming“, also unter Omarchy testen |
+| `ksni` | Linux | Reines StatusNotifierItem über D-Bus, ohne GTK: https://docs.rs/crate/ksni/latest/ |
+| `tray-icon` | macOS, Windows (Linux nur mit GTK + libappindicator) | Verbreitetster Weg; braucht eine Ereignisschleife auf dem Thread des Icons: https://docs.rs/crate/tray-icon/ |
+| `ldtray` | alle | Lädt Toolkits zur Laufzeit; jung (0.1.x): https://docs.rs/crate/ldtray/ |
+
+Plan: eine kleine Abstraktion im Kern, `ksni` unter Linux und `tray-icon` auf macOS und Windows.
+
+## 6. Alles auf einmal installieren
 
 - **Homebrew:** Tap `mahype/homebrew-torro` mit einer Formel pro App plus einer Meta-Formel
   oder einem Brewfile (`brew bundle`), siehe https://docs.brew.sh/Brew-Bundle-and-Brewfile.

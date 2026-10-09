@@ -19,6 +19,13 @@ pub struct AppId {
 }
 
 impl AppId {
+    /// The core: background service, tray icon, control centre.
+    pub const WORKPLACE: AppId = AppId {
+        window_class: "torro-workplace",
+        binary: "torroworkplace",
+        dir: "torroworkplace",
+        display_name: "Torro Workplace",
+    };
     pub const TASKS: AppId =
         AppId { window_class: "torro-tasks", binary: "torrotasks", dir: "torrotasks", display_name: "Torro Tasks" };
     pub const CALENDAR: AppId = AppId {
@@ -29,5 +36,5 @@ impl AppId {
     };
 
     /// Every app of the suite, in launcher order.
-    pub const ALL: &'static [AppId] = &[AppId::TASKS, AppId::CALENDAR];
+    pub const ALL: &'static [AppId] = &[AppId::WORKPLACE, AppId::TASKS, AppId::CALENDAR];
 }

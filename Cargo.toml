@@ -3,7 +3,9 @@ members = [
     "crates/torro-core",
     "crates/torro-pim",
     "crates/torro-pim-caldav",
+    "crates/torro-ipc",
     "crates/torro-tui",
+    "crates/torroworkplace",
     "crates/torrotasks",
     "crates/torrocalendar",
 ]
@@ -21,6 +23,7 @@ torro-core = { path = "crates/torro-core" }
 torro-pim = { path = "crates/torro-pim" }
 torro-pim-caldav = { path = "crates/torro-pim-caldav" }
 torro-tui = { path = "crates/torro-tui" }
+torro-ipc = { path = "crates/torro-ipc" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
