@@ -1,0 +1,487 @@
+<meta charset="utf-8">
+<title>Tagesspirale</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: Zifferblatt als Spirale mit zwei Windungen (00–12 innen, 12–24 außen) links, Tagesliste rechts; stapelt unter 900px */
+:root{
+  --bg:#0B0E13; --surface:#12171F; --surface-2:#181E29; --line:#232B39; --fg:#E9EDF5; --muted:#8C96A8; --faint:#465062;
+  --work:#7FB2FF; --private:#5ED8CB; --travel:#C7AEFF; --deadline:#FF8394; --birthday:#F4BA66;
+  --track-day:#2A3549; --track-night:#1A2130; --on-color:#0B0E13; --now:#FFFFFF; --hand:#F4BA66;
+  --hub:#10151C; --edge:#334058;
+  --font-display:"Bricolage Grotesque","Avenir Next",system-ui,sans-serif;
+  --font-body:"Figtree",system-ui,-apple-system,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#F2F4F8; --surface:#FFFFFF; --surface-2:#EEF1F6; --line:#DAE0EA; --fg:#111722; --muted:#5A6577; --faint:#A6AFBD;
+    --work:#3474E6; --private:#119C8E; --travel:#7A57E3; --deadline:#E0485D; --birthday:#C98213;
+    --track-day:#E6EBF3; --track-night:#C9D2E1; --on-color:#FFFFFF; --now:#111722; --hand:#D08A12;
+    --hub:#FFFFFF; --edge:#B4BFD0;
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#F2F4F8; --surface:#FFFFFF; --surface-2:#EEF1F6; --line:#DAE0EA; --fg:#111722; --muted:#5A6577; --faint:#A6AFBD;
+  --work:#3474E6; --private:#119C8E; --travel:#7A57E3; --deadline:#E0485D; --birthday:#C98213;
+  --track-day:#E6EBF3; --track-night:#C9D2E1; --on-color:#FFFFFF; --now:#111722; --hand:#D08A12;
+  --hub:#FFFFFF; --edge:#B4BFD0;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--font-body);padding:0 16px}
+.app{max-width:1200px;margin:0 auto;padding-block:20px 40px;display:flex;flex-direction:column;gap:18px}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.brand h1{font:700 28px/1 var(--font-display);letter-spacing:-.02em;margin:0}
+.brand p{margin:0;color:var(--muted);font-size:13px}
+.controls{display:flex;gap:10px;flex-wrap:wrap}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px;flex-wrap:wrap}
+.seg button{all:unset;cursor:pointer;padding:6px 14px;border-radius:999px;font:600 13px var(--font-body);color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--surface-2);color:var(--fg);box-shadow:inset 0 0 0 1px var(--line)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--work);outline-offset:2px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:28px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}}
+.stage-col{display:flex;flex-direction:column;gap:14px;min-width:0}
+.stage{width:100%;max-width:740px;margin:0 auto;aspect-ratio:1}
+svg{width:100%;height:100%;display:block;overflow:visible}
+.scrub{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center;font-size:13px;color:var(--muted)}
+.scrub input{width:min(380px,100%);accent-color:var(--hand)}
+.scrub output{font:500 13px var(--font-mono);color:var(--fg);min-width:44px;font-variant-numeric:tabular-nums}
+.text-btn{all:unset;cursor:pointer;padding:6px 13px;border-radius:999px;background:var(--surface);border:1px solid var(--line);font:600 12.5px var(--font-body);color:var(--fg)}
+aside{display:flex;flex-direction:column;gap:16px;min-width:0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.panel h2{margin:0;font:600 12px var(--font-body);text-transform:uppercase;letter-spacing:.09em;color:var(--muted)}
+.detail-kind{font:600 11px var(--font-body);text-transform:uppercase;letter-spacing:.09em;display:flex;align-items:center;gap:6px}
+.detail-title{font:700 20px/1.2 var(--font-display);margin:0;text-wrap:balance}
+.detail-meta{font:500 13px var(--font-mono);color:var(--muted);margin:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:600 12px var(--font-body);padding:3px 10px;border-radius:999px;background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line);display:inline-flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.list{list-style:none;margin:0;padding:0}
+.list li{display:grid;grid-template-columns:10px 96px minmax(0,1fr);gap:10px;align-items:baseline;padding:7px 6px;border-top:1px solid var(--line);font-size:13.5px;border-radius:6px}
+.list li:first-child{border-top:0}
+.list li.on{background:var(--surface-2)}
+.list li.past{opacity:.5}
+.list .when{font:500 12px var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.note{font-size:12.5px;color:var(--muted);margin:0}
+
+/* SVG */
+.ev{fill:none;stroke-linecap:round;cursor:pointer;transition:opacity .25s,filter .25s}
+.ev.work{stroke:var(--work)} .ev.priv{stroke:var(--private)} .ev.travel{stroke:var(--travel)}
+.bridge{stroke-linecap:round;fill:none;opacity:.55}
+.bridge.work{stroke:var(--work)} .bridge.priv{stroke:var(--private)} .bridge.travel{stroke:var(--travel)}
+.past{opacity:.5}
+.ev.on,.ev:hover{filter:brightness(1.15)}
+.ev.cur.work{filter:drop-shadow(0 0 10px var(--work))} .ev.cur.priv{filter:drop-shadow(0 0 10px var(--private))} .ev.cur.travel{filter:drop-shadow(0 0 10px var(--travel))}
+.lbl{fill:var(--on-color);font-family:var(--font-body);font-weight:650;dominant-baseline:central;pointer-events:none}
+.dl line{stroke:var(--deadline);stroke-width:2.5;stroke-linecap:round}
+.dl circle.m{fill:var(--deadline);stroke:var(--bg);stroke-width:2}
+.dl{cursor:pointer} .hit{fill:transparent}
+.hr{fill:var(--muted);font:500 12px var(--font-mono);text-anchor:middle;dominant-baseline:central;font-variant-numeric:tabular-nums}
+.hr.q{fill:var(--fg)}
+.hr.top{fill:var(--hand);font-weight:600}
+.pip{fill:var(--faint)} .pip.q{fill:var(--muted)}
+.chev{fill:none;stroke:var(--hand);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;opacity:.9}
+.progress{fill:none;stroke:var(--hand);stroke-width:3;stroke-linecap:round;opacity:.9}
+.hand{stroke:var(--hand);stroke-width:2;stroke-linecap:round}
+.now-dot{fill:var(--now);stroke:var(--hand);stroke-width:3}
+.now-pulse{fill:none;stroke:var(--hand);stroke-width:1.5;transform-box:fill-box;transform-origin:center;animation:pulse 2.4s ease-out infinite}
+@keyframes pulse{from{transform:scale(.6);opacity:.9}to{transform:scale(2.6);opacity:0}}
+@media (prefers-reduced-motion: reduce){.now-pulse{animation:none;opacity:.4}}
+.hub{fill:none;stroke:none}
+.edge{fill:none;stroke:var(--edge);stroke-width:1}
+.hub-time{fill:var(--fg);font:600 60px var(--font-display);text-anchor:middle;dominant-baseline:central;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.hub-sub{fill:var(--muted);font:600 11px var(--font-body);text-anchor:middle;dominant-baseline:central;letter-spacing:.14em}
+.hub-k{fill:var(--muted);font:500 12px var(--font-body);text-anchor:middle;dominant-baseline:central}
+.hub-t{fill:var(--fg);font:600 15px var(--font-body);text-anchor:middle;dominant-baseline:central}
+.sleep-lbl{fill:var(--muted);font:600 9.5px var(--font-body);letter-spacing:.22em;dominant-baseline:central;pointer-events:none}
+.ctl-label{font-size:12px;color:var(--muted);align-self:center;margin-right:-4px}
+</style>
+
+<div class="app">
+  <header>
+    <div class="brand">
+      <h1>Tagesspirale</h1>
+      <p id="subtitle"></p>
+    </div>
+    <div class="controls">
+      <span class="ctl-label" id="dir-label">Richtung</span>
+      <div class="seg" role="group" aria-labelledby="dir-label" id="forms">
+        <button data-f="out" aria-pressed="true">Innen → außen</button>
+        <button data-f="in" aria-pressed="false">Außen → innen</button>
+      </div>
+      <div class="seg" role="group" aria-label="Beispieltag" id="days"></div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <section class="stage-col">
+      <div class="stage">
+        <svg id="dial" viewBox="-410 -410 820 820" role="img" aria-label="Tagesuhr mit zwei Windungen"><defs id="defs"></defs><g id="g"></g></svg>
+      </div>
+      <div class="scrub">
+        <label for="time">Uhrzeit simulieren</label>
+        <input type="range" id="time" min="0" max="1439" step="1">
+        <output id="time-out" for="time"></output>
+        <button class="text-btn" id="live">Jetzt</button>
+      </div>
+    </section>
+
+    <aside>
+      <div class="panel" id="detail"></div>
+      <div class="panel">
+        <h2>Tagesablauf</h2>
+        <ul class="list" id="list"></ul>
+      </div>
+      <div class="panel">
+        <h2>Legende</h2>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--work)"></i>Arbeit</span>
+          <span><i class="dot" style="background:var(--private)"></i>Privat</span>
+          <span><i class="dot" style="background:var(--travel)"></i>Reise</span>
+          <span><i class="dot" style="background:var(--deadline)"></i>Frist</span>
+          <span><i class="dot" style="background:var(--hand)"></i>Tagesfortschritt</span>
+        </div>
+        <p class="note">Die Spur wird zur Nacht hin dunkler. Der Zeiger zeigt wie auf einer normalen Uhr 12 Stunden, der leuchtende Punkt die aktuelle Windung. Alle Termine sind Beispieldaten.</p>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+const TAU = Math.PI * 2;
+const f1 = n => n.toFixed(1);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pol = (r, a) => [r * Math.sin(a), -r * Math.cos(a)];
+const hm = m => String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+const T = s => { const [h, m] = s.split(':').map(Number); return h * 60 + m; };
+
+/* ---------- Beispieltage ---------- */
+const DAYS = [
+  { label: 'Do 8. Okt', title: 'Donnerstag, 8. Oktober', rise: '07:47', set: '18:44', sleep: [['00:00', '06:30'], ['23:00', '24:00']],
+    chips: [['Geburtstag Kai', 'var(--birthday)'], ['Fokuswoche Konzept', 'var(--private)']],
+    deadlines: [['17:00', 'Konzept-Entwurf abgeben']],
+    events: [
+      ['07:00', '07:45', 'priv', 'Laufen'],
+      ['09:30', '09:45', 'work', 'Daily Standup'],
+      ['10:00', '11:30', 'work', 'Workshop Kalender-Konzept'],
+      ['11:40', '12:20', 'work', 'Angebot gegenlesen'],
+      ['12:30', '13:30', 'priv', 'Mittagessen mit Jana'],
+      ['14:00', '15:00', 'work', 'Kundencall Stadtwerke'],
+      ['14:30', '15:15', 'work', '1:1 mit Max'],
+      ['16:00', '17:00', 'work', 'Design Review'],
+      ['19:00', '20:30', 'priv', 'Squash mit Tom'],
+      ['21:30', '22:30', 'priv', 'Serienabend'],
+    ] },
+  { label: 'Fr 9. Okt', title: 'Freitag, 9. Oktober', rise: '07:49', set: '18:42', sleep: [['00:00', '04:15'], ['22:45', '24:00']],
+    chips: [['Dienstreise Hamburg', 'var(--travel)']],
+    deadlines: [['12:00', 'Release 0.3']],
+    events: [
+      ['04:45', '06:00', 'travel', 'Fahrt zum Flughafen'],
+      ['06:30', '07:45', 'travel', 'Flug MUC → HAM'],
+      ['09:00', '12:30', 'work', 'Kundenworkshop Hamburg'],
+      ['12:30', '13:30', 'priv', 'Mittagessen am Hafen'],
+      ['13:30', '16:00', 'work', 'Workshop Teil 2'],
+      ['16:30', '17:15', 'work', 'Release-Check'],
+      ['18:10', '19:25', 'travel', 'Rückflug HAM → MUC'],
+      ['20:00', '20:45', 'travel', 'Heimfahrt'],
+    ] },
+  { label: 'Sa 10. Okt', title: 'Samstag, 10. Oktober', rise: '07:51', set: '18:39', sleep: [['01:45', '08:30'], ['23:30', '24:00']],
+    chips: [['Geburtstag Anna', 'var(--birthday)']],
+    deadlines: [],
+    events: [
+      ['00:00', '01:30', 'priv', 'Kneipe mit Ben'],
+      ['09:30', '10:30', 'priv', 'Laufen am Fluss'],
+      ['11:00', '13:00', 'priv', 'Brunch'],
+      ['15:00', '18:00', 'priv', 'Geburtstagsfeier Anna'],
+      ['20:00', '23:00', 'priv', 'Konzert'],
+    ] },
+];
+for (const d of DAYS) {
+  d.items = d.events.map(([a, b, cal, title]) => ({ kind: 'event', cal, title, s: T(a), e: T(b) })).sort((x, y) => x.s - y.s);
+  d.items.forEach((x, i) => x.i = i);
+  let cluster = [], ends = [], cEnd = -1;
+  const close = () => { cluster.forEach(c => c.n = ends.length); cluster = []; ends = []; };
+  for (const x of d.items) {
+    if (x.s >= cEnd && cluster.length) close();
+    let li = ends.findIndex(v => v <= x.s); if (li < 0) { li = ends.length; ends.push(x.e); } else ends[li] = x.e;
+    x.lane = li; cluster.push(x); cEnd = cluster.length === 1 ? x.e : Math.max(cEnd, x.e);
+  }
+  close();
+  d.dls = d.deadlines.map(([t, title], k) => ({ i: 'd' + k, kind: 'deadline', title, s: T(t), e: T(t) }));
+}
+
+/* ---------- Geometrie ----------
+   U(m) bildet Minuten auf 0..2 ab (je Windung 0..1). Ohne Stauchung linear,
+   mit Stauchung zählt Schlafzeit nur anteilig. Winkel = U · 360°.
+   wid(m) ist die relative Spurbreite (1 wach, schmal im Schlaf). */
+const W = 60;
+const FORMS = {
+  out: { rc: u => 158 + u * 92, hub: 110, split: false, first: 'innen', second: 'außen' },
+  in:  { rc: u => 342 - u * 92, hub: 110, split: false, first: 'außen', second: 'innen' },
+};
+const NIGHT = { normal: { w: 1, narrow: 1 }, schmal: { w: 1, narrow: .28 }, gestaucht: { w: .3, narrow: .28 } };
+const realNow = new Date();
+const liveMin = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
+const isRealDay = realNow.getFullYear() === 2026 && realNow.getMonth() === 9 && realNow.getDate() === 8;
+const S = { form: 'out', night: 'normal', day: DAYS[0], now: isRealDay ? liveMin() : T('10:40'), live: isRealDay, hover: null };
+const F = () => FORMS[S.form];
+
+let MAP = null;
+function buildMap() {
+  const cfg = NIGHT[S.night], sl = new Uint8Array(1440);
+  for (const [a, b] of S.day.sleep) for (let m = T(a); m < T(b); m++) sl[m] = 1;
+  const cum = new Float64Array(1441), wid = new Float32Array(1441);
+  for (let m = 0; m < 1440; m++) cum[m + 1] = cum[m] + (sl[m] ? cfg.w : 1);
+  for (let m = 0; m <= 1440; m++) {
+    let s = 0, n = 0;
+    for (let k = m - 25; k < m + 25; k++) { if (k >= 0 && k < 1440) { s += sl[k]; n++; } }
+    wid[m] = 1 - (1 - cfg.narrow) * (n ? s / n : 0);
+  }
+  MAP = { cum, wid, sl };
+}
+const at = (arr, m) => { m = Math.max(0, Math.min(1440, m)); const i = Math.min(1439, Math.floor(m)); return arr[i] + (arr[i + 1] - arr[i]) * (m - i); };
+function U(m) {
+  if (m >= 1440) return 2;
+  const h = m >= 720 ? 1 : 0, a = MAP.cum[720 * h], b = MAP.cum[720 * h + 720];
+  return h + (at(MAP.cum, m) - a) / (b - a);
+}
+const wid = m => at(MAP.wid, m);
+
+// Linie von Minute a bis b; off(m) = Versatz nach außen. In Ringform kein Sprung über 12 Uhr.
+function line(a, b, off = () => 0, reverse = false) {
+  const rc = F().rc, n = Math.max(2, Math.ceil((b - a) / 1.5)), pts = [];
+  for (let i = 0; i <= n; i++) {
+    const m = a + (b - a) * i / n;
+    let u = U(m);
+    if (F().split) u = Math.min(Math.max(u, a >= 720 ? 1 : 0), a >= 720 ? 2 : 1 - 1e-9);
+    const [x, y] = pol(rc(u) + off(m), u * TAU); pts.push(f1(x) + ',' + f1(y));
+  }
+  if (reverse) pts.reverse();
+  return 'M' + pts.join('L');
+}
+// Fläche der Spur von a bis b; Breite folgt wid(m), dadurch glatte Übergänge in den Schlaf
+function bandPath(a, b) {
+  const rc = F().rc, n = Math.max(2, Math.ceil((b - a) / 1)), outer = [], inner = [];
+  for (let i = 0; i <= n; i++) {
+    const m = a + (b - a) * i / n;
+    let u = U(m);
+    if (F().split) u = Math.min(Math.max(u, a >= 720 ? 1 : 0), a >= 720 ? 2 : 1 - 1e-9);
+    const r = rc(u), hw = W / 2 * wid(m), ang = u * TAU;
+    const [x1, y1] = pol(r + hw, ang), [x2, y2] = pol(r - hw, ang);
+    outer.push(f1(x1) + ',' + f1(y1)); inner.push(f1(x2) + ',' + f1(y2));
+  }
+  return 'M' + outer.join('L') + 'L' + inner.reverse().join('L') + 'Z';
+}
+const pieces = (a, b) => F().split && a < 720 && b > 720 ? [[a, 720], [720, b]] : [[a, b]];
+const uAt = (m, half) => { let u = U(m); if (F().split) u = half ? Math.max(u, 1) : Math.min(u, 1 - 1e-9); return u; };
+const rAt = (m, half = m >= 720) => F().rc(uAt(m, half));
+const angAt = m => U(m) * TAU;
+
+/* ---------- Farben für Tag/Nacht ---------- */
+const hex = h => { h = h.trim().replace('#', ''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+let COL = null;
+const readCols = () => { const cs = getComputedStyle(document.documentElement); COL = { day: hex(cs.getPropertyValue('--track-day')), night: hex(cs.getPropertyValue('--track-night')) }; };
+const mix = (a, b, k) => 'rgb(' + a.map((v, i) => Math.round(v + (b[i] - v) * k)).join(',') + ')';
+function light(m, rise, set) {
+  const tw = 50;
+  if (m < rise - tw || m > set + tw) return 0;
+  if (m > rise + tw && m < set - tw) return 1;
+  const k = m <= rise + tw ? (m - (rise - tw)) / (2 * tw) : 1 - (m - (set - tw)) / (2 * tw);
+  return k * k * (3 - 2 * k);
+}
+
+/* ---------- Zeichnen ---------- */
+const svgG = document.getElementById('g'), defs = document.getElementById('defs');
+const CAL = { work: ['Arbeit', 'var(--work)'], priv: ['Privat', 'var(--private)'], travel: ['Reise', 'var(--travel)'] };
+
+function render() {
+  if (!COL) readCols();
+  buildMap();
+  const d = S.day, f = F(), o = [], df = [];
+  const rise = T(d.rise), set = T(d.set);
+
+  // Spur: 5-Minuten-Scheiben mit Tageslicht-Verlauf, im Schlaf schmaler
+  for (let m = 0; m < 1440; m += 5) {
+    const c = mix(COL.night, COL.day, light(m + 2.5, rise, set));
+    o.push(`<path d="${bandPath(m, Math.min(m + 5.8, m < 720 && f.split ? 720 : 1440))}" fill="${c}" stroke="${c}" stroke-width=".6"/>`);
+  }
+  // Schlaf-Beschriftung
+  let si = 0;
+  for (const [sa, sb] of d.sleep) for (const [a, b] of pieces(T(sa), T(sb))) {
+    const r = rAt(a), len = (uAt(b, a >= 720) - uAt(a, a >= 720)) * TAU * r;
+    if (len < 70) continue;
+    const mid = ((U((a + b) / 2) % 1) * 360), rev = mid > 90 && mid < 270;
+    df.push(`<path id="sl${si}" d="${line(a, b, () => 0, rev)}"/>`);
+    o.push(`<text class="sleep-lbl"><textPath href="#sl${si++}" startOffset="50%" text-anchor="middle">SCHLAF</textPath></text>`);
+  }
+
+  // Skala
+  const sleeping = m => MAP.sl[Math.min(1439, m)] && NIGHT[S.night].w < 1;
+  if (f.split) {
+    for (let h = 0; h < 24; h++) {
+      const m = h * 60, outer = h < 12, a = angAt(m), q = h % 3 === 0;
+      if (sleeping(m) && !q) continue;
+      const [px, py] = pol(outer ? 330 - W / 2 - 8 : 236 + W / 2 + 8, a);
+      if (h % 12) o.push(`<circle class="pip${q ? ' q' : ''}" cx="${f1(px)}" cy="${f1(py)}" r="${q ? 2.4 : 1.5}"/>`);
+      const [lx, ly] = pol(outer ? 330 + W / 2 + 20 : 236 - W / 2 - 18, a);
+      o.push(`<text class="hr${q ? ' q' : ''}${h % 12 === 0 ? ' top' : ''}" x="${f1(lx)}" y="${f1(ly)}">${h}</text>`);
+    }
+    const y0 = -(330 - W / 2 - 6), y1 = -(236 + W / 2 + 6);
+    o.push(`<path class="chev" d="M0,${f1(y0)}L0,${f1(y1)}M-6,${f1(y1 - 7)}L0,${f1(y1)}L6,${f1(y1 - 7)}"/>`);
+  } else {
+    for (let h = 0; h < 24; h++) {
+      const m = h * 60, q = h % 3 === 0;
+      if (sleeping(m) && !q) continue;
+      const [x, y] = pol(rAt(m) + W / 2 + 16, angAt(m));
+      o.push(`<text class="hr${q ? ' q' : ''}${h % 12 === 0 ? ' top' : ''}" x="${f1(x)}" y="${f1(y)}">${h}</text>`);
+    }
+  }
+
+  // Durchgehende Kanten, damit die Spiralform unabhängig von der Tönung gleichmäßig bleibt
+  o.push(`<path class="edge" d="${line(0, 1440, () => W / 2)}"/><path class="edge" d="${line(0, 1440, () => -W / 2)}"/>`);
+  {
+    const [x0, y0] = pol(F().rc(0) - W / 2, 0), [x1, y1] = pol(F().rc(0) + W / 2, 0), [x2, y2] = pol(F().rc(2) - W / 2, 0), [x3, y3] = pol(F().rc(2) + W / 2, 0);
+    o.push(`<path class="edge" d="M${f1(x0)},${f1(y0)}L${f1(x1)},${f1(y1)}M${f1(x2)},${f1(y2)}L${f1(x3)},${f1(y3)}"/>`);
+  }
+
+  // Tagesfortschritt am Außenrand der Spur
+  for (const [a, b] of pieces(0, Math.max(S.now, 1))) o.push(`<path class="progress" d="${line(a, b, m => W / 2 * wid(m) + 5)}"/>`);
+
+  // Termine
+  const cur = d.items.filter(x => x.s <= S.now && x.e > S.now);
+  for (const x of d.items) {
+    const k = 1 - (2 * x.lane + 1) / x.n, off = m => k * W / 2 * wid(m);
+    const cls = `${x.cal}${x.e <= S.now ? ' past' : ''}${S.hover === x.i ? ' on' : ''}${cur.includes(x) ? ' cur' : ''}`;
+    const ps = pieces(x.s, x.e);
+    let best = null;
+    for (const [a, b] of ps) {
+      const half = a >= 720, mm = (a + b) / 2, sw = Math.max(4, (W / x.n) * wid(mm) - 5);
+      const r = rAt(a, half) + off(mm), du = uAt(b, half) - uAt(a, half), len = du * TAU * r;
+      if (len > sw) {
+        const cap = (sw / 2) / (TAU * r) / du * (b - a);
+        o.push(`<path class="ev ${cls}" data-i="${x.i}" stroke-width="${f1(sw)}" d="${line(a + cap, b - cap, off)}"/>`);
+      } else {
+        o.push(`<path class="ev ${cls}" data-i="${x.i}" stroke-width="${f1(Math.min(sw, Math.max(9, len - 2)))}" d="${line(mm - .01, mm + .01, off)}"/>`);
+      }
+      if (!best || len > best.len) best = { a, b, len, sw };
+    }
+    if (ps.length > 1) {
+      const [bx0, by0] = pol(330 + off(720), 0), [bx1, by1] = pol(236 + off(720), 0);
+      o.push(`<path class="bridge ${x.cal}${x.e <= S.now ? ' past' : ''}" stroke-width="${f1(Math.min(best.sw, 6))}" d="M${f1(bx0)},${f1(by0)}L${f1(bx1)},${f1(by1)}"/>`);
+    }
+    if (best && best.sw >= 13) {
+      const fs = best.sw >= 24 ? 12.5 : 10.5, max = Math.floor((best.len - 18) / (fs * .56));
+      if (max >= 4) {
+        const t = x.title.length > max ? x.title.slice(0, max - 1) + '…' : x.title;
+        const mid = (U((best.a + best.b) / 2) % 1) * 360, rev = mid > 90 && mid < 270;
+        df.push(`<path id="tp${x.i}" d="${line(best.a, best.b, off, rev)}"/>`);
+        o.push(`<text class="lbl" style="font-size:${fs}px"><textPath href="#tp${x.i}" startOffset="50%" text-anchor="middle">${esc(t)}</textPath></text>`);
+      }
+    }
+  }
+
+  // Fristen
+  for (const x of d.dls) {
+    const r = rAt(x.s), a = angAt(x.s), hw = W / 2 * wid(x.s);
+    const [x0, y0] = pol(r - hw - 4, a), [x1, y1] = pol(r + hw + 4, a), [cx, cy] = pol(r + hw + 5, a);
+    o.push(`<g class="dl${x.s <= S.now ? ' past' : ''}" data-i="${x.i}"><line x1="${f1(x0)}" y1="${f1(y0)}" x2="${f1(x1)}" y2="${f1(y1)}"/><circle class="m" cx="${f1(cx)}" cy="${f1(cy)}" r="6"/><circle class="hit" cx="${f1(cx)}" cy="${f1(cy)}" r="14"/></g>`);
+  }
+
+  // Mitte
+  const H = f.hub;
+  o.push(`<circle class="hub" r="${H}"/>`);
+  const next = d.items.find(x => x.s > S.now);
+  o.push(`<g transform="scale(${(H / 168).toFixed(3)})">`);
+  const asleep = MAP.sl[Math.min(1439, S.now)];
+  o.push(`<text class="hub-sub" y="-70">${asleep ? 'SCHLAFENSZEIT' : S.now < 720 ? 'VORMITTAG · ' + f.first.toUpperCase() : 'NACHMITTAG · ' + f.second.toUpperCase()}</text>`);
+  o.push(`<text class="hub-time" y="-22">${hm(S.now)}</text>`);
+  const short = s => s.length > 22 ? s.slice(0, 21) + '…' : s;
+  if (cur.length) {
+    o.push(`<text class="hub-k" y="30">läuft noch ${cur[0].e - S.now} min</text><text class="hub-t" y="52">${esc(short(cur[0].title))}</text>`);
+    if (next) o.push(`<text class="hub-k" y="82">danach ${hm(next.s)} · ${esc(short(next.title))}</text>`);
+  } else if (next) {
+    const gap = next.s - S.now;
+    o.push(`<text class="hub-k" y="30">frei für ${gap >= 60 ? Math.floor(gap / 60) + ' h ' : ''}${gap % 60} min</text><text class="hub-t" y="52">${hm(next.s)} ${esc(short(next.title))}</text>`);
+  } else o.push(`<text class="hub-k" y="34">Keine Termine mehr heute</text>`);
+  o.push(`</g>`);
+
+  // Zeiger + Jetzt-Punkt
+  const an = angAt(S.now), rn = rAt(S.now), [hx0, hy0] = pol(H + 4, an), [hx1, hy1] = pol(rn - W / 2 * wid(S.now) + 2, an), [nx, ny] = pol(rn, an);
+  o.push(`<line class="hand" x1="${f1(hx0)}" y1="${f1(hy0)}" x2="${f1(hx1)}" y2="${f1(hy1)}"/>`);
+  o.push(`<circle class="now-pulse" cx="${f1(nx)}" cy="${f1(ny)}" r="9"/><circle class="now-dot" cx="${f1(nx)}" cy="${f1(ny)}" r="8"/>`);
+
+  defs.innerHTML = df.join('');
+  svgG.innerHTML = o.join('');
+  renderSide(cur);
+}
+
+function find(id) { const d = S.day; return d.items.find(x => x.i === id) || d.dls.find(x => x.i === id); }
+function renderSide(cur) {
+  const d = S.day, h = S.hover != null ? find(S.hover) : null;
+  const det = document.getElementById('detail');
+  if (h) {
+    const [k, c] = h.kind === 'deadline' ? ['Frist', 'var(--deadline)'] : CAL[h.cal];
+    const dur = h.e - h.s;
+    det.innerHTML = `<div class="detail-kind" style="color:${c}"><span class="dot" style="background:${c}"></span>${k}</div>
+      <p class="detail-title">${esc(h.title)}</p>
+      <p class="detail-meta">${h.kind === 'deadline' ? 'bis ' + hm(h.s) : `${hm(h.s)}–${hm(h.e)} · ${dur >= 60 ? (dur / 60).toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' h' : dur + ' min'}`} · ${h.s < 720 && h.e > 720 ? 'wechselt nach ' + F().second : h.s < 720 ? F().first : F().second}</p>`;
+  } else {
+    const busy = d.items.reduce((a, x) => a + x.e - x.s, 0) / 60;
+    const sleepH = d.sleep.reduce((a, [s, e]) => a + T(e) - T(s), 0) / 60;
+    const fmt = n => n.toLocaleString('de-DE', { maximumFractionDigits: 1 });
+    det.innerHTML = `<h2>${d.title}</h2><p class="detail-meta">${d.items.length} Termine · ${fmt(busy)} h · Schlaf ${fmt(sleepH)} h · Sonne ${d.rise}–${d.set}</p>
+      ${d.chips.length ? `<div class="chips">${d.chips.map(([t, c]) => `<span class="chip"><span class="dot" style="background:${c}"></span>${esc(t)}</span>`).join('')}</div>` : ''}`;
+  }
+  const all = [...d.items, ...d.dls].sort((a, b) => a.s - b.s);
+  document.getElementById('list').innerHTML = all.map(x => {
+    const c = x.kind === 'deadline' ? 'var(--deadline)' : CAL[x.cal][1];
+    const when = x.kind === 'deadline' ? 'bis ' + hm(x.s) : `${hm(x.s)}–${hm(x.e)}`;
+    const past = x.kind === 'deadline' ? x.s <= S.now : x.e <= S.now;
+    return `<li data-i="${x.i}" class="${S.hover === x.i ? 'on' : ''}${past ? ' past' : ''}"><span class="dot" style="background:${c}"></span><span class="when">${when}</span><span>${esc(x.title)}</span></li>`;
+  }).join('');
+  document.getElementById('time').value = S.now;
+  document.getElementById('time-out').textContent = hm(S.now);
+}
+
+/* ---------- Eingabe ---------- */
+const parseId = v => v == null ? null : (String(v).startsWith('d') ? v : +v);
+function setHover(id) { const v = parseId(id); if (v === S.hover) return; S.hover = v; render(); }
+const svg = document.getElementById('dial');
+svg.addEventListener('pointerover', e => { const el = e.target.closest('[data-i]'); setHover(el ? el.dataset.i : null); });
+svg.addEventListener('pointerleave', () => setHover(null));
+const list = document.getElementById('list');
+list.addEventListener('pointerover', e => { const el = e.target.closest('[data-i]'); if (el) setHover(el.dataset.i); });
+list.addEventListener('pointerleave', () => setHover(null));
+
+document.getElementById('days').innerHTML = DAYS.map((d, i) => `<button data-d="${i}" aria-pressed="${i === 0}">${d.label}</button>`).join('');
+document.getElementById('days').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  S.day = DAYS[+b.dataset.d]; S.hover = null;
+  document.querySelectorAll('#days button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  render();
+});
+const subtitle = () => { const f = F(); document.getElementById('subtitle').textContent = `24 Stunden in zwei Windungen: ${f.first} 0–12 Uhr, ${f.second} 12–24 Uhr`; };
+document.getElementById('forms').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  S.form = b.dataset.f;
+  document.querySelectorAll('#forms button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  subtitle(); render();
+});
+subtitle();
+document.getElementById('time').addEventListener('input', e => { S.now = +e.target.value; S.live = false; render(); });
+document.getElementById('live').addEventListener('click', () => { S.now = liveMin(); S.live = true; render(); });
+setInterval(() => { if (S.live) { S.now = liveMin(); render(); } }, 30000);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { readCols(); render(); });
+new MutationObserver(() => { readCols(); render(); }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+render();
+})();
+</script>
