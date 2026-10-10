@@ -1,0 +1,806 @@
+<meta charset="utf-8">
+<title>Jahresring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: Zifferblatt als Bühne links, Steuerung + Ringlegende + Liste rechts; stapelt unter 900px */
+:root{
+  --bg:#0C0F14; --surface:#131821; --surface-2:#1A2130; --line:#252F40; --fg:#E8ECF4; --muted:#8D97A9; --faint:#4B5567;
+  --work:#78AEFF; --private:#52D6C8; --deadline:#FF7D8C; --allday:#A6DB7B; --birthday:#F4BA66; --holiday:#BBA1FF;
+  --track:#141A24; --shade:#0E131B; --night:#1A2232; --daylight:#3A3A2E; --weekend:#2A3346;
+  --s-winter:#3C5677; --s-spring:#4B6B3B; --s-summer:#7A6233; --s-autumn:#7A4545;
+  --on-color:#0C0F14; --now:#FFFFFF; --hover:rgba(255,255,255,.055);
+  --font-display:"Bricolage Grotesque","Avenir Next",system-ui,sans-serif;
+  --font-body:"Figtree",system-ui,-apple-system,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#F3F5F9; --surface:#FFFFFF; --surface-2:#EDF0F6; --line:#D8DEE9; --fg:#121822; --muted:#5A6577; --faint:#A3ACBB;
+    --work:#2D6BDD; --private:#0E9A8C; --deadline:#DD4157; --allday:#4F9426; --birthday:#C98213; --holiday:#7652E0;
+    --track:#E8ECF3; --shade:#DEE3EC; --night:#CDD5E3; --daylight:#F6EBC4; --weekend:#D3D9E5;
+    --s-winter:#B9CBE6; --s-spring:#C4DDB0; --s-summer:#F0D79E; --s-autumn:#EBBDB0;
+    --on-color:#FFFFFF; --now:#121822; --hover:rgba(18,24,34,.06);
+    color-scheme:light;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#F3F5F9; --surface:#FFFFFF; --surface-2:#EDF0F6; --line:#D8DEE9; --fg:#121822; --muted:#5A6577; --faint:#A3ACBB;
+  --work:#2D6BDD; --private:#0E9A8C; --deadline:#DD4157; --allday:#4F9426; --birthday:#C98213; --holiday:#7652E0;
+  --track:#E8ECF3; --shade:#DEE3EC; --night:#CDD5E3; --daylight:#F6EBC4; --weekend:#D3D9E5;
+  --s-winter:#B9CBE6; --s-spring:#C4DDB0; --s-summer:#F0D79E; --s-autumn:#EBBDB0;
+  --on-color:#FFFFFF; --now:#121822; --hover:rgba(18,24,34,.06);
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--font-body);padding:0 16px;}
+.app{max-width:1240px;margin:0 auto;padding-block:20px 40px;display:flex;flex-direction:column;gap:18px}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.brand h1{font:700 28px/1 var(--font-display);letter-spacing:-.02em;margin:0}
+.brand p{margin:0;color:var(--muted);font-size:13px}
+.seg{display:inline-flex;background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px}
+.seg button{all:unset;cursor:pointer;padding:6px 14px;border-radius:999px;font:600 13px var(--font-body);color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--surface-2);color:var(--fg);box-shadow:inset 0 0 0 1px var(--line)}
+.seg button:disabled{cursor:not-allowed;opacity:.5}
+button:focus-visible,input:focus-visible+span{outline:2px solid var(--work);outline-offset:2px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;align-items:start}
+@media (max-width:900px){.layout{grid-template-columns:minmax(0,1fr)}}
+.stage-col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center}
+.icon-btn{all:unset;cursor:pointer;width:34px;height:34px;display:grid;place-items:center;border-radius:50%;background:var(--surface);border:1px solid var(--line);color:var(--fg);font:600 16px var(--font-body)}
+.text-btn{all:unset;cursor:pointer;padding:7px 14px;border-radius:999px;background:var(--surface);border:1px solid var(--line);font:600 13px var(--font-body)}
+.stage{position:relative;width:100%;max-width:780px;margin:0 auto;aspect-ratio:1;container-type:inline-size}
+#dial{width:100%;height:100%;display:block;touch-action:none;user-select:none;cursor:grab}
+#dial.zoomable{cursor:zoom-in}
+#dial.dragging{cursor:grabbing}
+#dial path{fill-rule:evenodd}
+.hub{position:absolute;left:50%;top:50%;width:29.5%;aspect-ratio:1;transform:translate(-50%,-50%);border-radius:50%;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.6cqw;padding:2.2cqw;pointer-events:none;
+  background:radial-gradient(circle at 50% 35%,var(--surface-2),var(--surface) 70%);box-shadow:0 0 0 1px var(--line)}
+.crumbs{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:.4cqw;font:500 max(9px,1.45cqw) var(--font-mono);color:var(--faint)}
+.crumbs button{all:unset;pointer-events:auto;cursor:pointer;color:var(--muted);padding:0 .3cqw;border-radius:4px}
+.crumbs button:hover{color:var(--fg)}
+.crumbs button[aria-current="true"]{color:var(--fg)}
+.hub-title{font:700 max(15px,4.1cqw)/1.05 var(--font-display);letter-spacing:-.02em;text-wrap:balance}
+.hub-sub{font:500 max(10px,1.75cqw) var(--font-body);color:var(--muted)}
+.hub-stat{font:500 max(9px,1.5cqw) var(--font-mono);color:var(--muted)}
+.hub-kind{font:600 max(9px,1.4cqw) var(--font-body);text-transform:uppercase;letter-spacing:.08em;display:flex;align-items:center;gap:.6cqw}
+.hub-item{font:700 max(13px,2.9cqw)/1.15 var(--font-display);text-wrap:balance}
+.chips{display:flex;flex-wrap:wrap;justify-content:center;gap:.5cqw;max-width:100%}
+.chip{font:600 max(9px,1.35cqw) var(--font-body);padding:.25cqw .9cqw;border-radius:999px;background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line);display:inline-flex;align-items:center;gap:.5cqw;white-space:nowrap}
+.dot{width:.55em;height:.55em;border-radius:50%;display:inline-block;flex:none}
+.hint{text-align:center;color:var(--muted);font-size:12.5px;margin:0}
+.hint kbd{font:500 11px var(--font-mono);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+aside{display:flex;flex-direction:column;gap:16px;min-width:0}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.panel h2{margin:0;font:600 12px var(--font-body);text-transform:uppercase;letter-spacing:.09em;color:var(--muted);display:flex;justify-content:space-between;align-items:center;gap:8px}
+.panel h2 small{font:500 11px var(--font-mono);text-transform:none;letter-spacing:0;color:var(--faint)}
+.rings{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.rings label{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 4px;border-radius:8px;cursor:pointer}
+.rings label:hover{background:var(--hover)}
+.bar{height:6px;border-radius:3px;display:block}
+.rname{font-weight:600;font-size:14px;line-height:1.2}
+.rsub{display:block;font-size:12px;color:var(--muted);font-weight:400}
+.switch input{position:absolute;opacity:0;pointer-events:none}
+.switch span{display:block;width:30px;height:18px;border-radius:9px;background:var(--line);position:relative;transition:background .2s}
+.switch span::after{content:"";position:absolute;top:3px;left:3px;width:12px;height:12px;border-radius:50%;background:var(--fg);transition:transform .2s}
+.switch input:checked+span{background:var(--work)}
+.switch input:checked+span::after{transform:translateX(12px);background:var(--on-color)}
+.switch input:disabled+span{opacity:.45}
+.groupby{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+.list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+.list li{display:grid;grid-template-columns:10px 92px minmax(0,1fr);gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line);font-size:13.5px}
+.list li:first-child{border-top:0}
+.list .when{font:500 12px var(--font-mono);color:var(--muted);font-variant-numeric:tabular-nums}
+.list .what{overflow-wrap:anywhere}
+.list .past{opacity:.45}
+.empty{color:var(--muted);font-size:13px;margin:0}
+.note{font-size:12.5px;color:var(--muted);margin:0}
+
+/* SVG */
+.track{fill:var(--track)}
+.shade{fill:var(--shade)}
+.ctx-day{fill:var(--daylight)} .ctx-night{fill:var(--night)} .ctx-we{fill:var(--weekend)} .ctx-hol{fill:var(--holiday);opacity:.55}
+.s0{fill:var(--s-winter)} .s1{fill:var(--s-spring)} .s2{fill:var(--s-summer)} .s3{fill:var(--s-autumn)}
+.ev{stroke:var(--bg);stroke-width:1}
+.ev.work{fill:var(--work)} .ev.priv{fill:var(--private)}
+.heat{fill:var(--work)}
+.ev:hover,.allday:hover,.holiday:hover,.heat:hover{filter:brightness(1.18)}
+.dl line{stroke:var(--deadline);stroke-width:1.6} .dl path{fill:var(--deadline)} .hit{fill:transparent}
+.allday{fill:var(--allday)}
+.holiday{fill:var(--holiday)} .bday{fill:var(--birthday);stroke:var(--bg);stroke-width:1.2}
+.lbl{fill:var(--on-color);font:600 11.5px var(--font-body);text-anchor:middle;dominant-baseline:central;pointer-events:none}
+.lbl-sm{fill:var(--on-color);font:600 10px var(--font-body);text-anchor:middle;dominant-baseline:central;pointer-events:none}
+.scale-base{fill:none;stroke:var(--line)}
+.tk-major{stroke:var(--muted);stroke-width:1.3} .tk-mid{stroke:var(--faint)} .tk-minor{stroke:var(--faint);opacity:.7}
+.sc-lbl{fill:var(--fg);font:600 16px var(--font-display);text-anchor:middle;dominant-baseline:central}
+.sc-day{fill:var(--muted);font:500 12px var(--font-mono);text-anchor:middle;dominant-baseline:central}
+.sc-day.we{fill:var(--faint)} .sc-day.mo{fill:var(--fg)}
+.sc-month{fill:var(--fg);font:700 11px var(--font-body);letter-spacing:.1em;text-anchor:middle;dominant-baseline:central}
+.sc-hr{fill:var(--muted);font:500 12px var(--font-mono);text-anchor:middle;dominant-baseline:central}
+.sc-hr.major{fill:var(--fg)}
+.guide{stroke:var(--line);stroke-dasharray:2 5}
+.turn-lbl rect{fill:var(--bg);opacity:.88}
+.turn-lbl text{fill:var(--fg);font-family:var(--font-mono);font-weight:500;text-anchor:middle;dominant-baseline:central}
+.hl{fill:var(--hover);pointer-events:none}
+.now-line{stroke:var(--now);stroke-width:2;stroke-linecap:round}
+.now-dot{fill:var(--now)}
+.now-pulse{fill:none;stroke:var(--now);stroke-width:1.5;transform-box:fill-box;transform-origin:center;animation:pulse 2.4s ease-out infinite}
+@keyframes pulse{from{transform:scale(.6);opacity:.8}to{transform:scale(2.2);opacity:0}}
+@media (prefers-reduced-motion: reduce){.now-pulse{animation:none;opacity:.4}}
+</style>
+
+<div class="app">
+  <header>
+    <div class="brand">
+      <h1>Jahresring</h1>
+      <p>Prototyp · runder Kalender, der von Jahr bis Stunde zoomt</p>
+    </div>
+    <div class="seg" role="group" aria-label="Darstellung">
+      <button id="m-rings" aria-pressed="true">Ringe</button>
+      <button id="m-spiral" aria-pressed="false">Spirale</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <section class="stage-col">
+      <div class="toolbar">
+        <button class="icon-btn" id="prev" aria-label="Zurück">‹</button>
+        <div class="seg" role="group" aria-label="Zoomstufe" id="levels">
+          <button data-level="0">Jahr</button>
+          <button data-level="1">Monat</button>
+          <button data-level="2">Woche</button>
+          <button data-level="3">Tag</button>
+        </div>
+        <button class="icon-btn" id="next" aria-label="Weiter">›</button>
+        <button class="text-btn" id="today">Heute</button>
+      </div>
+      <div class="stage">
+        <svg id="dial" viewBox="-480 -480 960 960" role="img" aria-label="Runder Kalender">
+          <g id="hl"></g><g id="main"></g><g id="now"></g>
+        </svg>
+        <div class="hub" id="hub"></div>
+      </div>
+      <p class="hint"><kbd>Scrollen</kbd> zoomt · <kbd>Ziehen</kbd> dreht durch die Zeit · <kbd>Klick</kbd> zoomt hinein · <kbd>←</kbd><kbd>→</kbd> blättern · <kbd>+</kbd><kbd>−</kbd> zoomen</p>
+    </section>
+
+    <aside>
+      <div class="panel">
+        <h2>Ringe <small>von innen nach außen</small></h2>
+        <ul class="rings" id="rings"></ul>
+        <div class="groupby">
+          <span>Ringe gruppieren nach</span>
+          <div class="seg" role="group" aria-label="Ringe gruppieren nach">
+            <button aria-pressed="true">Typ</button>
+            <button disabled title="Kommt, sobald mehrere Kalender verbunden sind">Kalender</button>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2 id="list-title">Im Blick</h2>
+        <ul class="list" id="list"></ul>
+      </div>
+      <p class="note">Alle Termine sind Beispieldaten für 2026.</p>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+const TAU = Math.PI * 2, DAY = 864e5, HOUR = 36e5, MIN = 6e4;
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, k) => a + (b - a) * k;
+const ease = p => p < .5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const f1 = n => n.toFixed(1);
+const pol = (r, a) => [r * Math.sin(a), -r * Math.cos(a)];
+
+const MLONG = ['Januar','Februar','März','April','Mai','Juni','Juli','August','September','Oktober','November','Dezember'];
+const MSHORT = ['Jan','Feb','Mär','Apr','Mai','Jun','Jul','Aug','Sep','Okt','Nov','Dez'];
+const WD = ['So','Mo','Di','Mi','Do','Fr','Sa'];
+const WDLONG = ['Sonntag','Montag','Dienstag','Mittwoch','Donnerstag','Freitag','Samstag'];
+
+const YEAR = 2026;
+let NOW = Date.now();
+if (new Date(NOW).getFullYear() !== YEAR) NOW = new Date(YEAR, 9, 8, 10, 40).getTime();
+
+/* ---------- Datum ---------- */
+const D = (m, d, h = 0, mi = 0) => new Date(YEAR, m - 1, d, h, mi).getTime();
+const dayStart = t => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+const addDays = (t, n) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, d.getHours(), d.getMinutes()).getTime(); };
+function unitRange(level, t) {
+  const d = new Date(t), y = d.getFullYear(), m = d.getMonth(), dd = d.getDate();
+  if (level === 0) return [new Date(y, 0, 1).getTime(), new Date(y + 1, 0, 1).getTime()];
+  if (level === 1) return [new Date(y, m, 1).getTime(), new Date(y, m + 1, 1).getTime()];
+  if (level === 2) { const off = (d.getDay() + 6) % 7; return [new Date(y, m, dd - off).getTime(), new Date(y, m, dd - off + 7).getTime()]; }
+  return [new Date(y, m, dd).getTime(), new Date(y, m, dd + 1).getTime()];
+}
+function days(s, e) {
+  const out = []; let d = new Date(dayStart(s));
+  while (d.getTime() < e) { const n = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1); out.push([d.getTime(), n.getTime()]); d = n; }
+  return out;
+}
+function isoWeek(t) {
+  const d = new Date(t); const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const wd = x.getUTCDay() || 7; x.setUTCDate(x.getUTCDate() + 4 - wd);
+  const y0 = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
+  return Math.ceil(((x - y0) / DAY + 1) / 7);
+}
+const hm = t => { const d = new Date(t); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
+const dShort = t => { const d = new Date(t); return `${WD[d.getDay()]} ${d.getDate()}. ${MSHORT[d.getMonth()]}`; };
+const hrs = h => h.toLocaleString('de-DE', { maximumFractionDigits: 1 });
+function sun(ds) {
+  const d = new Date(ds); const doy = (ds - new Date(d.getFullYear(), 0, 1)) / DAY;
+  const len = 12 + 4.3 * Math.sin(TAU * (doy - 80) / 365.25);
+  const dst = ds >= D(3, 29) && ds < D(10, 25);
+  const noon = 12.33 + (dst ? 1 : 0);
+  return { rise: noon - len / 2, set: noon + len / 2 };
+}
+
+/* ---------- Beispieldaten ---------- */
+let seed = 11;
+const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
+const pick = a => a[Math.floor(rnd() * a.length)];
+const ALL = [], EVENTS = [], DEADLINES = [], ALLDAY = [], BIRTHDAYS = [], HOLIDAYS = [];
+const add = (arr, o) => { o.id = ALL.length; ALL.push(o); arr.push(o); return o; };
+
+[[1,1,'Neujahr'],[4,3,'Karfreitag'],[4,6,'Ostermontag'],[5,1,'Tag der Arbeit'],[5,14,'Christi Himmelfahrt'],[5,25,'Pfingstmontag'],
+ [6,4,'Fronleichnam'],[10,3,'Tag der Deutschen Einheit'],[11,1,'Allerheiligen'],[12,25,'1. Weihnachtstag'],[12,26,'2. Weihnachtstag']]
+  .forEach(([m, d, t]) => add(HOLIDAYS, { kind: 'holiday', title: t, start: D(m, d), end: D(m, d + 1) }));
+
+[[1,17,'Jana'],[2,14,'Sophie'],[3,3,'Mama'],[4,19,'Lena'],[5,24,'Lea'],[6,29,'Max'],[8,5,'Tom'],[9,9,'Ben'],
+ [10,8,'Kai'],[10,10,'Anna'],[10,22,'Papa'],[11,28,'Paul'],[12,12,'Oma Hilde']]
+  .forEach(([m, d, n]) => add(BIRTHDAYS, { kind: 'birthday', title: n, start: D(m, d), end: D(m, d + 1) }));
+
+const VAC = [], TRIP = [];
+[['Skiurlaub Zillertal',2,14,2,22,'vac'],['Messe Köln',3,10,3,13,'trip'],['Ostern bei den Eltern',4,3,4,7,'vac'],
+ ['Brückentag',5,15,5,16,'vac'],['Sommerurlaub Mallorca',8,3,8,17,'vac'],['Fokuswoche Konzept',10,5,10,10,'focus'],
+ ['Konferenz Berlin',10,21,10,24,'trip'],['Dienstreise Hamburg',11,11,11,13,'trip'],['Weihnachtsurlaub',12,23,13,1,'vac']]
+  .forEach(([t, m0, d0, m1, d1, type]) => {
+    const o = add(ALLDAY, { kind: 'allday', title: t, start: D(m0, d0), end: D(m1, d1) });
+    if (type === 'vac') VAC.push(o); if (type === 'trip') TRIP.push(o);
+  });
+
+[['Angebot Stadtwerke',1,20,12],['Q1-Bericht',4,10,17],['Förderantrag',6,15,18],['Steuererklärung',7,31,23],
+ ['Rechnungen Q3',10,5,10],['Konzept-Entwurf abgeben',10,8,17],['Release 0.3',10,9,12],['Release 0.4',11,27,12],['Jahresplanung',12,14,17]]
+  .forEach(([t, m, d, h]) => add(DEADLINES, { kind: 'deadline', title: t, start: D(m, d, h), end: D(m, d, h) }));
+for (let m = 1; m <= 11; m++) add(DEADLINES, { kind: 'deadline', title: 'Monatsabschluss', start: D(m, 28, 16), end: D(m, 28, 16) });
+
+const WORK = ['Sprint Planning','1:1 mit Lena','Design Review','Kundencall Müller GmbH','Architektur-Runde','Roadmap-Sync',
+  'Interview Backend','Retro','Support-Übergabe','Produkt-Demo','Budget-Abstimmung','Pairing mit Max','Onboarding Jonas'];
+const SLOTS = [10, 10.5, 11, 11.5, 13.5, 14, 14.5, 15, 16], DURS = [30, 45, 60, 60, 90];
+const EVENING = [['Kino',20,2.5],['Abendessen mit Freunden',19,2.5],['Yoga',18.5,1],['Elternabend',19.5,1.5],['Laufen',18,1]];
+const WEEKEND = [['Brunch',11,2],['Wandern',10,5],['Familienbesuch',14,4],['Flohmarkt',9,3],['Grillen',17,4]];
+const inAny = (list, t) => list.find(o => t >= o.start && t < o.end);
+const ev = (cal, title, s, durMin) => add(EVENTS, { kind: 'event', cal, title, start: s, end: s + durMin * MIN });
+
+for (let d = new Date(YEAR, 0, 1); d.getFullYear() === YEAR; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+  const ds = d.getTime(), wd = d.getDay(), weekday = wd >= 1 && wd <= 5;
+  const hol = HOLIDAYS.some(h => h.start === ds), vac = inAny(VAC, ds + HOUR * 12), trip = inAny(TRIP, ds + HOUR * 12);
+  if (ds === D(10, 8)) {
+    ev('Arbeit', 'Daily Standup', D(10, 8, 9, 30), 15);
+    ev('Arbeit', 'Workshop Kalender-Konzept', D(10, 8, 10), 90);
+    ev('Privat', 'Mittagessen mit Jana', D(10, 8, 12, 30), 60);
+    ev('Arbeit', 'Kundencall Stadtwerke', D(10, 8, 14), 60);
+    ev('Arbeit', '1:1 mit Max', D(10, 8, 14, 30), 45);
+    ev('Arbeit', 'Design Review Jahresring', D(10, 8, 16), 60);
+    ev('Privat', 'Squash mit Tom', D(10, 8, 19), 90);
+    continue;
+  }
+  if (vac) { if (rnd() < .12) { const [t, h, l] = pick(WEEKEND); ev('Privat', t, ds + h * HOUR, l * 60); } continue; }
+  if (weekday && !hol) {
+    if (trip) { ev('Arbeit', trip.title, ds + 9 * HOUR, 8 * 60); continue; }
+    ev('Arbeit', 'Daily Standup', ds + 9.5 * HOUR, 15);
+    const n = Math.floor(rnd() * 3.4) + (wd === 1 ? 1 : 0);
+    for (let i = 0; i < n; i++) ev('Arbeit', pick(WORK), ds + pick(SLOTS) * HOUR, pick(DURS));
+    if (wd === 3) ev('Privat', 'Chorprobe', ds + 19.5 * HOUR, 120);
+    else if (rnd() < .28) { const [t, h, l] = pick(EVENING); ev('Privat', t, ds + h * HOUR, l * 60); }
+  } else if (rnd() < .5) { const [t, h, l] = pick(WEEKEND); ev('Privat', t, ds + h * HOUR, l * 60); }
+}
+EVENTS.sort((a, b) => a.start - b.start || b.end - a.end);
+(function lanes() {
+  let cluster = [], ends = [], cEnd = -Infinity;
+  const close = () => { cluster.forEach(c => c.n = ends.length); cluster = []; ends = []; };
+  for (const e of EVENTS) {
+    if (e.start >= cEnd && cluster.length) close();
+    let li = ends.findIndex(x => x <= e.start);
+    if (li < 0) { li = ends.length; ends.push(e.end); } else ends[li] = e.end;
+    e.lane = li; cluster.push(e); cEnd = cluster.length === 1 ? e.end : Math.max(cEnd, e.end);
+  }
+  close();
+})();
+const STAT = new Map();
+for (const e of EVENTS) {
+  const k = dayStart(e.start); const s = STAT.get(k) || { count: 0, hours: 0 };
+  s.count++; s.hours += (e.end - e.start) / HOUR; STAT.set(k, s);
+}
+
+/* ---------- Ringe ---------- */
+const RINGS = [
+  { id: 'events', name: 'Termine', sub: 'Arbeit und Privat, mit Uhrzeit', color: 'linear-gradient(90deg,var(--work) 60%,var(--private) 60%)', base: null, fixed: true },
+  { id: 'deadlines', name: 'Fristen', sub: 'Abgaben, Releases, Deadlines', color: 'var(--deadline)', base: 20 },
+  { id: 'allday', name: 'Ganztägig', sub: 'Urlaub, Reisen, Konferenzen', color: 'var(--allday)', base: 16, collapses: true },
+  { id: 'markers', name: 'Anlässe', sub: 'Geburtstage und Feiertage', color: 'linear-gradient(90deg,var(--birthday) 50%,var(--holiday) 50%)', base: 16, collapses: true },
+  { id: 'context', name: 'Kontext', sub: 'Tageslicht, Wochenende, Jahreszeit', color: 'linear-gradient(90deg,var(--night),var(--daylight))', base: 9 },
+];
+const SPIRAL_LANES = { events: { f0: .04, f1: .56 }, deadlines: { f0: .60, f1: .68 }, allday: { f0: .71, f1: .79 }, markers: { f0: .82, f1: .90 }, context: { f0: .93, f1: .98 } };
+const R_IN = 152, R_RINGS = 372, R_SCALE = 380, GAP = 7;
+
+/* ---------- Zustand ---------- */
+const S = { mode: 'rings', level: 2, anchor: NOW, v: null, g: null, hidden: new Set(), hover: null, hoverT: null, drag: null, raf: 0, animating: false, wacc: 0 };
+
+function targetFor(mode, level, anchor) {
+  if (mode === 'rings') { const [a, b] = unitRange(level, anchor); return { start: a, dur: b - a }; }
+  const d = new Date(anchor);
+  if (level === 3) return { start: new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1).getTime(), P: DAY, N: 3 };
+  if (level === 2) return { start: unitRange(2, anchor)[0], P: DAY, N: 7 };
+  if (level === 1) { const [ms, me] = unitRange(1, anchor); const ws = unitRange(2, ms)[0]; return { start: ws, P: 7 * DAY, N: Math.ceil((me - ws) / (7 * DAY) - 1e-6) }; }
+  const [ys, ye] = unitRange(0, anchor); return { start: ys, P: (ye - ys) / 12, N: 12 };
+}
+
+/* ---------- Geometrie ---------- */
+function annulus(r0, r1, a0, a1) {
+  if (a1 - a0 >= TAU - 1e-4) {
+    return `M0,${-r1}A${r1},${r1} 0 1 1 0,${r1}A${r1},${r1} 0 1 1 0,${-r1}ZM0,${-r0}A${r0},${r0} 0 1 0 0,${r0}A${r0},${r0} 0 1 0 0,${-r0}Z`;
+  }
+  const L = a1 - a0 > Math.PI ? 1 : 0;
+  const [x1, y1] = pol(r1, a0), [x2, y2] = pol(r1, a1), [x3, y3] = pol(r0, a1), [x4, y4] = pol(r0, a0);
+  return `M${f1(x1)},${f1(y1)}A${r1},${r1} 0 ${L} 1 ${f1(x2)},${f1(y2)}L${f1(x3)},${f1(y3)}A${r0},${r0} 0 ${L} 0 ${f1(x4)},${f1(y4)}Z`;
+}
+function ringLayout(z) {
+  const col = clamp(Math.log(z / 1.05) / Math.log(2.4), 0, 1);
+  const w = {}; let fixed = 0;
+  for (const d of RINGS) if (!d.fixed) {
+    const f = (S.hidden.has(d.id) ? 0 : 1) * (d.collapses ? col : 1);
+    w[d.id] = d.base * f; w[d.id + 'g'] = GAP * f; fixed += (d.base + GAP) * f;
+  }
+  const L = {}; let r = R_IN;
+  for (const d of RINGS) {
+    if (!d.fixed) r += w[d.id + 'g'];
+    const width = d.fixed ? (R_RINGS - R_IN) - fixed : w[d.id];
+    L[d.id] = { r0: r, r1: r + width }; r += width;
+  }
+  return L;
+}
+function ringsGeom() {
+  const { start: s, dur } = S.v, e = s + dur, z = dur / DAY, L = ringLayout(z);
+  const ang = t => (t - s) / dur * TAU;
+  const clipA = (t0, t1, minA) => {
+    if (t1 < s || t0 > e) return null;
+    let a0 = Math.max(0, ang(t0)), a1 = Math.min(TAU, ang(t1));
+    if (minA && a1 - a0 < minA) { const m = (a0 + a1) / 2; a0 = m - minA / 2; a1 = m + minA / 2; }
+    return a1 > a0 ? [a0, a1] : null;
+  };
+  const rr = (l, a) => l.r0 + (l.r1 - l.r0) * a;
+  return {
+    mode: 'rings', s, e, z, ang,
+    lane: id => L[id], has: id => L[id].r1 - L[id].r0 > 1, width: l => l.r1 - l.r0,
+    shape(l, t0, t1, a = 0, b = 1, minA = 0) { const c = clipA(t0, t1, minA); return c ? annulus(rr(l, a), rr(l, b), c[0], c[1]) : ''; },
+    point(l, t, a = .5) { return pol(rr(l, a), ang(t)); },
+    mid(l, t0, t1, a = 0, b = 1) {
+      const c = clipA(t0, t1, 0); if (!c) return null;
+      const r = (rr(l, a) + rr(l, b)) / 2, m = (c[0] + c[1]) / 2, [x, y] = pol(r, m);
+      return { x, y, ang: m, len: (c[1] - c[0]) * r };
+    },
+    wedge(t0, t1) { const c = clipA(t0, t1, 0); return c ? annulus(R_IN, R_RINGS, c[0], c[1]) : ''; },
+    timeAt(x, y) { const r = Math.hypot(x, y); if (r < R_IN || r > 470) return null; let a = Math.atan2(x, -y); if (a < 0) a += TAU; return s + a / TAU * dur; },
+  };
+}
+function spiralGeom() {
+  const { start: s, P, N } = S.v, rIn = 150, rOut = 430, pitch = (rOut - rIn) / (N + 1), e = s + N * P, z = P / DAY;
+  const U = t => (t - s) / P;
+  const pt = (u, f) => pol(rIn + (u + f) * pitch, u * TAU);
+  const band = (u0, u1, fa, fb) => {
+    const n = Math.max(2, Math.ceil((u1 - u0) * TAU / .05)); let d = '';
+    for (let i = 0; i <= n; i++) { const [x, y] = pt(u0 + (u1 - u0) * i / n, fb); d += (i ? 'L' : 'M') + f1(x) + ',' + f1(y); }
+    for (let i = n; i >= 0; i--) { const [x, y] = pt(u0 + (u1 - u0) * i / n, fa); d += 'L' + f1(x) + ',' + f1(y); }
+    return d + 'Z';
+  };
+  const clipU = (t0, t1, minU) => {
+    if (t1 < s || t0 > e) return null;
+    let u0 = Math.max(0, U(t0)), u1 = Math.min(N, U(t1));
+    if (minU && u1 - u0 < minU) { const m = (u0 + u1) / 2; u0 = m - minU / 2; u1 = m + minU / 2; }
+    return u1 > u0 ? [u0, u1] : null;
+  };
+  const ff = (l, a) => l.f0 + (l.f1 - l.f0) * a;
+  return {
+    mode: 'spiral', s, e, z, N, P, pitch, rIn, U, pt,
+    lane: id => SPIRAL_LANES[id], has: id => !S.hidden.has(id), width: l => (l.f1 - l.f0) * pitch,
+    shape(l, t0, t1, a = 0, b = 1, minA = 0) { const c = clipU(t0, t1, minA / TAU); return c ? band(c[0], c[1], ff(l, a), ff(l, b)) : ''; },
+    point(l, t, a = .5) { return pt(U(t), ff(l, a)); },
+    mid(l, t0, t1, a = 0, b = 1) {
+      const c = clipU(t0, t1, 0); if (!c) return null;
+      const um = (c[0] + c[1]) / 2, f = (ff(l, a) + ff(l, b)) / 2, [x, y] = pt(um, f);
+      return { x, y, ang: (um % 1) * TAU, len: (c[1] - c[0]) * TAU * (rIn + (um + f) * pitch) };
+    },
+    wedge(t0, t1) { const c = clipU(t0, t1, 0); return c ? band(c[0], c[1], 0, .99) : ''; },
+    timeAt(x, y) {
+      const r = Math.hypot(x, y); let a = Math.atan2(x, -y); if (a < 0) a += TAU;
+      const fr = a / TAU, k = Math.floor((r - rIn) / pitch - fr), u = k + fr;
+      return u < 0 || u >= N ? null : s + u * P;
+    },
+  };
+}
+
+/* ---------- Zeichnen ---------- */
+function label(m, text, cls) {
+  let deg = m.ang * 180 / Math.PI; if (deg > 90 && deg < 270) deg += 180;
+  return `<text class="${cls}" transform="translate(${f1(m.x)},${f1(m.y)}) rotate(${f1(deg)})">${esc(text)}</text>`;
+}
+function drawContent(g) {
+  const o = [], { s, e, z } = g, has = id => g.has(id);
+  const el = g.lane('events'), cl = g.lane('context');
+  for (const d of RINGS) if (has(d.id)) o.push(`<path class="track" d="${g.shape(g.lane(d.id), s, e)}"/>`);
+
+  // Kontext + Schattierung im Terminring
+  const dayList = z <= 75 ? days(s, e) : [];
+  if (z <= 2.6) {
+    for (const [ds, de] of dayList) {
+      const { rise, set } = sun(ds), r = ds + rise * HOUR, st = ds + set * HOUR;
+      o.push(`<path class="shade" d="${g.shape(el, ds, r)}"/><path class="shade" d="${g.shape(el, st, de)}"/>`);
+      if (has('context')) {
+        const info = `Sonnenaufgang ${hm(r)} · Sonnenuntergang ${hm(st)}`;
+        o.push(`<path class="ctx-night" data-ctx="${info}" d="${g.shape(cl, ds, r)}"/><path class="ctx-day" data-ctx="${info}" d="${g.shape(cl, r, st)}"/><path class="ctx-night" data-ctx="${info}" d="${g.shape(cl, st, de)}"/>`);
+      }
+    }
+  } else if (z <= 75) {
+    for (const [ds, de] of dayList) {
+      const wd = new Date(ds).getDay(), hol = HOLIDAYS.find(h => h.start === ds);
+      if (wd === 0 || wd === 6 || hol) {
+        o.push(`<path class="shade" d="${g.shape(el, ds, de)}"/>`);
+        if (has('context')) o.push(`<path class="${hol ? 'ctx-hol' : 'ctx-we'}" data-ctx="${hol ? 'Feiertag · ' + esc(hol.title) : 'Wochenende'}" d="${g.shape(cl, ds, de)}"/>`);
+      }
+    }
+  } else if (has('context')) {
+    const y = new Date(s + (e - s) / 2).getFullYear();
+    const seasons = [[new Date(y - 1, 11, 21), new Date(y, 2, 20), 0, 'Winter'], [new Date(y, 2, 20), new Date(y, 5, 21), 1, 'Frühling'],
+      [new Date(y, 5, 21), new Date(y, 8, 23), 2, 'Sommer'], [new Date(y, 8, 23), new Date(y, 11, 21), 3, 'Herbst'], [new Date(y, 11, 21), new Date(y + 1, 2, 20), 0, 'Winter']];
+    for (const [a, b, c, n] of seasons) o.push(`<path class="s${c}" data-ctx="Jahreszeit · ${n}" d="${g.shape(cl, +a, +b)}"/>`);
+  }
+
+  // Termine: einzelne Bögen ↔ Heatmap
+  const aEv = clamp((14 - z) / 5, 0, 1), aHeat = 1 - aEv;
+  if (aEv > .01) {
+    for (const ev of EVENTS) {
+      if (ev.end < s || ev.start > e) continue;
+      const a = ev.lane / ev.n, b = (ev.lane + 1) / ev.n;
+      const d = g.shape(el, ev.start, ev.end, a + .015, b - .015, .009);
+      if (!d) continue;
+      o.push(`<path class="ev ${ev.cal === 'Privat' ? 'priv' : 'work'}" style="opacity:${aEv.toFixed(2)}" data-i="${ev.id}" d="${d}"/>`);
+      if (z < 1.7 && g.width(el) / ev.n > 15) {
+        const m = g.mid(el, ev.start, ev.end, a, b), tw = ev.title.length * 6.3 + 14;
+        if (m && m.len > tw) o.push(label(m, ev.title, 'lbl'));
+        else if (m && m.len > 15) {
+          const room = g.width(el) / ev.n - 12, max = Math.floor(room / 6.3);
+          const txt = ev.title.length > max ? ev.title.slice(0, Math.max(3, max - 1)) + '…' : ev.title;
+          let deg = m.ang * 180 / Math.PI - 90; if (m.ang > Math.PI) deg += 180;
+          o.push(`<text class="lbl" transform="translate(${f1(m.x)},${f1(m.y)}) rotate(${f1(deg)})">${esc(txt)}</text>`);
+        }
+      }
+    }
+  }
+  if (aHeat > .01) {
+    for (const [ds, de] of days(Math.max(s, D(1, 1) - DAY), Math.min(e, D(13, 1) + DAY))) {
+      const st = STAT.get(ds); if (!st) continue;
+      const k = Math.min(1, st.hours / 7), pad = (de - ds) * .07;
+      const d = g.shape(el, ds + pad, de - pad); if (!d) continue;
+      o.push(`<path class="heat" style="opacity:${(aHeat * (.14 + .86 * k)).toFixed(2)}" data-day="${ds}" d="${d}"/>`);
+    }
+  }
+
+  // Fristen
+  if (has('deadlines')) {
+    const l = g.lane('deadlines'), w = g.width(l), sz = clamp(w / 2.4, 3, 7);
+    for (const dl of DEADLINES) {
+      if (dl.start < s || dl.start > e) continue;
+      const [x0, y0] = g.point(l, dl.start, 0), [x1, y1] = g.point(l, dl.start, 1), [x, y] = g.point(l, dl.start, .5);
+      o.push(`<g class="dl" data-i="${dl.id}"><line x1="${f1(x0)}" y1="${f1(y0)}" x2="${f1(x1)}" y2="${f1(y1)}"/><path d="M${f1(x)},${f1(y - sz)}L${f1(x + sz)},${f1(y)}L${f1(x)},${f1(y + sz)}L${f1(x - sz)},${f1(y)}Z"/><circle class="hit" cx="${f1(x)}" cy="${f1(y)}" r="11"/></g>`);
+    }
+  }
+  // Ganztägig
+  if (has('allday')) {
+    const l = g.lane('allday'), w = g.width(l);
+    if (w > 1) for (const a of ALLDAY) {
+      const d = g.shape(l, a.start, a.end, .1, .9, .012); if (!d) continue;
+      o.push(`<path class="allday" data-i="${a.id}" d="${d}"/>`);
+      if (w >= 12) { const m = g.mid(l, a.start, a.end, .1, .9); if (m && m.len > a.title.length * 5.6 + 16) o.push(label(m, a.title, 'lbl-sm')); }
+    }
+  }
+  // Anlässe
+  if (has('markers')) {
+    const l = g.lane('markers'), w = g.width(l);
+    if (w > 1) {
+      for (const h of HOLIDAYS) { const d = g.shape(l, h.start, h.end, .2, .8, .012); if (d) o.push(`<path class="holiday" data-i="${h.id}" d="${d}"/>`); }
+      const r = clamp(w / 2.6, 2.5, 6);
+      for (const b of BIRTHDAYS) {
+        const t = b.start + DAY / 2; if (t < s || t > e) continue;
+        const [x, y] = g.point(l, t, .5);
+        o.push(`<circle class="bday" data-i="${b.id}" cx="${f1(x)}" cy="${f1(y)}" r="${f1(r)}"/>`);
+      }
+    }
+  }
+  return o.join('');
+}
+
+function ringScale(g) {
+  const { s, e, z, ang } = g, o = [], R = R_SCALE;
+  const tick = (t, r0, r1, cls) => { if (t < s || t > e) return; const a = ang(t), [x0, y0] = pol(r0, a), [x1, y1] = pol(r1, a); o.push(`<line class="${cls}" x1="${f1(x0)}" y1="${f1(y0)}" x2="${f1(x1)}" y2="${f1(y1)}"/>`); };
+  const txt = (t, r, str, cls) => { if (t < s || t > e) return; const [x, y] = pol(r, ang(t)); o.push(`<text class="${cls}" x="${f1(x)}" y="${f1(y)}">${esc(str)}</text>`); };
+  o.push(`<circle class="scale-base" r="${R}"/>`);
+  if (z > 60) {
+    let d = new Date(dayStart(s)); d = new Date(d.getFullYear(), d.getMonth(), 1);
+    while (d.getTime() < e) {
+      const ms = d.getTime(), next = new Date(d.getFullYear(), d.getMonth() + 1, 1), me = next.getTime();
+      tick(ms, R, R + 24, 'tk-major');
+      const a = Math.max(ms, s), b = Math.min(me, e);
+      if (b - a > DAY * 7) txt((a + b) / 2, R + 46, MSHORT[d.getMonth()], 'sc-lbl');
+      d = next;
+    }
+    for (let w = unitRange(2, s)[0]; w < e; w = addDays(w, 7)) tick(w, R, R + 7, 'tk-minor');
+  } else if (z > 9) {
+    for (const [ds, de] of days(s, e)) {
+      const d = new Date(ds), wd = d.getDay();
+      tick(ds, R, R + 12, 'tk-major');
+      txt((ds + de) / 2, R + 30, d.getDate(), 'sc-day' + (wd === 0 || wd === 6 ? ' we' : '') + (wd === 1 ? ' mo' : ''));
+      if (d.getDate() === 1) txt(ds + (de - ds) * .5, R + 58, MSHORT[d.getMonth()].toUpperCase(), 'sc-month');
+    }
+  } else if (z > 1.6) {
+    for (const [ds, de] of days(s, e)) {
+      const d = new Date(ds);
+      tick(ds, R, R + 28, 'tk-major');
+      for (const h of [6, 12, 18]) tick(ds + h * HOUR, R, R + (h === 12 ? 12 : 7), 'tk-minor');
+      txt((ds + de) / 2, R + 48, `${WD[d.getDay()]} ${d.getDate()}.`, 'sc-lbl');
+    }
+  } else {
+    for (const [ds] of days(s, e)) {
+      for (let h = 0; h < 24; h++) {
+        const t = ds + h * HOUR, major = h % 6 === 0;
+        tick(t, R, R + (major ? 20 : 11), major ? 'tk-major' : 'tk-mid');
+        if (z < 1.3 || h % 2 === 0) txt(t, R + 36, String(h).padStart(2, '0'), 'sc-hr' + (major ? ' major' : ''));
+        if (z < 1.2) for (let q = 1; q < 4; q++) tick(t + q * 15 * MIN, R, R + 5, 'tk-minor');
+      }
+    }
+  }
+  return o.join('');
+}
+
+function spiralDecor(g) {
+  const { s, z, N, P, pitch, rIn } = g, o = [], rEdge = rIn + (N + 1) * pitch;
+  let marks;
+  if (z < 2) marks = [0, 3, 6, 9, 12, 15, 18, 21].map(h => [h / 24, String(h).padStart(2, '0')]);
+  else if (z < 15) marks = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].map((n, i) => [(i + .5) / 7, n]);
+  else marks = [1, 8, 15, 22].map(d => [(d - 1) / 30.44, d + '.']);
+  for (const [fr, txt] of marks) {
+    const a = fr * TAU, [x0, y0] = pol(rIn - 6, a), [x1, y1] = pol(rEdge + 4, a), [lx, ly] = pol(rEdge + 22, a);
+    o.push(`<line class="guide" x1="${f1(x0)}" y1="${f1(y0)}" x2="${f1(x1)}" y2="${f1(y1)}"/><text class="sc-hr major" x="${f1(lx)}" y="${f1(ly)}">${txt}</text>`);
+  }
+  if (pitch > 13) {
+    const fs = Math.min(13, pitch * .42);
+    for (let k = 0; k < Math.ceil(N - 1e-6); k++) {
+      const ts = s + k * P, d = new Date(ts + Math.min(P / 2, HOUR * 12));
+      const t = z < 1.6 ? `${WD[d.getDay()]} ${d.getDate()}.` : z < 10 ? 'KW ' + isoWeek(ts + DAY) : MSHORT[new Date(ts + P / 2).getMonth()];
+      const [x, y] = g.pt(k, .3), w = t.length * fs * .66 + 12;
+      o.push(`<g class="turn-lbl"><rect x="${f1(x - w / 2)}" y="${f1(y - fs * .85)}" width="${f1(w)}" height="${f1(fs * 1.7)}" rx="${f1(fs * .85)}"/><text x="${f1(x)}" y="${f1(y)}" style="font-size:${f1(fs)}px">${t}</text></g>`);
+    }
+  }
+  return o.join('');
+}
+
+function drawNow(g) {
+  if (NOW < g.s || NOW > g.e) return '';
+  if (g.mode === 'rings') {
+    const a = g.ang(NOW), [x0, y0] = pol(R_IN - 2, a), [x1, y1] = pol(R_SCALE + 6, a);
+    return `<line class="now-line" x1="${f1(x0)}" y1="${f1(y0)}" x2="${f1(x1)}" y2="${f1(y1)}"/><circle class="now-pulse" cx="${f1(x1)}" cy="${f1(y1)}" r="6"/><circle class="now-dot" cx="${f1(x1)}" cy="${f1(y1)}" r="4.5"/>`;
+  }
+  const u = g.U(NOW), [x0, y0] = g.pt(u, 0), [x1, y1] = g.pt(u, 1), [x, y] = g.pt(u, .3);
+  return `<line class="now-line" x1="${f1(x0)}" y1="${f1(y0)}" x2="${f1(x1)}" y2="${f1(y1)}"/><circle class="now-pulse" cx="${f1(x)}" cy="${f1(y)}" r="6"/><circle class="now-dot" cx="${f1(x)}" cy="${f1(y)}" r="4.5"/>`;
+}
+
+/* ---------- DOM ---------- */
+const svg = document.getElementById('dial'), mainL = document.getElementById('main'), hlL = document.getElementById('hl'), nowL = document.getElementById('now');
+const hub = document.getElementById('hub');
+let lastHub = '';
+
+function render() {
+  const g = S.mode === 'rings' ? ringsGeom() : spiralGeom(); S.g = g;
+  mainL.innerHTML = drawContent(g) + (g.mode === 'rings' ? ringScale(g) : spiralDecor(g));
+  nowL.innerHTML = drawNow(g);
+  drawHL(); updateHub();
+}
+function drawHL() {
+  if (S.hoverT == null || S.level >= 3 || S.drag?.moved) { hlL.innerHTML = ''; svg.classList.remove('zoomable'); return; }
+  const [a, b] = unitRange(S.level + 1, S.hoverT);
+  hlL.innerHTML = `<path class="hl" d="${S.g.wedge(a, b)}"/>`; svg.classList.add('zoomable');
+}
+
+const KIND = {
+  event: ['Termin', 'var(--work)'], deadline: ['Frist', 'var(--deadline)'], allday: ['Ganztägig', 'var(--allday)'],
+  birthday: ['Geburtstag', 'var(--birthday)'], holiday: ['Feiertag', 'var(--holiday)'],
+};
+const dotOf = it => it.kind === 'event' && it.cal === 'Privat' ? 'var(--private)' : KIND[it.kind][1];
+function itemMeta(it) {
+  if (it.kind === 'event') return `${dShort(it.start)} · ${hm(it.start)}–${hm(it.end)}`;
+  if (it.kind === 'deadline') return `${dShort(it.start)} · bis ${hm(it.start)}`;
+  if (it.kind === 'allday') { const last = addDays(it.end, -1), n = Math.round((it.end - it.start) / DAY); return `${dShort(it.start)} – ${dShort(last)} · ${n} ${n === 1 ? 'Tag' : 'Tage'}`; }
+  return dShort(it.start);
+}
+function unitLabel(lv, t) {
+  const d = new Date(t);
+  return [String(d.getFullYear()), MLONG[d.getMonth()], 'KW ' + isoWeek(t), `${WD[d.getDay()]} ${d.getDate()}.`][lv];
+}
+function itemsIn(a, b, kinds) {
+  return ALL.filter(it => kinds.includes(it.kind) && it.end > a && it.start < b || (it.kind === 'deadline' && kinds.includes('deadline') && it.start >= a && it.start < b))
+    .filter((it, i, arr) => arr.indexOf(it) === i).sort((x, y) => x.start - y.start);
+}
+function updateHub() {
+  const lv = S.level, t = S.anchor, d = new Date(t);
+  const crumbs = [];
+  for (let i = 0; i <= lv; i++) crumbs.push(`<button data-lv="${i}"${i === lv ? ' aria-current="true"' : ''}>${unitLabel(i, t)}</button>`);
+  let body;
+  const h = S.hover;
+  if (h && h.item) {
+    const [k] = KIND[h.item.kind];
+    body = `<div class="hub-kind" style="color:${dotOf(h.item)}"><span class="dot" style="background:${dotOf(h.item)}"></span>${k}${h.item.cal ? ' · ' + h.item.cal : ''}</div>
+      <div class="hub-item">${esc(h.item.title)}</div><div class="hub-sub">${itemMeta(h.item)}</div>`;
+  } else if (h && h.day != null) {
+    const st = STAT.get(h.day) || { count: 0, hours: 0 };
+    body = `<div class="hub-kind" style="color:var(--work)"><span class="dot" style="background:var(--work)"></span>Auslastung</div>
+      <div class="hub-item">${dShort(h.day)}</div><div class="hub-sub">${st.count} Termine · ${hrs(st.hours)} h belegt</div>`;
+  } else if (h && h.ctx) {
+    body = `<div class="hub-kind" style="color:var(--muted)">Kontext</div><div class="hub-sub">${esc(h.ctx)}</div>`;
+  } else {
+    const [a, b] = unitRange(lv, t);
+    const evs = EVENTS.filter(e => e.start >= a && e.start < b), hours = evs.reduce((x, e) => x + (e.end - e.start) / HOUR, 0);
+    const title = [d.getFullYear(), MLONG[d.getMonth()], 'KW ' + isoWeek(t), WDLONG[d.getDay()]][lv];
+    const last = new Date(b - DAY);
+    const sub = ['', String(d.getFullYear()), `${new Date(a).getDate()}. ${MSHORT[new Date(a).getMonth()]} – ${last.getDate()}. ${MSHORT[last.getMonth()]}`, `${d.getDate()}. ${MLONG[d.getMonth()]}`][lv];
+    let extra = '';
+    if (lv === 3) {
+      const marks = itemsIn(a, b, ['allday', 'birthday', 'holiday', 'deadline']);
+      if (marks.length) extra = `<div class="chips">${marks.map(m => `<span class="chip"><span class="dot" style="background:${dotOf(m)}"></span>${m.kind === 'birthday' ? 'Geburtstag ' : ''}${esc(m.title)}${m.kind === 'deadline' ? ' · ' + hm(m.start) : ''}</span>`).join('')}</div>`;
+      const nxt = NOW >= a && NOW < b ? evs.find(e => e.start > NOW) : null;
+      if (nxt) extra += `<div class="hub-stat">als Nächstes ${hm(nxt.start)} · ${esc(nxt.title)}</div>`;
+    }
+    body = `<div class="hub-title">${title}</div>${sub ? `<div class="hub-sub">${sub}</div>` : ''}<div class="hub-stat">${evs.length} Termine · ${hrs(hours)} h</div>${extra}`;
+  }
+  const html = `<nav class="crumbs" aria-label="Zoompfad">${crumbs.join('<span>›</span>')}</nav>${body}`;
+  if (html !== lastHub) { hub.innerHTML = html; lastHub = html; }
+}
+hub.addEventListener('click', e => { const b = e.target.closest('button[data-lv]'); if (b) setLevel(+b.dataset.lv); });
+
+function updateList() {
+  const [a, b] = unitRange(S.level, S.anchor);
+  const kinds = S.level >= 2 ? ['event', 'deadline', 'allday', 'birthday', 'holiday'] : ['deadline', 'allday', 'birthday', 'holiday'];
+  let items = itemsIn(a, b, kinds);
+  if (NOW >= a && NOW < b) { const i = items.findIndex(it => it.end >= NOW); if (i > 2) items = items.slice(i - 2); }
+  items = items.slice(0, 10);
+  document.getElementById('list-title').innerHTML = `Im Blick <small>${unitLabel(S.level, S.anchor)}${S.level === 3 ? '' : S.level === 1 ? ' ' + new Date(S.anchor).getFullYear() : ''}</small>`;
+  document.getElementById('list').innerHTML = items.length ? items.map(it => {
+    const when = it.kind === 'event' || it.kind === 'deadline' ? (S.level === 3 ? hm(it.start) : `${new Date(it.start).getDate()}.${new Date(it.start).getMonth() + 1}. ${hm(it.start)}`) : `${new Date(it.start).getDate()}.${new Date(it.start).getMonth() + 1}.`;
+    return `<li class="${it.end < NOW && it.kind !== 'deadline' || (it.kind === 'deadline' && it.start < NOW) ? 'past' : ''}"><span class="dot" style="background:${dotOf(it)}"></span><span class="when">${when}</span><span class="what">${esc(it.title)}</span></li>`;
+  }).join('') : '<li><span></span><span></span><span class="empty">Nichts geplant.</span></li>';
+}
+
+function buildRings() {
+  document.getElementById('rings').innerHTML = RINGS.map(r => `<li><label for="ring-${r.id}">
+    <span class="bar" style="background:${r.color}"></span>
+    <span class="rname">${r.name}<span class="rsub">${r.sub}</span></span>
+    <span class="switch"><input type="checkbox" id="ring-${r.id}" data-ring="${r.id}" checked${r.fixed ? ' disabled' : ''}><span></span></span></label></li>`).join('');
+  document.getElementById('rings').addEventListener('change', e => {
+    const id = e.target.dataset.ring; if (!id) return;
+    e.target.checked ? S.hidden.delete(id) : S.hidden.add(id); render();
+  });
+}
+
+/* ---------- Animation & Navigation ---------- */
+function animateTo(to) {
+  cancelAnimationFrame(S.raf);
+  const from = { ...S.v }, key = S.mode === 'rings' ? 'dur' : 'P', d0 = from[key], d1 = to[key];
+  const fix = Math.abs(d0 - d1) > 1 ? (to.start * d0 - from.start * d1) / (d0 - d1) : null;
+  const t0 = performance.now(), T = reduceMotion ? 0 : 650;
+  S.animating = true;
+  const step = now => {
+    const p = T ? Math.min(1, (now - t0) / T) : 1, k = ease(p);
+    const dk = Math.exp(lerp(Math.log(d0), Math.log(d1), k));
+    const v = { start: fix === null ? lerp(from.start, to.start, k) : fix - (fix - from.start) * (dk / d0), [key]: dk };
+    if (S.mode === 'spiral') v.N = lerp(from.N, to.N, k);
+    S.v = p >= 1 ? { ...to } : v; render();
+    if (p < 1) S.raf = requestAnimationFrame(step); else S.animating = false;
+  };
+  S.raf = requestAnimationFrame(step);
+}
+function go() { animateTo(targetFor(S.mode, S.level, S.anchor)); syncControls(); updateList(); }
+function setLevel(l) { if (l === S.level) return; S.level = clamp(l, 0, 3); S.hover = null; go(); }
+function zoomIn(t) { if (S.level >= 3) return; S.anchor = t; S.level++; S.hover = null; go(); }
+function zoomOut() { if (S.level <= 0) return; S.level--; S.hover = null; go(); }
+function stepBy(dir) {
+  const d = new Date(S.anchor);
+  S.anchor = [new Date(d.getFullYear() + dir, d.getMonth(), Math.min(d.getDate(), 28)), new Date(d.getFullYear(), d.getMonth() + dir, Math.min(d.getDate(), 28)),
+    new Date(d.getFullYear(), d.getMonth(), d.getDate() + 7 * dir), new Date(d.getFullYear(), d.getMonth(), d.getDate() + dir)][S.level].getTime();
+  go();
+}
+function setMode(m) {
+  if (m === S.mode) return; cancelAnimationFrame(S.raf); S.animating = false;
+  S.mode = m; S.v = targetFor(m, S.level, S.anchor); render(); syncControls();
+}
+function syncControls() {
+  document.querySelectorAll('#levels button').forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.level === S.level)));
+  document.getElementById('m-rings').setAttribute('aria-pressed', String(S.mode === 'rings'));
+  document.getElementById('m-spiral').setAttribute('aria-pressed', String(S.mode === 'spiral'));
+}
+
+/* ---------- Eingabe ---------- */
+function svgPt(ev) { const p = svg.createSVGPoint(); p.x = ev.clientX; p.y = ev.clientY; return p.matrixTransform(svg.getScreenCTM().inverse()); }
+const angOf = p => { let a = Math.atan2(p.x, -p.y); return a < 0 ? a + TAU : a; };
+
+svg.addEventListener('pointerdown', ev => {
+  if (ev.button !== 0) return;
+  const p = svgPt(ev);
+  S.drag = { last: angOf(p), acc: 0, v0: null, moved: false, x: ev.clientX, y: ev.clientY };
+});
+svg.addEventListener('pointermove', ev => {
+  const p = svgPt(ev), d = S.drag;
+  if (d) {
+    if (!d.moved && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 5) {
+      d.moved = true; cancelAnimationFrame(S.raf); S.animating = false; d.v0 = { ...S.v };
+      svg.setPointerCapture(ev.pointerId); svg.classList.add('dragging');
+    }
+    if (d.moved) {
+      const a = angOf(p); let da = a - d.last; if (da > Math.PI) da -= TAU; if (da < -Math.PI) da += TAU;
+      d.acc += da; d.last = a;
+      const span = S.mode === 'rings' ? d.v0.dur : d.v0.P;
+      S.v = { ...d.v0, start: d.v0.start - d.acc / TAU * span }; render(); return;
+    }
+  }
+  S.hoverT = S.g.timeAt(p.x, p.y); drawHL();
+});
+function endDrag(ev, cancelled) {
+  const d = S.drag; S.drag = null; svg.classList.remove('dragging');
+  if (!d) return;
+  if (d.moved) {
+    const v = S.v; S.anchor = S.mode === 'rings' ? v.start + v.dur / 2 : v.start + v.N * v.P / 2;
+    go(); return;
+  }
+  if (cancelled) return;
+  const p = svgPt(ev), t = S.g.timeAt(p.x, p.y);
+  if (t != null) zoomIn(t);
+}
+svg.addEventListener('pointerup', ev => endDrag(ev, false));
+svg.addEventListener('pointercancel', ev => endDrag(ev, true));
+svg.addEventListener('pointerleave', () => { if (S.drag?.moved) return; S.hoverT = null; S.hover = null; drawHL(); updateHub(); });
+mainL.addEventListener('pointerover', ev => {
+  const el = ev.target.closest('[data-i],[data-day],[data-ctx]');
+  if (!el) { if (S.hover) { S.hover = null; updateHub(); } return; }
+  S.hover = el.dataset.i != null ? { item: ALL[+el.dataset.i] } : el.dataset.day != null ? { day: +el.dataset.day } : { ctx: el.dataset.ctx };
+  updateHub();
+});
+mainL.addEventListener('pointerout', ev => { if (!ev.relatedTarget || !mainL.contains(ev.relatedTarget)) { S.hover = null; updateHub(); } });
+svg.addEventListener('wheel', ev => {
+  ev.preventDefault(); if (S.animating) return;
+  S.wacc += ev.deltaY; if (Math.abs(S.wacc) < 50) return;
+  const dir = Math.sign(S.wacc); S.wacc = 0;
+  if (dir < 0) { const p = svgPt(ev); const t = S.g.timeAt(p.x, p.y); zoomIn(t ?? S.anchor); } else zoomOut();
+}, { passive: false });
+document.addEventListener('keydown', ev => {
+  if (ev.target.closest('input,textarea')) return;
+  if (ev.key === 'ArrowLeft') stepBy(-1);
+  else if (ev.key === 'ArrowRight') stepBy(1);
+  else if (ev.key === '+' || ev.key === '=') zoomIn(S.anchor);
+  else if (ev.key === '-' || ev.key === 'Escape') zoomOut();
+});
+document.getElementById('levels').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setLevel(+b.dataset.level); });
+document.getElementById('prev').addEventListener('click', () => stepBy(-1));
+document.getElementById('next').addEventListener('click', () => stepBy(1));
+document.getElementById('today').addEventListener('click', () => { S.anchor = NOW; go(); });
+document.getElementById('m-rings').addEventListener('click', () => setMode('rings'));
+document.getElementById('m-spiral').addEventListener('click', () => setMode('spiral'));
+
+buildRings();
+S.v = targetFor(S.mode, S.level, S.anchor);
+render(); syncControls(); updateList();
+})();
+</script>

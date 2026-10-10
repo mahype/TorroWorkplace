@@ -46,6 +46,7 @@ wiederherstellt.
 - **Technik wählen:** eine plattformübergreifende Rust-GUI (Iced als Favorit, Slint, egui) oder native
   Oberflächen pro System. Kleiner Prototyp-Vergleich, Prüfstein ist die Tagesspirale.
 - GUIs für Steuerzentrale, Aufgaben und Kalender auf demselben Kern
+- Kalender-Darstellung: Ideen und Prototypen (Tagesspirale, Jahresring) in [calendar-views.md](calendar-views.md)
 - gemeinsames Theme aus den Torro-Tokens
 - Paketierung: `.app` für macOS (signiert), `.desktop` und Icon für Linux
 
