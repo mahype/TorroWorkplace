@@ -1,6 +1,6 @@
 # Kalender: alternative Darstellungen
 
-Stand: 2026-10-09. Ideensammlung für `torrocalendar` (TUI) und `torrocalendar-gui` (Iced, Phase 2).
+Stand: 2026-10-09. Ideensammlung für `torrocalendar` (TUI) und die spätere Kalender-GUI (Phase 3, Technik noch offen).
 Noch nichts davon ist entschieden. Die Prototypen sind klickbare HTML-Seiten mit Beispieldaten
 und dienen nur dazu, das Gefühl der Darstellung zu prüfen.
 
@@ -113,5 +113,5 @@ Noch nicht prototypisch umgesetzt, aber als Anregung festgehalten:
 
 - Entscheiden, ob die Tagesspirale die Tagesansicht der GUI wird und wie sie im Terminal
   (TUI) aussehen könnte, etwa als vereinfachte Liste mit Windungsangabe.
-- Prüfen, ob sich Spirale und Zoom mit Iced (Canvas) flüssig umsetzen lassen.
+- Prüfen, ob sich Spirale und Zoom mit der gewählten GUI-Technik (z. B. Iced-Canvas) flüssig umsetzen lassen.
 - Mit echten CalDAV-Daten testen: viele Überschneidungen, mehrtägige Termine, Zeitzonen.

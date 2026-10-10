@@ -6,48 +6,69 @@ Die Arbeitspakete stehen als Issues in den [Meilensteinen](https://github.com/ma
 
 - Repository, Lizenz (MIT OR Apache-2.0), Dokumente unter `docs/`
 - workspace-setups mit Historie nach `apps/workspace-setups` übernommen
-- Rust-Workspace-Gerüst: `torro-core`, `torro-pim`, `torro-pim-caldav`, `torro-tui`, `torrotasks`, `torrocalendar`
+- Rust-Workspace-Gerüst: `torro-core`, `torro-ipc`, `torro-pim`, `torro-pim-caldav`, `torro-tui`,
+  `torroworkplace`, `torrotasks`, `torrocalendar`
 
-## Phase 1: MVP als TUI (Aufgaben und Kalender)
+## Phase 1: Kern – `torroworkplace`
 
-1. **`torro-pim-caldav`:** Erkennung (`current-user-principal`, `calendar-home-set`), Kalenderliste,
-   `sync-collection`, iCalendar lesen und schreiben (VEVENT, VTODO), Schreiben nur mit passendem ETag.
-   Getestet gegen Radicale (lokal, Container), Nextcloud und iCloud.
-2. **`torro-pim`:** SQLite-Cache, Sync-Engine, Umgang mit Konflikten.
-3. **Konten einrichten:** Assistent in der TUI, Passwort im Schlüsselbund.
-4. **`torrotasks`-TUI:** Listen, Fälligkeit, Priorität, Unteraufgaben, schnelles Erfassen, erledigte ausblenden.
-5. **`torrocalendar`-TUI:** Tag, Woche, Agenda; Termin anlegen und bearbeiten; „nächster Termin“.
-6. **`status --json`, `ctl`, `mcp`** für beide Apps.
-7. **Integrationen:** Hyprland-Regeln, `.desktop`-Launcher, AeroSpace-Regeln.
-8. **Installation:** `install.sh`, AUR (`-bin` + Metapaket `torroworkplace`), Homebrew-Tap, Release-CI.
+Der Kern ist ein Hintergrunddienst mit Icon in der Taskleiste, von dem aus sich alles steuern lässt.
 
-Fertig ist Phase 1, wenn beide Apps unter Hyprland und AeroSpace nebeneinander gekachelt laufen,
-mit der eigenen Nextcloud synchronisieren und workspace-setups sie wiederherstellt.
+1. **`torro-ipc`:** lokaler Socket, Protokoll (JSON-RPC), Client startet den Kern bei Bedarf.
+2. **Dienst `torroworkplace daemon`:** Lebenszyklus, `--headless`, Autostart auf Hyprland und macOS.
+3. **Tray-Icon:** `ksni` unter Linux (Omarchy 4-Leiste), `tray-icon` auf macOS und Windows. Menü:
+   Apps, Fenster-Sets, Sync-Status, Steuerzentrale, Beenden.
+4. **App-Verwaltung:** installierte Apps finden, starten oder fokussieren (Hyprland, AeroSpace).
+5. **Konten und Sync:** CalDAV-Erkennung, `sync-collection`, iCalendar lesen und schreiben,
+   SQLite-Cache, Sync-Engine, Passwörter im Schlüsselbund. Getestet gegen Radicale, Nextcloud, iCloud.
+6. **Steuerzentrale (TUI):** Apps, Konten einrichten, Sync-Status, Fenster-Sets.
+7. **Fenster-Sets:** workspace-setups aus Menü und Steuerzentrale (zunächst Linux).
+8. **Ein MCP-Server** für die Suite (`torroworkplace mcp`).
+9. **`status --json` und `ctl`.**
+10. **Integrationen:** Hyprland-Regeln, `.desktop`-Launcher, AeroSpace-Regeln.
 
-## Phase 2: Native GUI (Iced)
+Fertig ist Phase 1, wenn das Icon auf Omarchy und dem Mac erscheint, die Nextcloud synchronisiert
+wird und sich Fenster-Sets unter Omarchy aus dem Menü laden lassen.
 
-- `gui/torrotasks-gui`, `gui/torrocalendar-gui` auf demselben Kern
-- gemeinsames Iced-Theme aus den Torro-Tokens
+## Phase 2: Aufgaben und Kalender auf dem Kern (erste Version v0.1)
+
+1. **`torrotasks`-TUI:** Listen, Fälligkeit, Priorität, Unteraufgaben, schnelles Erfassen.
+2. **`torrocalendar`-TUI:** Tag, Woche, Agenda; Termin anlegen und bearbeiten; „nächster Termin“.
+   Ideen für neue Ansichten: [calendar-views.md](calendar-views.md).
+3. **MCP-Tools** für Aufgaben und Termine im Suite-Server.
+4. **Installation:** `install.sh`, Release-CI, AUR (`-bin` + Metapaket `torroworkplace`), Homebrew-Tap.
+
+Fertig ist v0.1, wenn Kern, Aufgaben und Kalender mit einem Befehl installiert sind, unter
+Hyprland und AeroSpace nebeneinander gekachelt laufen und workspace-setups sie unter Omarchy
+wiederherstellt.
+
+## Phase 3: GUI
+
+- **Technik wählen:** eine plattformübergreifende Rust-GUI (Iced als Favorit, Slint, egui) oder native
+  Oberflächen pro System. Kleiner Prototyp-Vergleich, Prüfstein ist die Tagesspirale.
+- GUIs für Steuerzentrale, Aufgaben und Kalender auf demselben Kern
 - Kalender-Darstellung: Ideen und Prototypen (Tagesspirale, Jahresring) in [calendar-views.md](calendar-views.md)
-- Paketierung als `.app` (macOS, signiert) und mit `.desktop` und Icon (Linux)
+- gemeinsames Theme aus den Torro-Tokens
+- Paketierung: `.app` für macOS (signiert), `.desktop` und Icon für Linux
 
-## Phase 3: workspace-setups für AeroSpace
+## Phase 4: workspace-setups für AeroSpace
 
 - `WindowManagerBackend` einziehen, Backend für AeroSpace, Template-Schema 3 mit Feld `wm`
 - Browser-Tabs auf dem Mac (Chrome/Brave unter `~/Library/Application Support`)
-- Bedienung auf dem Mac: CLI, Tastenkürzel in `~/.aerospace.toml`, später SketchyBar oder GUI
+- Fenster-Sets auf dem Mac aus dem Tray-Menü, Tastenkürzel in `~/.aerospace.toml`
 
-## Phase 4: Ausbau
+## Phase 5: Ausbau
 
-- Agenten-Übersicht und GitHub-Dashboard (siehe [app-catalog.md](app-catalog.md))
-- Omarchy-Leistenwidgets pro App
+- Agenten-Übersicht, Verbrauch & Kosten, GitHub-Dashboard (siehe [app-catalog.md](app-catalog.md))
+- Omarchy-Leistenwidgets
 - weitere Provider: Google Calendar, Todoist
 - Windows: komorebi/GlazeWM-Regeln, Scoop-Bucket, workspace-setups-Backend
-- TorroMail, TorroCast und TorroEQ in den Suite-Installer aufnehmen
+- TorroMail, TorroCast und TorroEQ in den Suite-Installer und das Tray-Menü aufnehmen
 
 ## Offene Fragen
 
-- Teilen sich Kalender und Aufgaben einen Sync-Daemon oder hat jede App einen eigenen Cache?
+- ~~Teilen sich Kalender und Aufgaben einen Sync-Daemon?~~ Entschieden: Der Kern synchronisiert für alle.
 - Kann `omarchy plugin add` ein Plugin aus einem Unterverzeichnis installieren?
-- Bundle-IDs und Signierung der macOS-GUIs (Team-ID wie bei TorroMail?)
-- workspace-setups: wann in Rust neu schreiben, vor oder nach dem AeroSpace-Backend?
+- Zeigt die Omarchy-Leiste (Quickshell) Icon und Menü von `ksni` sauber an?
+- GUI-Technik: eine für alle Systeme oder native pro System?
+- Bundle-IDs und Signierung auf macOS (Team-ID wie bei TorroMail?)
+- workspace-setups: wann in Rust neu schreiben, damit es direkt im Kern läuft?

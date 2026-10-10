@@ -1,0 +1,18 @@
+[package]
+name = "torroworkplace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The TorroWorkplace core: background service, tray icon, control centre TUI and one MCP server for the whole suite."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+torro-pim.workspace = true
+torro-pim-caldav.workspace = true
+torro-ipc.workspace = true
+torro-tui.workspace = true

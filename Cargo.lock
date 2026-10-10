@@ -7,6 +7,13 @@ name = "torro-core"
 version = "0.0.1"
 
 [[package]]
+name = "torro-ipc"
+version = "0.0.1"
+dependencies = [
+ "torro-core",
+]
+
+[[package]]
 name = "torro-pim"
 version = "0.0.1"
 dependencies = [
@@ -32,8 +39,8 @@ name = "torrocalendar"
 version = "0.0.1"
 dependencies = [
  "torro-core",
+ "torro-ipc",
  "torro-pim",
- "torro-pim-caldav",
  "torro-tui",
 ]
 
@@ -42,6 +49,17 @@ name = "torrotasks"
 version = "0.0.1"
 dependencies = [
  "torro-core",
+ "torro-ipc",
+ "torro-pim",
+ "torro-tui",
+]
+
+[[package]]
+name = "torroworkplace"
+version = "0.0.1"
+dependencies = [
+ "torro-core",
+ "torro-ipc",
  "torro-pim",
  "torro-pim-caldav",
  "torro-tui",
