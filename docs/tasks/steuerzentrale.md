@@ -73,7 +73,7 @@ Gemeinsam für alle Seiten-Aufgaben:
   (Agent `torro-design-review`) bei 1100 px, 500 px und 360 px, Fehler beheben.
 
 ### S.12 Remote Wipe für Nextcloud-Konten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert`, Sicherheit) · **Dateien:**
   `crates/torro-pim-caldav/src/nextcloud.rs`, `crates/torroworkplace/src/account.rs`,
   `crates/torroworkplace/src/pim.rs`

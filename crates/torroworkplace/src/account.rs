@@ -1,5 +1,6 @@
 //! The core's Nextcloud account: the stored account and its app password, signing in with
-//! Login Flow v2 and revoking the app password on the server when the account is removed.
+//! Login Flow v2, revoking the app password on the server when the account is removed, and the
+//! remote wipe the server may ask for once it refuses the app password ([`remote_wipe`], task S.12).
 //!
 //! Task K.6 in `docs/tasks/kalender-aufgaben.md`. Building blocks that exist:
 //! `torro_core::account` (accounts.json + keychain), `torro_pim_caldav::nextcloud`
@@ -128,6 +129,42 @@ fn revoke_outcome(status: reqwest::StatusCode) -> Result<(), String> {
     }
 }
 
+/// The remote wipe after the server refused the app password (401/403), in the order Nextcloud
+/// expects: ask the server (`check`, see `torro_pim_caldav::nextcloud::check_wipe`); only on a
+/// clear "wipe" remove everything local (`wipe`), and only after that confirm to the server
+/// (`report`, `nextcloud::confirm_wipe`). Confirming first would let the server delete the token
+/// while our data is still here.
+///
+/// `Ok(true)` = wiped; `Ok(false)` = nothing to wipe, the account stays (the user signs in again).
+/// A failed check or a failed local wipe is an error and nothing is confirmed. A failed
+/// confirmation is only logged: the local data is gone either way, and the token cannot be
+/// retried later because it no longer exists here.
+///
+/// The steps are closures so the order can be tested without a network or keychain (like
+/// [`poll_until_granted`]).
+pub async fn remote_wipe<Check, CheckFut, Wipe, WipeFut, Report, ReportFut>(
+    check: Check,
+    wipe: Wipe,
+    report: Report,
+) -> Result<bool, String>
+where
+    Check: FnOnce() -> CheckFut,
+    CheckFut: Future<Output = Result<bool, ProviderError>>,
+    Wipe: FnOnce() -> WipeFut,
+    WipeFut: Future<Output = Result<(), String>>,
+    Report: FnOnce() -> ReportFut,
+    ReportFut: Future<Output = Result<(), ProviderError>>,
+{
+    if !check().await.map_err(|err| format!("cannot check for a remote wipe: {err}"))? {
+        return Ok(false);
+    }
+    wipe().await.map_err(|err| format!("remote wipe requested, but the local data could not be removed: {err}"))?;
+    if let Err(err) = report().await {
+        eprintln!("torroworkplace: remote wipe done, but not confirmed to the server: {err}");
+    }
+    Ok(true)
+}
+
 /// A CalDAV client for the account (`<server>/remote.php/dav/`).
 pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavClient, String> {
     let dav = CalDavAccount {
@@ -223,6 +260,59 @@ mod tests {
             let status = reqwest::StatusCode::from_u16(status).expect("status");
             assert!(revoke_outcome(status).is_err(), "{status}");
         }
+    }
+
+    /// Runs [`remote_wipe`] with scripted answers and returns its result plus the steps taken.
+    async fn wipe_script(
+        check: Result<bool, ProviderError>,
+        wipe: Result<(), String>,
+    ) -> (Result<bool, String>, Vec<&'static str>) {
+        let steps = RefCell::new(Vec::new());
+        let result = remote_wipe(
+            || {
+                steps.borrow_mut().push("check");
+                async { check }
+            },
+            || {
+                steps.borrow_mut().push("wipe");
+                async { wipe }
+            },
+            || {
+                steps.borrow_mut().push("report");
+                async { Err::<(), _>(ProviderError::Offline) }
+            },
+        )
+        .await;
+        (result, steps.into_inner())
+    }
+
+    #[tokio::test]
+    async fn remote_wipe_wipes_then_confirms() {
+        let (result, steps) = wipe_script(Ok(true), Ok(())).await;
+        // A failed confirmation does not undo the wipe.
+        assert_eq!(result, Ok(true));
+        assert_eq!(steps, ["check", "wipe", "report"]);
+    }
+
+    #[tokio::test]
+    async fn no_remote_wipe_keeps_everything() {
+        let (result, steps) = wipe_script(Ok(false), Ok(())).await;
+        assert_eq!(result, Ok(false));
+        assert_eq!(steps, ["check"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_wipe_check_keeps_everything() {
+        let (result, steps) = wipe_script(Err(ProviderError::Offline), Ok(())).await;
+        assert!(result.is_err());
+        assert_eq!(steps, ["check"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_local_wipe_is_not_confirmed() {
+        let (result, steps) = wipe_script(Ok(true), Err("keychain locked".into())).await;
+        assert!(result.is_err());
+        assert_eq!(steps, ["check", "wipe"]);
     }
 
     #[tokio::test]

@@ -166,6 +166,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Workspace {workspace} · {backend}", "Workspace {workspace} · {backend}"),
     ("{name} not supported yet", "{name} fehlt noch"),
     // Notifications (torroworkplace)
+    ("Account removed", "Konto entfernt"),
     ("Done", "Erledigt"),
     ("Failed", "Fehlgeschlagen"),
     ("Template deleted", "Vorlage gelöscht"),
@@ -175,6 +176,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "The workspace is not empty. Choose “Add” or “Replace”.",
         "Der Workspace ist nicht leer. Wähle „Hinzufügen“ oder „Ersetzen“.",
+    ),
+    (
+        "Your Nextcloud account was removed from this device at the server's request.",
+        "Dein Nextcloud-Konto wurde auf Wunsch des Servers von diesem Gerät entfernt.",
     ),
     ("{name} · {n} windows", "{name} · {n} Fenster"),
     ("{n} windows", "{n} Fenster"),

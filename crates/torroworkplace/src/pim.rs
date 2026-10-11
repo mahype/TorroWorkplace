@@ -9,8 +9,12 @@
 //! - Writes go to the server first (ETag-guarded) and update the cache with the answer.
 //!   Recurring occurrences are refused until series editing exists, because writing one
 //!   would overwrite the whole series.
+//! - When the server refuses the app password (401/403), the core asks once whether this device
+//!   was marked for a remote wipe and, if so, removes the account, its secret and the cache
+//!   (task S.12, `account::remote_wipe`).
 //! - An SQLite cache that survives restarts comes later.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,10 +23,12 @@ use tokio::sync::{Mutex, RwLock};
 use torro_ipc::{Request, Response};
 use torro_pim::{AccountState, Collection, Event, EventTime, ProviderError, Todo};
 use torro_pim_caldav::CalDavClient;
+use torro_pim_caldav::nextcloud;
 
 use torro_core::i18n::tr;
 
 use crate::account::{self, Connected};
+use crate::notify;
 
 /// How often the cache is refreshed in the background.
 const SYNC_EVERY: Duration = Duration::from_secs(5 * 60);
@@ -43,6 +49,10 @@ struct State {
     /// The range `events` covers; `None` before the first successful sync.
     window: Option<(DateTime<Utc>, DateTime<Utc>)>,
     todos: Vec<Todo>,
+    /// The remote wipe check already ran since the server started refusing the app password.
+    /// Nextcloud rate-limits the check, and asking again on every failed request would not
+    /// change the answer; a successful sync or a new sign-in clears it.
+    wipe_checked: bool,
 }
 
 /// See the module docs.
@@ -103,6 +113,7 @@ impl PimService {
                 }
                 Err(err) => error("error", err),
             },
+            // `sync` runs the remote wipe check itself.
             Request::Sync => match self.sync().await {
                 Ok(()) => Response::Ok,
                 Err(err) => provider_error(&err),
@@ -115,7 +126,7 @@ impl PimService {
                 Ok(events) => {
                     Response::Events { events: without_hidden(events, &hidden_collections(), |e| &e.collection) }
                 }
-                Err(err) => provider_error(&err),
+                Err(err) => self.failed(err).await,
             },
             Request::Todos => {
                 let todos = self.state.read().await.todos.clone();
@@ -123,19 +134,19 @@ impl PimService {
             }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
-                Err(err) => provider_error(&err),
+                Err(err) => self.failed(err).await,
             },
             Request::DeleteEvent { event } => match self.delete_event(event).await {
                 Ok(()) => Response::Ok,
-                Err(err) => provider_error(&err),
+                Err(err) => self.failed(err).await,
             },
             Request::SaveTodo { todo } => match self.save_todo(todo).await {
                 Ok(todo) => Response::Todo { todo },
-                Err(err) => provider_error(&err),
+                Err(err) => self.failed(err).await,
             },
             Request::DeleteTodo { todo } => match self.delete_todo(todo).await {
                 Ok(()) => Response::Ok,
-                Err(err) => provider_error(&err),
+                Err(err) => self.failed(err).await,
             },
             _ => error("error", "not a calendar or task request".into()),
         }
@@ -162,11 +173,108 @@ impl PimService {
             }
             None => eprintln!("torroworkplace: app password not revoked on the server: no HTTP client"),
         }
-        account::keychain(account::forget).await?;
+        self.forget_locally(|| account::keychain(account::forget)).await
+    }
+
+    /// Forgets the account locally: account list and secret (`forget_store`, in production
+    /// [`account::forget`] on the keychain thread) first, then the cache. Shared by removing the
+    /// account and by the remote wipe.
+    async fn forget_locally<Forget, Fut>(&self, forget_store: Forget) -> Result<(), String>
+    where
+        Forget: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(), String>>,
+    {
+        forget_store().await?;
         let mut state = self.state.write().await;
         // A sign-in that runs meanwhile goes on; everything of the removed account goes.
         *state = State { signing_in: state.signing_in.take(), ..State::default() };
         Ok(())
+    }
+
+    /// The response for a failed request; a refused app password first runs the remote wipe
+    /// check.
+    async fn failed(&self, err: ProviderError) -> Response {
+        if err == ProviderError::Auth {
+            self.on_refused().await;
+        }
+        provider_error(&err)
+    }
+
+    /// The server refused the app password: asks once whether this device is to be wiped and
+    /// does so (task S.12). Otherwise the account stays and shows "sign-in refused" until the
+    /// user signs in again.
+    async fn on_refused(&self) {
+        let Some(http) = self.http.clone() else {
+            return;
+        };
+        let Some(connected) = self.state.read().await.account.clone() else {
+            return;
+        };
+        let (server, token) = (connected.account.server.as_str(), connected.app_password.as_str());
+        let wiped = self
+            .wipe_if_requested(
+                &connected,
+                || nextcloud::check_wipe(&http, server, token),
+                || account::keychain(account::forget),
+                || nextcloud::confirm_wipe(&http, server, token),
+            )
+            .await;
+        match wiped {
+            Ok(Some(true)) => {
+                eprintln!("torroworkplace: the server asked to remove the account from this device; done");
+                notify::show(
+                    tr("Account removed").into(),
+                    tr("Your Nextcloud account was removed from this device at the server's request.").into(),
+                );
+            }
+            Ok(_) => {}
+            Err(err) => eprintln!("torroworkplace: {err}"),
+        }
+    }
+
+    /// The remote wipe for `connected` with the network and keychain steps passed in, so it can
+    /// be tested without either. `Ok(None)` = skipped, because the check already ran for this
+    /// refusal or the account changed meanwhile; otherwise the result of
+    /// [`account::remote_wipe`]. A failed check may run again on the next refusal.
+    async fn wipe_if_requested<Check, CheckFut, Forget, ForgetFut, Report, ReportFut>(
+        &self,
+        connected: &Connected,
+        check: Check,
+        forget_store: Forget,
+        report: Report,
+    ) -> Result<Option<bool>, String>
+    where
+        Check: FnOnce() -> CheckFut,
+        CheckFut: Future<Output = Result<bool, ProviderError>>,
+        Forget: FnOnce() -> ForgetFut,
+        ForgetFut: Future<Output = Result<(), String>>,
+        Report: FnOnce() -> ReportFut,
+        ReportFut: Future<Output = Result<(), ProviderError>>,
+    {
+        let id = connected.account.id.as_str();
+        {
+            // Test and set under one lock, so concurrent failures ask only once.
+            let mut state = self.state.write().await;
+            if state.wipe_checked || !is_account(&state, id) {
+                return Ok(None);
+            }
+            state.wipe_checked = true;
+        }
+        let wipe = || async {
+            // The user may have removed the account or signed in anew while we asked.
+            if !is_account(&*self.state.read().await, id) {
+                return Err("the account changed meanwhile".to_string());
+            }
+            self.forget_locally(forget_store).await
+        };
+        let result = account::remote_wipe(check, wipe, report).await;
+        if result.is_err() {
+            let mut state = self.state.write().await;
+            if is_account(&state, id) {
+                state.wipe_checked = false;
+            }
+        }
+        result.map(Some)
     }
 
     pub async fn account_state(&self) -> AccountState {
@@ -195,6 +303,7 @@ impl PimService {
                         state.client = account::caldav(&http, &connected).ok();
                         state.account = Some(connected);
                         state.problem = None;
+                        state.wipe_checked = false;
                     }
                     Err(err) => {
                         // Back to the connect screen; the apps show the state.
@@ -229,10 +338,15 @@ impl PimService {
                 state.todos = todos;
                 state.last_sync = Some(Utc::now());
                 state.problem = None;
+                state.wipe_checked = false;
                 Ok(())
             }
             Err(err) => {
                 state.problem = Some(err.to_string());
+                drop(state);
+                if err == ProviderError::Auth {
+                    self.on_refused().await;
+                }
                 Err(err)
             }
         }
@@ -348,6 +462,11 @@ fn state_of(state: &State) -> AccountState {
         },
         None => AccountState::NotConnected,
     }
+}
+
+/// `id` is still the account in `state`.
+fn is_account(state: &State, id: &str) -> bool {
+    state.account.as_ref().is_some_and(|connected| connected.account.id == id)
 }
 
 /// One entry per stored account (today at most one Nextcloud) with all cached collections,
@@ -656,6 +775,91 @@ mod tests {
         assert!(service.remove_account("nextcloud:bob@cloud.example.org").await.is_err());
         assert!(service.remove_account("").await.is_err());
         assert_eq!(service.accounts().await.len(), 1);
+    }
+
+    /// A service whose server just refused the app password, with a filled cache.
+    async fn refused_service() -> Arc<PimService> {
+        let service = service();
+        {
+            let mut state = service.state.write().await;
+            state.account = Some(connected());
+            state.collections = vec![collection("work")];
+            state.problem = Some(ProviderError::Auth.to_string());
+        }
+        service
+    }
+
+    /// Runs the remote wipe with a scripted check answer and returns its result plus the steps
+    /// taken; keychain and network are stand-ins.
+    async fn wipe(
+        service: &PimService,
+        check: Result<bool, ProviderError>,
+    ) -> (Result<Option<bool>, String>, Vec<&'static str>) {
+        let steps = std::cell::RefCell::new(Vec::new());
+        let result = service
+            .wipe_if_requested(
+                &connected(),
+                || {
+                    steps.borrow_mut().push("check");
+                    async { check }
+                },
+                || {
+                    steps.borrow_mut().push("forget");
+                    async { Ok(()) }
+                },
+                || {
+                    steps.borrow_mut().push("report");
+                    async { Ok(()) }
+                },
+            )
+            .await;
+        (result, steps.into_inner())
+    }
+
+    #[tokio::test]
+    async fn a_remote_wipe_removes_account_secret_and_cache_and_reports_it() {
+        let service = refused_service().await;
+        let (result, steps) = wipe(&service, Ok(true)).await;
+        assert_eq!(result, Ok(Some(true)));
+        assert_eq!(steps, ["check", "forget", "report"]);
+        assert_eq!(service.account_state().await, AccountState::NotConnected);
+        assert!(service.accounts().await.is_empty());
+        assert!(service.state.read().await.collections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_a_remote_wipe_the_account_stays_and_is_checked_only_once() {
+        let service = refused_service().await;
+        let (result, steps) = wipe(&service, Ok(false)).await;
+        assert_eq!(result, Ok(Some(false)));
+        assert_eq!(steps, ["check"]);
+        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.state.read().await.collections, vec![collection("work")]);
+        // The next refused request does not ask the server again.
+        let (result, steps) = wipe(&service, Ok(true)).await;
+        assert_eq!(result, Ok(None));
+        assert!(steps.is_empty());
+        assert_eq!(service.accounts().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_wipe_check_keeps_the_account_and_may_be_retried() {
+        let service = refused_service().await;
+        let (result, steps) = wipe(&service, Err(ProviderError::Offline)).await;
+        assert!(result.is_err());
+        assert_eq!(steps, ["check"]);
+        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.state.read().await.collections, vec![collection("work")]);
+        let (_, steps) = wipe(&service, Ok(false)).await;
+        assert_eq!(steps, ["check"], "a failed check runs again on the next refusal");
+    }
+
+    #[tokio::test]
+    async fn no_wipe_check_for_an_account_that_is_gone() {
+        let service = service();
+        let (result, steps) = wipe(&service, Ok(true)).await;
+        assert_eq!(result, Ok(None));
+        assert!(steps.is_empty());
     }
 
     #[test]
