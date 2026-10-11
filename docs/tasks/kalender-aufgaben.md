@@ -112,7 +112,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torro-ipc/src/pim.rs`
 
 ### K.5 Zwischenspeicher und Sync im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.3, K.4, K.6
 - **Dateien:** `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/daemon.rs`
 - Konto laden, Anmeldung im Hintergrund, Zwischenspeicher, Sync-Schleife, alle PIM-Befehle beantworten.

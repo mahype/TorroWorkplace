@@ -2,6 +2,8 @@
 //! control centre) and the tray menu. Each [`Request`] gets one [`Response`]; the logic
 //! exists only here.
 
+use std::sync::Arc;
+
 use chrono::Local;
 use tokio::sync::Mutex;
 use torro_ipc::{Request, Response, Status};
@@ -35,11 +37,11 @@ pub struct Core {
     backend: Backend,
     store: Store,
     work: Mutex<()>,
-    pim: PimService,
+    pim: Arc<PimService>,
 }
 
 impl Core {
-    pub fn new(backend: Backend, store: Store, pim: PimService) -> Core {
+    pub fn new(backend: Backend, store: Store, pim: Arc<PimService>) -> Core {
         Core { backend, store, work: Mutex::new(()), pim }
     }
 
@@ -177,7 +179,11 @@ mod tests {
     use super::*;
 
     fn core(dir: &std::path::Path) -> Core {
-        Core::new(Backend::Unsupported { name: "test".into() }, Store::at(dir.to_path_buf()), PimService::new())
+        Core::new(
+            Backend::Unsupported { name: "test".into() },
+            Store::at(dir.to_path_buf()),
+            Arc::new(PimService::new()),
+        )
     }
 
     #[tokio::test]

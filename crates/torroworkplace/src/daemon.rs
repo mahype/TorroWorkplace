@@ -74,7 +74,9 @@ async fn serve(headless: bool) -> Result<(), String> {
     }
     let store = Store::open_default().map_err(|err| err.to_string())?;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
-    let core = Arc::new(Core::new(backend, store, crate::pim::PimService::new()));
+    let pim = Arc::new(crate::pim::PimService::new());
+    pim.start();
+    let core = Arc::new(Core::new(backend, store, pim));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
