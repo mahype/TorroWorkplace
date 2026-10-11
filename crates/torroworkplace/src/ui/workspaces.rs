@@ -188,7 +188,11 @@ fn template_row<'a>(state: &'a State, template: &'a TemplateSummary, now: DateTi
     }
     let meta = format!(
         "{} · {}",
-        trf("{n} windows", &[("n", &template.windows)]),
+        if template.windows == 1 {
+            tr("1 window").to_string()
+        } else {
+            trf("{n} windows", &[("n", &template.windows)])
+        },
         trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
     );
     let id = &template.id;
