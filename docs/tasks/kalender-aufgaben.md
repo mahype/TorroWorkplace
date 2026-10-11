@@ -97,7 +97,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   STATUS/COMPLETED, RELATED-TO, DESCRIPTION).
 
 ### K.4 CalDAV schreiben
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torro-pim-caldav/src/write.rs`
 
@@ -107,7 +107,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torroworkplace/src/account.rs`
 
 ### K.7 PimClient über den Socket
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torro-ipc/src/pim.rs`
 
