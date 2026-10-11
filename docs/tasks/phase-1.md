@@ -124,7 +124,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests für das Zerlegen einzelner Zeilen; unbekannte Ereignisse werden ignoriert.
 
 ### 1.8 Hyprland: Layout-Befehle
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.6
 - **Dateien:** `crates/torro-wm/src/hyprland/mod.rs`, `crates/torro-wm/src/hyprland/dispatch.rs`
 - **Ziel:** `prepare_insert` (Fenster fokussieren, dann `hl.dsp.layout("preselect r|l|u|d")`) und
