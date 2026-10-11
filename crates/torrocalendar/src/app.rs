@@ -113,7 +113,12 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         // Faster while waiting for a sign-in in the browser.
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
-        iced::time::every(every).map(|_| Message::Tick)
+        let tick = iced::time::every(every).map(|_| Message::Tick);
+        match self.editor {
+            // Escape closes the editor.
+            Some(_) => Subscription::batch([tick, editor::subscription().map(Message::Editor)]),
+            None => tick,
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {

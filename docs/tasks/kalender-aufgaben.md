@@ -73,7 +73,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torrocalendar/src/views/agenda.rs`
 
 ### K.12 Kalender: Termin-Editor
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0 (für die Eingaben K.1)
 - **Dateien:** `crates/torrocalendar/src/editor.rs`
 
