@@ -49,6 +49,8 @@ const TICK_INSET: f32 = 30.0;
 const RING_INSET: f32 = 40.0;
 /// A ring is at most this wide.
 pub const RING_MAX: f32 = 64.0;
+/// The dial is at most this wide: in a large window a bigger dial only grows the empty middle.
+pub const MAX_DIAMETER: f32 = 720.0;
 /// Between two rings.
 pub const RING_GAP: f32 = 4.0;
 /// The rings leave at least half the radius to the middle.
@@ -220,7 +222,7 @@ impl Dial {
     /// width (at most [`RING_MAX`], [`RING_GAP`] apart, the first outside). The rings leave at
     /// least half the radius to the middle.
     pub fn fit(bounds: Size, margin: f32, rings: usize) -> Dial {
-        let radius = ((bounds.width.min(bounds.height) - 2.0 * margin) / 2.0).max(0.0);
+        let radius = ((bounds.width.min(bounds.height) - 2.0 * margin) / 2.0).clamp(0.0, MAX_DIAMETER / 2.0);
         let outer = (radius - RING_INSET).max(0.0);
         let inner = (radius * INNER_SHARE).max(outer - rings as f32 * RING_MAX).min(outer);
         let band =
@@ -499,18 +501,22 @@ mod tests {
 
     #[test]
     fn rings_share_the_room_and_leave_the_middle() {
-        let dial = Dial::fit(Size::new(1000.0, 900.0), 24.0, 3);
-        assert_eq!(dial.center, Point::new(500.0, 450.0));
-        assert!(close(dial.radius, 426.0));
-        assert!(close(dial.outer, 386.0));
-        assert!(close(dial.inner, 213.0), "half the radius, wider rings would be over 64");
-        assert!(close(dial.band, (386.0 - 213.0 - 8.0) / 3.0));
+        let dial = Dial::fit(Size::new(800.0, 700.0), 24.0, 3);
+        assert_eq!(dial.center, Point::new(400.0, 350.0));
+        assert!(close(dial.radius, 326.0));
+        assert!(close(dial.outer, 286.0));
+        assert!(close(dial.inner, 163.0), "half the radius, wider rings would be over 64");
+        assert!(close(dial.band, (286.0 - 163.0 - 8.0) / 3.0));
         let (inner, outer) = dial.ring(2);
-        assert!(close(outer, 386.0 - 2.0 * (dial.band + RING_GAP)));
+        assert!(close(outer, 286.0 - 2.0 * (dial.band + RING_GAP)));
         assert!(close(inner, dial.inner));
         // One ring in a large dial: at most 64 wide.
         let one = Dial::fit(Size::new(1000.0, 900.0), 24.0, 1);
         assert!(close(one.band, RING_MAX));
+        // A large window does not grow the dial past its maximum.
+        let large = Dial::fit(Size::new(1600.0, 1200.0), 24.0, 3);
+        assert!(close(large.radius, MAX_DIAMETER / 2.0));
+        assert_eq!(large.center, Point::new(800.0, 600.0));
         let none = Dial::fit(Size::new(400.0, 400.0), 8.0, 0);
         assert_eq!((none.band, none.inner), (0.0, none.outer));
     }

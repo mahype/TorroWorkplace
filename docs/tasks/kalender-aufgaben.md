@@ -254,8 +254,8 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   Zeitstrahl die Helfer der Woche nutzt. `Icon::tinted` für das Mond-Icon im `Canvas`. Iced 0.14
   zeichnet Formen in `Frame::with_clip` nach waagerechtem Scrollen falsch; der Zeitstrahl zeichnet
   deshalb ohne Clip und kürzt Text selbst.
-- **Offen (Design-Prüfung):** In Breit sind die Säulen sehr hoch und fast leer (Höhe begrenzen oder
-  so lassen – Nutzer entscheidet). In Schmal zeigt das Menü „Day“ statt „Timeline“. Termine im
+- **Entschieden 2026-10-11:** Säulen höchstens 8 × `HOUR` = 384 hoch, „3 h free“ direkt darunter.
+- **Offen (Design-Prüfung):** In Schmal zeigt das Menü „Day“ statt „Timeline“. Termine im
   `Canvas` nicht per Tastatur erreichbar (gleiche Lücke wie im Wochenraster).
 
 ### K.22 Kalender: Radar
@@ -301,8 +301,8 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   (kein Status in `torro_pim::Event`). „Back to now“ ohne Icon. Die Termin-Tönung liegt über der
   Spur statt über `PANEL` (sonst wirkten dunkle Kalenderfarben schwächer als freie Zeit); das
   Ausblenden läuft in 1°-Stücken (2° zeigte in hell Streifen).
-- **Offen (Design-Prüfung):** In Breit wächst das Zifferblatt ohne Obergrenze (großes leeres Loch in
-  der Mitte) – Durchmesser begrenzen oder Ringe mitwachsen lassen, Nutzer entscheidet. Maße
+- **Entschieden 2026-10-11:** Zifferblatt höchstens 720 breit (`MAX_DIAMETER`).
+- **Offen (Design-Prüfung):** Maße
   `LIST_MEDIUM` 260 und `NARROW_DIAL` 440 sind lokale Konstanten, gehören als Tokens nach
   `torro-gui`. In Schmal liegen Liste und Kopftitel nicht auf einer Achse.
 

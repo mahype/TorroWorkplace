@@ -42,6 +42,9 @@ pub const FREE_ROW: f32 = size::CONTROL_SM;
 const ROW_GAP: f32 = space::XS;
 /// Narrowest event column, so that a short entry stays visible and clickable.
 pub const MIN_EVENT_WIDTH: f32 = 16.0;
+/// The event columns are at most this high (eight hours of the week grid): a rotated title and
+/// its time fit, and in a tall window the columns do not stretch into empty tinted bars.
+pub const MAX_LANES_HEIGHT: f32 = 8.0 * size::HOUR;
 /// Gap at the right end of an event column, so that back-to-back events stay apart.
 const GAP: f32 = 2.0;
 /// Gap between the lanes of overlapping events (they share the height).
@@ -257,15 +260,18 @@ impl Rows {
         (top, top + self.chip_rows.max(1) as f32 * CHIP_PITCH - (CHIP_PITCH - CHIP_HEIGHT) + 2.0 * STRIP_PAD)
     }
 
-    /// The event columns: `(top, bottom)`, never upside down in a very low window.
+    /// The event columns: `(top, bottom)`, at most [`MAX_LANES_HEIGHT`] high, never upside down in
+    /// a very low window.
     pub fn lanes(&self) -> (f32, f32) {
         let top = self.all_day().1 + ROW_GAP;
-        (top, (self.height - FREE_ROW - ROW_GAP).max(top + MIN_EVENT_WIDTH))
+        let bottom = (self.height - FREE_ROW - ROW_GAP).min(top + MAX_LANES_HEIGHT);
+        (top, bottom.max(top + MIN_EVENT_WIDTH))
     }
 
-    /// The row of the free-time notes: `(top, bottom)`.
+    /// The row of the free-time notes, right under the event columns: `(top, bottom)`.
     pub fn free(&self) -> (f32, f32) {
-        (self.height - FREE_ROW, self.height - ROW_GAP)
+        let bottom = self.lanes().1;
+        (bottom + ROW_GAP, bottom + FREE_ROW)
     }
 
     /// The top of the chip in row `row` of the all-day strip.
@@ -686,7 +692,11 @@ mod tests {
         let two = Rows { chip_rows: 2, ..one };
         assert_eq!(two.all_day(), (52.0, 104.0));
         assert!(two.lanes().0 > one.lanes().0);
-        assert_eq!(one.free(), (572.0, 596.0));
+        assert_eq!(one.lanes(), (84.0, 84.0 + MAX_LANES_HEIGHT), "columns stop at their maximum height");
+        assert_eq!(one.free(), (472.0, 496.0), "free time right under the columns");
+        let low = Rows { height: 300.0, ..one };
+        assert_eq!(low.lanes(), (84.0, 268.0));
+        assert_eq!(low.free(), (272.0, 296.0));
     }
 
     #[test]
