@@ -27,12 +27,16 @@
 //! same way the calendar and the tasks app do. The page sits under a 44-high header bar with its
 //! title and actions, at most [`size::CONTENT_MAX`] wide.
 //!
+//! Mini and strip tiles have no window frame: [`glance`] shows the status instead (design skill,
+//! section 6).
+//!
 //! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 
 mod accounts;
 mod apps;
 mod general;
+mod glance;
 mod launch;
 mod overview;
 mod wizard;
@@ -472,7 +476,13 @@ impl Ui {
     /// The window in the layout of its real size: `responsive` hands over the size Iced laid out,
     /// so the first frame already fits the tile (no assumed start width).
     fn view(&self) -> Element<'_, Message> {
-        responsive(move |size| self.window(layout::of(size))).into()
+        responsive(move |size| match layout::of(size) {
+            // Tiles too small for a window show the status as a glance, without any chrome.
+            SizeClass::Mini => glance::mini(&self.data, self.loaded, size),
+            SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
+            class => self.window(class),
+        })
+        .into()
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {

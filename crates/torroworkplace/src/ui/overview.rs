@@ -45,7 +45,7 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// How a status is shown: a dot in its colour next to the word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tone {
+pub(super) enum Tone {
     /// Running, connected, fine.
     Ok,
     /// Waiting for the user.
@@ -60,7 +60,7 @@ enum Tone {
 
 impl Tone {
     /// The dot in front of the word; a plain fact has none.
-    fn dot(self) -> Option<Dot> {
+    pub(super) fn dot(self) -> Option<Dot> {
         match self {
             Tone::Ok => Some(Dot::Ok),
             Tone::Attention => Some(Dot::Attention),
@@ -73,9 +73,9 @@ impl Tone {
 
 /// One line of a tile: a status with its dot, or a plain fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Line {
-    tone: Tone,
-    text: String,
+pub(super) struct Line {
+    pub(super) tone: Tone,
+    pub(super) text: String,
 }
 
 impl Line {
@@ -85,15 +85,15 @@ impl Line {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Tile {
-    title: &'static str,
-    headline: Line,
-    detail: Option<String>,
+pub(super) struct Tile {
+    pub(super) title: &'static str,
+    pub(super) headline: Line,
+    pub(super) detail: Option<String>,
 }
 
 /// Why an account needs the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Reason {
+pub(super) enum Reason {
     /// Not signed in yet.
     SignIn,
     /// Signed in, but the last sync failed; the server's words.
@@ -101,7 +101,7 @@ enum Reason {
 }
 
 impl Reason {
-    fn line(&self) -> Line {
+    pub(super) fn line(&self) -> Line {
         match self {
             Reason::SignIn => Line::new(Tone::Attention, tr("Needs sign-in")),
             Reason::Problem(problem) => Line::new(Tone::Attention, problem.clone()),
@@ -110,14 +110,14 @@ impl Reason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Attention {
-    label: String,
-    reason: Reason,
+pub(super) struct Attention {
+    pub(super) label: String,
+    pub(super) reason: Reason,
 }
 
 /// The accounts that need the user: not signed in, or the last sync failed. An account that
 /// is signing in right now is not listed, the user is already on it.
-fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
+pub(super) fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
     accounts
         .iter()
         .filter_map(|account| {
@@ -132,7 +132,7 @@ fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
 }
 
 /// The four tiles in reading order: core, window manager, accounts, workspaces.
-fn tiles(data: &Data) -> Vec<Tile> {
+pub(super) fn tiles(data: &Data) -> Vec<Tile> {
     vec![
         core_tile(data.status.as_ref(), data.error.as_deref()),
         window_manager_tile(data.status.as_ref()),

@@ -326,7 +326,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   angeschnitten ist, oder angeschnittene Labels nicht zeichnen.
 
 ### D.3 Steuerzentrale als Mini und Leiste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Dateien:** `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/glance.rs` (neu)
 - Ohne Chrom: Mini zeigt „Running“ bzw. „1 needs attention“ mit Punkt und höchstens die erste
   Meldung; Leiste die vier Kacheln als eine ruhige Zeile. Muster: `torrocalendar`/`torrotasks` `glance.rs`.
