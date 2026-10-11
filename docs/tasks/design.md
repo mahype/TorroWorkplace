@@ -67,7 +67,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   einstöckige „a“ und das flache „t“). Im Bericht die Inter-Version.
 
 ### F.2 Farben, Abstände, Radien, Maße als Tokens – hell und dunkel
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** F.1
 - **Dateien:** `crates/torro-gui/src/theme.rs`, `crates/torro-gui/src/typo.rs`, `crates/torro-gui/src/lib.rs`
 - Werte genau aus dem Skill (Abschnitte 1–3), Vorbild Linear, Referenz `docs/prototypes/linear/torro.css`.

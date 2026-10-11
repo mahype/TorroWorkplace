@@ -2,18 +2,23 @@
 //! centre), so they look and behave like one family when tiled side by side.
 //!
 //! - [`source::Source`]: where data comes from (the core, or demo data with `--demo`).
-//! - [`theme`]: the Torro theme from the design tokens, and the fonts.
+//! - [`theme`]: light and dark colour tokens (`theme::palette(&Theme)`), the Iced themes,
+//!   spacing, radius and size tokens (`theme::{space, radius, size}`), and the fonts.
 //! - [`typo`]: the type scale (`typo::text(typo::BODY, …)`).
 //! - [`fonts`] / [`settings`]: the bundled Inter files and the Iced settings that load them.
 //! - [`connect`]: the "connect your Nextcloud" screen every app shows without an account.
 //! - [`datetime`]: German date and time parsing and formatting, week arithmetic.
 //! - [`widgets`]: small building blocks (colour dots, toolbar buttons, empty states).
 
+// The connect screen and the widgets still use the dark-only colour constants; they move to
+// `theme::palette` with F.5.
+#[allow(deprecated)]
 pub mod connect;
 pub mod datetime;
 pub mod source;
 pub mod theme;
 pub mod typo;
+#[allow(deprecated)]
 pub mod widgets;
 
 use std::borrow::Cow;
@@ -45,7 +50,7 @@ pub fn fonts() -> [&'static [u8]; 5] {
 }
 
 /// Iced settings for every app: [`fonts`] loaded, [`theme::FONT`] (Inter) as default font and
-/// [`typo::BODY`] (14) as default text size – Iced's own default is 16 in the system sans-serif.
+/// [`typo::BODY`] (13) as default text size – Iced's own default is 16 in the system sans-serif.
 ///
 /// Use as `iced::application(…).settings(torro_gui::settings())`. It replaces all settings, so it
 /// goes before any builder call that changes settings (`.font`, `.default_font`, `.antialiasing`).
@@ -150,11 +155,11 @@ mod tests {
     }
 
     #[test]
-    fn settings_load_inter_at_14() {
+    fn settings_load_inter_at_13() {
         let settings = settings();
         assert_eq!(settings.fonts.len(), fonts().len());
         assert_eq!(settings.default_font, theme::FONT);
-        assert_eq!(settings.default_text_size, iced::Pixels(14.0));
+        assert_eq!(settings.default_text_size, iced::Pixels(13.0));
         assert!(settings.antialiasing);
     }
 }

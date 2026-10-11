@@ -5,7 +5,11 @@
 //! Day, week, month and agenda views; events can be created, edited and deleted.
 
 mod app;
+// The views still use the dark-only colour constants of `torro_gui::theme` (deprecated with F.2);
+// allowed here until C/T/W have moved them to `theme::palette`.
+#[allow(deprecated)]
 mod editor;
+#[allow(deprecated)]
 mod views;
 
 use torro_core::AppId;
