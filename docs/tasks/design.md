@@ -133,7 +133,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   erweitern; Screenshots hell und dunkel; Vergleich mit `docs/prototypes/linear/*.png`.
 
 ### F.6 Prüfung im Build
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.5
 - **Dateien:** `scripts/design-check.sh` (neu), `.github/workflows/ci.yml`
 - Schlägt fehl, wenn in `crates/{torrocalendar,torrotasks}/src` oder

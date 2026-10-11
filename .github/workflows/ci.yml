@@ -32,4 +32,11 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Design check (F.6): warn only for now; W.5 switches it to --strict.
+      - name: Design check self-test
+        shell: bash
+        run: scripts/design-check.sh --self-test
+      - name: Design check (warn)
+        shell: bash
+        run: scripts/design-check.sh --warn
       - run: cargo test --workspace
