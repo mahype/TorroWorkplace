@@ -5,12 +5,14 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
+use iced::theme::Mode;
 use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Element, Length, Subscription, Task};
+use iced::{Element, Length, Subscription, Task, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::source::Source;
+use torro_gui::theme::{self, Appearance};
 use torro_gui::widgets::{collection_color, modal};
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
@@ -58,6 +60,8 @@ pub struct App {
     editor: Option<Editor>,
     /// The time grid has been scrolled to the morning once; it only exists after the first load.
     scrolled: bool,
+    appearance: Appearance,
+    system_mode: Mode,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +90,10 @@ pub enum Message {
     Saved(Result<Event, String>),
     Deleted(Result<(), String>),
     Tick,
+    /// The desktop's light/dark preference (once at start, then whenever it changes).
+    SystemMode(Mode),
+    /// The appearance stored in the suite settings; an error keeps the one we have.
+    Appearance(Result<Appearance, String>),
 }
 
 /// Keyboard shortcuts while no dialog is open: N new event, T today, ←/→ back/forward,
@@ -132,8 +140,11 @@ impl App {
             error: None,
             editor: None,
             scrolled: false,
+            appearance: Appearance::System,
+            system_mode: Mode::None,
         };
-        let task = app.fetch_account();
+        let task =
+            Task::batch([app.fetch_account(), app.fetch_appearance(), iced::system::theme().map(Message::SystemMode)]);
         (app, task)
     }
 
@@ -145,11 +156,24 @@ impl App {
         // Faster while waiting for a sign-in in the browser.
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let tick = iced::time::every(every).map(|_| Message::Tick);
+        let system = iced::system::theme_changes().map(Message::SystemMode);
         match self.editor {
             // Escape closes the editor.
-            Some(_) => Subscription::batch([tick, editor::subscription().map(Message::Editor)]),
-            None => Subscription::batch([tick, iced::event::listen_with(shortcut)]),
+            Some(_) => Subscription::batch([tick, system, editor::subscription().map(Message::Editor)]),
+            None => Subscription::batch([tick, system, iced::event::listen_with(shortcut)]),
         }
+    }
+
+    /// The Iced theme: the stored appearance, with "System" following the desktop.
+    pub fn theme(&self) -> Theme {
+        theme::for_appearance(self.appearance, self.system_mode)
+    }
+
+    /// Asks the core for the stored appearance. Done on every tick, so a change in the control
+    /// centre reaches the open window within a minute (two seconds while no account is set up).
+    fn fetch_appearance(&self) -> Task<Message> {
+        let source = self.source.clone();
+        Task::perform(async move { theme::stored_appearance(&source).await }, Message::Appearance)
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -265,13 +289,19 @@ impl App {
             },
             Message::Tick => {
                 self.now = Local::now().naive_local();
+                let appearance = self.fetch_appearance();
                 if !self.connected() {
-                    return self.fetch_account();
+                    return Task::batch([appearance, self.fetch_account()]);
                 }
                 if self.editor.is_none() {
-                    return self.load();
+                    return Task::batch([appearance, self.load()]);
                 }
+                return appearance;
             }
+            Message::SystemMode(mode) => self.system_mode = mode,
+            Message::Appearance(Ok(appearance)) => self.appearance = appearance,
+            // The core may be starting up; keep the colours we have.
+            Message::Appearance(Err(_)) => {}
         }
         Task::none()
     }
@@ -450,5 +480,39 @@ impl App {
             },
             Message::Loaded,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn demo_app() -> App {
+        App::new(Source::from_args(["--demo".to_string()])).0
+    }
+
+    #[test]
+    fn theme_follows_appearance_and_desktop() {
+        let mut app = demo_app();
+        let _ = app.update(Message::SystemMode(Mode::Light));
+        assert_eq!(app.theme(), theme::light(), "System follows the desktop");
+        let _ = app.update(Message::Appearance(Ok(Appearance::Dark)));
+        assert_eq!(app.theme(), theme::theme(), "Dark ignores a light desktop");
+        let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+        let _ = app.update(Message::SystemMode(Mode::Dark));
+        assert_eq!(app.theme(), theme::light(), "Light ignores a dark desktop");
+    }
+
+    #[test]
+    fn a_failed_settings_request_keeps_the_appearance() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+        let _ = app.update(Message::Appearance(Err("core is not running".into())));
+        assert_eq!(app.theme(), theme::light());
+    }
+
+    #[test]
+    fn without_a_preference_the_system_appearance_is_dark() {
+        assert_eq!(demo_app().theme(), theme::theme());
     }
 }

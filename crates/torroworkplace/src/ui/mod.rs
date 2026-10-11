@@ -25,12 +25,13 @@ mod workspaces;
 
 use std::time::Duration;
 
+use iced::theme::Mode;
 use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Element, Length, Subscription, Task};
+use iced::{Element, Length, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::Settings;
-use torro_gui::theme;
+use torro_gui::theme::{self, Appearance};
 use torro_ipc::{AccountInfo, Request, Response, Status, client};
 use torro_setups::TemplateSummary;
 
@@ -102,6 +103,11 @@ pub struct Ui {
     /// In a narrow window: showing the section list (true) or the page (false).
     narrow_list: bool,
     width: f32,
+    /// The desktop's light/dark preference, for the appearance "System".
+    system_mode: Mode,
+    /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
+    /// (an empty `Data`) does not flip the colours.
+    appearance: Appearance,
     data: Data,
     /// The last failed request, kept across reloads until the next success or section change.
     notice: Option<String>,
@@ -120,6 +126,8 @@ pub enum Message {
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
     Resized(f32),
+    /// The desktop's light/dark preference (once at start, then whenever it changes).
+    SystemMode(Mode),
     Tick,
     /// Escape: close whatever dialog the current page has open.
     Escape,
@@ -143,7 +151,7 @@ pub fn run(args: &[String]) -> iced::Result {
     iced::application(move || Ui::new(section), Ui::update, Ui::view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| format!("Torro Workplace · {}", ui.section.label()))
-        .theme(|_: &Ui| theme::theme())
+        .theme(Ui::theme)
         .subscription(Ui::subscription)
         .window(torro_gui::window(AppId::WORKPLACE))
         .run()
@@ -155,6 +163,8 @@ impl Ui {
             section,
             narrow_list: false,
             width: 1100.0,
+            system_mode: Mode::None,
+            appearance: Appearance::System,
             data: Data::default(),
             notice: None,
             overview: overview::State::default(),
@@ -163,7 +173,13 @@ impl Ui {
             apps: apps::State::default(),
             general: general::State::default(),
         };
-        (ui, load())
+        (ui, Task::batch([load(), iced::system::theme().map(Message::SystemMode)]))
+    }
+
+    /// The Iced theme: the stored appearance (the page reloads it with every `Data`), with
+    /// "System" following the desktop.
+    fn theme(&self) -> Theme {
+        theme::for_appearance(self.appearance, self.system_mode)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -171,6 +187,7 @@ impl Ui {
         let every = if self.accounts.busy() { Duration::from_secs(1) } else { Duration::from_secs(3) };
         Subscription::batch([
             iced::time::every(every).map(|_| Message::Tick),
+            iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size.width)),
             iced::event::listen_with(escape_key),
         ])
@@ -190,6 +207,9 @@ impl Ui {
             }
             Message::Loaded(data) => {
                 self.data = *data;
+                if self.data.error.is_none() {
+                    self.appearance = self.data.settings.appearance;
+                }
                 // The add-account dialog follows the sign-in through the reloaded accounts.
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
@@ -202,6 +222,10 @@ impl Ui {
             }
             Message::Resized(width) => {
                 self.width = width;
+                Action::None
+            }
+            Message::SystemMode(mode) => {
+                self.system_mode = mode;
                 Action::None
             }
             Message::Tick => return load(),
@@ -377,4 +401,34 @@ fn send(request: Request) -> Task<Message> {
         },
         Message::Sent,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded(appearance: Appearance, error: Option<&str>) -> Message {
+        let settings = Settings { appearance, ..Settings::default() };
+        Message::Loaded(Box::new(Data { settings, error: error.map(String::from), ..Data::default() }))
+    }
+
+    #[test]
+    fn theme_follows_the_stored_appearance() {
+        let (mut ui, _) = Ui::new(Section::Overview);
+        let _ = ui.update(Message::SystemMode(Mode::Light));
+        assert_eq!(ui.theme(), theme::light(), "System follows the desktop");
+        let _ = ui.update(loaded(Appearance::Dark, None));
+        assert_eq!(ui.theme(), theme::theme());
+        let _ = ui.update(loaded(Appearance::Light, None));
+        let _ = ui.update(Message::SystemMode(Mode::Dark));
+        assert_eq!(ui.theme(), theme::light(), "an explicit choice ignores the desktop");
+    }
+
+    #[test]
+    fn an_unreachable_core_keeps_the_colours() {
+        let (mut ui, _) = Ui::new(Section::Overview);
+        let _ = ui.update(loaded(Appearance::Light, None));
+        let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
+        assert_eq!(ui.theme(), theme::light());
+    }
 }

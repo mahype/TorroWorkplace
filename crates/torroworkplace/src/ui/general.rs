@@ -9,6 +9,7 @@ use iced::widget::{column, container, radio, row, space, text, toggler};
 use iced::{Alignment, Background, Element, Length, border};
 use torro_core::i18n::tr;
 use torro_core::settings::Language;
+use torro_core::theme::Appearance;
 use torro_gui::{theme, widgets};
 use torro_ipc::Request;
 
@@ -20,6 +21,7 @@ pub struct State {}
 #[derive(Debug, Clone)]
 pub enum Message {
     Language(Language),
+    Appearance(Appearance),
     StartAtLogin(bool),
 }
 
@@ -28,6 +30,7 @@ pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
     let mut settings = data.settings.clone();
     match message {
         Message::Language(language) => settings.language = language,
+        Message::Appearance(appearance) => settings.appearance = appearance,
         Message::StartAtLogin(start) => settings.start_at_login = start,
     }
     Action::Send(Request::UpdateSettings { settings })
@@ -50,6 +53,19 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         tr("Applies to apps you open afterwards. “System” follows your system language."),
     );
 
+    // The control centre itself follows at once: it reloads the settings after every change.
+    let appearance = row_group(
+        tr("Appearance"),
+        column![
+            radio(tr("System"), Appearance::System, Some(settings.appearance), Message::Appearance).text_size(14),
+            radio(tr("Light"), Appearance::Light, Some(settings.appearance), Message::Appearance).text_size(14),
+            radio(tr("Dark"), Appearance::Dark, Some(settings.appearance), Message::Appearance).text_size(14),
+        ]
+        .spacing(8)
+        .into(),
+        tr("Light or dark colours for all Torro apps. “System” follows your desktop."),
+    );
+
     let startup = row_group(
         tr("Startup"),
         row![
@@ -63,7 +79,7 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         tr("Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready."),
     );
 
-    column![language, startup].spacing(24).max_width(640.0).into()
+    column![language, appearance, startup].spacing(24).max_width(640.0).into()
 }
 
 /// A group: a small heading in capitals, a card with the rows, and a footer sentence in muted
@@ -88,6 +104,7 @@ mod tests {
         Data {
             settings: Settings {
                 language: Language::German,
+                appearance: Appearance::Dark,
                 start_at_login: false,
                 hidden_collections: vec!["work".into()],
             },
@@ -111,6 +128,17 @@ mod tests {
             let mut expected = data.settings.clone();
             expected.language = language;
             assert_eq!(sent(action), expected, "choice {language:?}");
+        }
+    }
+
+    #[test]
+    fn each_appearance_choice_sends_only_the_appearance() {
+        let data = data();
+        for appearance in [Appearance::System, Appearance::Light, Appearance::Dark] {
+            let action = update(&mut State::default(), Message::Appearance(appearance), &data);
+            let mut expected = data.settings.clone();
+            expected.appearance = appearance;
+            assert_eq!(sent(action), expected, "choice {appearance:?}");
         }
     }
 

@@ -44,11 +44,13 @@
 
 use std::sync::LazyLock;
 
+use crate::source::Source;
 use iced::font::Weight;
 use iced::theme::Mode;
 use iced::widget::text::Style as TextStyle;
 use iced::{Color, Font, Shadow, Theme, Vector};
 use torro_core::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_INACTIVE, STATUS_OK, TORRO_RED};
+use torro_ipc::{Request, Response};
 
 /// Inter Regular (400): the default font of every app, for body text, lists and inputs.
 ///
@@ -249,17 +251,22 @@ pub fn text_3(theme: &Theme) -> TextStyle {
     TextStyle { color: Some(palette(theme).text_3) }
 }
 
-/// The appearance the user picked (control centre › General › Appearance). Resolve it to a theme
-/// with [`for_appearance`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Appearance {
-    /// Follow the desktop's light/dark preference; dark when the desktop has none.
-    #[default]
-    System,
-    /// Always "Torro Light".
-    Light,
-    /// Always "Torro Dark".
-    Dark,
+pub use torro_core::theme::Appearance;
+
+/// The appearance stored in the suite settings, asked from the core (`Request::Settings`).
+///
+/// `Err` when the core does not answer; the app then keeps the appearance it has, so a core that
+/// is starting up or restarting never flips the colours. `--demo` has no core and is always
+/// [`Appearance::System`].
+pub async fn stored_appearance(source: &Source) -> Result<Appearance, String> {
+    let Source::Core(client) = source else {
+        return Ok(Appearance::System);
+    };
+    match torro_ipc::client::call(&client.socket, &Request::Settings).await {
+        Ok(Response::Settings { settings }) => Ok(settings.appearance),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
 }
 
 /// The Iced theme for `appearance`. `system` is the desktop's preference as Iced reports it
@@ -532,6 +539,13 @@ mod tests {
         assert_eq!(for_appearance(Appearance::System, Mode::Dark), theme());
         assert_eq!(for_appearance(Appearance::System, Mode::None), theme(), "no preference is dark");
         assert_eq!(Appearance::default(), Appearance::System);
+    }
+
+    #[test]
+    fn demo_has_no_core_and_follows_the_system() {
+        let source = Source::from_args(["--demo".to_string()]);
+        let stored = iced::futures::executor::block_on(stored_appearance(&source));
+        assert_eq!(stored, Ok(Appearance::System));
     }
 
     #[test]

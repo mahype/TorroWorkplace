@@ -24,7 +24,7 @@ fn main() -> iced::Result {
     iced::application(move || app::App::new(source.clone()), app::App::update, app::App::view)
         .settings(torro_gui::settings())
         .title(app::App::title)
-        .theme(|_: &app::App| torro_gui::theme::theme())
+        .theme(app::App::theme)
         .subscription(app::App::subscription)
         .window(torro_gui::window(AppId::CALENDAR))
         .run()
