@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Tiling window managers behind one trait: Hyprland first, AeroSpace and GlazeWM to follow."
+description = "Tiling window managers behind one trait: Hyprland (Linux), AeroSpace (macOS), GlazeWM (Windows)."
 
 [lints]
 workspace = true

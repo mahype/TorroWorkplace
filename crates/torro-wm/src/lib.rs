@@ -5,6 +5,7 @@
 //! describe windows, workspaces and splits the way every backend can map them.
 //! [`detect`] picks the backend at runtime; [`fake::FakeWm`] stands in for tests.
 
+pub mod aerospace;
 pub mod detect;
 pub mod fake;
 pub mod glazewm;
@@ -77,6 +78,7 @@ pub trait WindowManager: Send + Sync {
 pub enum Backend {
     Hyprland(hyprland::Hyprland),
     GlazeWm(glazewm::GlazeWm),
+    AeroSpace(aerospace::AeroSpace),
     /// No supported tiling window manager found; `name` says what we looked for, for the
     /// tray menu ("AeroSpace (macOS)", …).
     Unsupported {
@@ -89,6 +91,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.name(),
             Backend::GlazeWm(wm) => wm.name(),
+            Backend::AeroSpace(wm) => wm.name(),
             Backend::Unsupported { .. } => "unsupported",
         }
     }
@@ -97,6 +100,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.active_workspace().await,
             Backend::GlazeWm(wm) => wm.active_workspace().await,
+            Backend::AeroSpace(wm) => wm.active_workspace().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -105,6 +109,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.windows(workspace).await,
             Backend::GlazeWm(wm) => wm.windows(workspace).await,
+            Backend::AeroSpace(wm) => wm.windows(workspace).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -113,6 +118,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.monitors().await,
             Backend::GlazeWm(wm) => wm.monitors().await,
+            Backend::AeroSpace(wm) => wm.monitors().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -121,6 +127,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.focus_window(window).await,
             Backend::GlazeWm(wm) => wm.focus_window(window).await,
+            Backend::AeroSpace(wm) => wm.focus_window(window).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -129,6 +136,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.move_to_workspace(window, workspace).await,
             Backend::GlazeWm(wm) => wm.move_to_workspace(window, workspace).await,
+            Backend::AeroSpace(wm) => wm.move_to_workspace(window, workspace).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -137,6 +145,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.close_window(window).await,
             Backend::GlazeWm(wm) => wm.close_window(window).await,
+            Backend::AeroSpace(wm) => wm.close_window(window).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -145,6 +154,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.prepare_insert(sibling, direction).await,
             Backend::GlazeWm(wm) => wm.prepare_insert(sibling, direction).await,
+            Backend::AeroSpace(wm) => wm.prepare_insert(sibling, direction).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -153,6 +163,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.place(window, sibling, split).await,
             Backend::GlazeWm(wm) => wm.place(window, sibling, split).await,
+            Backend::AeroSpace(wm) => wm.place(window, sibling, split).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -161,6 +172,7 @@ impl WindowManager for Backend {
         match self {
             Backend::Hyprland(wm) => wm.events().await,
             Backend::GlazeWm(wm) => wm.events().await,
+            Backend::AeroSpace(wm) => wm.events().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
