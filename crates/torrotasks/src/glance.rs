@@ -26,6 +26,7 @@ use iced::{Alignment, Color, Element, Fill, Padding, Size, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local};
 use torro_gui::icon::{self, Icon};
+use torro_gui::layout::shown_rows;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::typo::{self, ellipsize, line_height, text_width};
 use torro_gui::{style, widgets};
@@ -162,17 +163,6 @@ pub fn due_label(due: EventTime, today: NaiveDate, compact: bool) -> String {
         EventTime::DateTime(_) if day == today => format_time(at.time()),
         _ if compact && (day - today).num_days().abs() > 1 => day.format("%d.%m.").to_string(),
         _ => due_text(EventTime::Date(day), today),
-    }
-}
-
-/// How many of `count` rows to show when `fit` rows fit: all of them, or one row less and the
-/// number left out ("+3 more"). With room for a single row that row is worth more than the count.
-pub fn shown_rows(count: usize, fit: usize) -> (usize, Option<usize>) {
-    if count <= fit || fit <= 1 {
-        (count.min(fit), None)
-    } else {
-        let shown = fit - 1;
-        (shown, Some(count - shown))
     }
 }
 
@@ -627,15 +617,6 @@ mod tests {
         assert_eq!(label(date(7), false), format!("{}, 07.10.", tr("Wed")));
         assert_eq!(label(date(7), true), "07.10.", "compact: without the weekday");
         assert_eq!(label(date(10), true), tr("Yesterday"), "the words stay");
-    }
-
-    #[test]
-    fn rows_that_do_not_fit_become_a_count() {
-        assert_eq!(shown_rows(3, 5), (3, None));
-        assert_eq!(shown_rows(5, 5), (5, None));
-        assert_eq!(shown_rows(6, 3), (2, Some(4)), "the last slot says how many are left out");
-        assert_eq!(shown_rows(2, 0), (0, None));
-        assert_eq!(shown_rows(3, 1), (1, None), "one task rather than only a count");
     }
 
     #[test]

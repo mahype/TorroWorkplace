@@ -70,7 +70,7 @@ const ICON_GAP: f32 = 6.0;
 /// Gap between the cells of a list row (`tasks.html`: `.row{gap:10px}`).
 const ROW_GAP: f32 = 10.0;
 /// The one-pixel lines of the design.
-const LINE: f32 = 1.0;
+const LINE: f32 = size::HAIRLINE;
 /// Height of a list pill ([`pill`]) and of its round ends.
 const PILL_HEIGHT: f32 = 20.0;
 /// Edge of an avatar in [`avatar_stack`] and how far the next one is moved right.

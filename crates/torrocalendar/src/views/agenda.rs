@@ -324,7 +324,11 @@ mod tests {
 
     /// Items for `events`, indexed by position, all in one colour.
     fn items(events: &[Event]) -> Vec<Item<'_>> {
-        events.iter().enumerate().map(|(index, event)| Item { index, event, color: theme::TEXT }).collect()
+        events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| Item { index, event, color: theme::Palette::dark().text })
+            .collect()
     }
 
     /// The agenda's grouping as `(day of month, [(time label, summary)])`.

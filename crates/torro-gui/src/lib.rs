@@ -16,9 +16,6 @@
 //! - [`widgets`]: the building blocks inside it (buttons, sidebar and list rows, menus, floating
 //!   cards, chips, property rows, settings groups, empty/loading/error states).
 
-// The connect screen still uses the dark-only colour constants; it moves to `theme::palette`
-// with the app tasks.
-#[allow(deprecated)]
 pub mod connect;
 pub mod datetime;
 pub mod icon;

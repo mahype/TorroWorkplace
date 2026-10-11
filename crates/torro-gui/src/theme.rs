@@ -38,9 +38,8 @@
 //! [`FONT`] and friends name the Inter families that [`crate::fonts`] embeds. Apps rarely pick a
 //! font directly: the levels in [`crate::typo`] carry the right one.
 //!
-//! The old dark-only constants ([`BACKGROUND`], [`SURFACE`], [`MUTED`] …) are deprecated aliases
-//! to the dark values until the app tasks (C.*, T.*, W.*) have moved to [`palette`]; W.5 removes
-//! them.
+//! Outside Iced (the tray icon, notifications) there is no `&Theme`; such code takes the dark
+//! tokens from [`Palette::dark`].
 
 use std::sync::LazyLock;
 
@@ -165,8 +164,21 @@ impl Palette {
 }
 
 /// `a` moved towards `b` by `t` (0 = `a`, 1 = `b`) in sRGB, like the mock-ups' CSS `color-mix`.
-const fn mixed(a: Color, b: Color, t: f32) -> Color {
+/// The result is opaque; the alpha of `a` and `b` is ignored.
+///
+/// Read it also as "`b` laid over `a` at opacity `t`": that is how views fade or shade a colour
+/// where a translucent one would add up or show what is underneath (canvas fills, overlapping
+/// event blocks). Examples: a past event's colour `mix(p.panel, colour, 0.55)`, a weekend column
+/// `mix(p.panel, p.bg, 0.5)`.
+pub const fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+}
+
+/// The translucent `top` composited over the opaque `under`, as the renderer would draw it, as one
+/// opaque colour: `over(p.tinted(colour), p.panel)` is an event surface on the panel. Use it where
+/// the result is the base of a further [`mix`] or must not let lines underneath show through.
+pub const fn over(top: Color, under: Color) -> Color {
+    mix(under, top, top.a)
 }
 
 const fn hex(rgb: u32) -> Color {
@@ -232,9 +244,9 @@ const LIGHT: Palette = Palette {
     on_accent: Color::WHITE,
     ok: color(STATUS_OK),
     attention: color(STATUS_ATTENTION),
-    attention_text: mixed(color(STATUS_ATTENTION), hex(0x18191B), 0.5),
+    attention_text: mix(color(STATUS_ATTENTION), hex(0x18191B), 0.5),
     error: color(STATUS_ERROR),
-    error_text: mixed(color(STATUS_ERROR), hex(0x18191B), 0.3),
+    error_text: mix(color(STATUS_ERROR), hex(0x18191B), 0.3),
     inactive: color(STATUS_INACTIVE),
     calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xB06F12), hex(0xC2508F), hex(0x7C5CE6)],
     tint: 0.14,
@@ -403,38 +415,10 @@ pub mod size {
     pub const CONTENT_MAX: f32 = 720.0;
     /// 640: reading width of forms.
     pub const FORM_MAX: f32 = 640.0;
+    /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
+    /// above the columns of a grid). Always one logical pixel, also on HiDPI screens.
+    pub const HAIRLINE: f32 = 1.0;
 }
-
-/// Window background (dark).
-#[deprecated(note = "use `theme::palette(theme).bg` in a style closure")]
-pub const BACKGROUND: Color = DARK.bg;
-/// Cards, sidebars (dark).
-#[deprecated(note = "use `theme::palette(theme).panel` in a style closure")]
-pub const SURFACE: Color = DARK.panel;
-/// Selected rows, hovered items, the active view tab (dark).
-#[deprecated(note = "use `palette(theme).selected` (or `.hover`/`.raised`) in a style closure")]
-pub const SURFACE_2: Color = DARK.selected;
-/// Grid lines, separators (dark).
-#[deprecated(note = "use `theme::palette(theme).line` in a style closure")]
-pub const LINE: Color = DARK.line;
-/// Text (dark).
-#[deprecated(note = "use `.style(theme::text)` or `theme::palette(theme).text`")]
-pub const TEXT: Color = DARK.text;
-/// Secondary text (dark).
-#[deprecated(note = "use `.style(theme::text_2)` or `theme::palette(theme).text_2`")]
-pub const MUTED: Color = DARK.text_2;
-/// Tertiary text: dates outside the month, placeholders (dark).
-#[deprecated(note = "use `.style(theme::text_3)` or `theme::palette(theme).text_3`")]
-pub const FAINT: Color = DARK.text_3;
-/// The "now" line in the day and week views: Torro red, like Linear's and the skill's.
-#[deprecated(note = "use `theme::palette(theme).accent`")]
-pub const NOW: Color = DARK.accent;
-/// Dims everything behind a dialog (dark).
-#[deprecated(note = "use `theme::palette(theme).scrim`")]
-pub const SCRIM: Color = DARK.scrim;
-/// The soft shadow under dialogs (dark).
-#[deprecated(note = "use `theme::palette(theme).shadow`")]
-pub const SHADOW: Color = DARK.shadow.color;
 
 #[cfg(test)]
 mod tests {
@@ -449,12 +433,6 @@ mod tests {
             ("selected", p.selected),
             ("menu", p.menu),
         ]
-    }
-
-    /// `top` composited over the opaque `under`, as the renderer does it.
-    fn over(top: Color, under: Color) -> Color {
-        let mix = |a: f32, b: f32| a * top.a + b * (1.0 - top.a);
-        Color::from_rgb(mix(top.r, under.r), mix(top.g, under.g), mix(top.b, under.b))
     }
 
     /// Worst contrast of `fg` over every surface of `p`.
@@ -603,15 +581,17 @@ mod tests {
         assert_eq!([size::HEADER, size::SIDEBAR, size::PROPS, size::INSET], [44.0, 232.0, 300.0, 8.0]);
         assert_eq!([size::LIST, size::LIST_MEDIUM, size::CONTENT_MAX, size::FORM_MAX], [460.0, 380.0, 720.0, 640.0]);
         assert_eq!([size::HOUR, size::AXIS, size::AXIS_NARROW], [48.0, 52.0, 44.0]);
-        assert_eq!([size::ROW_SIDEBAR, size::ROW_GROUP], [28.0, 32.0]);
+        assert_eq!([size::ROW_SIDEBAR, size::ROW_GROUP, size::HAIRLINE], [28.0, 32.0, 1.0]);
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn old_constants_alias_the_dark_tokens() {
-        let p = Palette::dark();
-        assert_eq!([BACKGROUND, SURFACE, SURFACE_2, LINE], [p.bg, p.panel, p.selected, p.line]);
-        assert_eq!([TEXT, MUTED, FAINT], [p.text, p.text_2, p.text_3]);
-        assert_eq!([NOW, SCRIM, SHADOW], [p.accent, p.scrim, p.shadow.color]);
+    fn mix_and_over_blend_in_srgb() {
+        let (black, white) = (Color::BLACK, Color::WHITE);
+        assert_eq!(mix(black, white, 0.0), black);
+        assert_eq!(mix(black, white, 1.0), white);
+        assert_eq!(mix(black, white, 0.25), Color::from_rgb(0.25, 0.25, 0.25));
+        assert_eq!(mix(black.scale_alpha(0.5), white, 0.5).a, 1.0, "the result is opaque");
+        assert_eq!(over(white.scale_alpha(0.25), black), Color::from_rgb(0.25, 0.25, 0.25));
+        assert_eq!(over(white, black), white, "an opaque top covers the surface");
     }
 }

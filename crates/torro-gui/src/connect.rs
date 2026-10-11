@@ -10,14 +10,15 @@
 
 use std::process::Command;
 
-use iced::widget::{button, center, column, container, text};
-use iced::{Element, Fill, border};
+use iced::widget::{center, column, container, row};
+use iced::{Element, Fill};
 
 use torro_core::i18n::tr;
 use torro_pim::AccountState;
 
 use crate::source::sibling;
-use crate::theme;
+use crate::theme::{self, space};
+use crate::{style, typo, widgets};
 
 /// The screen keeps no state of its own; the app decides when it is shown.
 #[derive(Debug, Clone, Copy, Default)]
@@ -46,32 +47,38 @@ impl Connect {
     /// The screen for the current account state (`NotConnected` or `SigningIn`).
     ///
     /// Any state other than `SigningIn` shows the hint and the button, so a `Connected`
-    /// account that is still on screen does not show a blank card.
+    /// account that is still on screen does not show a blank card. The card is a floating card
+    /// (`style::container::popover`, as wide as one) centred on the window background: app name
+    /// in `TITLE`, the hint in `text_2`, "Open Settings" as the window's one primary button.
     pub fn view<'a>(&'a self, account: &'a AccountState, app_name: &'a str) -> Element<'a, Message> {
-        let heading = text(app_name).size(18).font(theme::FONT_SEMIBOLD).color(theme::TEXT);
+        let heading = typo::text(typo::TITLE, app_name);
 
         let body: Element<'a, Message> = match account {
-            AccountState::SigningIn { .. } => text(tr("Signing in to Nextcloud …")).size(14).color(theme::TEXT).into(),
+            AccountState::SigningIn { .. } => typo::text(typo::BODY, tr("Signing in to Nextcloud …")).into(),
             _ => column![
-                text(tr("Set up your Nextcloud in Torro Workplace's settings to see events and tasks here."))
-                    .size(14)
-                    .color(theme::MUTED),
-                button(text(tr("Open Settings")).size(14))
-                    .style(button::primary)
-                    .padding([8, 16])
-                    .on_press(Message::OpenSettings),
+                typo::text(
+                    typo::BODY,
+                    tr("Set up your Nextcloud in Torro Workplace's settings to see events and tasks here.")
+                )
+                .style(theme::text_2),
+                row![widgets::text_button(
+                    None,
+                    tr("Open Settings"),
+                    style::button::primary,
+                    Some(Message::OpenSettings)
+                )],
             ]
-            .spacing(16)
+            .spacing(space::L)
             .into(),
         };
 
-        let card = container(column![heading, body].spacing(16).width(Fill))
-            .padding(24)
+        let card = container(column![heading, body].spacing(space::S).width(Fill))
+            .padding(space::XL)
             .width(Fill)
-            .max_width(420)
-            .style(card_style);
+            .max_width(widgets::POPOVER_WIDTH)
+            .style(style::container::popover);
 
-        center(card).padding(16).into()
+        center(card).padding(space::L).into()
     }
 }
 
@@ -96,16 +103,6 @@ pub fn open_settings() {
             std::thread::spawn(move || child.wait());
         }
         Err(err) => eprintln!("cannot open {}: {err}", program.display()),
-    }
-}
-
-/// The card the hint sits on.
-fn card_style(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        text_color: Some(theme::TEXT),
-        background: Some(iced::Background::Color(theme::SURFACE)),
-        border: border::rounded(12).color(theme::LINE).width(1),
-        ..Default::default()
     }
 }
 

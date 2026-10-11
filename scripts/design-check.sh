@@ -15,7 +15,7 @@
 # Code after `#[cfg(test)]` (test modules) is not checked.
 #
 # Usage:
-#   scripts/design-check.sh               same as --warn
+#   scripts/design-check.sh               same as --strict
 #   scripts/design-check.sh --warn        list findings as file:line: rule, exit 0
 #   scripts/design-check.sh --strict      list findings, exit 1 if there are any
 #   scripts/design-check.sh --self-test   check the rules against an embedded fixture
@@ -258,14 +258,14 @@ self_test() {
 usage() {
     cat <<'USAGE'
 usage: scripts/design-check.sh [--warn | --strict | --self-test]
-  --warn       list findings, exit 0 (default)
-  --strict     list findings, exit 1 if there are any
+  --warn       list findings, exit 0
+  --strict     list findings, exit 1 if there are any (default)
   --self-test  check the rules against the embedded fixture
 USAGE
 }
 
-mode=warn
-case "${1:---warn}" in
+mode=strict
+case "${1:---strict}" in
     --warn) mode=warn ;;
     --strict) mode=strict ;;
     --self-test)

@@ -296,7 +296,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Löschen im „…“-Menü; Fensterklasse in `META`/`TEXT_3` in der Zeile statt eigener Zeile.
 
 ### W.5 Assistent und Abschluss
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** W.2, C.1–C.5, T.1–T.4
 - **Dateien:** `crates/torroworkplace/src/ui/wizard.rs`, `crates/torro-gui/src/theme.rs`,
   `scripts/design-check.sh`, `crates/torro-core/src/i18n/de.rs`

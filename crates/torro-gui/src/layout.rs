@@ -56,6 +56,21 @@ pub fn of(size: iced::Size) -> SizeClass {
     }
 }
 
+/// How many of `count` rows to show in a glance tile (mini, strip) when `fit` rows fit: all of
+/// them, or one row less and the number left out, for a closing "+3 more". With room for a single
+/// row that row is worth more than the count, so it is shown without one.
+///
+/// Returns `(rows to show, Some(left out))`; `shown + left out == count` whenever a count is
+/// given. The caller measures `fit` from its own row height.
+pub fn shown_rows(count: usize, fit: usize) -> (usize, Option<usize>) {
+    if count <= fit || fit <= 1 {
+        (count.min(fit), None)
+    } else {
+        let shown = fit - 1;
+        (shown, Some(count - shown))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +125,14 @@ mod tests {
     fn short_window_below_mini_width_is_mini_not_strip() {
         // Rule 1 needs a width of at least 600, so a short, narrow tile stays a Mini.
         assert_eq!(class(359.0, 200.0), SizeClass::Mini);
+    }
+
+    #[test]
+    fn rows_that_do_not_fit_become_a_count() {
+        assert_eq!(shown_rows(3, 5), (3, None));
+        assert_eq!(shown_rows(5, 5), (5, None));
+        assert_eq!(shown_rows(6, 3), (2, Some(4)), "the last slot says how many are left out");
+        assert_eq!(shown_rows(2, 0), (0, None));
+        assert_eq!(shown_rows(3, 1), (1, None), "one row rather than only a count");
     }
 }

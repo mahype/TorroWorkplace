@@ -27,7 +27,7 @@ use iced::widget::{Space, column, container, mouse_area, responsive, row, rule};
 use iced::{Background, Border, Color, Element, Length, Padding, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
-use torro_gui::theme::{self, Palette, palette, radius, size, space};
+use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::{style, typo};
 use torro_pim::{Event, EventTime};
 
@@ -93,7 +93,7 @@ fn header<'a>(start: NaiveDate) -> Element<'a, Message> {
     for offset in 0..7 {
         if offset > 0 {
             // As wide as the line between two cells, so the names stay above their columns.
-            names = names.push(Space::new().width(1));
+            names = names.push(Space::new().width(size::HAIRLINE));
         }
         let name = typo::text(typo::CAPTION, weekday_name(start + Duration::days(offset), true)).style(theme::text_3);
         names = names.push(
@@ -233,16 +233,6 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool) -> Element<'a, Me
         .on_press(Message::OpenEvent(item.index))
         .interaction(mouse::Interaction::Pointer)
         .into()
-}
-
-/// `b` laid over `a` at opacity `t` (0 = `a`, 1 = `b`), opaque.
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
-}
-
-/// A translucent `top` composed over the opaque `under`.
-fn over(top: Color, under: Color) -> Color {
-    mix(under, top, top.a)
 }
 
 /// `color` as it is drawn on the panel: faded towards it when `faded`, like CSS `opacity`.

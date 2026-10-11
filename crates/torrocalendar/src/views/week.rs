@@ -27,7 +27,7 @@ use iced::widget::{Id, Space, column, container, responsive, row, rule, scrollab
 use iced::{Background, Color, Element, Event, Length, Point, Rectangle, Size, Task, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
-use torro_gui::theme::{self, Palette, palette, radius, size, space};
+use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::{style, typo};
 use torro_pim::{Event as CalendarEvent, EventTime};
 
@@ -537,16 +537,6 @@ fn now_line(frame: &mut Frame, p: &Palette, x0: f32, width: f32, y: f32, now: Na
     frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::XS)), p.accent);
     let at = Point::new(pill.center_x(), y);
     label(frame, &format_time(now), at, NOW_LABEL, p.on_accent, Alignment::Center, Vertical::Center);
-}
-
-/// `b` laid over `a` at opacity `t` (0 = `a`, 1 = `b`), opaque.
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
-}
-
-/// A translucent `top` composed over the opaque `under`.
-fn over(top: Color, under: Color) -> Color {
-    mix(under, top, top.a)
 }
 
 fn line_height(level: typo::Level) -> f32 {

@@ -27,7 +27,8 @@ use iced::widget::{Space, column, container, row};
 use iced::{Alignment, Background, Color, Element, Length, Padding, Point, Rectangle, Size, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local};
-use torro_gui::theme::{self, Palette, palette, radius, size, space};
+use torro_gui::layout::shown_rows;
+use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, line_height, text_width};
 use torro_gui::{style, widgets};
 use torro_pim::{Event as CalendarEvent, EventTime};
@@ -309,17 +310,6 @@ pub fn rows_that_fit(height: f32, blocks: usize) -> usize {
     let room = height - 2.0 * space::M - mini_top_height() - blocks as f32 * space::S;
     let row = line_height(typo::BODY) + space::XS;
     ((room + space::XS) / row).floor().max(0.0) as usize
-}
-
-/// How many of `count` rows to show when `fit` rows fit: all of them, or one row less and the
-/// number left out ("+3 more"). With room for a single row that row is worth more than the count.
-fn shown_rows(count: usize, fit: usize) -> (usize, Option<usize>) {
-    if count <= fit || fit <= 1 {
-        (count.min(fit), None)
-    } else {
-        let shown = fit - 1;
-        (shown, Some(count - shown))
-    }
 }
 
 /// The mini tile for a window of `size`: the date (with "Free until 14:00" when it fits), the
@@ -650,16 +640,6 @@ fn now_line(frame: &mut Frame, p: &Palette, x: f32, top: f32, height: f32, width
     label(frame, &format_time(now), at, NOW_LABEL, p.on_accent, TextAlign::Center, Vertical::Center);
 }
 
-/// `b` laid over `a` at opacity `t` (0 = `a`, 1 = `b`), opaque.
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
-}
-
-/// A translucent `top` composed over the opaque `under`.
-fn over(top: Color, under: Color) -> Color {
-    mix(under, top, top.a)
-}
-
 /// A 1-px line.
 fn line(frame: &mut Frame, from: Point, to: Point, color: Color) {
     frame.stroke(&Path::line(from, to), Stroke::default().with_color(color).with_width(1.0));
@@ -880,10 +860,6 @@ mod tests {
         assert_eq!(rows_that_fit(160.0, 1), 1);
         assert_eq!(rows_that_fit(100.0, 1), 0);
         assert!(rows_that_fit(480.0, 2) >= 10);
-        assert_eq!(shown_rows(3, 5), (3, None));
-        assert_eq!(shown_rows(6, 3), (2, Some(4)), "the last row says how many are left out");
-        assert_eq!(shown_rows(2, 0), (0, None));
-        assert_eq!(shown_rows(3, 1), (1, None), "one row rather than only a count");
     }
 
     #[test]
