@@ -357,7 +357,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   („Sat, 3 Oct“, deutsch „Sa., 3. Okt.“) über `tr`, lange Form für Felder; Eingabe bleibt tolerant.
 
 ### D.8 Aufgaben-Detail: Achsen und Karten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torrotasks/src/detail.rs`, `crates/torroworkplace/src/ui/accounts.rs`
 - Danger-Textknöpfe („Delete task“, „Remove account…“) auf die Inhaltsachse; Fälligkeits-Karte am
   Datums-Chip verankern (eigener Anker je Chip); Chip „Parent task“ nur, wenn gesetzt, sonst

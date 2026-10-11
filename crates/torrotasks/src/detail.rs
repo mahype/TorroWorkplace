@@ -652,15 +652,12 @@ impl Detail {
                 self.can_move().then_some(Message::Open(Editor::List)),
             ),
         );
-        let parent = self.trigger(
-            Editor::Parent,
-            anchor,
-            widgets::chip(
-                Some(Mark::Icon(Icon::ListTodo)),
-                self.parent_title().unwrap_or_else(|| tr("Parent task").to_string()),
-                Some(Message::Open(Editor::Parent)),
-            ),
-        );
+        // A task without a parent offers "+ Parent" in quiet text instead of an empty "Parent task" chip.
+        let parent_chip = match self.parent_title() {
+            Some(title) => widgets::chip(Some(Mark::Icon(Icon::ListTodo)), title, Some(Message::Open(Editor::Parent))),
+            None => add_chip(tr("Parent"), Message::Open(Editor::Parent)),
+        };
+        let parent = self.trigger(Editor::Parent, anchor, parent_chip);
         widgets::chip_row(vec![status, priority, due, list, parent])
     }
 
@@ -761,8 +758,8 @@ impl Detail {
     /// "Delete task" (danger); after the first press the question with Delete and Cancel.
     fn delete_row(&self) -> Element<'_, Message> {
         if !self.confirm_delete {
-            return row![widgets::text_button(None, tr("Delete task"), style::button::danger, Some(Message::Delete))]
-                .into();
+            let delete = widgets::text_button(None, tr("Delete task"), style::button::danger, Some(Message::Delete));
+            return on_axis(delete);
         }
         row![
             typo::text(typo::BODY, tr("Really delete?")).style(theme::text_2),
@@ -943,6 +940,23 @@ fn lead_chip<'a>(lead: Element<'a, Message>, label: &'a str, on_press: Message) 
     let chip =
         container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
     mouse_area(chip).on_press(on_press).into()
+}
+
+/// A chip that offers to add something ("+ Parent"): plus and label in `text_3`, otherwise as
+/// `widgets::chip`, so it reads as an empty slot rather than a value.
+fn add_chip<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
+    let content = row![quiet_icon(Icon::Plus, icon::SIZE_SM), muted(label.to_string())]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
+    let chip =
+        container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
+    mouse_area(chip).on_press(on_press).into()
+}
+
+/// A text button moved left by its own padding, so its label stands on the content axis (the
+/// title, the notes) instead of 10 to the right of it; the hover surface reaches into the margin.
+fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
 }
 
 /// The priority bars in a 16-wide cell, so they line up with the icons of the other rows.

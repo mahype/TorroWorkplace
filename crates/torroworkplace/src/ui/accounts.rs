@@ -12,7 +12,7 @@
 
 use chrono::{DateTime, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, toggler};
+use iced::widget::{Space, column, container, row, toggler};
 use iced::{Element, Fill};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
@@ -326,9 +326,15 @@ fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> E
     let remove = widgets::text_button(None, tr("Remove account…"), style::button::danger, Some(Message::AskRemove));
     column![heading, status_group(account, now), collections_group(account, &data.settings)]
         .push(connection_group(account))
-        .push(row![remove])
+        .push(on_axis(remove))
         .spacing(space::XL)
         .into()
+}
+
+/// A text button moved left by its own padding, so its label stands on the page's content axis
+/// (the name, the groups) instead of 10 to the right of it; the hover surface reaches into the margin.
+fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
 }
 
 /// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
