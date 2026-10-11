@@ -130,7 +130,7 @@ impl PimService {
         }
     }
 
-    async fn account_state(&self) -> AccountState {
+    pub async fn account_state(&self) -> AccountState {
         let state = self.state.read().await;
         if let Some((server, login_url)) = &state.signing_in {
             return AccountState::SigningIn { server: server.clone(), login_url: login_url.clone() };

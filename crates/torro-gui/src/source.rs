@@ -17,17 +17,61 @@ pub enum Source {
 
 impl Source {
     /// `--demo` among the arguments picks demo data, anything else the core.
+    /// Without `--demo`, starts the core when it is not running, so opening an app is enough.
     pub fn from_args(args: impl IntoIterator<Item = String>) -> Source {
         if args.into_iter().any(|arg| arg == "--demo") {
             Source::Demo(Arc::new(DemoSource::new(chrono::Local::now().date_naive())))
         } else {
-            Source::Core(PimClient::default())
+            let client = PimClient::default();
+            ensure_core(&client.socket);
+            Source::Core(client)
         }
     }
 
     pub fn is_demo(&self) -> bool {
         matches!(self, Source::Demo(_))
     }
+}
+
+/// Starts `torroworkplace daemon` in the background when nothing listens on `socket`. The
+/// app then retries until the core answers. Unix only for now.
+fn ensure_core(socket: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return;
+        }
+        let program = sibling(torro_core::AppId::WORKPLACE.binary);
+        match Command::new(&program)
+            .arg("daemon")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+        {
+            // Reap the daemon if it ever exits while the app still runs.
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(err) => eprintln!("cannot start {}: {err}", program.display()),
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = socket;
+}
+
+/// `name` next to the running binary (an install puts the suite in one directory), else
+/// `name` from `PATH`.
+pub fn sibling(name: &str) -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 
 macro_rules! delegate {

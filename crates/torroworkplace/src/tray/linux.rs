@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
+use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
+use torro_pim::AccountState;
 use torro_setups::LoadMode;
 
 use super::icon;
@@ -100,7 +102,13 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
         menu.push(submenu(tr("Delete"), delete));
         menu.push(MenuItem::Separator);
     }
+    menu.push(open("Calendar", AppId::CALENDAR));
+    menu.push(open("Tasks", AppId::TASKS));
+    menu.push(MenuItem::Separator);
     menu.push(info(info_line(snapshot)));
+    if let Some(line) = account_line(snapshot) {
+        menu.push(info(line));
+    }
     menu.push(MenuItem::Separator);
     menu.push(
         StandardItem {
@@ -127,6 +135,29 @@ fn info_line(snapshot: &Snapshot) -> String {
         }
         None => snapshot.backend.clone(),
     }
+}
+
+/// The Nextcloud status: who is connected, a sign-in in progress, or a sync problem.
+fn account_line(snapshot: &Snapshot) -> Option<String> {
+    Some(match snapshot.account.as_ref()? {
+        AccountState::NotConnected => tr("Not connected to Nextcloud").to_string(),
+        AccountState::SigningIn { .. } => tr("Signing in to Nextcloud …").to_string(),
+        AccountState::Connected { problem: Some(problem), .. } => trf("Nextcloud: {problem}", &[("problem", problem)]),
+        AccountState::Connected { login_name, server, .. } => {
+            let host = server.split("://").nth(1).unwrap_or(server);
+            trf("Nextcloud: {account}", &[("account", &format!("{login_name}@{host}"))])
+        }
+    })
+}
+
+/// An entry that opens or focuses one of the suite's apps.
+fn open(label: &'static str, app: AppId) -> MenuItem<Tray> {
+    StandardItem {
+        label: tr(label).into(),
+        activate: Box::new(move |tray: &mut Tray| tray.daemon.open_app(app)),
+        ..Default::default()
+    }
+    .into()
 }
 
 /// One submenu per template, or a disabled hint when there are none.
@@ -212,6 +243,9 @@ mod tests {
                 tr("Save workspace").to_string(),
                 sub(tr("Update")),
                 sub(tr("Delete")),
+                "-".to_string(),
+                tr("Calendar").to_string(),
+                tr("Tasks").to_string(),
                 "-".to_string(),
                 format!(
                     "({})",

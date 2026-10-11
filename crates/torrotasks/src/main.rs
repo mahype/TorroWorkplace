@@ -4,9 +4,6 @@
 //! (`torroworkplace daemon`) over its socket; `--demo` runs on sample data instead.
 //! Lists, smart lists (Heute, Geplant, Alle), quick add, subtasks, due dates, priorities.
 
-// The list and the detail panel are scaffolds until tasks K.14 and K.15 fill them in.
-#![allow(dead_code)]
-
 mod app;
 mod detail;
 mod list;

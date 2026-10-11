@@ -6,15 +6,26 @@ use std::sync::Arc;
 
 use chrono::Local;
 use tokio::sync::Mutex;
+use torro_core::AppId;
 use torro_ipc::{Request, Response, Status};
+use torro_pim::AccountState;
 use torro_setups::capture::{auto_name, capture};
-use torro_setups::launch::{SystemLauncher, command_for};
+use torro_setups::launch::{Launcher, SystemLauncher, command_for};
 use torro_setups::restore::{RestoreOptions, restore};
 use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::pim::PimService;
+
+/// `name` next to the daemon's binary, else from `PATH`.
+fn sibling(name: &str) -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from(name))
+}
 
 /// What the tray menu is built from.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -29,6 +40,8 @@ pub struct Snapshot {
     pub busy: bool,
     /// Why the last refresh could not read something, for the info line.
     pub problem: Option<String>,
+    /// The Nextcloud account, for the status line.
+    pub account: Option<AccountState>,
 }
 
 /// The core's state: window manager, template store, and a lock so only one save or load
@@ -112,7 +125,19 @@ impl Core {
             Ok(list) => snapshot.templates = list.iter().map(TemplateSummary::from).collect(),
             Err(err) => snapshot.problem = Some(err.to_string()),
         }
+        snapshot.account = Some(self.pim.account_state().await);
         snapshot
+    }
+
+    /// Brings the app's window to the front, or starts the app when it has none.
+    pub async fn open_app(&self, app: AppId) -> Result<(), String> {
+        if let Ok(windows) = self.backend.windows(None).await
+            && let Some(window) = windows.iter().find(|w| w.class == app.window_class)
+        {
+            return self.backend.focus_window(&window.id).await.map_err(|err| err.to_string());
+        }
+        let program = sibling(app.binary).to_string_lossy().into_owned();
+        SystemLauncher.spawn(&[program]).map(|_| ()).map_err(|err| err.to_string())
     }
 
     async fn status(&self) -> Response {

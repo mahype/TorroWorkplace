@@ -465,10 +465,6 @@ mod tests {
         vec![calendar("work", "Work"), calendar("home", "Home")]
     }
 
-    fn today() -> NaiveDate {
-        day(2026, 10, 11)
-    }
-
     fn stored(summary: &str, start: EventTime, end: Option<EventTime>) -> Event {
         Event {
             uid: "uid-1".into(),

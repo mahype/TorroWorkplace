@@ -4,9 +4,6 @@
 //! (`torroworkplace daemon`) over its socket; `--demo` runs on sample data instead.
 //! Day, week, month and agenda views; events can be created, edited and deleted.
 
-// The views and the editor are scaffolds until tasks K.9–K.12 fill them in.
-#![allow(dead_code)]
-
 mod app;
 mod editor;
 mod views;

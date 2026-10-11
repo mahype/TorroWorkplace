@@ -44,6 +44,16 @@ impl Daemon {
         });
     }
 
+    /// Opens or focuses one of the suite's apps.
+    pub fn open_app(&self, app: torro_core::AppId) {
+        let core = Arc::clone(&self.core);
+        self.runtime.spawn(async move {
+            if let Err(err) = core.open_app(app).await {
+                eprintln!("torroworkplace: cannot open {}: {err}", app.binary);
+            }
+        });
+    }
+
     pub fn quit(&self) {
         let _ = self.quit.send(());
     }
