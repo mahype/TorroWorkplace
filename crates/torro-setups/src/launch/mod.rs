@@ -24,8 +24,50 @@ pub struct SystemLauncher;
 
 impl Launcher for SystemLauncher {
     fn spawn(&self, command: &[String]) -> Result<u32, SetupsError> {
-        let _ = command;
-        Err(SetupsError::NotImplemented("SystemLauncher::spawn (task 1.15)"))
+        let Some((program, args)) = command.split_first() else {
+            return Err(SetupsError::Launch("empty command".to_string()));
+        };
+        let mut process = std::process::Command::new(program);
+        process
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // Its own process group: a signal to the daemon's group does not reach the program.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            process.process_group(0);
+        }
+        let mut child = process.spawn().map_err(|err| SetupsError::Launch(format!("{program}: {err}")))?;
+        let pid = child.id();
+        // Waiting in a thread reaps the program when it exits, so it never stays a zombie.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(pid)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_command_is_an_error() {
+        assert!(matches!(SystemLauncher.spawn(&[]), Err(SetupsError::Launch(_))));
+    }
+
+    #[test]
+    fn missing_program_is_an_error() {
+        let result = SystemLauncher.spawn(&["/nonexistent/torro-test-program".to_string()]);
+        assert!(matches!(result, Err(SetupsError::Launch(_))));
+    }
+
+    #[test]
+    fn starts_a_program_and_returns_its_pid() {
+        let pid = SystemLauncher.spawn(&["true".to_string()]).unwrap();
+        assert!(pid > 0);
     }
 }
 
