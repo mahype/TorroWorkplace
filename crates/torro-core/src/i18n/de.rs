@@ -240,6 +240,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Show sidebar", "Seitenleiste zeigen"),
     ("Workplace", "Workplace"),
     // Calendar
+    ("{n} h free", "{n} h frei"),
     ("Next", "Weiter"),
     ("Next month", "Nächster Monat"),
     ("Open Tasks", "Aufgaben öffnen"),
