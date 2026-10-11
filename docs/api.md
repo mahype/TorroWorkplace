@@ -1,6 +1,6 @@
 # API und MCP: jede Funktion dreimal
 
-Stand: 2026-10-11. **Konzept zur Freigabe.** Aufgaben: [tasks/api-mcp.md](tasks/api-mcp.md).
+Stand: 2026-10-11. **Freigegeben** (Entscheidungen unten). Aufgaben: [tasks/api-mcp.md](tasks/api-mcp.md).
 
 ## Die Regel
 
@@ -76,14 +76,26 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | Bereich | Lesen | Schreiben | Löschen | Verwalten (`Admin`) |
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
-| `workspaces` | `list_templates` | `save_template`, `update_template`, `rename_template`, `load_template` | `delete_template` | |
+| `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `accounts` | `list_accounts`, `account` | `sync` | | `connect_nextcloud`, `remove_account` |
-| `settings` | `get_settings` | | | `update_settings` |
+| `accounts` | `list_accounts` | `sync` | | `connect_nextcloud`, `remove_account` |
+| `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
 | `clients` | | | | Agenten und Schlüssel verwalten (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | | | `decide_approval` (**nur App-Schlüssel**) |
+
+¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
+schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::operation()`).
+`update_template` überschreibt eine Vorlage unwiederbringlich und ist deshalb `Delete`.
+
+Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
+`accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)
+ermittelt künftig der Dienst, nicht mehr die Steuerzentrale.
+
+`set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
+Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine
+Sammlung einblendet, erweitert, was Agenten sehen.
 
 `Collections` liefert heute Kalender und Aufgabenlisten zusammen; die API teilt das nach Bereich
 auf (`calendar.list_calendars`, `tasks.list_lists`), damit die Rechte sauber greifen. Die Präfixe
@@ -154,7 +166,8 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 - **Je Bereich eine Stufe**: Kein Zugriff · Lesen · Lesen und Schreiben · Voll (mit Löschen).
   `Admin`-Befehle (Konten verbinden/entfernen, Einstellungen ändern) sind ein eigener Schalter je
-  Bereich, Standard aus.
+  Bereich, Standard aus. Ist er an, braucht jeder `Admin`-Befehl trotzdem eine Freigabe durch den
+  Menschen, unabhängig von „Freigabe vorher“.
 - **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten (später auch
   Repositories, Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
@@ -251,12 +264,17 @@ Ersetzt „AI & agents“ aus [settings.md](settings.md).
 - Eigene Coder-Agenten für API und MCP gibt es nicht: Die Arbeit ist dank Katalog klein und
   mechanisch, die vorhandenen `torro-coder-*` erledigen sie mit dem Skill.
 
-## Offene Fragen
+## Entscheidungen
 
-1. HTTP-API: gleich mitbauen oder erst, wenn es einen Nutzer gibt? Vorschlag: später.
-2. App-Schlüssel als Datei (`app.key`, 0600) oder im Schlüsselbund? Vorschlag: Datei, weil jede
-   App ihn beim Start braucht und der Schlüsselbund unter Linux beim ersten Zugriff nachfragen
-   kann. Sicherheit gleich (siehe „Was der Schlüssel schützt“).
-3. Sollen Agenten Konten verbinden und Einstellungen ändern dürfen, wenn der Mensch das freischaltet
-   (`Admin`-Schalter), oder bleibt das wie in TorroMail grundsätzlich der Oberfläche vorbehalten?
-   Vorschlag: freischaltbar, Standard aus, immer mit Freigabe.
+Getroffen am 2026-10-11.
+
+1. **HTTP-API später.** Sie kommt erst, wenn es einen ersten Nutzer gibt (Aufgabe A.10).
+2. **App-Schlüssel als Datei** (`app.key` im State-Verzeichnis, 0600), weil jede App ihn beim Start
+   braucht und der Schlüsselbund unter Linux beim ersten Zugriff nachfragen kann. Sicherheit gleich
+   (siehe „Was der Schlüssel schützt“).
+3. **Admin für Agenten freischaltbar**: eigener Schalter je Bereich, Standard aus, und jeder
+   `Admin`-Befehl eines Agenten braucht immer eine Freigabe.
+4. **Überschreiben ist Löschen**: `update_template` und `load_template` mit `replace` brauchen
+   `Delete`.
+5. **Ein-Konto-Requests entfallen**: `Account` und `DisconnectAccount` gehen in `Accounts` und
+   `RemoveAccount` auf.
