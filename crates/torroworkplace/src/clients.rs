@@ -192,6 +192,20 @@ fn has_legacy_selection(rights: &Rights) -> bool {
     })
 }
 
+/// The GitHub selection names something that is no repository (`owner/name`) or owner
+/// (`owner`): a URL, a path, an empty name (task G.2). [`Rights::reaches_repo`] would never match
+/// it, so the person would believe they granted something they did not.
+fn has_bad_repo_selection(rights: &Rights) -> bool {
+    let part = |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    match &rights.github_repos {
+        Selection::All => false,
+        Selection::Only(names) => names.iter().any(|name| match name.split_once('/') {
+            Some((owner, repo)) => !(part(owner) && part(repo)),
+            None => !part(name),
+        }),
+    }
+}
+
 /// Puts `owner` in front of every bare URL in the selections of `clients` (task M1.1): before
 /// several accounts existed there was one, `owner`, so the rewrite is unambiguous and grants no
 /// client anything it did not have. `true` when something changed.
@@ -468,11 +482,17 @@ impl Clients {
     ///
     /// A selection that names a collection by a bare URL, as before several accounts existed, is
     /// refused ([`ClientsError::Invalid`]) and nothing changes (task M1.4): old selections were
-    /// rewritten once when the core started, and a bare URL now would reach no collection.
+    /// rewritten once when the core started, and a bare URL now would reach no collection. So is
+    /// a GitHub selection with anything but `owner/name` and `owner` in it (task G.2).
     pub async fn update(&self, id: &str, rights: Rights) -> Result<(), ClientsError> {
         if has_legacy_selection(&rights) {
             return Err(ClientsError::Invalid(
                 "a selection names a collection by its URL; use the collection ids from accounts.list_accounts",
+            ));
+        }
+        if has_bad_repo_selection(&rights) {
+            return Err(ClientsError::Invalid(
+                "a GitHub selection names repositories as owner/name and owners as owner, nothing else",
             ));
         }
         let _changing = self.shared.changing.lock().await;
@@ -1190,6 +1210,36 @@ pub(crate) mod tests {
             "nextcloud:anna@cloud.example.org/https://cloud.example.org/remote.php/dav/calendars/anna/work/".into(),
         ]);
         clients.update(&client.id, rights).await.expect("ids are fine");
+    }
+
+    #[tokio::test]
+    async fn a_github_selection_names_repositories_and_owners_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (client, _) = clients.add("Script", "script", read_only()).await.expect("added");
+        for bad in ["https://github.com/mahype/TorroWorkplace", "mahype/TorroWorkplace/issues", "", "a/", "a b"] {
+            let rights = Rights { github_repos: Selection::Only(vec![bad.into()]), ..read_only() };
+            let refused = clients.update(&client.id, rights).await;
+            assert!(matches!(refused, Err(ClientsError::Invalid(_))), "{bad:?}: {refused:?}");
+        }
+        assert_eq!(clients.list(), vec![client.clone()], "the rights stay as they were");
+        let rights = Rights {
+            github_repos: Selection::Only(vec!["mahype/TorroWorkplace".into(), "awesomemotive".into()]),
+            ..read_only()
+        };
+        clients.update(&client.id, rights.clone()).await.expect("repositories and owners are fine");
+        assert_eq!(clients.list()[0].rights, rights);
+    }
+
+    #[test]
+    fn clients_from_before_github_reach_no_repository_and_no_github_command() {
+        let json = r#"{"id":"c1","name":"Old","kind":"script","keySha256":"00","created":"2026-01-01T00:00:00Z",
+            "rights":{"areas":{"tasks":{"level":"full","admin":false}},"calendars":"all","taskLists":"all",
+            "confirm":"never"}}"#;
+        let record: ClientRecord = serde_json::from_str(json).expect("an older record");
+        assert_eq!(record.rights.github_repos, Selection::Only(vec![]));
+        let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
+        assert!(!record.rights.allows(preview.operation()));
     }
 
     #[tokio::test]

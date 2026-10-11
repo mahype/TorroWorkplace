@@ -741,6 +741,15 @@ pub mod github {
             self.slots.read().await.iter().any(|slot| slot.account.id == id)
         }
 
+        /// What the filter lists need to ask GitHub as account `id` (task G.2): the HTTP client,
+        /// this service's GraphQL endpoint and the account's token, which stays inside the core.
+        /// `None` for an unknown account, one without a token, or without an HTTP client.
+        pub async fn api(&self, id: &str) -> Option<torro_pim_github::Api> {
+            let http = self.http.clone()?;
+            let token = self.slots.read().await.iter().find(|slot| slot.account.id == id)?.token.clone()?;
+            Some(torro_pim_github::Api::new(http, self.graphql.clone(), token))
+        }
+
         /// Takes over the GitHub CLI's sign-in ([`cli_token`]) and connects its account
         /// ([`GithubAccounts::connect_token`]).
         pub async fn connect_cli(&self) -> Result<AccountInfo, GithubError> {

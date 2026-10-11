@@ -84,7 +84,7 @@ impl CalDavClient {
                 .map(|c| c.trim().chars().take(7).collect::<String>())
                 .filter(|c| c.len() == 7 && c.starts_with('#'));
             let writable = writable(prop);
-            collections.push(Collection { id: url.to_string(), name, kind, color, writable });
+            collections.push(Collection { id: url.to_string(), name, kind, color, writable, source: None });
         }
         Ok(collections)
     }

@@ -87,7 +87,7 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
 }
 
 fn collection(id: &str, name: &str, kind: CollectionKind, color: &str) -> Collection {
-    Collection { id: id.into(), name: name.into(), kind, color: Some(color.into()), writable: true }
+    Collection { id: id.into(), name: name.into(), kind, color: Some(color.into()), writable: true, source: None }
 }
 
 /// Local wall-clock time on `day` as an instant. The sample avoids the hour that a DST
@@ -728,6 +728,7 @@ mod tests {
             kind: CollectionKind::Events,
             color: Some("#3474E6".into()),
             writable: true,
+            source: None,
         });
         source
     }

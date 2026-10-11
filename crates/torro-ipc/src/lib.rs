@@ -179,7 +179,9 @@ pub enum Request {
     #[serde(rename = "calendar.list_calendars")]
     CalendarCollections,
     /// The task lists the suite shows, i.e. the collections with todos that are not hidden
-    /// ([`Response::Collections`]). A collection with both appears in both lists.
+    /// ([`Response::Collections`]). A collection with both appears in both lists. The GitHub
+    /// filter lists are task lists too (`writable: false`, their definition in `source`); a
+    /// client sees them only with read access to `github`.
     #[serde(rename = "tasks.list_lists")]
     TaskCollections,
     /// Events overlapping `[start, end)`.
@@ -225,6 +227,85 @@ pub enum Request {
         /// the end.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<String>,
+    },
+
+    // GitHub filter lists (task G.2, `docs/github.md`). Granted in the area `github`: for a client
+    // key the core also filters every issue and pull request by its repository
+    // (`api::Rights::github_repos`) before it reads it further, and the list itself must be in
+    // its `task_lists`.
+    /// Creates a filter list of the GitHub account `account`: saved GitHub searches whose matches
+    /// the core keeps as a task list (`github:<login>/<list-id>`, not writable), fetched whole now,
+    /// every five minutes and on `accounts.sync`. Answered with [`Response::Collection`]: the
+    /// list with its definition in `source`; a failed first fetch is in `source.problem`, the list
+    /// is kept. A new list is never added to a client's selection of task lists, and list ids
+    /// are never handed out twice. Codes: `not-found` for an account that is no connected GitHub
+    /// account, `error` for an empty name, a colour that is not `#RRGGBB`, no search, more than
+    /// ten, or an address that is no issue list.
+    #[serde(rename = "tasks.create_filter_list")]
+    CreateFilterList {
+        /// The GitHub account, `github:<login>` as `accounts.list_accounts` lists it.
+        account: String,
+        /// The name of the list.
+        name: String,
+        /// The colour of the list as `#RRGGBB`; leave out for the app's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+        /// One to ten GitHub searches (`is:open is:issue repo:owner/name label:bug`) or addresses
+        /// of issue lists on github.com (`https://github.com/owner/name/issues?q=…`, `…/pulls`,
+        /// `github.com/search?q=…&type=issues`); the core makes addresses searches and adds
+        /// `repo:` and the type from the address unless the search names them. The list holds
+        /// the matches of any of them.
+        queries: Vec<String>,
+    },
+    /// Replaces name, colour and searches of the filter list `collection` and fetches it again;
+    /// pinned items stay. `revision` must be the list's `source.revision` as last read, else
+    /// `conflict` and nothing changes (someone else changed it meanwhile: read it again). Answered
+    /// with [`Response::Collection`]. Codes as [`Request::CreateFilterList`]; `not-found` for a
+    /// collection that is no filter list (or one the client may not see).
+    #[serde(rename = "tasks.update_filter_list")]
+    UpdateFilterList {
+        /// Id of the filter list, `github:<login>/<list-id>` from `tasks.list_lists`.
+        collection: String,
+        /// `source.revision` of the list as last read.
+        revision: u64,
+        /// The new name.
+        name: String,
+        /// The new colour as `#RRGGBB`; leave out for the app's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+        /// The new searches, as for `tasks.create_filter_list`.
+        queries: Vec<String>,
+    },
+    /// Deletes the filter list `collection` from this device: its definition and its cached
+    /// items. Nothing changes on GitHub. Answered with [`Response::Ok`]; `not-found` for a
+    /// collection that is no filter list (or one the client may not see).
+    #[serde(rename = "tasks.delete_filter_list")]
+    DeleteFilterList {
+        /// Id of the filter list, `github:<login>/<list-id>`.
+        collection: String,
+    },
+    /// Runs searches of the GitHub account `account` without saving anything, to try them before
+    /// creating or changing a list. Answered with [`Response::FilterPreview`]. Codes as
+    /// [`Request::CreateFilterList`], plus `auth` and `offline` when GitHub refuses the token or
+    /// cannot be reached.
+    #[serde(rename = "tasks.preview_filter")]
+    PreviewFilter {
+        /// The GitHub account, `github:<login>`.
+        account: String,
+        /// The searches or addresses, as for `tasks.create_filter_list`.
+        queries: Vec<String>,
+    },
+    /// Takes the pinned issue or pull request `url` out of the filter list `collection`; it stays
+    /// in the list while a search finds it. Nothing changes on GitHub, and the list's revision
+    /// stays. Answered with [`Response::Ok`]; `not-found` when the list does not pin it (or the
+    /// client may not see the list or the repository).
+    #[serde(rename = "tasks.unpin_issue")]
+    UnpinIssue {
+        /// Id of the filter list, `github:<login>/<list-id>`.
+        collection: String,
+        /// The item: its address on github.com, `owner/repo#12` or its link id
+        /// (`github:owner/repo#12`) as `source.pinned` lists it.
+        url: String,
     },
 
     /// The suite-wide settings ([`Response::Settings`]).
@@ -394,6 +475,22 @@ pub enum Response {
     /// The control centre was opened so a person can finish the request there (a client's
     /// [`Request::ConnectGithub`]); nothing has changed yet.
     Opened,
+    /// One collection as `tasks.list_lists` lists it: a filter list just created or changed
+    /// ([`Request::CreateFilterList`], [`Request::UpdateFilterList`]).
+    Collection {
+        collection: Collection,
+    },
+    /// What searches find without being saved ([`Request::PreviewFilter`]).
+    FilterPreview {
+        /// How many issues and pull requests match. For the suite GitHub's count, added up over
+        /// the searches (an item two searches find counts twice). For a client limited to some
+        /// repositories, the matches in those among the first 1,000 of each search.
+        matches: u64,
+        /// A search found more than 1,000 matches; a list of it would hold only the first 1,000.
+        truncated: bool,
+        /// The first matches (at most 20) as tasks of no list (`collection` empty).
+        todos: Vec<Todo>,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -436,7 +533,7 @@ pub struct AccountInfo {
     /// `anna@cloud.example.org`; for GitHub the login.
     pub label: String,
     pub state: AccountState,
-    /// All collections of the account, hidden ones included. None for GitHub yet.
+    /// All collections of the account, hidden ones included; for GitHub its filter lists.
     pub collections: Vec<Collection>,
     /// What the account's token may do, as the provider reported it when the core last checked
     /// it: for GitHub the OAuth scopes of a classic token or of the GitHub CLI's sign-in

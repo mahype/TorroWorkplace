@@ -68,7 +68,8 @@ const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, task
                             this desktop. Every tool is checked against the rights a person granted this agent's \
                             key: `forbidden` means the rights do not cover it (ask the person to change them in \
                             Torro Workplace, Agents & API), `not-found` also stands for calendars and task lists \
-                            this agent may not see. Until people can approve single commands, admin tools \
+                            this agent may not see. GitHub filter lists show only issues and pull requests of the \
+                            repositories granted to this agent. Until people can approve single commands, admin tools \
                             (accounts, settings) and deleting are refused for agents with `forbidden`. To change \
                             an event or a task, pass the full item as list_events or list_todos returned it, with \
                             your changes; the short forms of save_event and save_todo only create.";
@@ -304,6 +305,8 @@ const IDEMPOTENT: &[&str] = &[
     "workspaces.rename_template",
     "calendar.delete_event",
     "tasks.delete_todo",
+    "tasks.delete_filter_list",
+    "tasks.unpin_issue",
     "accounts.sync",
     "accounts.remove_account",
     "settings.set_setting",
@@ -797,6 +800,33 @@ mod tests {
             events,
             Ok(Request::Events { start: utc("2026-10-14T00:00:00Z"), end: utc("2026-10-15T00:00:00Z") })
         );
+    }
+
+    #[test]
+    fn the_filter_list_tools_build_their_requests() {
+        let create = request_for(
+            "tasks_create_filter_list",
+            args(json!({"account": "github:mahype", "name": "Bugs", "queries": ["is:open label:bug"]})),
+            &Utc,
+        );
+        assert_eq!(
+            create,
+            Ok(Request::CreateFilterList {
+                account: "github:mahype".into(),
+                name: "Bugs".into(),
+                color: None,
+                queries: vec!["is:open label:bug".into()],
+            })
+        );
+        let preview =
+            request_for("tasks_preview_filter", args(json!({"account": "github:mahype", "queries": ["x"]})), &Utc);
+        assert_eq!(preview, Ok(Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["x".into()] }));
+        let unpin =
+            request_for("tasks_unpin_issue", args(json!({"collection": "github:mahype/00ff", "url": "a/b#1"})), &Utc);
+        assert_eq!(unpin, Ok(Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "a/b#1".into() }));
+        let tool = tools().iter().find(|tool| tool.name == "tasks_delete_filter_list").expect("a tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!((hints.destructive_hint, hints.open_world_hint), (Some(true), None));
     }
 
     #[test]

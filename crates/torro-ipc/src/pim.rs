@@ -209,6 +209,7 @@ mod tests {
             kind: CollectionKind::Both,
             color: Some("#3366ff".into()),
             writable: true,
+            source: None,
         }
     }
 

@@ -36,6 +36,11 @@ pub enum Area {
     Workspaces,
     Calendar,
     Tasks,
+    /// GitHub issues and pull requests: the filter lists (task G.2). Their commands are task
+    /// commands (`tasks.create_filter_list`), but the GitHub token reaches far more than a task
+    /// list, so they are granted here, together with the repositories a client may see
+    /// ([`Rights::github_repos`]).
+    Github,
     /// Connected accounts (Nextcloud, later GitHub, Slack …) and sync.
     Accounts,
     /// Suite-wide settings.
@@ -49,11 +54,12 @@ pub enum Area {
 
 impl Area {
     /// Every area, in the order of the enum.
-    pub const ALL: [Area; 8] = [
+    pub const ALL: [Area; 9] = [
         Area::System,
         Area::Workspaces,
         Area::Calendar,
         Area::Tasks,
+        Area::Github,
         Area::Accounts,
         Area::Settings,
         Area::Apps,
@@ -67,17 +73,30 @@ impl Area {
         !matches!(self, Area::System | Area::Clients)
     }
 
-    /// The name in commands and rights: `calendar`. Every command name starts with it.
+    /// The name in rights: `calendar`. Every command name starts with it, except those of
+    /// `github`: they are task commands (`tasks.preview_filter`), see [`Area::prefix`].
     pub fn name(self) -> &'static str {
         match self {
             Area::System => "system",
             Area::Workspaces => "workspaces",
             Area::Calendar => "calendar",
             Area::Tasks => "tasks",
+            Area::Github => "github",
             Area::Accounts => "accounts",
             Area::Settings => "settings",
             Area::Apps => "apps",
             Area::Clients => "clients",
+        }
+    }
+}
+
+impl Area {
+    /// What the names of the area's commands start with: its [`Area::name`], for `github`
+    /// `tasks`, since filter lists are task lists to the apps and agents.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Area::Github => "tasks",
+            area => area.name(),
         }
     }
 }
@@ -170,17 +189,20 @@ impl AreaRights {
     }
 }
 
-/// Which calendars or task lists a client may see: all, or the ones with these ids.
+/// Which calendars, task lists or GitHub repositories a client may see: all, or the ones with
+/// these ids.
 ///
 /// A collection outside the selection behaves for the client as if it did not exist
-/// (`not-found`). Collections hidden in the suite are left out for every client anyway.
+/// (`not-found`). Collections hidden in the suite are left out for every client anyway. For
+/// repositories see [`Rights::reaches_repo`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Selection {
     /// Every collection of this kind, also ones added later.
     All,
     /// Only the collections with these ids (from `accounts.list_accounts`, each
-    /// `<account-id>/<collection URL>`).
+    /// `<account-id>/<collection URL>`), or the GitHub repositories (`owner/name`) and owners
+    /// (`owner`: every repository of a user or organisation).
     Only(Vec<String>),
 }
 
@@ -223,8 +245,8 @@ pub enum Confirm {
 /// What a client may do. Kept per client in `clients.json`; only the app key may change it.
 ///
 /// The core checks in this order: [`Rights::allows`] (level and admin switch of the area), then
-/// the collections ([`Rights::calendars`], [`Rights::task_lists`]), then
-/// [`Rights::needs_approval`].
+/// the collections ([`Rights::calendars`], [`Rights::task_lists`]) and repositories
+/// ([`Rights::github_repos`]), then [`Rights::needs_approval`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Rights {
@@ -235,8 +257,19 @@ pub struct Rights {
     pub calendars: Selection,
     /// The task lists the client sees and may write to.
     pub task_lists: Selection,
+    /// The GitHub repositories and owners whose issues and pull requests the client sees: every
+    /// match of a search, a preview or a filter list outside them is dropped before the core
+    /// reads it further ([`Rights::reaches_repo`]). Missing in rights from before GitHub: none,
+    /// like an area added later.
+    #[serde(default = "no_repos")]
+    pub github_repos: Selection,
     /// When a command waits for a person's approval.
     pub confirm: Confirm,
+}
+
+/// The repositories of rights stored before `github_repos` existed: none.
+fn no_repos() -> Selection {
+    Selection::Only(Vec::new())
 }
 
 impl Rights {
@@ -295,7 +328,20 @@ impl Rights {
             areas,
             calendars: self.calendars.common(&other.calendars),
             task_lists: self.task_lists.common(&other.task_lists),
+            github_repos: common_repos(&self.github_repos, &other.github_repos),
             confirm: self.confirm.max(other.confirm),
+        }
+    }
+
+    /// Whether the client sees issues and pull requests of `repo` (`owner/name`): the selection
+    /// names the repository or its owner, in any case (GitHub's names ignore it).
+    pub fn reaches_repo(&self, repo: &str) -> bool {
+        let owner = repo.split_once('/').map_or(repo, |(owner, _)| owner);
+        match &self.github_repos {
+            Selection::All => true,
+            Selection::Only(names) => {
+                names.iter().any(|name| name.eq_ignore_ascii_case(repo) || name.eq_ignore_ascii_case(owner))
+            }
         }
     }
 
@@ -303,6 +349,26 @@ impl Rights {
     pub fn template(&self) -> Option<RightsTemplate> {
         RightsTemplate::ALL.into_iter().find(|template| template.rights() == *self)
     }
+}
+
+/// The repositories both selections reach: each name of one that the other reaches whole (a
+/// repository it reaches, an owner it names or `All`), each name once.
+fn common_repos(mine: &Selection, theirs: &Selection) -> Selection {
+    let (a, b) = match (mine, theirs) {
+        (Selection::All, selection) | (selection, Selection::All) => return selection.clone(),
+        (Selection::Only(a), Selection::Only(b)) => (a, b),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for (name, other) in a.iter().map(|name| (name, b)).chain(b.iter().map(|name| (name, a))) {
+        let whole = match name.split_once('/') {
+            Some((owner, _)) => other.iter().any(|o| o.eq_ignore_ascii_case(name) || o.eq_ignore_ascii_case(owner)),
+            None => other.iter().any(|o| o.eq_ignore_ascii_case(name)),
+        };
+        if whole && !names.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+            names.push(name.clone());
+        }
+    }
+    Selection::Only(names)
 }
 
 /// The rights a new client starts with; afterwards every row can be changed.
@@ -335,7 +401,7 @@ impl RightsTemplate {
             .filter(|area| area.grantable())
             .map(|area| (area, AreaRights { level, admin: false }))
             .collect();
-        Rights { areas, calendars: Selection::All, task_lists: Selection::All, confirm }
+        Rights { areas, calendars: Selection::All, task_lists: Selection::All, github_repos: Selection::All, confirm }
     }
 }
 
@@ -465,6 +531,11 @@ impl Request {
             Request::SaveTodo { .. } => &SAVE_TODO,
             Request::DeleteTodo { .. } => &DELETE_TODO,
             Request::MoveTodo { .. } => &MOVE_TODO,
+            Request::CreateFilterList { .. } => &CREATE_FILTER_LIST,
+            Request::UpdateFilterList { .. } => &UPDATE_FILTER_LIST,
+            Request::DeleteFilterList { .. } => &DELETE_FILTER_LIST,
+            Request::PreviewFilter { .. } => &PREVIEW_FILTER,
+            Request::UnpinIssue { .. } => &UNPIN_ISSUE,
             Request::Settings => &GET_SETTINGS,
             Request::UpdateSettings { .. } => &UPDATE_SETTINGS,
             Request::SetSetting { .. } => &SET_SETTING,
@@ -520,6 +591,11 @@ pub static CATALOGUE: &[&Command] = &[
     &SAVE_TODO,
     &DELETE_TODO,
     &MOVE_TODO,
+    &CREATE_FILTER_LIST,
+    &UPDATE_FILTER_LIST,
+    &DELETE_FILTER_LIST,
+    &PREVIEW_FILTER,
+    &UNPIN_ISSUE,
     &LIST_ACCOUNTS,
     &SYNC,
     &CONNECT_NEXTCLOUD,
@@ -664,7 +740,10 @@ static LIST_LISTS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the task lists of all accounts shown in the suite with id, name, colour and whether they \
-                  can be written to. The id is `<account-id>/<list URL>`; tasks refer to their list by it.",
+                  can be written to. The id is `<account-id>/<list URL>`; tasks refer to their list by it. GitHub \
+                  filter lists (`github:<login>/<list-id>`) are listed too, with their searches in `source`; they \
+                  are not writable (no new or deleted tasks); marking their tasks done is meant to close the issue on \
+                  GitHub, which save_todo does not do yet (it answers `unsupported`).",
 };
 
 static LIST_TODOS: Command = Command {
@@ -711,6 +790,60 @@ static MOVE_TODO: Command = Command {
                   If a write fails, the task has not moved yet: reload with list_todos and try again.",
 };
 
+// The GitHub filter lists (task G.2): task commands, granted in the area `github` together with
+// the repositories a client may see (`Rights::github_repos`).
+
+static CREATE_FILTER_LIST: Command = Command {
+    name: "tasks.create_filter_list",
+    area: Area::Github,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Creates a GitHub filter list: a task list of a GitHub account (`github:<login>` from \
+                  accounts.list_accounts) that holds the issues and pull requests one or more GitHub searches find \
+                  (`is:open is:issue repo:owner/name label:bug`, or the address of an issue list on github.com). \
+                  The core refreshes it every five minutes; it cannot be written to. Returns the list with its \
+                  definition in `source`. Try searches with preview_filter first.",
+};
+
+static UPDATE_FILTER_LIST: Command = Command {
+    name: "tasks.update_filter_list",
+    area: Area::Github,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Replaces name, colour and searches of a GitHub filter list and fetches it again; pinned items \
+                  stay. Pass `revision` from the list's `source` as list_lists returned it: if the list changed \
+                  meanwhile the call fails with `conflict` and nothing changes.",
+};
+
+static DELETE_FILTER_LIST: Command = Command {
+    name: "tasks.delete_filter_list",
+    area: Area::Github,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Deletes a GitHub filter list from this device: its searches and pinned items cannot be restored. \
+                  The issues and pull requests on GitHub stay as they are.",
+};
+
+static PREVIEW_FILTER: Command = Command {
+    name: "tasks.preview_filter",
+    area: Area::Github,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Runs GitHub searches (or addresses of issue lists on github.com) of a GitHub account without \
+                  saving anything and returns how many issues and pull requests match and the first 20 of them as \
+                  tasks. Agents see only matches in the repositories they were granted.",
+};
+
+static UNPIN_ISSUE: Command = Command {
+    name: "tasks.unpin_issue",
+    area: Area::Github,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Takes a pinned issue or pull request (its address, `owner/repo#12` or the id from \
+                  `source.pinned`) out of a GitHub filter list. It stays in the list while one of the list's \
+                  searches finds it; nothing changes on GitHub.",
+};
+
 static LIST_ACCOUNTS: Command = Command {
     name: "accounts.list_accounts",
     area: Area::Accounts,
@@ -728,8 +861,8 @@ static SYNC: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Fetches calendars, events and tasks from the servers of all accounts now instead of at the next \
-                  automatic sync, which runs every five minutes, and checks the tokens of the GitHub accounts \
-                  again. An account that fails keeps its cached data; the others are synced anyway. If a Nextcloud \
+                  automatic sync, which runs every five minutes, checks the tokens of the GitHub accounts again and \
+                  fetches their filter lists anew. An account that fails keeps its cached data; the others are synced anyway. If a Nextcloud \
                   refuses the sign-in and has marked this device for a remote wipe, that account and its cached \
                   data are removed from this device.",
 };
@@ -971,6 +1104,22 @@ mod tests {
             Request::SaveTodo { todo: todo() },
             Request::DeleteTodo { todo: todo() },
             Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None },
+            Request::CreateFilterList {
+                account: "github:mahype".into(),
+                name: "Bugs".into(),
+                color: None,
+                queries: vec!["is:open label:bug".into()],
+            },
+            Request::UpdateFilterList {
+                collection: "github:mahype/00ff".into(),
+                revision: 1,
+                name: "Bugs".into(),
+                color: Some("#D73A4A".into()),
+                queries: vec!["is:open label:bug".into()],
+            },
+            Request::DeleteFilterList { collection: "github:mahype/00ff".into() },
+            Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] },
+            Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::Settings,
             Request::UpdateSettings { settings: Settings::default() },
             Request::SetSetting { key: SettingKey::StartAtLogin, value: serde_json::Value::Bool(true) },
@@ -1047,7 +1196,7 @@ mod tests {
     fn names_follow_the_rules() {
         for command in CATALOGUE {
             let (area, verb) = command.name.split_once('.').expect("area.verb_object");
-            assert_eq!(area, command.area.name(), "{}", command.name);
+            assert_eq!(area, command.area.prefix(), "{}", command.name);
             assert!(!verb.is_empty() && verb.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", command.name);
             // MCP clients accept tool names up to 64 characters.
             assert!(command.tool_name().len() <= 64, "{}", command.name);
@@ -1120,6 +1269,7 @@ mod tests {
                 assert!(!rights.area(area).admin, "{template:?} {area:?}");
             }
             assert_eq!((&rights.calendars, &rights.task_lists), (&Selection::All, &Selection::All));
+            assert_eq!(rights.github_repos, Selection::All);
         }
         let level = |template: RightsTemplate| template.rights().area(Area::Calendar).level;
         assert_eq!(level(RightsTemplate::ReadOnly), Level::Read);
@@ -1236,6 +1386,72 @@ mod tests {
             assert_eq!(common.confirm, Confirm::OnDelete);
         }
         assert_eq!(wide.common(&wide), wide);
+    }
+
+    #[test]
+    fn the_filter_list_commands_are_task_commands_granted_in_github() {
+        let requests = samples();
+        let github: Vec<&str> = requests
+            .iter()
+            .map(Request::operation)
+            .filter(|operation| operation.area() == Area::Github)
+            .map(|operation| operation.name())
+            .collect();
+        assert_eq!(
+            github,
+            [
+                "tasks.create_filter_list",
+                "tasks.update_filter_list",
+                "tasks.delete_filter_list",
+                "tasks.preview_filter",
+                "tasks.unpin_issue"
+            ]
+        );
+        assert!(Area::Github.grantable());
+        assert_eq!(DELETE_FILTER_LIST.access, Access::Delete);
+        assert_eq!(PREVIEW_FILTER.access, Access::Read);
+        // Rights in `tasks` alone open none of them.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.remove(&Area::Github);
+        let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
+        assert!(!rights.allows(preview.operation()));
+    }
+
+    #[test]
+    fn repositories_are_reached_by_name_or_owner_in_any_case() {
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert!(rights.reaches_repo("anyone/anything"), "templates reach every repository");
+        rights.github_repos = Selection::Only(vec!["mahype/TorroWorkplace".into(), "awesomemotive".into()]);
+        assert!(rights.reaches_repo("mahype/TorroWorkplace") && rights.reaches_repo("MAHYPE/torroworkplace"));
+        assert!(rights.reaches_repo("AwesomeMotive/wpforms"));
+        assert!(!rights.reaches_repo("mahype/secret") && !rights.reaches_repo("mahype"));
+        assert!(!rights.reaches_repo("mahype/TorroWorkplace2"));
+    }
+
+    #[test]
+    fn rights_from_before_github_reach_no_repository() {
+        let mut json = serde_json::to_value(RightsTemplate::FullAccess.rights()).expect("json");
+        let object = json.as_object_mut().expect("an object");
+        object.remove("githubRepos");
+        object["areas"].as_object_mut().expect("areas").remove("github");
+        let rights: Rights = serde_json::from_value(json).expect("older rights read");
+        assert_eq!(rights.github_repos, Selection::Only(vec![]));
+        assert_eq!(rights.area(Area::Github), AreaRights::NONE);
+        assert!(!rights.reaches_repo("mahype/TorroWorkplace"));
+    }
+
+    #[test]
+    fn common_repositories_are_what_both_reach() {
+        let only = |names: &[&str]| Selection::Only(names.iter().map(|n| n.to_string()).collect());
+        let with = |names: &[&str]| Rights { github_repos: only(names), ..RightsTemplate::ReadOnly.rights() };
+        let wide = with(&["mahype", "awesomemotive/wpforms", "gone/away"]);
+        let narrow = with(&["mahype/TorroWorkplace", "AwesomeMotive", "other/x"]);
+        for common in [wide.common(&narrow), narrow.common(&wide)] {
+            let Selection::Only(mut names) = common.github_repos else { panic!("a selection") };
+            names.sort_by_key(|name| name.to_ascii_lowercase());
+            assert_eq!(names, ["awesomemotive/wpforms", "mahype/TorroWorkplace"]);
+        }
+        assert_eq!(wide.common(&RightsTemplate::ReadOnly.rights()).github_repos, wide.github_repos);
     }
 
     #[test]

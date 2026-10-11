@@ -280,6 +280,12 @@ fn describe(request: &Request) -> String {
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::MoveTodo { .. } => "move todo".into(),
+        // Ids only, never a search or a name (task G.2).
+        Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
+        Request::UpdateFilterList { collection, .. } => format!("update filter list {collection}"),
+        Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),
+        Request::PreviewFilter { account, .. } => format!("preview filter of {account}"),
+        Request::UnpinIssue { collection, .. } => format!("unpin from {collection}"),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
         Request::SetSetting { key, .. } => format!("set {key:?}"),

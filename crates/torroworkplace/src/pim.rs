@@ -31,15 +31,25 @@
 //! - Who asks decides what is seen ([`Reach`]): collections hidden in the suite and, for a
 //!   client key, collections outside its selection are left out before anything is read, so
 //!   their events and tasks are neither fetched nor answered.
+//! - **GitHub filter lists** (task G.2) are task lists too, `github:<login>/<list-id>`, never
+//!   writable. Their definitions live in `filter-lists.json` (config directory,
+//!   `torro_pim_github::lists`); each GitHub account has its own [`FilterSlot`] with the lists and
+//!   what GitHub last found for them. The core hands in the account's [`Api`] for every fetch
+//!   (`crate::core`), so the token stays with the GitHub accounts. A list is fetched whole: when
+//!   it is created or changed, every 5 minutes and on `accounts.sync`. For a client key every
+//!   issue and pull request is checked against its repositories ([`Rights::reaches_repo`])
+//!   before anything else is done with it, and the lists need read access to `github`. Log lines
+//!   name lists and items by id only, never a search or a title.
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Duration as Span, Local, Utc};
 use tokio::sync::{Mutex, RwLock};
 use torro_core::{AppId, paths::AppPaths};
-use torro_ipc::api::Rights;
+use torro_ipc::api::{Access, Area, Rights};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::source::move_plan;
@@ -47,6 +57,9 @@ use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, Provider
 use torro_pim_caldav::CalDavClient;
 use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
+use torro_pim_github::api::{self as github_api, MAX_MATCHES};
+use torro_pim_github::lists::{self, FilterFile};
+use torro_pim_github::{Api, FilterList, address, item};
 
 use torro_core::i18n::{tr, trf};
 
@@ -156,6 +169,8 @@ struct State {
     accounts: Vec<Slot>,
     /// Server and login URL while Login Flow v2 runs (one at a time).
     signing_in: Option<(String, String)>,
+    /// The filter lists of the GitHub accounts the core knows (task G.2).
+    filters: Vec<FilterSlot>,
 }
 
 impl State {
@@ -179,9 +194,95 @@ impl State {
         self.owner(collection).and_then(|slot| slot.url(collection))
     }
 
-    /// The cached collections of all accounts.
+    /// The cached collections of all accounts, the filter lists last.
     fn collections(&self) -> impl Iterator<Item = &Collection> {
-        self.accounts.iter().flat_map(|slot| &slot.collections)
+        let filters = self.filters.iter().flat_map(|slot| &slot.lists).map(|list| &list.collection);
+        self.accounts.iter().flat_map(|slot| &slot.collections).chain(filters)
+    }
+
+    /// The filter list `collection` (an id) and its account.
+    fn filter(&self, collection: &str) -> Option<(&str, &FilterCache)> {
+        self.filters.iter().find_map(|slot| {
+            slot.lists.iter().find(|list| list.collection.id == collection).map(|list| (slot.account.as_str(), list))
+        })
+    }
+
+    fn filter_mut(&mut self, collection: &str) -> Option<&mut FilterCache> {
+        self.filters.iter_mut().flat_map(|slot| &mut slot.lists).find(|list| list.collection.id == collection)
+    }
+
+    fn filter_slot_mut(&mut self, account: &str) -> &mut FilterSlot {
+        match self.filters.iter().position(|slot| slot.account == account) {
+            Some(at) => &mut self.filters[at],
+            None => {
+                self.filters.push(FilterSlot { account: account.to_string(), lists: Vec::new() });
+                let last = self.filters.len() - 1;
+                &mut self.filters[last]
+            }
+        }
+    }
+}
+
+/// The filter lists of one GitHub account (task G.2).
+#[derive(Debug)]
+struct FilterSlot {
+    /// `github:<login>`.
+    account: String,
+    lists: Vec<FilterCache>,
+}
+
+/// One filter list: its definition, how `tasks.list_lists` shows it and what GitHub last found.
+#[derive(Debug)]
+struct FilterCache {
+    list: FilterList,
+    /// Built from `list` and the last fetch ([`FilterCache::rebuild`]).
+    collection: Collection,
+    /// For everyone; a client's view is filtered on the way out ([`Reach::todo_for`]).
+    todos: Vec<Todo>,
+    truncated: bool,
+    problem: Option<String>,
+}
+
+impl FilterCache {
+    fn new(account: &str, list: FilterList) -> FilterCache {
+        let collection = list.collection(account, false, None);
+        FilterCache { list, collection, todos: Vec::new(), truncated: false, problem: None }
+    }
+
+    /// A new definition; the items stay until the next fetch.
+    fn redefine(&mut self, account: &str, list: FilterList) {
+        self.list = list;
+        self.rebuild(account);
+    }
+
+    fn rebuild(&mut self, account: &str) {
+        self.collection = self.list.collection(account, self.truncated, self.problem.clone());
+    }
+
+    /// What a fetch of the definition `fetched_for` brought. Dropped when the definition changed
+    /// meanwhile, so an old search never overwrites the items of a new one; a failure keeps the
+    /// items from before.
+    fn apply(
+        &mut self,
+        account: &str,
+        fetched_for: &FilterList,
+        result: Result<github_api::Fetched, torro_pim_github::Error>,
+    ) {
+        if self.list.queries != fetched_for.queries || self.list.pinned != fetched_for.pinned {
+            return;
+        }
+        match result {
+            Ok(fetched) => {
+                self.todos = item::todos(&fetched.items, &self.collection.id);
+                self.truncated = fetched.truncated;
+                self.problem = None;
+            }
+            Err(err) => {
+                eprintln!("torroworkplace: filter list {} not refreshed: {}", self.collection.id, err.code());
+                self.problem = Some(err.to_string());
+            }
+        }
+        self.rebuild(account);
     }
 }
 
@@ -206,8 +307,12 @@ enum Role {
 }
 
 impl Reach<'_> {
-    /// `collection` serves as `role`, is not `hidden` and is in the selection.
+    /// `collection` serves as `role`, is not `hidden` and is in the selection. A filter list
+    /// needs read access to `github` as well: its items come with the GitHub token.
     fn sees(&self, collection: &Collection, role: Role, hidden: &[String]) -> bool {
+        if collection.source.is_some() && !self.reads_github() {
+            return false;
+        }
         let fits = match role {
             Role::Calendar => collection.kind.has_events(),
             Role::TaskList => collection.kind.has_todos(),
@@ -218,6 +323,43 @@ impl Reach<'_> {
             (Reach::Client(rights), Role::TaskList) => rights.task_lists.contains(&collection.id),
         };
         fits && selected && !hidden.contains(&collection.id)
+    }
+
+    /// The suite, or a client with read access to `github`.
+    fn reads_github(&self) -> bool {
+        match self {
+            Reach::Suite => true,
+            Reach::Client(rights) => rights.area(Area::Github).allows(Access::Read),
+        }
+    }
+
+    /// Issues and pull requests of `repo` (`owner/name`) are for these eyes
+    /// ([`Rights::reaches_repo`]); always for the suite.
+    fn reaches_repo(&self, repo: &str) -> bool {
+        match self {
+            Reach::Suite => true,
+            Reach::Client(rights) => rights.reaches_repo(repo),
+        }
+    }
+
+    /// An item of a filter list as this reach may see it: not at all outside its repositories,
+    /// and without a parent of a repository it may not see, whose id would name it.
+    fn todo_for(&self, todo: &Todo) -> Option<Todo> {
+        let repo_of = |id: &str| address::issue_ref(id).map(|issue| issue.repo);
+        if !repo_of(&todo.uid).is_some_and(|repo| self.reaches_repo(&repo)) {
+            return None;
+        }
+        let parent = todo.parent.clone().filter(|parent| repo_of(parent).is_some_and(|repo| self.reaches_repo(&repo)));
+        Some(Todo { parent, ..todo.clone() })
+    }
+
+    /// A collection as this reach may see it: a filter list without the pinned items of
+    /// repositories it may not see.
+    fn collection_for(&self, mut collection: Collection) -> Collection {
+        if let Some(source) = &mut collection.source {
+            source.pinned.retain(|id| address::issue_ref(id).is_some_and(|issue| self.reaches_repo(&issue.repo)));
+        }
+        collection
     }
 }
 
@@ -230,13 +372,19 @@ pub struct PimService {
     syncing: Mutex<()>,
     /// Where the hidden collections are read from, and cleaned up when an account goes.
     settings: SettingsStore,
+    /// `filter-lists.json` in the config directory (task G.2); `None` without a home directory,
+    /// and then no filter list can be stored.
+    filters_file: Option<PathBuf>,
+    /// One change of `filter-lists.json` at a time: read, change, write.
+    filters_writing: Mutex<()>,
 }
 
 impl PimService {
     /// The service on the user's settings ([`SettingsStore::system`]), as the daemon runs it.
     /// Does not touch the network; [`PimService::start`] loads the accounts.
     pub fn new() -> PimService {
-        PimService::with_settings(SettingsStore::system())
+        let filters_file = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.config.join(lists::FILE));
+        PimService { filters_file, ..PimService::with_settings(SettingsStore::system()) }
     }
 
     /// The service on `settings`; tests pass a store in a temp directory. Does not touch the
@@ -249,7 +397,20 @@ impl PimService {
                 None
             }
         };
-        PimService { http, state: RwLock::new(State::default()), syncing: Mutex::new(()), settings }
+        PimService {
+            http,
+            state: RwLock::new(State::default()),
+            syncing: Mutex::new(()),
+            settings,
+            filters_file: None,
+            filters_writing: Mutex::new(()),
+        }
+    }
+
+    /// The service on `settings` with its filter lists in `filters_file`, for tests.
+    #[cfg(test)]
+    pub fn with_filter_file(settings: SettingsStore, filters_file: PathBuf) -> PimService {
+        PimService { filters_file: Some(filters_file), ..PimService::with_settings(settings) }
     }
 
     /// The settings this service reads; the core uses the same ones.
@@ -324,14 +485,23 @@ impl PimService {
             Request::Todos => {
                 let lists = ids(self.seen(reach, Role::TaskList).await);
                 let state = self.state.read().await;
-                let todos = state
+                let mut todos: Vec<Todo> = state
                     .accounts
                     .iter()
                     .flat_map(|slot| &slot.todos)
                     .filter(|t| lists.contains(&t.collection))
                     .cloned()
                     .collect();
+                // Filter lists: every item checked against the client's repositories first.
+                let filters = state.filters.iter().flat_map(|slot| &slot.lists);
+                let seen = filters.filter(|list| lists.contains(&list.collection.id));
+                todos.extend(seen.flat_map(|list| &list.todos).filter_map(|todo| reach.todo_for(todo)));
                 Response::Todos { todos }
+            }
+            Request::SaveTodo { todo } | Request::DeleteTodo { todo }
+                if self.is_filter_list(&todo.collection).await =>
+            {
+                error("unsupported", "the items of a GitHub filter list cannot be changed here yet".into())
             }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
@@ -361,7 +531,7 @@ impl PimService {
     async fn seen(&self, reach: Reach<'_>, role: Role) -> Vec<Collection> {
         let hidden = self.hidden_collections();
         let state = self.state.read().await;
-        state.collections().filter(|c| reach.sees(c, role, &hidden)).cloned().collect()
+        state.collections().filter(|c| reach.sees(c, role, &hidden)).map(|c| reach.collection_for(c.clone())).collect()
     }
 
     /// For a client: the collection (or the item's `href`) a write would touch outside its
@@ -378,9 +548,31 @@ impl PimService {
             Request::SaveEvent { event } | Request::DeleteEvent { event } => {
                 (Role::Calendar, &event.collection, event.href.as_deref())
             }
+            Request::SaveTodo { todo } | Request::DeleteTodo { todo }
+                if self.is_filter_list(&todo.collection).await =>
+            {
+                // An item of a filter list: the list must be seen and the item's repository too.
+                if !self.sees_task_list(reach, &todo.collection).await {
+                    return Some(todo.collection.clone());
+                }
+                return reach.todo_for(todo).is_none().then(|| todo.uid.clone());
+            }
             Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
                 (Role::TaskList, &todo.collection, todo.href.as_deref())
             }
+            Request::UpdateFilterList { collection, .. } | Request::DeleteFilterList { collection } => {
+                return (!self.sees_task_list(reach, collection).await).then(|| collection.clone());
+            }
+            Request::UnpinIssue { collection, url } => {
+                if !self.sees_task_list(reach, collection).await {
+                    return Some(collection.clone());
+                }
+                let outside = address::issue_ref(url).is_some_and(|issue| !reach.reaches_repo(&issue.repo));
+                return outside.then(|| url.clone());
+            }
+            // Nothing exists yet that could be out of reach; the matches of a preview are
+            // filtered by repository when they come in.
+            Request::CreateFilterList { .. } | Request::PreviewFilter { .. } => return None,
             // Both tasks name their list only through the cache; one it does not hold, or one in a
             // list the client may not see, is `not-found`. The tasks renumbered with them are in
             // the same list (`move_todo` refuses `before` in another one).
@@ -1039,6 +1231,325 @@ impl PimService {
     }
 }
 
+/// A request refused before anything changed: an API error code and a message for people.
+type Refusal = (&'static str, String);
+
+/// How many matches a preview hands out.
+const PREVIEW_ITEMS: usize = 20;
+
+/// GitHub filter lists (task G.2). The core resolves the account's [`Api`] and the rights;
+/// these methods keep the definitions and the items.
+impl PimService {
+    /// `collection` is a filter list the core holds.
+    pub async fn is_filter_list(&self, collection: &str) -> bool {
+        self.state.read().await.filter(collection).is_some()
+    }
+
+    /// The GitHub account of the filter list `collection`, if it is one.
+    pub async fn filter_list_account(&self, collection: &str) -> Option<String> {
+        self.state.read().await.filter(collection).map(|(account, _)| account.to_string())
+    }
+
+    /// The accounts that have filter lists in `filter-lists.json`, so the core knows whose
+    /// tokens to wait for at start.
+    pub fn filter_list_owners(&self) -> Vec<String> {
+        self.read_filters()
+            .map(|file| file.accounts.into_iter().filter(|(_, lists)| !lists.is_empty()).map(|(id, _)| id).collect())
+            .unwrap_or_default()
+    }
+
+    /// The filter lists of `account` as `reach` sees them, for `accounts.list_accounts`: for the
+    /// suite all, hidden ones included; for a client the ones it sees.
+    pub async fn filter_lists_within(&self, account: &str, reach: Reach<'_>) -> Vec<Collection> {
+        let hidden = match reach {
+            Reach::Suite => Vec::new(),
+            Reach::Client(_) => self.hidden_collections(),
+        };
+        let state = self.state.read().await;
+        let lists = state.filters.iter().filter(|slot| slot.account == account).flat_map(|slot| &slot.lists);
+        lists
+            .map(|list| &list.collection)
+            .filter(|c| matches!(reach, Reach::Suite) || reach.sees(c, Role::TaskList, &hidden))
+            .map(|c| reach.collection_for(c.clone()))
+            .collect()
+    }
+
+    /// Reads the filter lists of the GitHub account `account` from `filter-lists.json` into the
+    /// cache and fetches each from GitHub with `api`. Without `api` (no token) the lists keep
+    /// what they had and show a problem. A file that cannot be read changes nothing.
+    pub async fn refresh_filter_lists(&self, account: &str, api: Option<&Api>) {
+        let file = match self.read_filters() {
+            Ok(file) => file,
+            Err(err) => {
+                eprintln!("torroworkplace: filter lists of {account} not read: {err}");
+                return;
+            }
+        };
+        let defined = file.lists(account).to_vec();
+        {
+            let mut state = self.state.write().await;
+            let slot = state.filter_slot_mut(account);
+            let mut old = std::mem::take(&mut slot.lists);
+            for list in &defined {
+                let cache = match old.iter().position(|cache| cache.list.id == list.id) {
+                    Some(at) => {
+                        let mut cache = old.swap_remove(at);
+                        cache.redefine(account, list.clone());
+                        cache
+                    }
+                    None => FilterCache::new(account, list.clone()),
+                };
+                slot.lists.push(cache);
+            }
+        }
+        for list in &defined {
+            self.fetch_filter_list(account, list, api).await;
+        }
+    }
+
+    /// Forgets the filter lists of `account` in the cache, when the account is removed. The
+    /// definitions stay in the file: signing in to the account again brings them back.
+    pub async fn forget_filter_lists(&self, account: &str) {
+        self.state.write().await.filters.retain(|slot| slot.account != account);
+    }
+
+    /// `tasks.create_filter_list` for the GitHub account `account`, which the core knows: stored
+    /// with a new id and revision 1, then fetched once.
+    pub async fn create_filter_list(
+        &self,
+        account: &str,
+        name: &str,
+        color: Option<&str>,
+        queries: &[String],
+        api: Option<&Api>,
+    ) -> Response {
+        let (name, color, queries) = match checked_definition(name, color, queries) {
+            Ok(checked) => checked,
+            Err((code, message)) => return error(code, message),
+        };
+        let list = {
+            let _writing = self.filters_writing.lock().await;
+            let mut file = match self.read_filters() {
+                Ok(file) => file,
+                Err(err) => return error("error", err),
+            };
+            let id = match lists::new_id(|id| file.has_id(id)) {
+                Ok(id) => id,
+                Err(err) => return error("error", err),
+            };
+            let list = FilterList { id, name, color, queries, pinned: Vec::new(), revision: 1 };
+            file.accounts.entry(account.to_string()).or_default().push(list.clone());
+            if let Err(err) = self.write_filters(&file) {
+                return error("error", err);
+            }
+            self.state.write().await.filter_slot_mut(account).lists.push(FilterCache::new(account, list.clone()));
+            list
+        };
+        self.fetch_filter_list(account, &list, api).await;
+        self.answer_collection(&collection_id(account, &list.id)).await
+    }
+
+    /// `tasks.update_filter_list`: new name, colour and searches when `revision` is the stored
+    /// one, then a new fetch.
+    pub async fn update_filter_list(
+        &self,
+        collection: &str,
+        revision: u64,
+        name: &str,
+        color: Option<&str>,
+        queries: &[String],
+        api: Option<&Api>,
+    ) -> Response {
+        let Some(account) = self.filter_list_account(collection).await else {
+            return no_filter_list(collection);
+        };
+        let (name, color, queries) = match checked_definition(name, color, queries) {
+            Ok(checked) => checked,
+            Err((code, message)) => return error(code, message),
+        };
+        let changed = self
+            .change_filter_list(&account, collection, |list| {
+                if list.revision != revision {
+                    let message = format!("the list changed meanwhile (revision {}): read it again", list.revision);
+                    return Err(("conflict", message));
+                }
+                *list = FilterList { name, color, queries, revision: revision + 1, ..list.clone() };
+                Ok(())
+            })
+            .await;
+        match changed {
+            Ok(list) => {
+                self.fetch_filter_list(&account, &list, api).await;
+                self.answer_collection(collection).await
+            }
+            Err((code, message)) => error(code, message),
+        }
+    }
+
+    /// `tasks.delete_filter_list`: the definition and the cached items go, and the list leaves
+    /// the hidden collections. Its id is never handed out again ([`lists::new_id`]).
+    pub async fn delete_filter_list(&self, collection: &str) -> Response {
+        let Some(account) = self.filter_list_account(collection).await else {
+            return no_filter_list(collection);
+        };
+        {
+            let _writing = self.filters_writing.lock().await;
+            let mut file = match self.read_filters() {
+                Ok(file) => file,
+                Err(err) => return error("error", err),
+            };
+            if let Some(lists) = file.accounts.get_mut(&account) {
+                lists.retain(|list| collection_id(&account, &list.id) != collection);
+            }
+            if let Err(err) = self.write_filters(&file) {
+                return error("error", err);
+            }
+            for slot in &mut self.state.write().await.filters {
+                slot.lists.retain(|list| list.collection.id != collection);
+            }
+        }
+        if let Err(err) = self.settings.forget_collections(&[collection.to_string()]) {
+            eprintln!("torroworkplace: the deleted filter list stays among the hidden collections: {err}");
+        }
+        Response::Ok
+    }
+
+    /// `tasks.unpin_issue`: the item `url` leaves the pinned ones of `collection`; the list is
+    /// fetched again, so the item stays while a search finds it.
+    pub async fn unpin_issue(&self, collection: &str, url: &str, api: Option<&Api>) -> Response {
+        let Some(account) = self.filter_list_account(collection).await else {
+            return no_filter_list(collection);
+        };
+        let Some(issue) = address::issue_ref(url) else {
+            return error("not-found", "the list pins no such item".into());
+        };
+        let changed = self
+            .change_filter_list(&account, collection, |list| {
+                let before = list.pinned.len();
+                list.pinned.retain(|id| !address::issue_ref(id).is_some_and(|pinned| pinned.same(&issue)));
+                match list.pinned.len() < before {
+                    true => Ok(()),
+                    false => Err(("not-found", format!("the list does not pin {}", issue.link_id()))),
+                }
+            })
+            .await;
+        match changed {
+            Ok(list) => {
+                self.fetch_filter_list(&account, &list, api).await;
+                Response::Ok
+            }
+            Err((code, message)) => error(code, message),
+        }
+    }
+
+    /// `tasks.preview_filter`: the searches run now, nothing is stored. For a client every match
+    /// outside its repositories is dropped as it comes in, before it is counted or read further;
+    /// that takes all matches (up to 1,000 a search), while the suite gets GitHub's count and
+    /// the first page.
+    pub async fn preview_filter(&self, queries: &[String], api: &Api, reach: Reach<'_>) -> Response {
+        let queries = match lists::check_queries(queries) {
+            Ok(queries) => queries,
+            Err(err) => return error(err.code(), err.to_string()),
+        };
+        let wanted = if matches!(reach, Reach::Suite) { PREVIEW_ITEMS } else { MAX_MATCHES };
+        let (mut matches, mut truncated, mut parts) = (0, false, Vec::new());
+        for query in &queries {
+            let search = match api.search(query, wanted).await {
+                Ok(search) => search,
+                Err(err) => return error(err.code(), err.to_string()),
+            };
+            truncated |= search.total > MAX_MATCHES as u64;
+            let mine: Vec<item::Item> =
+                search.items.into_iter().filter(|item| reach.reaches_repo(item.repo())).collect();
+            matches += match reach {
+                Reach::Suite => search.total,
+                Reach::Client(_) => mine.len() as u64,
+            };
+            parts.push(mine);
+        }
+        let mut all = item::union(parts);
+        all.truncate(PREVIEW_ITEMS);
+        let todos = item::todos(&all, "").iter().filter_map(|todo| reach.todo_for(todo)).collect();
+        Response::FilterPreview { matches, truncated, todos }
+    }
+
+    /// Fetches the list `list` of `account` and keeps what came, unless its definition changed
+    /// meanwhile ([`FilterCache::apply`]).
+    async fn fetch_filter_list(&self, account: &str, list: &FilterList, api: Option<&Api>) {
+        let result = match api {
+            Some(api) => api.fetch(&list.queries, &list.pinned).await,
+            None => Err(torro_pim_github::Error::Refused),
+        };
+        if let Some(cache) = self.state.write().await.filter_mut(&collection_id(account, &list.id)) {
+            cache.apply(account, list, result);
+        }
+    }
+
+    /// Reads `filter-lists.json`, changes the list `collection` of `account` with `change` and
+    /// writes it back, then puts the new definition into the cache. `change` may refuse with an
+    /// answer; then nothing is written.
+    async fn change_filter_list(
+        &self,
+        account: &str,
+        collection: &str,
+        change: impl FnOnce(&mut FilterList) -> Result<(), Refusal>,
+    ) -> Result<FilterList, Refusal> {
+        let _writing = self.filters_writing.lock().await;
+        let mut file = self.read_filters().map_err(|err| ("error", err))?;
+        let list = file
+            .accounts
+            .get_mut(account)
+            .and_then(|lists| lists.iter_mut().find(|list| collection_id(account, &list.id) == collection))
+            .ok_or_else(|| ("not-found", format!("no filter list {collection:?}")))?;
+        change(list)?;
+        let list = list.clone();
+        self.write_filters(&file).map_err(|err| ("error", err))?;
+        if let Some(cache) = self.state.write().await.filter_mut(collection) {
+            cache.redefine(account, list.clone());
+        }
+        Ok(list)
+    }
+
+    /// The filter list `collection` as `tasks.list_lists` shows it to the suite.
+    async fn answer_collection(&self, collection: &str) -> Response {
+        match self.state.read().await.filter(collection) {
+            Some((_, list)) => Response::Collection { collection: list.collection.clone() },
+            None => no_filter_list(collection),
+        }
+    }
+
+    fn read_filters(&self) -> Result<FilterFile, String> {
+        match &self.filters_file {
+            Some(path) => lists::load(path),
+            None => Ok(FilterFile::default()),
+        }
+    }
+
+    fn write_filters(&self, file: &FilterFile) -> Result<(), String> {
+        let path = self.filters_file.as_deref().ok_or("No home directory, so filter lists cannot be stored.")?;
+        lists::save(path, file)
+    }
+}
+
+/// Name, colour and searches of a filter list as they are stored, or the refusal (`error`) that
+/// says what is wrong.
+fn checked_definition(
+    name: &str,
+    color: Option<&str>,
+    queries: &[String],
+) -> Result<(String, Option<String>, Vec<String>), Refusal> {
+    let refuse = |err: torro_pim_github::Error| (err.code(), err.to_string());
+    let name = lists::check_name(name).map_err(refuse)?;
+    let color = lists::check_color(color).map_err(refuse)?;
+    let queries = lists::check_queries(queries).map_err(refuse)?;
+    Ok((name, color, queries))
+}
+
+/// The answer for a collection that is no filter list: `not-found`.
+fn no_filter_list(collection: &str) -> Response {
+    error("not-found", format!("no filter list {collection:?}"))
+}
+
 /// One entry per account with all its cached collections, hidden ones included: the control
 /// centre shows a switch for each. A sign-in that runs is listed last with an empty id, so the
 /// add-account dialog can follow it.
@@ -1288,7 +1799,7 @@ pub(crate) mod tests {
     }
 
     fn service_with(settings: SettingsStore) -> Arc<PimService> {
-        Arc::new(PimService { http: None, state: RwLock::new(State::default()), syncing: Mutex::new(()), settings })
+        Arc::new(PimService { http: None, ..PimService::with_settings(settings) })
     }
 
     fn event(start: DateTime<Utc>, hours: i64) -> Event {
@@ -1349,6 +1860,7 @@ pub(crate) mod tests {
             kind: torro_pim::CollectionKind::Events,
             color: None,
             writable: true,
+            source: None,
         }
     }
 
@@ -1423,6 +1935,7 @@ pub(crate) mod tests {
         let state = State {
             accounts: vec![slot_with(vec![])],
             signing_in: Some(("cloud.example.org".into(), "https://cloud.example.org/login/v2/flow/x".into())),
+            filters: Vec::new(),
         };
         let infos = account_infos(&state);
         assert_eq!(infos.len(), 2);
@@ -1451,7 +1964,7 @@ pub(crate) mod tests {
             problem: Some("server not reachable".into()),
             ..slot_with(vec![collection(&cal("work")), collection(&cal("home"))])
         };
-        let infos = account_infos(&State { accounts: vec![slot], signing_in: None });
+        let infos = account_infos(&State { accounts: vec![slot], ..State::default() });
         assert_eq!(
             infos,
             vec![AccountInfo {

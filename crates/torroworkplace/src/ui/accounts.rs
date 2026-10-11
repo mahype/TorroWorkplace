@@ -619,6 +619,7 @@ mod tests {
             kind: CollectionKind::Events,
             color: None,
             writable: true,
+            source: None,
         };
         assert_eq!(collection_detail(&collection), tr("Calendar"));
         collection.writable = false;
@@ -651,6 +652,7 @@ mod tests {
             kind: CollectionKind::Todos,
             color: Some("#5B8CFF".into()),
             writable: false,
+            source: None,
         }];
         let data =
             Data { accounts: vec![anna, account("nextcloud:ben", AccountState::NotConnected)], ..Data::default() };

@@ -19,10 +19,38 @@ pub struct Collection {
     /// Nextcloud's contact birthdays are not writable.
     #[serde(default = "writable_by_default")]
     pub writable: bool,
+    /// Where the items come from when the collection is not one of a server: the definition of
+    /// a GitHub filter list (task G.2). `None` for every calendar and task list of an account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<GitHubFilter>,
 }
 
 fn writable_by_default() -> bool {
     true
+}
+
+/// A GitHub filter list: saved GitHub searches whose matches the core keeps as a task list
+/// (`github:<login>/<list-id>`, kind todos, never writable). The definition lives in the core,
+/// not on GitHub; the items are what the searches find today plus the pinned ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubFilter {
+    /// The searches, as GitHub's search box takes them (`is:open is:issue repo:owner/name
+    /// label:bug`). Within one search everything must match; the list holds the matches of any.
+    pub queries: Vec<String>,
+    /// Issues and pull requests in the list whatever the searches find, as link ids
+    /// (`github:<owner>/<repo>#<number>`, [`Link::id`]).
+    #[serde(default)]
+    pub pinned: Vec<String>,
+    /// Version of name, colour and searches. `tasks.update_filter_list` sends it back and is
+    /// refused with `conflict` when the list changed meanwhile. Unpinning does not change it.
+    pub revision: u64,
+    /// A search found more than 1,000 matches; the list holds only the first 1,000 of it, as
+    /// GitHub hands out no more.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Why the last refresh from GitHub failed, if it did; the items from before stay.
+    #[serde(default)]
+    pub problem: Option<String>,
 }
 
 /// What a collection holds. A CalDAV calendar may hold both.
@@ -271,6 +299,28 @@ mod tests {
             "due":null,"priority":null,"completed":false,"parent":null,"description":null}"#;
         let todo: Todo = serde_json::from_str(json).expect("old task");
         assert_eq!((todo.url, todo.categories, todo.sort_order, todo.link), (None, Vec::new(), None, None));
+    }
+
+    #[test]
+    fn a_collection_reads_without_a_source_and_round_trips_with_one() {
+        let json = r#"{"id":"a/https://x/tasks/","name":"Home","kind":"todos","color":null}"#;
+        let plain: Collection = serde_json::from_str(json).expect("a collection of an older core");
+        assert_eq!((plain.writable, plain.source.clone()), (true, None));
+        assert!(!serde_json::to_string(&plain).expect("json").contains("source"), "older apps see nothing new");
+        let filter = Collection {
+            id: "github:mahype/00ff".into(),
+            writable: false,
+            source: Some(GitHubFilter {
+                queries: vec!["is:open label:bug".into()],
+                pinned: vec!["github:mahype/TorroWorkplace#7".into()],
+                revision: 2,
+                truncated: true,
+                problem: None,
+            }),
+            ..plain
+        };
+        let json = serde_json::to_string(&filter).expect("json");
+        assert_eq!(serde_json::from_str::<Collection>(&json).expect("back"), filter);
     }
 
     #[test]

@@ -970,7 +970,14 @@ mod tests {
     }
 
     fn calendar(id: &str, name: &str) -> Collection {
-        Collection { id: id.into(), name: name.into(), kind: CollectionKind::Events, color: None, writable: true }
+        Collection {
+            id: id.into(),
+            name: name.into(),
+            kind: CollectionKind::Events,
+            color: None,
+            writable: true,
+            source: None,
+        }
     }
 
     fn calendars() -> Vec<Collection> {

@@ -175,6 +175,7 @@ pub fn demo_data() -> Data {
         kind,
         color: Some(color.into()),
         writable: true,
+        source: None,
     };
     let accounts = vec![
         AccountInfo {

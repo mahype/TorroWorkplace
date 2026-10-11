@@ -186,7 +186,7 @@ K.21 (frei)
   kaputtem Request.
 
 ### G.2 Filterlisten im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.1, P.2 · **Dateien:** `crates/torro-pim-github/` (neu), Wurzel-`Cargo.toml`,
   `crates/torro-pim/src/model.rs` (`Collection::source`), `crates/torroworkplace/src/{pim,core,mcp,clients}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`
