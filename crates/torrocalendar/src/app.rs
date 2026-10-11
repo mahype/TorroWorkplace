@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
-use iced::widget::{column, container, row};
+use iced::widget::{column, container, responsive, row};
 use iced::{Alignment, Color, Element, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -1178,11 +1178,19 @@ impl App {
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data, self.class()),
             CalView::Timeline => views::timeline::view(data, &self.timeline),
-            // Narrow: under the week strip, whose days page the radar like the small month does.
+            // Narrow: under the week strip, whose days page the radar like the small month does –
+            // unless the tile is so low that the strip would cut into the dial.
             CalView::Radar if self.class() == SizeClass::Narrow => {
-                let strip = week_strip::view(&data);
-                let radar = views::radar::view(data, &self.calendar_order(), self.turn, views::radar::ListAt::Below);
-                column![strip, radar].into()
+                let (order, turn) = (self.calendar_order(), self.turn);
+                responsive(move |bounds| {
+                    let radar = views::radar::view(data.clone(), &order, turn, views::radar::ListAt::Below);
+                    if views::radar::strip_fits(bounds) {
+                        column![week_strip::view(&data), radar].into()
+                    } else {
+                        radar
+                    }
+                })
+                .into()
             }
             CalView::Radar => {
                 let list = match self.class() {

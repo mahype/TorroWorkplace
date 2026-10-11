@@ -79,6 +79,9 @@ const LIST_MEDIUM: f32 = 260.0;
 const STAGE_MARGIN: f32 = space::XL;
 /// The narrow dial is never wider than this (`radar.html`: 440).
 const NARROW_DIAL: f32 = 440.0;
+/// Height of the week strip above the narrow radar (`week_strip`: weekday letter, the 28 circle,
+/// dots, padding and its line), for [`strip_fits`].
+const WEEK_STRIP: f32 = 2.0 * size::CONTROL_SM + 2.0 * space::XS + space::S;
 /// The middle keeps this far from the inner ring on each side (`radar.html`: 16).
 const MIDDLE_INSET: f32 = space::L;
 /// The track of a ring: `text` at 7 % over the panel.
@@ -154,8 +157,16 @@ pub fn view<'a>(data: ViewData<'a>, calendars: &[String], offset: i64, at: ListA
             .height(Length::Fill);
             row![stage(plan), rule::vertical(1).style(style::rule), list].height(Length::Fill).into()
         }
-        ListAt::Below => responsive(move |bounds| narrow(plan.clone(), bounds.width)).into(),
+        ListAt::Below => responsive(move |bounds| narrow(plan.clone(), bounds)).into(),
     }
+}
+
+/// Whether the week strip fits above the narrow radar in `bounds` (the room under the header)
+/// without making the dial smaller than the width allows: the dial is what the view is for, so in a
+/// low tile the strip gives way (‹ › and the small month still page the days).
+pub fn strip_fits(bounds: Size) -> bool {
+    let dial = (bounds.width - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
+    bounds.height - WEEK_STRIP >= dial
 }
 
 /// Where the window starts: the start of the day `data.anchor` ([`layout::day_start`] over the
@@ -187,10 +198,12 @@ fn stage(plan: Plan) -> Element<'static, Message> {
     .into()
 }
 
-/// Narrow: the dial as wide as the window allows (at most [`NARROW_DIAL`]), the list under it, the
-/// whole page scrolling. The wheel scrolls the page, not the time.
-fn narrow(plan: Plan, width: f32) -> Element<'static, Message> {
-    let edge = (width - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
+/// Narrow: the dial as large as the window allows – never wider or taller than what is on screen
+/// (at most [`NARROW_DIAL`]), so a low tile shows the whole circle –, the list under it, the whole
+/// page scrolling. The wheel scrolls the page, not the time.
+fn narrow(plan: Plan, bounds: Size) -> Element<'static, Message> {
+    let width = bounds.width;
+    let edge = (width.min(bounds.height) - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
     let dial = Dial::fit(Size::new(width, edge), space::S, plan.rings);
     let canvas = iced::widget::canvas(Radar { plan: plan.clone(), margin: space::S, wheel: false })
         .width(Length::Fill)
@@ -1004,6 +1017,14 @@ mod tests {
 
     fn at(day: u32, hour: u32, minute: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 10, day).expect("date").and_hms_opt(hour, minute, 0).expect("time")
+    }
+
+    #[test]
+    fn the_week_strip_gives_way_in_a_low_tile() {
+        // A tall narrow tile (480 × 856 under the header): strip and full-width dial both fit.
+        assert!(strip_fits(Size::new(480.0, 856.0)));
+        // A low tile (579 × 377): the strip would push the dial out of view.
+        assert!(!strip_fits(Size::new(579.0, 377.0)));
     }
 
     fn local(day: u32, hour: u32, minute: u32) -> EventTime {
