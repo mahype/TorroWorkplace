@@ -11,7 +11,7 @@ Reihenfolge: **M1** (Grundlage) → **P** (Aufgaben-Modell, gilt auch für Nextc
 M1.1 ─┬─ M1.2
       ├─ M1.3
       ├─ M1.4
-      └─ G.1 ── G.2 ─┬─ G.3 ─┬─ G.4
+      └─ G.1 ── G.2 ── G.2b ─┬─ G.3 ─┬─ G.4
                      │       └─ G.5
 P.1 ── P.2 ─┬─ P.3a ─┼─ P.3b (nach dem Redesign)
             └────────┴─ G.6
@@ -221,6 +221,33 @@ K.21 (frei)
 - Abnahme: Tests für Adressen → Anfrage (Fixtures), Abbildung aus aufgezeichneten GraphQL-Antworten, Wegfallen
   nicht mehr passender Einträge, Angeheftete; Rechte: Vorschau und umgeschriebene Anfrage zeigen einem Client
   nur Treffer aus `github_repos`, fremde Liste → `not-found`, neue Liste nicht in `Only`-Auswahl.
+
+### G.2b Filterlisten: Seitenkanäle schließen (aus der API-Prüfung von G.2)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.2 · **Dateien:** `crates/torroworkplace/src/{pim,core}.rs`, `crates/torro-pim-github/src/{address,lists,lib}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`
+- **Prüfen vor dem Fragen (hoch):** Für einen Client mit eingeschränkter Repo-Auswahl (`github_repos` = nur diese)
+  prüft der Kern jede Suchanfrage, **bevor** GitHub gefragt wird: Jede Anfrage braucht mindestens ein
+  `repo:`/`org:`/`user:` aus der Auswahl und kein positives `repo:`/`org:`/`user:` außerhalb; sonst `forbidden`
+  mit fester Meldung. Gilt für `preview_filter`, `create_filter_list`, `update_filter_list`. Heute sucht GitHub
+  mit dem vollen Token und es wird erst danach gefiltert: Fehlercode, `matches`, `truncated` und Antwortzeit
+  verraten dann Namen und Trefferzahlen fremder (auch privater) Repos. Das Nachfiltern bleibt als zweite Sicherung.
+- **Feste Meldungen für Clients:** GitHub-Fehlermeldungen gehen an Clients nicht wörtlich hinaus (auch nicht in
+  `source.problem`), sondern als feste Meldung je Code.
+- **Listen nur sichtbar, wenn sie ganz in der Auswahl liegen (mittel):** Eine Filterliste ist für einen Client nur
+  sichtbar (`sees`, `out_of_reach`), wenn alle ihre Anfragen nach der Regel oben in seiner Auswahl liegen; sonst
+  verhält sie sich wie nicht vorhanden. Sonst liest er in `source.queries` die Namen privater Repos.
+- **Antworten filtern (mittel):** `answer_collection` nach `create`/`update` wendet `reach.collection_for` an
+  (heute enthält `source.pinned` dort fremde Einträge).
+- **Hinweise:** `preview_filter`-Doc nennt `not-connected`; Vorschau für Clients begrenzen (weniger Seiten oder
+  `busy` bei zu vielen Aufrufen in kurzer Zeit), damit ein Agent das Rate-Limit nicht aufbraucht;
+  `settings.set_collection_shown` prüft `sees_task_list` wie `ListOrder`; Katalogtexte: `create_filter_list` sagt,
+  dass eine neue Liste nicht in eine eingeschränkte Listen-Auswahl kommt, `list_lists`/`list_todos` sagen, dass
+  Einträge, `pinned` und `parent` fremder Repos fehlen.
+- **Oberfläche/MCP:** keine neuen Requests.
+- Abnahme: Tests: Client mit `Only([mahype/a])` → Anfrage mit `repo:mahype/secret` bzw. ohne `repo:` → `forbidden`,
+  **an GitHub geht nichts** (Fake-Server zählt Aufrufe); Liste eines Menschen mit fremdem Repo für den Client
+  unsichtbar; `update` durch Client liefert kein fremdes `pinned`; feste Meldungen; `set_collection_shown`.
 
 ### G.3 Aufgaben-App: Filterlisten zeigen
 - [ ] erledigt
