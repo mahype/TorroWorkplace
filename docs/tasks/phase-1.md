@@ -186,7 +186,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Test mit `FakeWm` und drei Fenstern ergibt die erwartete Vorlage.
 
 ### 1.14 Laden: Modi und „herholen“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.13
 - **Dateien:** `crates/torro-setups/src/restore.rs`
 - **Ziel:** Ziel-Workspace zu Beginn festhalten. Modus `Empty` bricht bei belegtem Workspace mit
