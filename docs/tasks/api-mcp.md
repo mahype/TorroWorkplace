@@ -52,7 +52,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 
 ### A.0c Volle Schemata für Termin, Aufgabe und Einstellungen
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** A.0d · **Dateien:** `crates/torro-pim/Cargo.toml`, `crates/torro-pim/src/*.rs`, `crates/torro-core/Cargo.toml`, `crates/torro-core/src/settings.rs`, `crates/torro-setups/Cargo.toml`, `crates/torro-setups/src/template.rs`, `crates/torro-ipc/src/api.rs`
+- **Modell:** Haiku · **Braucht:** A.0d · **Dateien:** `crates/torro-pim/Cargo.toml`, `crates/torro-pim/src/*.rs`, `crates/torro-core/Cargo.toml`, `crates/torro-core/src/settings.rs`, `crates/torro-core/src/theme.rs`, `crates/torro-setups/Cargo.toml`, `crates/torro-setups/src/template.rs`, `crates/torro-ipc/src/api.rs`
 - `JsonSchema` für `Event`, `Todo`, `Settings`, `LoadMode` und deren Feldtypen ableiten (Entscheidung
   7); in `api.rs` die Platzhalter `{"type":"object"}` und `LoadModeSchema` ersetzen. Doc-Kommentare
   der Felder sind die Beschreibungen für Agenten, also prüfen, dass `href`, `etag` und `collection`
