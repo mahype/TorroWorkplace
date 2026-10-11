@@ -90,8 +90,8 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Modell:** Opus · **Braucht:** A.1 · **Dateien:** `crates/torroworkplace/src/clients.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/cli.rs`, `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-ipc/src/server.rs`, `crates/torro-ipc/src/pim.rs`
 - Stufe je Bereich, `Admin`-Schalter, Auswahl der Sammlungen (Filter vor dem Lesen), Vorlagen
   *Read only*, *Read and write*, *Full access*.
-- Requests `clients.list`, `clients.create` (gibt den Schlüssel genau einmal zurück),
-  `clients.update` (Rechte), `clients.new_key`, `clients.remove`: im Katalog, `Mcp::Never`,
+- Requests `clients.list_clients`, `clients.create_client` (gibt den Schlüssel genau einmal zurück),
+  `clients.update_client` (Rechte), `clients.new_key`, `clients.remove_client`: im Katalog, `Mcp::Never`,
   nur mit App-Schlüssel.
 - `torroworkplace ctl clients list|add|remove|new-key`, damit sich Agenten schon vor A.6 verbinden
   lassen.
