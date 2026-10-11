@@ -10,9 +10,8 @@
 
 use std::process::Command;
 
-use iced::font::Weight;
 use iced::widget::{button, center, column, container, text};
-use iced::{Element, Fill, Font, border};
+use iced::{Element, Fill, border};
 
 use torro_core::i18n::tr;
 use torro_pim::AccountState;
@@ -49,8 +48,7 @@ impl Connect {
     /// Any state other than `SigningIn` shows the hint and the button, so a `Connected`
     /// account that is still on screen does not show a blank card.
     pub fn view<'a>(&'a self, account: &'a AccountState, app_name: &'a str) -> Element<'a, Message> {
-        let heading =
-            text(app_name).size(18).font(Font { weight: Weight::Semibold, ..Font::DEFAULT }).color(theme::TEXT);
+        let heading = text(app_name).size(18).font(theme::FONT_SEMIBOLD).color(theme::TEXT);
 
         let body: Element<'a, Message> = match account {
             AccountState::SigningIn { .. } => text(tr("Signing in to Nextcloud …")).size(14).color(theme::TEXT).into(),

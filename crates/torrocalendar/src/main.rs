@@ -18,6 +18,7 @@ fn main() -> iced::Result {
     }
     let source = Source::from_args(std::env::args().skip(1));
     iced::application(move || app::App::new(source.clone()), app::App::update, app::App::view)
+        .settings(torro_gui::settings())
         .title(app::App::title)
         .theme(|_: &app::App| torro_gui::theme::theme())
         .subscription(app::App::subscription)

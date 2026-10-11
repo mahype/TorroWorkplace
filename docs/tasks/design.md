@@ -40,7 +40,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen. API u
 ### Fundament
 
 ### F.1 Schrift: Inter und Schriftstufen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Ersetzt:** K.17
 - **Dateien:** `crates/torro-gui/assets/fonts/` (neu), `crates/torro-gui/src/{lib,theme,connect}.rs`,
   `crates/torro-gui/src/typo.rs` (neu), `crates/torrocalendar/src/main.rs`,

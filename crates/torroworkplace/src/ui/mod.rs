@@ -141,6 +141,7 @@ pub fn run(args: &[String]) -> iced::Result {
         torro_gui::source::ensure_core(&socket);
     }
     iced::application(move || Ui::new(section), Ui::update, Ui::view)
+        .settings(torro_gui::settings())
         .title(|ui: &Ui| format!("Torro Workplace · {}", ui.section.label()))
         .theme(|_: &Ui| theme::theme())
         .subscription(Ui::subscription)

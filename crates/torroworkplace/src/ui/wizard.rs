@@ -23,7 +23,7 @@
 //! click next to the dialog send it.
 
 use iced::widget::{button, column, container, row, space, text, text_input};
-use iced::{Alignment, Background, Element, Fill, Font, border};
+use iced::{Alignment, Background, Element, Fill, border};
 use torro_core::i18n::tr;
 use torro_core::theme::STATUS_ERROR;
 use torro_gui::theme;
@@ -172,7 +172,7 @@ fn login_url(data: &Data) -> Option<&str> {
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let header = column![
-        text(tr("Add account")).size(18).font(semibold()),
+        text(tr("Add account")).size(18).font(theme::FONT_SEMIBOLD),
         text(subtitle(state.step)).size(14).color(theme::MUTED)
     ]
     .spacing(4);
@@ -221,10 +221,12 @@ fn provider_step() -> Element<'static, Message> {
 fn provider_card(provider: Provider, name: &'static str, summary: &'static str) -> Element<'static, Message> {
     let enabled = provider.is_enabled();
     let name_color = if enabled { theme::TEXT } else { theme::MUTED };
-    let label =
-        column![text(name).size(14).font(semibold()).color(name_color), text(summary).size(14).color(theme::MUTED),]
-            .spacing(4)
-            .width(Fill);
+    let label = column![
+        text(name).size(14).font(theme::FONT_SEMIBOLD).color(name_color),
+        text(summary).size(14).color(theme::MUTED),
+    ]
+    .spacing(4)
+    .width(Fill);
     let mut content = row![label].spacing(12).align_y(Alignment::Center);
     if enabled {
         content = content.push(text("›").size(18).color(theme::MUTED));
@@ -340,10 +342,6 @@ fn input_style(theme: &iced::Theme, status: text_input::Status) -> text_input::S
         value: theme::TEXT,
         ..text_input::default(theme, status)
     }
-}
-
-fn semibold() -> Font {
-    Font { weight: iced::font::Weight::Semibold, ..Font::DEFAULT }
 }
 
 #[cfg(test)]

@@ -7,9 +7,30 @@
 //!
 //! The named colour constants below are the dark variant. The light variant only changes the
 //! Iced palette ([`light`]); apps that need a light-specific surface must pick their own colour.
+//!
+//! The fonts ([`FONT`] and friends) name the Inter families that [`crate::fonts`] embeds. Apps
+//! rarely pick a font directly: the levels in [`crate::typo`] carry the right one.
 
-use iced::{Color, Theme};
+use iced::font::Weight;
+use iced::{Color, Font, Theme};
 use torro_core::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_OK, TORRO_RED};
+
+/// Inter Regular (400): the default font of every app, for body text, lists and inputs.
+///
+/// Set as the app default by [`crate::settings`]. Never use `Font::DEFAULT`: depending on the
+/// system that is Liberation Sans or Arial, not Inter.
+pub const FONT: Font = Font::with_name("Inter");
+/// Inter Medium (500): emphasis – row titles, buttons, event titles, captions.
+pub const FONT_MEDIUM: Font = Font { weight: Weight::Medium, ..FONT };
+/// Inter SemiBold (600): titles – dialog, group and view titles, the big number in a mini tile.
+pub const FONT_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..FONT };
+/// "Inter Tabular" Regular (400): Inter with tabular figures baked in, for digits that change
+/// (clocks, time axes, counters, dates in columns), so nothing jumps and columns line up.
+///
+/// A separate family because Iced 0.14 cannot switch OpenType features such as `tnum`.
+pub const FONT_TABULAR: Font = Font::with_name("Inter Tabular");
+/// "Inter Tabular" Medium (500): tabular figures at the weight of [`FONT_MEDIUM`].
+pub const FONT_TABULAR_MEDIUM: Font = Font { weight: Weight::Medium, ..FONT_TABULAR };
 
 pub fn color(rgb: Rgb) -> Color {
     Color::from_rgb8(rgb.0, rgb.1, rgb.2)
