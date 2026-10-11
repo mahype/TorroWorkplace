@@ -40,7 +40,7 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         tr("Language"),
         column![
             radio(tr("System"), Language::System, Some(settings.language), Message::Language).text_size(14),
-            radio(tr("English"), Language::English, Some(settings.language), Message::Language).text_size(14),
+            radio("English", Language::English, Some(settings.language), Message::Language).text_size(14),
             // Shown in its own name on purpose: someone who cannot read the current language
             // must still find their way back.
             radio("Deutsch", Language::German, Some(settings.language), Message::Language).text_size(14),

@@ -2,6 +2,19 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Control centre (torroworkplace ui)
+    (
+        "Applies to apps you open afterwards. “System” follows your system language.",
+        "Gilt für Apps, die du danach öffnest. „System“ folgt der Systemsprache.",
+    ),
+    ("Language", "Sprache"),
+    ("Start at login", "Beim Anmelden starten"),
+    (
+        "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.",
+        "Startet Torro Workplace im Hintergrund, wenn du dich anmeldest, damit Tray-Icon und Workspaces sofort bereitstehen.",
+    ),
+    ("Startup", "Start"),
+    ("System", "System"),
     // Tray menu (torroworkplace)
     ("Add", "Hinzufügen"),
     ("Busy …", "Läuft gerade …"),

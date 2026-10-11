@@ -57,7 +57,7 @@ Gemeinsam für alle Seiten-Aufgaben:
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/apps.rs`
 
 ### S.9 Seite General
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/general.rs`
 
 ### S.10 Apps und Tray verweisen auf die Steuerzentrale
