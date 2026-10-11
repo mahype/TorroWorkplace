@@ -226,8 +226,14 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 
 ## Transport
 
-- **Jetzt:** `core.sock` (Unix-Socket, 0600; Windows: Named Pipe, kommt mit GlazeWM), eine
-  JSON-Zeile je Richtung, Umschlag mit `v` und `key`. `ping` meldet die API-Version.
+- **Jetzt:** `core.sock` (Unix-Socket, 0600), eine JSON-Zeile je Richtung, Umschlag mit `v` und
+  `key`. `ping` meldet die API-Version.
+- **Windows:** dasselbe Protokoll über die Named Pipe `\\.\pipe\torro-workplace-<SID>` (fest je
+  Benutzer). Die Zugriffsliste lässt nur den eigenen Benutzer zu (SDDL `D:P(A;;GA;;;<SID>)`), der Kern
+  legt die Pipe als erste Instanz exklusiv an und lehnt Remote-Clients ab. Weil der Name bekannt ist,
+  prüft der Client vor dem Senden, dass der Server-Prozess der Pipe demselben Benutzer gehört; sonst
+  (oder wenn das nicht feststellbar ist) schickt er nichts, auch keinen Schlüssel. `app.key` liegt im
+  State-Verzeichnis.
 - **MCP:** `torroworkplace mcp`, stdio, auf dem offiziellen Rust-SDK `rmcp` statt eines eigenen
   JSON-RPC (in TorroMail eine Fehlerquelle). Schlüssel aus `TORRO_TOKEN`. Läuft der Dienst nicht,
   startet der MCP-Server ihn wie die Apps.

@@ -6,6 +6,9 @@
 //! Each call opens its own connection, sends one [`crate::Envelope`] line and reads one response
 //! line. The suite's own programs use [`call`], which reads the app key of the core, so they
 //! never deal with keys; scripts and the MCP server bring their own key to [`call_with_key`].
+//!
+//! On Windows the client checks who serves the pipe before it sends anything (X.1b): the pipe
+//! name is fixed and known, so while the core is not running another user could hold it.
 
 use std::path::Path;
 
@@ -28,7 +31,9 @@ pub async fn call(path: &Path, request: &Request) -> Result<Response, IpcError> 
 ///
 /// `path` is a socket file on Unix and a named pipe (`\\.\pipe\…`, see [`crate::socket_path`])
 /// on Windows; on Windows any other path counts as nothing listening, so a stray path never
-/// opens a file or device. Elsewhere [`IpcError::Unsupported`].
+/// opens a file or device, and a pipe whose server runs as another user (or whose owner cannot be
+/// found out) gets nothing, not even a request without key: [`IpcError::Io`] with
+/// [`std::io::ErrorKind::PermissionDenied`]. Elsewhere [`IpcError::Unsupported`].
 #[cfg(unix)]
 pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) -> Result<Response, IpcError> {
     use std::io::ErrorKind;
@@ -52,7 +57,9 @@ pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) ->
 ///
 /// `path` is a socket file on Unix and a named pipe (`\\.\pipe\…`, see [`crate::socket_path`])
 /// on Windows; on Windows any other path counts as nothing listening, so a stray path never
-/// opens a file or device. Elsewhere [`IpcError::Unsupported`].
+/// opens a file or device, and a pipe whose server runs as another user (or whose owner cannot be
+/// found out) gets nothing, not even a request without key: [`IpcError::Io`] with
+/// [`std::io::ErrorKind::PermissionDenied`]. Elsewhere [`IpcError::Unsupported`].
 #[cfg(windows)]
 pub async fn call_with_key(path: &Path, key: Option<&Key>, request: &Request) -> Result<Response, IpcError> {
     let pipe = open_pipe(path).await?;
@@ -76,7 +83,8 @@ const PIPE_BUSY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(windows)]
 const ERROR_PIPE_BUSY: i32 = 231;
 
-/// Connects to the named pipe `path`, waiting up to [`PIPE_BUSY_WAIT`] while it is busy.
+/// Connects to the named pipe `path`, waiting up to [`PIPE_BUSY_WAIT`] while it is busy, and
+/// hands the pipe out only when its server runs as this user ([`check_owner`]).
 ///
 /// The client keeps tokio's default security quality of service (identification only), so a
 /// program that holds the pipe name cannot act as this user through the connection.
@@ -94,7 +102,7 @@ async fn open_pipe(path: &Path) -> Result<tokio::net::windows::named_pipe::Named
     let deadline = Instant::now() + PIPE_BUSY_WAIT;
     loop {
         match ClientOptions::new().open(path) {
-            Ok(pipe) => return Ok(pipe),
+            Ok(pipe) => return check_owner(&pipe, path).map(|()| pipe),
             Err(err) if err.kind() == ErrorKind::NotFound => return Err(IpcError::NotRunning),
             Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY) && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(20)).await;
@@ -102,6 +110,52 @@ async fn open_pipe(path: &Path) -> Result<tokio::net::windows::named_pipe::Named
             Err(err) => return Err(IpcError::Io(err)),
         }
     }
+}
+
+/// Refuses `pipe` unless its server process runs as this user, before anything is sent.
+///
+/// The access list of the core's pipe keeps other users from connecting, but while the core is
+/// not running, a program of another user could create a pipe of the same name and receive the
+/// request with the app key. The name alone proves nothing, so the server's process decides:
+/// [`IpcError::Io`] with [`std::io::ErrorKind::PermissionDenied`] (as the core reports a name held
+/// by another program) when it belongs to someone else or its owner cannot be found out.
+#[cfg(windows)]
+fn check_owner(pipe: &tokio::net::windows::named_pipe::NamedPipeClient, path: &Path) -> Result<(), IpcError> {
+    use std::io::{Error, ErrorKind};
+
+    let server = server_process_id(pipe).and_then(crate::pipe::process_sid);
+    if is_same_user(crate::pipe::user_sid(), server.as_deref()) {
+        return Ok(());
+    }
+    let message = format!("the pipe {} belongs to another user", path.display());
+    Err(IpcError::Io(Error::new(ErrorKind::PermissionDenied, message)))
+}
+
+/// The id of the process that serves the other end of `pipe`, `None` when Windows cannot tell.
+///
+/// The one FFI call of this crate: neither tokio nor `sysinfo` offers it, and `interprocess`,
+/// which does, opens client pipes without security quality of service, so its server could act
+/// as this user.
+#[cfg(windows)]
+fn server_process_id(pipe: &tokio::net::windows::named_pipe::NamedPipeClient) -> Option<u32> {
+    use std::os::windows::io::AsRawHandle;
+
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+
+    let mut pid: u32 = 0;
+    #[allow(unsafe_code)]
+    // SAFETY: the handle belongs to `pipe`, which the borrow keeps open for the whole call, and
+    // `pid` is a valid, writable `u32` that outlives it. The call only writes that one value.
+    let ok = unsafe { GetNamedPipeServerProcessId(pipe.as_raw_handle(), &mut pid) };
+    (ok != 0 && pid != 0).then_some(pid)
+}
+
+/// Whether the server of a pipe runs as this user: `own` (this process's SID) and `server` (the
+/// SID of the pipe's server process) are both known, not empty and equal. Anything unknown counts
+/// as another user, so a client that cannot tell sends nothing.
+#[cfg(any(windows, test))]
+fn is_same_user(own: Option<&str>, server: Option<&str>) -> bool {
+    matches!((own, server), (Some(own), Some(server)) if !own.is_empty() && own == server)
 }
 
 /// Writes the envelope line of `request` to `write` and reads the one response line from `read`.
@@ -133,6 +187,24 @@ fn read_app_key(socket: &Path) -> Option<Key> {
     let key = std::fs::read_to_string(app_key_path(socket)).ok()?;
     let key = key.trim();
     (!key.is_empty()).then(|| Key::new(key))
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::is_same_user;
+
+    #[test]
+    fn only_the_same_known_user_passes() {
+        let me = "S-1-5-21-3623811015-3361044348-30300820-1013";
+        assert!(is_same_user(Some(me), Some(me)));
+
+        let other = "S-1-5-21-3623811015-3361044348-30300820-1014";
+        assert!(!is_same_user(Some(me), Some(other)));
+        assert!(!is_same_user(Some(me), None), "an owner that cannot be found out");
+        assert!(!is_same_user(None, Some(me)), "an own SID that cannot be found out");
+        assert!(!is_same_user(None, None));
+        assert!(!is_same_user(Some(""), Some("")));
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -187,7 +259,20 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
     use super::*;
+
+    #[tokio::test]
+    async fn a_pipe_of_this_user_passes_the_owner_check() {
+        let name = format!(r"\\.\pipe\torro-workplace-test-owner-{}", std::process::id());
+        let server = ServerOptions::new().first_pipe_instance(true).create(&name).expect("creates the pipe");
+        let client = ClientOptions::new().open(&name).expect("connects");
+
+        assert_eq!(server_process_id(&client), Some(std::process::id()));
+        check_owner(&client, Path::new(&name)).expect("this process serves the pipe");
+        drop(server);
+    }
 
     #[tokio::test]
     async fn missing_pipe_is_not_running() {

@@ -97,12 +97,18 @@ pub(crate) mod pipe {
         SID.get_or_init(look_up_user_sid).as_deref()
     }
 
-    /// Reads the user SID from this process's token. `sysinfo` does the token calls, so this crate
-    /// stays free of `unsafe` (forbidden in the workspace).
+    /// Reads the user SID from this process's token.
     fn look_up_user_sid() -> Option<String> {
-        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        process_sid(sysinfo::get_current_pid().ok()?.as_u32())
+    }
 
-        let pid = sysinfo::get_current_pid().ok()?;
+    /// The SID of the account the process `pid` runs as, `None` when the process is gone or its
+    /// token cannot be read (as for most processes of other users). `sysinfo` does the token
+    /// calls, so this crate needs no `unsafe` for them.
+    pub(crate) fn process_sid(pid: u32) -> Option<String> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+        let pid = Pid::from_u32(pid);
         let mut system = System::new();
         let only_the_user = ProcessRefreshKind::nothing().with_user(UpdateKind::Always);
         system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, only_the_user);

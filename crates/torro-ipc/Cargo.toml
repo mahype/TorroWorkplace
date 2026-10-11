@@ -7,8 +7,17 @@ authors.workspace = true
 repository.workspace = true
 description = "How the TorroWorkplace apps talk to the torroworkplace core: requests over a local socket."
 
-[lints]
-workspace = true
+# The workspace lints, with one difference: `unsafe_code` is `deny` instead of `forbid`. `forbid`
+# cannot be lifted locally, and the owner check of the Windows pipe client (`client.rs`, X.1b) needs
+# one FFI call behind a single `#[allow(unsafe_code)]`. Keep the rest in sync with the root Cargo.toml
+# (Cargo does not allow `workspace = true` next to overrides).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
 
 [dependencies]
 torro-core.workspace = true
@@ -23,6 +32,7 @@ tokio.workspace = true
 [target.'cfg(windows)'.dependencies]
 interprocess.workspace = true
 sysinfo.workspace = true
+windows-sys.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

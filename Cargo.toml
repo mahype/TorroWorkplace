@@ -61,7 +61,8 @@ tempfile = "3.27.0"
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_System_Console"] }
+# Win32_System_Pipes: the owner check of the pipe client in torro-ipc (X.1b).
+windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Pipes"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
