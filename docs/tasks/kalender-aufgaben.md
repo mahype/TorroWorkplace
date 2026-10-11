@@ -42,7 +42,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 ### Spur Oberflächen (Beispieldaten)
 
 ### K.1 torro-gui: Theme, Eingaben, Anmeldebildschirm
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torro-gui/src/{theme,datetime,connect,widgets}.rs`
 - `parse_date`, `parse_time`; Anmeldebildschirm (`connect.rs`); Theme verfeinern; Bausteine
@@ -78,7 +78,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torrocalendar/src/editor.rs`
 
 ### K.14 Aufgaben: Liste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torrotasks/src/list.rs`
 
