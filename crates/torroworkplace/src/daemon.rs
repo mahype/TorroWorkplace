@@ -39,11 +39,16 @@ impl Daemon {
     pub fn run(&self, request: Request) {
         let core = Arc::clone(&self.core);
         let refresh = self.refresh.clone();
+        let quit = self.quit.clone();
         self.runtime.spawn(async move {
             let what = describe(&request);
+            let ends = matches!(request, Request::Quit);
             let _ = refresh.send(());
             let response = core.handle(request).await;
             report(&what, &response);
+            if ends && matches!(response, Response::Ok) {
+                end_after_answer(quit);
+            }
             let _ = refresh.send(());
         });
     }
@@ -57,39 +62,19 @@ impl Daemon {
             }
         });
     }
+}
 
-    /// Opens the control centre (`torroworkplace ui`) in its own process, so it neither blocks
-    /// the tray nor goes away with it.
-    pub fn open_settings(&self) {
-        let program = match std::env::current_exe() {
-            Ok(program) => program,
-            Err(err) => {
-                eprintln!("torroworkplace: cannot find the settings: {err}");
-                return;
-            }
-        };
-        let mut command = std::process::Command::new(program);
-        command
-            .arg("ui")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        match command.spawn() {
-            Ok(mut child) => {
-                std::thread::spawn(move || child.wait());
-            }
-            Err(err) => eprintln!("torroworkplace: cannot open the settings: {err}"),
-        }
-    }
+/// How long a quit waits before it ends the service. The socket server writes the answer only
+/// after the handler returned, so ending at once could cut the `Ok` off; the grace time lets it
+/// go out first.
+const ANSWER_GRACE: Duration = Duration::from_millis(200);
 
-    pub fn quit(&self) {
-        let _ = self.quit.send(());
-    }
+/// Ends the service once the answer to a `system.quit` is on its way (see [`ANSWER_GRACE`]).
+fn end_after_answer(quit: mpsc::UnboundedSender<()>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(ANSWER_GRACE).await;
+        let _ = quit.send(());
+    });
 }
 
 /// Runs the service until it is told to quit. `headless` skips the tray icon.
@@ -137,21 +122,27 @@ async fn serve(headless: bool) -> Result<(), String> {
     let ipc = {
         let core = Arc::clone(&core);
         let refresh = refresh_tx.clone();
+        let quit = quit_tx.clone();
         let socket = socket.clone();
         tokio::spawn(async move {
             server::serve_with_key(&socket, move |key, request| {
                 let core = Arc::clone(&core);
                 let refresh = refresh.clone();
+                let quit = quit.clone();
                 async move {
                     // Hotkeys go through `ctl`, so commands from the socket get the same
                     // notifications as clicks in the tray.
                     let changes = changes_state(&request).then(|| describe(&request));
+                    let ends = matches!(request, Request::Quit);
                     // A refused request ran nothing: no notification, no new menu, so a foreign
                     // client cannot flood the desktop.
                     let response = match core.handle_from(key.as_ref(), request).await {
                         Ok(response) => response,
                         Err(refused) => return refused.response(),
                     };
+                    if ends && matches!(response, Response::Ok) {
+                        end_after_answer(quit);
+                    }
                     if let Some(what) = changes {
                         report(&what, &response);
                         let _ = refresh.send(());
@@ -264,6 +255,7 @@ fn describe(request: &Request) -> String {
     match request {
         Request::Ping => "ping".into(),
         Request::Status => "status".into(),
+        Request::Quit => "quit".into(),
         Request::ListTemplates => "list".into(),
         Request::SaveTemplate { .. } => "save".into(),
         Request::UpdateTemplate { id } => format!("update {id}"),

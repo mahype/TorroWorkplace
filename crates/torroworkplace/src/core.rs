@@ -30,6 +30,12 @@ fn sibling(name: &str) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 
+/// The command line that starts `app`. The control centre is this same program with `ui`, the
+/// other apps start without arguments.
+fn launch_command(app: AppId, program: String) -> Vec<String> {
+    if app == AppId::WORKPLACE { vec![program, "ui".into()] } else { vec![program] }
+}
+
 /// What the tray menu is built from.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
@@ -132,6 +138,9 @@ impl Core {
         match request {
             Request::Ping => Response::Pong { version: version(), api: API_VERSION },
             Request::Status => self.status(reach).await,
+            // The core ends only after the answer went out; the daemon takes care of that
+            // (`daemon::end_after_answer`), so the core itself just acknowledges it.
+            Request::Quit => Response::Ok,
             Request::ListTemplates => match self.store.list() {
                 Ok(list) => Response::Templates { templates: list.iter().map(TemplateSummary::from).collect() },
                 Err(err) => error(&err),
@@ -267,7 +276,7 @@ impl Core {
             return self.backend.focus_window(&window.id).await.map_err(|err| err.to_string());
         }
         let program = sibling(app.binary).to_string_lossy().into_owned();
-        SystemLauncher.spawn(&[program]).map(|_| ()).map_err(|err| err.to_string())
+        SystemLauncher.spawn(&launch_command(app, program)).map(|_| ()).map_err(|err| err.to_string())
     }
 
     /// The status for `reach`. A client without read access to `workspaces` gets no workspace
@@ -724,6 +733,23 @@ mod tests {
         };
         let binaries: Vec<_> = apps.iter().map(|app| app.binary.as_str()).collect();
         assert_eq!(binaries, ["torrotasks", "torrocalendar"]);
+    }
+
+    #[test]
+    fn the_control_centre_starts_with_ui_and_the_apps_without_arguments() {
+        assert_eq!(launch_command(AppId::WORKPLACE, "/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui"]);
+        assert_eq!(launch_command(AppId::TASKS, "/bin/torrotasks".into()), ["/bin/torrotasks"]);
+    }
+
+    #[tokio::test]
+    async fn quitting_is_for_the_app_key_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+
+        assert_eq!(code(&ask(&core, Some(&key), Request::Quit).await), "forbidden");
+        assert_eq!(ask(&core, Some(&app_key), Request::Quit).await, Response::Ok);
     }
 
     #[tokio::test]

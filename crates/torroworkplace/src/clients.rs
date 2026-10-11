@@ -308,7 +308,8 @@ impl Clients {
     ///
     /// - The app key may run everything.
     /// - A client key may run what its rights allow ([`Rights::allows`]): every `system`
-    ///   command, no `clients` command, the rest by level and admin switch of the area.
+    ///   command except `system.quit`, no `clients` command, the rest by level and admin switch of
+    ///   the area.
     ///   Otherwise [`Refused::Forbidden`]. Collections and approval are the core's next steps.
     /// - Without a valid key (none, unknown or removed) only `system.ping` runs, as
     ///   [`Caller::Anonymous`]; everything else is [`Refused::Unauthorized`].
@@ -1016,6 +1017,7 @@ pub(crate) mod tests {
                 clients.update(&client.id, rights.clone()).await.expect("rights changed");
                 for command in CATALOGUE {
                     let allowed = match (command.area, command.access) {
+                        (Area::System, Access::Admin) => false,
                         (Area::System, _) => true,
                         (Area::Clients, _) => false,
                         (_, Access::Admin) => admin,

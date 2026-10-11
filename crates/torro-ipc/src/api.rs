@@ -60,8 +60,9 @@ impl Area {
         Area::Clients,
     ];
 
-    /// Rights for this area can be granted to a client. `system` is open to every valid key and
-    /// `clients` to the app key only, so neither has a level in [`Rights::areas`].
+    /// Rights for this area can be granted to a client. `system` is open to every valid key, except
+    /// its admin commands, and `clients` to the app key only, so neither has a level in
+    /// [`Rights::areas`].
     pub fn grantable(self) -> bool {
         !matches!(self, Area::System | Area::Clients)
     }
@@ -243,13 +244,14 @@ impl Rights {
         self.areas.get(&area).copied().unwrap_or(AreaRights::NONE)
     }
 
-    /// Whether level and admin switch allow `operation`. Every `system` command is allowed and
-    /// no `clients` command: those are for the app key only.
+    /// Whether level and admin switch allow `operation`. Every `system` command is allowed except
+    /// the admin ones (`system.quit`), and no `clients` command: those are for the app key only,
+    /// so no client can switch the service off or give itself rights.
     ///
     /// Collections and approval are checked after this, by the core.
     pub fn allows(&self, operation: Operation) -> bool {
         match operation.area() {
-            Area::System => true,
+            Area::System => operation.access != Access::Admin,
             Area::Clients => false,
             area => self.area(area).allows(operation.access),
         }
@@ -433,6 +435,7 @@ impl Request {
         let command = match self {
             Request::Ping => &PING,
             Request::Status => &STATUS,
+            Request::Quit => &QUIT,
             Request::ListTemplates => &LIST_TEMPLATES,
             Request::SaveTemplate { .. } => &SAVE_TEMPLATE,
             Request::UpdateTemplate { .. } => &UPDATE_TEMPLATE,
@@ -490,6 +493,7 @@ fn method_of(variant: &serde_json::Value) -> Option<&str> {
 pub static CATALOGUE: &[&Command] = &[
     &PING,
     &STATUS,
+    &QUIT,
     &LIST_TEMPLATES,
     &SAVE_TEMPLATE,
     &UPDATE_TEMPLATE,
@@ -537,6 +541,17 @@ static STATUS: Command = Command {
     mcp: Mcp::Tool,
     description: "Returns a short status: version, window manager, active workspace, number of templates and \
                   whether a template is being saved or loaded.",
+};
+
+// Never an MCP tool: an agent must not switch off the service that checks and logs its requests
+// (`docs/api.md`, "Was nie nach außen geht", 4). Only the app key may send it.
+static QUIT: Command = Command {
+    name: "system.quit",
+    area: Area::System,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Stops the Torro Workplace core, as the tray's Quit does; the socket closes and the tray icon \
+                  disappears. Only the app key may use it.",
 };
 
 static LIST_TEMPLATES: Command = Command {
@@ -751,7 +766,7 @@ static OPEN_APP: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Opens an app of the suite by binary name (from list_apps), or brings its window to the front \
-                  when it already runs.",
+                  when it already runs. `torroworkplace` opens the control centre, which list_apps does not list.",
 };
 
 // The `clients` commands are never MCP tools, and only the app key may use them (`docs/api.md`,
@@ -861,6 +876,7 @@ mod tests {
         vec![
             Request::Ping,
             Request::Status,
+            Request::Quit,
             Request::ListTemplates,
             Request::SaveTemplate { name: None },
             Request::UpdateTemplate { id: "dev".into() },
@@ -960,8 +976,10 @@ mod tests {
             // MCP clients accept tool names up to 64 characters.
             assert!(command.tool_name().len() <= 64, "{}", command.name);
             assert!(!command.description.is_empty() && command.description.ends_with('.'), "{}", command.name);
-            // Rule from docs/api.md: only secrets, clients and approvals are kept from agents.
-            assert_eq!(command.mcp == Mcp::Never, command.area == Area::Clients, "{}", command.name);
+            // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals and quitting the
+            // service are kept from agents.
+            let kept_back = command.area == Area::Clients || command.name == "system.quit";
+            assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
             if command.area == Area::Clients {
                 assert_eq!(command.access, Access::Admin, "{}", command.name);
@@ -1052,6 +1070,7 @@ mod tests {
                     }
                     let operation = Operation { command, access: command.access };
                     let expected = match (command.area, command.access) {
+                        (Area::System, Access::Admin) => false,
                         (Area::System, _) => true,
                         (Area::Clients, _) => false,
                         (_, Access::Admin) => admin,
@@ -1072,6 +1091,15 @@ mod tests {
         assert_eq!(rights.area(Area::Calendar), AreaRights::NONE);
         assert!(!rights.allows(Request::CalendarCollections.operation()));
         assert!(rights.allows(Request::Ping.operation()), "system needs no entry");
+    }
+
+    #[test]
+    fn only_the_app_key_may_quit_the_service() {
+        // Not a right a client can be given: even a full-access client may not quit.
+        for template in RightsTemplate::ALL {
+            assert!(!template.rights().allows(Request::Quit.operation()), "{template:?}");
+        }
+        assert!(RightsTemplate::ReadOnly.rights().allows(Request::Status.operation()));
     }
 
     #[test]

@@ -28,7 +28,8 @@ const USAGE: &str = "usage:
   torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script]
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
-  torroworkplace ctl clients new-key <id> [--json]";
+  torroworkplace ctl clients new-key <id> [--json]
+  torroworkplace ctl quit [--json]";
 
 /// The kind of a client added without `--kind`.
 const DEFAULT_KIND: &str = "script";
@@ -152,8 +153,10 @@ fn ctl_request(words: &[&str], options: &Options) -> Result<Request, UsageError>
         ["setups"] => Err(UsageError::new("ctl setups needs a subcommand: list, save, update, delete or load")),
         ["clients", verb, args @ ..] => clients_request(verb, args, options),
         ["clients"] => Err(UsageError::new(tr("ctl clients needs a subcommand: list, add, remove or new-key"))),
+        ["quit"] => Ok(Request::Quit),
+        ["quit", ..] => Err(UsageError::new("ctl quit takes no arguments")),
         [] => Err(UsageError::new("ctl needs a group, e.g. `ctl setups list`")),
-        [other, ..] => Err(UsageError::new(format!("unknown ctl group {other:?}; try setups or clients"))),
+        [other, ..] => Err(UsageError::new(format!("unknown ctl group {other:?}; try setups, clients or quit"))),
     }
 }
 
@@ -454,6 +457,12 @@ mod tests {
         assert!(parse_strs(&["ctl", "setups", "list", "extra"]).is_err());
         assert!(parse_strs(&["ctl", "setups", "save", "a", "b"]).is_err());
         assert!(parse_strs(&["ctl", "setups", "list", "--verbose"]).is_err());
+    }
+
+    #[test]
+    fn ctl_quit_asks_the_core_to_stop() {
+        assert_eq!(request(&["ctl", "quit"]), Request::Quit);
+        assert!(parse_strs(&["ctl", "quit", "now"]).is_err());
     }
 
     #[test]

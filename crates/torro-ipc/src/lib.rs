@@ -115,6 +115,10 @@ pub enum Request {
     /// Short status for bars and scripts.
     #[serde(rename = "system.status")]
     Status,
+    /// Stops the core cleanly, as the tray's Quit does. Answered with [`Response::Ok`] before the
+    /// core ends. Only the app key may send it; a client key gets `forbidden`.
+    #[serde(rename = "system.quit")]
+    Quit,
     /// All templates.
     #[serde(rename = "workspaces.list_templates")]
     ListTemplates,
