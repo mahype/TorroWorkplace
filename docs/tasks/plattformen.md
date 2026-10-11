@@ -29,7 +29,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
 ## Aufgaben
 
 ### X.1 Windows: Apps und Dienst sprechen über Named Pipes
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Sicherheit, Nebenläufigkeit) · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,client,server}.rs`,
   `crates/torro-ipc/Cargo.toml`, `Cargo.toml` (nur `[workspace.dependencies]`)
 - Heute geben `client::call_with_key` und `server::serve_with_key` außerhalb von Unix `IpcError::Unsupported`
