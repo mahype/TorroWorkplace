@@ -145,6 +145,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Lists, due dates and subtasks", "Listen, Fälligkeiten und Unteraufgaben"),
     ("Not installed", "Nicht installiert"),
     ("Open", "Öffnen"),
+    ("Open link", "Link öffnen"),
     (
         "Opening an app brings its window to the front when it is already running.",
         "Öffnen holt das Fenster einer bereits laufenden App nach vorn.",
