@@ -23,9 +23,12 @@ use torro_setups::storage::Store;
 
 use crate::clients::{Clients, SystemKeychain};
 use crate::core::{Core, Snapshot};
+#[cfg(target_os = "linux")]
 use crate::tray;
 
 /// The way back into the daemon for front ends like the tray menu.
+// Only the Linux tray uses it so far; macOS and Windows run without a tray until `tray-icon` follows.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct Daemon {
     core: Arc<Core>,
     runtime: tokio::runtime::Handle,
@@ -33,6 +36,7 @@ pub struct Daemon {
     quit: mpsc::UnboundedSender<()>,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl Daemon {
     /// Runs `request` in the background and refreshes the menu before (to show "busy") and
     /// after.
