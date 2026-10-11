@@ -399,6 +399,9 @@ pub mod size {
     pub const SIDEBAR: f32 = 232.0;
     /// 300: the properties column on the right.
     pub const PROPS: f32 = 300.0;
+    /// 400: the side panel with the details of an event or a task ([`crate::panel`]), beside the
+    /// content in the wide layout and over it in the medium one.
+    pub const PANEL: f32 = 400.0;
     /// 460: the list next to the detail in the wide layout.
     pub const LIST: f32 = 460.0;
     /// 380: the list next to the detail in the medium layout.

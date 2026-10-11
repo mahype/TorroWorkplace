@@ -436,7 +436,7 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
   Sichtprüfung aller drei Apps breit und mittel, hell und dunkel, ein- und ausgeklappt.
 
 ### U.3 Seitenpaneel: rechts daneben oder darüber
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/panel.rs` (neu), `crates/torro-gui/src/lib.rs`, `crates/torro-gui/examples/gallery.rs`
 - Ein gemeinsamer Baustein für Details (Termin, Aufgabe, später mehr): `panel(header, body, footer)`
   sieht immer gleich aus wie die rechte Spalte (Fläche `PANEL`, Linie links, Kopf mit Pfad, Titel und
