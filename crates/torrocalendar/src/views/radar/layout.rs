@@ -23,8 +23,8 @@ pub const SEAM: f32 = 6.0;
 /// Where the drawn window ends (minutes after its start).
 pub const END: f32 = WINDOW - SEAM;
 /// The fading quarter is drawn in pieces this long, each with the opacity of its middle: Iced has
-/// no masks. Four minutes are two degrees.
-pub const FADE_PIECE: f32 = 4.0;
+/// no masks. Two minutes are one degree; at two degrees the steps showed as stripes in light mode.
+pub const FADE_PIECE: f32 = 2.0;
 /// Degrees per minute: twelve hours are a turn.
 const DEGREES_PER_MINUTE: f32 = 360.0 / WINDOW;
 /// One notch of the mouse wheel over the dial looks this far ahead or back (minutes).
@@ -465,8 +465,8 @@ mod tests {
         assert!(all.windows(2).all(|w| close(w[0].to, w[1].from)), "no gaps");
         // An event in the fade gets the same pieces as the ring under it.
         let event = pieces(600.0, 610.0);
-        assert_eq!(event.len(), 3);
-        assert_eq!((event[0].from, event[0].to), (600.0, 604.0));
+        assert_eq!(event.len(), 5);
+        assert_eq!((event[0].from, event[0].to), (600.0, 600.0 + FADE_PIECE));
         let ring = all.iter().find(|p| p.from == 600.0).expect("the same grid");
         assert_eq!(ring.opacity, event[0].opacity);
         assert!(pieces(-30.0, 0.0).is_empty(), "before the window");

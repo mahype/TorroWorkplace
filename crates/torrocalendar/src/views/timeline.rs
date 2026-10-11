@@ -410,7 +410,8 @@ impl canvas::Program<Message> for Timeline {
 }
 
 /// Hour lines from the axis down, and their labels "09:00" in the axis, in the days and the
-/// unfolded nights. No label right under the now label.
+/// unfolded nights. No label right under the now label, and none that would start at or past the
+/// left edge of what is on screen ("00" left of a cut-off "10:00").
 fn hours(
     frame: &mut Frame,
     p: &Palette,
@@ -421,6 +422,7 @@ fn hours(
 ) {
     let (top, bottom) = rows.axis();
     let label_width = text_width("00:00", typo::MICRO);
+    let left = plan.viewport.map_or(0.0, |viewport| viewport.offset) + space::S;
     for (hour, x) in plan.track.hours().into_iter().filter(|(_, x)| seen(*x, label_width)) {
         week::line(frame, Point::new(x, bottom), Point::new(x, rows.height), p.line);
         let start = x + HOUR_LABEL_GAP;
@@ -428,7 +430,7 @@ fn hours(
             let half = NOW_LABEL_WIDTH / 2.0;
             start < now + half && now - half < start + label_width
         });
-        if !covered {
+        if !covered && start >= left {
             let at = Point::new(start, (top + bottom) / 2.0);
             let text = format!("{:02}:00", hour.hour());
             week::label(frame, &text, at, typo::MICRO, p.text_3, Alignment::Left, Vertical::Center);

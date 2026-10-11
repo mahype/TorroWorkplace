@@ -248,6 +248,15 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   Bahnen, freie Zeit, Treffer: Termin, Nacht, freie Fläche) mit festen Zeiten; `--demo --open
   timeline --now 2026-10-13T14:20` funktioniert; fmt, clippy, test (auch `TORRO_LANG=de`) grün;
   Screenshots Breit und Mittel (hell und dunkel) ansehen und im Bericht bewerten.
+- **Umgesetzt (abweichend):** Taste **Shift+T** statt `T` (`T` ist „Today“, in Schmal der einzige
+  Weg zurück). Unbestätigte Termine nicht gestrichelt – `torro_pim::Event` kennt keinen Status
+  (wie die Woche). `views/week.rs` nur in der Sichtbarkeit geöffnet (`pub(super)`), damit der
+  Zeitstrahl die Helfer der Woche nutzt. `Icon::tinted` für das Mond-Icon im `Canvas`. Iced 0.14
+  zeichnet Formen in `Frame::with_clip` nach waagerechtem Scrollen falsch; der Zeitstrahl zeichnet
+  deshalb ohne Clip und kürzt Text selbst.
+- **Offen (Design-Prüfung):** In Breit sind die Säulen sehr hoch und fast leer (Höhe begrenzen oder
+  so lassen – Nutzer entscheidet). In Schmal zeigt das Menü „Day“ statt „Timeline“. Termine im
+  `Canvas` nicht per Tastatur erreichbar (gleiche Lücke wie im Wochenraster).
 
 ### K.22 Kalender: Radar
 - [x] erledigt
@@ -287,6 +296,15 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   Bahnen, Treffer Winkel/Radius → Termin) mit festen Zeiten; `--demo --open radar --now
   2026-10-13T14:20` funktioniert; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Screenshots
   Breit, Mittel und Schmal (hell und dunkel) ansehen und im Bericht bewerten.
+- **Umgesetzt (abweichend):** Klick auf freie Fläche in einem Ring legt einen Termin an
+  (`NewEvent`, auf 15 min gerundet), wie im Wochenraster. Unbestätigte Termine nicht gestrichelt
+  (kein Status in `torro_pim::Event`). „Back to now“ ohne Icon. Die Termin-Tönung liegt über der
+  Spur statt über `PANEL` (sonst wirkten dunkle Kalenderfarben schwächer als freie Zeit); das
+  Ausblenden läuft in 1°-Stücken (2° zeigte in hell Streifen).
+- **Offen (Design-Prüfung):** In Breit wächst das Zifferblatt ohne Obergrenze (großes leeres Loch in
+  der Mitte) – Durchmesser begrenzen oder Ringe mitwachsen lassen, Nutzer entscheidet. Maße
+  `LIST_MEDIUM` 260 und `NARROW_DIAL` 440 sind lokale Konstanten, gehören als Tokens nach
+  `torro-gui`. In Schmal liegen Liste und Kopftitel nicht auf einer Achse.
 
 ### Spur Kern (Nextcloud)
 

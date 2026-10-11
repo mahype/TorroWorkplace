@@ -584,7 +584,10 @@ fn tone(p: &Palette, entry: &Entry, now: NaiveDateTime) -> Tone {
     let colour = entry.event.color;
     let past = entry.event.end <= now;
     let fade = |c: Color| if past { mix(p.panel, c, PAST_OPACITY) } else { c };
-    Tone { fill: fade(over(p.tinted(colour), p.panel)), bar: fade(colour), title: fade(p.text), time: fade(p.text_2) }
+    // The tint lies over the ring's track, not the bare panel: over the panel a dark calendar
+    // colour came out darker than an empty track, so busy time looked weaker than free time.
+    let track = mix(p.panel, p.text, TRACK);
+    Tone { fill: fade(over(p.tinted(colour), track)), bar: fade(colour), title: fade(p.text), time: fade(p.text_2) }
 }
 
 /// The end angle of a fill piece, a quarter degree further so neighbouring pieces overlap and no
