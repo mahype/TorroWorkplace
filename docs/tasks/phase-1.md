@@ -226,7 +226,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   Test für die Einzelinstanz.
 
 ### 1.18 `ctl` und `status`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.17
 - **Dateien:** `crates/torroworkplace/src/cli.rs`, `crates/torroworkplace/src/main.rs`
 - **Ziel:** `torroworkplace ctl setups list|save|update <name>|delete <name>|load <name> [--mode empty|add|replace]`
