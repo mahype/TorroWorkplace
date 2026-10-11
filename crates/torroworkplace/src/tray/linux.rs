@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
+use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_setups::LoadMode;
 
@@ -76,34 +77,34 @@ impl ksni::Tray for Tray {
 fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     let mut menu = Vec::new();
     if let Some(name) = &snapshot.unsupported {
-        menu.push(info(format!("{name} fehlt noch")));
+        menu.push(info(trf("{name} not supported yet", &[("name", name)])));
         menu.push(MenuItem::Separator);
     } else {
         let load = per_template(snapshot, |t| {
             let id = &t.id;
             vec![
                 action_if(
-                    "Hier laden",
+                    tr("Load here"),
                     snapshot.workspace_windows == 0,
                     Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
                 ),
-                action("Hinzufügen", Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
-                action("Ersetzen", Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
+                action(tr("Add"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
+                action(tr("Replace"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
             ]
         });
-        menu.push(submenu("Vorlage laden", load));
-        menu.push(action("Workspace speichern", Request::SaveTemplate { name: None }));
+        menu.push(submenu(tr("Load template"), load));
+        menu.push(action(tr("Save workspace"), Request::SaveTemplate { name: None }));
         let update = per_template_action(snapshot, |id| Request::UpdateTemplate { id });
-        menu.push(submenu("Aktualisieren", update));
+        menu.push(submenu(tr("Update"), update));
         let delete = per_template_action(snapshot, |id| Request::DeleteTemplate { id });
-        menu.push(submenu("Löschen", delete));
+        menu.push(submenu(tr("Delete"), delete));
         menu.push(MenuItem::Separator);
     }
     menu.push(info(info_line(snapshot)));
     menu.push(MenuItem::Separator);
     menu.push(
         StandardItem {
-            label: "Beenden".into(),
+            label: tr("Quit").into(),
             activate: Box::new(|tray: &mut Tray| tray.daemon.quit()),
             ..Default::default()
         }
@@ -115,13 +116,15 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
 /// `Workspace 3 · hyprland`, or what is going on instead.
 fn info_line(snapshot: &Snapshot) -> String {
     if snapshot.busy {
-        return "Läuft gerade …".into();
+        return tr("Busy …").into();
     }
     if let Some(problem) = &snapshot.problem {
         return problem.clone();
     }
     match &snapshot.workspace {
-        Some(workspace) => format!("Workspace {workspace} · {}", snapshot.backend),
+        Some(workspace) => {
+            trf("Workspace {workspace} · {backend}", &[("workspace", workspace), ("backend", &snapshot.backend)])
+        }
         None => snapshot.backend.clone(),
     }
 }
@@ -132,7 +135,7 @@ fn per_template(
     items: impl Fn(&torro_setups::TemplateSummary) -> Vec<MenuItem<Tray>>,
 ) -> Vec<MenuItem<Tray>> {
     if snapshot.templates.is_empty() {
-        return vec![info("Noch keine Vorlagen".into())];
+        return vec![info(tr("No templates yet").into())];
     }
     snapshot.templates.iter().map(|t| submenu(&t.name, items(t))).collect()
 }
@@ -140,7 +143,7 @@ fn per_template(
 /// One entry per template that sends `request(id)`.
 fn per_template_action(snapshot: &Snapshot, request: impl Fn(String) -> Request) -> Vec<MenuItem<Tray>> {
     if snapshot.templates.is_empty() {
-        return vec![info("Noch keine Vorlagen".into())];
+        return vec![info(tr("No templates yet").into())];
     }
     snapshot.templates.iter().map(|t| action(&t.name, request(t.id.clone()))).collect()
 }
@@ -201,17 +204,21 @@ mod tests {
 
     #[test]
     fn menu_follows_the_concept() {
+        let sub = |label: &str| format!("{label} ▸");
         assert_eq!(
             labels(&build_menu(&snapshot())),
             [
-                "Vorlage laden ▸",
-                "Workspace speichern",
-                "Aktualisieren ▸",
-                "Löschen ▸",
-                "-",
-                "(Workspace 3 · hyprland)",
-                "-",
-                "Beenden"
+                sub(tr("Load template")),
+                tr("Save workspace").to_string(),
+                sub(tr("Update")),
+                sub(tr("Delete")),
+                "-".to_string(),
+                format!(
+                    "({})",
+                    trf("Workspace {workspace} · {backend}", &[("workspace", &"3"), ("backend", &"hyprland")])
+                ),
+                "-".to_string(),
+                tr("Quit").to_string(),
             ]
         );
     }
@@ -224,17 +231,18 @@ mod tests {
             let MenuItem::SubMenu(template) = &load.submenu[0] else { panic!("template submenu") };
             labels(&template.submenu)
         };
-        assert_eq!(load_items(&snapshot()), ["(Hier laden)", "Hinzufügen", "Ersetzen"]);
+        let (here, add, replace) = (tr("Load here"), tr("Add").to_string(), tr("Replace").to_string());
+        assert_eq!(load_items(&snapshot()), [format!("({here})"), add.clone(), replace.clone()]);
         let empty = Snapshot { workspace_windows: 0, ..snapshot() };
-        assert_eq!(load_items(&empty), ["Hier laden", "Hinzufügen", "Ersetzen"]);
+        assert_eq!(load_items(&empty), [here.to_string(), add, replace]);
     }
 
     #[test]
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
         let menu = labels(&build_menu(&snapshot));
-        assert_eq!(menu[0], "(AeroSpace (macOS) fehlt noch)");
-        assert_eq!(menu.last().map(String::as_str), Some("Beenden"));
+        assert_eq!(menu[0], format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])));
+        assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 
     #[test]

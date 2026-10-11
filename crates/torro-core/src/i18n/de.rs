@@ -33,8 +33,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Delete failed: {error}", "Löschen fehlgeschlagen: {error}"),
     ("Loading …", "Lade …"),
     ("Save failed: {error}", "Speichern fehlgeschlagen: {error}"),
+    ("Connect to Nextcloud", "Mit Nextcloud verbinden"),
+    ("If the browser does not open, copy this link:", "Falls sich der Browser nicht öffnet, kopiere diesen Link:"),
+    ("Please enter the address of your Nextcloud", "Bitte die Adresse deiner Nextcloud eingeben"),
+    ("Sign in in your browser …", "Im Browser anmelden …"),
     ("Sign in in your browser … ({url})", "Im Browser anmelden … ({url})"),
+    (
+        "Sign in with your Nextcloud to see events and tasks.",
+        "Melde dich mit deiner Nextcloud an, um Termine und Aufgaben zu sehen.",
+    ),
+    (
+        "This window updates itself once you have signed in.",
+        "Dieses Fenster aktualisiert sich, sobald du angemeldet bist.",
+    ),
     // Calendar
+    ("(untitled)", "(ohne Titel)"),
     ("+ Event", "+ Termin"),
     ("Agenda", "Agenda"),
     ("Calendar", "Kalender"),
@@ -46,6 +59,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Today", "Heute"),
     ("Week", "Woche"),
     ("Week {week} · {month} {year}", "KW {week} · {month} {year}"),
+    ("all day", "ganztägig"),
     // Tasks
     ("All", "Alle"),
     ("Completed", "Erledigte"),
@@ -56,4 +70,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Planned", "Geplant"),
     ("Tasks", "Aufgaben"),
     ("Tasks · {filter}", "Aufgaben · {filter}"),
+    ("Add a task above", "Neue Aufgabe oben eingeben"),
+    ("Nothing to do", "Nichts zu tun"),
+    ("Tomorrow", "Morgen"),
+    ("Yesterday", "Gestern"),
 ];

@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::{Space, checkbox, column, container, mouse_area, rich_text, row, scrollable, span, text};
 use iced::{Alignment, Background, Color, Element, Length, mouse};
+use torro_core::i18n::tr;
 use torro_core::theme::STATUS_ATTENTION;
 use torro_gui::datetime;
 use torro_gui::theme;
@@ -154,9 +155,9 @@ fn is_overdue(todo: &Todo, today: NaiveDate) -> bool {
 fn due_text(due: EventTime, today: NaiveDate) -> String {
     let day = due_date(due);
     let name = match (day - today).num_days() {
-        0 => "Today".to_string(),
-        1 => "Tomorrow".to_string(),
-        -1 => "Yesterday".to_string(),
+        0 => tr("Today").to_string(),
+        1 => tr("Tomorrow").to_string(),
+        -1 => tr("Yesterday").to_string(),
         _ => format!("{}, {}", datetime::weekday_name(day, true), day.format("%d.%m.")),
     };
     match due {
@@ -188,8 +189,8 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
 
 fn empty_state<'a>() -> Element<'a, Message> {
     let hint = column![
-        text("Nothing to do").size(18).color(theme::MUTED),
-        text("Add a task above").size(13).color(theme::MUTED),
+        text(tr("Nothing to do")).size(18).color(theme::MUTED),
+        text(tr("Add a task above")).size(13).color(theme::MUTED),
     ]
     .spacing(6)
     .align_x(Alignment::Center);
@@ -406,9 +407,9 @@ mod tests {
 
     #[test]
     fn due_text_is_relative_to_today() {
-        assert_eq!(due_text(EventTime::Date(day(11)), today()), "Today");
-        assert_eq!(due_text(EventTime::Date(day(12)), today()), "Tomorrow");
-        assert_eq!(due_text(EventTime::Date(day(10)), today()), "Yesterday");
+        assert_eq!(due_text(EventTime::Date(day(11)), today()), tr("Today"));
+        assert_eq!(due_text(EventTime::Date(day(12)), today()), tr("Tomorrow"));
+        assert_eq!(due_text(EventTime::Date(day(10)), today()), tr("Yesterday"));
         assert_eq!(due_text(EventTime::Date(day(14)), today()), "Mi, 14.10.");
         assert_eq!(due_text(EventTime::Date(day(5)), today()), "Mo, 05.10.");
     }
@@ -416,7 +417,7 @@ mod tests {
     #[test]
     fn due_text_shows_time_of_day() {
         let at = EventTime::DateTime(datetime::to_utc(day(11).and_hms_opt(14, 0, 0).expect("time")));
-        assert_eq!(due_text(at, today()), "Today 14:00");
+        assert_eq!(due_text(at, today()), format!("{} 14:00", tr("Today")));
     }
 
     #[test]

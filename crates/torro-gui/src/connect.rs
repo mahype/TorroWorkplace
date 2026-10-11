@@ -13,6 +13,7 @@ use iced::font::Weight;
 use iced::widget::{button, center, column, container, text, text_input};
 use iced::{Element, Fill, Font, border};
 
+use torro_core::i18n::tr;
 use torro_core::theme::STATUS_ERROR;
 use torro_pim::AccountState;
 
@@ -57,7 +58,7 @@ impl Connect {
             Message::Submit => {
                 let server = self.server.trim();
                 if server.is_empty() {
-                    self.status = Some(EMPTY_SERVER.to_string());
+                    self.status = Some(tr(EMPTY_SERVER).to_string());
                     return Action::None;
                 }
                 let server = server.to_string();
@@ -77,9 +78,9 @@ impl Connect {
 
         let body: Element<'a, Message> = match account {
             AccountState::SigningIn { login_url, .. } => column![
-                text("Sign in in your browser …").size(16).color(theme::TEXT),
-                text("This window updates itself once you have signed in.").size(14).color(theme::MUTED),
-                text("If the browser does not open, copy this link:").size(14).color(theme::MUTED),
+                text(tr("Sign in in your browser …")).size(16).color(theme::TEXT),
+                text(tr("This window updates itself once you have signed in.")).size(14).color(theme::MUTED),
+                text(tr("If the browser does not open, copy this link:")).size(14).color(theme::MUTED),
                 // A read-only input: it cannot be edited, but the text can be selected and copied.
                 text_input("", login_url).size(13).width(Fill).style(login_url_style),
             ]
@@ -101,14 +102,14 @@ impl Connect {
     fn form(&self) -> Element<'_, Message> {
         let can_submit = !self.busy;
         let mut form = column![
-            text(TAGLINE).size(15).color(theme::MUTED),
+            text(tr(TAGLINE)).size(15).color(theme::MUTED),
             text_input("cloud.example.org", &self.server)
                 .on_input(Message::ServerChanged)
                 .on_submit_maybe(can_submit.then_some(Message::Submit))
                 .padding(12)
                 .size(16)
                 .width(Fill),
-            button(text("Connect to Nextcloud").width(Fill).align_x(iced::Center))
+            button(text(tr("Connect to Nextcloud")).width(Fill).align_x(iced::Center))
                 .style(button::primary)
                 .padding([10, 16])
                 .width(Fill)
@@ -161,7 +162,7 @@ mod tests {
     fn submit_with_empty_server_sets_status() {
         let mut connect = Connect::default();
         assert_eq!(connect.update(Message::Submit), Action::None);
-        assert_eq!(connect.status.as_deref(), Some("Please enter the address of your Nextcloud"));
+        assert_eq!(connect.status.as_deref(), Some(tr(EMPTY_SERVER)));
         assert!(!connect.busy);
     }
 

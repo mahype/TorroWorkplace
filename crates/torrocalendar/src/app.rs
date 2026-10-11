@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::{button, column, container, opaque, row, scrollable, stack, text};
 use iced::{Element, Length, Subscription, Task};
+use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::source::Source;
@@ -30,10 +31,10 @@ impl CalView {
 
     fn label(self) -> &'static str {
         match self {
-            CalView::Day => "Tag",
-            CalView::Week => "Woche",
-            CalView::Month => "Monat",
-            CalView::Agenda => "Agenda",
+            CalView::Day => tr("Day"),
+            CalView::Week => tr("Week"),
+            CalView::Month => tr("Month"),
+            CalView::Agenda => tr("Agenda"),
         }
     }
 }
@@ -101,12 +102,12 @@ impl App {
             error: None,
             editor: None,
         };
-        let task = app.fetch_account();
+        let task = app.fetch_account().chain(views::week::scroll_to_morning());
         (app, task)
     }
 
     pub fn title(&self) -> String {
-        format!("Kalender · {}", self.heading())
+        trf("Calendar · {heading}", &[("heading", &self.heading())])
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -140,7 +141,7 @@ impl App {
             Message::ConnectStarted(result) => {
                 self.connect.busy = false;
                 match result {
-                    Ok(url) => self.connect.status = Some(format!("Im Browser anmelden … ({url})")),
+                    Ok(url) => self.connect.status = Some(trf("Sign in in your browser … ({url})", &[("url", &url)])),
                     Err(err) => self.connect.status = Some(err),
                 }
                 return self.fetch_account();
@@ -158,19 +159,19 @@ impl App {
             }
             Message::SetView(view) => {
                 self.view = view;
-                return self.load();
+                return self.load().chain(self.scroll_to_morning());
             }
             Message::Prev => {
                 self.anchor = self.step(-1);
-                return self.load();
+                return self.load().chain(self.scroll_to_morning());
             }
             Message::Next => {
                 self.anchor = self.step(1);
-                return self.load();
+                return self.load().chain(self.scroll_to_morning());
             }
             Message::Today => {
                 self.anchor = self.now.date();
-                return self.load();
+                return self.load().chain(self.scroll_to_morning());
             }
             Message::Refresh => {
                 let source = self.source.clone();
@@ -222,14 +223,14 @@ impl App {
                     self.editor = None;
                     return self.load();
                 }
-                Err(err) => self.error = Some(format!("Speichern fehlgeschlagen: {err}")),
+                Err(err) => self.error = Some(trf("Save failed: {error}", &[("error", &err)])),
             },
             Message::Deleted(result) => match result {
                 Ok(()) => {
                     self.editor = None;
                     return self.load();
                 }
-                Err(err) => self.error = Some(format!("Löschen fehlgeschlagen: {err}")),
+                Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
             },
             Message::Tick => {
                 self.now = Local::now().naive_local();
@@ -246,9 +247,9 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         match &self.account {
-            None => return container(text(self.error.as_deref().unwrap_or("Lade …"))).padding(24).into(),
+            None => return container(text(self.error.as_deref().unwrap_or(tr("Loading …")))).padding(24).into(),
             Some(account @ (AccountState::NotConnected | AccountState::SigningIn { .. })) => {
-                return self.connect.view(account, "Kalender").map(Message::Connect);
+                return self.connect.view(account, tr("Calendar")).map(Message::Connect);
             }
             Some(AccountState::Connected { .. }) => {}
         }
@@ -276,13 +277,13 @@ impl App {
             });
         }
         row![
-            button(text("Heute")).style(button::secondary).on_press(Message::Today),
+            button(text(tr("Today"))).style(button::secondary).on_press(Message::Today),
             button(text("‹")).style(button::secondary).on_press(Message::Prev),
             button(text("›")).style(button::secondary).on_press(Message::Next),
             text(self.heading()).size(18),
             iced::widget::Space::new().width(Length::Fill),
             views,
-            button(text("+ Termin"))
+            button(text(tr("+ Event")))
                 .style(button::primary)
                 .on_press(Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) }),
             button(text("⟳")).style(button::secondary).on_press(Message::Refresh),
@@ -294,7 +295,7 @@ impl App {
     }
 
     fn sidebar(&self) -> Element<'_, Message> {
-        let mut list = column![text("Kalender").size(13)].spacing(6).padding(10);
+        let mut list = column![text(tr("Calendars")).size(13)].spacing(6).padding(10);
         for collection in self.collections.iter().filter(|c| c.kind.has_events()) {
             let shown = !self.hidden.contains(&collection.id);
             let id = collection.id.clone();
@@ -366,10 +367,25 @@ impl App {
             CalView::Day => format_long_date(self.anchor),
             CalView::Week => {
                 let start = week_start(self.anchor);
-                format!("KW {} · {} {}", start.iso_week().week(), month_name(start.month()), start.year())
+                trf(
+                    "Week {week} · {month} {year}",
+                    &[
+                        ("week", &start.iso_week().week()),
+                        ("month", &month_name(start.month())),
+                        ("year", &start.year()),
+                    ],
+                )
             }
             CalView::Month => format!("{} {}", month_name(self.anchor.month()), self.anchor.year()),
-            CalView::Agenda => format!("Ab {}", format_long_date(self.anchor)),
+            CalView::Agenda => trf("From {date}", &[("date", &format_long_date(self.anchor))]),
+        }
+    }
+
+    /// Day and week open at 07:00 instead of midnight.
+    fn scroll_to_morning(&self) -> Task<Message> {
+        match self.view {
+            CalView::Day | CalView::Week => views::week::scroll_to_morning(),
+            CalView::Month | CalView::Agenda => Task::none(),
         }
     }
 

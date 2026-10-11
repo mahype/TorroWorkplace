@@ -19,6 +19,7 @@ use iced::widget::scrollable::AbsoluteOffset;
 use iced::widget::text::Alignment;
 use iced::widget::{Id, Space, column, container, row, scrollable, text};
 use iced::{Color, Element, Event, Length, Pixels, Point, Rectangle, Size, Task, mouse};
+use torro_core::i18n::tr;
 use torro_core::theme::TORRO_RED;
 use torro_gui::datetime::{format_time, to_local, weekday_name};
 use torro_gui::theme::{self, BACKGROUND, LINE, MUTED, SURFACE, TEXT};
@@ -129,7 +130,7 @@ fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
 
 fn title(event: &CalendarEvent) -> String {
     let summary = event.summary.trim();
-    if summary.is_empty() { UNTITLED.to_string() } else { summary.to_string() }
+    if summary.is_empty() { tr(UNTITLED).to_string() } else { summary.to_string() }
 }
 
 /// The left-button press in `bounds`, relative to its top left corner.
@@ -200,7 +201,7 @@ impl canvas::Program<Message> for Strip {
             let x = x0 + column as f32 * col_w;
             fill(&mut frame, Rectangle { x, y: 0.0, width: col_w, height }, SURFACE);
         }
-        label(&mut frame, "all day", Point::new(8.0, height / 2.0), MUTED, Alignment::Left, Vertical::Center);
+        label(&mut frame, tr("all day"), Point::new(8.0, height / 2.0), MUTED, Alignment::Left, Vertical::Center);
         for column in 0..=count {
             let x = x0 + column as f32 * col_w;
             line(&mut frame, Point::new(x, 0.0), Point::new(x, height), LINE, 1.0);

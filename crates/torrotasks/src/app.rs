@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::{Local, NaiveDate};
 use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler};
 use iced::{Element, Length, Subscription, Task};
+use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::source::Source;
 use torro_gui::widgets::collection_color;
@@ -86,7 +87,7 @@ impl App {
     }
 
     pub fn title(&self) -> String {
-        format!("Aufgaben · {}", self.filter_name(&self.filter))
+        trf("Tasks · {filter}", &[("filter", &self.filter_name(&self.filter))])
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -116,7 +117,7 @@ impl App {
             Message::ConnectStarted(result) => {
                 self.connect.busy = false;
                 match result {
-                    Ok(url) => self.connect.status = Some(format!("Im Browser anmelden … ({url})")),
+                    Ok(url) => self.connect.status = Some(trf("Sign in in your browser … ({url})", &[("url", &url)])),
                     Err(err) => self.connect.status = Some(err),
                 }
                 return self.fetch_account();
@@ -145,7 +146,7 @@ impl App {
             Message::QuickAddSubmit => {
                 let summary = self.quick_add.trim().to_string();
                 let Some(collection) = self.target_list() else {
-                    self.error = Some("Keine Aufgabenliste vorhanden".into());
+                    self.error = Some(tr("No task list yet").into());
                     return Task::none();
                 };
                 if summary.is_empty() {
@@ -201,11 +202,11 @@ impl App {
             }
             Message::Saved(result) => match result {
                 Ok(_) => return self.load(),
-                Err(err) => self.error = Some(format!("Speichern fehlgeschlagen: {err}")),
+                Err(err) => self.error = Some(trf("Save failed: {error}", &[("error", &err)])),
             },
             Message::Deleted(result) => match result {
                 Ok(()) => return self.load(),
-                Err(err) => self.error = Some(format!("Löschen fehlgeschlagen: {err}")),
+                Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
             },
             Message::Refresh => {
                 let source = self.source.clone();
@@ -228,9 +229,9 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         match &self.account {
-            None => return container(text(self.error.as_deref().unwrap_or("Lade …"))).padding(24).into(),
+            None => return container(text(self.error.as_deref().unwrap_or(tr("Loading …")))).padding(24).into(),
             Some(account @ (AccountState::NotConnected | AccountState::SigningIn { .. })) => {
-                return self.connect.view(account, "Aufgaben").map(Message::Connect);
+                return self.connect.view(account, tr("Tasks")).map(Message::Connect);
             }
             Some(AccountState::Connected { .. }) => {}
         }
@@ -239,12 +240,12 @@ impl App {
         let header = row![
             text(self.filter_name(&self.filter)).size(20),
             iced::widget::Space::new().width(Length::Fill),
-            toggler(self.show_completed).label("Erledigte").on_toggle(Message::ShowCompleted),
+            toggler(self.show_completed).label(tr("Completed")).on_toggle(Message::ShowCompleted),
             button(text("⟳")).style(button::secondary).on_press(Message::Refresh),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center);
-        let quick_add = text_input("Neue Aufgabe …", &self.quick_add)
+        let quick_add = text_input(tr("New task …"), &self.quick_add)
             .on_input(Message::QuickAddChanged)
             .on_submit(Message::QuickAddSubmit)
             .padding(8);
@@ -273,10 +274,10 @@ impl App {
             button(text(label)).style(style).width(Length::Fill).on_press(Message::SetFilter(filter))
         };
         let mut list = column![
-            entry(Filter::Today, "Heute".into()),
-            entry(Filter::Planned, "Geplant".into()),
-            entry(Filter::All, "Alle".into()),
-            text("Listen").size(13),
+            entry(Filter::Today, tr("Today").into()),
+            entry(Filter::Planned, tr("Planned").into()),
+            entry(Filter::All, tr("All").into()),
+            text(tr("Lists")).size(13),
         ]
         .spacing(4)
         .padding(10);
@@ -289,11 +290,11 @@ impl App {
 
     fn filter_name(&self, filter: &Filter) -> String {
         match filter {
-            Filter::Today => "Heute".into(),
-            Filter::Planned => "Geplant".into(),
-            Filter::All => "Alle".into(),
+            Filter::Today => tr("Today").into(),
+            Filter::Planned => tr("Planned").into(),
+            Filter::All => tr("All").into(),
             Filter::List(id) => {
-                self.collections.iter().find(|c| &c.id == id).map_or_else(|| "Liste".into(), |c| c.name.clone())
+                self.collections.iter().find(|c| &c.id == id).map_or_else(|| tr("List").into(), |c| c.name.clone())
             }
         }
     }
