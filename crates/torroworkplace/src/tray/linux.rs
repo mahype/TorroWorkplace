@@ -1,20 +1,22 @@
-//! Tray icon for Linux, built on ksni. This is the first attempt (task 1.1): a fixed menu
-//! whose clicks only name the entry on stderr. "Beenden" ends the daemon. Task 1.19 wires
-//! the menu to the real state. The icon is the Torro symbol from `icon.rs` (task 1.2).
+//! Tray icon for Linux, built on ksni (StatusNotifierItem over D-Bus; Omarchy's bar,
+//! Waybar and KDE show it). The menu is built from a [`Snapshot`] of the core and turns
+//! clicks into the same [`Request`]s the socket takes. The icon comes from `icon.rs`.
 
 use std::fmt;
+use std::sync::Arc;
 
 use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
-use tokio::sync::mpsc;
+use torro_ipc::Request;
+use torro_setups::LoadMode;
 
 use super::icon;
+use crate::core::Snapshot;
+use crate::daemon::Daemon;
 
 /// Errors of the tray icon.
 #[derive(Debug)]
 pub enum TrayError {
-    /// The async runtime for the tray could not be built.
-    Runtime(std::io::Error),
     /// The tray could not be registered on D-Bus or shown by the desktop.
     Spawn(ksni::Error),
 }
@@ -22,7 +24,6 @@ pub enum TrayError {
 impl fmt::Display for TrayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TrayError::Runtime(err) => write!(f, "cannot start the async runtime: {err}"),
             TrayError::Spawn(err) => write!(f, "cannot show the tray icon: {err}"),
         }
     }
@@ -30,10 +31,18 @@ impl fmt::Display for TrayError {
 
 impl std::error::Error for TrayError {}
 
-/// The tray state. It holds no data yet, only the channel that ends the daemon.
-struct Tray {
-    /// Receives one message when the user picks "Beenden".
-    quit: mpsc::UnboundedSender<()>,
+/// Keeps the icon alive; updating it shows a new snapshot.
+pub type TrayHandle = ksni::Handle<Tray>;
+
+/// The tray: the last snapshot plus the way back into the daemon.
+pub struct Tray {
+    pub snapshot: Snapshot,
+    daemon: Arc<Daemon>,
+}
+
+/// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot.
+pub async fn spawn(daemon: Arc<Daemon>, snapshot: Snapshot) -> Result<TrayHandle, TrayError> {
+    Tray { snapshot, daemon }.spawn().await.map_err(TrayError::Spawn)
 }
 
 impl ksni::Tray for Tray {
@@ -42,7 +51,7 @@ impl ksni::Tray for Tray {
     }
 
     fn title(&self) -> String {
-        "TorroWorkplace".into()
+        "Torro Workplace".into()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -53,84 +62,178 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        let quit = self.quit.clone();
-        vec![
-            SubMenu {
-                label: "Vorlage laden".into(),
-                submenu: vec![
-                    SubMenu {
-                        label: "Beispiel".into(),
-                        submenu: vec![entry("Hier laden"), entry("Hinzufügen"), entry("Ersetzen")],
-                        ..Default::default()
-                    }
-                    .into(),
-                ],
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "Beenden".into(),
-                activate: Box::new(move |_| {
-                    report("Beenden");
-                    // The receiver lives in `run`; if it is gone, the daemon is already ending.
-                    let _ = quit.send(());
-                }),
-                ..Default::default()
-            }
-            .into(),
-        ]
+        build_menu(&self.snapshot)
     }
 }
 
-/// A menu entry that only reports its name when clicked.
-fn entry(label: &'static str) -> MenuItem<Tray> {
-    StandardItem { label: label.into(), activate: Box::new(|_| report(label)), ..Default::default() }.into()
+/// The menu from docs/core.md for one snapshot.
+fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
+    let mut menu = Vec::new();
+    if let Some(name) = &snapshot.unsupported {
+        menu.push(info(format!("{name}: noch nicht unterstützt")));
+        menu.push(MenuItem::Separator);
+    } else {
+        let load = per_template(snapshot, |t| {
+            let id = &t.id;
+            vec![
+                action_if(
+                    "Hier laden",
+                    snapshot.workspace_windows == 0,
+                    Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
+                ),
+                action("Hinzufügen", Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
+                action("Ersetzen", Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
+            ]
+        });
+        menu.push(submenu("Vorlage laden", load));
+        menu.push(action("Aktiven Workspace speichern", Request::SaveTemplate { name: None }));
+        let update = per_template_action(snapshot, |id| Request::UpdateTemplate { id });
+        menu.push(submenu("Vorlage aktualisieren", update));
+        let delete = per_template_action(snapshot, |id| Request::DeleteTemplate { id });
+        menu.push(submenu("Vorlage löschen", delete));
+        menu.push(MenuItem::Separator);
+    }
+    menu.push(info(info_line(snapshot)));
+    menu.push(MenuItem::Separator);
+    menu.push(
+        StandardItem {
+            label: "Beenden".into(),
+            activate: Box::new(|tray: &mut Tray| tray.daemon.quit()),
+            ..Default::default()
+        }
+        .into(),
+    );
+    menu
 }
 
-fn report(name: &str) {
-    eprintln!("{name}");
+/// `Workspace 3 · hyprland`, or what is going on instead.
+fn info_line(snapshot: &Snapshot) -> String {
+    if snapshot.busy {
+        return "Läuft gerade …".into();
+    }
+    if let Some(problem) = &snapshot.problem {
+        return problem.clone();
+    }
+    match &snapshot.workspace {
+        Some(workspace) => format!("Workspace {workspace} · {}", snapshot.backend),
+        None => snapshot.backend.clone(),
+    }
 }
 
-/// Shows the tray icon and blocks until the user picks "Beenden".
-pub fn run() -> Result<(), TrayError> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(TrayError::Runtime)?;
-    runtime.block_on(async {
-        let (quit, mut quit_rx) = mpsc::unbounded_channel();
-        // The handle keeps the tray service running. Dropping it removes the icon.
-        let _handle = Tray { quit }.spawn().await.map_err(TrayError::Spawn)?;
-        quit_rx.recv().await;
-        Ok(())
-    })
+/// One submenu per template, or a disabled hint when there are none.
+fn per_template(
+    snapshot: &Snapshot,
+    items: impl Fn(&torro_setups::TemplateSummary) -> Vec<MenuItem<Tray>>,
+) -> Vec<MenuItem<Tray>> {
+    if snapshot.templates.is_empty() {
+        return vec![info("Noch keine Vorlagen".into())];
+    }
+    snapshot.templates.iter().map(|t| submenu(&t.name, items(t))).collect()
+}
+
+/// One entry per template that sends `request(id)`.
+fn per_template_action(snapshot: &Snapshot, request: impl Fn(String) -> Request) -> Vec<MenuItem<Tray>> {
+    if snapshot.templates.is_empty() {
+        return vec![info("Noch keine Vorlagen".into())];
+    }
+    snapshot.templates.iter().map(|t| action(&t.name, request(t.id.clone()))).collect()
+}
+
+fn submenu(label: &str, submenu: Vec<MenuItem<Tray>>) -> MenuItem<Tray> {
+    SubMenu { label: label.into(), submenu, ..Default::default() }.into()
+}
+
+fn action(label: &str, request: Request) -> MenuItem<Tray> {
+    action_if(label, true, request)
+}
+
+fn action_if(label: &str, enabled: bool, request: Request) -> MenuItem<Tray> {
+    StandardItem {
+        label: label.into(),
+        enabled,
+        activate: Box::new(move |tray: &mut Tray| tray.daemon.run(request.clone())),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// A greyed-out line that only informs.
+fn info(label: String) -> MenuItem<Tray> {
+    StandardItem { label, enabled: false, ..Default::default() }.into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ksni::Tray as _; // brings `menu` into scope
+    use torro_setups::TemplateSummary;
 
-    #[test]
-    fn menu_offers_the_example_submenu_and_quit() {
-        let (quit, _rx) = mpsc::unbounded_channel();
-        let menu = Tray { quit }.menu();
-        let top: Vec<&str> = menu
-            .iter()
+    fn labels(menu: &[MenuItem<Tray>]) -> Vec<String> {
+        menu.iter()
             .map(|item| match item {
-                MenuItem::SubMenu(sub) => sub.label.as_str(),
-                MenuItem::Standard(item) => item.label.as_str(),
-                _ => "-",
+                MenuItem::SubMenu(sub) => format!("{} ▸", sub.label),
+                MenuItem::Standard(item) if item.enabled => item.label.clone(),
+                MenuItem::Standard(item) => format!("({})", item.label),
+                _ => "-".into(),
             })
-            .collect();
-        assert_eq!(top, ["Vorlage laden", "-", "Beenden"]);
+            .collect()
+    }
+
+    fn snapshot() -> Snapshot {
+        Snapshot {
+            backend: "hyprland".into(),
+            workspace: Some("3".into()),
+            workspace_windows: 2,
+            templates: vec![TemplateSummary {
+                id: "dev".into(),
+                name: "Entwicklung".into(),
+                windows: 3,
+                updated: chrono::Utc::now(),
+            }],
+            ..Snapshot::default()
+        }
     }
 
     #[test]
-    fn icon_comes_as_pixmaps_without_icon_name() {
-        let (quit, _rx) = mpsc::unbounded_channel();
-        let tray = Tray { quit };
-        assert_eq!(tray.icon_name(), "");
-        let sizes: Vec<(i32, i32)> = tray.icon_pixmap().iter().map(|icon| (icon.width, icon.height)).collect();
-        let expected: Vec<(i32, i32)> = icon::SIZES.iter().map(|&s| (s as i32, s as i32)).collect();
-        assert_eq!(sizes, expected);
+    fn menu_follows_the_concept() {
+        assert_eq!(
+            labels(&build_menu(&snapshot())),
+            [
+                "Vorlage laden ▸",
+                "Aktiven Workspace speichern",
+                "Vorlage aktualisieren ▸",
+                "Vorlage löschen ▸",
+                "-",
+                "(Workspace 3 · hyprland)",
+                "-",
+                "Beenden"
+            ]
+        );
+    }
+
+    #[test]
+    fn load_here_only_on_an_empty_workspace() {
+        let load_items = |snapshot: &Snapshot| {
+            let menu = build_menu(snapshot);
+            let MenuItem::SubMenu(load) = &menu[0] else { panic!("load submenu") };
+            let MenuItem::SubMenu(template) = &load.submenu[0] else { panic!("template submenu") };
+            labels(&template.submenu)
+        };
+        assert_eq!(load_items(&snapshot()), ["(Hier laden)", "Hinzufügen", "Ersetzen"]);
+        let empty = Snapshot { workspace_windows: 0, ..snapshot() };
+        assert_eq!(load_items(&empty), ["Hier laden", "Hinzufügen", "Ersetzen"]);
+    }
+
+    #[test]
+    fn unsupported_system_shows_why() {
+        let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
+        let menu = labels(&build_menu(&snapshot));
+        assert_eq!(menu[0], "(AeroSpace (macOS): noch nicht unterstützt)");
+        assert_eq!(menu.last().map(String::as_str), Some("Beenden"));
+    }
+
+    #[test]
+    fn icon_comes_as_pixmaps() {
+        let sizes: Vec<usize> = icon::SIZES.iter().map(|&s| icon::argb32(s).len()).collect();
+        assert_eq!(sizes, icon::SIZES.iter().map(|&s| (s * s * 4) as usize).collect::<Vec<_>>());
     }
 }
