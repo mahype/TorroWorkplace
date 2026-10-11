@@ -2,6 +2,9 @@
 //! StatusNotifierItem protocol on D-Bus); `main` reports "tray not supported yet" elsewhere.
 
 #[cfg(target_os = "linux")]
+mod icon;
+
+#[cfg(target_os = "linux")]
 mod linux;
 
 #[cfg(target_os = "linux")]

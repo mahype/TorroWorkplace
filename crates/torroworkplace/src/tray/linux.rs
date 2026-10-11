@@ -1,6 +1,6 @@
 //! Tray icon for Linux, built on ksni. This is the first attempt (task 1.1): a fixed menu
 //! whose clicks only name the entry on stderr. "Beenden" ends the daemon. Task 1.19 wires
-//! the menu to the real state.
+//! the menu to the real state. The icon is the Torro symbol from `icon.rs` (task 1.2).
 
 use std::fmt;
 
@@ -8,8 +8,7 @@ use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 use tokio::sync::mpsc;
 
-/// Freedesktop icon name, used until the Torro icon lands in task 1.2.
-const ICON_NAME: &str = "view-grid-symbolic";
+use super::icon;
 
 /// Errors of the tray icon.
 #[derive(Debug)]
@@ -46,8 +45,11 @@ impl ksni::Tray for Tray {
         "TorroWorkplace".into()
     }
 
-    fn icon_name(&self) -> String {
-        ICON_NAME.into()
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        icon::SIZES
+            .iter()
+            .map(|&size| ksni::Icon { width: size as i32, height: size as i32, data: icon::argb32(size) })
+            .collect()
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
@@ -120,5 +122,15 @@ mod tests {
             })
             .collect();
         assert_eq!(top, ["Vorlage laden", "-", "Beenden"]);
+    }
+
+    #[test]
+    fn icon_comes_as_pixmaps_without_icon_name() {
+        let (quit, _rx) = mpsc::unbounded_channel();
+        let tray = Tray { quit };
+        assert_eq!(tray.icon_name(), "");
+        let sizes: Vec<(i32, i32)> = tray.icon_pixmap().iter().map(|icon| (icon.width, icon.height)).collect();
+        let expected: Vec<(i32, i32)> = icon::SIZES.iter().map(|&s| (s as i32, s as i32)).collect();
+        assert_eq!(sizes, expected);
     }
 }
