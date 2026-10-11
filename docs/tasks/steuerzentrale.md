@@ -53,7 +53,7 @@ Gemeinsam für alle Seiten-Aufgaben:
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/workspaces.rs`
 
 ### S.8 Seite Apps
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/apps.rs`
 
 ### S.9 Seite General

@@ -7,7 +7,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Applies to apps you open afterwards. “System” follows your system language.",
         "Gilt für Apps, die du danach öffnest. „System“ folgt der Systemsprache.",
     ),
+    ("Day, week, month and agenda", "Tag, Woche, Monat und Agenda"),
+    ("Installed", "Installiert"),
     ("Language", "Sprache"),
+    ("Lists, due dates and subtasks", "Listen, Fälligkeiten und Unteraufgaben"),
+    ("Not installed", "Nicht installiert"),
+    ("Open", "Öffnen"),
+    (
+        "Opening an app brings its window to the front when it is already running.",
+        "Öffnen holt das Fenster einer bereits laufenden App nach vorn.",
+    ),
+    ("Suite apps", "Suite-Apps"),
+    ("Window class: {class}", "Fensterklasse: {class}"),
     ("Start at login", "Beim Anmelden starten"),
     (
         "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.",
