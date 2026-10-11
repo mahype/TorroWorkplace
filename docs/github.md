@@ -172,9 +172,14 @@ Darum bekommt GitHub einen **eigenen Bereich `github`** mit Stufe (none / read /
 einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben `calendars` und
 `task_lists` in `Rights`). Der Dienst prüft bei jedem Client:
 
-- **Jeder Treffer** einer Suche, Vorschau oder Filterliste wird gegen die Repo-Auswahl gefiltert,
-  bevor er gelesen wird. Eine umgeschriebene Anfrage kann also nie mehr zeigen als die
-  freigegebenen Repos.
+- **Vor dem Fragen prüfen (seit G.2b):** Bei einer Auswahl „nur diese Repos“ muss jede Suche, die ein
+  Client schickt (Vorschau, Anlegen, Ändern), mindestens ein `repo:`/`org:`/`user:` aus seiner Auswahl
+  haben und kein positives außerhalb; `OR`, `NOT`, Klammern und Unklares werden abgelehnt. Sonst
+  `forbidden`, ohne dass GitHub gefragt wird. GitHub sucht mit dem vollen Token: Erst danach zu
+  filtern ließe Fehlercodes, Trefferzahlen und Antwortzeit Namen privater Repos verraten.
+- **Jeder Treffer** wird zusätzlich gegen die Repo-Auswahl gefiltert, bevor er gelesen wird (zweite
+  Sicherung). Eine Filterliste, deren Suchen nicht ganz in der Auswahl liegen, gibt es für den Client
+  nicht. GitHub-Fehlermeldungen erreichen Clients nur als feste Meldung.
 - `tasks.add_link`, Anheften und Abhaken (Issue schließen) nur bei Repos in der Auswahl; sonst
   `not-found`.
 - Neue Filterlisten kommen nie von selbst in eine Auswahl „nur diese“; Listen-Kennungen werden nie
