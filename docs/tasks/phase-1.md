@@ -105,7 +105,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** `#[ignore]`-Test gegen den echten Hyprland liefert die Fenster des aktiven Workspace.
 
 ### 1.6 Hyprland: Fenster steuern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.5
 - **Dateien:** `crates/torro-wm/src/hyprland/dispatch.rs`, `crates/torro-wm/src/hyprland/mod.rs`
 - **Ziel:** `focus_window`, `move_to_workspace`, `close_window`. Hyprland 0.56 unter Omarchy 4 nimmt
