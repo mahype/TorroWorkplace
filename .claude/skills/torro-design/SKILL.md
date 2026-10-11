@@ -294,7 +294,8 @@ das Skript nutzt diese Form. Eine Ansicht wechseln geht per Tastenkürzel an das
 
 **Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
 Zustand direkt (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
-editor editor-new menu drawer switcher error empty loading`; Aufgaben: `detail menu display drawer
+timeline radar night editor editor-new menu drawer switcher error empty loading` (`night`: Zeitstrahl
+mit der Karte „Night“); Aufgaben: `detail menu display drawer
 switcher due error empty loading`; Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
 remove delete-template rename-template` und `--section overview|accounts|workspaces|apps|general`.
