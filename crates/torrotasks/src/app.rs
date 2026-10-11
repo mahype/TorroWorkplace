@@ -6,10 +6,11 @@
 //! list (`list.rs`) and the detail panel (`detail.rs`) only render and report clicks as
 //! [`Message`]s.
 //!
-//! The detail (T.4) stands beside the list (wide, medium) or replaces it with "‹ Today" in the
-//! header (narrow); in the wide layout its properties fill the shell's properties column. It has
-//! no Save button: it hands out saves as it changes, and while title or notes wait to be saved a
-//! one-second timer sends `Flush` ([`AUTOSAVE`]).
+//! The detail (T.4, U.5) is the side panel of `torro_gui::panel`: beside the list in the wide
+//! layout (where it takes the place of the properties column), over the list in the medium and
+//! narrow ones (full width in narrow); the list keeps its width. It has no Save button: it hands
+//! out saves as it changes, and while title or notes wait to be saved a one-second timer sends
+//! `Flush` ([`AUTOSAVE`]).
 //!
 //! The header (T.2) has one primary button, "New task", that focuses the quick add row (the same
 //! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
@@ -18,7 +19,7 @@
 //! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
 //! glances without any frame (`glance.rs`: the numbers "3 overdue · 5 today" and the next open
 //! tasks, to be ticked off and nothing else); narrow is the list with "Today ▾" in the header and
-//! the detail instead of the list; medium and wide are as described above. The size is kept in the
+//! the detail over the list; medium and wide are as described above. The size is kept in the
 //! state ([`Message::Resized`]), so the keys can be switched off in a glance; filter, selection,
 //! open detail and quick add text survive every change of size.
 //!
@@ -36,13 +37,14 @@ use std::time::Duration;
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
+use iced::widget::{Space, column, container, row, stack, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
+use torro_gui::panel;
 use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
@@ -232,8 +234,6 @@ const QUICK_ADD: &str = "quick-add";
 const QUICK_ADD_START: f32 = space::M + icon::SIZE_SM + space::S;
 /// Where the quick add text ends: before the key hint.
 const QUICK_ADD_END: f32 = space::XXL + space::S;
-/// The one-pixel line between the list and the detail.
-const LINE: f32 = 1.0;
 /// How long after the last keystroke typed title or notes are saved.
 const AUTOSAVE: Duration = Duration::from_secs(1);
 
@@ -839,15 +839,14 @@ impl App {
         });
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         let layer = menu.or_else(editor);
-        let props = self
-            .detail
-            .as_ref()
-            .filter(|_| shell::has_props(class))
-            .map(|detail| detail.properties(&property).map(Message::Detail));
-        shell::shell(class, sidebar, header, self.body(class, &property), props)
+        let detail =
+            self.detail.as_ref().map(|detail| detail.panel(self.crumb_filter(detail), &property, Message::Detail));
+        // The panel takes the place of the properties column while it is beside the list.
+        let placed = panel::place(class, self.body(class), detail, layer);
+        shell::shell(class, sidebar, header, placed.body, None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(layer)
+            .overlay(placed.overlay)
             .into()
     }
 
@@ -857,17 +856,6 @@ impl App {
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
         let icon = filter_icon(&self.filter);
-        let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
-        if narrow && self.detail.is_some() {
-            // The detail replaces the list: back to it, named after the filter.
-            let back = widgets::text_button(
-                Some(Icon::ChevronLeft),
-                name,
-                style::button::ghost,
-                Some(Message::Detail(detail::Message::Close)),
-            );
-            return shell::header_bar([], back, []);
-        }
         let new_task = Message::Switcher(Switcher::New);
         let (show_display, new_button) = match class {
             SizeClass::Wide => (
@@ -922,21 +910,10 @@ impl App {
         )])])
     }
 
-    /// The content below the header: the list, and the detail beside it (wide, medium) or
-    /// instead of it (narrow).
-    fn body<'a>(&'a self, class: SizeClass, property: &Anchor) -> Element<'a, Message> {
-        let Some(detail) = &self.detail else {
-            return widgets::content(size::CONTENT_MAX, self.list(class));
-        };
-        let palette = theme::palette(&self.theme());
-        let detail = detail.view(class, self.crumb_filter(detail), property, palette).map(Message::Detail);
-        let width = match class {
-            SizeClass::Wide => size::LIST,
-            SizeClass::Medium => size::LIST_MEDIUM,
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => return detail,
-        };
-        row![container(self.list(class)).width(width).height(Fill), rule::vertical(LINE).style(style::rule), detail]
-            .into()
+    /// The content below the header: the list at its own width, whatever the detail does; the
+    /// detail is the side panel `window` places beside or over it.
+    fn body(&self, class: SizeClass) -> Element<'_, Message> {
+        widgets::content(size::CONTENT_MAX, self.list(class))
     }
 
     /// The quick add row, an error line if there is one, and the grouped list; loading and the
@@ -1615,6 +1592,7 @@ mod tests {
     const MINI: Size = Size::new(240.0, 160.0);
     const STRIP: Size = Size::new(1200.0, 200.0);
     const NARROW: Size = Size::new(420.0, 780.0);
+    const MEDIUM: Size = Size::new(900.0, 700.0);
     const WIDE: Size = Size::new(1600.0, 1000.0);
 
     fn connected(app: &mut App) {
@@ -1661,6 +1639,22 @@ mod tests {
             // Every size builds its view from this state.
             let _ = app.view();
         }
+    }
+
+    #[test]
+    fn the_detail_leaves_the_list_its_width_in_every_layout() {
+        let mut app = app_with_rows();
+        connected(&mut app);
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let _ = app.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(panel::mode_for(app.class()) == panel::PanelMode::Beside, size == WIDE, "{size:?}");
+            // The panel, the list and the open card are built from the one state.
+            let _ = app.view();
+        }
+        assert!(app.detail.is_some(), "a resize does not close the panel");
     }
 
     #[test]

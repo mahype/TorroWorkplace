@@ -1,11 +1,12 @@
 //! The detail of one task (K.15 in `docs/tasks/kalender-aufgaben.md`, Linear look from T.4 in
-//! `docs/tasks/design.md`, mock-up `docs/prototypes/linear/tasks.html`).
+//! `docs/tasks/design.md`, mock-up `docs/prototypes/linear/tasks.html`), shown in the side panel
+//! of `torro_gui::panel` (U.5): beside the list in the wide layout, over it in the medium and
+//! narrow ones.
 //!
-//! The main column ([`Detail::view`]): a crumb "List › Filter" in `text_3`, the title as a large
-//! borderless field (`HEADLINE`, wraps), in the medium and narrow layouts the properties as chips
-//! below it, the notes as a quiet field, the subtasks (round check to tick them, a click on the
-//! title opens them) and "Delete task" (`danger`, asks once). In the wide layout the properties
-//! stand in the window's properties column instead ([`Detail::properties`]).
+//! The panel ([`Detail::panel`]): the path "List › Filter" in its head, the title as a large
+//! borderless field (`HEADLINE`, wraps), the notes as a quiet field, the properties as rows
+//! (the same in every size), the subtasks (round check to tick them, a click on the title opens
+//! them) and, fixed in the footer, "Delete task" (`danger`, asks once).
 //!
 //! Properties: status (open/done), priority (None, Low = 9, Medium = 5, High = 1; stored values
 //! map to the nearest), due date, list and parent task. A click on a property opens its editor
@@ -24,31 +25,24 @@ use std::collections::HashSet;
 
 use chrono::{Days, Local, NaiveDate};
 use iced::widget::text::Wrapping;
-use iced::widget::{
-    Space, button, checkbox, column, container, mouse_area, row, rule, scrollable, svg, text_editor, text_input,
-};
-use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard, mouse};
+use iced::widget::{button, checkbox, column, container, row, rule, scrollable, text_editor, text_input};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::layout::SizeClass;
-use torro_gui::theme::{self, Palette, palette, size, space};
+use torro_gui::panel::{self, Panel};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
-use torro_gui::{datetime, shell, style, typo};
+use torro_gui::{datetime, style, typo};
 use torro_pim::{Collection, EventTime, Todo};
 
 use crate::list;
 
 /// The id of the date field in the due card, so opening the card can focus it.
 pub const DUE_INPUT: &str = "detail-due";
-/// Gap between icon and label inside a chip, as in `widgets::chip` (6 is allowed inside blocks).
-const ICON_GAP: f32 = 6.0;
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
 /// The parent menu shows at most this many entries and scrolls the rest.
 const PARENT_MENU_ROWS: f32 = 10.0;
-// design-check: allow the crumb's ring is the mock-up's `.ring` inside a crumb (12, line 2)
-const CRUMB_RING: f32 = 12.0;
-const RING_LINE: f32 = 2.0;
 
 /// The panel's state.
 #[derive(Debug)]
@@ -454,54 +448,41 @@ impl Detail {
     // View
     // -----------------------------------------------------------------------------------------
 
-    /// The main column for the layout `class`: crumb, title, chips (unless `class` has the
-    /// properties column), notes, subtasks, delete. `filter` is the list's current filter name for
-    /// the crumb (`None` when the filter is the task's own list). `anchor` is registered by the
-    /// trigger of the open editor; pass the same one to [`Detail::layer`].
-    ///
-    /// `p` is the palette of the current mode, for the marks that take a fixed colour.
-    pub fn view<'a>(
+    /// The task as a side panel (`torro_gui::panel`): path "List › Filter" (`filter` is the list's
+    /// current filter name, `None` when it is the task's own list), the title field, the notes,
+    /// the properties as rows and the subtasks; "Delete task" in the footer. `anchor` is
+    /// registered by the trigger of the open editor; pass the same one to [`Detail::layer`].
+    /// `wrap` turns this module's messages into the app's, because the panel is built for one
+    /// message type.
+    pub fn panel<'a, M: Clone + 'a>(
         &'a self,
-        class: SizeClass,
         filter: Option<String>,
         anchor: &Anchor,
-        p: &'static Palette,
-    ) -> Element<'a, Message> {
-        let mut head = column![self.crumb(filter, class), self.title_field()].spacing(space::S);
+        wrap: fn(Message) -> M,
+    ) -> Panel<'a, M> {
+        let mark = Mark::Ring(self.list_colour());
+        let parts = std::iter::once(self.list_name()).chain(filter);
+        let mut title = column![self.title_field()].spacing(space::S);
         if let Some(problem) = self.shown(self.title_problem()) {
-            head = head.push(error_text(problem));
+            title = title.push(error_text(problem));
         }
-        // As in the mock-up: the notes follow the title closely (8) and keep a little more room
-        // (16) below the chips.
-        let notes_gap = if shell::has_props(class) {
-            space::S
-        } else {
-            head = head.push(self.chips(anchor, p));
-            space::L
-        };
-        let mut body = column![column![head, self.notes_field()].spacing(notes_gap)].spacing(space::XL);
+        let mut body = column![panel::inset(self.notes_field()), self.properties(anchor)].spacing(space::L);
         if let Some(subtasks) = self.subtasks_view() {
             body = body.push(subtasks);
         }
-        body = body.push(self.delete_row());
-
-        let padding = match class {
-            SizeClass::Wide => space::XXL,
-            SizeClass::Medium => space::XL,
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => space::L,
-        };
-        let page = container(body.max_width(size::FORM_MAX)).width(Fill).padding(padding);
-        scrollable(page)
-            .direction(scrollable::Direction::Vertical(style::scrollbar()))
-            .style(style::scrollable)
-            .width(Fill)
-            .height(Fill)
-            .into()
+        let footer = self.footer().into_iter().map(|element| element.map(wrap)).collect();
+        panel::panel(
+            panel::path(Some(mark), parts),
+            Element::from(title).map(wrap),
+            Element::from(body).map(wrap),
+            wrap(Message::Close),
+        )
+        .footer(footer)
     }
 
-    /// The properties column of the wide layout: "Properties" (status, priority, due), "List" and
-    /// "Parent task", as `prop_section`s.
-    pub fn properties<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
+    /// "Properties" (status, priority, due), "List" and "Parent task" as `prop_section`s: the same
+    /// rows in every size.
+    fn properties<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
         let priority = self.draft.priority;
         let status = widgets::prop_row(
             None,
@@ -565,21 +546,6 @@ impl Detail {
         Some(widgets::floating(anchor, Placement::Below(Align::Start), card, Message::CloseEditor))
     }
 
-    /// "● Work › Today" in `META` `text_3`, and in the side-by-side layouts a close button.
-    fn crumb<'a>(&'a self, filter: Option<String>, class: SizeClass) -> Element<'a, Message> {
-        let mut crumb =
-            row![ring(self.list_colour()), muted(self.list_name())].spacing(ICON_GAP).align_y(Alignment::Center);
-        if let Some(filter) = filter {
-            crumb = crumb.push(quiet_icon(Icon::ChevronRight, icon::SIZE_SM)).push(muted(filter));
-        }
-        let mut line = row![crumb, Space::new().width(Fill)].align_y(Alignment::Center);
-        // Narrow shows "‹ Back" in the header instead.
-        if matches!(class, SizeClass::Wide | SizeClass::Medium) {
-            line = line.push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Close)));
-        }
-        container(line).height(size::CONTROL_SM).center_y(size::CONTROL_SM).into()
-    }
-
     /// The title as a large borderless field that wraps; Enter saves, Escape leaves the field.
     fn title_field(&self) -> Element<'_, Message> {
         text_editor(&self.title)
@@ -622,43 +588,6 @@ impl Detail {
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text_2))
             .into()
-    }
-
-    /// The properties as chips under the title (medium and narrow layouts).
-    fn chips<'a>(&'a self, anchor: &Anchor, p: &'static Palette) -> Element<'a, Message> {
-        let priority = self.draft.priority;
-        let status_mark = if self.draft.completed {
-            Mark::Tinted(Icon::CircleCheck, self.list_colour())
-        } else {
-            Mark::Ring(p.text_3)
-        };
-        let status = widgets::chip(Some(status_mark), self.status_label(), Some(Message::ToggleDone));
-        let priority = self.trigger(
-            Editor::Priority,
-            anchor,
-            lead_chip(bars_cell(priority.level()), priority.label(), Message::Open(Editor::Priority)),
-        );
-        let due = self.trigger(
-            Editor::Due,
-            anchor,
-            widgets::chip(Some(Mark::Icon(Icon::Calendar)), self.due_label(), Some(Message::Open(Editor::Due))),
-        );
-        let list = self.trigger(
-            Editor::List,
-            anchor,
-            widgets::chip(
-                Some(Mark::Ring(self.list_colour())),
-                self.list_name(),
-                self.can_move().then_some(Message::Open(Editor::List)),
-            ),
-        );
-        // A task without a parent offers "+ Parent" in quiet text instead of an empty "Parent task" chip.
-        let parent_chip = match self.parent_title() {
-            Some(title) => widgets::chip(Some(Mark::Icon(Icon::ListTodo)), title, Some(Message::Open(Editor::Parent))),
-            None => add_chip(tr("Parent"), Message::Open(Editor::Parent)),
-        };
-        let parent = self.trigger(Editor::Parent, anchor, parent_chip);
-        widgets::chip_row(vec![status, priority, due, list, parent])
     }
 
     /// `content` anchored when `editor` is the open one, so its layer floats next to it.
@@ -744,7 +673,9 @@ impl Detail {
         .align_y(Alignment::Center);
         let colour = self.list_colour();
         let rows = subtasks.into_iter().map(|task| subtask_row(task, colour));
-        Some(column![container(head).padding(Padding::ZERO.bottom(space::XS))].extend(rows).into())
+        // The title stands where the titles of the property sections stand (8 in from the rows).
+        let head = container(head).padding(Padding { bottom: space::XS, ..style::ITEM_PADDING });
+        Some(column![head].extend(rows).into())
     }
 
     /// The direct subtasks, open first, then by title.
@@ -755,20 +686,17 @@ impl Detail {
         subtasks
     }
 
-    /// "Delete task" (danger); after the first press the question with Delete and Cancel.
-    fn delete_row(&self) -> Element<'_, Message> {
+    /// The panel's footer: "Delete task" (danger); after the first press the question with Delete
+    /// and Cancel. Escape cancels the question before it closes the panel.
+    fn footer(&self) -> Vec<Element<'_, Message>> {
         if !self.confirm_delete {
-            let delete = widgets::text_button(None, tr("Delete task"), style::button::danger, Some(Message::Delete));
-            return on_axis(delete);
+            return vec![widgets::text_button(None, tr("Delete task"), style::button::danger, Some(Message::Delete))];
         }
-        row![
-            typo::text(typo::BODY, tr("Really delete?")).style(theme::text_2),
+        vec![
+            typo::text(typo::BODY, tr("Really delete?")).style(theme::text_2).into(),
             widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete)),
             widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
         ]
-        .spacing(space::S)
-        .align_y(Alignment::Center)
-        .into()
     }
 
     fn priority_menu(&self) -> Element<'_, Message> {
@@ -905,7 +833,9 @@ fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
         .padding(style::ITEM_PADDING)
         .style(style::button::list_row(false))
         .on_press(Message::OpenSubtask(task.uid.clone()));
-    column![row![check, title].align_y(Alignment::Center), rule::horizontal(LINE).style(style::rule)].into()
+    // The check stands on the axis of the property marks (16 from the panel's edge).
+    let line = container(row![check, title].align_y(Alignment::Center)).padding(Padding::ZERO.left(space::S));
+    column![line, rule::horizontal(LINE).style(style::rule)].into()
 }
 
 /// Escape in a text field: leave it and save what was typed.
@@ -933,55 +863,9 @@ fn bare_editor(theme: &Theme, status: text_editor::Status, value: Color) -> text
     }
 }
 
-/// A chip whose mark is an element of its own (the priority bars); looks like `widgets::chip`.
-fn lead_chip<'a>(lead: Element<'a, Message>, label: &'a str, on_press: Message) -> Element<'a, Message> {
-    let content =
-        row![lead, typo::text(typo::META, label).wrapping(Wrapping::None)].spacing(ICON_GAP).align_y(Alignment::Center);
-    let chip =
-        container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
-    mouse_area(chip).on_press(on_press).interaction(mouse::Interaction::Pointer).into()
-}
-
-/// A chip that offers to add something ("+ Parent"): plus and label in `text_3`, otherwise as
-/// `widgets::chip`, so it reads as an empty slot rather than a value.
-fn add_chip<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
-    let content = row![quiet_icon(Icon::Plus, icon::SIZE_SM), muted(label.to_string())]
-        .spacing(ICON_GAP)
-        .align_y(Alignment::Center);
-    let chip =
-        container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
-    mouse_area(chip).on_press(on_press).interaction(mouse::Interaction::Pointer).into()
-}
-
-/// A text button moved left by its own padding, so its label stands on the content axis (the
-/// title, the notes) instead of 10 to the right of it; the hover surface reaches into the margin.
-fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
-    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
-}
-
 /// The priority bars in a 16-wide cell, so they line up with the icons of the other rows.
 fn bars_cell<'a>(level: usize) -> Element<'a, Message> {
     container(list::priority_view(level)).center_x(icon::SIZE).into()
-}
-
-/// A ring in `colour` (a task list), as in the mock-up's crumb.
-fn ring<'a>(colour: Color) -> Element<'a, Message> {
-    container(Space::new())
-        .width(CRUMB_RING)
-        .height(CRUMB_RING)
-        .style(move |_| container::Style {
-            border: border::rounded(CRUMB_RING / 2.0).color(colour).width(RING_LINE),
-            ..container::Style::default()
-        })
-        .into()
-}
-
-fn quiet_icon<'a>(which: Icon, edge: f32) -> Element<'a, Message> {
-    icon::icon(which, edge).style(|t, _| svg::Style { color: Some(palette(t).text_3) }).into()
-}
-
-fn muted<'a>(label: String) -> Element<'a, Message> {
-    typo::text(typo::META, label).style(theme::text_3).wrapping(Wrapping::None).into()
 }
 
 fn error_text<'a>(problem: &'a str) -> Element<'a, Message> {
@@ -1073,6 +957,8 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::NaiveDateTime;
+    use iced::widget::Space;
+    use torro_gui::layout::SizeClass;
     use torro_pim::CollectionKind;
 
     fn day(d: u32) -> NaiveDate {
@@ -1464,6 +1350,29 @@ mod tests {
         assert_eq!(detail.open, Some(Editor::List));
         detail.update(Message::Open(Editor::List));
         assert_eq!(detail.open, None);
+    }
+
+    #[test]
+    fn the_footer_asks_before_deleting() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        assert_eq!(detail.footer().len(), 1, "only Delete task");
+        detail.update(Message::Delete);
+        assert_eq!(detail.footer().len(), 3, "the question, Delete and Cancel");
+        detail.update(Message::CancelDelete);
+        assert_eq!(detail.footer().len(), 1);
+    }
+
+    #[test]
+    fn the_panel_is_the_same_for_every_size_and_closes_with_its_x() {
+        let child = Todo { parent: Some("t1".into()), ..todo("c", "Child") };
+        let mut detail = detail(&todo("t1", "a"), &[child]);
+        detail.update(Message::Open(Editor::List));
+        let anchor = Anchor::new();
+        for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let panel = detail.panel(Some("Today".into()), &anchor, |message| message);
+            let placed = panel::place(class, Space::new(), Some(panel), detail.layer(&anchor));
+            assert!(placed.overlay.is_some(), "{class:?}: the open editor is always on top");
+        }
     }
 
     #[test]

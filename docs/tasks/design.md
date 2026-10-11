@@ -460,7 +460,7 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
 - Der gewählte Termin ist im Raster markiert (`focus_ring`-Umriss, offener Punkt aus C.2).
 
 ### U.5 Aufgaben: Detail im selben Paneel
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** U.3 · **Dateien:** `crates/torrotasks/src/{app,detail}.rs`
 - Das Detail nutzt das Paneel aus U.3: Breit daneben (wie heute), Mittel und Schmal darüber statt
   „Liste schmaler“ bzw. „Detail ersetzt die Liste“. Inhalt und Verhalten bleiben.
