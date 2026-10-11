@@ -54,8 +54,8 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | Anbieter | Wofür | Anmeldung | |
 |---|---|---|---|
 | **Nextcloud** | Kalender, Aufgaben; später Kontakte, Dateien, Deck, Notizen, Talk | Login Flow v2 im Browser, App-Passwort im Schlüsselbund (gibt es schon im Kern) | v1 |
-| **GitHub** | Issues, Pull Requests, Reviews, Benachrichtigungen | OAuth **Device Flow**: die Steuerzentrale zeigt einen Code, der Nutzer bestätigt auf github.com; kein Client-Secret nötig. Token im Schlüsselbund | nächste |
-| **Slack** | Erwähnungen, Direktnachrichten, ausgewählte Kanäle | OAuth im Browser mit Rücksprung auf `localhost`; Token im Schlüsselbund | später |
+| **GitHub** | Issues und Projekte lesen; später Pull Requests, Reviews, Benachrichtigungen | Ohne eigene OAuth-App: **(a) Anmeldung der GitHub CLI übernehmen**, wenn `gh` angemeldet ist (Token per `gh auth token`, einmal bestätigen; für Projekte `gh auth refresh -s read:project`), oder **(b) Token einfügen** (Personal Access Token, nur Lesen; Link zur Token-Seite mit vorausgewählten Rechten). Token im Schlüsselbund. OAuth Device Flow mit eigener App höchstens später | nächste |
+| **Slack** | Erwähnungen, Direktnachrichten, ausgewählte Kanäle | Weg noch offen (Token statt OAuth wahrscheinlich); Token im Schlüsselbund | später |
 | **KI-Anbieter** (Anthropic, OpenAI, lokal) | Zusammenfassen, Agenten in der Suite | API-Schlüssel (maskiertes Feld, „Key stored“, entfernen), lokal: Adresse | später |
 
 Weitere Anbieter (Google Kalender, Todoist, IMAP über TorroMail …) kommen als neue Einträge im
@@ -89,6 +89,25 @@ rechts unten:
 Das Modell erlaubt mehrere Konten je Anbieter (zwei Nextclouds, privat und Arbeit). Die
 Detailseite bestimmt, welche Sammlungen in die Apps fließen.
 
+### GitHub: Rechte
+
+Issues lesen: Classic-Token mit `repo` (privat) bzw. ohne Rechte (öffentlich) oder Fine-grained
+Token mit „Issues: Read“. Projekte (Projects v2, GraphQL): `read:project` beim Classic-Token bzw.
+„Projects: Read“ beim Fine-grained Token (für Projekte einer Organisation). Die Detailseite zeigt,
+welche Rechte das Token hat, und was ohne sie fehlt („Projects need the read:project permission“).
+
+## Kalender und Listen pro Fenster (später)
+
+Jedes App-Fenster bekommt ein eigenes **Fenster-Profil**: welche Kalender bzw. Listen es zeigt,
+welche Ansicht (Tag, Woche, Monat, Agenda). So lassen sich mehrere Kalenderfenster nebeneinander
+kacheln, etwa „Arbeit · Woche“ und „Familie · Monat“.
+
+- Jedes Fenster hat eine feste Kennung (`--window <id>`); ohne Angabe erzeugt die App eine neue.
+- Die App legt ihr Profil unter dieser Kennung im State-Verzeichnis ab und lädt es beim Start.
+- Die **Workspace-Vorlagen** speichern den Startbefehl samt `--window <id>`. Beim Laden öffnen sich
+  dieselben Fenster mit denselben Kalendern und derselben Ansicht.
+- Die Auswahl im Fenster ist eine Teilmenge dessen, was die Steuerzentrale für die Suite freigibt.
+
 ## Ablage
 
 | Was | Wo |
@@ -110,9 +129,8 @@ Die App wartet und lädt von selbst, sobald ein Konto da ist.
 
 ## Offene Fragen
 
-1. GitHub: eigene OAuth-App unter dem Konto `mahype` registrieren (Client-ID ist öffentlich, kein
-   Secret beim Device Flow)?
-2. Slack: braucht für OAuth eine registrierte Slack-App mit Redirect auf `localhost`; Workspace-
-   Admin muss sie zulassen. Soll das später überhaupt OAuth sein oder reicht ein Bot-Token?
-3. Sollen die Apps Konten-Auswahl je Fenster bekommen (z. B. Kalender nur „Arbeit“), oder reicht
-   die Auswahl der Sammlungen in der Steuerzentrale?
+1. Slack: welcher Weg (Bot-Token, Benutzer-Token, OAuth) – entscheiden, wenn Slack drankommt.
+
+Entschieden am 2026-10-11: GitHub ohne eigene OAuth-App (CLI-Anmeldung übernehmen oder Token
+einfügen). Kalender und Listen werden später pro Fenster gewählt, und die Workspace-Vorlagen
+merken sich, welche Fenster mit welcher Auswahl offen waren.
