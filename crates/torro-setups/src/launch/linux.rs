@@ -21,7 +21,15 @@ pub fn command_from_proc(proc_root: &Path, pid: u32) -> Option<Vec<String>> {
     let raw = fs::read(proc_root.join(pid.to_string()).join("cmdline")).ok()?;
     // Every argument is followed by a NUL, so the last one is the terminator, not a separator.
     let data: &[u8] = raw.strip_suffix(&[0u8]).unwrap_or(&raw);
-    let args = data.split(|byte| *byte == 0).map(|part| String::from_utf8_lossy(part).into_owned()).collect();
+    let mut args: Vec<String> =
+        data.split(|byte| *byte == 0).map(|part| String::from_utf8_lossy(part).into_owned()).collect();
+    // Chromium, Electron apps and others rewrite their argv into one space-separated string.
+    if let [single] = args.as_slice()
+        && single.contains(' ')
+        && !Path::new(single).exists()
+    {
+        args = single.split_whitespace().map(str::to_string).collect();
+    }
     let args = strip_secrets(args);
     args.first().is_some_and(|program| !program.is_empty()).then_some(args)
 }
@@ -122,8 +130,14 @@ pub fn process_ancestors(proc_root: &Path, pid: u32) -> HashSet<u32> {
     ancestors
 }
 
+/// Flags that contain a secret word but carry no secret (Chromium's keyring backend).
+const NOT_SECRET: &[&str] = &["password-store"];
+
 fn is_secret_key(key: &str) -> bool {
     let lowered = key.to_lowercase();
+    if NOT_SECRET.contains(&lowered.trim_start_matches('-')) {
+        return false;
+    }
     SECRET_WORDS.iter().any(|word| lowered.contains(word))
 }
 
@@ -332,6 +346,24 @@ mod tests {
     fn strip_secrets_removes_key_value_words_in_any_case() {
         let args = words(&["app", "token=abc", "SECRET=s", "ApiKey=k", "API_KEY=v", "auth=a", "lang=de"]);
         assert_eq!(strip_secrets(args), words(&["app", "lang=de"]));
+    }
+
+    #[test]
+    fn strip_secrets_keeps_chromium_password_store() {
+        let args = words(&["chromium", "--password-store=gnome-libsecret", "--password=x"]);
+        assert_eq!(strip_secrets(args), words(&["chromium", "--password-store=gnome-libsecret"]));
+    }
+
+    #[test]
+    fn rewritten_cmdline_is_split_on_spaces() {
+        let proc = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(proc.path().join("42")).unwrap();
+        std::fs::write(proc.path().join("42/cmdline"), b"/usr/lib/chromium/chromium --ozone-platform=wayland\0")
+            .unwrap();
+        assert_eq!(
+            command_from_proc(proc.path(), 42),
+            Some(words(&["/usr/lib/chromium/chromium", "--ozone-platform=wayland"]))
+        );
     }
 
     #[test]
