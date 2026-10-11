@@ -198,7 +198,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 - „all day“ in `CAPTION`; ganztägige Termine im Stil der Blöcke.
 
 ### C.3 Monat
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.2
 - **Dateien:** `crates/torrocalendar/src/views/month.rs`
 - Nur Innenlinien, keine Zellrahmen; Tageszahl 12/500 mit Rand 8, heute als Kreis 22;

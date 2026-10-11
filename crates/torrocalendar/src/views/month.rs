@@ -1,134 +1,268 @@
-//! Month view: six weeks of day cells (task K.10 in `docs/tasks/kalender-aufgaben.md`).
+//! Month view: six weeks of day cells (task K.10 in `docs/tasks/kalender-aufgaben.md`), drawn
+//! after Linear (task C.3 in `docs/tasks/design.md`, tokens from the C.2 week view).
 //!
-//! A weekday header (Mo–Su) above six rows of seven cells, starting at `data.start` (the
-//! Monday on or before the 1st of the month). Days outside the anchor's month are dimmed,
-//! today's number is in Torro red. Each cell lists its events, all-day first, then by start
-//! (`14:00 Title`), at most four lines; with more, three events and `+n more`. A timed event
-//! that continues from an earlier day shows as `… Title` on the following days. Multi-day
-//! and all-day events appear on every day they cover. Click on a day number → `ShowDay(date)`,
-//! on an event → `OpenEvent(index)`, on empty space in a cell → `NewEvent { date, time: None }`.
+//! A weekday header (Mon–Sun, `CAPTION` in `text_3`) above six rows of seven cells, starting at
+//! `data.start` (the Monday on or before the 1st of the month). Only inner lines separate the
+//! cells: no frame per cell. Days outside the anchor's month have a `text_3` number and faded
+//! entries but no surface of their own; weekends of the month are set off a little, as in the
+//! week view. Today's number is white in a red circle.
+//!
+//! Each cell lists its events, all-day first, then by start, as rows 20 high: all-day entries
+//! as tinted chips with a bar in the calendar colour, timed ones with a dot and `14:00 Title`;
+//! entries that are over are faded. As many rows as the cell is high (at most four, the
+//! `+n more` line included); with more entries, the last row sums the rest up. A timed event that
+//! continues from an earlier day shows as `… Title` on the following days. Multi-day and all-day
+//! events appear on every day they cover. Click on a day number → `ShowDay(date)`, on an event →
+//! `OpenEvent(index)`, on empty space in a cell → `NewEvent { date, time: None }`.
+//!
+//! Every colour comes from the theme's [`Palette`] when the view is drawn, so light and dark
+//! both work.
 
-use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime};
-use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, mouse_area, row, text};
-use iced::{Alignment, Background, Border, Color, Element, Length, border, mouse};
+use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
+use iced::alignment::Vertical;
+use iced::border::{self, Radius};
+use iced::widget::button;
+use iced::widget::text::{Style as TextStyle, Wrapping};
+use iced::widget::{Space, column, container, mouse_area, responsive, row, rule};
+use iced::{Background, Border, Color, Element, Length, Padding, Theme, mouse};
 use torro_core::i18n::{tr, trf};
-use torro_core::theme::TORRO_RED;
 use torro_gui::datetime::{format_time, to_local, weekday_name};
-use torro_gui::theme;
-use torro_gui::widgets::color_dot;
+use torro_gui::theme::{self, Palette, palette, radius, size, space};
+use torro_gui::{style, typo};
 use torro_pim::{Event, EventTime};
 
 use super::{Item, ViewData};
 use crate::app::Message;
 
-/// Lines per cell, the `+n more` line included.
+/// Lines per cell at most, the `+n more` line included.
 const MAX_LINES: usize = 4;
 /// Height of one event row; longer titles are clipped, not wrapped.
-const EVENT_HEIGHT: f32 = 17.0;
+const EVENT_HEIGHT: f32 = 20.0;
+/// Space between two event rows.
+const LINE_GAP: f32 = 2.0;
+/// Edge of the box around a day number, and of today's red circle.
+const DAY_CIRCLE: f32 = 22.0;
+/// The day number: 12/500 with tabular figures.
+const DAY_NUMBER: typo::Level = typo::CAPTION.tabular();
+/// Diameter of the dot in front of a timed entry.
+const DOT: f32 = 6.0;
+/// Width of the colour bar on the left of an all-day chip.
+const BAR: f32 = 3.0;
+/// Entries that are over, and those of the neighbouring months, are drawn at this opacity over
+/// the panel (as in the week view).
+const FADE_OPACITY: f32 = 0.55;
+/// Weekend cells get this much of the window background over the panel (as in the week view).
+const WEEKEND_SHADE: f32 = 0.35;
+/// Height of the weekday header.
+const HEADER_HEIGHT: f32 = size::CONTROL_SM;
+/// The lines between the header and the grid and between the six rows of cells.
+const INNER_LINES: f32 = 6.0;
 
 pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
-    let today = data.now.date();
-    let mut weeks = column![header(data.start)].height(Length::Fill);
+    // The number of entry rows depends on the height the cells get.
+    responsive(move |bounds| month(&data, bounds.height)).into()
+}
+
+/// The header and the six weeks for a view `height` high.
+fn month<'a>(data: &ViewData<'a>, height: f32) -> Element<'a, Message> {
+    let today = data.now;
+    let cell_height = (height - HEADER_HEIGHT - INNER_LINES) / 6.0;
+    let lines = lines_that_fit(cell_height);
+    let horizontal = || rule::horizontal(1).style(style::rule);
+    let mut weeks = column![header(data.start), horizontal()].height(Length::Fill);
     for week in 0..6i64 {
         let mut cells = row![].height(Length::FillPortion(1));
         for day in 0..7i64 {
+            if day > 0 {
+                cells = cells.push(rule::vertical(1).style(style::rule));
+            }
             let date = data.start + Duration::days(week * 7 + day);
-            cells = cells.push(cell(date, data.anchor, today, &data.items));
+            cells = cells.push(cell(date, data.anchor, today, &data.items, lines));
+        }
+        if week > 0 {
+            weeks = weeks.push(horizontal());
         }
         weeks = weeks.push(cells);
     }
     weeks.into()
 }
 
-/// Mo–Su, short names, from `start` on.
+/// Mon–Sun, short names, from `start` on, left-aligned with the day numbers below.
 fn header<'a>(start: NaiveDate) -> Element<'a, Message> {
-    let mut names = row![].width(Length::Fill);
+    let mut names = row![].width(Length::Fill).height(HEADER_HEIGHT);
     for offset in 0..7 {
-        let name = weekday_name(start + Duration::days(offset), true);
+        if offset > 0 {
+            // As wide as the line between two cells, so the names stay above their columns.
+            names = names.push(Space::new().width(1));
+        }
+        let name = typo::text(typo::CAPTION, weekday_name(start + Duration::days(offset), true)).style(theme::text_3);
         names = names.push(
-            container(text(name).size(12).color(theme::MUTED))
-                .padding([4, 6])
+            container(name)
+                .padding(Padding::ZERO.left(space::S))
                 .width(Length::FillPortion(1))
-                .center_x(Length::FillPortion(1)),
+                .height(Length::Fill)
+                .align_y(Vertical::Center),
         );
     }
-    container(names).style(|_| container::Style { border: line_border(), ..Default::default() }).into()
+    names.into()
 }
 
-/// One day: the day number, then its events as far as they fit. Empty space in the cell
+/// One day: the day number, then its events as far as `lines` rows go. Empty space in the cell
 /// creates an event on that day.
-fn cell<'a>(date: NaiveDate, anchor: NaiveDate, today: NaiveDate, items: &[Item<'a>]) -> Element<'a, Message> {
+fn cell<'a>(
+    date: NaiveDate,
+    anchor: NaiveDate,
+    today: NaiveDateTime,
+    items: &[Item<'a>],
+    lines: usize,
+) -> Element<'a, Message> {
     let in_month = date.year() == anchor.year() && date.month() == anchor.month();
-    let number_color = if date == today {
-        theme::color(TORRO_RED)
-    } else if in_month {
-        theme::TEXT
-    } else {
-        theme::FAINT
-    };
-    let text_color = if in_month { theme::TEXT } else { theme::MUTED };
-    let background = if in_month { theme::SURFACE } else { theme::BACKGROUND };
-
     let day = day_items(items, date);
-    let (shown, more) = visible_split(day.len());
-    let mut lines = column![].spacing(2);
+    let (shown, more) = visible_split(day.len(), lines);
+    let mut rows = column![].spacing(LINE_GAP);
     for item in &day[..shown] {
-        lines = lines.push(event_row(*item, date, text_color));
+        let faded = !in_month || ends_before(item.event, today);
+        rows = rows.push(event_row(*item, date, faded));
     }
     if more > 0 {
         let summary = trf("{n} more", &[("n", &more)]);
-        lines = lines.push(text(format!("+{summary}")).size(11).color(theme::MUTED));
+        let more = typo::text(typo::META, format!("+{summary}")).style(theme::text_2).wrapping(Wrapping::None);
+        rows = rows.push(container(more).padding(Padding::ZERO.left(space::XS)).height(EVENT_HEIGHT));
     }
 
-    let number = button(text(date.day().to_string()).size(13))
-        .padding([2, 6])
-        .style(move |_, _| button::Style { text_color: number_color, ..Default::default() })
-        .on_press(Message::ShowDay(date));
-
-    let cell = container(column![number, lines].spacing(2))
-        .padding(4)
+    let number =
+        container(day_number(date, today.date(), in_month)).padding(Padding::ZERO.top(space::S).left(space::S));
+    let rows = container(rows).padding([0.0, space::XS]);
+    let shaded = in_month && is_weekend(date);
+    let cell = container(column![number, rows].spacing(space::XS))
+        .padding(Padding::ZERO.bottom(space::XS))
         .width(Length::FillPortion(1))
         .height(Length::Fill)
         .clip(true)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(background)),
-            border: line_border(),
-            ..Default::default()
+        .style(move |theme| container::Style {
+            background: shaded.then(|| Background::Color(weekend_shade(palette(theme)))),
+            ..container::Style::default()
         });
     mouse_area(cell).on_press(Message::NewEvent { date, time: None }).into()
 }
 
-/// One event line in a cell: all-day entries as a tinted bar, timed ones with a colour dot.
-fn event_row<'a>(item: Item<'a>, date: NaiveDate, text_color: Color) -> Element<'a, Message> {
-    let label = entry_label(item.event, date);
+/// The day number: `text_2` (weekends and neighbouring months `text_3`); today white in a red
+/// circle. Click → `ShowDay`.
+fn day_number<'a>(date: NaiveDate, today: NaiveDate, in_month: bool) -> Element<'a, Message> {
+    let is_today = date == today;
+    let number = typo::text(DAY_NUMBER, date.day().to_string()).style(move |theme: &Theme| {
+        let p = palette(theme);
+        let color = if is_today {
+            p.on_accent
+        } else if in_month && !is_weekend(date) {
+            p.text_2
+        } else {
+            p.text_3
+        };
+        TextStyle { color: Some(color) }
+    });
+    button(container(number).center(DAY_CIRCLE))
+        .padding(0)
+        .width(DAY_CIRCLE)
+        .height(DAY_CIRCLE)
+        .style(move |theme, status| {
+            let p = palette(theme);
+            let background = match (is_today, status) {
+                (true, _) => Some(p.accent),
+                (false, button::Status::Hovered) => Some(p.hover),
+                (false, button::Status::Pressed) => Some(p.selected),
+                (false, _) => None,
+            };
+            button::Style {
+                background: background.map(Background::Color),
+                border: border::rounded(DAY_CIRCLE / 2.0),
+                ..button::Style::default()
+            }
+        })
+        .on_press(Message::ShowDay(date))
+        .into()
+}
+
+/// One event row in a cell: all-day entries as a tinted chip with a bar, timed ones with a dot.
+/// `faded` rows (over, or in a neighbouring month) are drawn at [`FADE_OPACITY`].
+fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool) -> Element<'a, Message> {
+    let (prefix, title) = entry_parts(item.event, date);
+    let color = item.color;
+    let title = typo::text(typo::CAPTION, title)
+        .style(move |theme: &Theme| TextStyle { color: Some(shade(palette(theme), palette(theme).text, faded)) })
+        .wrapping(Wrapping::None);
     let body: Element<'a, Message> = if item.event.all_day() {
-        let tint = Color { a: 0.35, ..item.color };
-        container(text(label).size(12).color(text_color).wrapping(Wrapping::None))
-            .padding([1, 4])
+        let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |theme| container::Style {
+            background: Some(Background::Color(shade(palette(theme), color, faded))),
+            border: Border { radius: Radius::new(0.0).left(radius::XS), ..Border::default() },
+            ..container::Style::default()
+        });
+        let fill = container(title)
+            .padding([0.0, space::S])
             .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Vertical::Center)
             .clip(true)
-            .style(move |_| container::Style {
-                background: Some(Background::Color(tint)),
-                border: border::rounded(3.0),
-                ..Default::default()
-            })
-            .into()
+            .style(move |theme| {
+                let p = palette(theme);
+                container::Style {
+                    background: Some(Background::Color(shade(p, over(p.tinted(color), p.panel), faded))),
+                    border: Border { radius: Radius::new(0.0).right(radius::XS), ..Border::default() },
+                    ..container::Style::default()
+                }
+            });
+        row![bar, fill].height(Length::Fill).into()
     } else {
-        row![color_dot(item.color, 6.0), text(label).size(12).color(text_color).wrapping(Wrapping::None)]
-            .spacing(4)
-            .align_y(Alignment::Center)
-            .width(Length::Fill)
-            .into()
+        let dot = container(Space::new()).width(DOT).height(DOT).style(move |theme| container::Style {
+            background: Some(Background::Color(shade(palette(theme), color, faded))),
+            border: border::rounded(DOT / 2.0),
+            ..container::Style::default()
+        });
+        let mut line = row![dot].spacing(space::XS).align_y(Vertical::Center).padding(Padding::ZERO.left(space::XS));
+        if let Some(prefix) = prefix {
+            let prefix = typo::text(typo::MICRO, prefix)
+                .style(move |theme: &Theme| TextStyle {
+                    color: Some(shade(palette(theme), palette(theme).text_2, faded)),
+                })
+                .wrapping(Wrapping::None);
+            line = line.push(prefix);
+        }
+        line.push(title).into()
     };
-    mouse_area(container(body).width(Length::Fill).height(Length::Fixed(EVENT_HEIGHT)).clip(true))
+    mouse_area(container(body).width(Length::Fill).height(EVENT_HEIGHT).clip(true))
         .on_press(Message::OpenEvent(item.index))
         .interaction(mouse::Interaction::Pointer)
         .into()
 }
 
-fn line_border() -> Border {
-    Border { color: theme::LINE, width: 1.0, ..Default::default() }
+/// `b` laid over `a` at opacity `t` (0 = `a`, 1 = `b`), opaque.
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+}
+
+/// A translucent `top` composed over the opaque `under`.
+fn over(top: Color, under: Color) -> Color {
+    mix(under, top, top.a)
+}
+
+/// `color` as it is drawn on the panel: faded towards it when `faded`, like CSS `opacity`.
+fn shade(p: &Palette, color: Color, faded: bool) -> Color {
+    if faded { mix(p.panel, color, FADE_OPACITY) } else { color }
+}
+
+/// The surface of weekend cells.
+fn weekend_shade(p: &Palette) -> Color {
+    mix(p.panel, p.bg, WEEKEND_SHADE)
+}
+
+fn is_weekend(day: NaiveDate) -> bool {
+    matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
+}
+
+/// Whether `event` is over by `now`; an entry without length is over when it has started.
+fn ends_before(event: &Event, now: NaiveDateTime) -> bool {
+    let (start, end) = local_span(event);
+    end.max(start) <= now
 }
 
 /// Local start and exclusive end of an event. All-day entries without an end cover one day;
@@ -187,21 +321,35 @@ fn day_items<'a>(items: &[Item<'a>], date: NaiveDate) -> Vec<Item<'a>> {
     day
 }
 
-/// The text of an event row on `date`: the title for all-day entries, `14:00 Title` where the
-/// entry starts, `… Title` where it continues from an earlier day.
-fn entry_label(event: &Event, date: NaiveDate) -> String {
+/// The text of an event row on `date` as (lead-in, title): no lead-in for all-day entries,
+/// `14:00` where the entry starts, `…` where it continues from an earlier day.
+fn entry_parts(event: &Event, date: NaiveDate) -> (Option<String>, String) {
     let title = if event.summary.trim().is_empty() { tr("(no title)").to_string() } else { event.summary.clone() };
     if event.all_day() {
-        return title;
+        return (None, title);
     }
     let (start, _) = local_span(event);
-    if start.date() == date { format!("{} {title}", format_time(start.time())) } else { format!("… {title}") }
+    let prefix = if start.date() == date { format_time(start.time()) } else { "…".to_string() };
+    (Some(prefix), title)
 }
 
-/// How many of `total` entries a cell lists, and how many it sums up as `+n more`. The summary
-/// line counts towards [`MAX_LINES`].
-fn visible_split(total: usize) -> (usize, usize) {
-    if total <= MAX_LINES { (total, 0) } else { (MAX_LINES - 1, total - (MAX_LINES - 1)) }
+/// How many rows a cell of `height` holds: below the day number, above the bottom edge, at most
+/// [`MAX_LINES`].
+fn lines_that_fit(height: f32) -> usize {
+    let free = height - space::S - DAY_CIRCLE - space::XS - space::XS;
+    if free < EVENT_HEIGHT { 0 } else { (((free + LINE_GAP) / (EVENT_HEIGHT + LINE_GAP)) as usize).min(MAX_LINES) }
+}
+
+/// How many of `total` entries a cell with `lines` rows lists, and how many it sums up as
+/// `+n more`. The summary line takes a row of its own; a cell without rows shows nothing.
+fn visible_split(total: usize, lines: usize) -> (usize, usize) {
+    if lines == 0 {
+        (0, 0)
+    } else if total <= lines {
+        (total, 0)
+    } else {
+        (lines - 1, total - (lines - 1))
+    }
 }
 
 #[cfg(test)]
@@ -299,20 +447,62 @@ mod tests {
     }
 
     #[test]
-    fn labels_show_start_time_or_continuation() {
+    fn rows_show_start_time_or_continuation() {
         let review = event("Review", at(11, 14), None);
-        assert_eq!(entry_label(&review, d(11)), "14:00 Review");
-        assert_eq!(entry_label(&review, d(12)), "… Review");
+        assert_eq!(entry_parts(&review, d(11)), (Some("14:00".into()), "Review".into()));
+        assert_eq!(entry_parts(&review, d(12)), (Some("…".into()), "Review".into()));
         let holiday = all_day("Holiday", 11, None);
-        assert_eq!(entry_label(&holiday, d(11)), "Holiday");
+        assert_eq!(entry_parts(&holiday, d(11)), (None, "Holiday".into()));
     }
 
     #[test]
-    fn overflow_keeps_four_lines_including_the_summary() {
-        assert_eq!(visible_split(0), (0, 0));
-        assert_eq!(visible_split(4), (4, 0));
-        assert_eq!(visible_split(5), (3, 2));
-        assert_eq!(visible_split(9), (3, 6));
+    fn overflow_keeps_the_rows_including_the_summary() {
+        assert_eq!(visible_split(0, 4), (0, 0));
+        assert_eq!(visible_split(4, 4), (4, 0));
+        assert_eq!(visible_split(5, 4), (3, 2));
+        assert_eq!(visible_split(9, 4), (3, 6));
+        assert_eq!(visible_split(3, 2), (1, 2));
+        assert_eq!(visible_split(1, 1), (1, 0));
+        assert_eq!(visible_split(3, 0), (0, 0), "no room, no rows");
+    }
+
+    #[test]
+    fn rows_that_fit_follow_the_cell_height() {
+        // Number box 8 + 22, gap 4, bottom 4 leave 38 px of 120: four rows of 20 with 2 between.
+        assert_eq!(lines_that_fit(38.0 + 4.0 * 20.0 + 3.0 * 2.0), 4);
+        assert_eq!(lines_that_fit(38.0 + 4.0 * 20.0 + 3.0 * 2.0 - 1.0), 3);
+        assert_eq!(lines_that_fit(38.0 + 19.0), 0);
+        assert_eq!(lines_that_fit(500.0), MAX_LINES);
+        assert_eq!(lines_that_fit(0.0), 0);
+    }
+
+    #[test]
+    fn events_are_over_when_they_end_before_now() {
+        let now = d(11).and_hms_opt(10, 0, 0).unwrap();
+        assert!(ends_before(&event("Early", at(11, 9), Some(at(11, 10))), now));
+        assert!(ends_before(&event("Call", at(11, 9), None), now), "an instant is over once it has started");
+        assert!(!ends_before(&event("Running", at(11, 9), Some(at(11, 11))), now));
+        assert!(!ends_before(&all_day("Today", 11, None), now));
+        assert!(ends_before(&all_day("Yesterday", 10, None), now));
+    }
+
+    #[test]
+    fn weekend_is_saturday_and_sunday() {
+        // 10 and 11 October 2026 are Saturday and Sunday.
+        let days: Vec<bool> = (5..=11).map(|day| is_weekend(d(day))).collect();
+        assert_eq!(days, [false, false, false, false, false, true, true]);
+    }
+
+    #[test]
+    fn faded_colours_move_towards_the_panel_in_both_themes() {
+        for p in [Palette::dark(), Palette::light()] {
+            assert_eq!(shade(p, p.text, false), p.text);
+            let faded = shade(p, p.text, true);
+            assert!((faded.r - mix(p.panel, p.text, FADE_OPACITY).r).abs() < 1e-6);
+            assert!((faded.r - p.panel.r).abs() < (p.text.r - p.panel.r).abs());
+            let tint = over(p.tinted(p.calendar[0]), p.panel);
+            assert_eq!(tint.a, 1.0, "composed, so the bar does not shine through");
+        }
     }
 
     #[test]
