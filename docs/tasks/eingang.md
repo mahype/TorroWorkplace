@@ -188,7 +188,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   Kontoproblem kommt und geht; ein Agent kann beide nicht erledigen (`forbidden`).
 
 ### E2.2a Hook-Meldungen übersetzen (reine Logik)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E1.1a · **Dateien:** `crates/torro-inbox/src/{lib,hook}.rs` (`hook.rs` neu),
   `crates/torro-inbox/tests/fixtures/hooks/*.json` (neu), `crates/torro-inbox/Cargo.toml` (falls `serde_json`
   als normale Abhängigkeit nötig)

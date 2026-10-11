@@ -1,0 +1,17 @@
+{
+  "session_id": "thr_123",
+  "transcript_path": "/home/user/.codex/sessions/rollout-thr_123.jsonl",
+  "cwd": "/home/user/my-project",
+  "model": "gpt-5-codex",
+  "permission_mode": "default",
+  "turn_id": "turn_7",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_use_id": "call_42",
+  "tool_input": {
+    "command": "cargo test --workspace"
+  },
+  "tool_response": {
+    "exit_code": 0
+  }
+}
