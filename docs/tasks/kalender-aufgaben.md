@@ -49,7 +49,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   (Farbpunkt, Leerzustand, Abschnittsüberschrift). Details im jeweiligen Doc-Kommentar.
 
 ### K.2 Beispieldaten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torro-pim/src/demo.rs` (nur `sample`)
 - Zwei Kalender, zwei Aufgabenlisten; Termine rund um heute, darunter Überschneidungen, ganztägige,
