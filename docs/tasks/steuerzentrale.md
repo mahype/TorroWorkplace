@@ -61,7 +61,7 @@ Gemeinsam für alle Seiten-Aufgaben:
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/general.rs`
 
 ### S.10 Apps und Tray verweisen auf die Steuerzentrale
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torro-gui/src/connect.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/tray/linux.rs`, `crates/torroworkplace/src/daemon.rs`
 - Statt Anmeldung in den Apps: Hinweis + „Open Settings“ (startet `torroworkplace ui --section accounts`).
   Tray: Eintrag „Settings…“.
