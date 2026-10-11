@@ -13,6 +13,7 @@
 mod app;
 mod detail;
 mod empty;
+mod keys;
 mod list;
 
 use std::process::ExitCode;

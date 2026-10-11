@@ -6,6 +6,10 @@
 //! the body in `text_3`, how many reports were merged (from two on) and the time. A click on the
 //! row → `Select(id)`. Nothing to show → the empty state of the view.
 //!
+//! The row under the cursor (E3.2) is the highlighted one; it registers [`ListData::anchor`], so
+//! the snooze menu and the lane question open beside it. The list reports its scroll position
+//! (`Message::Scrolled`), so the app can keep the cursor in view; every row is `size::ROW` high.
+//!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
 //! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
 //! direction characters, so a title can neither break the row into lines nor turn its text around.
@@ -17,6 +21,7 @@ use iced::{Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, space};
+use torro_gui::widgets::Anchor;
 use torro_gui::{datetime, style, typo, widgets};
 use torro_inbox::{Item, SourceKind, SourceRef, State};
 
@@ -27,11 +32,16 @@ pub struct ListData<'a> {
     /// The entries of the view, in the order to show them.
     pub items: &'a [Item],
     pub view: &'a View,
-    /// Id of the entry open in the panel.
+    /// Id of the entry under the cursor (and in the panel, when it is open).
     pub selected: Option<&'a str>,
     /// "Now", for the times ("4 min").
     pub now: DateTime<Utc>,
+    /// Registered by the selected row, for the menus that open beside it.
+    pub anchor: Anchor,
 }
+
+/// The id of the list's scrollable, to scroll the cursor into view.
+pub const SCROLL: &str = "inbox-list";
 
 /// The list, scrolling; the empty state of the view when there are no entries.
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
@@ -41,6 +51,8 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     }
     let rows = data.items.iter().map(|item| row_view(&data, item));
     scrollable(column(rows).width(Fill))
+        .id(SCROLL)
+        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Fill)
@@ -74,7 +86,8 @@ fn row_view<'a>(data: &ListData<'a>, item: &'a Item) -> Element<'a, Message> {
             .into(),
     );
     let selected = data.selected == Some(item.id.as_str());
-    widgets::list_row(cells, selected, Some(Message::Select(item.id.clone())))
+    let row = widgets::list_row(cells, selected, Some(Message::Select(item.id.clone())));
+    if selected { widgets::anchored(&data.anchor, row) } else { row }
 }
 
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts.

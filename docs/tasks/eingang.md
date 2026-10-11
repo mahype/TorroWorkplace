@@ -305,7 +305,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** `torro-design-review` in allen Größen, hell und dunkel; Tests der Nachrichten.
 
 ### E3.2 Abarbeiten mit der Tastatur
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E3.1 · **Dateien:** `crates/torroinbox/src/{app,keys}.rs`
 - `j`/`k` bewegen, `Enter` öffnen, `e` erledigt, `u` rückgängig (Hinweis 5 s), `s` vertagen (Later today,
   Tomorrow, Next week, Pick…), `m` Quelle stumm (mit Nachfrage), `l` Spur wechseln (fragt „Always for

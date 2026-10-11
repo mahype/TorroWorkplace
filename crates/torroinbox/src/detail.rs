@@ -7,6 +7,10 @@
 //! that the text comes from outside the suite. Footer: "Mark as done" / "Reopen"; approvals show
 //! "Allow" and "Deny" instead, which stay disabled until the core decides approvals from here
 //! (E1.1/E2.1) – an approval resolves itself once decided, so it has no "Mark as done".
+//!
+//! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
+//! opens the snooze menu, and at the right "Move to …" (`l`) and "Mute …" (`m`) as icon buttons.
+//! The suite as a source is never muted, so its entries have no mute button.
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
@@ -17,15 +21,37 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::panel::{self, Panel};
 use torro_gui::theme::{self, space};
-use torro_gui::widgets::{self, Mark, Status};
+
+use torro_gui::widgets::{self, Anchor, Mark, Status};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::{Action, Item, Kind, Lane, Link, State, rules};
 
-use crate::app::Message;
+use crate::app::{self, Message};
 use crate::list;
 
-/// The panel for `item`, reached through the view `view_name`; `now` for the times.
-pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>) -> Panel<'a, Message> {
+/// The triggers of the menus that open for an entry, made new in every `view` and shared with the
+/// floating layer ([`widgets::floating`]).
+#[derive(Debug, Clone, Default)]
+pub struct Anchors {
+    /// The row under the cursor in the list (registered by `list.rs`).
+    pub row: Anchor,
+    /// The footer's "Snooze": the snooze menu and the picker open here while the panel is open.
+    pub snooze: Anchor,
+    /// The footer's "Move to …": the lane question opens here while the panel is open.
+    pub lane: Anchor,
+}
+
+/// What the footer needs besides the entry.
+#[derive(Debug, Clone)]
+pub struct Footer {
+    pub anchors: Anchors,
+    /// The entry's source is muted: the mute button unmutes.
+    pub muted: bool,
+}
+
+/// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
+/// triage buttons register `footer.anchors`.
+pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: Footer) -> Panel<'a, Message> {
     let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
     let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::L);
     if let Some(agent) = &item.agent {
@@ -60,7 +86,8 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>) -> Panel
     if !notes.is_empty() {
         body = body.push(panel::inset(column(notes).spacing(space::XS)));
     }
-    panel::panel(path, panel::title(list::plain(&item.title)), body, Message::CloseDetail).footer(footer(item))
+    panel::panel(path, panel::title(list::plain(&item.title)), body, Message::CloseDetail)
+        .footer(buttons(item, &footer))
 }
 
 /// Status, lane, source, time and – from two on – the number of merged reports.
@@ -69,10 +96,7 @@ fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
     let mut rows = vec![
         widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::S).align_y(Alignment::Center), None),
-        match item.lane {
-            Lane::ForMe => value_row(Icon::Inbox, tr("For me").to_owned()),
-            Lane::Info => value_row(Icon::Bell, tr("Info").to_owned()),
-        },
+        value_row(app::lane_icon(item.lane), lane_label(item.lane).to_owned()),
         value_row(list::source_icon(&item.source), item.source.label()),
         value_row(Icon::Clock, when(item.updated, now)),
     ];
@@ -130,8 +154,49 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     format!("{} · {}", datetime::format_short_date(at.date_naive(), today), datetime::format_time(at.time()))
 }
 
-/// The buttons below the line: Allow/Deny for an approval (disabled for now), else done or reopen.
-fn footer<'a>(item: &'a Item) -> Vec<Element<'a, Message>> {
+/// The buttons below the line: Allow/Deny for an approval (disabled for now), else done or reopen;
+/// then "Snooze" for an entry that is not done, and at the right "Move to …" and "Mute …".
+fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
+    let mut buttons = decide(item);
+    if !matches!(item.state, State::Done { .. }) {
+        let snooze = widgets::text_button(
+            Some(Icon::Clock),
+            tr("Snooze"),
+            style::button::secondary,
+            Some(Message::AskSnooze(item.id.clone())),
+        );
+        buttons.push(widgets::anchored(&footer.anchors.snooze, snooze));
+    }
+    buttons.push(iced::widget::space::horizontal().into());
+    let lane = app::other_lane(item.lane);
+    let move_to = widgets::icon_button(
+        app::lane_icon(lane),
+        trf("Move to {lane}", &[("lane", &lane_label(lane))]),
+        Some(Message::AskLane(item.id.clone())),
+    );
+    buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
+    if app::rules_allowed(&item.source) {
+        let label = item.source.label();
+        let tooltip = if footer.muted {
+            trf("Unmute {source}", &[("source", &label)])
+        } else {
+            trf("Mute {source}", &[("source", &label)])
+        };
+        buttons.push(widgets::icon_button(Icon::Moon, tooltip, Some(Message::AskMute(item.id.clone()))));
+    }
+    buttons
+}
+
+/// "For me" or "Info".
+fn lane_label(lane: Lane) -> &'static str {
+    match lane {
+        Lane::ForMe => tr("For me"),
+        Lane::Info => tr("Info"),
+    }
+}
+
+/// How the entry is closed: Allow/Deny for an approval (disabled for now), else done or reopen.
+fn decide<'a>(item: &'a Item) -> Vec<Element<'a, Message>> {
     if is_approval(item) {
         // Deciding needs `approvals.decide_approval`, which no `InboxSource` offers; the core
         // wires it with E1.1/E2.1. Until then the buttons say what is coming, honestly disabled.
@@ -227,9 +292,23 @@ mod tests {
     fn approvals_offer_allow_and_deny_but_no_done() {
         let approval = sample("demo-3");
         assert!(is_approval(&approval));
-        assert_eq!(footer(&approval).len(), 2, "Allow and Deny");
+        assert_eq!(decide(&approval).len(), 2, "Allow and Deny");
         assert!(!is_approval(&sample("demo-1")));
-        assert_eq!(footer(&sample("demo-1")).len(), 1, "Mark as done");
+        assert_eq!(decide(&sample("demo-1")).len(), 1, "Mark as done");
+    }
+
+    fn footer(muted: bool) -> Footer {
+        Footer { anchors: Anchors::default(), muted }
+    }
+
+    #[test]
+    fn the_footer_offers_triage_to_the_mouse() {
+        // Mark as done, Snooze, the gap, Move to, Mute.
+        assert_eq!(buttons(&sample("demo-1"), &footer(false)).len(), 5);
+        // Allow, Deny, Snooze, the gap, Move to: the suite is never muted.
+        assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
+        // Reopen, the gap, Move to, Mute: a done entry is not snoozed.
+        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 4);
     }
 
     #[test]
@@ -244,7 +323,7 @@ mod tests {
     #[test]
     fn every_sample_entry_builds_a_panel() {
         for item in demo::sample(now()) {
-            let _ = panel(&item, tr("For me").to_owned(), now());
+            let _ = panel(&item, tr("For me").to_owned(), now(), footer(false));
         }
     }
 }
