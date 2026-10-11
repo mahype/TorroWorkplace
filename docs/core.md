@@ -71,16 +71,17 @@ Torro Workplace
 Vorlage laden             ▸  Entwicklung        ▸  Hier laden
                              Kommunikation         Hinzufügen
                                                    Ersetzen
-Aktiven Workspace speichern
-Vorlage aktualisieren     ▸  Entwicklung
-Vorlage löschen           ▸  Entwicklung
+Workspace speichern
+Aktualisieren             ▸  Entwicklung
+Löschen                   ▸  Entwicklung
 ────────────────────────────
 Workspace 3 · Hyprland        (nur Anzeige)
 ────────────────────────────
 Beenden
 ```
 
-„Hier laden“ ist nur aktiv, wenn der Workspace leer ist. Später kommen „Steuerzentrale öffnen …“
+„Hier laden“ ist nur aktiv, wenn der Workspace leer ist. Ein Linksklick auf das Icon öffnet das
+Menü. Die Einträge bleiben kurz, weil die Omarchy-Leiste Tray-Menüs nur etwa 232 px breit zeichnet. Später kommen „Steuerzentrale öffnen …“
 und die Apps hinzu.
 
 ## Prozesse

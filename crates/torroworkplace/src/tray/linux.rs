@@ -46,6 +46,9 @@ pub async fn spawn(daemon: Arc<Daemon>, snapshot: Snapshot) -> Result<TrayHandle
 }
 
 impl ksni::Tray for Tray {
+    /// A left click opens the menu, like every other icon in the bar (sets `ItemIsMenu`).
+    const MENU_ON_ACTIVATE: bool = true;
+
     fn id(&self) -> String {
         env!("CARGO_PKG_NAME").into()
     }
@@ -67,10 +70,13 @@ impl ksni::Tray for Tray {
 }
 
 /// The menu from docs/core.md for one snapshot.
+///
+/// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
+/// text off with an ellipsis.
 fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     let mut menu = Vec::new();
     if let Some(name) = &snapshot.unsupported {
-        menu.push(info(format!("{name}: noch nicht unterstützt")));
+        menu.push(info(format!("{name} fehlt noch")));
         menu.push(MenuItem::Separator);
     } else {
         let load = per_template(snapshot, |t| {
@@ -86,11 +92,11 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
             ]
         });
         menu.push(submenu("Vorlage laden", load));
-        menu.push(action("Aktiven Workspace speichern", Request::SaveTemplate { name: None }));
+        menu.push(action("Workspace speichern", Request::SaveTemplate { name: None }));
         let update = per_template_action(snapshot, |id| Request::UpdateTemplate { id });
-        menu.push(submenu("Vorlage aktualisieren", update));
+        menu.push(submenu("Aktualisieren", update));
         let delete = per_template_action(snapshot, |id| Request::DeleteTemplate { id });
-        menu.push(submenu("Vorlage löschen", delete));
+        menu.push(submenu("Löschen", delete));
         menu.push(MenuItem::Separator);
     }
     menu.push(info(info_line(snapshot)));
@@ -199,9 +205,9 @@ mod tests {
             labels(&build_menu(&snapshot())),
             [
                 "Vorlage laden ▸",
-                "Aktiven Workspace speichern",
-                "Vorlage aktualisieren ▸",
-                "Vorlage löschen ▸",
+                "Workspace speichern",
+                "Aktualisieren ▸",
+                "Löschen ▸",
                 "-",
                 "(Workspace 3 · hyprland)",
                 "-",
@@ -227,8 +233,13 @@ mod tests {
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
         let menu = labels(&build_menu(&snapshot));
-        assert_eq!(menu[0], "(AeroSpace (macOS): noch nicht unterstützt)");
+        assert_eq!(menu[0], "(AeroSpace (macOS) fehlt noch)");
         assert_eq!(menu.last().map(String::as_str), Some("Beenden"));
+    }
+
+    #[test]
+    fn left_click_opens_the_menu() {
+        const { assert!(<Tray as ksni::Tray>::MENU_ON_ACTIVATE) };
     }
 
     #[test]
