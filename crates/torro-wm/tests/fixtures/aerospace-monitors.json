@@ -1,0 +1,12 @@
+[
+  {
+    "monitor-appkit-nsscreen-screens-id" : 1,
+    "monitor-id" : 1,
+    "monitor-name" : "Built-in Retina Display"
+  },
+  {
+    "monitor-appkit-nsscreen-screens-id" : 2,
+    "monitor-id" : 2,
+    "monitor-name" : "DELL U2723QE"
+  }
+]

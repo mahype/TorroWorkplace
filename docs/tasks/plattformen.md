@@ -106,7 +106,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   Namen; ohne Berechtigung (macOS) fällt der Dienst nicht um.
 
 ### X.6 Fenstermanager AeroSpace (macOS)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-wm/src/aerospace/` (neu), `crates/torro-wm/src/{lib,detect}.rs`,
   `crates/torro-wm/tests/fixtures/aerospace-*.json` (neu)
 - Neues Backend neben `hyprland/`, das `WindowManager` umsetzt. AeroSpace wird über seine Kommandozeile
