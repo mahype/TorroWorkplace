@@ -51,7 +51,7 @@ K.21 (frei)
 - Abnahme: Sichtprüfung mit zwei Konten (Breit, Mittel, Schmal), Tests der Nachrichten.
 
 ### M1.3 Kalender und Aufgaben: Konto-Gruppen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M1.1 · **Dateien:** `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`,
   ggf. `crates/torro-gui/src/shell.rs` (nennen)
 - Ab zwei Konten gruppiert die Seitenleiste Kalender bzw. Listen je Konto (`sidebar_group_in`, Kontoname als

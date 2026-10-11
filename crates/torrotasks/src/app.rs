@@ -29,7 +29,7 @@
 //! highlighted row; the list scrolls to keep it in view. Plain keys are ignored while a text
 //! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -54,7 +54,7 @@ use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
 use torro_pim::demo::DemoSource;
-use torro_pim::{AccountState, Collection, EventTime, PimSource, Todo};
+use torro_pim::{AccountState, Collection, EventTime, PimAccount, PimSource, Todo};
 
 use crate::detail::{self, Detail};
 use crate::glance::{self, GlanceData};
@@ -249,6 +249,10 @@ pub struct App {
     /// than asked of the view, so that subscriptions and tests know the class too.
     size: Size,
     account: Option<AccountState>,
+    /// Every account behind the data, for grouping the lists in the sidebar (task M1.3).
+    accounts: Vec<PimAccount>,
+    /// Accounts whose lists the sidebar has folded away. Window state, nothing is stored.
+    folded: HashSet<String>,
     connect: Connect,
     collections: Vec<Collection>,
     todos: Vec<Todo>,
@@ -282,7 +286,9 @@ pub struct App {
 pub enum Message {
     /// The window has this size (at start and after every resize).
     Resized(Size),
-    AccountLoaded(Result<AccountState, String>),
+    AccountLoaded(Result<Vec<PimAccount>, String>),
+    /// An account's title in the sidebar: fold or unfold its lists.
+    ToggleAccount(String),
     Connect(connect::Message),
     Loaded(Result<(Vec<Collection>, Vec<Todo>), String>),
     SetFilter(Filter),
@@ -397,6 +403,8 @@ impl App {
             today: launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date()),
             size: torro_gui::window(AppId::TASKS).size,
             account: None,
+            accounts: Vec::new(),
+            folded: HashSet::new(),
             connect: Connect,
             collections: Vec::new(),
             todos: Vec::new(),
@@ -487,9 +495,10 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Resized(size) => self.size = size,
-            Message::AccountLoaded(Ok(account)) => {
+            Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(account);
+                self.account = Some(torro_pim::combined_state(&accounts));
+                self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();
                 }
@@ -519,6 +528,11 @@ impl App {
                 }
                 Err(err) => self.error = Some(load_failed(&err)),
             },
+            Message::ToggleAccount(id) => {
+                if !self.folded.remove(&id) {
+                    self.folded.insert(id);
+                }
+            }
             Message::SetFilter(filter) => {
                 self.filter = filter;
                 self.cursor = None;
@@ -593,15 +607,17 @@ impl App {
             Message::Tick => {
                 self.today = self.launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date());
                 let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
+                // The accounts come with every tick: one may have been added or removed.
+                let accounts = self.fetch_account();
                 if !self.connected() {
-                    return Task::batch([appearance, self.fetch_account()]);
+                    return Task::batch([appearance, accounts]);
                 }
                 // An open detail keeps what it holds until it is closed or saved; but a glance
                 // shows no detail and must not go stale, and the detail follows a reload anyway.
                 if self.detail.is_none() || self.is_glance() {
-                    return Task::batch([appearance, self.load()]);
+                    return Task::batch([appearance, accounts, self.load()]);
                 }
-                return appearance;
+                return Task::batch([appearance, accounts]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
@@ -1024,9 +1040,30 @@ impl App {
             widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
         };
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
-        if !lists.is_empty() {
-            items.push(widgets::sidebar_group_in(mode, tr("Lists"), None));
-            items.extend(lists.into_iter().map(row));
+        match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
+            // One account: as it always was, a flat list under "Lists".
+            Err(lists) => {
+                if !lists.is_empty() {
+                    items.push(widgets::sidebar_group_in(mode, tr("Lists"), None));
+                    items.extend(lists.into_iter().map(row));
+                }
+            }
+            Ok(groups) => {
+                for group in groups {
+                    let Some(account) = group.account else {
+                        items.push(widgets::sidebar_group_in(mode, tr("Lists"), None));
+                        items.extend(group.items.into_iter().map(row));
+                        continue;
+                    };
+                    let unfolded = !self.folded.contains(&account.id);
+                    let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
+                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    // The rail has no title to unfold with, so it shows every list.
+                    if unfolded || mode == SidebarMode::Rail {
+                        items.extend(group.items.into_iter().map(row));
+                    }
+                }
+            }
         }
         let footer = vec![
             widgets::sidebar_item_in(
@@ -1051,8 +1088,17 @@ impl App {
             MenuItem::new(e.mark, e.label, Message::SetFilter(e.filter)).trail(trail).current(e.active)
         };
         let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
-        if !lists.is_empty() {
-            sections.push(MenuSection::titled(tr("Lists"), lists.into_iter().map(item).collect()));
+        match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
+            Err(lists) => {
+                if !lists.is_empty() {
+                    sections.push(MenuSection::titled(tr("Lists"), lists.into_iter().map(item).collect()));
+                }
+            }
+            // A menu has no folding: every account is a section named after it.
+            Ok(groups) => sections.extend(groups.into_iter().map(|group| {
+                let title = group.account.map_or_else(|| tr("Lists"), |account| account.label.as_str());
+                MenuSection::titled(title, group.items.into_iter().map(item).collect())
+            })),
         }
         sections.push(MenuSection::new(vec![
             MenuItem::new(Icon::Calendar, tr("Open Calendar"), Message::OpenApp(AppId::CALENDAR.binary))
@@ -1161,10 +1207,7 @@ impl App {
 
     fn fetch_account(&self) -> Task<Message> {
         let source = self.source.clone();
-        // One state for the connect screen; grouping by account is M1.3.
-        let combined =
-            async move { source.accounts().await.map(|a| torro_pim::combined_state(&a)).map_err(|e| e.to_string()) };
-        Task::perform(combined, Message::AccountLoaded)
+        Task::perform(async move { source.accounts().await.map_err(|e| e.to_string()) }, Message::AccountLoaded)
     }
 
     fn save(&self, todo: Todo) -> Task<Message> {
@@ -1220,6 +1263,14 @@ struct NavEntry {
 impl NavEntry {
     fn trail(&self) -> Trail {
         self.count.map_or(Trail::None, Trail::Count)
+    }
+
+    /// The collection id of a list entry (what names its account); empty for the smart lists.
+    fn list_id(&self) -> &str {
+        match &self.filter {
+            Filter::List(id) => id,
+            _ => "",
+        }
     }
 }
 
@@ -1286,18 +1337,63 @@ mod tests {
     #[test]
     fn the_window_builds_with_rail_and_drawer_in_every_layout() {
         let mut app = demo_app();
-        let connected = AccountState::Connected {
-            server: "demo".into(),
-            login_name: "demo".into(),
-            last_sync: None,
-            problem: None,
-        };
-        let _ = app.update(Message::AccountLoaded(Ok(connected)));
+        let _ = app.update(Message::AccountLoaded(Ok(vec![account("work")])));
         for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
             let _ = app.update(Message::UiState(UiState { sidebar }));
             for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
                 let _ = app.update(Message::Resized(size));
                 let _ = app.view();
+            }
+        }
+    }
+
+    #[test]
+    fn two_accounts_group_the_lists_but_not_the_smart_lists() {
+        let mut app = launched(&["--demo"]);
+        let grouped = |app: &App| {
+            let (views, lists) = app.nav_entries();
+            let groups = shell::account_groups(&app.accounts, lists, NavEntry::list_id);
+            let names = groups.ok().map(|groups| {
+                groups.iter().map(|g| g.items.iter().map(|e| e.label.clone()).collect::<Vec<_>>()).collect::<Vec<_>>()
+            });
+            (views.len(), names)
+        };
+        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        assert_eq!(
+            grouped(&app),
+            (3, Some(vec![vec!["Tasks".to_string()], vec!["Groceries".to_string(), "Family".to_string()]])),
+            "Today, Planned and All stay above the groups, each account has its lists"
+        );
+        let _ = app.update(Message::AccountLoaded(Ok(vec![account(torro_pim::demo::WORK_ACCOUNT)])));
+        assert_eq!(grouped(&app).1, None, "a single account is not grouped");
+    }
+
+    #[test]
+    fn an_account_title_folds_and_unfolds_its_lists() {
+        let mut app = launched(&["--demo"]);
+        let work = torro_pim::demo::WORK_ACCOUNT.to_string();
+        let _ = app.update(Message::ToggleAccount(work.clone()));
+        assert!(app.folded.contains(&work));
+        // Folding hides rows in the sidebar only; the smart lists still count every task.
+        assert_eq!(app.filter, Filter::Today);
+        let _ = app.update(Message::ToggleAccount(work));
+        assert!(app.folded.is_empty());
+    }
+
+    #[test]
+    fn the_grouped_sidebar_and_menu_build_in_every_layout() {
+        for accounts in [vec![account("work")], two_accounts()] {
+            let mut app = launched(&["--demo"]);
+            let _ = app.update(Message::AccountLoaded(Ok(accounts)));
+            let _ = app.update(Message::ToggleAccount(torro_pim::demo::HOME_ACCOUNT.into()));
+            for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+                let _ = app.update(Message::UiState(UiState { sidebar }));
+                for size in [WIDE, MEDIUM, NARROW] {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.update(Message::ShowDrawer);
+                    let _ = app.view();
+                    let _ = app.nav_menu();
+                }
             }
         }
     }
@@ -1629,6 +1725,22 @@ mod tests {
     const NARROW: Size = Size::new(420.0, 780.0);
     const MEDIUM: Size = Size::new(900.0, 700.0);
     const WIDE: Size = Size::new(1600.0, 1000.0);
+
+    /// A connected account with this id, named like it.
+    fn account(id: &str) -> PimAccount {
+        let state = AccountState::Connected {
+            server: "demo".into(),
+            login_name: "demo".into(),
+            last_sync: None,
+            problem: None,
+        };
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+    }
+
+    /// The accounts of `--demo`: the sample spreads over two.
+    fn two_accounts() -> Vec<PimAccount> {
+        vec![account(torro_pim::demo::WORK_ACCOUNT), account(torro_pim::demo::HOME_ACCOUNT)]
+    }
 
     fn connected(app: &mut App) {
         app.account = Some(AccountState::Connected {

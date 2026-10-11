@@ -42,7 +42,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::zoom::{self, Zoom};
 use torro_pim::demo::DemoSource;
-use torro_pim::{AccountState, Collection, Event, PimSource};
+use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 
 use crate::editor::{self, Editor};
 use crate::views::{self, Item, ViewData, glance, mini_month, short_date, timeline, week_strip};
@@ -322,6 +322,10 @@ pub struct App {
     /// other views are shown, back to 0 whenever the day changes.
     turn: i64,
     account: Option<AccountState>,
+    /// Every account behind the data, for grouping the calendars in the sidebar (task M1.3).
+    accounts: Vec<PimAccount>,
+    /// Accounts whose calendars the sidebar has folded away. Window state, nothing is stored.
+    folded: HashSet<String>,
     connect: Connect,
     collections: Vec<Collection>,
     hidden: HashSet<String>,
@@ -360,7 +364,9 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    AccountLoaded(Result<AccountState, String>),
+    AccountLoaded(Result<Vec<PimAccount>, String>),
+    /// An account's title in the sidebar: fold or unfold its calendars.
+    ToggleAccount(String),
     Connect(connect::Message),
     Loaded(Result<(Vec<Collection>, Vec<Event>), String>),
     SetView(CalView),
@@ -491,6 +497,8 @@ impl App {
             anchor: now.date(),
             turn: 0,
             account: None,
+            accounts: Vec::new(),
+            folded: HashSet::new(),
             connect: Connect,
             collections: Vec::new(),
             hidden: HashSet::new(),
@@ -583,9 +591,10 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::AccountLoaded(Ok(account)) => {
+            Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(account);
+                self.account = Some(torro_pim::combined_state(&accounts));
+                self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();
                 }
@@ -704,6 +713,11 @@ impl App {
                     Task::perform(async move { source.sync().await.map_err(|e| e.to_string()) }, |_| Message::Tick);
                 return sync.chain(self.load());
             }
+            Message::ToggleAccount(id) => {
+                if !self.folded.remove(&id) {
+                    self.folded.insert(id);
+                }
+            }
             Message::ToggleCollection(id) => {
                 if !self.hidden.remove(&id) {
                     self.hidden.insert(id);
@@ -763,13 +777,15 @@ impl App {
             Message::Tick => {
                 self.now = self.launch.now.unwrap_or_else(|| Local::now().naive_local());
                 let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
+                // The accounts come with every tick: one may have been added or removed.
+                let accounts = self.fetch_account();
                 if !self.connected() {
-                    return Task::batch([appearance, self.fetch_account()]);
+                    return Task::batch([appearance, accounts]);
                 }
                 if self.editor.is_none() {
-                    return Task::batch([appearance, self.load()]);
+                    return Task::batch([appearance, accounts, self.load()]);
                 }
-                return appearance;
+                return Task::batch([appearance, accounts]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
@@ -964,19 +980,40 @@ impl App {
                 )
             }));
         }
-        let calendars = self.calendars();
-        if !calendars.is_empty() {
-            items.push(widgets::sidebar_group_in(mode, tr("Calendars"), None));
-            items.extend(calendars.into_iter().map(|(calendar, colour, count)| {
-                widgets::sidebar_item_in(
-                    mode,
-                    Mark::Check(colour, !self.hidden.contains(&calendar.id)),
-                    calendar.name.as_str(),
-                    Trail::Count(count),
-                    false,
-                    Message::ToggleCollection(calendar.id.clone()),
-                )
-            }));
+        let row = |(calendar, colour, count): (&'a Collection, Color, usize)| {
+            widgets::sidebar_item_in(
+                mode,
+                Mark::Check(colour, !self.hidden.contains(&calendar.id)),
+                calendar.name.as_str(),
+                Trail::Count(count),
+                false,
+                Message::ToggleCollection(calendar.id.clone()),
+            )
+        };
+        match shell::account_groups(&self.accounts, self.calendars(), |c| c.0.id.as_str()) {
+            // One account: as it always was, a flat list under "Calendars".
+            Err(calendars) => {
+                if !calendars.is_empty() {
+                    items.push(widgets::sidebar_group_in(mode, tr("Calendars"), None));
+                    items.extend(calendars.into_iter().map(row));
+                }
+            }
+            Ok(groups) => {
+                for group in groups {
+                    let Some(account) = group.account else {
+                        items.push(widgets::sidebar_group_in(mode, tr("Calendars"), None));
+                        items.extend(group.items.into_iter().map(row));
+                        continue;
+                    };
+                    let unfolded = !self.folded.contains(&account.id);
+                    let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
+                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    // The rail has no title to unfold with, so it shows every calendar.
+                    if unfolded || mode == SidebarMode::Rail {
+                        items.extend(group.items.into_iter().map(row));
+                    }
+                }
+            }
         }
         let footer = vec![
             widgets::sidebar_item_in(
@@ -1004,22 +1041,31 @@ impl App {
             })
             .to_vec();
         let mut sections = vec![MenuSection::titled(tr("View"), views)];
-        let calendars: Vec<_> = self
-            .calendars()
-            .into_iter()
-            .map(|(calendar, colour, count)| {
-                MenuItem::new(
-                    Mark::Check(colour, !self.hidden.contains(&calendar.id)),
-                    calendar.name.as_str(),
-                    Message::ToggleCollection(calendar.id.clone()),
-                )
-                .trail(Trail::Count(count))
-            })
-            .collect();
-        if !calendars.is_empty() {
-            sections.push(MenuSection::titled(tr("Calendars"), calendars));
+        let item = |entry| self.calendar_item(entry);
+        match shell::account_groups(&self.accounts, self.calendars(), |c| c.0.id.as_str()) {
+            Err(calendars) => {
+                let calendars: Vec<_> = calendars.into_iter().map(item).collect();
+                if !calendars.is_empty() {
+                    sections.push(MenuSection::titled(tr("Calendars"), calendars));
+                }
+            }
+            // A menu has no folding: every account is a section named after it.
+            Ok(groups) => sections.extend(groups.into_iter().map(|group| {
+                let title = group.account.map_or_else(|| tr("Calendars"), |account| account.label.as_str());
+                MenuSection::titled(title, group.items.into_iter().map(item).collect())
+            })),
         }
         widgets::menu(sections)
+    }
+
+    /// A calendar as a menu entry: check box in its colour, name, number of loaded events.
+    fn calendar_item<'a>(&self, (calendar, colour, count): (&'a Collection, Color, usize)) -> MenuItem<'a, Message> {
+        MenuItem::new(
+            Mark::Check(colour, !self.hidden.contains(&calendar.id)),
+            calendar.name.as_str(),
+            Message::ToggleCollection(calendar.id.clone()),
+        )
+        .trail(Trail::Count(count))
     }
 
     /// The event calendars with their colour and how many of the loaded events they hold.
@@ -1332,10 +1378,7 @@ impl App {
 
     fn fetch_account(&self) -> Task<Message> {
         let source = self.source.clone();
-        // One state for the connect screen; grouping by account is M1.3.
-        let combined =
-            async move { source.accounts().await.map(|a| torro_pim::combined_state(&a)).map_err(|e| e.to_string()) };
-        Task::perform(combined, Message::AccountLoaded)
+        Task::perform(async move { source.accounts().await.map_err(|e| e.to_string()) }, Message::AccountLoaded)
     }
 
     /// The editor states of `--open`, once the first events are in: an event needs data to open.
@@ -1476,19 +1519,61 @@ mod tests {
     #[test]
     fn the_window_builds_with_rail_and_drawer_in_every_layout() {
         let mut app = demo_app();
-        let connected = AccountState::Connected {
-            server: "demo".into(),
-            login_name: "demo".into(),
-            last_sync: None,
-            problem: None,
-        };
-        let _ = app.update(Message::AccountLoaded(Ok(connected)));
+        let _ = app.update(Message::AccountLoaded(Ok(one_account())));
         for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
             let _ = app.update(Message::UiState(UiState { sidebar }));
             for size in [Size::new(1440.0, 900.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
                 let _ = app.update(Message::Resized(size));
                 let _ = app.update(Message::ToggleDrawer);
                 let _ = app.view();
+            }
+        }
+    }
+
+    #[test]
+    fn two_accounts_group_the_calendars_and_one_keeps_the_flat_list() {
+        let mut app = launched(&["--demo"]);
+        let names = |app: &App| {
+            let groups = shell::account_groups(&app.accounts, app.calendars(), |c| c.0.id.as_str());
+            groups.ok().map(|groups| {
+                groups.iter().map(|g| g.items.iter().map(|c| c.0.name.clone()).collect::<Vec<_>>()).collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            names(&app),
+            Some(vec![vec!["Work".to_string()], vec!["Personal".to_string(), "Family".to_string()]]),
+            "the demo's two accounts, each with its calendars"
+        );
+        let _ = app.update(Message::AccountLoaded(Ok(vec![account(torro_pim::demo::WORK_ACCOUNT)])));
+        assert_eq!(names(&app), None, "a single account is not grouped");
+    }
+
+    #[test]
+    fn an_account_title_folds_and_unfolds_its_calendars() {
+        let mut app = launched(&["--demo"]);
+        let work = torro_pim::demo::WORK_ACCOUNT.to_string();
+        let _ = app.update(Message::ToggleAccount(work.clone()));
+        assert!(app.folded.contains(&work));
+        // Folding hides rows in the sidebar only; the calendars keep showing their events.
+        assert!(app.hidden.is_empty());
+        let _ = app.update(Message::ToggleAccount(work.clone()));
+        assert!(app.folded.is_empty());
+    }
+
+    #[test]
+    fn the_grouped_sidebar_and_menu_build_in_every_layout() {
+        for accounts in [one_account(), two_accounts()] {
+            let mut app = launched(&["--demo"]);
+            let _ = app.update(Message::AccountLoaded(Ok(accounts)));
+            let _ = app.update(Message::ToggleAccount(torro_pim::demo::HOME_ACCOUNT.into()));
+            for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+                let _ = app.update(Message::UiState(UiState { sidebar }));
+                for size in [Size::new(1440.0, 900.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.update(Message::ToggleDrawer);
+                    let _ = app.view();
+                    let _ = app.view_menu();
+                }
             }
         }
     }
@@ -1582,12 +1667,7 @@ mod tests {
     #[test]
     fn retry_clears_the_error_and_loads_again() {
         let mut app = demo_app();
-        let _ = app.update(Message::AccountLoaded(Ok(AccountState::Connected {
-            server: "demo".into(),
-            login_name: "demo".into(),
-            last_sync: None,
-            problem: None,
-        })));
+        let _ = app.update(Message::AccountLoaded(Ok(one_account())));
         let _ = app.update(Message::Loaded(Err("offline".into())));
         assert_eq!(app.error, Some(load_failed("offline")));
         let _ = app.update(Message::Retry);
@@ -1763,12 +1843,26 @@ mod tests {
         AccountState::Connected { server: "demo".into(), login_name: "demo".into(), last_sync: None, problem: None }
     }
 
+    /// A connected account with this id, named like it.
+    fn account(id: &str) -> PimAccount {
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state: connected() }
+    }
+
+    fn one_account() -> Vec<PimAccount> {
+        vec![account("work")]
+    }
+
+    /// The accounts of `--demo`: the sample spreads over two.
+    fn two_accounts() -> Vec<PimAccount> {
+        vec![account(torro_pim::demo::WORK_ACCOUNT), account(torro_pim::demo::HOME_ACCOUNT)]
+    }
+
     /// A demo app started with these words, its account and its first events loaded.
     fn launched(words: &[&str]) -> App {
         let launch = Launch::parse(&args(words)).expect("valid parameters");
         let (mut app, _) = App::new(launch.source(&args(words)), launch);
         let (collections, events, _) = torro_pim::demo::sample(app.now.date());
-        let _ = app.update(Message::AccountLoaded(Ok(connected())));
+        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
         let _ = app.update(Message::Loaded(Ok((collections, events))));
         app
     }

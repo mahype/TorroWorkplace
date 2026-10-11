@@ -98,6 +98,7 @@ use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
 use torro_core::i18n::tr;
+use torro_pim::{PimAccount, account::account_of};
 
 use crate::icon::{self, Icon};
 use crate::layout::SizeClass;
@@ -543,9 +544,52 @@ pub fn switcher_menu<'a, M: Clone + 'a>(current: AppId, on: fn(Switcher) -> M) -
     widgets::menu(vec![MenuSection::titled(tr("Apps"), items)])
 }
 
+/// The part of a sidebar list (calendars, task lists) that belongs to one account.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountGroup<'a, T> {
+    /// The owner; `None` for collections no known account owns (a stale cache), shown last
+    /// without a title.
+    pub account: Option<&'a PimAccount>,
+    pub items: Vec<T>,
+}
+
+/// Splits `items` (calendars, lists) by the account their collection id names (`id`, see
+/// [`torro_pim::account`]), for a sidebar that groups per account (task M1.3). The groups follow
+/// the order of `accounts`, the items keep their order, accounts without items get no group.
+///
+/// `Err(items)` – the items given back – with fewer than two accounts: one account looks like it
+/// always did, a flat list under the app's own title, so the caller needs no second code path,
+/// only `Err(items) => flat`.
+pub fn account_groups<'a, T>(
+    accounts: &'a [PimAccount],
+    items: Vec<T>,
+    id: impl Fn(&T) -> &str,
+) -> Result<Vec<AccountGroup<'a, T>>, Vec<T>> {
+    if accounts.len() < 2 {
+        return Err(items);
+    }
+    let mut groups: Vec<AccountGroup<'a, T>> =
+        accounts.iter().map(|account| AccountGroup { account: Some(account), items: Vec::new() }).collect();
+    let mut strays = Vec::new();
+    for item in items {
+        let owner = account_of(id(&item), accounts, |a| a.id.as_str())
+            .and_then(|owner| accounts.iter().position(|a| std::ptr::eq(a, owner)));
+        match owner {
+            Some(index) => groups[index].items.push(item),
+            None => strays.push(item),
+        }
+    }
+    groups.retain(|group| !group.items.is_empty());
+    if !strays.is_empty() {
+        groups.push(AccountGroup { account: None, items: strays });
+    }
+    Ok(groups)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torro_pim::AccountState;
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {
@@ -570,6 +614,35 @@ mod tests {
                 assert_eq!(sidebar_mode(class, choice), None, "{class:?} has only the drawer");
             }
         }
+    }
+
+    fn account(id: &str) -> PimAccount {
+        let state =
+            AccountState::Connected { server: "s".into(), login_name: "l".into(), last_sync: None, problem: None };
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+    }
+
+    #[test]
+    fn one_account_or_none_stays_a_flat_list() {
+        let items = vec!["a/x".to_string()];
+        assert_eq!(account_groups(&[], items.clone(), |i| i), Err(items.clone()));
+        assert_eq!(account_groups(&[account("a")], items.clone(), |i| i), Err(items));
+    }
+
+    #[test]
+    fn two_accounts_split_the_items_in_account_order() {
+        let accounts = [account("a"), account("b"), account("c")];
+        let items: Vec<String> = ["b/1", "a/1", "b/2", "a/2", "gone/3"].map(String::from).to_vec();
+        let groups = account_groups(&accounts, items, |i| i).expect("grouped");
+        let shape: Vec<(Option<&str>, Vec<&str>)> = groups
+            .iter()
+            .map(|g| (g.account.map(|a| a.id.as_str()), g.items.iter().map(String::as_str).collect()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![(Some("a"), vec!["a/1", "a/2"]), (Some("b"), vec!["b/1", "b/2"]), (None, vec!["gone/3"]),],
+            "account c has no items and no group; strays come last"
+        );
     }
 
     #[test]
