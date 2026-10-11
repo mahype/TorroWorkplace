@@ -96,7 +96,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   löschen, eigener Testschlüssel statt `Run`). Einmal von Hand: einschalten, ab- und anmelden, der Dienst läuft.
 
 ### X.4 Tray auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Ereignisschleife, Threads) · **Braucht:** X.1 (für Windows; macOS kann vorher) · **Dateien:**
   `crates/torroworkplace/src/tray/{mod,linux,desktop}.rs` (neu: `desktop.rs`), `crates/torroworkplace/src/tray/icon.rs`,
   `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/Cargo.toml`, `Cargo.toml`

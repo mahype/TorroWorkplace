@@ -60,6 +60,10 @@ tempfile = "3.27.0"
 # GlazeWM's IPC (torro-wm): plain ws:// on 127.0.0.1, so no TLS features.
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+# The tray on macOS and Windows: tray-icon (menus from muda) on a winit event loop; winit is
+# the one iced already brings along.
+tray-icon = { version = "0.26.1", default-features = false }
+winit = { version = "0.30.13", default-features = false }
 tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 # Win32_System_Pipes: the owner check of the pipe client in torro-ipc (X.1b).
 windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Pipes"] }
