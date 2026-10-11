@@ -2,10 +2,12 @@
 //! `docs/tasks/kalender-aufgaben.md`; design skill `.claude/skills/torro-design`, section 6; the
 //! pattern is `torrocalendar/src/views/glance.rs`).
 //!
-//! - **Mini** ([`mini`]): at the top "3 overdue · 5 today" (only the parts that are not zero;
-//!   overdue in the attention colour, never red), then the next open tasks – overdue first, then
-//!   today, then by due date – as many as fit, each with its round check, title and due date. The
-//!   rest is counted as "+4 more". Nothing open: a calm "All done for today".
+//! - **Mini** ([`mini`]): at the top the numbers, each a big figure (`DISPLAY`) with its word
+//!   beside it – "3 ● overdue  5 today" (only the parts that are not zero; the attention colour
+//!   lives in the dot only, never in text and never red) – then the next open tasks – overdue
+//!   first, then today, then by due date – as many as fit, each with its round check, title and
+//!   due date (an overdue one with the dot in front). The rest is counted as "+4 more". Nothing
+//!   open: a calm "All done for today".
 //! - **Strip** ([`strip`]): the same numbers at the left, the same tasks as chips (check and
 //!   title) filling the rest in as many lines as the height allows; what does not fit is "+4".
 //!
@@ -35,8 +37,6 @@ use torro_pim::{EventTime, Todo};
 use crate::app::Message;
 use crate::list::due_text;
 
-/// Between the parts of the numbers line: "3 overdue · 5 today".
-const SEPARATOR: &str = " · ";
 /// A chip is never wider than this, so one long title does not push the others out.
 const CHIP_MAX: f32 = size::SIDEBAR;
 /// The one-pixel frame of a chip (it lies inside the chip's bounds).
@@ -45,6 +45,10 @@ const FRAME: f32 = 1.0;
 const STRIP_INFO_SHARE: f32 = 4.0;
 /// The level of the numbers and the calm line, largest first: the first that fits is used.
 const HEAD_LEVELS: [typo::Level; 2] = [typo::TITLE.tabular(), typo::BODY_STRONG.tabular()];
+/// The levels of the mini's figures, largest first: the first that fits is used.
+const FIGURE_LEVELS: [typo::Level; 2] = [typo::DISPLAY.tabular(), typo::TITLE.tabular()];
+/// The status dot in front of "overdue" and of an overdue date: `widgets::status_dot` is this wide.
+const DOT: f32 = space::S;
 /// The height of a row of the mini tile: a control, so the check is a 28-high click target.
 const ROW: f32 = size::CONTROL_SM;
 
@@ -166,9 +170,14 @@ pub fn due_label(due: EventTime, today: NaiveDate, compact: bool) -> String {
     }
 }
 
-/// The height of the line with the numbers (or the calm line), at the largest level.
+/// The height of the line with the numbers (or the calm line) in the strip, at the largest level.
 fn head_height() -> f32 {
     line_height(HEAD_LEVELS[0])
+}
+
+/// The height of the head of the mini tile: the figures at the largest level.
+fn figure_height() -> f32 {
+    line_height(FIGURE_LEVELS[0])
 }
 
 /// The height of the quiet error line with its gap above.
@@ -179,7 +188,7 @@ fn error_height() -> f32 {
 /// How many rows fit in a mini tile `height` high under the numbers, with room for the error line
 /// if there is one.
 pub fn rows_that_fit(height: f32, error: bool) -> usize {
-    let above = 2.0 * space::M + head_height() + space::S + if error { error_height() } else { 0.0 };
+    let above = 2.0 * space::M + figure_height() + space::S + if error { error_height() } else { 0.0 };
     ((height - above) / ROW).floor().max(0.0) as usize
 }
 
@@ -260,18 +269,47 @@ fn part(content: String, overdue: bool, level: typo::Level) -> iced::widget::Tex
     })
 }
 
-/// "3 overdue · 5 today" in one line, in the largest level of [`HEAD_LEVELS`] that fits `width`.
-fn numbers_line(parts: &[(String, bool)], width: f32) -> Element<'static, Message> {
-    let joined = parts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join(SEPARATOR);
-    let level = fit_level(&joined, &HEAD_LEVELS, width);
-    let mut line = row![].align_y(Alignment::Center);
-    for (n, (content, overdue)) in parts.iter().enumerate() {
-        if n > 0 {
-            line = line.push(typo::text(level, SEPARATOR).style(theme::text_3).wrapping(Wrapping::None));
+/// A part of the numbers line split into its figure and its word: "3 overdue" → ("3", "overdue").
+/// A text without a space (a translation that does not start with the number) has no figure.
+fn split_count(text: &str) -> (&str, &str) {
+    text.split_once(' ').unwrap_or(("", text))
+}
+
+/// The level for the figures of the mini: the largest of [`FIGURE_LEVELS`] under which all parts
+/// together (figure, word, the dot of an overdue part and the gaps) fit `width`.
+fn figure_level(parts: &[(String, bool)], width: f32) -> typo::Level {
+    let total = |level: typo::Level| {
+        let parts_width: f32 = parts
+            .iter()
+            .map(|(text, overdue)| {
+                let (figure, word) = split_count(text);
+                let dot = if *overdue { DOT + space::XS } else { 0.0 };
+                text_width(figure, level) + space::XS + dot + text_width(word, typo::META)
+            })
+            .sum();
+        parts_width + space::L * parts.len().saturating_sub(1) as f32
+    };
+    FIGURE_LEVELS.iter().copied().find(|level| total(*level) <= width).unwrap_or(FIGURE_LEVELS[FIGURE_LEVELS.len() - 1])
+}
+
+/// The mini's numbers: per part the figure in the fitting level (`text`), then the word in `META`
+/// (`text_2`); an overdue part has the attention dot in front of its word, so the colour never
+/// carries the text and the word says it too.
+fn figures_line(parts: &[(String, bool)], width: f32) -> Element<'static, Message> {
+    let level = figure_level(parts, width);
+    let mut line = row![].spacing(space::L).align_y(Alignment::Center);
+    for (text, overdue) in parts {
+        let (figure, word) = split_count(text);
+        let mut part = row![typo::text(level, figure.to_string()).wrapping(Wrapping::None)]
+            .spacing(space::XS)
+            .align_y(Alignment::Center);
+        if *overdue {
+            part = part.push(widgets::status_dot(widgets::Status::Attention));
         }
-        line = line.push(part(content.clone(), *overdue, level));
+        part = part.push(typo::text(typo::META, word.to_string()).style(theme::text_2).wrapping(Wrapping::None));
+        line = line.push(part);
     }
-    container(line).height(head_height()).center_y(head_height()).into()
+    container(line).height(figure_height()).center_y(figure_height()).into()
 }
 
 /// The calm line, in the largest level that fits `width`, cut when even the smallest does not.
@@ -302,9 +340,11 @@ fn color_of(data: &GlanceData<'_>, todo: &Todo) -> Color {
     data.colors.get(&todo.collection).copied().unwrap_or_else(|| widgets::collection_color(None))
 }
 
-/// The width a row's title has left of `width` when `due` stands at the right.
-fn title_room(width: f32, due: &str) -> f32 {
-    width - style::CHECK_SIZE - space::S - text_width(due, typo::META) - space::S
+/// The width a row's title has left of `width` when `due` stands at the right (an `overdue` one
+/// with its dot in front).
+fn title_room(width: f32, due: &str, overdue: bool) -> f32 {
+    let dot = if overdue { DOT + space::XS } else { 0.0 };
+    width - style::CHECK_SIZE - space::S - dot - text_width(due, typo::META) - space::S
 }
 
 /// Whether the dates of the `shown` rows lose their weekday: when one title would otherwise be
@@ -314,29 +354,29 @@ fn compact_dates(shown: &[Pick], data: &GlanceData<'_>, width: f32) -> bool {
         let todo = &data.todos[pick.index];
         todo.due.is_some_and(|due| {
             let full = due_label(due, data.today, false);
-            text_width(&todo.summary, typo::BODY) > title_room(width, &full)
+            text_width(&todo.summary, typo::BODY) > title_room(width, &full, pick.overdue)
         })
     })
 }
 
-/// One task of the mini tile: check, title cut to fit, due date at the right (overdue in the
-/// attention colour, with the word as well: "Yesterday", never just a colour).
+/// One task of the mini tile: check, title cut to fit, due date at the right in `text_3`; an
+/// overdue one has the attention dot in front of it (and the word as well: "Yesterday", never
+/// just a colour).
 fn row_view(pick: Pick, data: &GlanceData<'_>, width: f32, compact: bool) -> Element<'static, Message> {
     let todo = &data.todos[pick.index];
     let above = (ROW - style::CHECK_SIZE) / 2.0;
     let check = check(pick.index, color_of(data, todo), above, 0.0, space::S);
     let due = todo.due.map(|due| due_label(due, data.today, compact));
-    let title_width = due.as_deref().map_or(width - style::CHECK_SIZE - space::S, |due| title_room(width, due));
+    let title_width =
+        due.as_deref().map_or(width - style::CHECK_SIZE - space::S, |due| title_room(width, due, pick.overdue));
     let title = typo::text(typo::BODY, ellipsize(&todo.summary, typo::BODY, title_width)).wrapping(Wrapping::None);
     let mut line = row![check, title].align_y(Alignment::Center).height(ROW);
     if let Some(due) = due {
-        let overdue = pick.overdue;
-        line = line.push(Space::new().width(Fill)).push(
-            typo::text(typo::META.tabular(), due).wrapping(Wrapping::None).style(move |t: &Theme| {
-                let p = palette(t);
-                text::Style { color: Some(if overdue { p.attention_text } else { p.text_3 }) }
-            }),
-        );
+        line = line.push(Space::new().width(Fill));
+        if pick.overdue {
+            line = line.push(widgets::status_dot(widgets::Status::Attention)).push(Space::new().width(space::XS));
+        }
+        line = line.push(typo::text(typo::META.tabular(), due).wrapping(Wrapping::None).style(theme::text_3));
     }
     line.into()
 }
@@ -352,7 +392,11 @@ pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     }
 
     let parts = count_parts(counts);
-    let head = if parts.is_empty() { calm_line(width) } else { numbers_line(&parts, width) };
+    let head = if parts.is_empty() {
+        container(calm_line(width)).height(figure_height()).center_y(figure_height()).into()
+    } else {
+        figures_line(&parts, width)
+    };
     let mut content = column![head];
     if let Some(error) = data.error {
         content = content.push(Space::new().height(space::XS)).push(error_line(error, width));
@@ -621,7 +665,7 @@ mod tests {
 
     #[test]
     fn the_height_of_the_tile_decides_how_many_rows_fit() {
-        // 240×160: 12 above and below, the numbers (22), 8 gap, rows of 28.
+        // 240×160: 12 above and below, the figures (32), 8 gap, rows of 28.
         assert_eq!(rows_that_fit(160.0, false), 3);
         assert_eq!((rows_that_fit(150.0, false), rows_that_fit(150.0, true)), (3, 2), "the error line takes room");
         assert_eq!(rows_that_fit(100.0, false), 1);
@@ -667,6 +711,19 @@ mod tests {
         assert_eq!(fit_level("3 overdue", &HEAD_LEVELS, 200.0), HEAD_LEVELS[0]);
         assert_eq!(fit_level("12 overdue · 12 today", &HEAD_LEVELS, 176.0), HEAD_LEVELS[1]);
         assert_eq!(fit_level("a very long line indeed that fits nowhere", &HEAD_LEVELS, 50.0), HEAD_LEVELS[1]);
+    }
+
+    #[test]
+    fn a_count_splits_into_figure_and_word() {
+        assert_eq!(split_count("12 overdue"), ("12", "overdue"));
+        assert_eq!(split_count("overdue"), ("", "overdue"), "a text without a figure keeps all of it as the word");
+    }
+
+    #[test]
+    fn the_figures_take_the_smaller_level_when_the_big_one_does_not_fit() {
+        let parts = count_parts(Counts { overdue: 3, today: 5 });
+        assert_eq!(figure_level(&parts, 216.0), FIGURE_LEVELS[0], "a 240-wide tile has room for both");
+        assert_eq!(figure_level(&parts, 100.0), FIGURE_LEVELS[1]);
     }
 
     fn data(todos: &[Todo]) -> GlanceData<'_> {
