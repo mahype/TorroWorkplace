@@ -164,7 +164,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   überschreiben mit Sicherung, Sicherungen begrenzt, löschen.
 
 ### 1.12 Startbefehle unter Linux
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-setups/src/launch/linux.rs`, `crates/torro-setups/src/launch/mod.rs`
 - **Ziel:** Aus PID und Fensterklasse einen Startbefehl ermitteln: `/proc/<pid>/cmdline`, bei
@@ -215,7 +215,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Test mit `FakeWm` prüft die Reihenfolge der Aufrufe für einen verschachtelten Baum.
 
 ### 1.17 IPC zwischen Dienst und Clients
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/server.rs`, `crates/torro-ipc/src/client.rs`
 - **Ziel:** Unix-Socket `core.sock` im State-Verzeichnis (Windows: vorerst „nicht unterstützt“).
