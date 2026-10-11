@@ -1,0 +1,404 @@
+{
+  "messageType": "client_response",
+  "clientMessage": "query workspaces",
+  "data": {
+    "workspaces": [
+      {
+        "type": "workspace",
+        "id": "7c1e9a40-1f2b-4c3d-8e4f-50617283a901",
+        "name": "1",
+        "displayName": null,
+        "parentId": "5f0b6f2e-6a1d-4b52-9c1e-0a1b2c3d4e01",
+        "children": [
+          {
+            "type": "window",
+            "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e01",
+            "parentId": "7c1e9a40-1f2b-4c3d-8e4f-50617283a901",
+            "hasFocus": true,
+            "tilingSize": 0.5,
+            "width": 1280,
+            "height": 1400,
+            "x": 0,
+            "y": 0,
+            "state": {
+              "type": "tiling"
+            },
+            "prevState": null,
+            "displayState": "shown",
+            "borderDelta": {
+              "left": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "top": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "right": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "bottom": {
+                "amount": 0.0,
+                "unit": "pixel"
+              }
+            },
+            "floatingPlacement": {
+              "left": 0,
+              "top": 0,
+              "right": 1280,
+              "bottom": 1400
+            },
+            "handle": 395116,
+            "title": "Inbox - Mozilla Firefox",
+            "className": "MozillaWindowClass",
+            "processName": "firefox",
+            "activeDrag": null
+          },
+          {
+            "type": "split",
+            "id": "a3d4e5f6-0718-4293-a4b5-c6d7e8f90a11",
+            "parentId": "7c1e9a40-1f2b-4c3d-8e4f-50617283a901",
+            "children": [
+              {
+                "type": "window",
+                "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e02",
+                "parentId": "a3d4e5f6-0718-4293-a4b5-c6d7e8f90a11",
+                "hasFocus": false,
+                "tilingSize": 0.5,
+                "width": 1280,
+                "height": 700,
+                "x": 1280,
+                "y": 0,
+                "state": {
+                  "type": "tiling"
+                },
+                "prevState": null,
+                "displayState": "shown",
+                "borderDelta": {
+                  "left": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  },
+                  "top": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  },
+                  "right": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  },
+                  "bottom": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  }
+                },
+                "floatingPlacement": {
+                  "left": 1280,
+                  "top": 0,
+                  "right": 2560,
+                  "bottom": 700
+                },
+                "handle": 263472,
+                "title": "Windows PowerShell",
+                "className": "CASCADIA_HOSTING_WINDOW_CLASS",
+                "processName": "WindowsTerminal",
+                "activeDrag": null
+              },
+              {
+                "type": "window",
+                "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e03",
+                "parentId": "a3d4e5f6-0718-4293-a4b5-c6d7e8f90a11",
+                "hasFocus": false,
+                "tilingSize": 0.5,
+                "width": 1280,
+                "height": 700,
+                "x": 1280,
+                "y": 700,
+                "state": {
+                  "type": "tiling"
+                },
+                "prevState": null,
+                "displayState": "shown",
+                "borderDelta": {
+                  "left": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  },
+                  "top": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  },
+                  "right": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  },
+                  "bottom": {
+                    "amount": 0.0,
+                    "unit": "pixel"
+                  }
+                },
+                "floatingPlacement": {
+                  "left": 1280,
+                  "top": 700,
+                  "right": 2560,
+                  "bottom": 1400
+                },
+                "handle": 131890,
+                "title": "main.rs - TorroWorkplace - Visual Studio Code",
+                "className": "Chrome_WidgetWin_1",
+                "processName": "Code",
+                "activeDrag": null
+              }
+            ],
+            "childFocusOrder": [
+              "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e02",
+              "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e03"
+            ],
+            "hasFocus": false,
+            "tilingSize": 0.5,
+            "width": 1280,
+            "height": 1400,
+            "x": 1280,
+            "y": 0,
+            "tilingDirection": "vertical"
+          }
+        ],
+        "childFocusOrder": [
+          "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e01",
+          "a3d4e5f6-0718-4293-a4b5-c6d7e8f90a11"
+        ],
+        "hasFocus": true,
+        "isDisplayed": true,
+        "width": 2560,
+        "height": 1400,
+        "x": 0,
+        "y": 0,
+        "tilingDirection": "horizontal"
+      },
+      {
+        "type": "workspace",
+        "id": "7c1e9a40-1f2b-4c3d-8e4f-50617283a902",
+        "name": "2",
+        "displayName": "music",
+        "parentId": "5f0b6f2e-6a1d-4b52-9c1e-0a1b2c3d4e01",
+        "children": [
+          {
+            "type": "window",
+            "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e04",
+            "parentId": "7c1e9a40-1f2b-4c3d-8e4f-50617283a902",
+            "hasFocus": false,
+            "tilingSize": 1.0,
+            "width": 2560,
+            "height": 1400,
+            "x": 0,
+            "y": 0,
+            "state": {
+              "type": "tiling"
+            },
+            "prevState": null,
+            "displayState": "hidden",
+            "borderDelta": {
+              "left": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "top": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "right": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "bottom": {
+                "amount": 0.0,
+                "unit": "pixel"
+              }
+            },
+            "floatingPlacement": {
+              "left": 0,
+              "top": 0,
+              "right": 2560,
+              "bottom": 1400
+            },
+            "handle": 657922,
+            "title": "Spotify Premium",
+            "className": "Chrome_WidgetWin_0",
+            "processName": "Spotify",
+            "activeDrag": null
+          }
+        ],
+        "childFocusOrder": [
+          "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e04"
+        ],
+        "hasFocus": false,
+        "isDisplayed": false,
+        "width": 2560,
+        "height": 1400,
+        "x": 0,
+        "y": 0,
+        "tilingDirection": "horizontal"
+      },
+      {
+        "type": "workspace",
+        "id": "7c1e9a40-1f2b-4c3d-8e4f-50617283a903",
+        "name": "3",
+        "displayName": null,
+        "parentId": "5f0b6f2e-6a1d-4b52-9c1e-0a1b2c3d4e02",
+        "children": [
+          {
+            "type": "window",
+            "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e06",
+            "parentId": "7c1e9a40-1f2b-4c3d-8e4f-50617283a903",
+            "hasFocus": false,
+            "tilingSize": 1.0,
+            "width": 1920,
+            "height": 1040,
+            "x": 2560,
+            "y": 0,
+            "state": {
+              "type": "tiling"
+            },
+            "prevState": null,
+            "displayState": "shown",
+            "borderDelta": {
+              "left": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "top": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "right": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "bottom": {
+                "amount": 0.0,
+                "unit": "pixel"
+              }
+            },
+            "floatingPlacement": {
+              "left": 2560,
+              "top": 0,
+              "right": 4480,
+              "bottom": 1040
+            },
+            "handle": 789204,
+            "title": "Calendar - Outlook",
+            "className": "Olk Host",
+            "processName": "olk",
+            "activeDrag": null
+          },
+          {
+            "type": "window",
+            "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e05",
+            "parentId": "7c1e9a40-1f2b-4c3d-8e4f-50617283a903",
+            "hasFocus": false,
+            "tilingSize": null,
+            "width": 400,
+            "height": 600,
+            "x": 3200,
+            "y": 300,
+            "state": {
+              "type": "floating",
+              "centered": true,
+              "shownOnTop": false
+            },
+            "prevState": null,
+            "displayState": "shown",
+            "borderDelta": {
+              "left": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "top": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "right": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "bottom": {
+                "amount": 0.0,
+                "unit": "pixel"
+              }
+            },
+            "floatingPlacement": {
+              "left": 3200,
+              "top": 300,
+              "right": 3600,
+              "bottom": 900
+            },
+            "handle": 920110,
+            "title": "Calculator",
+            "className": "ApplicationFrameWindow",
+            "processName": "ApplicationFrameHost",
+            "activeDrag": null
+          },
+          {
+            "type": "window",
+            "id": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e07",
+            "parentId": "7c1e9a40-1f2b-4c3d-8e4f-50617283a903",
+            "hasFocus": false,
+            "tilingSize": null,
+            "width": 800,
+            "height": 600,
+            "x": 2560,
+            "y": 0,
+            "state": {
+              "type": "minimized"
+            },
+            "prevState": null,
+            "displayState": "hidden",
+            "borderDelta": {
+              "left": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "top": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "right": {
+                "amount": 0.0,
+                "unit": "pixel"
+              },
+              "bottom": {
+                "amount": 0.0,
+                "unit": "pixel"
+              }
+            },
+            "floatingPlacement": {
+              "left": 2560,
+              "top": 0,
+              "right": 3360,
+              "bottom": 600
+            },
+            "handle": 1051300,
+            "title": "Notepad",
+            "className": "Notepad",
+            "processName": "Notepad",
+            "activeDrag": null
+          }
+        ],
+        "childFocusOrder": [
+          "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e06",
+          "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e05"
+        ],
+        "hasFocus": false,
+        "isDisplayed": true,
+        "width": 1920,
+        "height": 1040,
+        "x": 2560,
+        "y": 0,
+        "tilingDirection": "horizontal"
+      }
+    ]
+  },
+  "error": null,
+  "success": true
+}

@@ -123,7 +123,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   speichern und laden auf einem Mac mit AeroSpace.
 
 ### X.7 Fenstermanager GlazeWM (Windows)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – (für den Dienst unter Windows: X.1) · **Dateien:** `crates/torro-wm/src/glazewm/` (neu),
   `crates/torro-wm/src/{lib,detect}.rs`, `crates/torro-wm/tests/fixtures/glazewm-*.json` (neu), `crates/torro-wm/Cargo.toml`,
   `Cargo.toml`
