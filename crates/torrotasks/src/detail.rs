@@ -586,6 +586,9 @@ impl Detail {
             .placeholder(tr("Task title"))
             .on_action(Message::TitleEdited)
             .key_binding(|press| match press.key.as_ref() {
+                // Only while the field has focus: otherwise Enter and Escape belong to the window
+                // (open a task, close the detail).
+                _ if !is_focused(&press) => text_editor::Binding::from_key_press(press),
                 keyboard::Key::Named(keyboard::key::Named::Enter) => Some(text_editor::Binding::Sequence(vec![
                     text_editor::Binding::Custom(Message::TitleSubmit),
                     text_editor::Binding::Unfocus,
@@ -608,6 +611,7 @@ impl Detail {
             .placeholder(tr("Add notes …"))
             .on_action(Message::NotesEdited)
             .key_binding(|press| match press.key.as_ref() {
+                _ if !is_focused(&press) => text_editor::Binding::from_key_press(press),
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
                 _ => text_editor::Binding::from_key_press(press),
             })
@@ -908,6 +912,11 @@ fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
 }
 
 /// Escape in a text field: leave it and save what was typed.
+/// Whether the editor that got `press` has the keyboard focus.
+fn is_focused(press: &text_editor::KeyPress) -> bool {
+    matches!(press.status, text_editor::Status::Focused { .. })
+}
+
 fn leave_field() -> text_editor::Binding<Message> {
     text_editor::Binding::Sequence(vec![text_editor::Binding::Unfocus, text_editor::Binding::Custom(Message::Flush)])
 }
