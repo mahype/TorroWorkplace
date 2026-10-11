@@ -1,8 +1,8 @@
 //! Geometry of the radar, free of Iced widgets so that it can be tested: where the window of a
 //! day starts, time to angle and back within the window, how the last quarter fades out, the
 //! ticks and numerals of the dial, the radii of the rings, the arcs of the events with their
-//! lanes, hit-testing, turning the dial by dragging, and where the letters of a title go along an
-//! arc. `radar.rs` draws the result.
+//! lanes, the nights and the free time in the window, hit-testing, turning the dial by dragging,
+//! and where the letters of a title go along an arc. `radar.rs` draws the result.
 //!
 //! Angles are in degrees, 0 at the top (where the 12 stands), growing clockwise, as on a clock.
 //! Times inside the window are minutes after its start ("rel"); the window starts at the start of
@@ -41,6 +41,8 @@ pub const LOOK_AHEAD: i64 = 24 * 60;
 const DAY_OPENS: u32 = 8;
 /// …or at the hour of an earlier event, but never before the night ends.
 const NIGHT_ENDS: u32 = 6;
+/// The night starts at this hour, the same as in the timeline (22:00–06:00).
+const NIGHT_STARTS: u32 = 22;
 /// A press on the dial turns it only once the pointer has moved this far (pixels); less is a click.
 pub const DRAG_THRESHOLD: f32 = 4.0;
 /// Dragging turns the dial in steps of this many minutes.
@@ -442,6 +444,76 @@ pub fn glyphs(text: &str, level: typo::Level, radius: f32, start: f32, flipped: 
         .collect()
 }
 
+/// The nights (22:00–06:00, as in the timeline) in the window: minutes after its start, cut to
+/// `[0, END]`, in order. A window is shorter than a day and a night, so there is at most one, but
+/// one that started the evening before the window counts.
+pub fn nights(window: &Window) -> Vec<(f32, f32)> {
+    let evening = |days: i64| {
+        let day = window.start.date() + Duration::days(days);
+        day.and_time(NaiveTime::MIN) + Duration::hours(i64::from(NIGHT_STARTS))
+    };
+    let length = Duration::hours(i64::from(24 + NIGHT_ENDS - NIGHT_STARTS));
+    (-1..=1)
+        .map(evening)
+        .map(|start| (window.rel(start).max(0.0), window.rel(start + length).min(END)))
+        .filter(|(from, to)| to > from)
+        .collect()
+}
+
+/// `[from, to)` cut at the edges of `nights` (sorted, apart, as from [`nights`]): the stretches in
+/// order, each with whether it lies in a night. Drawing them one by one puts the right ground under
+/// every piece.
+pub fn split(from: f32, to: f32, nights: &[(f32, f32)]) -> Vec<(f32, f32, bool)> {
+    let mut out = Vec::new();
+    let mut at = from;
+    for &(start, end) in nights {
+        if end <= at || start >= to {
+            continue;
+        }
+        if start > at {
+            out.push((at, start, false));
+        }
+        let end = end.min(to);
+        out.push((at.max(start), end, true));
+        at = end;
+    }
+    if to > at {
+        out.push((at, to, false));
+    }
+    out
+}
+
+/// The free time of the window from `from` on (now, or the start of the window): the stretches up
+/// to [`END`] in which no span runs in any ring and that lie outside `nights`, each at least `min`
+/// minutes long. The night is for sleeping, not free time to fill.
+pub fn free(spans: &[Span], nights: &[(f32, f32)], from: f32, min: f32) -> Vec<(f32, f32)> {
+    let mut busy: Vec<(f32, f32)> =
+        spans.iter().map(|span| (span.from, span.to)).chain(nights.iter().copied()).collect();
+    busy.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut out = Vec::new();
+    let mut at = from.max(0.0);
+    for (start, end) in busy {
+        if start - at >= min {
+            out.push((at, start));
+        }
+        at = at.max(end);
+    }
+    if END - at >= min {
+        out.push((at, END));
+    }
+    out
+}
+
+/// Where the moon stands on the numerals' circle: at the first half hour of the clock inside a
+/// night of the window (between two numerals, so it never covers one), clear of the time chip at
+/// the start and of the seam at the end. `None` when no half hour of a night is in the window.
+pub fn moon(window: &Window, nights: &[(f32, f32)]) -> Option<f32> {
+    let clear = NUMERAL_CLEARANCE..=WINDOW - NUMERAL_CLEARANCE;
+    let in_night = |rel: f32| nights.iter().any(|(from, to)| (*from..=*to).contains(&rel));
+    // Ticks are every half hour; those that are not full hours are the half hours.
+    window.ticks().into_iter().find(|(rel, full)| !full && clear.contains(rel) && in_night(*rel)).map(|(rel, _)| rel)
+}
+
 /// Whole minutes from `from` to `to`, rounded up ("40 min left" while 39½ are), never below 0.
 pub fn minutes_until(from: NaiveDateTime, to: NaiveDateTime) -> i64 {
     let seconds = (to - from).num_seconds().max(0);
@@ -676,6 +748,64 @@ mod tests {
         assert!(arc(150.0, 200.0).flipped());
         assert!(!arc(340.0, 380.0).flipped(), "over the 12");
         assert!(close(arc(0.0, 90.0).length(), std::f32::consts::FRAC_PI_2 * 120.0));
+    }
+
+    #[test]
+    fn the_night_lies_in_the_window_also_over_midnight() {
+        // 14:20: the night starts 7 h 40 min in and runs past the end of the window.
+        assert_eq!(nights(&Window::new(at(13, 14, 20))), [(460.0, END)]);
+        // 08:00: no night at all before 19:54.
+        assert!(nights(&Window::new(at(18, 8, 0))).is_empty());
+        // 23:10, past midnight: the night begun the evening before runs until 06:00.
+        assert_eq!(nights(&Window::new(at(13, 23, 10))), [(0.0, 410.0)]);
+        // 01:00: still the night of the evening before.
+        assert_eq!(nights(&Window::new(at(14, 1, 0))), [(0.0, 300.0)]);
+        // 20:00: the whole night of eight hours fits, from 22:00 to 06:00.
+        assert_eq!(nights(&Window::new(at(13, 20, 0))), [(120.0, 600.0)]);
+    }
+
+    #[test]
+    fn stretches_are_cut_at_the_edges_of_the_night() {
+        let nights = [(120.0, 600.0)];
+        assert_eq!(split(0.0, END, &nights), [(0.0, 120.0, false), (120.0, 600.0, true), (600.0, END, false)]);
+        assert_eq!(split(100.0, 200.0, &nights), [(100.0, 120.0, false), (120.0, 200.0, true)]);
+        assert_eq!(split(200.0, 300.0, &nights), [(200.0, 300.0, true)], "inside the night");
+        assert_eq!(split(0.0, 60.0, &nights), [(0.0, 60.0, false)], "before it");
+        assert_eq!(split(0.0, 60.0, &[]), [(0.0, 60.0, false)]);
+    }
+
+    #[test]
+    fn free_time_is_two_hours_or_more_and_never_the_night() {
+        let span = |from: f32, to: f32| Span { id: 0, ring: 0, from, to, starts: true };
+        // The demo at 14:20: 1:1 until 15:00, run 18:30–19:30, night from 22:00.
+        let spans = [span(0.0, 40.0), span(10.0, 40.0), span(250.0, 310.0)];
+        let nights = [(460.0, END)];
+        assert_eq!(free(&spans, &nights, 0.0, 120.0), [(40.0, 250.0), (310.0, 460.0)]);
+        // Overlapping events in other rings close the gap just the same.
+        let busy = [span(0.0, 40.0), Span { ring: 2, ..span(100.0, 200.0) }, span(250.0, 310.0)];
+        assert_eq!(free(&busy, &nights, 0.0, 120.0), [(310.0, 460.0)], "60 and 50 minutes are too short");
+        // An empty day: everything up to the end of the window, nothing in a night.
+        assert_eq!(free(&[], &[], 0.0, 120.0), [(0.0, END)]);
+        assert_eq!(free(&[], &[(0.0, 410.0)], 0.0, 120.0), [(410.0, END)], "after the night");
+        assert!(free(&[], &[(0.0, 600.0)], 0.0, 120.0).is_empty(), "less than two hours after it");
+        // From now on: time already gone is not free.
+        assert_eq!(free(&spans, &nights, 100.0, 120.0), [(100.0, 250.0), (310.0, 460.0)]);
+        assert!(free(&spans, &nights, 800.0, 120.0).is_empty(), "the window lies in the past");
+    }
+
+    #[test]
+    fn the_moon_stands_at_the_first_half_hour_of_the_night() {
+        let window = Window::new(at(13, 14, 20));
+        assert_eq!(moon(&window, &nights(&window)), Some(490.0), "22:30");
+        assert_eq!(window.at(490.0), at(13, 22, 30));
+        // Starting at 23:10 inside the night: 23:30, just clear of the chip.
+        let late = Window::new(at(13, 23, 10));
+        assert_eq!(moon(&late, &nights(&late)), Some(20.0));
+        // At 23:20 the 23:30 would touch the chip: 00:30.
+        let later = Window::new(at(13, 23, 20));
+        assert_eq!(later.at(moon(&later, &nights(&later)).expect("a moon")), at(14, 0, 30));
+        let morning = Window::new(at(18, 8, 0));
+        assert_eq!(moon(&morning, &nights(&morning)), None, "no night, no moon");
     }
 
     #[test]

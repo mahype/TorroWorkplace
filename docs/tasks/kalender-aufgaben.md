@@ -374,7 +374,7 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   Zeiten; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Sichtprüfung alle Größen hell/dunkel.
 
 ### K.25 Radar: auch ohne Termine lebendig
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.23 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
   `crates/torrocalendar/src/views/radar/layout.rs`
 - Wunsch des Nutzers (2026-10-11): Ohne Termine sieht das Radar aus wie eine leere Uhr.

@@ -1194,9 +1194,10 @@ impl App {
         }
     }
 
-    /// The ids of the event calendars in the order of the sidebar: the radar's rings.
+    /// The ids of the visible event calendars in the order of the sidebar: the radar's rings.
     fn calendar_order(&self) -> Vec<String> {
-        self.calendars().into_iter().map(|(calendar, _, _)| calendar.id.clone()).collect()
+        let visible = self.calendars().into_iter().filter(|(calendar, _, _)| !self.hidden.contains(&calendar.id));
+        visible.map(|(calendar, _, _)| calendar.id.clone()).collect()
     }
 
     /// Where the radar's window starts: the start of the anchor's day turned by [`App::turn`].
