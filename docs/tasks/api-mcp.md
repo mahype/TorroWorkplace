@@ -110,11 +110,18 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 
 ### A.3 Freigaben
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** A.2 · **Dateien:** `crates/torroworkplace/src/approvals.rs` (neu), `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`
+- **Modell:** Opus · **Braucht:** A.2 · **Dateien:** `crates/torroworkplace/src/approvals.rs` (neu), `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/account.rs`
 - Offene Freigaben in `approvals.json`, Ablauf nach 10 Minuten, `pending`-Antwort mit
   Zusammenfassung, `approvals.list/status/decide` (decide nur App-Schlüssel), Benachrichtigung mit
   „Allow“/„Deny“, Rechte bei Ausführung erneut prüfen.
   `Admin`-Befehle eines Agenten brauchen immer eine Freigabe (Entscheidung 3).
+- Bis A.3 lehnt der Dienst alles, was eine Freigabe bräuchte, mit `forbidden` ab
+  (`Refused::NeedsApproval` in `Core::handle_from`); A.3 ersetzt genau diesen Zweig durch `pending`.
+- Bei der Ausführung einer Freigabe Rechte **und** Reichweite (`out_of_reach`, ausgeblendete
+  Sammlungen) erneut prüfen; zwischen Anfrage und Entscheidung kann sich beides geändert haben.
+- Aus dem API-Check von A.2: `torro-core/src/account.rs` lehnt Konto-Kennungen ab, die mit
+  `client-` beginnen (beim Laden und in `keychain_entry()`), damit kein Konto den Schlüsselbund-
+  Eintrag eines Agenten überschreiben oder löschen kann.
 - **Abnahme:** Agent kann sich nicht selbst freigeben; Neustart verliert nichts; Ablauf greift;
   Admin-Befehl eines Agenten wartet auch bei „Freigabe vorher: Nie“.
 

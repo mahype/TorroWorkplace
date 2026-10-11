@@ -82,7 +82,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `accounts` | `list_accounts` | `sync` | | `connect_nextcloud`, `remove_account` |
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
-| `clients` | | | | Agenten und Schlüssel verwalten (**nur App-Schlüssel**, siehe unten) |
+| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | | | `decide_approval` (**nur App-Schlüssel**) |
 
 ¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
@@ -182,6 +182,13 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 Für jede Anfrage: Schlüssel → Client → `Request::operation()` → Stufe im Bereich reicht? →
 Sammlung freigegeben? → Freigabe nötig? → ausführen → protokollieren. Rechte werden bei der
 Ausführung einer Freigabe **noch einmal** geprüft.
+
+- Rechte gelten je Anfrage: Eine Änderung wirkt ab der nächsten Anfrage, eine laufende läuft mit
+  dem Stand zu Ende, mit dem sie angenommen wurde.
+- Ein Termin oder eine Aufgabe ist nur erreichbar, wenn das aufgelöste `href` ein **direktes Kind**
+  einer erlaubten Sammlung ist (gleicher Server, kein `..`).
+- **Verschieben** (`save_event`/`save_todo` mit anderer `collection`) braucht nur `Write`, obwohl
+  es im Ursprung löscht: Die Daten bleiben erhalten. Beide Sammlungen müssen erreichbar sein.
 
 ## Freigaben: der Mensch entscheidet
 
