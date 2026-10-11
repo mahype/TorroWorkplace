@@ -289,7 +289,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   `TEXT`, Farbe nur im Punkt.
 
 ### W.4 Workspaces und Apps: eine Aktion je Zeile
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** W.2
 - **Dateien:** `crates/torroworkplace/src/ui/{workspaces,apps}.rs`
 - Je Zeile eine sichtbare Aktion („Load“ bzw. „Open“, secondary `CONTROL_SM`), Umbenennen und
