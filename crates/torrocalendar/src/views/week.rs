@@ -301,6 +301,13 @@ fn is_weekend(day: NaiveDate) -> bool {
     matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
 }
 
+/// The hand over everything a click does something on (an event, a bar, an empty slot or day
+/// cell), the plain arrow elsewhere (the time axis). The same hit-test as the click, so the
+/// cursor never promises more than a press does.
+fn pointer_if(clickable: bool) -> mouse::Interaction {
+    if clickable { mouse::Interaction::Pointer } else { mouse::Interaction::Idle }
+}
+
 /// The left-button press in `bounds`, relative to its top left corner.
 fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Point> {
     match event {
@@ -447,6 +454,13 @@ impl canvas::Program<Message> for Strip {
         Some(Action::publish(message).and_capture())
     }
 
+    fn mouse_interaction(&self, _state: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        let count = self.plan.days.len();
+        let (bars, _) = layout::bar_blocks(&self.plan.bars, count, bounds.width);
+        let over = cursor.position_in(bounds).and_then(|point| layout::strip_hit(&bars, count, bounds.width, point));
+        pointer_if(over.is_some())
+    }
+
     fn draw(
         &self,
         _state: &(),
@@ -512,6 +526,13 @@ impl canvas::Program<Message> for Grid {
             }
         };
         Some(Action::publish(message).and_capture())
+    }
+
+    fn mouse_interaction(&self, _state: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        let count = self.plan.days.len();
+        let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width);
+        let over = cursor.position_in(bounds).and_then(|point| layout::grid_hit(&blocks, count, bounds.width, point));
+        pointer_if(over.is_some())
     }
 
     fn draw(
@@ -760,6 +781,8 @@ fn label(
 
 #[cfg(test)]
 mod tests {
+    use iced::widget::canvas::Program;
+
     use super::*;
 
     fn at(day: u32, hour: u32, minute: u32) -> NaiveDateTime {
@@ -966,5 +989,68 @@ mod tests {
         let plan = Plan::new(&data);
         assert_eq!(plan.free_gaps(0), vec![], "Monday is over");
         assert_eq!(plan.free_gaps(3), vec![(660.0, 960.0)], "Thursday 11:00–16:00");
+    }
+
+    /// A week (Mon 5 – Sun 11 Oct 2026) with a timed event on Wednesday and an all-day one.
+    fn week_plan() -> Plan {
+        let events = [
+            calendar_event("Workshop", local(7, 10, 0), Some(local(7, 11, 0))),
+            calendar_event("Holiday", EventTime::Date(at(7, 0, 0).date()), None),
+        ];
+        let items =
+            events.iter().enumerate().map(|(index, event)| super::super::Item { index, event, color: Color::BLACK });
+        let monday = at(5, 0, 0).date();
+        let data = ViewData {
+            items: items.collect(),
+            start: monday,
+            end: monday + Duration::days(7),
+            anchor: monday,
+            now: at(7, 14, 20),
+        };
+        Plan::new(&data)
+    }
+
+    /// What the canvas shows with the cursor at `point` inside bounds that start at (30, 40).
+    fn interaction(program: &impl canvas::Program<Message, State = ()>, point: Point) -> mouse::Interaction {
+        let bounds = Rectangle::new(Point::new(30.0, 40.0), Size::new(700.0, GRID_HEIGHT + 100.0));
+        let cursor = mouse::Cursor::Available(Point::new(bounds.x + point.x, bounds.y + point.y));
+        program.mouse_interaction(&(), bounds, cursor)
+    }
+
+    #[test]
+    fn the_grid_shows_the_hand_over_events_and_slots_but_not_over_the_axis() {
+        let plan = week_plan();
+        let grid = Grid { plan: plan.clone() };
+        let blocks = layout::timed_blocks(&plan.timed, plan.days.len(), 700.0);
+        let block = blocks.first().expect("the workshop is drawn").rect;
+        assert_eq!(interaction(&grid, block.center()), mouse::Interaction::Pointer, "an event");
+        let slot = Point::new(block.x + 1.0, 3.0 * HOUR_HEIGHT);
+        assert_eq!(interaction(&grid, slot), mouse::Interaction::Pointer, "an empty slot starts a new event");
+        let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, block.center().y);
+        assert_eq!(interaction(&grid, axis), mouse::Interaction::Idle, "the time axis does nothing");
+        let below = Point::new(block.x, GRID_HEIGHT + 1.0);
+        assert_eq!(interaction(&grid, below), mouse::Interaction::Idle, "beyond 24:00");
+    }
+
+    #[test]
+    fn the_grid_shows_no_hand_with_the_cursor_elsewhere() {
+        let grid = Grid { plan: week_plan() };
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(700.0, 400.0));
+        let outside = mouse::Cursor::Available(Point::new(900.0, 100.0));
+        assert_eq!(grid.mouse_interaction(&(), bounds, outside), mouse::Interaction::Idle);
+        assert_eq!(grid.mouse_interaction(&(), bounds, mouse::Cursor::Unavailable), mouse::Interaction::Idle);
+    }
+
+    #[test]
+    fn the_all_day_strip_shows_the_hand_over_bars_and_day_cells_but_not_over_the_axis() {
+        let plan = week_plan();
+        let strip = Strip { plan: plan.clone() };
+        let (bars, _) = layout::bar_blocks(&plan.bars, plan.days.len(), 700.0);
+        let bar = bars.first().expect("the holiday is drawn").rect;
+        assert_eq!(interaction(&strip, bar.center()), mouse::Interaction::Pointer, "a bar");
+        let day = Point::new(bar.x - 2.0 * layout::columns(700.0, 7).1, bar.y);
+        assert_eq!(interaction(&strip, day), mouse::Interaction::Pointer, "an empty day cell");
+        let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, bar.y);
+        assert_eq!(interaction(&strip, axis), mouse::Interaction::Idle, "the axis cell does nothing");
     }
 }

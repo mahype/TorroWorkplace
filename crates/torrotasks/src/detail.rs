@@ -27,7 +27,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{
     Space, button, checkbox, column, container, mouse_area, row, rule, scrollable, svg, text_editor, text_input,
 };
-use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
@@ -939,7 +939,7 @@ fn lead_chip<'a>(lead: Element<'a, Message>, label: &'a str, on_press: Message) 
         row![lead, typo::text(typo::META, label).wrapping(Wrapping::None)].spacing(ICON_GAP).align_y(Alignment::Center);
     let chip =
         container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
-    mouse_area(chip).on_press(on_press).into()
+    mouse_area(chip).on_press(on_press).interaction(mouse::Interaction::Pointer).into()
 }
 
 /// A chip that offers to add something ("+ Parent"): plus and label in `text_3`, otherwise as
@@ -950,7 +950,7 @@ fn add_chip<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
         .align_y(Alignment::Center);
     let chip =
         container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
-    mouse_area(chip).on_press(on_press).into()
+    mouse_area(chip).on_press(on_press).interaction(mouse::Interaction::Pointer).into()
 }
 
 /// A text button moved left by its own padding, so its label stands on the content axis (the

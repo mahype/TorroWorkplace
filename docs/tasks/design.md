@@ -411,7 +411,7 @@ keine Funktionen der Suite: kein neuer API-Befehl, kein MCP-Tool (wie Scrollposi
 ist der Zustand der Seitenleiste reine Fensteransicht).
 
 ### U.1 Zeiger-Cursor auf allem, was klickbar ist
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/{week,month,glance,mini_month,week_strip}.rs`, `crates/torrotasks/src/{list,glance}.rs`, ggf. `crates/torroworkplace/src/ui/*` (nennen)
 - Termine im Wochen-/Tagesraster (Canvas: `canvas::Program::mouse_interaction` → `Interaction::Pointer`
   über einem Termin bzw. einer klickbaren Fläche, sonst `Idle`), Monatszellen und -termine, Mini-Monat,

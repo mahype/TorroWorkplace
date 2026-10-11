@@ -150,7 +150,7 @@ fn cell<'a>(
             background: shade.map(|shade| Background::Color(mix(palette(theme).panel, palette(theme).bg, shade))),
             ..container::Style::default()
         });
-    mouse_area(cell).on_press(Message::NewEvent { date, time: None }).into()
+    mouse_area(cell).on_press(Message::NewEvent { date, time: None }).interaction(mouse::Interaction::Pointer).into()
 }
 
 /// The day number: `text_2` (weekends and neighbouring months `text_3`); today white in a red
