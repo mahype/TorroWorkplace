@@ -1,0 +1,3 @@
+# Test fixtures are byte-exact server answers (bare LF, CRLF, long lines). Git must not convert their line
+# endings on checkout, or Windows (core.autocrlf=true) tests other bytes than Linux and macOS.
+**/tests/fixtures/** -text
