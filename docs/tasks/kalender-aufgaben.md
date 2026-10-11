@@ -88,6 +88,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torrotasks/src/detail.rs`
 
 ### K.17 Schrift Inter in allen Apps
+- **Ersetzt durch F.1** in [design.md](design.md) (Inter plus Schriftstufen). Nicht mehr einzeln bearbeiten.
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** K.1
 - **Dateien:** `crates/torro-gui/assets/fonts/` (neu), `crates/torro-gui/src/{lib,theme,connect}.rs`,
@@ -141,6 +142,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### K.19 Kalender in jeder Größe: Mini, Leiste, Schmal
+- **Nach C.1** aus [design.md](design.md): Bausteine und Tokens von dort verwenden (Skill `torro-design`).
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** K.18 (K.17 hilfreich, nicht nötig)
 - **Dateien:** `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/{mod,glance}.rs`
@@ -173,6 +175,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   sechs Größen – alle vier Ziele mindestens „erfüllt“ für Mini, Leiste und Schmal.
 
 ### K.20 Aufgaben in jeder Größe: Mini, Leiste, Schmal
+- **Nach T.1** aus [design.md](design.md): Bausteine und Tokens von dort verwenden (Skill `torro-design`).
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** K.19 (als Muster)
 - **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torrotasks/src/glance.rs` (neu),
