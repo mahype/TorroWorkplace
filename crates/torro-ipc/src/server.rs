@@ -10,8 +10,8 @@ use std::path::Path;
 
 use crate::{IpcError, Request, Response};
 
-/// Listens on `path` and answers each connection's request with `handler`, concurrently,
-/// until the listener fails.
+/// Listens on `path` and answers each connection's request with `handler`, concurrently.
+/// Runs until the task is dropped; failing to accept one client is logged, not fatal.
 ///
 /// Single instance: if `path` exists and a core answers a [`Request::Ping`] there, returns
 /// [`IpcError::AlreadyRunning`]; a stale socket file is removed. Creates the parent
@@ -20,7 +20,7 @@ use crate::{IpcError, Request, Response};
 pub async fn serve<H, F>(path: &Path, handler: H) -> Result<(), IpcError>
 where
     H: Fn(Request) -> F + Send + Sync + 'static,
-    F: Future<Output = Response> + Send,
+    F: Future<Output = Response> + Send + 'static,
 {
     use std::sync::Arc;
 
@@ -40,7 +40,15 @@ where
     let listener = UnixListener::bind(path).map_err(IpcError::Io)?;
     let handler = Arc::new(handler);
     loop {
-        let (stream, _) = listener.accept().await.map_err(IpcError::Io)?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            // Out of file descriptors and the like pass; keep serving instead of ending the core.
+            Err(err) => {
+                eprintln!("torroworkplace: accepting a client failed: {err}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let handler = Arc::clone(&handler);
         tokio::spawn(async move {
             // A client that hangs up mid-request only ends its own connection.
@@ -54,7 +62,7 @@ where
 pub async fn serve<H, F>(path: &Path, handler: H) -> Result<(), IpcError>
 where
     H: Fn(Request) -> F + Send + Sync + 'static,
-    F: Future<Output = Response> + Send,
+    F: Future<Output = Response> + Send + 'static,
 {
     let _ = (path, handler);
     Err(IpcError::Unsupported)
