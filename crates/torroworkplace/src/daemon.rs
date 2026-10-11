@@ -76,6 +76,9 @@ impl Daemon {
 /// go out first.
 const ANSWER_GRACE: Duration = Duration::from_millis(200);
 
+/// How long the start waits for an answer to "is a core already running?".
+const START_PING_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Ends the service once the answer to a `system.quit` is on its way (see [`ANSWER_GRACE`]).
 fn end_after_answer(quit: mpsc::UnboundedSender<()>) {
     tokio::spawn(async move {
@@ -172,7 +175,10 @@ enum Shows {
 
 async fn serve(shows: Shows) -> Result<(), String> {
     let socket = socket_path().ok_or("no home directory")?;
-    if let Ok(Response::Pong { .. }) = client::call(&socket, &Request::Ping).await {
+    // Bounded: a program that holds the socket or pipe name but never answers must not stall
+    // the start; the server then fails on the taken name with a clear error instead.
+    let ping = tokio::time::timeout(START_PING_TIMEOUT, client::call(&socket, &Request::Ping)).await;
+    if let Ok(Ok(Response::Pong { .. })) = ping {
         return Err("already running".into());
     }
     // The app key goes next to the socket, where `torro_ipc::client` looks for it.
