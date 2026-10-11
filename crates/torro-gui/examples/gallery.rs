@@ -1,35 +1,50 @@
-//! Gallery of every style in `torro_gui::style`, each in every state side by side.
+//! Gallery of every style in `torro_gui::style`, the building blocks of `torro_gui::widgets` and
+//! an example window built with `torro_gui::shell`.
 //!
-//! `cargo run -p torro-gui --example gallery` (dark) or `… --example gallery -- --light`. The
-//! "Dark · Light" switch in the header flips the mode live. States are forced through the style
-//! closure (`.style(move |theme, _| f(theme, Status::Hovered))`), so one screenshot shows hover,
-//! pressed, focus and disabled at once; the "Live" section has real widgets to try by hand.
+//! `cargo run -p torro-gui --example gallery` shows the styles (dark), `-- --light` in light mode,
+//! `-- --blocks` the building blocks, `-- --window` the example "Tasks" window (sample data from
+//! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
+//! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start. The "Styles ·
+//! Blocks · Window" switch in the header changes the page, "Dark · Light" the mode.
 //!
-//! A developer tool, not part of an app: its labels are not translated, and the "+" stands in for
-//! the Lucide icons of task F.4.
+//! States are forced through the style closure (`.style(move |theme, _| f(theme,
+//! Status::Hovered))`), so one screenshot shows hover, pressed, focus and disabled at once; the
+//! "Live" section has real widgets to try by hand.
+//!
+//! A developer tool, not part of an app: its own labels are not translated.
 
 use iced::widget::{
-    Space, button, checkbox, column, container, pick_list, radio, row, rule, scrollable, text_editor, text_input,
-    toggler,
+    Space, button, checkbox, column, container, pick_list, radio, responsive, row, rule, scrollable, text_editor,
+    text_input, toggler,
 };
-use iced::{Alignment, Element, Fill, Length, Theme};
+use iced::{Alignment, Background, Color, Element, Fill, Length, Subscription, Theme, border};
+use torro_core::AppId;
+use torro_gui::icon::{self, Icon, icon};
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::shell::{self, Switcher};
 use torro_gui::style;
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::typo;
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, Trail};
 
 fn main() -> iced::Result {
-    let light = std::env::args().any(|arg| arg == "--light");
-    iced::application(move || Gallery::new(light), Gallery::update, Gallery::view)
+    let args: Vec<String> = std::env::args().collect();
+    let start = Start::from_args(&args);
+    let size =
+        if start.page == Page::Window { iced::Size::new(1440.0, 900.0) } else { iced::Size::new(3700.0, 1060.0) };
+    iced::application(move || Gallery::new(start), Gallery::update, Gallery::view)
         .settings(torro_gui::settings())
         .title("Torro style gallery")
         .theme(Gallery::theme)
-        .window(window())
+        .subscription(Gallery::subscription)
+        .window(window(size))
         .run()
 }
 
-fn window() -> iced::window::Settings {
+fn window(size: iced::Size) -> iced::window::Settings {
     iced::window::Settings {
-        size: iced::Size::new(3700.0, 1060.0),
+        size,
+        min_size: Some(iced::Size::new(200.0, 120.0)),
         #[cfg(target_os = "linux")]
         platform_specific: iced::window::settings::PlatformSpecific {
             application_id: "torro-gallery".to_string(),
@@ -39,8 +54,52 @@ fn window() -> iced::window::Settings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Styles,
+    Blocks,
+    Window,
+}
+
+/// The menus of the example window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Menu {
+    Switcher,
+    Nav,
+}
+
+/// What the command line asks for.
+#[derive(Debug, Clone, Copy)]
+struct Start {
+    light: bool,
+    page: Page,
+    menu: Option<Menu>,
+    drawer: bool,
+}
+
+impl Start {
+    fn from_args(args: &[String]) -> Self {
+        let has = |flag: &str| args.iter().any(|a| a == flag);
+        let open = args.iter().position(|a| a == "--open").and_then(|i| args.get(i + 1)).map(String::as_str);
+        let page = if has("--window") {
+            Page::Window
+        } else if has("--blocks") {
+            Page::Blocks
+        } else {
+            Page::Styles
+        };
+        let menu = match open {
+            Some("nav") => Some(Menu::Nav),
+            Some("switcher") => Some(Menu::Switcher),
+            _ => None,
+        };
+        Self { light: has("--light"), page, menu, drawer: open == Some("drawer") }
+    }
+}
+
 struct Gallery {
     light: bool,
+    page: Page,
     section: usize,
     query: String,
     notes: text_editor::Content,
@@ -48,12 +107,18 @@ struct Gallery {
     checked: bool,
     toggled: bool,
     choice: Option<u8>,
+    /// Example window: the open menu, the drawer, the selected task and which tasks are done.
+    menu: Option<Menu>,
+    drawer: bool,
+    selected: usize,
+    done: Vec<bool>,
 }
 
 #[derive(Debug, Clone)]
 enum Msg {
     Noop,
     Light(bool),
+    Page(Page),
     Section(usize),
     Query(String),
     Notes(text_editor::Action),
@@ -61,6 +126,12 @@ enum Msg {
     Check(bool),
     Toggle(bool),
     Choice(u8),
+    Switcher(Switcher),
+    OpenMenu(Menu),
+    CloseMenu,
+    Drawer,
+    Select(usize),
+    Done(usize, bool),
 }
 
 const SECTIONS: [&str; 5] = ["Buttons", "Rows", "Inputs", "Checks", "Surfaces"];
@@ -71,9 +142,10 @@ const NAME_WIDTH: f32 = 160.0;
 type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
 
 impl Gallery {
-    fn new(light: bool) -> Self {
+    fn new(start: Start) -> Self {
         Self {
-            light,
+            light: start.light,
+            page: start.page,
             section: 0,
             query: String::new(),
             notes: text_editor::Content::with_text("Bring the printed agenda.\nAsk about the budget."),
@@ -81,6 +153,10 @@ impl Gallery {
             checked: true,
             toggled: true,
             choice: Some(1),
+            menu: start.menu,
+            drawer: start.drawer,
+            selected: 2,
+            done: TASKS.iter().map(|t| t.done).collect(),
         }
     }
 
@@ -88,10 +164,19 @@ impl Gallery {
         if self.light { theme::light() } else { theme::theme() }
     }
 
+    fn subscription(&self) -> Subscription<Msg> {
+        if self.menu.is_some() || self.drawer {
+            widgets::escape().map(|()| Msg::CloseMenu)
+        } else {
+            Subscription::none()
+        }
+    }
+
     fn update(&mut self, msg: Msg) {
         match msg {
             Msg::Noop => {}
             Msg::Light(light) => self.light = light,
+            Msg::Page(page) => self.page = page,
             Msg::Section(i) => self.section = i,
             Msg::Query(q) => self.query = q,
             Msg::Notes(action) => self.notes.perform(action),
@@ -99,10 +184,41 @@ impl Gallery {
             Msg::Check(c) => self.checked = c,
             Msg::Toggle(t) => self.toggled = t,
             Msg::Choice(c) => self.choice = Some(c),
+            Msg::Switcher(Switcher::Toggle) => {
+                self.menu = if self.menu == Some(Menu::Switcher) { None } else { Some(Menu::Switcher) };
+            }
+            // The gallery has no core to start apps; it only closes the menu.
+            Msg::Switcher(_) | Msg::CloseMenu => {
+                self.menu = None;
+                self.drawer = false;
+            }
+            Msg::OpenMenu(menu) => self.menu = Some(menu),
+            Msg::Drawer => self.drawer = !self.drawer,
+            Msg::Select(i) => {
+                self.selected = i;
+                self.menu = None;
+            }
+            Msg::Done(i, done) => {
+                if let Some(d) = self.done.get_mut(i) {
+                    *d = done;
+                }
+            }
         }
     }
 
+    fn palette(&self) -> &'static Palette {
+        if self.light { Palette::light() } else { Palette::dark() }
+    }
+
     fn view(&self) -> Element<'_, Msg> {
+        match self.page {
+            Page::Window => responsive(move |size| self.tasks_window(layout::of(size))).into(),
+            Page::Blocks => self.page_frame(self.blocks()),
+            Page::Styles => self.page_frame(self.styles()),
+        }
+    }
+
+    fn styles(&self) -> Element<'_, Msg> {
         // Three columns, so one screenshot of a wide window (3700 × 1060) shows every style.
         let first = column![section("Buttons", buttons()), section("Checks", checks())].spacing(space::XXL);
         let second = column![section("Rows", rows())].spacing(space::XXL);
@@ -112,14 +228,20 @@ impl Gallery {
             section("Live", self.live()),
         ]
         .spacing(space::XXL);
-        let body = row![first, second, third].spacing(space::XXL).padding(space::XL);
+        row![first, second, third].spacing(space::XXL).padding(space::XL).into()
+    }
+
+    /// A gallery page: sidebar, header and the scrolling `body` in the inset panel.
+    fn page_frame<'a>(&'a self, body: Element<'a, Msg>) -> Element<'a, Msg> {
         let content = column![
             self.header(),
             rule::horizontal(1).style(style::rule),
             scrollable(body).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
         ];
         let panel = container(content).width(Fill).height(Fill).style(style::container::panel);
-        row![self.sidebar(), container(panel).padding(iced::Padding { left: 0.0, ..size::INSET.into() })].into()
+        container(row![self.sidebar(), container(panel).padding(iced::Padding { left: 0.0, ..size::INSET.into() })])
+            .style(style::container::sidebar)
+            .into()
     }
 
     fn sidebar(&self) -> Element<'_, Msg> {
@@ -143,10 +265,22 @@ impl Gallery {
         let title =
             row![typo::text(typo::BODY_STRONG, "Style gallery"), typo::text(typo::BODY, mode).style(theme::text_3)]
                 .spacing(space::S);
-        let modes = segmented(&[("Dark", !self.light, Msg::Light(false)), ("Light", self.light, Msg::Light(true))]);
+        let pages = [Page::Styles, Page::Blocks, Page::Window];
+        let active = pages.iter().position(|p| *p == self.page).unwrap_or(0);
+        let pages = widgets::segmented(
+            [
+                ("Styles", Msg::Page(Page::Styles)),
+                ("Blocks", Msg::Page(Page::Blocks)),
+                ("Window", Msg::Page(Page::Window)),
+            ],
+            active,
+        );
+        let modes =
+            widgets::segmented([("Dark", Msg::Light(false)), ("Light", Msg::Light(true))], usize::from(self.light));
         let bar = row![
             title,
             Space::new().width(Fill),
+            pages,
             modes,
             text_button("Filter", style::button::ghost, true),
             text_button("New event", style::button::primary, true),
@@ -652,4 +786,626 @@ fn surfaces() -> Element<'static, Msg> {
     ]
     .spacing(space::L)
     .into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Building blocks and the example window (task F.5). Sample data as in
+// `docs/prototypes/linear/tasks.html`.
+// ---------------------------------------------------------------------------------------------
+
+/// A task of the example window. `list` indexes the default list colours (`Palette::calendar`).
+struct Task {
+    title: &'static str,
+    priority: u8,
+    urgent: bool,
+    list: usize,
+    list_name: &'static str,
+    due: &'static str,
+    late: bool,
+    done: bool,
+}
+
+const fn task(title: &'static str, priority: u8, list: usize, list_name: &'static str, due: &'static str) -> Task {
+    Task { title, priority, urgent: false, list, list_name, due, late: false, done: false }
+}
+
+const TASKS: [Task; 9] = [
+    Task { urgent: true, late: true, ..task("File invoices for September", 0, 0, "Work", "Fri 9") },
+    Task { late: true, ..task("Call the insurance about the bike", 1, 1, "Personal", "Thu 8") },
+    task("Review API concept", 2, 0, "Work", "16:00"),
+    task("Buy Mum's present", 3, 2, "Family", "18:00"),
+    Task { done: true, ..task("Book train tickets", 0, 1, "Personal", "") },
+    task("Prepare sprint demo", 2, 0, "Work", "Mon 12"),
+    task("Groceries for the weekend", 0, 4, "Groceries", "Fri 16"),
+    task("Renew passport", 1, 1, "Personal", "Oct 30"),
+    task("Plan Christmas with the family", 0, 2, "Family", "Nov 15"),
+];
+
+/// The groups of the list: their tasks are `TASKS[range]`.
+const GROUPS: [(&str, std::ops::Range<usize>); 3] = [("Overdue", 0..2), ("Today", 2..5), ("Upcoming", 5..9)];
+
+/// An icon in `text_3` (the quiet icons of the example detail).
+fn quiet<'a>(which: Icon, edge: f32) -> Element<'a, Msg> {
+    let quiet: Element<'static, Msg> =
+        icon(which, edge).style(|t, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }).into();
+    quiet
+}
+
+fn coloured(colour: impl Fn(&Palette) -> Color + 'static) -> impl Fn(&Theme) -> iced::widget::text::Style {
+    move |t| iced::widget::text::Style { color: Some(colour(palette(t))) }
+}
+
+/// Linear's priority: three bars rising, the first `level` in `text_2`; urgent is an orange square
+/// with "!". Task-specific, so it lives with the tasks app; drawn here for the example.
+fn priority<'a>(level: u8, urgent: bool) -> Element<'a, Msg> {
+    if urgent {
+        return container(typo::text(typo::CAPTION, "!").style(coloured(|_| Palette::dark().bg)))
+            .center(icon::SIZE_SM)
+            .style(|t| container::Style {
+                background: Some(Background::Color(palette(t).attention)),
+                border: border::rounded(3),
+                ..container::Style::default()
+            })
+            .into();
+    }
+    let bars = [5.0, 8.0, 12.0].into_iter().enumerate().map(|(i, height)| {
+        let on = (i as u8) < level;
+        container(Space::new().width(3).height(height))
+            .style(move |t| {
+                let p = palette(t);
+                container::Style {
+                    background: Some(Background::Color(if on { p.text_2 } else { p.line_strong })),
+                    border: border::rounded(1),
+                    ..container::Style::default()
+                }
+            })
+            .into()
+    });
+    container(row(bars).spacing(2).align_y(Alignment::End)).width(icon::SIZE_SM).height(12).align_bottom(12).into()
+}
+
+/// A ring of `edge` in `colour`, 2 px (list marks outside the building blocks).
+fn small_ring<'a>(colour: Color, edge: f32) -> Element<'a, Msg> {
+    container(Space::new().width(edge).height(edge))
+        .style(move |_| container::Style {
+            border: border::rounded(edge / 2.0).color(colour).width(2),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn task_check<'a>(done: bool, colour: usize, on_toggle: Option<Msg>) -> Element<'a, Msg> {
+    let b =
+        checkbox(done).size(style::CHECK_SIZE).style(move |t, s| style::task_check(palette(t).calendar[colour])(t, s));
+    match on_toggle {
+        Some(msg) => b.on_toggle(move |_| msg.clone()).into(),
+        None => b.into(),
+    }
+}
+
+impl Gallery {
+    /// The example window in the layout of `class`.
+    fn tasks_window(&self, class: SizeClass) -> Element<'_, Msg> {
+        let (switcher, nav) = (Anchor::new(), Anchor::new());
+        let sidebar = self.tasks_sidebar(&switcher);
+        let header = self.tasks_header(class, &nav);
+        let props = shell::has_props(class).then(|| self.tasks_props());
+        let layer = self.menu.map(|menu| match menu {
+            Menu::Switcher => widgets::floating(
+                &switcher,
+                Placement::Below(Align::Start),
+                shell::switcher_menu(AppId::TASKS, Msg::Switcher),
+                Msg::CloseMenu,
+            ),
+            Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Msg::CloseMenu),
+        });
+        shell::shell(class, sidebar, header, self.tasks_body(class), props)
+            .drawer(self.drawer, Msg::CloseMenu)
+            .overlay(layer)
+            .into()
+    }
+
+    fn tasks_sidebar<'a>(&'a self, switcher: &Anchor) -> Element<'a, Msg> {
+        let p = self.palette();
+        let lists = [("Work", 0, 6), ("Personal", 1, 4), ("Family", 2, 3), ("Groceries", 4, 5)];
+        let mut items = vec![
+            widgets::sidebar_item(Icon::Inbox, "Inbox", Trail::Count(2), false, Msg::Noop),
+            widgets::sidebar_item(Icon::Sun, "Today", Trail::Count(5), true, Msg::Noop),
+            widgets::sidebar_item(Icon::CalendarClock, "Upcoming", Trail::Count(9), false, Msg::Noop),
+            widgets::sidebar_item(Icon::Layers, "Anytime", Trail::None, false, Msg::Noop),
+            widgets::sidebar_item(Icon::CircleCheck, "Completed", Trail::None, false, Msg::Noop),
+            widgets::sidebar_group("Lists", Some((true, Msg::Noop))),
+        ];
+        items.extend(lists.map(|(name, colour, open)| {
+            widgets::sidebar_item(Mark::Ring(p.calendar[colour]), name, Trail::Count(open), false, Msg::Noop)
+        }));
+        items.push(widgets::sidebar_group("Accounts", Some((true, Msg::Noop))));
+        items.push(widgets::sidebar_item(Icon::Cloud, "cloud.example.org", Trail::Dot(p.ok), false, Msg::Noop));
+        shell::sidebar(
+            shell::app_switcher(AppId::TASKS, switcher, Msg::Switcher),
+            items,
+            vec![
+                widgets::sidebar_item(
+                    Icon::Calendar,
+                    "Open Calendar",
+                    Trail::Icon(Icon::ArrowUpRight),
+                    false,
+                    Msg::Noop,
+                ),
+                widgets::sidebar_item(Icon::Settings, "Settings", Trail::None, false, Msg::Noop),
+            ],
+        )
+    }
+
+    fn tasks_header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Msg> {
+        let new_task = widgets::text_button(Some(Icon::Plus), "New task", style::button::primary, Some(Msg::Noop));
+        let filter = widgets::icon_button(Icon::ListFilter, "Filter", Some(Msg::Noop));
+        let menu = widgets::menu_button(nav, Some(Icon::Sun), "Today", Msg::OpenMenu(Menu::Nav));
+        match class {
+            SizeClass::Wide => shell::header_bar(
+                [],
+                shell::header_title(Some(Icon::Sun), "Today", Some("5 open".into())),
+                [
+                    widgets::text_button(Some(Icon::ListFilter), "Filter", style::button::ghost, Some(Msg::Noop)),
+                    widgets::text_button(
+                        Some(Icon::SlidersHorizontal),
+                        "Display",
+                        style::button::ghost,
+                        Some(Msg::Noop),
+                    ),
+                    new_task,
+                ],
+            ),
+            SizeClass::Medium => shell::header_bar(
+                [shell::sidebar_toggle(Msg::Drawer)],
+                row![menu, typo::text(typo::BODY, "5 open").style(theme::text_3)]
+                    .spacing(space::S)
+                    .align_y(Alignment::Center),
+                [filter, new_task],
+            ),
+            _ => shell::header_bar(
+                [shell::sidebar_toggle(Msg::Drawer)],
+                menu,
+                [filter, widgets::compact_button(Icon::Plus, "New task", style::button::primary, Some(Msg::Noop))],
+            ),
+        }
+    }
+
+    fn nav_menu(&self) -> Element<'_, Msg> {
+        let p = self.palette();
+        let views = vec![
+            MenuItem::new(Icon::Inbox, "Inbox", Msg::CloseMenu).trail(Trail::Count(2)),
+            MenuItem::new(Icon::Sun, "Today", Msg::CloseMenu).trail(Trail::Count(5)).current(true),
+            MenuItem::new(Icon::CalendarClock, "Upcoming", Msg::CloseMenu).trail(Trail::Count(9)),
+            MenuItem::new(Icon::Layers, "Anytime", Msg::CloseMenu),
+            MenuItem::new(Icon::CircleCheck, "Completed", Msg::CloseMenu),
+        ];
+        let lists = [("Work", 0, 6), ("Personal", 1, 4), ("Family", 2, 3), ("Groceries", 4, 5)]
+            .map(|(name, colour, open)| {
+                MenuItem::new(Mark::Ring(p.calendar[colour]), name, Msg::CloseMenu).trail(Trail::Count(open))
+            })
+            .to_vec();
+        let more = vec![
+            MenuItem::new(Icon::Calendar, "Open Calendar", Msg::CloseMenu).trail(Trail::Icon(Icon::ArrowUpRight)),
+            MenuItem::new(Icon::Settings, "Settings", Msg::CloseMenu),
+        ];
+        widgets::menu(vec![MenuSection::new(views), MenuSection::titled("Lists", lists), MenuSection::new(more)])
+    }
+
+    fn tasks_body(&self, class: SizeClass) -> Element<'_, Msg> {
+        let list = self.task_list(class);
+        let width = match class {
+            SizeClass::Wide => size::LIST,
+            SizeClass::Medium => size::LIST_MEDIUM,
+            _ => return list,
+        };
+        row![container(list).width(width).height(Fill), rule::vertical(1).style(style::rule), self.task_detail(class)]
+            .into()
+    }
+
+    fn task_list(&self, class: SizeClass) -> Element<'_, Msg> {
+        let p = self.palette();
+        let quick = container(
+            row![
+                quiet(Icon::Plus, icon::SIZE_SM),
+                typo::text(typo::BODY, "New task…").style(theme::text_3),
+                Space::new().width(Fill),
+                widgets::kbd("N"),
+            ]
+            .spacing(space::S)
+            .align_y(Alignment::Center),
+        )
+        .center_y(size::CONTROL_LG)
+        .padding(style::BUTTON_PADDING)
+        .style(|t| container::Style {
+            border: border::rounded(theme::radius::SM).color(palette(t).line).width(1),
+            ..container::Style::default()
+        });
+        let mut list = column![container(quick).padding(iced::Padding {
+            top: space::S,
+            right: space::S,
+            bottom: space::XS,
+            left: space::S
+        })];
+        let marks =
+            [Mark::Tinted(Icon::CircleAlert, p.attention), Mark::Icon(Icon::Sun), Mark::Icon(Icon::CalendarClock)];
+        for ((name, range), mark) in GROUPS.into_iter().zip(marks) {
+            list = list.push(widgets::group_head(mark, name, Some(range.len()), Some(Msg::Noop)));
+            for i in range {
+                list = list.push(self.task_row(i, class));
+            }
+        }
+        scrollable(list).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable).into()
+    }
+
+    fn task_row(&self, i: usize, class: SizeClass) -> Element<'_, Msg> {
+        let t = &TASKS[i];
+        let done = self.done.get(i).copied().unwrap_or(t.done);
+        let title = typo::text(typo::BODY, t.title).wrapping(iced::widget::text::Wrapping::None).style(if done {
+            theme::text_3
+        } else {
+            theme::text
+        });
+        let late = t.late;
+        let due = container(
+            typo::text(typo::META.tabular(), t.due).style(coloured(move |p| if late { p.attention } else { p.text_3 })),
+        )
+        .width(44)
+        .align_right(44);
+        let mut cells = vec![
+            task_check(done, t.list, Some(Msg::Done(i, !done))),
+            priority(t.priority, t.urgent),
+            container(title).width(Fill).clip(true).into(),
+        ];
+        if class != SizeClass::Narrow {
+            cells.push(widgets::pill(Some(self.palette().calendar[t.list]), t.list_name));
+        }
+        cells.push(due.into());
+        widgets::list_row(cells, i == self.selected, Some(Msg::Select(i)))
+    }
+
+    fn task_detail(&self, class: SizeClass) -> Element<'_, Msg> {
+        let p = self.palette();
+        let crumb = row![
+            small_ring(p.calendar[0], 12.0),
+            typo::text(typo::META, "Work").style(theme::text_3),
+            quiet(Icon::ChevronRight, icon::SIZE_SM),
+            typo::text(typo::META, "Today").style(theme::text_3),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let mut detail = column![
+            container(crumb).padding(iced::Padding::ZERO.bottom(space::M)),
+            container(typo::text(typo::HEADLINE, "Review API concept")).padding(iced::Padding::ZERO.bottom(space::S)),
+        ];
+        if class != SizeClass::Wide {
+            let chips = widgets::chip_row(vec![
+                widgets::chip(Some(Mark::Ring(p.text_3)), "Open", Some(Msg::Noop)),
+                widgets::chip(Some(Mark::Icon(Icon::Flag)), "Medium", Some(Msg::Noop)),
+                widgets::chip(Some(Mark::Icon(Icon::Calendar)), "Today, 16:00", Some(Msg::Noop)),
+                widgets::chip(Some(Mark::Icon(Icon::Bell)), "15:45", Some(Msg::Noop)),
+                widgets::chip(Some(Mark::Ring(p.calendar[0])), "Work", Some(Msg::Noop)),
+                widgets::chip(Some(Mark::Icon(Icon::Ellipsis)), "", Some(Msg::Noop)),
+            ]);
+            detail = detail.push(container(chips).padding(iced::Padding::ZERO.top(space::XS).bottom(space::L)));
+        }
+        let description = "Read docs/api.md and decide the three open questions: HTTP API now or later, the app key as \
+                           a file or in the keychain, and whether agents may change accounts and settings.";
+        detail = detail.push(
+            container(typo::text(typo::BODY, description).style(theme::text_2))
+                .max_width(size::CONTENT_MAX * 0.7)
+                .padding(iced::Padding::ZERO.bottom(space::XL)),
+        );
+        let progress = container(container(Space::new().width(24).height(4)).style(|t| container::Style {
+            background: Some(Background::Color(palette(t).ok)),
+            border: border::rounded(2),
+            ..container::Style::default()
+        }))
+        .width(48)
+        .height(4)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).line_strong)),
+            border: border::rounded(2),
+            ..container::Style::default()
+        });
+        let sub_head = row![
+            quiet(Icon::ChevronDown, icon::SIZE_SM),
+            typo::text(typo::CAPTION, "Sub-tasks").style(theme::text_3),
+            progress,
+            typo::text(typo::META.tabular(), "2/4").style(theme::text_3),
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+        let mut subs = column![container(sub_head).padding(iced::Padding::ZERO.bottom(space::XS))];
+        for (title, done) in [
+            ("Read the concept", true),
+            ("Compare with TorroMail", true),
+            ("Decide the open questions", false),
+            ("Start task A.0", false),
+        ] {
+            let line = row![
+                task_check(done, 1, Some(Msg::Noop)),
+                typo::text(typo::BODY, title).style(if done { theme::text_3 } else { theme::text })
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center);
+            subs = subs
+                .push(column![container(line).center_y(size::CONTROL - 1.0), rule::horizontal(1).style(style::rule)]);
+        }
+        subs = subs.push(
+            container(
+                row![quiet(Icon::Plus, icon::SIZE_SM), typo::text(typo::BODY, "Add sub-task").style(theme::text_3)]
+                    .spacing(space::S)
+                    .align_y(Alignment::Center),
+            )
+            .center_y(size::CONTROL),
+        );
+        detail = detail.push(container(subs).max_width(size::CONTENT_MAX * 0.7));
+        let mut activity = column![typo::text(typo::CAPTION, "Activity").style(theme::text_3)].spacing(space::XS);
+        for (which, who, what) in [
+            (Icon::CirclePlus, "You", "created the task · 2 days ago"),
+            (Icon::Sparkles, "Claude Code", "added two sub-tasks · yesterday"),
+            (Icon::Calendar, "You", "set the due date to today · 3 h ago"),
+        ] {
+            activity = activity.push(
+                container(
+                    row![
+                        quiet(which, icon::SIZE_SM),
+                        typo::text(typo::CAPTION, who).style(theme::text_2),
+                        typo::text(typo::META, what).style(theme::text_3)
+                    ]
+                    .spacing(space::S)
+                    .align_y(Alignment::Center),
+                )
+                .center_y(size::ROW_SIDEBAR),
+            );
+        }
+        detail = detail.push(container(activity).padding(iced::Padding::ZERO.top(space::XXL)));
+        let padding = match class {
+            SizeClass::Wide => iced::Padding::from([space::XXL, space::XXL + space::S]),
+            SizeClass::Medium => iced::Padding::from([space::XL, space::XL + space::XS]),
+            _ => iced::Padding::new(space::L),
+        };
+        scrollable(container(detail).padding(padding).width(Fill))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .into()
+    }
+
+    fn tasks_props(&self) -> Element<'_, Msg> {
+        let p = self.palette();
+        let value = |text: &'static str| typo::text(typo::BODY, text);
+        let quiet_value =
+            |text: &'static str| row![Space::new().width(Fill), typo::text(typo::BODY, text).style(theme::text_3)];
+        column![
+            widgets::prop_section(
+                "Properties",
+                vec![
+                    widgets::prop_row(Some(Mark::Ring(p.text_3)), value("Open"), Some(Msg::Noop)),
+                    widgets::prop_row(
+                        None,
+                        row![priority(2, false), value("Medium priority")].spacing(space::S).align_y(Alignment::Center),
+                        Some(Msg::Noop)
+                    ),
+                    widgets::prop_row(
+                        Some(Mark::Icon(Icon::Calendar)),
+                        typo::text(typo::BODY.tabular(), "Today, 16:00"),
+                        Some(Msg::Noop)
+                    ),
+                    widgets::prop_row(
+                        Some(Mark::Icon(Icon::Bell)),
+                        typo::text(typo::BODY.tabular(), "15:45"),
+                        Some(Msg::Noop)
+                    ),
+                    widgets::prop_row(Some(Mark::Icon(Icon::Repeat)), quiet_value("No repeat"), Some(Msg::Noop)),
+                ],
+            ),
+            widgets::prop_section(
+                "List",
+                vec![widgets::prop_row(Some(Mark::Ring(p.calendar[0])), value("Work"), Some(Msg::Noop))]
+            ),
+            widgets::prop_section(
+                "Tags",
+                vec![widgets::prop_row(
+                    None,
+                    row![widgets::pill(None, "torroworkplace"), widgets::pill(None, "review")].spacing(space::S),
+                    None
+                )]
+            ),
+            widgets::prop_section(
+                "Calendar",
+                vec![widgets::prop_row(
+                    Some(Mark::Icon(Icon::CalendarPlus)),
+                    typo::text(typo::BODY, "Block time in calendar").style(theme::text_2),
+                    Some(Msg::Noop)
+                )]
+            ),
+            widgets::prop_section(
+                "Account",
+                vec![widgets::prop_row(
+                    Some(Mark::Icon(Icon::Cloud)),
+                    typo::text(typo::BODY, "Nextcloud · Tasks").style(theme::text_2),
+                    None
+                )]
+            ),
+        ]
+        .spacing(space::L)
+        .into()
+    }
+
+    /// The building blocks, each in place (menus and cards are drawn where they would float).
+    fn blocks(&self) -> Element<'_, Msg> {
+        let p = self.palette();
+        let sidebar = container(self.tasks_sidebar(&Anchor::new()))
+            .width(size::SIDEBAR)
+            .height(640)
+            .padding(space::S)
+            .style(style::container::sidebar);
+        let mut list = column![];
+        for ((name, range), mark) in GROUPS.into_iter().zip([
+            Mark::Tinted(Icon::CircleAlert, p.attention),
+            Mark::Icon(Icon::Sun),
+            Mark::Icon(Icon::CalendarClock),
+        ]) {
+            list = list.push(widgets::group_head(mark, name, Some(range.len()), Some(Msg::Noop)));
+            for i in range {
+                list = list.push(self.task_row(i, SizeClass::Wide));
+            }
+        }
+        let list = container(list).width(size::LIST).style(style::container::panel);
+        let header = container(shell::header_bar(
+            [shell::sidebar_toggle(Msg::Noop)],
+            shell::header_title(Some(Icon::Sun), "Today", Some("5 open".into())),
+            [
+                widgets::select_button(&Anchor::new(), "Week", Msg::Noop),
+                widgets::text_button(Some(Icon::Plus), "New task", style::button::primary, Some(Msg::Noop)),
+            ],
+        ))
+        .width(size::LIST + size::PROPS)
+        .center_y(size::HEADER)
+        .padding(iced::Padding::ZERO.left(space::L).right(space::M))
+        .style(style::container::panel);
+        let buttons = row![
+            widgets::text_button(Some(Icon::Plus), "New task", style::button::primary, Some(Msg::Noop)),
+            widgets::text_button(None, "Today", style::button::secondary, Some(Msg::Noop)),
+            widgets::text_button(Some(Icon::ListFilter), "Filter", style::button::ghost, Some(Msg::Noop)),
+            widgets::text_button(None, "Delete task", style::button::danger, Some(Msg::Noop)),
+            widgets::text_button(None, "Save", style::button::secondary, None),
+            widgets::icon_button(Icon::RefreshCw, "Refresh", Some(Msg::Noop)),
+            widgets::boxed_button(Icon::SquarePen, "New", Some(Msg::Noop)),
+            widgets::compact_button(Icon::Plus, "New task", style::button::primary, Some(Msg::Noop)),
+            widgets::segmented([("Day", Msg::Noop), ("Week", Msg::Noop), ("Month", Msg::Noop)], 1),
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+        let chips = widgets::chip_row(vec![
+            widgets::chip(Some(Mark::Ring(p.text_3)), "Open", Some(Msg::Noop)),
+            widgets::chip(Some(Mark::Icon(Icon::Calendar)), "Today, 16:00", Some(Msg::Noop)),
+            widgets::chip(Some(Mark::Dot(p.calendar[0])), "Work", None),
+            widgets::chip(Some(Mark::Check(p.calendar[1], true)), "Personal", None),
+            widgets::chip(Some(Mark::Icon(Icon::Ellipsis)), "", Some(Msg::Noop)),
+        ]);
+        let small = row![
+            widgets::pill(Some(p.calendar[0]), "Work"),
+            widgets::pill(None, "review"),
+            widgets::kbd("N"),
+            widgets::kbd("Ctrl K"),
+            row![widgets::status_dot(Status::Ok), typo::text(typo::META, "Connected")]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            row![widgets::status_dot(Status::Attention), typo::text(typo::META, "Waiting")]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            row![widgets::status_dot(Status::Error), typo::text(typo::META, "Refused")]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            row![widgets::status_dot(Status::Inactive), typo::text(typo::META, "Not set up")]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            widgets::avatar_stack(&[("AW", p.calendar[0]), ("JK", p.calendar[1]), ("LM", p.calendar[2])], 3),
+        ]
+        .spacing(space::L)
+        .align_y(Alignment::Center);
+        let props = container(self.tasks_props())
+            .width(size::PROPS)
+            .padding(iced::Padding { top: space::L, right: space::S, bottom: space::XL, left: space::S })
+            .style(style::container::panel);
+        let card = widgets::popover(
+            row![
+                widgets::color_dot(p.calendar[0], 8.0),
+                typo::text(typo::META, "Work").style(theme::text_3),
+                Space::new().width(Fill),
+                widgets::icon_button(Icon::Ellipsis, "More", Some(Msg::Noop)),
+                widgets::icon_button(Icon::X, "Close", Some(Msg::Noop)),
+            ]
+            .spacing(space::S)
+            .align_y(Alignment::Center),
+            "Sprint planning",
+            vec![
+                widgets::prop_row(
+                    Some(Mark::Icon(Icon::Clock)),
+                    typo::text(typo::BODY.tabular(), "Mon, 5 Oct · 10:00 – 11:30"),
+                    None,
+                ),
+                widgets::prop_row(
+                    Some(Mark::Icon(Icon::MapPin)),
+                    typo::text(typo::BODY, "Room 2 · Office Berlin"),
+                    None,
+                ),
+                widgets::prop_row(
+                    Some(Mark::Icon(Icon::Users)),
+                    typo::text(typo::BODY, "6 guests · you accepted"),
+                    None,
+                ),
+            ],
+            vec![
+                widgets::text_button(None, "Open details", style::button::secondary, Some(Msg::Noop)),
+                widgets::text_button(Some(Icon::Video), "Join", style::button::ghost, Some(Msg::Noop)),
+            ],
+        );
+        let view_menu = widgets::menu(vec![
+            MenuSection::titled(
+                "View",
+                vec![
+                    MenuItem::new(Icon::CalendarDays, "Day", Msg::Noop).trail(Trail::Kbd("D")),
+                    MenuItem::new(Icon::CalendarRange, "Week", Msg::Noop).trail(Trail::Kbd("W")).current(true),
+                    MenuItem::new(Icon::Calendar, "Month", Msg::Noop).trail(Trail::Kbd("M")),
+                ],
+            ),
+            MenuSection::titled(
+                "Calendars",
+                vec![
+                    MenuItem::new(Mark::Check(p.calendar[0], true), "Work", Msg::Noop).trail(Trail::Count(14)),
+                    MenuItem::new(Mark::Check(p.calendar[3], false), "Birthdays", Msg::Noop).trail(Trail::Count(1)),
+                ],
+            ),
+            MenuSection::new(vec![MenuItem::new(Icon::Settings, "Calendar settings…", Msg::Noop)]),
+        ]);
+        let settings = container(widgets::group(
+            "General",
+            vec![
+                widgets::group_row(
+                    "Start at login",
+                    Some("Starts Torro Workplace in the background.".into()),
+                    toggler(true).size(style::CHECK_SIZE).style(style::toggler).on_toggle(|_| Msg::Noop),
+                ),
+                widgets::group_row(
+                    "Appearance",
+                    None,
+                    widgets::segmented([("System", Msg::Noop), ("Light", Msg::Noop), ("Dark", Msg::Noop)], 0),
+                ),
+            ],
+            Some("Changes apply to all apps of the suite.".into()),
+        ))
+        .width(size::FORM_MAX)
+        .padding(space::L)
+        .style(style::container::panel);
+        let state = |content: Element<'static, Msg>| -> Element<'static, Msg> {
+            container(content).width(300).height(180).style(style::container::panel).into()
+        };
+        let states = row![
+            state(widgets::empty_state("No tasks today", "Enjoy the free time, or add one with N.")),
+            state(widgets::loading()),
+            state(widgets::error_state("The server did not answer. Check the connection and try again.", Msg::Noop)),
+        ]
+        .spacing(space::L);
+        let first = column![section("Sidebar", sidebar.into())];
+        let second = column![
+            section("Header bar", header.into()),
+            section("List: group heads and rows", list.into()),
+            section("Buttons", buttons.into()),
+            section("Chips", chips),
+            section("Pills, keys, status, avatars", small.into()),
+        ]
+        .spacing(space::XL);
+        let third = column![
+            section("Menu", row![self.nav_menu(), view_menu].spacing(space::L).into()),
+            section("Floating card", card),
+            section("Properties", props.into()),
+        ]
+        .spacing(space::XL);
+        let fourth =
+            column![section("Settings group", settings.into()), section("States", states.into())].spacing(space::XL);
+        row![first, second, third, fourth].spacing(space::XXL).padding(space::XL).into()
+    }
 }

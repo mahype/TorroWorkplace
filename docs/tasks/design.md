@@ -116,7 +116,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   (gilt ab den App-Aufgaben).
 
 ### F.5 Gemeinsame Bausteine (Linear-Fenster)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** F.3, F.4, K.18
 - **Dateien:** `crates/torro-gui/src/widgets.rs`, `crates/torro-gui/src/shell.rs` (neu), `crates/torro-gui/src/lib.rs`
 - `shell.rs`: das Fenster aus Skill Abschnitt 0 – `shell(size_class, sidebar, header, body, props)`

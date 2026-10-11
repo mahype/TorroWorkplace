@@ -8,20 +8,26 @@
 //! - [`fonts`] / [`settings`]: the bundled Inter files and the Iced settings that load them.
 //! - [`connect`]: the "connect your Nextcloud" screen every app shows without an account.
 //! - [`datetime`]: German date and time parsing and formatting, week arithmetic.
-//! - [`widgets`]: small building blocks (colour dots, toolbar buttons, empty states).
+//! - [`style`]: the style functions for every Iced widget, light and dark.
+//! - [`icon`]: the bundled Lucide icons.
+//! - [`layout`]: the size classes of tiled windows (`layout::of(size)`).
+//! - [`shell`]: the Linear window frame (sidebar, inset panel, header bar, properties column)
+//!   and the app switcher.
+//! - [`widgets`]: the building blocks inside it (buttons, sidebar and list rows, menus, floating
+//!   cards, chips, property rows, settings groups, empty/loading/error states).
 
-// The connect screen and the widgets still use the dark-only colour constants; they move to
-// `theme::palette` with F.5.
+// The connect screen still uses the dark-only colour constants; it moves to `theme::palette`
+// with the app tasks.
 #[allow(deprecated)]
 pub mod connect;
 pub mod datetime;
 pub mod icon;
 pub mod layout;
+pub mod shell;
 pub mod source;
 pub mod style;
 pub mod theme;
 pub mod typo;
-#[allow(deprecated)]
 pub mod widgets;
 
 use std::borrow::Cow;

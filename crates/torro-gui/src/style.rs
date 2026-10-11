@@ -197,20 +197,13 @@ pub mod button {
         secondary(theme, status)
     }
 
-    /// A destructive action ("Delete event"): a [`ghost`] button with the text in the error
-    /// colour, in every state.
-    ///
-    /// The error colour on light surfaces is only 3.5:1, so in light mode the text is the error
-    /// colour moved 30 % towards `text` (≥ 4.5:1 on every surface); in dark mode it is unchanged.
+    /// A destructive action ("Delete event"): a [`ghost`] button with the text in
+    /// [`Palette::error_text`] (≥ 4.5:1 on every surface, both modes), in every state.
     pub fn danger(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
-        let text = danger_text(theme, p);
-        let rest = Rest { background: Color::TRANSPARENT, text, border: Color::TRANSPARENT, radius: radius::SM };
-        neutral(p, status, rest, text)
-    }
-
-    fn danger_text(theme: &Theme, p: &Palette) -> Color {
-        if theme.extended_palette().is_dark { p.error } else { mix(p.error, p.text, 0.3) }
+        let rest =
+            Rest { background: Color::TRANSPARENT, text: p.error_text, border: Color::TRANSPARENT, radius: radius::SM };
+        neutral(p, status, rest, p.error_text)
     }
 
     /// One segment of a segmented control (Day · Week · Month), inside
