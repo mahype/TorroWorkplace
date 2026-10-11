@@ -311,7 +311,7 @@ impl PimSource for DemoSource {
     }
 
     async fn connect_nextcloud(&self, server: String) -> Result<String, ProviderError> {
-        Err(ProviderError::Other(format!("demo mode cannot connect to {server}")))
+        Err(ProviderError::Other(format!("Demo mode cannot connect to {server}")))
     }
 
     async fn sync(&self) -> Result<(), ProviderError> {
@@ -354,7 +354,7 @@ impl PimSource for DemoSource {
             }
             Some(href) => {
                 let Some(slot) = data.events.iter_mut().find(|e| e.href.as_deref() == Some(href.as_str())) else {
-                    return Err(ProviderError::Other(format!("no event at {href}")));
+                    return Err(ProviderError::Other(format!("No event at {href}")));
                 };
                 if slot.etag != event.etag {
                     return Err(ProviderError::Conflict { uid: event.uid });
@@ -370,7 +370,7 @@ impl PimSource for DemoSource {
         let mut data = self.lock();
         let before = data.events.len();
         data.events.retain(|e| e.href != event.href || e.uid != event.uid);
-        if data.events.len() == before { Err(ProviderError::Other("no such event".into())) } else { Ok(()) }
+        if data.events.len() == before { Err(ProviderError::Other("No such event".into())) } else { Ok(()) }
     }
 
     async fn save_todo(&self, mut todo: Todo) -> Result<Todo, ProviderError> {
@@ -388,7 +388,7 @@ impl PimSource for DemoSource {
             }
             Some(href) => {
                 let Some(slot) = data.todos.iter_mut().find(|t| t.href.as_deref() == Some(href.as_str())) else {
-                    return Err(ProviderError::Other(format!("no task at {href}")));
+                    return Err(ProviderError::Other(format!("No task at {href}")));
                 };
                 if slot.etag != todo.etag {
                     return Err(ProviderError::Conflict { uid: todo.uid });
@@ -404,7 +404,7 @@ impl PimSource for DemoSource {
         let mut data = self.lock();
         let before = data.todos.len();
         data.todos.retain(|t| t.href != todo.href || t.uid != todo.uid);
-        if data.todos.len() == before { Err(ProviderError::Other("no such task".into())) } else { Ok(()) }
+        if data.todos.len() == before { Err(ProviderError::Other("No such task".into())) } else { Ok(()) }
     }
 }
 

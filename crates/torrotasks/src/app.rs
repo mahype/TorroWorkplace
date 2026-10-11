@@ -221,7 +221,7 @@ impl Launch {
 }
 
 /// The text of the forced error state.
-const DEMO_ERROR: &str = "the server did not answer (demo)";
+const DEMO_ERROR: &str = "The server did not answer (demo)";
 
 /// The id of the quick add field, so "New" can focus it.
 const QUICK_ADD: &str = "quick-add";
@@ -462,7 +462,7 @@ impl App {
                     return self.load();
                 }
             }
-            Message::AccountLoaded(Err(err)) => self.error = Some(err),
+            Message::AccountLoaded(Err(err)) => self.error = Some(load_failed(&err)),
             Message::Connect(message) => match self.connect.update(message) {
                 // The account is set up in the control centre; the polling in `Tick` picks it up.
                 connect::Action::OpenSettings => connect::open_settings(),
@@ -485,7 +485,7 @@ impl App {
                     }
                     return self.open_launched();
                 }
-                Err(err) => self.error = Some(err),
+                Err(err) => self.error = Some(load_failed(&err)),
             },
             Message::SetFilter(filter) => {
                 self.filter = filter;
@@ -1187,6 +1187,12 @@ async fn open_app(source: Source, app: &'static str) -> Result<(), String> {
     }
 }
 
+/// The error text when the account or the tasks could not be loaded; the error state's "Retry"
+/// is what the user can do about it. Like the calendar's `load_failed`.
+fn load_failed(err: &str) -> String {
+    trf("Tasks could not be loaded: {error}", &[("error", &err)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1508,7 +1514,8 @@ mod tests {
         let mut app = demo_app();
         assert!(!app.loaded);
         let _ = app.update(Message::Loaded(Err("offline".into())));
-        assert!(!app.loaded && app.error.is_some(), "a failed first load keeps the error state");
+        assert!(!app.loaded, "a failed first load keeps the error state");
+        assert_eq!(app.error, Some(load_failed("offline")));
         let _ = app.update(Message::Loaded(Ok((Vec::new(), Vec::new()))));
         assert!(app.loaded && app.error.is_none());
         let _ = app.update(Message::Loaded(Err("offline".into())));
@@ -1711,7 +1718,7 @@ mod tests {
         let (mut error, _) = App::new(launch.source(&args(&words)), launch);
         assert_eq!(error.load().units(), 1, "the error is the answer");
         let _ = error.update(Message::Loaded(Err(DEMO_ERROR.into())));
-        assert_eq!(error.error.as_deref(), Some(DEMO_ERROR));
+        assert_eq!(error.error, Some(load_failed(DEMO_ERROR)));
         assert!(!error.loaded);
         assert!(launched(&["--demo"]).load().units() > 0, "an ordinary demo loads");
     }
