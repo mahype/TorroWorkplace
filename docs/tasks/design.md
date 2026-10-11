@@ -253,7 +253,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Escape schließt das Detail. Fokus sichtbar (`FOCUS_RING`). Muster wie die Kurzbefehle im Kalender.
 
 ### T.4 Detail
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** T.1
 - **Dateien:** `crates/torrotasks/src/detail.rs`, `crates/torrotasks/src/app.rs`
 - Breit: 360–400 neben der Liste mit Linie links; Mittel: Overlay; Schmal: ersetzt die Liste

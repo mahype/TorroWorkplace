@@ -161,7 +161,7 @@ fn is_overdue(todo: &Todo, today: NaiveDate) -> bool {
 
 /// `Today`, `Tomorrow`, `Yesterday`, otherwise `Mo, 12.10.` (short weekday name from
 /// `datetime::weekday_name`); a time of day is appended (`Today 14:00`).
-fn due_text(due: EventTime, today: NaiveDate) -> String {
+pub(crate) fn due_text(due: EventTime, today: NaiveDate) -> String {
     let day = due_date(due);
     let name = match (day - today).num_days() {
         0 => tr("Today").to_string(),
@@ -177,7 +177,7 @@ fn due_text(due: EventTime, today: NaiveDate) -> String {
 
 /// Linear's priority levels: how many of the three bars are lit. iCalendar 1–4 is high (3),
 /// 5 medium (2), 6–9 low (1); 0 and anything else is none (0, all bars dim).
-fn priority_level(priority: Option<u8>) -> usize {
+pub(crate) fn priority_level(priority: Option<u8>) -> usize {
     match priority {
         Some(1..=4) => 3,
         Some(5) => 2,
@@ -330,7 +330,7 @@ fn row_view<'a>(data: &ListData<'a>, index: usize, depth: usize) -> Element<'a, 
 }
 
 /// The title on one line; a done task struck through in `text_3`.
-fn title_view<'a>(todo: &Todo) -> Element<'a, Message> {
+pub(crate) fn title_view<'a, M: 'a>(todo: &Todo) -> Element<'a, M> {
     let fragment: text::Span<'static, ()> = span(todo.summary.clone()).strikethrough(todo.completed);
     let completed = todo.completed;
     rich_text(vec![fragment])
@@ -355,7 +355,7 @@ const BAR_RADIUS: f32 = 1.0;
 
 /// Linear's priority glyph: three rising bars in a 14-wide cell, the first `level` in `text_2`,
 /// the rest in `line_strong`. Shape, not colour, carries the level.
-fn priority_view<'a>(level: usize) -> Element<'a, Message> {
+pub(crate) fn priority_view<'a, M: 'a>(level: usize) -> Element<'a, M> {
     let bars = BAR_HEIGHTS.into_iter().enumerate().map(|(i, height)| {
         let lit = i < level;
         container(Space::new().width(BAR_WIDTH).height(height))

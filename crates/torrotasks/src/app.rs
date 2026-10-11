@@ -3,6 +3,11 @@
 //! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. The
 //! list (`list.rs`) and the detail panel (`detail.rs`) only render and report clicks as
 //! [`Message`]s.
+//!
+//! The detail (T.4) stands beside the list (wide, medium) or replaces it with "‹ Today" in the
+//! header (narrow); in the wide layout its properties fill the shell's properties column. It has
+//! no Save button: it hands out saves as it changes, and while title or notes wait to be saved a
+//! one-second timer sends `Flush` ([`AUTOSAVE`]).
 
 use std::time::Duration;
 
@@ -52,6 +57,8 @@ pub enum Menu {
 const QUICK_ADD: &str = "quick-add";
 /// The one-pixel line between the list and the detail.
 const LINE: f32 = 1.0;
+/// How long after the last keystroke typed title or notes are saved.
+const AUTOSAVE: Duration = Duration::from_secs(1);
 
 pub struct App {
     source: Source,
@@ -103,8 +110,10 @@ pub enum Message {
     ToggleNav,
     /// Open the sidebar drawer (medium and narrow layouts).
     ShowDrawer,
-    /// Close the open menu and the drawer (click beside them, Escape).
+    /// Close the open menu and the drawer (click beside them).
     CloseMenu,
+    /// Escape: closes the innermost open thing – menu or drawer, the detail's editor, the detail.
+    Escape,
     /// Start or raise another app of the suite ([`AppId::binary`]) through the core.
     OpenApp(&'static str),
     /// The core's answer to [`Message::OpenApp`].
@@ -148,9 +157,12 @@ impl App {
             iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
         ];
-        // Escape closes an open menu or drawer; nothing listens while none is open.
-        if self.menu.is_some() || self.drawer {
-            subscriptions.push(widgets::escape().map(|()| Message::CloseMenu));
+        // Escape closes an open menu, drawer or the detail; nothing listens while none is open.
+        if self.menu.is_some() || self.drawer || self.detail.is_some() {
+            subscriptions.push(widgets::escape().map(|()| Message::Escape));
+        }
+        if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
+            subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
         }
         Subscription::batch(subscriptions)
     }
@@ -189,17 +201,18 @@ impl App {
                     // Keep the detail panel on the same task after a reload.
                     let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
                     self.selected = selected_uid.and_then(|uid| self.todos.iter().position(|t| t.uid == uid));
-                    if self.selected.is_none() {
-                        self.detail = None;
+                    let lists = self.writable_lists();
+                    match (self.selected, self.detail.as_mut()) {
+                        (Some(_), Some(detail)) => detail.refresh(&lists, &self.todos),
+                        _ => self.detail = None,
                     }
                 }
                 Err(err) => self.error = Some(err),
             },
             Message::SetFilter(filter) => {
                 self.filter = filter;
-                self.selected = None;
-                self.detail = None;
                 self.close_menus();
+                return self.close_detail();
             }
             Message::ShowCompleted(show) => self.show_completed = show,
             Message::QuickAddChanged(value) => self.quick_add = value,
@@ -234,41 +247,28 @@ impl App {
                     return self.save(todo);
                 }
             }
-            Message::Select(index) => {
-                if let Some(todo) = self.todos.get(index) {
-                    self.selected = Some(index);
-                    self.detail = Some(Detail::new(todo, &self.writable_lists(), &self.todos));
-                }
-            }
+            Message::Select(index) => return self.select(index),
             Message::Detail(message) => {
                 let Some(detail) = self.detail.as_mut() else { return Task::none() };
-                match detail.update(message) {
-                    detail::Action::None => {}
-                    detail::Action::Close => {
-                        self.detail = None;
-                        self.selected = None;
-                    }
-                    detail::Action::Save(todo) => return self.save(todo),
-                    detail::Action::Delete(todo) => {
-                        self.detail = None;
-                        self.selected = None;
-                        let source = self.source.clone();
-                        return Task::perform(
-                            async move { source.delete_todo(todo).await.map_err(|e| e.to_string()) },
-                            Message::Deleted,
-                        );
-                    }
-                }
+                let action = detail.update(message);
+                return self.detail_action(action);
             }
             Message::Saved(result) => match result {
                 Ok(saved) => {
-                    // The panel keeps editing the stored version, with its new etag.
-                    if self.detail.as_ref().is_some_and(|d| d.original.uid == saved.uid) {
-                        self.detail = Some(Detail::new(&saved, &self.writable_lists(), &self.todos));
-                    }
-                    return self.load();
+                    // The panel keeps editing on top of the stored version, with its new etag,
+                    // and sends what was typed meanwhile.
+                    let follow_up = match self.detail.as_mut() {
+                        Some(detail) if detail.original.uid == saved.uid => detail.stored(&saved),
+                        _ => detail::Action::None,
+                    };
+                    return Task::batch([self.detail_action(follow_up), self.load()]);
                 }
-                Err(err) => self.error = Some(trf("Save failed: {error}", &[("error", &err)])),
+                Err(err) => {
+                    if let Some(detail) = self.detail.as_mut() {
+                        detail.save_failed();
+                    }
+                    self.error = Some(trf("Save failed: {error}", &[("error", &err)]));
+                }
             },
             Message::Deleted(result) => match result {
                 Ok(()) => return self.load(),
@@ -310,6 +310,13 @@ impl App {
                 self.drawer = true;
             }
             Message::CloseMenu => self.close_menus(),
+            Message::Escape => {
+                if self.menu.is_some() || self.drawer {
+                    self.close_menus();
+                } else {
+                    return self.update(Message::Detail(detail::Message::Escape));
+                }
+            }
             Message::OpenApp(app) => {
                 self.close_menus();
                 let source = self.source.clone();
@@ -345,10 +352,10 @@ impl App {
 
     /// The whole window in the layout of `class`.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, nav) = (Anchor::new(), Anchor::new());
+        let (switcher, nav, property) = (Anchor::new(), Anchor::new(), Anchor::new());
         let sidebar = self.sidebar(&switcher);
         let header = self.header(class, &nav);
-        let layer = self.menu.map(|menu| match menu {
+        let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
                 &switcher,
                 Placement::Below(Align::Start),
@@ -357,7 +364,14 @@ impl App {
             ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu),
         });
-        shell::shell(class, sidebar, header, self.body(class), None)
+        let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
+        let layer = menu.or_else(editor);
+        let props = self
+            .detail
+            .as_ref()
+            .filter(|_| shell::has_props(class))
+            .map(|detail| detail.properties(&property).map(Message::Detail));
+        shell::shell(class, sidebar, header, self.body(class, &property), props)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
             .into()
@@ -377,6 +391,17 @@ impl App {
             .on_toggle(Message::ShowCompleted);
         let trailing = [completed.into(), widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh))];
         let icon = filter_icon(&self.filter);
+        let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
+        if narrow && self.detail.is_some() {
+            // The detail replaces the list: back to it, named after the filter.
+            let back = widgets::text_button(
+                Some(Icon::ChevronLeft),
+                name,
+                style::button::ghost,
+                Some(Message::Detail(detail::Message::Close)),
+            );
+            return shell::header_bar([], back, []);
+        }
         match class {
             SizeClass::Wide => shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing),
             SizeClass::Medium => {
@@ -397,11 +422,12 @@ impl App {
 
     /// The content below the header: the list, and the detail beside it (wide, medium) or
     /// instead of it (narrow).
-    fn body(&self, class: SizeClass) -> Element<'_, Message> {
+    fn body<'a>(&'a self, class: SizeClass, property: &Anchor) -> Element<'a, Message> {
         let Some(detail) = &self.detail else {
             return widgets::content(size::CONTENT_MAX, self.list(class));
         };
-        let detail = detail.view().map(Message::Detail);
+        let palette = theme::palette(&self.theme());
+        let detail = detail.view(class, self.crumb_filter(detail), property, palette).map(Message::Detail);
         let width = match class {
             SizeClass::Wide => size::LIST,
             SizeClass::Medium => size::LIST_MEDIUM,
@@ -512,6 +538,60 @@ impl App {
             MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings),
         ]));
         widgets::menu(sections)
+    }
+
+    /// The filter name for the detail's crumb ("Work › Today"); none when the filter is the
+    /// task's own list, which the crumb already names.
+    fn crumb_filter(&self, detail: &Detail) -> Option<String> {
+        match &self.filter {
+            Filter::List(id) if *id == detail.original.collection => None,
+            filter => Some(self.filter_name(filter)),
+        }
+    }
+
+    /// Opens `todos[index]` in the detail, saving what the open detail still holds.
+    fn select(&mut self, index: usize) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        let flush = self.close_detail();
+        self.selected = Some(index);
+        self.detail = Some(Detail::new(&todo, &self.writable_lists(), &self.todos));
+        flush
+    }
+
+    /// Closes the detail; a draft that still waits to be saved is saved.
+    fn close_detail(&mut self) -> Task<Message> {
+        self.selected = None;
+        match self.detail.take().and_then(|detail| detail.leave()) {
+            Some(todo) => self.save(todo),
+            None => Task::none(),
+        }
+    }
+
+    /// Carries out what the detail asked for.
+    fn detail_action(&mut self, action: detail::Action) -> Task<Message> {
+        match action {
+            detail::Action::None => Task::none(),
+            detail::Action::Save(todo) => self.save(todo),
+            detail::Action::Close => self.close_detail(),
+            detail::Action::Delete(todo) => {
+                self.detail = None;
+                self.selected = None;
+                let source = self.source.clone();
+                Task::perform(
+                    async move { source.delete_todo(todo).await.map_err(|e| e.to_string()) },
+                    Message::Deleted,
+                )
+            }
+            detail::Action::ToggleDone(uid) => match self.todos.iter().position(|t| t.uid == uid) {
+                Some(index) => self.update(Message::ToggleDone(index)),
+                None => Task::none(),
+            },
+            detail::Action::Show(uid) => match self.todos.iter().position(|t| t.uid == uid) {
+                Some(index) => self.select(index),
+                None => Task::none(),
+            },
+            detail::Action::Focus(id) => iced::widget::operation::focus(id),
+        }
     }
 
     fn toggle_menu(&mut self, menu: Menu) {
@@ -684,6 +764,45 @@ mod tests {
     fn filters_have_icons_and_lists_rings() {
         assert_eq!(filter_icon(&Filter::Today), Some(Icon::Sun));
         assert_eq!(filter_icon(&Filter::List("work".into())), None);
+    }
+
+    fn task(uid: &str) -> Todo {
+        Todo {
+            uid: uid.into(),
+            collection: "work".into(),
+            href: None,
+            etag: None,
+            summary: uid.into(),
+            due: None,
+            priority: None,
+            completed: false,
+            parent: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn escape_closes_the_menu_before_the_detail() {
+        let mut app = demo_app();
+        app.todos = vec![task("a"), task("b")];
+        let _ = app.update(Message::Select(1));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("b"));
+        let _ = app.update(Message::ToggleNav);
+        let _ = app.update(Message::Escape);
+        assert!(app.menu.is_none() && app.detail.is_some(), "the menu goes first");
+        let _ = app.update(Message::Escape);
+        assert!(app.detail.is_none() && app.selected.is_none());
+    }
+
+    #[test]
+    fn a_reload_keeps_the_detail_on_its_task() {
+        let mut app = demo_app();
+        app.todos = vec![task("a"), task("b")];
+        let _ = app.update(Message::Select(1));
+        let _ = app.update(Message::Loaded(Ok((Vec::new(), vec![task("b")]))));
+        assert_eq!(app.selected, Some(0));
+        let _ = app.update(Message::Loaded(Ok((Vec::new(), vec![task("a")]))));
+        assert!(app.detail.is_none(), "a task deleted elsewhere closes the detail");
     }
 
     #[test]
