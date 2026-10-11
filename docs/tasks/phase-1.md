@@ -141,7 +141,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests mit gesetzter und fehlender Variable.
 
 ### 1.10 Layout aus Fensterrechtecken erfassen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-setups/src/layout.rs`
 - **Ziel:** `infer_tree(&[(id, Rect)]) -> LayoutTree`: Binärbaum aus Teilungen mit Richtung und
