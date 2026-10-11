@@ -292,6 +292,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("all day · day {n} of {total}", "ganztägig · Tag {n} von {total}"),
     ("{n} more", "{n} weitere"),
     // Tasks
+    ("Display", "Anzeige"),
+    ("New task", "Neue Aufgabe"),
+    ("Show completed", "Erledigte anzeigen"),
     ("Add notes …", "Notizen hinzufügen …"),
     ("Delete task", "Aufgabe löschen"),
     ("Due date", "Fälligkeit"),
