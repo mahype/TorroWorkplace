@@ -400,6 +400,10 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   sogar Absagen an die Teilnehmer schicken. Lösung: beim Lesen das Original-`VEVENT` behalten und
   beim Speichern nur die geänderten Eigenschaften ersetzen (Round-Trip), mit Tests an echten
   Nextcloud-Fixtures.
+  **Erledigt mit P.1** ([github.md](github.md), Commit „keep foreign properties when writing
+  items“): `CalDavClient::save_*` holt das gespeicherte Objekt und ersetzt nur geänderte Felder
+  (`write::merge_ics_event`/`merge_ics_todo`), `ATTENDEE`, `ORGANIZER`, `VALARM`, `VTIMEZONE`,
+  `X-*` bleiben. Für K.26 bleibt das Lesen und Anzeigen der Teilnehmer und des Status.
 - **Neu im Modell:** `organizer` und `attendees` (Name, E-Mail, Teilnahme-Status, Rolle) sowie
   `status` (bestätigt, vorläufig, abgesagt), alle mit `#[serde(default)]`. Damit gehen sie über
   `Events` auch an Agenten (`list_events`, Bereich Kalender, Lesen) – Hinweis in `api.md`, dass das
