@@ -78,15 +78,19 @@ pub(super) fn check_answer(answer: &str) -> Result<(), WmError> {
 /// `hl.dsp.layout("preselect r")` for `LeftRight`, `"preselect d"` for `TopBottom`: the next
 /// window opens right of / below the focused one.
 pub fn preselect(direction: SplitDirection) -> String {
-    let _ = direction;
-    String::new()
+    let flag = match direction {
+        SplitDirection::LeftRight => "r",
+        SplitDirection::TopBottom => "d",
+    };
+    format!("hl.dsp.layout({})", lua_string(&format!("preselect {flag}")))
 }
 
 /// `hl.dsp.layout("splitratio 1.3000 exact")`. Hyprland's dwindle ratio runs from 0.1 to
-/// 1.9 with 1.0 as an even split, so the share of the first child is doubled.
+/// 1.9 with 1.0 as an even split, so the share of the first child is doubled. The doubled
+/// value is clamped to that range, which means `ratio` is effectively limited to 0.05..=0.95.
 pub fn split_ratio(ratio: f32) -> String {
-    let _ = ratio;
-    String::new()
+    let hyprland_ratio = (ratio * 2.0).clamp(0.1, 1.9);
+    format!("hl.dsp.layout({})", lua_string(&format!("splitratio {hyprland_ratio:.4} exact")))
 }
 
 #[cfg(test)]
@@ -178,6 +182,26 @@ mod tests {
     fn close_expression() {
         assert_eq!(close_window(&id("0x1f")).expect("valid"), r#"hl.dsp.window.close({ window = "address:0x1f" })"#);
         assert!(close_window(&id("")).is_err());
+    }
+
+    #[test]
+    fn preselect_expressions_per_direction() {
+        assert_eq!(preselect(SplitDirection::LeftRight), r#"hl.dsp.layout("preselect r")"#);
+        assert_eq!(preselect(SplitDirection::TopBottom), r#"hl.dsp.layout("preselect d")"#);
+    }
+
+    #[test]
+    fn split_ratio_doubles_and_formats_with_four_decimals() {
+        assert_eq!(split_ratio(0.5), r#"hl.dsp.layout("splitratio 1.0000 exact")"#);
+        assert_eq!(split_ratio(0.35), r#"hl.dsp.layout("splitratio 0.7000 exact")"#);
+    }
+
+    #[test]
+    fn split_ratio_clamps_to_hyprland_range() {
+        assert_eq!(split_ratio(0.01), r#"hl.dsp.layout("splitratio 0.1000 exact")"#);
+        assert_eq!(split_ratio(0.99), r#"hl.dsp.layout("splitratio 1.9000 exact")"#);
+        assert_eq!(split_ratio(0.0), r#"hl.dsp.layout("splitratio 0.1000 exact")"#);
+        assert_eq!(split_ratio(1.0), r#"hl.dsp.layout("splitratio 1.9000 exact")"#);
     }
 
     #[test]

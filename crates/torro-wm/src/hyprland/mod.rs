@@ -91,14 +91,17 @@ impl WindowManager for Hyprland {
 
     /// Task 1.8.
     async fn prepare_insert(&self, sibling: &WindowId, direction: SplitDirection) -> Result<(), WmError> {
-        let _ = (sibling, direction);
-        Err(WmError::NotImplemented("hyprland prepare_insert (task 1.8)"))
+        self.dispatch(&dispatch::focus_window(sibling)?).await?;
+        self.dispatch(&dispatch::preselect(direction)).await
     }
 
     /// Task 1.8.
     async fn place(&self, window: &WindowId, sibling: &WindowId, split: Split) -> Result<(), WmError> {
-        let _ = (window, sibling, split);
-        Err(WmError::NotImplemented("hyprland place (task 1.8)"))
+        // Hyprland already put `window` next to `sibling` when it opened (see prepare_insert),
+        // so only the ratio of that split is left to set here.
+        let _ = sibling;
+        self.dispatch(&dispatch::focus_window(window)?).await?;
+        self.dispatch(&dispatch::split_ratio(split.ratio)).await
     }
 
     /// Task 1.7.
@@ -176,6 +179,66 @@ mod tests {
         let received = server.await.expect("server task");
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(received, r#"dispatch hl.dsp.focus({ window = "address:0xabc" })"#);
+        assert_eq!(result, Ok(()));
+    }
+
+    /// Stands in for Hyprland's request socket for `count` requests, answering each with `ok`.
+    /// Every request uses its own connection; the returned task yields the request texts in order.
+    #[cfg(unix)]
+    async fn answer_requests(dir: &std::path::Path, count: usize) -> tokio::task::JoinHandle<Vec<String>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::UnixListener::bind(dir.join(".socket.sock")).expect("bind fake socket");
+        tokio::spawn(async move {
+            let mut received = Vec::new();
+            for _ in 0..count {
+                let (mut conn, _) = listener.accept().await.expect("accept");
+                let mut request = String::new();
+                conn.read_to_string(&mut request).await.expect("read request");
+                conn.write_all(b"ok\n").await.expect("write answer");
+                received.push(request);
+            }
+            received
+        })
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn prepare_insert_focuses_sibling_then_preselects() {
+        let dir = temp_instance_dir("prepare-insert");
+        let server = answer_requests(&dir, 2).await;
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let result = wm.prepare_insert(&WindowId("0x51b".into()), SplitDirection::TopBottom).await;
+        let received = server.await.expect("server task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            received,
+            vec![
+                r#"dispatch hl.dsp.focus({ window = "address:0x51b" })"#.to_owned(),
+                r#"dispatch hl.dsp.layout("preselect d")"#.to_owned(),
+            ]
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn place_focuses_new_window_then_sets_ratio() {
+        let dir = temp_instance_dir("place");
+        let server = answer_requests(&dir, 2).await;
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let split = Split { direction: SplitDirection::LeftRight, ratio: 0.35 };
+        let result = wm.place(&WindowId("0xe0e".into()), &WindowId("0x51b".into()), split).await;
+        let received = server.await.expect("server task");
+        let _ = std::fs::remove_dir_all(&dir);
+        // The sibling is not focused again: Hyprland placed the window when it opened.
+        assert_eq!(
+            received,
+            vec![
+                r#"dispatch hl.dsp.focus({ window = "address:0xe0e" })"#.to_owned(),
+                r#"dispatch hl.dsp.layout("splitratio 0.7000 exact")"#.to_owned(),
+            ]
+        );
         assert_eq!(result, Ok(()));
     }
 
