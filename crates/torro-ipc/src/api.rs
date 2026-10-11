@@ -743,7 +743,9 @@ static LIST_LISTS: Command = Command {
                   can be written to. The id is `<account-id>/<list URL>`; tasks refer to their list by it. GitHub \
                   filter lists (`github:<login>/<list-id>`) are listed too, with their searches in `source`; they \
                   are not writable (no new or deleted tasks); marking their tasks done is meant to close the issue on \
-                  GitHub, which save_todo does not do yet (it answers `unsupported`).",
+                  GitHub, which save_todo does not do yet (it answers `unsupported`). A key limited to some \
+                  repositories sees only filter lists whose searches all stay inside them, and their `pinned` \
+                  without items of other repositories.",
 };
 
 static LIST_TODOS: Command = Command {
@@ -753,7 +755,9 @@ static LIST_TODOS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists the tasks of all shown task lists, with their tags (`categories`), web address (`url`), \
                   manual position (`sort_order`, smaller first) and `link` to a GitHub issue or pull request \
-                  (`github:<owner>/<repo>#<number>`; `link.github` holds what GitHub reports, once fetched).",
+                  (`github:<owner>/<repo>#<number>`; `link.github` holds what GitHub reports, once fetched). A key \
+                  limited to some GitHub repositories gets no items of other repositories and no `parent` that \
+                  names one.",
 };
 
 static SAVE_TODO: Command = Command {
@@ -802,7 +806,11 @@ static CREATE_FILTER_LIST: Command = Command {
                   accounts.list_accounts) that holds the issues and pull requests one or more GitHub searches find \
                   (`is:open is:issue repo:owner/name label:bug`, or the address of an issue list on github.com). \
                   The core refreshes it every five minutes; it cannot be written to. Returns the list with its \
-                  definition in `source`. Try searches with preview_filter first.",
+                  definition in `source`. Try searches with preview_filter first. A new list is not added to a key \
+                  limited to some task lists, so such a key does not see it afterwards. A key limited to some \
+                  repositories must name granted ones in every search (`repo:owner/name`, `org:owner`, \
+                  `user:owner`), no other one (`-repo:` to exclude is fine) and no OR, NOT or parentheses; \
+                  otherwise the call fails with `forbidden` and nothing is stored.",
 };
 
 static UPDATE_FILTER_LIST: Command = Command {
@@ -812,7 +820,8 @@ static UPDATE_FILTER_LIST: Command = Command {
     mcp: Mcp::Tool,
     description: "Replaces name, colour and searches of a GitHub filter list and fetches it again; pinned items \
                   stay. Pass `revision` from the list's `source` as list_lists returned it: if the list changed \
-                  meanwhile the call fails with `conflict` and nothing changes.",
+                  meanwhile the call fails with `conflict` and nothing changes. The searches follow the same \
+                  rule as in create_filter_list.",
 };
 
 static DELETE_FILTER_LIST: Command = Command {
@@ -831,7 +840,8 @@ static PREVIEW_FILTER: Command = Command {
     mcp: Mcp::Tool,
     description: "Runs GitHub searches (or addresses of issue lists on github.com) of a GitHub account without \
                   saving anything and returns how many issues and pull requests match and the first 20 of them as \
-                  tasks. Agents see only matches in the repositories they were granted.",
+                  tasks. A key limited to some repositories must name granted ones in every search, as for \
+                  create_filter_list, else `forbidden` before GitHub is asked; it sees only matches in them.",
 };
 
 static UNPIN_ISSUE: Command = Command {
@@ -941,7 +951,8 @@ static SET_COLLECTION_SHOWN: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Shows or hides a calendar or task list (id from accounts.list_accounts) in every app of the \
-                  suite. Hidden collections are hidden from agents too, so showing one widens what agents see.",
+                  suite. Hidden collections are hidden from agents too, so showing one widens what agents see. \
+                  Agents reach only the collections they see; a hidden one is shown again by a person.",
 };
 
 static UPDATE_SETTINGS: Command = Command {

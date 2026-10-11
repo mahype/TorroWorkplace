@@ -40,6 +40,11 @@
 //!   issue and pull request is checked against its repositories ([`Rights::reaches_repo`])
 //!   before anything else is done with it, and the lists need read access to `github`. Log lines
 //!   name lists and items by id only, never a search or a title.
+//! - **A client limited to some repositories** (task G.2b) has its searches checked before
+//!   GitHub is asked ([`scope::confined`]): a preview, a new list or a changed one that might
+//!   search elsewhere is `forbidden` and GitHub hears nothing of it. It sees a list only when all
+//!   its searches pass that check, and it never reads GitHub's own error messages, only fixed ones
+//!   ([`torro_pim_github::Error::public_message`]). Filtering each match stays as a second guard.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -49,7 +54,7 @@ use std::time::Duration;
 use chrono::{DateTime, Duration as Span, Local, Utc};
 use tokio::sync::{Mutex, RwLock};
 use torro_core::{AppId, paths::AppPaths};
-use torro_ipc::api::{Access, Area, Rights};
+use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::source::move_plan;
@@ -59,7 +64,7 @@ use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
 use torro_pim_github::api::{self as github_api, MAX_MATCHES};
 use torro_pim_github::lists::{self, FilterFile};
-use torro_pim_github::{Api, FilterList, address, item};
+use torro_pim_github::{Api, FilterList, address, item, scope};
 
 use torro_core::i18n::{tr, trf};
 
@@ -308,9 +313,13 @@ enum Role {
 
 impl Reach<'_> {
     /// `collection` serves as `role`, is not `hidden` and is in the selection. A filter list
-    /// needs read access to `github` as well: its items come with the GitHub token.
+    /// needs read access to `github` as well, since its items come with the GitHub token, and
+    /// searches that stay inside the repositories of this reach ([`Reach::confines`]): its
+    /// searches, in `source.queries`, would name the others.
     fn sees(&self, collection: &Collection, role: Role, hidden: &[String]) -> bool {
-        if collection.source.is_some() && !self.reads_github() {
+        if let Some(source) = &collection.source
+            && !(self.reads_github() && self.confines(&source.queries))
+        {
             return false;
         }
         let fits = match role {
@@ -330,6 +339,28 @@ impl Reach<'_> {
         match self {
             Reach::Suite => true,
             Reach::Client(rights) => rights.area(Area::Github).allows(Access::Read),
+        }
+    }
+
+    /// Every one of `queries` (searches as `lists::check_queries` makes them) searches only the
+    /// repositories this reach sees ([`scope::confined`]). Always for the suite and for a client
+    /// with every repository ([`Selection::All`]); they are not limited.
+    fn confines(&self, queries: &[String]) -> bool {
+        match self {
+            Reach::Suite => true,
+            Reach::Client(rights) => {
+                rights.github_repos == Selection::All
+                    || queries.iter().all(|query| scope::confined(query, |name| rights.reaches_repo(name)))
+            }
+        }
+    }
+
+    /// The message of a GitHub failure for this reach: the whole of it for the suite, the fixed
+    /// one of its code for a client ([`torro_pim_github::Error::public_message`]).
+    fn message_of(&self, err: &torro_pim_github::Error) -> String {
+        match self {
+            Reach::Suite => err.to_string(),
+            Reach::Client(_) => err.public_message(),
         }
     }
 
@@ -354,10 +385,14 @@ impl Reach<'_> {
     }
 
     /// A collection as this reach may see it: a filter list without the pinned items of
-    /// repositories it may not see.
+    /// repositories it may not see, and for a client with a fixed `problem` instead of GitHub's
+    /// words ([`torro_pim_github::public_problem`]).
     fn collection_for(&self, mut collection: Collection) -> Collection {
         if let Some(source) = &mut collection.source {
             source.pinned.retain(|id| address::issue_ref(id).is_some_and(|issue| self.reaches_repo(&issue.repo)));
+            if let Reach::Client(_) = self {
+                source.problem = source.problem.as_deref().map(torro_pim_github::public_problem);
+            }
         }
         collection
     }
@@ -570,8 +605,9 @@ impl PimService {
                 let outside = address::issue_ref(url).is_some_and(|issue| !reach.reaches_repo(&issue.repo));
                 return outside.then(|| url.clone());
             }
-            // Nothing exists yet that could be out of reach; the matches of a preview are
-            // filtered by repository when they come in.
+            // Nothing exists yet that could be out of reach. Searches outside the client's
+            // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
+            // is asked ([`Reach::confines`]).
             Request::CreateFilterList { .. } | Request::PreviewFilter { .. } => return None,
             // Both tasks name their list only through the cache; one it does not hold, or one in a
             // list the client may not see, is `not-found`. The tasks renumbered with them are in
@@ -647,6 +683,18 @@ impl PimService {
     /// client may not see behaves as if it did not exist.
     pub async fn sees_task_list(&self, reach: Reach<'_>, id: &str) -> bool {
         self.seen(reach, Role::TaskList).await.iter().any(|list| list.id == id)
+    }
+
+    /// `id` is a calendar or a task list that `reach` sees ([`PimService::sees_task_list`], and
+    /// the same for calendars): shown, in the selection of its kind and, for a filter list, inside
+    /// the client's repositories. For `settings.set_collection_shown` from a client.
+    pub async fn sees_collection(&self, reach: Reach<'_>, id: &str) -> bool {
+        for role in [Role::Calendar, Role::TaskList] {
+            if self.seen(reach, role).await.iter().any(|collection| collection.id == id) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Fills the cache of the first account as a sync would, for the core's handler tests; with
@@ -1314,16 +1362,17 @@ impl PimService {
     }
 
     /// `tasks.create_filter_list` for the GitHub account `account`, which the core knows: stored
-    /// with a new id and revision 1, then fetched once.
+    /// with a new id and revision 1, then fetched once, and answered as `reach` may see it. A
+    /// search outside the repositories of `reach` is `forbidden` before anything is stored or
+    /// asked ([`checked_definition`]).
     pub async fn create_filter_list(
         &self,
         account: &str,
-        name: &str,
-        color: Option<&str>,
-        queries: &[String],
+        definition: Definition<'_>,
         api: Option<&Api>,
+        reach: Reach<'_>,
     ) -> Response {
-        let (name, color, queries) = match checked_definition(name, color, queries) {
+        let (name, color, queries) = match checked_definition(definition, reach) {
             Ok(checked) => checked,
             Err((code, message)) => return error(code, message),
         };
@@ -1346,24 +1395,24 @@ impl PimService {
             list
         };
         self.fetch_filter_list(account, &list, api).await;
-        self.answer_collection(&collection_id(account, &list.id)).await
+        self.answer_collection(&collection_id(account, &list.id), reach).await
     }
 
     /// `tasks.update_filter_list`: new name, colour and searches when `revision` is the stored
-    /// one, then a new fetch.
+    /// one, then a new fetch; answered as `reach` may see the list. Searches outside the
+    /// repositories of `reach` are `forbidden` and change nothing ([`checked_definition`]).
     pub async fn update_filter_list(
         &self,
         collection: &str,
         revision: u64,
-        name: &str,
-        color: Option<&str>,
-        queries: &[String],
+        definition: Definition<'_>,
         api: Option<&Api>,
+        reach: Reach<'_>,
     ) -> Response {
         let Some(account) = self.filter_list_account(collection).await else {
             return no_filter_list(collection);
         };
-        let (name, color, queries) = match checked_definition(name, color, queries) {
+        let (name, color, queries) = match checked_definition(definition, reach) {
             Ok(checked) => checked,
             Err((code, message)) => return error(code, message),
         };
@@ -1380,7 +1429,7 @@ impl PimService {
         match changed {
             Ok(list) => {
                 self.fetch_filter_list(&account, &list, api).await;
-                self.answer_collection(collection).await
+                self.answer_collection(collection, reach).await
             }
             Err((code, message)) => error(code, message),
         }
@@ -1442,29 +1491,37 @@ impl PimService {
         }
     }
 
-    /// `tasks.preview_filter`: the searches run now, nothing is stored. For a client every match
-    /// outside its repositories is dropped as it comes in, before it is counted or read further;
-    /// that takes all matches (up to 1,000 a search), while the suite gets GitHub's count and
-    /// the first page.
+    /// `tasks.preview_filter`: the searches run now, nothing is stored; one call to GitHub per
+    /// search (its first [`PREVIEW_ITEMS`] matches and GitHub's count).
+    ///
+    /// For a client limited to some repositories every search must stay inside them
+    /// ([`Reach::confines`]), else `forbidden` before GitHub is asked; its failures come with fixed
+    /// messages ([`Reach::message_of`]). Every match outside its repositories is still dropped as
+    /// it comes in. Should one be dropped (GitHub followed a renamed repository), that search
+    /// counts only the matches kept, since GitHub's count would include the others.
     pub async fn preview_filter(&self, queries: &[String], api: &Api, reach: Reach<'_>) -> Response {
         let queries = match lists::check_queries(queries) {
             Ok(queries) => queries,
             Err(err) => return error(err.code(), err.to_string()),
         };
-        let wanted = if matches!(reach, Reach::Suite) { PREVIEW_ITEMS } else { MAX_MATCHES };
+        if !reach.confines(&queries) {
+            return error("forbidden", scope::OUTSIDE.into());
+        }
         let (mut matches, mut truncated, mut parts) = (0, false, Vec::new());
         for query in &queries {
-            let search = match api.search(query, wanted).await {
+            let search = match api.search(query, PREVIEW_ITEMS).await {
                 Ok(search) => search,
-                Err(err) => return error(err.code(), err.to_string()),
+                Err(err) => return error(err.code(), reach.message_of(&err)),
             };
-            truncated |= search.total > MAX_MATCHES as u64;
+            let found = search.items.len();
             let mine: Vec<item::Item> =
                 search.items.into_iter().filter(|item| reach.reaches_repo(item.repo())).collect();
-            matches += match reach {
-                Reach::Suite => search.total,
-                Reach::Client(_) => mine.len() as u64,
-            };
+            if mine.len() == found {
+                matches += search.total;
+                truncated |= search.total > MAX_MATCHES as u64;
+            } else {
+                matches += mine.len() as u64;
+            }
             parts.push(mine);
         }
         let mut all = item::union(parts);
@@ -1510,10 +1567,11 @@ impl PimService {
         Ok(list)
     }
 
-    /// The filter list `collection` as `tasks.list_lists` shows it to the suite.
-    async fn answer_collection(&self, collection: &str) -> Response {
+    /// The filter list `collection` as `tasks.list_lists` shows it to `reach`
+    /// ([`Reach::collection_for`]).
+    async fn answer_collection(&self, collection: &str, reach: Reach<'_>) -> Response {
         match self.state.read().await.filter(collection) {
-            Some((_, list)) => Response::Collection { collection: list.collection.clone() },
+            Some((_, list)) => Response::Collection { collection: reach.collection_for(list.collection.clone()) },
             None => no_filter_list(collection),
         }
     }
@@ -1531,17 +1589,32 @@ impl PimService {
     }
 }
 
-/// Name, colour and searches of a filter list as they are stored, or the refusal (`error`) that
-/// says what is wrong.
+/// Name, colour and searches of a filter list as `tasks.create_filter_list` and
+/// `tasks.update_filter_list` send them, before [`checked_definition`].
+#[derive(Debug, Clone, Copy)]
+pub struct Definition<'a> {
+    pub name: &'a str,
+    /// `#RRGGBB`, or none for the app's default.
+    pub color: Option<&'a str>,
+    /// GitHub searches or addresses of issue lists on github.com.
+    pub queries: &'a [String],
+}
+
+/// Name, colour and searches of a filter list as they are stored, or the refusal that says what
+/// is wrong: `error` for what does not fit, `forbidden` with a fixed message for a search outside
+/// the repositories of `reach` ([`Reach::confines`]). Pure, so a refused list reaches neither the
+/// file nor GitHub.
 fn checked_definition(
-    name: &str,
-    color: Option<&str>,
-    queries: &[String],
+    definition: Definition<'_>,
+    reach: Reach<'_>,
 ) -> Result<(String, Option<String>, Vec<String>), Refusal> {
     let refuse = |err: torro_pim_github::Error| (err.code(), err.to_string());
-    let name = lists::check_name(name).map_err(refuse)?;
-    let color = lists::check_color(color).map_err(refuse)?;
-    let queries = lists::check_queries(queries).map_err(refuse)?;
+    let name = lists::check_name(definition.name).map_err(refuse)?;
+    let color = lists::check_color(definition.color).map_err(refuse)?;
+    let queries = lists::check_queries(definition.queries).map_err(refuse)?;
+    if !reach.confines(&queries) {
+        return Err(("forbidden", scope::OUTSIDE.into()));
+    }
     Ok((name, color, queries))
 }
 

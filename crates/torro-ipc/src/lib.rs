@@ -232,7 +232,9 @@ pub enum Request {
     // GitHub filter lists (task G.2, `docs/github.md`). Granted in the area `github`: for a client
     // key the core also filters every issue and pull request by its repository
     // (`api::Rights::github_repos`) before it reads it further, and the list itself must be in
-    // its `task_lists`.
+    // its `task_lists`. A client limited to some repositories has each search checked before
+    // GitHub is asked (task G.2b, `torro_pim_github::scope::confined`), sees only lists whose
+    // searches all pass that check, and gets fixed messages instead of GitHub's own.
     /// Creates a filter list of the GitHub account `account`: saved GitHub searches whose matches
     /// the core keeps as a task list (`github:<login>/<list-id>`, not writable), fetched whole now,
     /// every five minutes and on `accounts.sync`. Answered with [`Response::Collection`]: the
@@ -240,7 +242,10 @@ pub enum Request {
     /// is kept. A new list is never added to a client's selection of task lists, and list ids
     /// are never handed out twice. Codes: `not-found` for an account that is no connected GitHub
     /// account, `error` for an empty name, a colour that is not `#RRGGBB`, no search, more than
-    /// ten, or an address that is no issue list.
+    /// ten, or an address that is no issue list, `forbidden` (nothing stored, GitHub not asked)
+    /// for a client limited to some repositories when a search might reach beyond them: each
+    /// search needs a `repo:owner/name`, `org:owner` or `user:owner` the client was granted, no
+    /// other positive one (`-repo:` is fine), and no `OR`, `NOT` or parentheses.
     #[serde(rename = "tasks.create_filter_list")]
     CreateFilterList {
         /// The GitHub account, `github:<login>` as `accounts.list_accounts` lists it.
@@ -285,9 +290,12 @@ pub enum Request {
         collection: String,
     },
     /// Runs searches of the GitHub account `account` without saving anything, to try them before
-    /// creating or changing a list. Answered with [`Response::FilterPreview`]. Codes as
-    /// [`Request::CreateFilterList`], plus `auth` and `offline` when GitHub refuses the token or
-    /// cannot be reached.
+    /// creating or changing a list: one call to GitHub per search. Answered with
+    /// [`Response::FilterPreview`]. Codes as [`Request::CreateFilterList`] (`forbidden` for a
+    /// search outside a client's repositories, before GitHub is asked), plus `not-connected` when
+    /// the account has no token on this device, `auth` and `offline` when GitHub refuses the
+    /// token or cannot be reached, and `error` when GitHub cannot run a search (for a client with
+    /// a fixed message, never GitHub's own).
     #[serde(rename = "tasks.preview_filter")]
     PreviewFilter {
         /// The GitHub account, `github:<login>`.
@@ -482,9 +490,10 @@ pub enum Response {
     },
     /// What searches find without being saved ([`Request::PreviewFilter`]).
     FilterPreview {
-        /// How many issues and pull requests match. For the suite GitHub's count, added up over
-        /// the searches (an item two searches find counts twice). For a client limited to some
-        /// repositories, the matches in those among the first 1,000 of each search.
+        /// How many issues and pull requests match: GitHub's count, added up over the searches
+        /// (an item two searches find counts twice). Should GitHub return a match outside a
+        /// client's repositories although its search named only granted ones (a renamed
+        /// repository), that search counts only the matches on its first page the client sees.
         matches: u64,
         /// A search found more than 1,000 matches; a list of it would hold only the first 1,000.
         truncated: bool,

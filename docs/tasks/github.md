@@ -223,7 +223,7 @@ K.21 (frei)
   nur Treffer aus `github_repos`, fremde Liste → `not-found`, neue Liste nicht in `Only`-Auswahl.
 
 ### G.2b Filterlisten: Seitenkanäle schließen (aus der API-Prüfung von G.2)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.2 · **Dateien:** `crates/torroworkplace/src/{pim,core}.rs`, `crates/torro-pim-github/src/{address,lists,lib}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`
 - **Prüfen vor dem Fragen (hoch):** Für einen Client mit eingeschränkter Repo-Auswahl (`github_repos` = nur diese)

@@ -11,15 +11,19 @@
 //!   items, a whole list.
 //! - [`lists`]: the definitions in `filter-lists.json` (config directory, one entry per account)
 //!   and the checks of names, colours and searches.
+//! - [`scope`]: whether a search stays inside the repositories a client was granted, checked
+//!   before GitHub is asked (task G.2b).
 //!
-//! Who may see which repository is not decided here: the core filters every [`Item`] by its
-//! repository ([`Item::repo`]) before it reads it further.
+//! Who may see which repository is not decided here: the core checks a client's searches with
+//! [`scope::confined`] and filters every [`Item`] by its repository ([`Item::repo`]) before it
+//! reads it further. Clients never get GitHub's own words, only [`Error::public_message`].
 
 pub mod address;
 pub mod api;
 pub mod graphql;
 pub mod item;
 pub mod lists;
+pub mod scope;
 
 use std::fmt;
 
@@ -54,6 +58,32 @@ impl Error {
     }
 }
 
+/// What a client reads instead of GitHub's own message ([`Error::Github`]): that message may
+/// quote the search or tell about repositories the client may not see.
+pub const GITHUB_FAILED: &str = "GitHub could not run the search. Check the search, or try again later.";
+
+impl Error {
+    /// The message for a client key: fixed per code. [`Error::Input`] is the core's own text and
+    /// never quotes the input; [`Error::Github`] becomes [`GITHUB_FAILED`].
+    pub fn public_message(&self) -> String {
+        match self {
+            Error::Github(_) => GITHUB_FAILED.to_string(),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// A list's problem (`source.problem`, the message of the error its last fetch ended with) as a
+/// client may read it: the fixed texts of [`Error::Refused`] and [`Error::Offline`] stay, any
+/// other becomes [`GITHUB_FAILED`].
+pub fn public_problem(problem: &str) -> String {
+    let fixed = [Error::Refused.to_string(), Error::Offline.to_string()];
+    match fixed.iter().any(|text| text == problem) {
+        true => problem.to_string(),
+        false => GITHUB_FAILED.to_string(),
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -65,3 +95,21 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clients_get_fixed_messages_never_githubs_words() {
+        let github = Error::Github("GitHub could not run the search: mahype/secret does not exist".into());
+        assert_eq!(github.public_message(), GITHUB_FAILED);
+        assert_eq!(public_problem(&github.to_string()), GITHUB_FAILED);
+        for fixed in [Error::Refused, Error::Offline] {
+            assert_eq!(fixed.public_message(), fixed.to_string());
+            assert_eq!(public_problem(&fixed.to_string()), fixed.to_string());
+        }
+        let input = Error::Input("A filter list needs a name.".into());
+        assert_eq!(input.public_message(), input.to_string());
+    }
+}

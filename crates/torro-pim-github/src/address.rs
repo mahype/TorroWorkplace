@@ -132,7 +132,7 @@ fn tidy(query: &str) -> String {
 }
 
 /// An owner or repository name as GitHub allows it: ASCII letters, digits, `-`, `_` and `.`.
-fn name_part(part: &str) -> bool {
+pub(crate) fn name_part(part: &str) -> bool {
     !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 

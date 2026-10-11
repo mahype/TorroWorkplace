@@ -20,7 +20,7 @@ use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::clients::{Caller, Clients, ClientsError, Refused};
-use crate::pim::{PimService, Reach};
+use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 
 /// `name` next to the daemon's binary, else from `PATH`.
@@ -181,13 +181,13 @@ impl Core {
     }
 
     /// For a client: the collection `request` would touch outside its reach, if any. Writes of
-    /// events and tasks ask the calendar service; showing or hiding a collection needs it in
-    /// the client's selection of calendars or task lists.
+    /// events and tasks ask the calendar service; showing or hiding a collection needs one the
+    /// client sees ([`PimService::sees_collection`]): in its selection, shown, and a filter list
+    /// only with access to `github` and inside its repositories.
     async fn out_of_reach(&self, reach: Reach<'_>, request: &Request) -> Option<String> {
         match (reach, request) {
-            (Reach::Client(rights), Request::SetCollectionShown { collection, .. }) => {
-                let selected = rights.calendars.contains(collection) || rights.task_lists.contains(collection);
-                (!selected).then(|| collection.clone())
+            (reach @ Reach::Client(_), Request::SetCollectionShown { collection, .. }) => {
+                (!self.pim.sees_collection(reach, collection).await).then(|| collection.clone())
             }
             // Only shown task lists in the selection: hidden lists and calendars look unknown.
             (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
@@ -241,12 +241,13 @@ impl Core {
                     return no_github_account(&account);
                 }
                 let api = self.github.api(&account).await;
-                self.pim.create_filter_list(&account, &name, color.as_deref(), &queries, api.as_ref()).await
+                let definition = Definition { name: &name, color: color.as_deref(), queries: &queries };
+                self.pim.create_filter_list(&account, definition, api.as_ref(), reach).await
             }
             Request::UpdateFilterList { collection, revision, name, color, queries } => {
                 let api = self.filter_list_api(&collection).await;
-                let (color, api) = (color.as_deref(), api.as_ref());
-                self.pim.update_filter_list(&collection, revision, &name, color, &queries, api).await
+                let definition = Definition { name: &name, color: color.as_deref(), queries: &queries };
+                self.pim.update_filter_list(&collection, revision, definition, api.as_ref(), reach).await
             }
             Request::DeleteFilterList { collection } => self.pim.delete_filter_list(&collection).await,
             Request::PreviewFilter { account, queries } => {
@@ -1301,19 +1302,26 @@ mod tests {
     }
 
     /// The issues GitHub "has" in a test, by search: every search finds `found`, the pinned
-    /// lookup finds `pinned`.
+    /// lookup finds `pinned`. With `fail`, every search fails with that message, as GitHub's
+    /// GraphQL errors do.
     #[derive(Default)]
     struct World {
         found: Vec<Issue>,
         pinned: Vec<Issue>,
+        fail: Option<&'static str>,
     }
 
+    /// Every request the fake GitHub got.
+    type Asked = Arc<std::sync::Mutex<Vec<crate::account::github::tests::Seen>>>;
+
     /// A fake GitHub that knows `mahype` and answers searches and pinned lookups from `world`.
-    async fn fake_world(world: Arc<std::sync::Mutex<World>>) -> String {
-        let (url, _) = fake_github(move |seen| {
+    async fn fake_world(world: Arc<std::sync::Mutex<World>>) -> (String, Asked) {
+        fake_github(move |seen| {
             let world = world.lock().expect("world");
             let body = if seen.body.contains("viewer") {
                 viewer("mahype")
+            } else if let (true, Some(message)) = (seen.body.contains("search("), world.fail) {
+                serde_json::json!({"data": null, "errors": [{"type": "NOT_FOUND", "message": message}]}).to_string()
             } else if seen.body.contains("search(") {
                 let nodes: Vec<_> = world.found.iter().copied().map(node).collect();
                 serde_json::json!({"data": {"search": {"issueCount": nodes.len(),
@@ -1330,17 +1338,21 @@ mod tests {
             };
             (200, Some("repo"), body)
         })
-        .await;
-        url
+        .await
     }
 
     /// A core with the GitHub account `github:mahype` connected on a fake GitHub with `world`.
     async fn core_with_world(dir: &std::path::Path, world: &Arc<std::sync::Mutex<World>>) -> Core {
-        let url = fake_world(Arc::clone(world)).await;
+        core_asking(dir, world).await.0
+    }
+
+    /// [`core_with_world`] and what its fake GitHub is asked.
+    async fn core_asking(dir: &std::path::Path, world: &Arc<std::sync::Mutex<World>>) -> (Core, Asked) {
+        let (url, asked) = fake_world(Arc::clone(world)).await;
         let core = core_with_github(dir, &MemoryTokens::default(), &url);
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
         assert!(matches!(core.handle(set).await, Response::Account { .. }));
-        core
+        (core, asked)
     }
 
     fn create(name: &str, queries: &[&str]) -> Request {
@@ -1388,7 +1400,11 @@ mod tests {
     #[tokio::test]
     async fn a_filter_list_holds_what_its_searches_find_now_and_its_pinned_items() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, ISSUE_2], pinned: vec![PINNED_7] }));
+        let world = Arc::new(std::sync::Mutex::new(World {
+            found: vec![ISSUE_1, ISSUE_2],
+            pinned: vec![PINNED_7],
+            ..World::default()
+        }));
         let core = core_with_world(dir.path(), &world).await;
 
         let address = "https://github.com/mahype/TorroWorkplace/issues?q=is%3Aopen+label%3Abug";
@@ -1475,14 +1491,34 @@ mod tests {
         rights
     }
 
+    /// [`repo_limited`] with the admin switch of every area, so admin commands reach the approval.
+    fn repo_limited_admin() -> Rights {
+        let mut rights = repo_limited();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights
+    }
+
+    fn preview(queries: &[&str]) -> Request {
+        Request::PreviewFilter {
+            account: "github:mahype".into(),
+            queries: queries.iter().map(|q| q.to_string()).collect(),
+        }
+    }
+
+    const MINE: &str = "repo:mahype/TorroWorkplace";
+    const SECRET_3: Issue = ("mahype/secret", 3, "Private plans", None);
+
     #[tokio::test]
-    async fn a_client_sees_only_matches_in_its_repositories_whatever_the_search() {
+    async fn a_client_sees_only_matches_in_its_repositories_even_when_github_sends_more() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let secret: Issue = ("mahype/secret", 3, "Private plans", None);
         let child: Issue = ("mahype/TorroWorkplace", 4, "Sub-issue", Some(("mahype/secret", 3)));
-        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, secret, child], pinned: vec![] }));
+        // The fake GitHub finds all three whatever the search: the second guard drops `secret`.
+        let world =
+            Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, SECRET_3, child], ..World::default() }));
         let core = core_with_world(dir.path(), &world).await;
-        let list = created(core.handle(create("All", &["is:open"])).await);
+        let list = created(core.handle(create("Mine", &[MINE])).await);
         let (_, key) = client(&core, repo_limited()).await;
 
         let Response::Todos { todos } = ask(&core, Some(&key), Request::Todos).await else { panic!("todos") };
@@ -1490,30 +1526,28 @@ mod tests {
         assert_eq!(ids, ["github:mahype/TorroWorkplace#1", "github:mahype/TorroWorkplace#4"]);
         assert_eq!(todos[1].parent, None, "the parent would name the other repository");
 
-        let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
-        let Response::FilterPreview { matches, todos, .. } = ask(&core, Some(&key), preview.clone()).await else {
+        // A match was dropped: GitHub's count (3) would tell about it, so only the kept ones count.
+        let Response::FilterPreview { matches, todos, .. } = ask(&core, Some(&key), preview(&[MINE])).await else {
             panic!("a preview")
         };
         assert_eq!((matches, todos.len()), (2, 2));
-        let Response::FilterPreview { matches, .. } = core.handle(preview).await else { panic!("a preview") };
-        assert_eq!(matches, 3, "the suite sees everything");
-
-        // Rewriting the search to the other repository shows nothing more.
-        let rewrite = Request::UpdateFilterList {
-            collection: list.id.clone(),
-            revision: 1,
-            name: "All".into(),
-            color: None,
-            queries: vec!["repo:mahype/secret".into()],
+        let Response::FilterPreview { matches, .. } = core.handle(preview(&["is:open"])).await else {
+            panic!("a preview")
         };
-        assert!(matches!(ask(&core, Some(&key), rewrite).await, Response::Collection { .. }));
-        world.lock().expect("world").found = vec![secret];
+        assert_eq!(matches, 3, "the suite sees everything");
+        // Nothing dropped: GitHub's count, as for the suite.
+        world.lock().expect("world").found = vec![ISSUE_1, ISSUE_2];
+        let Response::FilterPreview { matches, .. } = ask(&core, Some(&key), preview(&[MINE])).await else {
+            panic!("a preview")
+        };
+        assert_eq!(matches, 2);
+
+        world.lock().expect("world").found = vec![ISSUE_1, SECRET_3, child];
         assert_eq!(core.handle(Request::Sync).await, Response::Ok);
         for request in [Request::Todos, Request::TaskCollections, Request::Accounts] {
             let answer = serde_json::to_string(&ask(&core, Some(&key), request.clone()).await).expect("json");
-            assert!(!answer.contains("Private plans") && !answer.contains("secret#3"), "{request:?}: {answer}");
+            assert!(!answer.contains("Private plans") && !answer.contains("secret"), "{request:?}: {answer}");
         }
-        assert_eq!(todo_ids(&core, None).await, ["github:mahype/secret#3"], "the suite still sees it");
 
         // Unpinning an item of another repository is as unknown as a list it may not see.
         let unpin = Request::UnpinIssue { collection: list.id.clone(), url: "mahype/secret#3".into() };
@@ -1521,9 +1555,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_search_outside_a_clients_repositories_is_refused_before_github_hears_of_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let (core, asked) = core_asking(dir.path(), &world).await;
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let (_, key) = client(&core, repo_limited()).await;
+        let stored = std::fs::read_to_string(filters_file(dir.path())).expect("stored");
+        let before = asked.lock().expect("asked").len();
+
+        for queries in [
+            &["repo:mahype/secret"][..],
+            &["is:open"],
+            &["label:bug -repo:mahype/secret"],
+            &["repo:mahype/TorroWorkplace repo:mahype/secret"],
+            &["repo:mahype/TorroWorkplace OR repo:mahype/secret"],
+            &["repo:mahype/TorroWorkplace (label:bug OR repo:mahype/secret)"],
+            &["NOT repo:mahype/TorroWorkplace"],
+            &["repo:mahype/TorroWorkplace \"repo:mahype/secret\""],
+            &[MINE, "org:mahype"],
+            &["https://github.com/mahype/secret/issues"],
+            &["https://github.com/orgs/mahype/issues"],
+            &["https://github.com/issues"],
+        ] {
+            let update = Request::UpdateFilterList {
+                collection: list.id.clone(),
+                revision: 1,
+                name: "Mine".into(),
+                color: None,
+                queries: queries.iter().map(|q| q.to_string()).collect(),
+            };
+            for request in [preview(queries), create("Wider", queries), update] {
+                let answer = ask(&core, Some(&key), request.clone()).await;
+                let wanted =
+                    Response::Error { code: "forbidden".into(), message: torro_pim_github::scope::OUTSIDE.into() };
+                assert_eq!(answer, wanted, "{request:?}");
+            }
+        }
+        assert_eq!(asked.lock().expect("asked").len(), before, "nothing went to GitHub");
+        assert_eq!(std::fs::read_to_string(filters_file(dir.path())).expect("stored"), stored, "nothing stored");
+
+        // Inside its repositories, in any case and with exclusions, one call per search.
+        let inside = preview(&["REPO:mahype/torroworkplace -repo:mahype/secret is:open"]);
+        assert!(matches!(ask(&core, Some(&key), inside).await, Response::FilterPreview { .. }));
+        assert_eq!(asked.lock().expect("asked").len(), before + 1);
+
+        // The suite and a client with every repository are not limited.
+        assert!(matches!(core.handle(preview(&["is:open"])).await, Response::FilterPreview { .. }));
+        let (_, all) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        assert!(matches!(ask(&core, Some(&all), preview(&["is:open"])).await, Response::FilterPreview { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_list_reaching_beyond_a_clients_repositories_does_not_exist_for_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let core = core_with_world(dir.path(), &world).await;
+        let everything = created(core.handle(create("Everything", &["is:open"])).await);
+        let mixed = created(core.handle(create("Mixed", &[MINE, "repo:mahype/secret"])).await);
+        let mine = created(core.handle(create("Mine", &[MINE])).await);
+        let (_, key) = client(&core, repo_limited_admin()).await;
+
+        assert_eq!(list_ids(&core, Some(&key), Request::TaskCollections).await, std::slice::from_ref(&mine.id));
+        assert_eq!(todo_ids(&core, Some(&key)).await, ["github:mahype/TorroWorkplace#1"]);
+        let accounts = serde_json::to_string(&ask(&core, Some(&key), Request::Accounts).await).expect("json");
+        assert!(accounts.contains(&mine.id), "{accounts}");
+        for hidden in [&everything.id, &mixed.id, "mahype/secret"] {
+            assert!(!accounts.contains(hidden), "{hidden}: {accounts}");
+        }
+
+        for other in [&everything, &mixed] {
+            for request in [
+                Request::UpdateFilterList {
+                    collection: other.id.clone(),
+                    revision: 1,
+                    name: "Mine".into(),
+                    color: None,
+                    queries: vec![MINE.into()],
+                },
+                Request::DeleteFilterList { collection: other.id.clone() },
+                Request::UnpinIssue { collection: other.id.clone(), url: "mahype/TorroWorkplace#1".into() },
+                Request::SetCollectionShown { collection: other.id.clone(), shown: false },
+            ] {
+                assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "not-found", "{request:?}");
+            }
+        }
+        // A list it sees gets as far as the approval an admin command needs.
+        let shown = Request::SetCollectionShown { collection: mine.id.clone(), shown: false };
+        assert_eq!(code(&ask(&core, Some(&key), shown).await), "forbidden");
+        assert!(!settings_file(dir.path()).exists(), "nothing hidden");
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_no_foreign_pins_and_no_words_of_github() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World {
+            found: vec![ISSUE_1],
+            pinned: vec![PINNED_7, SECRET_3],
+            ..World::default()
+        }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let path = filters_file(dir.path());
+        let mut file = torro_pim_github::lists::load(&path).expect("stored");
+        let stored = file.accounts.get_mut("github:mahype").and_then(|lists| lists.first_mut()).expect("the list");
+        stored.pinned = vec!["github:mahype/TorroWorkplace#7".into(), "github:mahype/secret#3".into()];
+        torro_pim_github::lists::save(&path, &file).expect("pinned");
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+        let (_, key) = client(&core, repo_limited()).await;
+
+        let update = Request::UpdateFilterList {
+            collection: list.id.clone(),
+            revision: 1,
+            name: "Renamed".into(),
+            color: None,
+            queries: vec![MINE.into()],
+        };
+        let changed = created(ask(&core, Some(&key), update).await);
+        assert_eq!(changed.source.map(|source| source.pinned), Some(vec!["github:mahype/TorroWorkplace#7".into()]));
+        let Response::Collections { collections } = core.handle(Request::TaskCollections).await else {
+            panic!("lists")
+        };
+        assert_eq!(collections[0].source.as_ref().map(|source| source.pinned.len()), Some(2), "the suite sees both");
+
+        // GitHub's message names a private repository: clients read a fixed one instead.
+        let words = "Could not resolve to a Repository with the name 'mahype/secret'.";
+        world.lock().expect("world").fail = Some(words);
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+        let problem = |answer: Response| match answer {
+            Response::Collections { collections } => collections[0].source.as_ref().and_then(|s| s.problem.clone()),
+            other => panic!("lists, got {other:?}"),
+        };
+        let theirs = problem(ask(&core, Some(&key), Request::TaskCollections).await);
+        assert_eq!(theirs.as_deref(), Some(torro_pim_github::GITHUB_FAILED));
+        assert!(problem(core.handle(Request::TaskCollections).await).is_some_and(|p| p.contains("mahype/secret")));
+        let failed = ask(&core, Some(&key), preview(&[MINE])).await;
+        let wanted = Response::Error { code: "error".into(), message: torro_pim_github::GITHUB_FAILED.into() };
+        assert_eq!(failed, wanted);
+        let Response::Error { message, .. } = core.handle(preview(&[MINE])).await else { panic!("an error") };
+        assert!(message.contains("mahype/secret"), "the control centre says what GitHub said: {message}");
+    }
+
+    #[tokio::test]
     async fn a_list_outside_a_clients_selection_or_without_github_rights_does_not_exist_for_it() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pinned: vec![] }));
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
         let core = core_with_world(dir.path(), &world).await;
         let list = created(core.handle(create("Bugs", &["is:open"])).await);
 
@@ -1565,7 +1741,7 @@ mod tests {
     #[tokio::test]
     async fn filter_lists_come_back_when_the_account_is_signed_in_again() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pinned: vec![] }));
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
         let core = core_with_world(dir.path(), &world).await;
         let list = created(core.handle(create("Bugs", &["is:open"])).await);
         let remove = Request::RemoveAccount { id: "github:mahype".into() };
