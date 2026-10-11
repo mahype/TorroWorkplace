@@ -129,21 +129,29 @@ fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message
     let header = with_header.then(|| header(&plan.days, plan.now.date(), axis));
     let strip_height = layout::strip_height(layout::strip_rows(&plan.bars));
     // Without a single event the strip says so, quietly, above an empty grid (design skill,
-    // section 5: an empty view says what would be here).
-    let strip: Element<'static, Message> = match plan.empty_note() {
-        Some(note) => container(typo::text(typo::META, note).style(theme::text_3))
-            .padding(Padding::ZERO.left(axis))
-            .center_x(Length::Fill)
-            .center_y(Length::Fixed(strip_height))
-            .into(),
-        None => iced::widget::canvas(Strip { plan: plan.clone() })
-            .width(Length::Fill)
-            .height(Length::Fixed(strip_height))
-            .into(),
+    // section 5: an empty view says what would be here). With events but none all day, an empty
+    // strip would only be a band between the days and the hours: it is left out.
+    let strip: Option<Element<'static, Message>> = match plan.empty_note() {
+        Some(note) => Some(
+            container(typo::text(typo::META, note).style(theme::text_3))
+                .padding(Padding::ZERO.left(axis))
+                .center_x(Length::Fill)
+                .center_y(Length::Fixed(strip_height))
+                .into(),
+        ),
+        None if plan.bars.is_empty() => None,
+        None => Some(
+            iced::widget::canvas(Strip { plan: plan.clone() })
+                .width(Length::Fill)
+                .height(Length::Fixed(strip_height))
+                .into(),
+        ),
     };
     // What the grid's scrollable gets: the view less the header, the strip and their lines.
-    let above = if with_header { size::HEADER + size::HAIRLINE } else { 0.0 } + strip_height + size::HAIRLINE;
-    let pad = morning_pad(bounds.height - above);
+    let header_height = if with_header { size::HEADER + size::HAIRLINE } else { 0.0 };
+    let strip_height = if strip.is_some() { strip_height + size::HAIRLINE } else { 0.0 };
+    let pad_above = header_height + strip_height;
+    let pad = morning_pad(bounds.height - pad_above);
     let grid = iced::widget::canvas(Grid { plan }).width(Length::Fill).height(Length::Fixed(GRID_HEIGHT));
     let grid = scrollable(column![grid, Space::new().height(Length::Fixed(pad))])
         .id(SCROLL_ID)
@@ -156,7 +164,10 @@ fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message
     if let Some(header) = header {
         parts = parts.push(header).push(line());
     }
-    parts.push(strip).push(line()).push(grid).into()
+    if let Some(strip) = strip {
+        parts = parts.push(strip).push(line());
+    }
+    parts.push(grid).into()
 }
 
 /// Everything the grid draws, built once per view. Entry ids are positions in `entries`.

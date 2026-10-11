@@ -388,6 +388,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 
 ### D.11 Kleinigkeiten
 - [ ] erledigt
+- Kalender-Teil erledigt (Commit `fix(torrocalendar): hide the empty all-day strip, dim neighbouring months (D.11)`): leerer Ganztagsstreifen ausgeblendet (`views/week.rs`), Nachbarmonate abgeblendet (`views/month.rs`).
 - Steuerzentralen-Teil erledigt (Commit e4c5f6b): Drawer mit Scrim und Schatten, Kopftitel und Inhalt in Mittel auf einer Achse, „Coming soon“-Zeilen auf 40 %, „colours“ → „colors“, Rollbalken hell nur bei Zeigerkontakt (`shell.rs`, `style.rs`, `widgets.rs`, `ui/`).
 - **Modell:** Haiku · **Dateien:** je nach Punkt (nennen)
 - Drawer in Mittel mit Scrim und Schatten; Steuerzentrale Mittel: Kopftitel und Inhalt auf einer

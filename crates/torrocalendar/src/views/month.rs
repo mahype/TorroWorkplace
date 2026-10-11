@@ -3,9 +3,9 @@
 //!
 //! A weekday header (Mon–Sun, `CAPTION` in `text_3`) above six rows of seven cells, starting at
 //! `data.start` (the Monday on or before the 1st of the month). Only inner lines separate the
-//! cells: no frame per cell. Days outside the anchor's month have a `text_3` number and faded
-//! entries but no surface of their own; weekends of the month are set off a little, as in the
-//! week view. Today's number is white in a red circle.
+//! cells: no frame per cell. Days outside the anchor's month are dimmed: a `text_3` number, faded
+//! entries and a surface towards the window background, a little more than the weekends of the
+//! month are set off (as in the week view). Today's number is white in a red circle.
 //!
 //! Each cell lists its events, all-day first, then by start, as rows 20 high: all-day entries
 //! as tinted chips with a bar in the calendar colour, timed ones with a dot and `14:00 Title`;
@@ -54,6 +54,10 @@ const BAR: f32 = 3.0;
 const FADE_OPACITY: f32 = 0.55;
 /// Weekend cells get this much of the window background over the panel (as in the week view).
 const WEEKEND_SHADE: f32 = 0.35;
+/// Cells of the neighbouring months get this much of the window background over the panel: more
+/// than a weekend, so the month itself stands out.
+const OUTSIDE_SHADE: f32 = 0.7;
+const _: () = assert!(OUTSIDE_SHADE > WEEKEND_SHADE, "neighbouring months are dimmed more than weekends");
 /// Height of the weekday header.
 const HEADER_HEIGHT: f32 = size::CONTROL_SM;
 /// The lines between the header and the grid and between the six rows of cells.
@@ -136,14 +140,14 @@ fn cell<'a>(
     let number =
         container(day_number(date, today.date(), in_month)).padding(Padding::ZERO.top(space::S).left(space::S));
     let rows = container(rows).padding([0.0, space::XS]);
-    let shaded = in_month && is_weekend(date);
+    let shade = cell_shade(in_month, is_weekend(date));
     let cell = container(column![number, rows].spacing(space::XS))
         .padding(Padding::ZERO.bottom(space::XS))
         .width(Length::FillPortion(1))
         .height(Length::Fill)
         .clip(true)
         .style(move |theme| container::Style {
-            background: shaded.then(|| Background::Color(weekend_shade(palette(theme)))),
+            background: shade.map(|shade| Background::Color(mix(palette(theme).panel, palette(theme).bg, shade))),
             ..container::Style::default()
         });
     mouse_area(cell).on_press(Message::NewEvent { date, time: None }).into()
@@ -257,9 +261,14 @@ fn shade(p: &Palette, color: Color, faded: bool) -> Color {
     if faded { mix(p.panel, color, FADE_OPACITY) } else { color }
 }
 
-/// The surface of weekend cells.
-fn weekend_shade(p: &Palette) -> Color {
-    mix(p.panel, p.bg, WEEKEND_SHADE)
+/// How much of the window background lies over a cell's panel: [`OUTSIDE_SHADE`] for a day of a
+/// neighbouring month, [`WEEKEND_SHADE`] for a weekend of the month, none for a weekday.
+fn cell_shade(in_month: bool, weekend: bool) -> Option<f32> {
+    match (in_month, weekend) {
+        (false, _) => Some(OUTSIDE_SHADE),
+        (true, true) => Some(WEEKEND_SHADE),
+        (true, false) => None,
+    }
 }
 
 fn is_weekend(day: NaiveDate) -> bool {
@@ -499,6 +508,14 @@ mod tests {
         assert!(!ends_before(&event("Running", at(11, 9), Some(at(11, 11))), now));
         assert!(!ends_before(&all_day("Today", 11, None), now));
         assert!(ends_before(&all_day("Yesterday", 10, None), now));
+    }
+
+    #[test]
+    fn neighbouring_months_are_dimmed_more_than_weekends() {
+        assert_eq!(cell_shade(true, false), None);
+        assert_eq!(cell_shade(true, true), Some(WEEKEND_SHADE));
+        assert_eq!(cell_shade(false, false), Some(OUTSIDE_SHADE));
+        assert_eq!(cell_shade(false, true), Some(OUTSIDE_SHADE));
     }
 
     #[test]
