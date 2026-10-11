@@ -133,7 +133,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests für die erzeugten Ausdrücke.
 
 ### 1.9 Backend erkennen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.3
 - **Dateien:** `crates/torro-wm/src/detect.rs`
 - **Ziel:** `detect(env) -> Backend`: Hyprland, wenn `Hyprland::from_env(env)` gelingt; sonst
@@ -152,7 +152,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   rechts zwei übereinander), nicht teilbar → Rückfall.
 
 ### 1.11 Vorlagen ablegen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-setups/src/storage.rs`
 - **Ziel:** `list`, `load`, `save`, `delete` für Vorlagen in `<data>/templates/<id>.json`
