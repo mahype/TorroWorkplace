@@ -116,7 +116,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   Hinweis sehen, Steuerzentrale öffnen, Beenden.
 
 ### X.5 Benachrichtigungen auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** X.4 · **Dateien:** `crates/torroworkplace/src/notify.rs`, ggf.
   `packaging/macos/Info.plist.in` (nennen)
 - `notify-rust` nutzt auf macOS das Benachrichtigungssystem nur sauber aus einem Bündel mit Bundle-ID, auf
