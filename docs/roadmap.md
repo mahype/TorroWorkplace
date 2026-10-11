@@ -1,6 +1,6 @@
 # Roadmap
 
-Die Arbeitspakete stehen als Issues in den [Meilensteinen](https://github.com/mahype/TorroWorkplace/milestones) auf GitHub, eine Phase pro Meilenstein.
+Die Planung steht in diesem Dokument, die Aufgaben der aktuellen Phase unter [tasks/](tasks/). GitHub-Issues sind für Fehler und Einzelthemen da, nicht für die Vorausplanung.
 
 ## Phase 0: Planung und Gerüst ✅
 
