@@ -1176,7 +1176,7 @@ impl App {
             }
             CalView::Day | CalView::Week => views::week::view(data),
             CalView::Month => views::month::view(data),
-            CalView::Agenda => views::agenda::view(data),
+            CalView::Agenda => views::agenda::view(data, self.class()),
             CalView::Timeline => views::timeline::view(data, &self.timeline),
             // Narrow: under the week strip, whose days page the radar like the small month does.
             CalView::Radar if self.class() == SizeClass::Narrow => {

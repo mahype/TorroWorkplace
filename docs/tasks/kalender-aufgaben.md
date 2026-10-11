@@ -341,7 +341,7 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   zum Rand des Zifferblatts. Ziehen nur per Unit-Test geprüft.
 
 ### K.24 Kalender: Agenda neu gestalten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.23 (beide ändern `app.rs`) · **Dateien:**
   `crates/torrocalendar/src/views/agenda.rs`, `crates/torrocalendar/src/app.rs` (nur Eigenschaften-
   Spalte der Agenda in Breit)
