@@ -218,9 +218,9 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   | Claude Code | `Notification` mit `permission_prompt`, `agent_needs_input`, `elicitation_dialog` | `agent_waiting` |
   | Claude Code | `Stop` | `agent_done` |
   | Claude Code | `UserPromptSubmit`, `PostToolUse` | erledigt das Warten dieser Sitzung |
-  | Claude Code | `SessionEnd` | erledigt alles dieser Sitzung |
   | Codex | `PermissionRequest` (nur beobachten, keine Entscheidung) / `Stop` / `UserPromptSubmit`, `PostToolUse` | wartet / fertig / erledigt |
-  | Gemini CLI | `Notification` (`ToolPermission`) / `AfterAgent` | wartet / fertig |
+  | Gemini CLI | `Notification` (`ToolPermission`) / `AfterAgent` / `BeforeAgent` | wartet / fertig / erledigt |
+  | alle drei | `SessionEnd` | erledigt alles dieser Sitzung |
 
   `idle_prompt` wird ignoriert (`Stop` deckt es ab). `thread_key` = `<agent>:<session_id>` (der Kern
   stellt den Client davor). Projekt = letzter Teil von `cwd`; Branch aus `.git/HEAD` lesen (keinen

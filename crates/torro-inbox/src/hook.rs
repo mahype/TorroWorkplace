@@ -14,12 +14,13 @@
 //! | Claude Code | `Notification` with `permission_prompt`, `agent_needs_input`, `elicitation_dialog` | report `agent_waiting` |
 //! | Claude Code | `Stop` | report `agent_done` |
 //! | Claude Code | `UserPromptSubmit`, `PostToolUse` | resolve waiting |
-//! | Claude Code | `SessionEnd` | resolve session |
 //! | Codex | `PermissionRequest` | report `agent_waiting` (observed only, never answered) |
 //! | Codex | `Stop` | report `agent_done` |
 //! | Codex | `UserPromptSubmit`, `PostToolUse` | resolve waiting |
 //! | Gemini CLI | `Notification` with `ToolPermission` | report `agent_waiting` |
 //! | Gemini CLI | `AfterAgent` | report `agent_done` |
+//! | Gemini CLI | `BeforeAgent` | resolve waiting |
+//! | all three | `SessionEnd` | resolve session |
 //!
 //! Everything else is nothing, among it Claude Code's `idle_prompt` (its `Stop` already said the
 //! turn is over) and `SubagentStop` (the session as a whole still runs).
@@ -103,7 +104,8 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
         (AgentKind::ClaudeCode | AgentKind::Codex, "UserPromptSubmit" | "PostToolUse") => {
             HookIntent::ResolveWaiting { thread_key }
         }
-        (AgentKind::ClaudeCode, "SessionEnd") => HookIntent::ResolveSession { thread_key },
+        // A closed session waits for nobody, whichever agent it was.
+        (_, "SessionEnd") => HookIntent::ResolveSession { thread_key },
         (AgentKind::Codex, "PermissionRequest") => {
             let reason = json.get("tool_input").and_then(|input| text(input, "description"));
             report(Kind::AgentWaiting, reason)
@@ -113,6 +115,8 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
             _ => HookIntent::Nothing,
         },
         (AgentKind::Gemini, "AfterAgent") => report(Kind::AgentDone, text(&json, "prompt_response")),
+        // Gemini has no prompt-submit event; a new turn starting means the person is back.
+        (AgentKind::Gemini, "BeforeAgent") => HookIntent::ResolveWaiting { thread_key },
         _ => HookIntent::Nothing,
     }
 }
@@ -236,19 +240,26 @@ mod tests {
     }
 
     #[test]
-    fn gemini_waits_and_finishes() {
+    fn gemini_waits_finishes_and_goes_on() {
         use AgentKind::Gemini;
         let waiting = report(Gemini, "7f3a", Kind::AgentWaiting, "Gemini CLI wants to run: npm test");
         assert_eq!(run(Gemini, "gemini-notification"), waiting);
         let done =
             report(Gemini, "7f3a", Kind::AgentDone, "The test failed because of a missing import. It passes now.");
         assert_eq!(run(Gemini, "gemini-after-agent"), done);
+        let going_on = HookIntent::ResolveWaiting { thread_key: "gemini:7f3a".into() };
+        assert_eq!(run(Gemini, "gemini-before-agent"), going_on);
+    }
+
+    #[test]
+    fn every_agent_resolves_its_session_on_end() {
+        let ended = |key: &str| HookIntent::ResolveSession { thread_key: key.into() };
+        assert_eq!(run(AgentKind::Codex, "codex-session-end"), ended("codex:thr_123"));
+        assert_eq!(run(AgentKind::Gemini, "gemini-session-end"), ended("gemini:7f3a"));
     }
 
     #[test]
     fn events_outside_the_table_are_nothing() {
-        assert_eq!(run(AgentKind::Codex, "codex-session-end"), HookIntent::Nothing);
-        assert_eq!(run(AgentKind::Gemini, "gemini-before-agent"), HookIntent::Nothing);
         // A payload handed to the wrong agent's command: Codex has no `Notification`.
         assert_eq!(run(AgentKind::Codex, "claude-code-notification-permission"), HookIntent::Nothing);
         assert_eq!(run(AgentKind::Gemini, "claude-code-notification-permission"), HookIntent::Nothing);
