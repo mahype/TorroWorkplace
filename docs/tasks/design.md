@@ -449,7 +449,8 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
   Darstellungen.
 
 ### U.4 Kalender: Termin im Seitenpaneel statt Dialog
-- [ ] erledigt
+- [x] erledigt (auch `views/{mod,month,agenda}.rs` für die Markierung; neuer Startzustand
+  `--open editor-read-only` für die Sichtprüfung eines Nur-Lesen-Termins)
 - **Modell:** Opus · **Braucht:** U.2, U.3 · **Dateien:** `crates/torrocalendar/src/{app,editor}.rs`, ggf. `views/week.rs` (nennen)
 - Klick auf einen Termin (und „New event“) öffnet das Paneel aus U.3 statt des Dialogs: Titel groß und
   randlos, darunter die Eigenschaften als Zeilen (Zeit, Kalender, ganztägig, Ort, Notizen) wie im

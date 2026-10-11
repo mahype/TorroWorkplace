@@ -5,7 +5,8 @@
 //! (`all day · day 2 of 3` for a multi-day event), a colour dot, title and location. Multi-day
 //! events appear on every day they cover; a timed event crossing midnight shows `22:30–24:00`
 //! on its first day and `00:00–00:30` on the next. All-day entries come first, then by start.
-//! Past events of today are muted. Click on a row → `OpenEvent(index)`. Fits a narrow tile:
+//! Past events of today are muted. Click on a row → `OpenEvent(index)`; the event open in the side
+//! panel (`ViewData::selected`) is the selected row. Fits a narrow tile:
 //! no fixed widths, text wraps. Empty → a friendly empty state.
 
 use std::cmp::Ordering;
@@ -70,7 +71,7 @@ pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
         let (label, date) = day_heading(day.date, today);
         list = list.push(day_head(label, date, n == 0));
         for entry in &day.entries {
-            list = list.push(row_view(entry));
+            list = list.push(row_view(entry, data.selected == Some(entry.index)));
         }
     }
     // Room under the last row so it does not touch the edge of the panel.
@@ -111,8 +112,9 @@ fn day_head<'a>(label: String, date: String, first: bool) -> Element<'a, Message
 
 /// One event row (`widgets::list_row`, so hover and focus come from the shared style): the time
 /// in a column of its own, then the colour dot, the title and under it the location. A click
-/// opens the event. An event that has ended today is muted.
-fn row_view<'a>(entry: &Entry<'a>) -> Element<'a, Message> {
+/// opens the event. An event that has ended today is muted; the one open in the side panel is
+/// `selected`.
+fn row_view<'a>(entry: &Entry<'a>, selected: bool) -> Element<'a, Message> {
     let event = entry.event;
     let (first, second) = split_label(&entry.time, entry.all_day);
     let text_colour: fn(&iced::Theme) -> iced::widget::text::Style =
@@ -153,7 +155,7 @@ fn row_view<'a>(entry: &Entry<'a>) -> Element<'a, Message> {
 
     widgets::list_row(
         vec![time.into(), container(main).width(Length::Fill).clip(true).into()],
-        false,
+        selected,
         Some(Message::OpenEvent(entry.index)),
     )
 }
@@ -505,6 +507,7 @@ mod tests {
             end: day(11) + Duration::days(30),
             anchor: day(11),
             now: local(11, 8, 0),
+            selected: None,
         });
         let events = [event("meeting", at(11, 9, 0), Some(at(11, 10, 0)))];
         let _ = view(ViewData {
@@ -513,6 +516,7 @@ mod tests {
             end: day(11) + Duration::days(30),
             anchor: day(11),
             now: local(11, 8, 0),
+            selected: None,
         });
     }
 }

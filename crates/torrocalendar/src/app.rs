@@ -4,8 +4,15 @@
 //!
 //! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
 //! glances without any frame (`views::glance`); narrow shows a week as one day under the week
-//! strip and a month as the agenda, and opens the editor full-window; medium and wide show the
-//! chosen view. State (view, date, selection, open editor) survives every change of size.
+//! strip and a month as the agenda; medium and wide show the chosen view. State (view, date,
+//! selection, open editor) survives every change of size.
+//!
+//! An event (a click on it, "New event", a click on an empty slot) opens in the side panel
+//! (`torro_gui::panel`, U.4): beside the view in the wide layout, where it takes the place of the
+//! properties column ("Up next"), and over the view otherwise; the open event is outlined in the
+//! views. The editor has no Save button: it hands out saves as it changes, and while typed text
+//! waits to be saved a one-second timer sends `Flush` ([`AUTOSAVE`]). Escape closes an open menu
+//! or the drawer first, then whatever is open in the panel, then the panel.
 //!
 //! In the wide layout the sidebar collapses to a rail of icons (U.2: panel button at its top or
 //! `[`, remembered in `ui.json`); the rail leaves out the small month. The medium layout always
@@ -26,12 +33,13 @@ use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
+use torro_gui::panel::{self, PanelMode};
 use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::style;
 use torro_gui::theme::{self, Appearance, size, space};
 use torro_gui::ui_state::{self, UiState};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color, modal};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
@@ -114,10 +122,12 @@ pub enum Open {
     Week,
     Month,
     Agenda,
-    /// The editor of the first event that is not part of a series.
+    /// The side panel with the first event that is not part of a series.
     Editor,
-    /// The editor for a new event.
+    /// The side panel with a new event.
     EditorNew,
+    /// The side panel with an event that cannot be edited (the first occurrence of a series).
+    EditorReadOnly,
     /// The view menu ("Week ▾"); only the medium and narrow header have it.
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
@@ -133,13 +143,14 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 12] = [
+    const ALL: [(&'static str, Open); 13] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
         ("agenda", Open::Agenda),
         ("editor", Open::Editor),
         ("editor-new", Open::EditorNew),
+        ("editor-read-only", Open::EditorReadOnly),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
@@ -269,6 +280,9 @@ const DEMO_ERROR: &str = "the server did not answer (demo)";
 /// Days the agenda shows from its anchor on.
 const AGENDA_DAYS: i64 = 30;
 
+/// How long typing rests before the editor saves it (as in the task detail).
+const AUTOSAVE: Duration = Duration::from_secs(1);
+
 pub struct App {
     source: Source,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
@@ -303,7 +317,11 @@ pub struct App {
     /// than read in `iced::widget::responsive`, so `update` sees a change of layout and can
     /// scroll the time grid back to the morning (the new widget tree loses its scroll position).
     size: Size,
+    /// The event open in the side panel.
     editor: Option<Editor>,
+    /// Counts the editors opened. Every save carries the count of its editor, so an answer that
+    /// arrives after the panel moved on to another event does not reach the new editor.
+    edits: u64,
     /// The time grid has been scrolled to the morning once; it only exists after the first load.
     scrolled: bool,
     appearance: Appearance,
@@ -327,8 +345,10 @@ pub enum Message {
     Switcher(Switcher),
     /// Open `Menu`, or close it when it is open.
     ToggleMenu(Menu),
-    /// Close the open menu and the drawer (click beside them, Escape).
+    /// Close the open menu and the drawer (click beside them).
     CloseMenu,
+    /// Escape: closes the open menu or drawer, else what is open in the side panel, else the panel.
+    Escape,
     /// Open or close the sidebar drawer (medium and narrow layouts).
     ToggleDrawer,
     /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
@@ -358,7 +378,8 @@ pub enum Message {
     Editor(editor::Message),
     /// Keyboard: a new event on the shown day at 09:00.
     NewEventHere,
-    Saved(Result<Event, String>),
+    /// The answer to a save of the editor with this count ([`App::edits`]).
+    Saved(u64, Result<Event, String>),
     Deleted(Result<(), String>),
     Tick,
     /// The desktop's light/dark preference (once at start, then whenever it changes).
@@ -367,8 +388,9 @@ pub enum Message {
     Appearance(Result<Appearance, String>),
 }
 
-/// Keyboard shortcuts while no dialog is open: N new event, T today, ←/→ back/forward,
-/// D/W/M/A the views, `[` the sidebar. Keys a text input already used are ignored.
+/// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
+/// not count): N new event, T today, ←/→ back/forward, D/W/M/A the views, `[` the sidebar. Keys a
+/// text input already used are ignored.
 fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     use iced::keyboard::{Event as Key, Key as Name, key::Named};
     if status == iced::event::Status::Captured {
@@ -425,6 +447,7 @@ impl App {
             mini_month: mini_month::shift(now.date(), 0),
             size: torro_gui::window(AppId::CALENDAR).size,
             editor: None,
+            edits: 0,
             scrolled: false,
             appearance: Appearance::System,
             system_mode: Mode::None,
@@ -451,19 +474,22 @@ impl App {
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let tick = iced::time::every(every).map(|_| Message::Tick);
         let system = iced::system::theme_changes().map(Message::SystemMode);
-        let keys = match self.editor {
-            // Escape closes the editor.
-            Some(_) => editor::subscription().map(Message::Editor),
-            None => iced::event::listen_with(shortcut),
-        };
         let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
         let mut all = vec![tick, system, resize];
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
-            all.push(keys);
-            if self.menu.is_some() || self.drawer {
-                all.push(widgets::escape().map(|()| Message::CloseMenu));
+            // Over the view the panel is all there is to work with; beside it the view still is.
+            let over = self.editor.is_some() && panel::mode_for(self.class()) == PanelMode::Over;
+            if !over {
+                all.push(iced::event::listen_with(shortcut));
             }
+            if self.menu.is_some() || self.drawer || self.editor.is_some() {
+                all.push(widgets::escape().map(|()| Message::Escape));
+            }
+        }
+        // Only while typed text waits to be saved, so an idle panel costs nothing.
+        if self.editor.as_ref().is_some_and(Editor::wants_autosave) {
+            all.push(iced::time::every(AUTOSAVE).map(|_| Message::Editor(editor::Message::Flush)));
         }
         Subscription::batch(all)
     }
@@ -552,6 +578,13 @@ impl App {
                 self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
             }
             Message::CloseMenu => self.close_menus(),
+            Message::Escape => {
+                if self.menu.is_some() || self.drawer {
+                    self.close_menus();
+                } else if self.editor.is_some() {
+                    return self.update(Message::Editor(editor::Message::Escape));
+                }
+            }
             Message::ToggleDrawer => {
                 self.menu = None;
                 self.drawer = !self.drawer;
@@ -599,15 +632,21 @@ impl App {
             }
             Message::NewEventHere => {
                 let time = Some(NaiveTime::MIN + Days::hours(9));
-                self.editor = Some(Editor::new_event(&self.writable_calendars(), self.anchor, time));
+                return self.update(Message::NewEvent { date: self.anchor, time });
             }
             Message::NewEvent { date, time } => {
-                self.editor = Some(Editor::new_event(&self.writable_calendars(), date, time));
+                let draft = Editor::new_event(&self.writable_calendars(), date, time);
+                // The title is what a new event needs first.
+                return Task::batch([self.open_editor(draft), iced::widget::operation::focus(editor::TITLE_ID)]);
             }
             Message::OpenEvent(index) => {
-                if let Some(event) = self.events.get(index) {
-                    self.editor = Some(Editor::edit(event, &self.writable_calendars()));
+                let Some(event) = self.events.get(index) else { return Task::none() };
+                // A second click on the open event keeps what is typed.
+                if self.editor.as_ref().and_then(Editor::event).is_some_and(|open| same_event(open, event)) {
+                    return Task::none();
                 }
+                let editor = Editor::edit(event, &self.writable_calendars());
+                return self.open_editor(editor);
             }
             Message::ShowDay(date) => {
                 self.view = CalView::Day;
@@ -615,39 +654,31 @@ impl App {
             }
             Message::Editor(message) => {
                 let Some(editor) = self.editor.as_mut() else { return Task::none() };
-                match editor.update(message) {
-                    editor::Action::None => {}
-                    editor::Action::Close => self.editor = None,
-                    // The first field with a problem, after a press on Save.
-                    editor::Action::Focus(id) => return iced::widget::operation::focus(id),
-                    editor::Action::Save(event) => {
-                        let source = self.source.clone();
-                        return Task::perform(
-                            async move { source.save_event(event).await.map_err(|e| e.to_string()) },
-                            Message::Saved,
-                        );
+                let action = editor.update(message);
+                return self.editor_action(action);
+            }
+            Message::Saved(edit, result) => {
+                let current = edit == self.edits;
+                match result {
+                    Ok(saved) => {
+                        // The editor keeps editing on top of the stored version, with its new etag,
+                        // and sends what was typed meanwhile.
+                        let follow_up = match self.editor.as_mut() {
+                            Some(editor) if current && editor.awaits(&saved) => editor.stored(&saved),
+                            _ => editor::Action::None,
+                        };
+                        return Task::batch([self.editor_action(follow_up), self.load()]);
                     }
-                    editor::Action::Delete(event) => {
-                        let source = self.source.clone();
-                        return Task::perform(
-                            async move { source.delete_event(event).await.map_err(|e| e.to_string()) },
-                            Message::Deleted,
-                        );
+                    Err(err) => {
+                        if let Some(editor) = self.editor.as_mut().filter(|_| current) {
+                            editor.save_failed();
+                        }
+                        self.error = Some(trf("Save failed: {error}", &[("error", &err)]));
                     }
                 }
             }
-            Message::Saved(result) => match result {
-                Ok(_) => {
-                    self.editor = None;
-                    return self.load();
-                }
-                Err(err) => self.error = Some(trf("Save failed: {error}", &[("error", &err)])),
-            },
             Message::Deleted(result) => match result {
-                Ok(()) => {
-                    self.editor = None;
-                    return self.load();
-                }
+                Ok(()) => return self.load(),
                 Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
             },
             Message::Tick => {
@@ -687,17 +718,7 @@ impl App {
             // An open editor stays in the state and comes back with a larger window.
             return self.glance(class);
         }
-        let window = self.window(class);
-        match &self.editor {
-            Some(editor) if class == SizeClass::Narrow => editor.view_full_window().map(Message::Editor),
-            Some(editor) => modal(
-                window,
-                editor.view().map(Message::Editor),
-                editor::WIDTH,
-                Message::Editor(editor::Message::Cancel),
-            ),
-            None => window,
-        }
+        self.window(class)
     }
 
     /// Mini or strip: the error and the loading state as in every layout, then the glance at
@@ -710,7 +731,7 @@ impl App {
             return widgets::loading();
         }
         let (start, end) = self.load_range();
-        let data = ViewData { items: self.items(), start, end, anchor: self.now.date(), now: self.now };
+        let data = ViewData { items: self.items(), start, end, anchor: self.now.date(), now: self.now, selected: None };
         match class {
             SizeClass::Strip => glance::strip(&data, self.size),
             _ => glance::mini(&data, self.size),
@@ -718,10 +739,10 @@ impl App {
     }
 
     /// The whole window in the layout for `class`: sidebar, header and the current view in the
-    /// shell, the drawer and the open menu above it.
+    /// shell, the side panel beside or over the view, the drawer and the open menu above it.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, views) = (Anchor::new(), Anchor::new());
-        let layer = self.menu.and_then(|menu| match menu {
+        let (switcher, views, field) = (Anchor::new(), Anchor::new(), Anchor::new());
+        let menu = self.menu.and_then(|menu| match menu {
             Menu::Switcher => Some(widgets::floating(
                 &switcher,
                 Placement::Below(Align::Start),
@@ -732,14 +753,25 @@ impl App {
             Menu::View => (!shell::has_sidebar(class))
                 .then(|| widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)),
         });
+        // One layer at a time: the window's menus, else the calendar menu inside the panel.
+        let layer = menu.or_else(|| self.editor.as_ref().and_then(|editor| editor.layer(&field, Message::Editor)));
+        let detail = self.editor.as_ref().map(|editor| editor.panel(&field, Message::Editor));
+        // Beside the view the panel takes the place of the properties column ("Up next").
+        let props = if self.panel_beside(class) { None } else { self.props(class) };
+        let placed = panel::place(class, self.body(), detail, layer);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, class, &switcher));
         let sidebar = self.sidebar(SidebarMode::Expanded, class, &switcher);
-        shell::shell(class, sidebar, self.header(class, &views), self.body(), self.props(class))
+        shell::shell(class, sidebar, self.header(class, &views), placed.body, props)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(layer)
+            .overlay(placed.overlay)
             .into()
+    }
+
+    /// The side panel is open and stands beside the view (the wide layout).
+    fn panel_beside(&self, class: SizeClass) -> bool {
+        self.editor.is_some() && panel::mode_for(class) == PanelMode::Beside
     }
 
     /// The header bar (`calendar.html`, `.header`):
@@ -903,7 +935,58 @@ impl App {
     /// What the current view gets to draw.
     fn view_data(&self) -> ViewData<'_> {
         let (start, end) = self.range();
-        ViewData { items: self.items(), start, end, anchor: self.anchor, now: self.now }
+        ViewData { items: self.items(), start, end, anchor: self.anchor, now: self.now, selected: self.selected() }
+    }
+
+    /// The index in [`App::events`] of the event open in the side panel; `None` for none or a
+    /// draft. Found again after every reload, which renumbers the events.
+    fn selected(&self) -> Option<usize> {
+        let open = self.editor.as_ref()?.event()?;
+        self.events.iter().position(|event| same_event(event, open))
+    }
+
+    /// Opens `editor` in the side panel. A change still waiting in the editor open before is saved.
+    fn open_editor(&mut self, editor: Editor) -> Task<Message> {
+        let leave = self.close_editor();
+        self.edits += 1;
+        self.editor = Some(editor);
+        leave
+    }
+
+    /// Closes the side panel; a change that still waits to be saved is saved.
+    fn close_editor(&mut self) -> Task<Message> {
+        match self.editor.take().and_then(|editor| editor.leave()) {
+            Some(event) => self.save(event),
+            None => Task::none(),
+        }
+    }
+
+    /// Carries out what the editor asked for.
+    fn editor_action(&mut self, action: editor::Action) -> Task<Message> {
+        match action {
+            editor::Action::None => Task::none(),
+            editor::Action::Close => self.close_editor(),
+            // The first field with a problem, after Enter.
+            editor::Action::Focus(id) => iced::widget::operation::focus(id),
+            editor::Action::Save(event) => self.save(event),
+            editor::Action::Delete(event) => {
+                self.editor = None;
+                let source = self.source.clone();
+                Task::perform(
+                    async move { source.delete_event(event).await.map_err(|e| e.to_string()) },
+                    Message::Deleted,
+                )
+            }
+        }
+    }
+
+    /// Saves `event` (the core's `save_event`) for the editor open now.
+    fn save(&self, event: Event) -> Task<Message> {
+        let source = self.source.clone();
+        let edit = self.edits;
+        Task::perform(async move { source.save_event(event).await.map_err(|e| e.to_string()) }, move |result| {
+            Message::Saved(edit, result)
+        })
     }
 
     fn current_view(&self) -> Element<'_, Message> {
@@ -1066,15 +1149,17 @@ impl App {
         if std::mem::replace(&mut self.opened, true) {
             return;
         }
-        match self.launch.open {
-            Some(Open::Editor) => {
-                let event = self.events.iter().find(|event| !event.recurring).or(self.events.first());
-                self.editor = event.map(|event| Editor::edit(event, &self.writable_calendars()));
-            }
+        let event = match self.launch.open {
+            Some(Open::Editor) => self.events.iter().find(|event| !event.recurring).or(self.events.first()),
+            Some(Open::EditorReadOnly) => self.events.iter().find(|event| event.recurring).or(self.events.first()),
             Some(Open::EditorNew) => {
                 let _ = self.update(Message::NewEventHere);
+                None
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(editor) = event.map(|event| Editor::edit(event, &self.writable_calendars())) {
+            let _ = self.open_editor(editor);
         }
     }
 
@@ -1100,6 +1185,12 @@ impl App {
             Message::Loaded,
         )
     }
+}
+
+/// Whether `a` and `b` are the same event: the same uid in the same calendar, and for the
+/// occurrences of a series (which share their uid) the same start.
+fn same_event(a: &Event, b: &Event) -> bool {
+    a.uid == b.uid && a.collection == b.collection && (!a.recurring || a.start == b.start)
 }
 
 /// The error state's text when the account or the events could not be loaded.
@@ -1315,7 +1406,120 @@ mod tests {
         let _ = app.update(Message::Resized(MINI));
         assert!(app.editor.is_some());
         let _ = app.update(Message::Resized(NARROW));
-        assert!(app.editor.is_some(), "and opens full-window in narrow");
+        assert!(app.editor.is_some(), "and opens over the window in narrow");
+    }
+
+    /// A launched demo app with the window at `size` and the event `index` open in the panel.
+    fn with_open_event(size: Size, index: usize) -> App {
+        let mut app = launched(&["--demo", "--now", "2026-10-07T14:20"]);
+        let _ = app.update(Message::Resized(size));
+        let _ = app.update(Message::OpenEvent(index));
+        app
+    }
+
+    /// The index of the first event of the demo that can be edited.
+    fn editable(app: &App) -> usize {
+        app.events.iter().position(|event| !event.recurring).expect("the demo has editable events")
+    }
+
+    #[test]
+    fn the_panel_stands_beside_the_view_only_in_wide_windows() {
+        let app = with_open_event(WIDE, 0);
+        assert!(app.panel_beside(SizeClass::Wide), "it takes the place of the properties column");
+        for size in [Size::new(800.0, 600.0), NARROW] {
+            let mut app = with_open_event(size, 0);
+            assert!(!app.panel_beside(app.class()), "{size:?}: over the view");
+            let _ = app.update(Message::Editor(editor::Message::Close));
+            assert!(!app.panel_beside(SizeClass::Wide), "closed, nothing stands beside");
+        }
+    }
+
+    #[test]
+    fn the_window_builds_with_the_panel_in_every_layout_and_view() {
+        for size in [WIDE, Size::new(800.0, 600.0), NARROW, MINI] {
+            let mut app = with_open_event(size, 0);
+            for view in CalView::ALL {
+                let _ = app.update(Message::SetView(view));
+                let _ = app.view();
+            }
+            let _ = app.update(Message::NewEvent { date: date(2026, 10, 8), time: None });
+            let _ = app.update(Message::Editor(editor::Message::ToggleCalendars));
+            let _ = app.view();
+        }
+    }
+
+    #[test]
+    fn the_open_event_is_selected_in_the_views_and_found_again_after_a_reload() {
+        let mut app = with_open_event(WIDE, 0);
+        let index = editable(&app);
+        let _ = app.update(Message::OpenEvent(index));
+        assert_eq!(app.view_data().selected, Some(index));
+        // A reload in another order renumbers the events; the selection follows the event.
+        let (collections, mut events, _) = torro_pim::demo::sample(app.now.date());
+        events.reverse();
+        let _ = app.update(Message::Loaded(Ok((collections, events))));
+        let moved = app.view_data().selected.expect("still selected");
+        assert_eq!(app.events[moved].uid, app.editor.as_ref().and_then(Editor::event).expect("open").uid);
+        // Occurrences of a series share their uid; only the one clicked is selected.
+        let first = app.events.iter().position(|event| event.recurring).expect("the demo has a series");
+        let _ = app.update(Message::OpenEvent(first));
+        assert_eq!(app.view_data().selected, Some(first));
+        let _ = app.update(Message::NewEventHere);
+        assert_eq!(app.view_data().selected, None, "a draft is not in the calendar yet");
+    }
+
+    #[test]
+    fn opening_another_event_saves_the_pending_change_first() {
+        let mut app = with_open_event(WIDE, 0);
+        let index = editable(&app);
+        let _ = app.update(Message::OpenEvent(index));
+        let edits = app.edits;
+        let _ = app.update(Message::Editor(editor::Message::Location("Room 9".into())));
+        assert_eq!(app.update(Message::OpenEvent(index)).units(), 0, "a second click keeps the panel as it is");
+        assert_eq!(app.edits, edits);
+        let other = app.events.iter().rposition(|event| !event.recurring).expect("another event");
+        assert!(app.update(Message::OpenEvent(other)).units() > 0, "the pending location is saved");
+        assert_eq!(app.edits, edits + 1);
+        assert_eq!(app.view_data().selected, Some(other));
+    }
+
+    #[test]
+    fn an_answer_for_an_earlier_editor_does_not_reach_the_next() {
+        let mut app = with_open_event(WIDE, 0);
+        let index = editable(&app);
+        let _ = app.update(Message::OpenEvent(index));
+        let earlier = app.edits;
+        let event = app.events[index].clone();
+        let _ = app.update(Message::NewEventHere);
+        let _ = app.update(Message::Editor(editor::Message::Title(iced::widget::text_editor::Action::Edit(
+            iced::widget::text_editor::Edit::Insert('X'),
+        ))));
+        let _ = app.update(Message::Editor(editor::Message::Flush));
+        let _ = app.update(Message::Saved(earlier, Ok(event)));
+        assert!(app.editor.as_ref().is_some_and(|editor| editor.event().is_none()), "the draft stays a draft");
+    }
+
+    #[test]
+    fn escape_closes_the_menu_first_then_the_panel() {
+        let mut app = with_open_event(Size::new(800.0, 600.0), 0);
+        let _ = app.update(Message::ToggleMenu(Menu::View));
+        let _ = app.update(Message::Escape);
+        assert_eq!((app.menu, app.editor.is_some()), (None, true));
+        let _ = app.update(Message::Escape);
+        assert!(app.editor.is_none());
+        let _ = app.update(Message::Escape);
+        assert!(app.editor.is_none(), "nothing left to close");
+    }
+
+    #[test]
+    fn deleting_closes_the_panel() {
+        let mut app = with_open_event(WIDE, 0);
+        let index = editable(&app);
+        let _ = app.update(Message::OpenEvent(index));
+        let _ = app.update(Message::Editor(editor::Message::Delete));
+        assert!(app.editor.is_some(), "it asks first");
+        assert!(app.update(Message::Editor(editor::Message::ConfirmDelete)).units() > 0);
+        assert!(app.editor.is_none());
     }
 
     fn args(words: &[&str]) -> Vec<String> {
@@ -1409,13 +1613,19 @@ mod tests {
         let edit = launched(&["--demo", "--open", "editor"]);
         let mut editor = edit.editor.clone().expect("the editor is open");
         // Only an existing event can be deleted: this one is the first that is not a series.
-        assert!(matches!(editor.update(editor::Message::Delete), editor::Action::Delete(event) if !event.recurring));
+        assert!(matches!(editor.update(editor::Message::Delete), editor::Action::None), "it asks first");
+        assert!(
+            matches!(editor.update(editor::Message::ConfirmDelete), editor::Action::Delete(event) if !event.recurring)
+        );
         let new = launched(&["--demo", "--open", "editor-new"]);
-        let mut editor = new.editor.clone().expect("the editor is open");
-        assert!(matches!(editor.update(editor::Message::Delete), editor::Action::None), "it is a new event");
+        let editor = new.editor.as_ref().expect("the editor is open");
+        assert!(editor.event().is_none(), "it is a draft");
+        let series = launched(&["--demo", "--open", "editor-read-only"]);
+        let editor = series.editor.as_ref().expect("the editor is open");
+        assert!(editor.event().is_some_and(|event| event.recurring), "a series opens read-only");
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "editor"]);
-        let _ = closed.update(Message::Editor(editor::Message::Cancel));
+        let _ = closed.update(Message::Editor(editor::Message::Close));
         let (collections, events, _) = torro_pim::demo::sample(closed.now.date());
         let _ = closed.update(Message::Loaded(Ok((collections, events))));
         assert!(closed.editor.is_none());

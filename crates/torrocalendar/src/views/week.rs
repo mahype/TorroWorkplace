@@ -9,7 +9,8 @@
 //! with its time in the axis marks now. Weekends are set off a little.
 //!
 //! Click on an empty slot → `NewEvent { date, time }` (time rounded down to the half hour), on
-//! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`.
+//! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`. The
+//! event open in the side panel (`ViewData::selected`) is outlined with the focus ring.
 //!
 //! In the wide layout the day view's properties column lists what is left of the day
 //! ([`day_props`], "Up next"); a click on an entry opens it like a click on its block.
@@ -79,6 +80,9 @@ const NOW_LABEL: typo::Level =
 const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// Radius of the dot at the start of the now line (7 across, `.now::before`).
 const NOW_DOT: f32 = 3.5;
+/// The ring around the event open in the side panel stands this far off its edge
+/// (`.ev.sel{outline:2px solid var(--focus);outline-offset:1px}`).
+const RING_OFFSET: f32 = size::HAIRLINE;
 
 /// Where the grid opens: 07:00 at the top, with room above the line for its label (which is
 /// centred on the line).
@@ -182,6 +186,8 @@ struct Plan {
     /// The all-day bars.
     bars: Vec<layout::DaySpan>,
     now: NaiveDateTime,
+    /// The app's index of the event open in the side panel.
+    selected: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +223,14 @@ impl Plan {
         let count = (data.end - data.start).num_days().max(1);
         let days: Vec<NaiveDate> = (0..count).map(|i| data.start + Duration::days(i)).collect();
         let columns = days.len();
-        let mut plan = Plan { days, entries: Vec::new(), timed: Vec::new(), bars: Vec::new(), now: data.now };
+        let mut plan = Plan {
+            days,
+            entries: Vec::new(),
+            timed: Vec::new(),
+            bars: Vec::new(),
+            now: data.now,
+            selected: data.selected,
+        };
         for item in &data.items {
             let (start, end, all_day) = local_span(item.event);
             let id = plan.entries.len();
@@ -251,6 +264,11 @@ impl Plan {
         } else {
             Some(tr("No events"))
         }
+    }
+
+    /// Whether the entry `id` is the event open in the side panel.
+    fn is_selected(&self, id: usize) -> bool {
+        self.selected.is_some_and(|index| self.entries.get(id).is_some_and(|entry| entry.index == index))
     }
 
     fn today_column(&self) -> Option<usize> {
@@ -497,6 +515,9 @@ impl canvas::Program<Message> for Strip {
                 });
             }
         }
+        for bar in bars.iter().filter(|bar| plan.is_selected(bar.id)) {
+            selection_ring(&mut frame, bar.rect, p);
+        }
         vec![frame.into_geometry()]
     }
 }
@@ -612,6 +633,10 @@ impl canvas::Program<Message> for Grid {
             // The day view has the width for the place; seven columns do not.
             event_text(&mut frame, block.rect, entry, &tone, count == 1);
         }
+        // Over the blocks, so a neighbour in the next lane does not cover it.
+        for block in blocks.iter().filter(|block| plan.is_selected(block.id)) {
+            selection_ring(&mut frame, block.rect, p);
+        }
 
         if let Some(y) = now_y {
             now_line(&mut frame, p, x0, width, y, plan.now.time());
@@ -650,6 +675,21 @@ fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     let body_radius = Radius::new(0.0).right(radius::XS);
     frame.fill(&Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, body_radius), tone.fill);
+}
+
+/// The outline of the event open in the side panel: a ring in `focus_ring`, as wide as the focus
+/// ring of the controls, [`RING_OFFSET`] off the block's edge and rounded along with it. Neutral
+/// like every selection; the calendar colour stays the block's own.
+fn selection_ring(frame: &mut Frame, rect: Rectangle, p: &Palette) {
+    let grow = RING_OFFSET + style::FOCUS_RING_WIDTH / 2.0;
+    let ring = Rectangle {
+        x: rect.x - grow,
+        y: rect.y - grow,
+        width: rect.width + 2.0 * grow,
+        height: rect.height + 2.0 * grow,
+    };
+    let path = Path::rounded_rectangle(ring.position(), ring.size(), Radius::from(radius::XS + grow));
+    frame.stroke(&path, Stroke::default().with_color(p.focus_ring).with_width(style::FOCUS_RING_WIDTH));
 }
 
 /// Where the text of an event or chip may go: inside it, short of its right edge.
@@ -860,6 +900,7 @@ mod tests {
             end: day + Duration::days(1),
             anchor: day,
             now: at(7, 14, 20),
+            selected: None,
         };
         let listed =
             |data: &ViewData<'_>| up_next(data).into_iter().map(|next| (next.title, next.when)).collect::<Vec<_>>();
@@ -889,6 +930,7 @@ mod tests {
                 end: start + Duration::days(days),
                 anchor: start,
                 now: at(7, 14, 20),
+                selected: None,
             };
             Plan::new(&data).empty_note()
         };
@@ -897,8 +939,14 @@ mod tests {
         assert_eq!(empty(at(8, 0, 0).date(), 1), Some(tr("No events")));
         let event = calendar_event("Standup", local(7, 9, 30), Some(local(7, 9, 45)));
         let items = vec![super::super::Item { index: 0, event: &event, color: Color::BLACK }];
-        let data =
-            ViewData { items, start: monday, end: monday + Duration::days(7), anchor: monday, now: at(7, 14, 20) };
+        let data = ViewData {
+            items,
+            start: monday,
+            end: monday + Duration::days(7),
+            anchor: monday,
+            now: at(7, 14, 20),
+            selected: None,
+        };
         assert_eq!(Plan::new(&data).empty_note(), None);
     }
 
@@ -986,7 +1034,14 @@ mod tests {
         let items =
             events.iter().enumerate().map(|(index, event)| super::super::Item { index, event, color: blue }).collect();
         let start = at(5, 0, 0).date();
-        let data = ViewData { items, start, end: start + Duration::days(7), anchor: start, now: at(7, 14, 20) };
+        let data = ViewData {
+            items,
+            start,
+            end: start + Duration::days(7),
+            anchor: start,
+            now: at(7, 14, 20),
+            selected: None,
+        };
         let plan = Plan::new(&data);
         assert_eq!(plan.free_gaps(0), vec![], "Monday is over");
         assert_eq!(plan.free_gaps(3), vec![(660.0, 960.0)], "Thursday 11:00–16:00");
@@ -1007,6 +1062,7 @@ mod tests {
             end: monday + Duration::days(7),
             anchor: monday,
             now: at(7, 14, 20),
+            selected: None,
         };
         Plan::new(&data)
     }
@@ -1040,6 +1096,16 @@ mod tests {
         let outside = mouse::Cursor::Available(Point::new(900.0, 100.0));
         assert_eq!(grid.mouse_interaction(&(), bounds, outside), mouse::Interaction::Idle);
         assert_eq!(grid.mouse_interaction(&(), bounds, mouse::Cursor::Unavailable), mouse::Interaction::Idle);
+    }
+
+    #[test]
+    fn only_the_event_open_in_the_panel_is_selected() {
+        let mut plan = week_plan();
+        assert!(!plan.is_selected(0) && !plan.is_selected(1), "nothing open");
+        plan.selected = Some(1);
+        assert!(!plan.is_selected(0));
+        assert!(plan.is_selected(1), "the holiday, in the all-day strip");
+        assert!(!plan.is_selected(7), "no such entry");
     }
 
     #[test]
