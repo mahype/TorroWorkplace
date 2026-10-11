@@ -14,6 +14,7 @@ use std::process::ExitCode;
 
 use torro_core::AppId;
 
+mod cli;
 mod tray;
 
 const APP: AppId = AppId::WORKPLACE;
@@ -22,7 +23,8 @@ fn main() -> ExitCode {
     let command = std::env::args().nth(1);
     match command.as_deref() {
         Some("daemon") => daemon(),
-        None | Some("tui") | Some("status") | Some("ctl") | Some("mcp") => {
+        Some("ctl" | "status") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
+        None | Some("tui") | Some("mcp") => {
             eprintln!("{}: not implemented yet ({} scaffold)", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::from(2)
         }
