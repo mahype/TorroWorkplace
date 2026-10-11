@@ -71,3 +71,36 @@ Gemeinsam für alle Seiten-Aufgaben:
 - **Modell:** Opus
 - `#![allow(...)]` in `ui/mod.rs` entfernen, Übersetzungen eintragen, Design-Prüfung
   (Agent `torro-design-review`) bei 1100 px, 500 px und 360 px, Fehler beheben.
+
+### S.12 Remote Wipe für Nextcloud-Konten
+- [ ] erledigt
+- **Modell:** Opus (Agent `nextcloud-expert`, Sicherheit) · **Dateien:**
+  `crates/torro-pim-caldav/src/nextcloud.rs`, `crates/torroworkplace/src/account.rs`,
+  `crates/torroworkplace/src/pim.rs`
+- Warum: Nextcloud erwartet von Clients, dass sie ein Fernlöschen unterstützen. Markiert der
+  Nutzer oder Admin das Gerät unter „Geräte & Sitzungen“ zum Löschen, lehnt der Server das
+  App-Passwort ab, und der Client soll seine lokalen Daten entfernen.
+- Antwortet der Server mit 401/403 (`ProviderError::Auth`), prüft der Kern einmal
+  `POST /index.php/core/wipe/check` mit `token=<app-password>`. Bei `{"wipe": true}`: Konto,
+  App-Passwort im Schlüsselbund und den Zwischenspeicher dieses Kontos löschen, dann
+  `POST /index.php/core/wipe/success` mit demselben Token melden und eine Benachrichtigung zeigen
+  („Your Nextcloud account was removed from this device at the server's request.“). Sonst (404 oder
+  `wipe: false`): wie bisher „sign-in refused“, Nutzer neu anmelden lassen, nicht in Schleife wiederholen.
+- Endpunkte vor der Umsetzung in der aktuellen Nextcloud-Doku nachlesen (Skill `nextcloud`).
+- **Abnahme:** Tests ohne Netz mit austauschbarer Abfrage (Vorbild `poll_until_granted`): Wipe → alles
+  gelöscht und Erfolg gemeldet; kein Wipe → Konto bleibt; Fehler bei der Prüfung → Konto bleibt.
+  Manuell gegen die Nextcloud des Nutzers nur nach Rückfrage (löscht das Gerät dort wirklich).
+
+### S.13 Konto- und Sync-Status in `status --json`
+- [ ] erledigt
+- **Modell:** Opus (erweitert die IPC-Schnittstelle) · **Dateien:** `crates/torro-ipc/src/lib.rs`,
+  `crates/torroworkplace/src/{core,cli,pim}.rs`
+- Warum: Leisten und Skripte sollen sehen, ob ein Konto verbunden ist und wann zuletzt
+  synchronisiert wurde. Heute zeigt `status --json` nur Workspace und Vorlagen.
+- `torro_ipc::Status` bekommt `accounts: Vec<AccountStatus>` (mit `#[serde(default)]`, damit ältere
+  Clients weiter lesen können). `AccountStatus`: `id`, `kind`, `server`, `state`
+  (`connected`, `signing_in`, `auth_failed`, `offline`), `last_sync` (Zeitpunkt oder leer), `error`
+  (kurzer Text oder leer). Nie Passwörter oder Tokens.
+- `status` ohne `--json` zeigt je Konto eine Zeile (`nextcloud  wagesve@cloud.example.org  connected, synced 12:04`).
+- **Abnahme:** Tests für Serialisierung (alt ohne `accounts` lesbar) und die Textausgabe; fmt,
+  clippy, test (auch `TORRO_LANG=de`) grün.
