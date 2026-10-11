@@ -88,9 +88,12 @@ async fn serve(headless: bool) -> Result<(), String> {
                 let core = Arc::clone(&core);
                 let refresh = refresh.clone();
                 async move {
-                    let changes = changes_state(&request);
+                    // Hotkeys go through `ctl`, so commands from the socket get the same
+                    // notifications as clicks in the tray.
+                    let changes = changes_state(&request).then(|| describe(&request));
                     let response = core.handle(request).await;
-                    if changes {
+                    if let Some(what) = changes {
+                        report(&what, &response);
                         let _ = refresh.send(());
                     }
                     response

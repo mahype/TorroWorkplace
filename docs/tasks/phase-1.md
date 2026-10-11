@@ -246,7 +246,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   Modi), aktualisieren, löschen.
 
 ### 1.20 Benachrichtigungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.19
 - **Dateien:** `crates/torroworkplace/src/notify.rs`, `crates/torroworkplace/src/daemon.rs`
 - **Ziel:** Desktop-Benachrichtigung nach Speichern und Laden (Erfolg, Teilfehler mit Anzahl,
