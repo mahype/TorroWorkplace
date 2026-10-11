@@ -206,7 +206,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests mit `FakeWm`, der nach dem Start ein Fenster-Ereignis liefert; Test für das Zeitlimit.
 
 ### 1.16 Laden: Layout aufbauen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.15, 1.8
 - **Dateien:** `crates/torro-setups/src/restore.rs`
 - **Ziel:** Den Baum **von oben nach unten** aufbauen, wie im Doc-Kommentar von `restore.rs`
