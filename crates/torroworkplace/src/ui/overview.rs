@@ -104,7 +104,9 @@ impl Reason {
     pub(super) fn line(&self) -> Line {
         match self {
             Reason::SignIn => Line::new(Tone::Attention, tr("Needs sign-in")),
-            Reason::Problem(problem) => Line::new(Tone::Attention, problem.clone()),
+            // The same words and tone as the account list (`accounts::status_line`): a problem is
+            // an error everywhere, only a missing sign-in is attention.
+            Reason::Problem(problem) => Line::new(Tone::Error, trf("Problem: {problem}", &[("problem", problem)])),
         }
     }
 }
@@ -164,14 +166,19 @@ fn window_manager_tile(status: Option<&Status>) -> Tile {
 }
 
 fn accounts_tile(accounts: &[AccountInfo]) -> Tile {
-    let headline = if !attention(accounts).is_empty() {
+    let items = attention(accounts);
+    let problems = items.iter().filter(|item| matches!(item.reason, Reason::Problem(_))).count();
+    // The heaviest reason names the tile: a problem outweighs a missing sign-in.
+    let headline = if problems > 0 {
+        Line::new(Tone::Error, counted(problems, "1 problem", "{n} problems"))
+    } else if !items.is_empty() {
         Line::new(Tone::Attention, tr("Needs sign-in"))
     } else if accounts.is_empty() {
         Line::new(Tone::Inactive, tr("Not set up"))
     } else if accounts.iter().all(|account| matches!(account.state, AccountState::Connected { .. })) {
         Line::new(Tone::Ok, tr("Connected"))
     } else {
-        Line::new(Tone::Inactive, tr("Signing in …"))
+        Line::new(Tone::Attention, tr("Signing in …"))
     };
     let detail = if accounts.is_empty() {
         tr("Add one in Accounts").to_string()
@@ -317,6 +324,13 @@ mod tests {
     }
 
     #[test]
+    fn a_reason_looks_like_the_status_in_the_account_list() {
+        let problem = Reason::Problem("Server unreachable".into()).line();
+        assert_eq!(problem, Line::new(Tone::Error, trf("Problem: {problem}", &[("problem", &"Server unreachable")])));
+        assert_eq!(Reason::SignIn.line(), Line::new(Tone::Attention, tr("Needs sign-in")));
+    }
+
+    #[test]
     fn nothing_to_report_when_all_is_connected() {
         let accounts = [account("anna@cloud.example.test", connected(None))];
         assert!(attention(&accounts).is_empty());
@@ -352,6 +366,18 @@ mod tests {
         let needs = accounts_tile(&[account("anna", connected(None)), account("ben", AccountState::NotConnected)]);
         assert_eq!(needs.headline, Line::new(Tone::Attention, tr("Needs sign-in")));
         assert_eq!(needs.detail, Some(trf("{n} accounts", &[("n", &2)])));
+
+        // A problem outweighs a missing sign-in, and is an error like in the account list.
+        let broken = accounts_tile(&[
+            account("ben", AccountState::NotConnected),
+            account("carla", connected(Some("Server unreachable"))),
+        ]);
+        assert_eq!(broken.headline, Line::new(Tone::Error, tr("1 problem")));
+        let two = accounts_tile(&[
+            account("anna", connected(Some("Server unreachable"))),
+            account("carla", connected(Some("Timeout"))),
+        ]);
+        assert_eq!(two.headline, Line::new(Tone::Error, trf("{n} problems", &[("n", &2)])));
 
         let none = accounts_tile(&[]);
         assert_eq!(none.headline, Line::new(Tone::Inactive, tr("Not set up")));

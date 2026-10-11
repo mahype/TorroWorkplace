@@ -332,7 +332,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   Meldung; Leiste die vier Kacheln als eine ruhige Zeile. Muster: `torrocalendar`/`torrotasks` `glance.rs`.
 
 ### D.4 Kontostatus einheitlich
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/overview.rs`, `ui/accounts.rs`
 - Übersicht und Kontoliste zeigen denselben Status: Kachelkopf aus dem schwersten Grund („1 problem“
   vs. „Needs sign-in“), Problem überall `Tone::Error`, Anmeldung nötig überall Attention.
