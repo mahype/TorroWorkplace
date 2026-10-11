@@ -1,0 +1,499 @@
+[
+    {
+        "address": "0x5c719dbfc640",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            1901,
+            1036
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "Hermes",
+        "title": "Terminal",
+        "initialClass": "Hermes",
+        "initialTitle": "Terminal",
+        "pid": 1332792,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 3,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    },
+    {
+        "address": "0x5c719d9660b0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            1927,
+            32
+        ],
+        "size": [
+            941,
+            1036
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chromium",
+        "title": "Browser",
+        "initialClass": "chromium",
+        "initialTitle": "Browser",
+        "pid": 20545,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "chromium-based-browser*",
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 2,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000008"
+    },
+    {
+        "address": "0x5c719dd57f50",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            2882,
+            32
+        ],
+        "size": [
+            946,
+            1036
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "org.gnome.Nautilus",
+        "title": "Files",
+        "initialClass": "org.gnome.Nautilus",
+        "initialTitle": "Files",
+        "pid": 47375,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 4,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000161"
+    },
+    {
+        "address": "0x5c719ce92aa0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            2527,
+            32
+        ],
+        "size": [
+            1301,
+            1036
+        ],
+        "workspace": {
+            "id": 2,
+            "name": "2"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "chromium",
+        "title": "Browser",
+        "initialClass": "chromium",
+        "initialTitle": "Browser",
+        "pid": 20545,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "chromium-based-browser*",
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 0,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000144"
+    },
+    {
+        "address": "0x5c719cca3bc0",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            2501,
+            1036
+        ],
+        "workspace": {
+            "id": 2,
+            "name": "2"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "com.anthropic.Claude",
+        "title": "Chat",
+        "initialClass": "com.anthropic.Claude",
+        "initialTitle": "Chat",
+        "pid": 5512,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 1,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000007"
+    },
+    {
+        "address": "0x5c719e000001",
+        "mapped": true,
+        "hidden": false,
+        "visible": false,
+        "acceptsInput": false,
+        "at": [
+            480,
+            240
+        ],
+        "size": [
+            1440,
+            900
+        ],
+        "workspace": {
+            "id": -98,
+            "name": "special:scratchpad"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "Terminal",
+        "title": "Terminal",
+        "initialClass": "Terminal",
+        "initialTitle": "Terminal",
+        "pid": 61001,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 5,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    },
+    {
+        "address": "0x5c719e000002",
+        "mapped": true,
+        "hidden": true,
+        "visible": false,
+        "acceptsInput": false,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            1901,
+            1036
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "org.example.Messenger",
+        "title": "Messenger",
+        "initialClass": "org.example.Messenger",
+        "initialTitle": "Messenger",
+        "pid": 61002,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 6,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    },
+    {
+        "address": "0x5c719e000003",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            1901,
+            1036
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "",
+        "title": "Untitled",
+        "initialClass": "",
+        "initialTitle": "Untitled",
+        "pid": 61003,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 7,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    },
+    {
+        "address": "0x5c719e000004",
+        "mapped": false,
+        "hidden": false,
+        "visible": false,
+        "acceptsInput": false,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            1901,
+            1036
+        ],
+        "workspace": {
+            "id": 1,
+            "name": "1"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "org.example.Unmapped",
+        "title": "Unmapped",
+        "initialClass": "org.example.Unmapped",
+        "initialTitle": "Unmapped",
+        "pid": 61004,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 8,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    },
+    {
+        "address": "0x5c719e000005",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            1901,
+            1036
+        ],
+        "workspace": {
+            "id": 3,
+            "name": "3"
+        },
+        "floating": true,
+        "monitor": 0,
+        "class": "org.example.Fullscreen",
+        "title": "Fullscreen",
+        "initialClass": "org.example.Fullscreen",
+        "initialTitle": "Fullscreen",
+        "pid": 61005,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 2,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 9,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    },
+    {
+        "address": "0x5c719e000006",
+        "mapped": true,
+        "hidden": false,
+        "visible": true,
+        "acceptsInput": true,
+        "at": [
+            12,
+            32
+        ],
+        "size": [
+            1901,
+            1036
+        ],
+        "workspace": {
+            "id": 3,
+            "name": "3"
+        },
+        "floating": false,
+        "monitor": 0,
+        "class": "org.example.NoPid",
+        "title": "Window",
+        "initialClass": "org.example.NoPid",
+        "initialTitle": "Window",
+        "pid": -1,
+        "xwayland": false,
+        "pinned": false,
+        "pinFullscreened": false,
+        "fullscreen": 0,
+        "fullscreenClient": 0,
+        "fullscreenHandler": "default",
+        "allowedOverFullscreen": true,
+        "grouped": [],
+        "tags": [
+            "default-opacity*"
+        ],
+        "swallowing": "0x0",
+        "focusHistoryID": 10,
+        "inhibitingIdle": false,
+        "xdgTag": "",
+        "xdgDescription": "",
+        "contentType": "none",
+        "tearingHint": false,
+        "stableId": "18000142"
+    }
+]
