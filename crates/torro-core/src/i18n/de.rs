@@ -3,6 +3,7 @@
 
 pub(super) static TABLE: &[(&str, &str)] = &[
     // Control centre (torroworkplace ui)
+    ("Services", "Dienste"),
     (
         "Torro Workplace isn't responding. It may still be starting.",
         "Torro Workplace antwortet nicht. Vielleicht startet es noch.",
