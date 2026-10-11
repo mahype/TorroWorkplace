@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Tasks – Redesign</title>
+<!-- Entwurf: Neugestaltung von torrotasks (Liste mit GitHub-Issues und Pull Requests, Detail, Eigenschaften).
+     Oben die Leiste des Entwurfs: Größenklasse (Breit 1600 / Breit 1280 / Mittel 1000 / Schmal 480) und Hell/Dunkel.
+     URL-Parameter: ?size=l|l2|m|s  ?theme=light|dark  ?open=<id>|none  ?order=manual  ?shot=1 (nur das Fenster,
+     für Screenshots mit passender Fenstergröße). Ids: api (Aufgabe), i123 (Issue), p131 (Pull Request). -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--ok:#3FB984;--merged:#A78BFA;--attention:#E8A33D;--on-attention:#111;--error:#EB5757}
+:root[data-theme="light"]{--ok:#1F9D68;--merged:#7C5CE6;--attention:#B06F12;--on-attention:#fff;--error:#CE2C31}
+body{overflow:auto}
+svg.i.s12{width:12px;height:12px}
+svg.i.s20{width:20px;height:20px;stroke-width:1.75}
+.c-ok{color:var(--ok)} .c-merged{color:var(--merged)} .c-att{color:var(--attention)} .c-err{color:var(--error)} .c-3{color:var(--text3)} .c-2{color:var(--text2)}
+
+/* ---------- Leiste des Entwurfs (nicht Teil der App) ---------- */
+.proto{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;align-items:center;gap:12px;min-height:44px;padding:8px 16px;background:var(--bg);border-bottom:1px solid var(--line)}
+.proto .note{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 8px;border-radius:4px;background:var(--raised);border:1px solid var(--line-strong);font-size:12px;font-weight:500;color:var(--text2)}
+.proto .lab{font-size:12px;color:var(--text3)}
+.proto .seg span{cursor:pointer}
+.proto .grow{flex:1}
+html[data-shot] .proto{display:none}
+.stage{padding:24px 16px 48px}
+html[data-shot] .stage{padding:0}
+.frame{position:relative;overflow:hidden}
+.win{position:absolute;left:0;top:0;transform-origin:0 0;background:var(--bg);overflow:hidden;box-shadow:0 0 0 1px var(--line-strong)}
+html[data-shot] .win{box-shadow:none}
+.win .app{height:100%}
+button{font:inherit;color:inherit;cursor:pointer}
+
+/* ---------- Mittel: Seitenleiste als Leiste 52, Inhalt bleibt eingesetzt ---------- */
+.rail{width:52px;flex:none;display:none;flex-direction:column;align-items:center;padding:8px 0;gap:2px}
+.rail .sep{width:24px;height:1px;background:var(--line);margin:6px 0}
+.rail .iconbtn.on{background:var(--selected);color:var(--text)}
+.rail .spacer{flex:1}
+html[data-size="m"] .rail{display:flex}
+html[data-size="m"] .panel{margin:8px 8px 8px 0;border:1px solid var(--line);border-radius:8px}
+.sidebar .nav{cursor:default}
+.sidebar .nav .ic{width:16px;display:grid;place-items:center;flex:none}
+
+/* ---------- Spalten ---------- */
+.body{flex:1;display:flex;min-height:0}
+.list{display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line);container:list/inline-size}
+.win:not([data-detail]) .list{flex:1;max-width:720px}
+.win[data-detail][data-cols="3"] .list{width:460px;flex:none}
+.win[data-detail][data-cols="2"] .list{width:380px;flex:none}
+html[data-size="s"] .list{flex:1;width:auto;max-width:none;border:0}
+html[data-size="s"] .win[data-detail] .list{display:none}
+.scroll{flex:1;overflow:auto;min-height:0}
+.dwrap{flex:1;min-width:0;display:flex;flex-direction:column}
+.win:not([data-detail]) .dwrap{display:none}
+.dbody{flex:1;display:flex;min-height:0}
+.dmain{flex:1;min-width:0;overflow:auto;padding:32px}
+html[data-size="s"] .dmain{padding:16px}
+.dinner{max-width:640px}
+.win:not([data-cols="3"]) .props{display:none}
+.win[data-cols="3"] .dchips{display:none}
+
+/* ---------- Kopfleiste der Liste und des Details (je 44) ---------- */
+.head{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px 0 16px;border-bottom:1px solid var(--line);white-space:nowrap}
+html[data-size="s"] .head{padding:0 8px}
+html[data-size="s"] .lhead .btn.primary{width:28px;padding:0;justify-content:center}
+.head .grow{flex:1;min-width:8px}
+.head .ttl{display:flex;align-items:center;gap:8px;min-width:0}
+.head .ttl b{font-weight:500}
+.head .ttl .faint{font-family:"Inter Tabular",Inter,sans-serif}
+@container list (max-width:439px){.lhead .btn.ghost .bl{display:none}.lhead .btn.ghost{padding:0;width:28px;justify-content:center}}
+.dd{position:relative}
+.menu[hidden]{display:none}
+.menu .item{cursor:default}
+.menu .item.on::after{margin-left:auto}
+.menu .item.danger{color:var(--error)}
+.menu .foot{font-size:12px;line-height:16px;color:var(--text3);padding:4px 8px 6px;font-family:"Inter Tabular",Inter,sans-serif}
+.crumbs .ring{width:12px;height:12px}
+
+/* ---------- Schnelleingabe: wie eine Listenzeile ---------- */
+.quick{display:flex;align-items:center;height:40px;padding:0 16px;border-bottom:1px solid var(--line);flex:none}
+.quick input{flex:1;min-width:0;border:0;background:none;outline:0;font:400 13px/20px Inter,sans-serif;color:var(--text);padding:0}
+.quick input::placeholder{color:var(--text3)}
+.quick kbd{margin-left:8px}
+
+/* ---------- Gruppenkopf (ROW_GROUP 32) ---------- */
+.ghead{position:relative;display:flex;align-items:center;height:32px;padding:0 12px 0 16px;background:var(--raised);cursor:default;user-select:none}
+.ghead + .ghead{border-top:1px solid var(--line)}
+.ghead .chev{position:absolute;left:2px;top:10px;width:12px;height:12px;display:grid;color:var(--text3);transition:transform .15s ease-out}
+.ghead.closed .chev{transform:rotate(-90deg)}
+.ghead .name{font-size:12px;line-height:16px;font-weight:500;color:var(--text2)}
+.ghead .n{font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3);margin-left:8px}
+.ghead .grow{flex:1}
+.ghead .add{width:24px;height:24px;display:grid;place-items:center;border-radius:6px;border:0;background:none;color:var(--text3);padding:0}
+.ghead .add:hover{background:var(--hover);color:var(--text)}
+
+/* ---------- Listenzeile (ROW 40) ---------- */
+.lead{width:16px;height:16px;flex:none;display:grid;place-items:center;margin-right:12px}
+.pcol{width:14px;height:14px;flex:none;display:grid;place-items:center;margin-right:8px}
+.row{position:relative;display:flex;align-items:center;height:40px;padding:0 16px;border-bottom:1px solid var(--line);cursor:default;white-space:nowrap}
+.row:hover{background:var(--hover)}
+.row.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--text3)}
+.row .grip{position:absolute;left:1px;top:0;bottom:0;width:14px;display:none;place-items:center;color:var(--text3)}
+.list[data-order="manual"] .row:hover .grip{display:grid}
+.row .repo{flex:none;margin-right:8px;font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.row .repo .short{display:none}
+.row .title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:500}
+.row.done .title{color:var(--text3);text-decoration:line-through}
+.row .hints{flex:none;display:flex;align-items:center;gap:8px;margin-left:12px;color:var(--text3)}
+.row .hint{display:inline-flex;align-items:center;gap:4px;font:400 12px/16px "Inter Tabular",Inter,sans-serif}
+.row .fill{flex:1 1 0;min-width:12px}
+.row .right{flex:none;display:flex;align-items:center;gap:8px}
+.row .labels{display:flex;align-items:center;gap:4px}
+.lbl{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 6px;border-radius:4px;border:1px solid var(--line-strong);font-size:12px;line-height:16px;font-weight:500;color:var(--text2);white-space:nowrap}
+.lbl .dot{width:6px;height:6px}
+.more{font-size:12px;font-weight:500;color:var(--text3);font-family:"Inter Tabular",Inter,sans-serif}
+.pill{display:inline-flex;align-items:center;gap:6px;height:20px;padding:0 8px 0 6px;border-radius:10px;border:1px solid var(--line-strong);font-size:12px;line-height:16px;font-weight:500;color:var(--text2);white-space:nowrap}
+.pill .dot{width:6px;height:6px}
+.pdot{display:none;width:6px;height:6px;border-radius:50%;background:var(--c);flex:none}
+.due{min-width:44px;text-align:right;font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.due.late{color:var(--attention)}
+.due:empty{min-width:0;margin-left:-8px}
+/* Wenn es eng wird, in dieser Reihenfolge: Labels, Hinweis-Icons, Pille → Punkt, repo#123 → #123. Nie zweizeilig. */
+@container list (max-width:699px){.row .labels{display:none}}
+@container list (max-width:599px){.row .hints{display:none}}
+@container list (max-width:559px){.row .pill{display:none}.row .pdot{display:block}}
+@container list (max-width:519px){.row .repo .full{display:none}.row .repo .short{display:inline}}
+
+/* Leitsymbole, Priorität */
+.circle{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--text3);flex:none;display:grid;place-items:center}
+.circle:hover{border-color:var(--text2)}
+.circle.done{border:0;background:var(--c);color:#fff}
+.circle.done svg{width:11px;height:11px;stroke-width:3}
+.circle.big{width:20px;height:20px}
+.circle.big.done svg{width:13px;height:13px}
+.circle.small{width:12px;height:12px}
+.prio{display:inline-flex;align-items:flex-end;gap:2px;height:12px;width:13px}
+.prio i{display:block;width:3px;border-radius:1px;background:var(--line-strong)}
+.prio i:nth-child(1){height:5px}.prio i:nth-child(2){height:8px}.prio i:nth-child(3){height:12px}
+.prio.p1 i:nth-child(-n+1),.prio.p2 i:nth-child(-n+2),.prio.p3 i{background:var(--text2)}
+.urgent{width:14px;height:14px;border-radius:3px;background:var(--attention);color:var(--on-attention);display:grid;place-items:center;font-size:10px;line-height:1;font-weight:600}
+
+/* ---------- Detail ---------- */
+.dhead .crumbs{min-width:0;overflow:hidden}
+.dhead .crumbs span{overflow:hidden;text-overflow:ellipsis}
+.dtitle{display:flex;align-items:flex-start;gap:12px}
+.dtitle .ic{width:20px;height:28px;flex:none;display:grid;place-items:center}
+.dtitle h1{margin:0;font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.01em;min-width:0;overflow-wrap:anywhere}
+.ind{padding-left:32px}
+.ghmeta{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;margin-top:8px;font-size:12px;line-height:16px;color:var(--text3)}
+.ghmeta .tab{white-space:nowrap}
+.spill{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px 0 6px;border-radius:11px;border:1px solid var(--line-strong);font-size:12px;line-height:16px;font-weight:500;color:var(--text)}
+.spill svg{width:14px;height:14px}
+.dchips{margin-top:16px}
+.dchips .pchip{cursor:default}
+.dchips .pchip:hover{background:var(--hover)}
+.dchips .pchip.empty{color:var(--text3)}
+.dchips .prio{width:13px}
+.notes{margin:12px -8px 0 24px;padding:6px 8px;border-radius:6px;color:var(--text2);white-space:pre-line}
+.notes:hover{background:var(--hover)}
+.notes.empty{color:var(--text3)}
+.sec{margin-top:28px}
+.shead{display:flex;align-items:center;gap:12px;height:32px;user-select:none}
+.shead .cb{width:20px;display:grid;place-items:center;color:var(--text3);flex:none}
+.shead.closed .cb svg{transform:rotate(-90deg)}
+.shead .st{font-size:12px;line-height:16px;font-weight:500;color:var(--text2)}
+.shead .sm{font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.shead .grow{flex:1}
+.shead .lnk{border:0;background:none;padding:2px 6px;margin-right:-6px;border-radius:4px;font-size:12px;line-height:16px;color:var(--text3)}
+.shead .lnk:hover{background:var(--hover);color:var(--text)}
+.bar{width:64px;height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden;flex:none}
+.bar i{display:block;height:100%;background:var(--ok)}
+.srow{display:flex;align-items:center;gap:12px;height:32px;border-bottom:1px solid var(--line);white-space:nowrap}
+.srow:hover{background:var(--hover)}
+.srow .lb{width:20px;display:grid;place-items:center;flex:none}
+.srow .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.srow.done .tx{color:var(--text3);text-decoration:line-through}
+.srow .rt{flex:none;display:inline-flex;align-items:center;gap:6px;font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3);padding-right:4px}
+.srow.add{border-bottom:0;color:var(--text3)}
+.srow.add:hover{color:var(--text)}
+.av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font:600 10px/1 Inter,sans-serif;color:#fff;background:var(--c);flex:none}
+.act{display:flex;align-items:center;gap:12px;min-height:28px;font-size:12px;line-height:16px;color:var(--text3)}
+.act .lb{width:20px;display:grid;place-items:center;flex:none}
+.act b{font-weight:500;color:var(--text2)}
+.cmt{display:grid;grid-template-columns:20px 1fr;column-gap:12px;padding:8px 0}
+.cmt .who{font-size:12px;line-height:20px;color:var(--text3)}
+.cmt .who b{font-weight:500;color:var(--text)}
+.cmt p{grid-column:2;margin:2px 0 0;color:var(--text2)}
+
+/* ---------- Eigenschaften (300) ---------- */
+.props{padding:0 16px 24px}
+.psec{padding:8px 16px;margin:0 -16px;border-top:1px solid var(--line)}
+.psec:first-child{border-top:0}
+.psec h4{margin:0;height:28px;display:flex;align-items:center;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.prow{display:flex;align-items:center;min-height:32px;padding:0 8px;margin:0 -8px;border-radius:6px;cursor:default;border:0;background:none;width:calc(100% + 16px);text-align:left}
+.prow:hover{background:var(--hover)}
+.prow .pl{width:88px;flex:none;font-size:12px;line-height:16px;color:var(--text3)}
+.prow .pv{flex:1;min-width:0;display:flex;align-items:center;gap:8px;color:var(--text);white-space:nowrap;overflow:hidden}
+.prow .pv > span:last-child{overflow:hidden;text-overflow:ellipsis}
+.prow .pv.empty{color:var(--text3)}
+.prow .pv .i{color:var(--text3)}
+.prow .pv.wrap{flex-wrap:wrap;gap:4px;padding:6px 0;white-space:normal}
+.prow.gh .pv{color:var(--text2)}
+.prow .pv .ring{width:12px;height:12px;margin:0 2px}
+.prow .pv .prio,.dchips .prio{margin:0 1px}
+</style></head>
+<body>
+
+<div class="proto">
+  <span class="note"><i data-lucide="flask-conical" class="i s14"></i>Prototype – not final</span>
+  <span class="lab">Size</span>
+  <span class="seg" id="sizes">
+    <span data-size="l">Wide 1600</span><span data-size="l2">Wide 1280</span><span data-size="m">Medium 1000</span><span data-size="s">Narrow 480</span>
+  </span>
+  <span class="lab">Theme</span>
+  <span class="seg" id="themes"><span data-theme="light">Light</span><span data-theme="dark">Dark</span></span>
+  <span class="grow"></span>
+  <span class="lab">Click a row to open it · try the task, issue #123 and pull request #131</span>
+</div>
+
+<div class="stage"><div class="frame" id="frame"><div class="win" id="win">
+<div class="app">
+
+  <!-- Seitenleiste 232 (Breit) -->
+  <aside class="sidebar only-l">
+    <div style="display:flex;align-items:center;gap:2px">
+      <div class="switcher" style="flex:1"><div class="logo">T</div><b>Tasks</b><i data-lucide="chevron-down" class="i s14 faint"></i><span class="grow"></span></div>
+      <button class="iconbtn" title="Search"><i data-lucide="search" class="i"></i></button>
+      <button class="iconbtn boxed" title="New task"><i data-lucide="square-pen" class="i"></i></button>
+      <button class="iconbtn" title="Collapse sidebar"><i data-lucide="panel-left" class="i"></i></button>
+    </div>
+    <div style="height:8px"></div>
+    <a class="nav active"><i data-lucide="sun" class="i"></i><span class="grow">Today</span><span class="count" id="cnt-today"></span></a>
+    <a class="nav"><i data-lucide="calendar-clock" class="i"></i><span class="grow">Planned</span><span class="count">14</span></a>
+    <a class="nav"><i data-lucide="layers" class="i"></i><span class="grow">All</span><span class="count">31</span></a>
+    <div class="group">Nextcloud · Work <i data-lucide="chevron-down" class="i"></i></div>
+    <a class="nav"><span class="ic"><span class="ring" style="--c:var(--c-work)"></span></span><span class="grow">Work</span><span class="count">6</span></a>
+    <a class="nav"><span class="ic"><span class="ring" style="--c:var(--c-family)"></span></span><span class="grow">Tasks</span><span class="count">3</span></a>
+    <div class="group">Nextcloud · Home <i data-lucide="chevron-down" class="i"></i></div>
+    <a class="nav"><span class="ic"><span class="ring" style="--c:var(--c-personal)"></span></span><span class="grow">Personal</span><span class="count">4</span></a>
+    <a class="nav"><span class="ic"><span class="ring" style="--c:var(--c-groceries)"></span></span><span class="grow">Groceries</span><span class="count">5</span></a>
+    <div class="group">GitHub · mahype <i data-lucide="chevron-down" class="i"></i></div>
+    <a class="nav"><i data-lucide="user-check" class="i"></i><span class="grow">Needs me</span><span class="count">2</span></a>
+    <a class="nav"><i data-lucide="bug" class="i"></i><span class="grow">Torro bugs</span><span class="count">3</span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="calendar" class="i"></i><span class="grow">Open Calendar</span><i data-lucide="arrow-up-right" class="i s14 faint"></i></a>
+    <a class="nav"><i data-lucide="settings" class="i"></i><span class="grow">Settings</span></a>
+  </aside>
+
+  <!-- Leiste 52 (Mittel): nur Icons, Namen als Tooltip -->
+  <aside class="rail">
+    <div class="logo" title="Tasks – switch app" style="margin:4px 0 6px">T</div>
+    <button class="iconbtn" title="Search"><i data-lucide="search" class="i"></i></button>
+    <button class="iconbtn boxed" title="New task"><i data-lucide="square-pen" class="i"></i></button>
+    <button class="iconbtn" title="Expand sidebar"><i data-lucide="panel-left" class="i"></i></button>
+    <span class="sep"></span>
+    <button class="iconbtn on" title="Today"><i data-lucide="sun" class="i"></i></button>
+    <button class="iconbtn" title="Planned"><i data-lucide="calendar-clock" class="i"></i></button>
+    <button class="iconbtn" title="All"><i data-lucide="layers" class="i"></i></button>
+    <span class="sep"></span>
+    <button class="iconbtn" title="Work"><span class="ring" style="--c:var(--c-work)"></span></button>
+    <button class="iconbtn" title="Tasks"><span class="ring" style="--c:var(--c-family)"></span></button>
+    <span class="sep"></span>
+    <button class="iconbtn" title="Personal"><span class="ring" style="--c:var(--c-personal)"></span></button>
+    <button class="iconbtn" title="Groceries"><span class="ring" style="--c:var(--c-groceries)"></span></button>
+    <span class="sep"></span>
+    <button class="iconbtn" title="Needs me"><i data-lucide="user-check" class="i"></i></button>
+    <button class="iconbtn" title="Torro bugs"><i data-lucide="bug" class="i"></i></button>
+    <span class="spacer"></span>
+    <button class="iconbtn" title="Open Calendar"><i data-lucide="calendar" class="i"></i></button>
+    <button class="iconbtn" title="Settings"><i data-lucide="settings" class="i"></i></button>
+  </aside>
+
+  <main class="panel">
+    <div class="body">
+      <section class="list" id="list"></section>
+      <section class="dwrap" id="dwrap"></section>
+    </div>
+  </main>
+</div>
+</div></div></div>
+
+<script>
+// ---------- Beispieldaten ----------
+const LISTS={
+  work:{name:'Work',c:'var(--c-work)',account:'Nextcloud · Work'},
+  tasks:{name:'Tasks',c:'var(--c-family)',account:'Nextcloud · Work'},
+  personal:{name:'Personal',c:'var(--c-personal)',account:'Nextcloud · Home'},
+  groceries:{name:'Groceries',c:'var(--c-groceries)',account:'Nextcloud · Home'},
+};
+const LABELS={bug:'#D73A4A',ui:'#3B82F6',linux:'#D4A72C',enhancement:'#2DA44E',api:'#7C5CE6',review:'#C2508F'};
+const PEOPLE={anna:['A','#C2508F'],mahype:['M','#3B6EF0'],jonas:['J','#1F9D68'],you:['Y','#3B6EF0'],claude:['C','#B06F12']};
+const GROUPS=[
+  {id:'overdue',name:'Overdue',icon:'circle-alert',cls:'c-att'},
+  {id:'today',name:'Today',icon:'sun',cls:'c-3'},
+  {id:'upcoming',name:'Upcoming',icon:'calendar-clock',cls:'c-3'},
+];
+const ITEMS=[
+  {id:'inv',kind:'task',group:'overdue',title:'File invoices for September',list:'tasks',prio:'urgent',due:'Fri 9',dueLong:'Fri, 9 Oct',late:true,reminder:'Fri, 9 Oct 09:00'},
+  {id:'i123',kind:'issue',state:'open',num:123,group:'overdue',title:'Tray icon disappears after resuming from sleep',labels:['bug','ui','linux'],prio:'high',due:'Sat 10',dueLong:'Sat, 10 Oct',late:true},
+  {id:'api',kind:'task',group:'today',title:'Review API concept',list:'work',prio:'medium',due:'16:00',dueLong:'Today, 16:00',sub:[2,4],note:true,reminder:'Today, 15:45',parent:'Plan the API release',labels:['api','review']},
+  {id:'p131',kind:'pr',state:'open',num:131,group:'today',title:'Add workspace templates to the tray menu',labels:['ui'],ci:'running',review:true,due:'17:00',dueLong:'Today, 17:00'},
+  {id:'gift',kind:'task',group:'today',title:"Buy Mum's birthday present",list:'personal',prio:'high',due:'18:00',dueLong:'Today, 18:00',note:true},
+  {id:'plants',kind:'task',group:'today',title:'Water the plants',list:'personal',due:'',dueLong:'Today',repeat:'Every 3 days'},
+  {id:'p127',kind:'pr',state:'merged',done:true,num:127,group:'today',title:'Parse Hyprland clients with the new Lua API',labels:['linux'],ci:'passed',due:''},
+  {id:'train',kind:'task',done:true,group:'today',title:'Book train tickets to Hamburg',list:'personal',due:'09:00',dueLong:'Today, 09:00'},
+  {id:'demo',kind:'task',group:'upcoming',title:'Prepare the sprint demo',list:'work',prio:'low',due:'Mon 12',dueLong:'Mon, 12 Oct',sub:[0,3]},
+  {id:'p134',kind:'pr',state:'draft',num:134,group:'upcoming',title:'Sidebar rail: show list names as tooltips',labels:['ui'],ci:'passed',due:'Wed 14',dueLong:'Wed, 14 Oct'},
+  {id:'i125',kind:'issue',state:'open',num:125,group:'upcoming',title:'Display menu: add “Sync now” and the last sync time',labels:['ui','enhancement'],due:'Oct 20',dueLong:'Tue, 20 Oct'},
+  {id:'groc',kind:'task',group:'upcoming',title:'Groceries for the weekend',list:'groceries',due:'Fri 16',dueLong:'Fri, 16 Oct',note:true,sub:[1,6]},
+  {id:'pass',kind:'task',group:'upcoming',title:'Renew passport',list:'personal',prio:'medium',due:'Oct 30',dueLong:'Fri, 30 Oct',reminder:'Mon, 26 Oct 09:00',repeat:''},
+];
+// Inhalte der drei ausgearbeiteten Details; alle anderen Zeilen bekommen ein einfaches Detail aus den Zeilendaten.
+const DETAIL={
+  api:{
+    notes:'Read docs/api.md and decide the three open questions: HTTP API now or later, the app key as a file or in the keychain, and whether agents may change accounts and settings.',
+    subs:[['Read the concept',1],['Compare with TorroMail',1],['Decide the open questions',0],['Start task A.0',0]],
+    activity:[['circle-plus','You','created the task','2 d ago'],['sparkles','Claude Code','added two sub-tasks','yesterday'],['calendar','You','set the due date to today','3 h ago']],
+  },
+  i123:{
+    opened:['anna','2 d ago'],
+    notes:'After suspend and resume the tray icon is gone until torroworkplace restarts. The StatusNotifier watcher restarts with Waybar, and we never register again.\n\nSeen on Hyprland 0.56 with Waybar 0.12.',
+    subs:[['Reproduce on Hyprland 0.56',1],['Re-register when the watcher appears',0]],
+    milestone:'v0.4',assignees:['mahype'],linked:null,
+    activity:[['circle-dot','anna','opened the issue','2 d ago'],['tag','mahype','added bug, ui and linux','2 d ago']],
+    comments:[['mahype','yesterday','I can reproduce it. The watcher comes back with a new owner and we keep the old name.'],['anna','5 h ago','Restarting Waybar alone also triggers it, so it is not tied to suspend.']],
+    total:6,
+  },
+  p131:{
+    opened:['anna','5 h ago'],
+    notes:'Shows the saved workspace templates directly in the tray menu, with “Load” and “Save current” for each one.\n\nCloses #123 only partly: the icon itself is fixed in a follow-up.',
+    subs:[],
+    checks:[['passed','build (linux)','2m 14s'],['passed','clippy','1m 02s'],['running','build (macos)','Running'],['queued','build (windows)','Queued']],
+    reviews:[['mahype','requested','Review requested'],['jonas','approved','Approved']],
+    milestone:'v0.4',assignees:['anna'],linked:['i123','#123 Tray icon disappears after resuming from sleep'],branch:'anna/tray-templates',
+    activity:[['git-pull-request','anna','opened the pull request','5 h ago'],['eye','anna','requested a review from you','5 h ago'],['circle-check','jonas','approved these changes','2 h ago']],
+    comments:[['jonas','2 h ago','Looks good. The menu gets long with many templates, maybe cap it at eight and add “More…”.']],
+    total:4,
+  },
+};
+
+// ---------- Zustand ----------
+const SIZES={l:{cls:'l',w:1600,h:1000},l2:{cls:'l',w:1280,h:860},m:{cls:'m',w:1000,h:700},s:{cls:'s',w:480,h:900}};
+const q=new URLSearchParams(location.search);
+const st={
+  size:SIZES[q.get('size')]?q.get('size'):'l',
+  theme:q.get('theme')==='dark'?'dark':'light',
+  open:q.has('open')?(q.get('open')==='none'?null:q.get('open')):'api',
+  order:q.get('order')==='manual'?'manual':'due',
+  closed:new Set(), menu:q.get('menu')||null, hideDone:false,
+};
+if(q.get('shot'))document.documentElement.dataset.shot='1';
+
+// ---------- Bausteine ----------
+const ic=(n,c='')=>`<i data-lucide="${n}" class="i ${c}"></i>`;
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const byId=id=>ITEMS.find(t=>t.id===id);
+const isGh=t=>t.kind!=='task';
+function ghIcon(t,size=''){
+  if(t.kind==='issue')return t.state==='closed'?`<span class="c-merged" title="Closed issue">${ic('circle-check',size)}</span>`:`<span class="c-ok" title="Open issue">${ic('circle-dot',size)}</span>`;
+  if(t.state==='merged')return `<span class="c-merged" title="Merged">${ic('git-merge',size)}</span>`;
+  if(t.state==='draft')return `<span class="c-3" title="Draft">${ic('git-pull-request-draft',size)}</span>`;
+  if(t.state==='closed')return `<span class="c-err" title="Closed">${ic('git-pull-request-closed',size)}</span>`;
+  return `<span class="c-ok" title="Open pull request">${ic('git-pull-request',size)}</span>`;
+}
+function stateWord(t){
+  if(t.kind==='task')return t.done?'Completed':'Open';
+  return {open:'Open',closed:'Closed',merged:'Merged',draft:'Draft'}[t.state];
+}
+function lead(t,big){
+  if(isGh(t))return ghIcon(t,big?'s20':'');
+  const c=LISTS[t.list].c;
+  return t.done?`<span class="circle done ${big?'big':''}" style="--c:${c}" title="Mark as open">${ic('check')}</span>`
+               :`<span class="circle ${big?'big':''}" title="Complete"></span>`;
+}
+function prio(p){
+  if(!p)return '';
+  if(p==='urgent')return '<span class="urgent" title="Urgent">!</span>';
+  const n={low:1,medium:2,high:3}[p];
+  return `<span class="prio p${n}" title="${p[0].toUpperCase()+p.slice(1)} priority"><i></i><i></i><i></i></span>`;
+}
+const PRIO_WORD={urgent:'Urgent',high:'High',medium:'Medium',low:'Low'};
+function ci(t){
+  if(!t.ci)return '';
+  const m={running:['circle-dot-dashed','c-att','Checks running'],passed:['circle-check','c-ok','Checks passed'],failed:['circle-x','c-err','Checks failed']}[t.ci];
+  return `<span class="${m[1]}" title="${m[2]}">${ic(m[0],'s14')}</span>`;
+}
+function source(t){ // Listen-Pille: Quelle; GitHub mit Icon und Repo
+  if(isGh(t))return `<span class="pill">${ic('github','s12')}TorroWorkplace</span><span class="pdot" style="--c:var(--text3)" title="TorroWorkplace"></span>`;
+  const l=LISTS[t.list];
+  return `<span class="pill"><span class="dot" style="--c:${l.c}"></span>${l.name}</span><span class="pdot" style="--c:${l.c}" title="${l.name}"></span>`;
+}
+function labelChips(ls,max=2){
+  if(!ls||!ls.length)return '';
+  const shown=ls.slice(0,max).map(l=>`<span class="lbl"><span class="dot" style="--c:${LABELS[l]}"></span>${l}</span>`).join('');
+  return shown+(ls.length>max?`<span class="more">+${ls.length-max}</span>`:'');
+}
+const avatar=p=>`<span class="av" style="--c:${PEOPLE[p][1]}">${PEOPLE[p][0]}</span>`;
+
+// ---------- Liste ----------
+function row(t){
+  const hints=[];
+  if(t.sub)hints.push(`<span class="hint" title="Sub-tasks">${ic('list-checks','s14')}${t.sub[0]}/${t.sub[1]}</span>`);
+  if(t.note)hints.push(`<span class="hint" title="Has notes">${ic('align-left','s14')}</span>`);
+  if(t.repeat)hints.push(`<span class="hint" title="${t.repeat}">${ic('repeat','s14')}</span>`);
+  if(t.reminder)hints.push(`<span class="hint" title="Reminder ${t.reminder}">${ic('bell','s14')}</span>`);
+  const gh=isGh(t)?`<span class="repo"><span class="full">TorroWorkplace#${t.num}</span><span class="short">#${t.num}</span></span>`:'';
+  return `<div class="row${t.done?' done':''}${st.open===t.id?' sel':''}" data-id="${t.id}">
+    <span class="grip" title="Drag to reorder">${ic('grip-vertical','s14')}</span>
+    <span class="lead" data-act="toggle">${lead(t)}</span>
+    <span class="pcol">${prio(t.prio)}</span>${gh}
+    <span class="title">${esc(t.title)}</span>
+    ${hints.length?`<span class="hints">${hints.join('')}</span>`:''}
+    <span class="fill"></span>
+    <span class="right">
+      ${t.labels&&isGh(t)?`<span class="labels">${labelChips(t.labels)}</span>`:''}
+      ${ci(t)}${t.review?`<span class="c-att" title="Review requested from you">${ic('eye','s14')}</span>`:''}
+      ${source(t)}<span class="due${t.late?' late':''}">${t.due||''}</span>
+    </span></div>`;
+}
+function renderList(){
+  const open=ITEMS.filter(t=>!t.done).length;
+  document.getElementById('cnt-today').textContent=open;
+  const menu=st.menu==='display'?'':'hidden';
+  let h=`<div class="head lhead">
+    <button class="iconbtn only-s" title="Show lists">${ic('panel-left')}</button>
+    <span class="ttl">${ic('sun')}<b>Today</b><span class="faint">${open} open</span></span>
+    <span class="grow"></span>
+    <button class="btn ghost" title="Filter">${ic('list-filter','s14')}<span class="bl">Filter</span></button>
+    <div class="dd"><button class="btn ghost" data-menu="display" title="Display options">${ic('sliders-horizontal','s14')}<span class="bl">Display</span></button>
+      <div class="menu right" ${menu}>
+        <div class="label">Group by</div>
+        <div class="item on">${ic('calendar')}Due date</div><div class="item">${ic('list')}List</div><div class="item">${ic('signal-high')}Priority</div><div class="item">${ic('minus')}None</div>
+        <div class="sep"></div><div class="label">Order</div>
+        <div class="item${st.order==='due'?' on':''}" data-order="due">${ic('calendar-clock')}Due date</div>
+        <div class="item">${ic('signal-high')}Priority</div>
+        <div class="item${st.order==='manual'?' on':''}" data-order="manual">${ic('grip-vertical')}Manual</div>
+        <div class="sep"></div>
+        <div class="item" data-act="sync">${ic('refresh-cw')}Sync now<kbd>R</kbd></div>
+        <div class="foot">Synced 2 min ago</div>
+      </div></div>
+    <button class="btn primary" title="New task (N)">${ic('plus','s14')}<span class="not-s">New task</span></button>
+  </div>
+  <div class="quick"><span class="lead c-3">${ic('plus')}</span><span class="pcol"></span>
+    <input placeholder="Add a task or paste a GitHub link…" aria-label="New task"><kbd>N</kbd></div>
+  <div class="scroll">`;
+  for(const g of GROUPS){
+    const items=ITEMS.filter(t=>t.group===g.id);
+    const closed=st.closed.has(g.id);
+    h+=`<div class="ghead${closed?' closed':''}" data-group="${g.id}">
+      <span class="chev">${ic('chevron-down','s12')}</span>
+      <span class="lead ${g.cls}">${ic(g.icon,'s14')}</span>
+      <span class="name">${g.name}</span><span class="n">${items.filter(t=>!t.done).length}</span>
+      <span class="grow"></span><button class="add" title="Add a task to ${g.name}">${ic('plus','s14')}</button></div>`;
+    if(!closed)h+=items.map(row).join('');
+  }
+  h+='</div>';
+  const el=document.getElementById('list');
+  el.dataset.order=st.order;
+  el.innerHTML=h;
+}
+
+// ---------- Detail ----------
+function chips(t,d){
+  const l=t.list?LISTS[t.list]:null;
+  // Bei GitHub steht der Zustand schon als Pille unter dem Titel, darum dort kein Status-Chip.
+  const status=isGh(t)?'':`<span class="pchip">${t.done?`<span class="circle done small" style="--c:${l.c}">${ic('check')}</span>`:'<span class="circle small"></span>'}${stateWord(t)}</span>`;
+  return `<div class="chips dchips ind">
+    ${status}
+    <span class="pchip${t.prio?'':' empty'}">${t.prio?prio(t.prio):ic('signal-high')}${t.prio?PRIO_WORD[t.prio]:'Priority'}</span>
+    <span class="pchip${t.dueLong?'':' empty'}"${t.late?' style="color:var(--attention)"':''}>${ic('calendar')}<span class="tab">${t.dueLong||'Due date'}</span></span>
+    <span class="pchip">${l?`<span class="ring" style="--c:${l.c};width:12px;height:12px"></span>${l.name}`:`${ic('github')}TorroWorkplace`}</span>
+    <span class="pchip" title="More properties">${ic('plus')}</span>
+  </div>`;
+}
+function prow(label,val,empty,icon){
+  return `<button class="prow"><span class="pl">${label}</span><span class="pv${empty?' empty':''}">${icon||''}<span>${val}</span></span></button>`;
+}
+function props(t,d){
+  const l=t.list?LISTS[t.list]:null;
+  let h=`<div class="psec">
+    ${prow('Status',stateWord(t),false,isGh(t)?ghIcon(t):(t.done?`<span class="circle done" style="--c:${l.c}">${ic('check')}</span>`:'<span class="circle"></span>'))}
+    ${prow('Priority',t.prio?PRIO_WORD[t.prio]:'Add priority',!t.prio,t.prio?`<span style="width:16px;display:grid;place-items:center">${prio(t.prio)}</span>`:ic('signal-high'))}
+    ${prow('Due',t.dueLong?`<span class="tab"${t.late?' style="color:var(--attention)"':''}>${t.dueLong}</span>`:'Add due date',!t.dueLong,ic('calendar'))}
+    ${prow('Reminder',t.reminder?`<span class="tab">${t.reminder}</span>`:'Add reminder',!t.reminder,ic('bell'))}
+    ${prow('Repeat',t.repeat||'Add repeat',!t.repeat,ic('repeat'))}
+  </div><div class="psec"><h4>Organisation</h4>
+    ${prow('List',l?l.name:'TorroWorkplace',false,l?`<span class="ring" style="--c:${l.c}"></span>`:ic('github'))}
+    ${prow('Parent',t.parent||'Add parent task',!t.parent,ic('list-tree'))}
+    <button class="prow"><span class="pl">Labels</span><span class="pv wrap${t.labels?'':' empty'}">${t.labels?t.labels.map(x=>`<span class="lbl"><span class="dot" style="--c:${LABELS[x]}"></span>${x}</span>`).join(''):`${ic('tag')}<span>Add labels</span>`}</span></button>
+  </div><div class="psec"><h4>Source</h4>`;
+  if(!isGh(t)){
+    h+=prow('Account',l.account,false,ic('cloud'));
+  }else{
+    h+=prow('Account','GitHub · mahype',false,ic('github'));
+    h+=prow('Repo','mahype/TorroWorkplace',false,ic('folder-git-2'));
+    const as=(d&&d.assignees)||[];
+    h+=prow('Assignees',as.length?as.join(', '):'Add assignee',!as.length,as.length?avatar(as[0]):ic('user'));
+    h+=prow('Milestone',(d&&d.milestone)||'Add milestone',!(d&&d.milestone),ic('milestone'));
+    if(t.kind==='pr')h+=prow('Linked issue',d&&d.linked?d.linked[1]:'Add linked issue',!(d&&d.linked),ic('circle-dot'));
+    else h+=prow('Linked PR',d&&d.linked?d.linked[1]:'No linked pull request',!(d&&d.linked),ic('git-pull-request'));
+    h+=`<button class="prow gh"><span class="pv">${ic('github')}<span>Open on GitHub</span>${ic('arrow-up-right','s14')}</span></button>`;
+  }
+  return h+'</div>';
+}
+function renderDetail(){
+  const el=document.getElementById('dwrap');
+  const win=document.getElementById('win');
+  const t=st.open&&byId(st.open);
+  if(!t){delete win.dataset.detail;el.innerHTML='';return}
+  win.dataset.detail='1';
+  const d=DETAIL[t.id]||{notes:'',subs:t.sub?Array.from({length:t.sub[1]},(_,i)=>[`Step ${i+1}`,i<t.sub[0]?1:0]):[],
+    activity:[[isGh(t)?'github':'circle-plus',isGh(t)?'anna':'You',isGh(t)?'opened it on GitHub':'created the task','last week']]};
+  const l=t.list?LISTS[t.list]:null;
+  const crumb=l?`<span class="ring" style="--c:${l.c}"></span><span>${l.name}</span>`:`${ic('github','s14')}<span>TorroWorkplace</span>`;
+  const menu=st.menu==='more'?'':'hidden';
+  let h=`<div class="head dhead">
+    <button class="btn ghost only-s" data-act="back" style="padding-left:4px">${ic('chevron-left','s14')}Today</button>
+    <div class="crumbs not-s">${crumb}${t.parent?`${ic('chevron-right','s14')}<span>${t.parent}</span>`:''}</div>
+    <span class="grow"></span>
+    <button class="iconbtn" data-act="prev" title="Previous (K)">${ic('chevron-up')}</button>
+    <button class="iconbtn" data-act="next" title="Next (J)">${ic('chevron-down')}</button>
+    <div class="dd"><button class="iconbtn" data-menu="more" title="More">${ic('ellipsis')}</button>
+      <div class="menu right" ${menu}>
+        <div class="item">${ic('link')}Copy link<kbd>Ctrl L</kbd></div>
+        ${isGh(t)?`<div class="item">${ic('github')}Open on GitHub${ic('arrow-up-right','s14 faint')}</div>`:''}
+        ${isGh(t)?'':`<div class="sep"></div><div class="item danger">${ic('trash-2')}Delete task<kbd>Del</kbd></div>`}
+      </div></div>
+    <button class="iconbtn not-s" data-act="close" title="Close (Esc)">${ic('x')}</button>
+  </div><div class="dbody"><div class="dmain"><div class="dinner">
+    <div class="dtitle"><span class="ic" data-act="toggle-d">${lead(t,true)}</span><h1>${esc(t.title)}</h1></div>`;
+  if(isGh(t)){
+    const o=d.opened||['anna','last week'];
+    h+=`<div class="ghmeta ind"><span class="spill">${ghIcon(t)}${stateWord(t)}</span>
+      <span class="tab">mahype/TorroWorkplace#${t.num}</span><span>·</span><span>opened by ${o[0]}</span><span>·</span><span class="tab">${o[1]}</span>
+</div>`;
+  }
+  h+=chips(t,d);
+  h+=`<div class="notes${d.notes?'':' empty'}">${d.notes?esc(d.notes):'Add notes…'}</div>`;
+  // Unteraufgaben: immer da, damit man welche anlegen kann
+  const subs=d.subs||[], doneN=subs.filter(s=>s[1]).length;
+  h+=`<div class="sec"><div class="shead"><span class="cb">${ic('chevron-down','s12')}</span><span class="st">Sub-tasks</span>
+    ${subs.length?`<span class="bar"><i style="width:${Math.round(doneN/subs.length*100)}%"></i></span><span class="sm">${doneN}/${subs.length}</span>`:''}
+    <span class="grow"></span>${doneN?`<button class="lnk" data-act="hide-done">${st.hideDone?'Show completed':'Hide completed'}</button>`:''}</div>`;
+  for(const [s,dn] of subs){
+    if(dn&&st.hideDone)continue;
+    h+=`<div class="srow${dn?' done':''}"><span class="lb">${dn?`<span class="circle done" style="--c:${l?l.c:'var(--ok)'}">${ic('check')}</span>`:'<span class="circle"></span>'}</span><span class="tx">${esc(s)}</span></div>`;
+  }
+  h+=`<div class="srow add"><span class="lb">${ic('plus','s14')}</span><span class="tx">Add sub-task</span></div></div>`;
+  if(d.checks){
+    const p=d.checks.filter(c=>c[0]==='passed').length;
+    const CI={passed:['circle-check','c-ok'],running:['circle-dot-dashed','c-att'],queued:['circle-dashed','c-3'],failed:['circle-x','c-err']};
+    h+=`<div class="sec"><div class="shead"><span class="cb">${ic('chevron-down','s12')}</span><span class="st">Checks</span>
+      <span class="sm">${p} of ${d.checks.length} passed · 1 running</span></div>`;
+    for(const [s,n,tm] of d.checks)h+=`<div class="srow"><span class="lb ${CI[s][1]}">${ic(CI[s][0])}</span><span class="tx">${n}</span><span class="rt">${tm}</span></div>`;
+    h+=`</div><div class="sec"><div class="shead"><span class="cb">${ic('chevron-down','s12')}</span><span class="st">Reviews</span><span class="sm">1 of 2 approved</span></div>`;
+    for(const [p2,s,w] of d.reviews){
+      const r=s==='approved'?`<span class="c-ok">${ic('circle-check','s14')}</span>${w}`:`<span class="c-att">${ic('eye','s14')}</span>${w}`;
+      h+=`<div class="srow"><span class="lb">${avatar(p2)}</span><span class="tx">${p2}${p2==='mahype'?' <span class="faint">(you)</span>':''}</span><span class="rt">${r}</span></div>`;
+    }
+    h+='</div>';
+  }
+  h+=`<div class="sec"><div class="shead"><span class="cb">${ic('chevron-down','s12')}</span><span class="st">Activity</span>
+    <span class="grow"></span>${d.total?`<button class="lnk">Show all ${d.total}</button>`:''}</div>`;
+  for(const [i,a,w,tm] of d.activity||[])h+=`<div class="act"><span class="lb">${ic(i,'s14')}</span><span><b>${a}</b> ${w} · <span class="tab">${tm}</span></span></div>`;
+  for(const [p2,tm,txt] of d.comments||[])h+=`<div class="cmt">${avatar(p2)}<span class="who"><b>${p2}</b> · <span class="tab">${tm}</span></span><p>${esc(txt)}</p></div>`;
+  h+=`</div></div></div><aside class="props">${props(t,d)}</aside></div>`;
+  el.innerHTML=h;
+}
+
+// ---------- Größe, Thema, Rahmen ----------
+function layout(){
+  const s=SIZES[st.size], html=document.documentElement, win=document.getElementById('win');
+  html.dataset.size=s.cls; html.dataset.theme=st.theme;
+  // Spalten wie im Auftrag: Breit mit Inhalt >= 1320 → drei Spalten, sonst Liste + Detail; Schmal eine.
+  const panelW=s.cls==='l'?s.w-232-8:s.cls==='m'?s.w-52-8:s.w;
+  win.dataset.cols=s.cls==='s'?'1':(s.cls==='l'&&panelW>=1320?'3':'2');
+  win.style.width=s.w+'px'; win.style.height=s.h+'px';
+  const shot=html.dataset.shot, avail=innerWidth-32;
+  const k=shot?1:Math.min(1,avail/s.w);
+  win.style.transform=`scale(${k})`;
+  const f=document.getElementById('frame'); f.style.width=s.w*k+'px'; f.style.height=s.h*k+'px';
+  if(!shot)f.style.margin='0 auto';
+  for(const e of document.querySelectorAll('#sizes span'))e.classList.toggle('on',e.dataset.size===st.size);
+  for(const e of document.querySelectorAll('#themes span'))e.classList.toggle('on',e.dataset.theme===st.theme);
+}
+function render(){layout();renderList();renderDetail();lucide.createIcons();sync()}
+function sync(){
+  const p=new URLSearchParams(location.search);
+  p.set('size',st.size);p.set('theme',st.theme);p.set('open',st.open||'none');
+  if(st.order==='manual')p.set('order','manual');else p.delete('order');
+  history.replaceState(null,'','?'+p.toString());
+}
+function visible(){return GROUPS.flatMap(g=>st.closed.has(g.id)?[]:ITEMS.filter(t=>t.group===g.id))}
+
+// ---------- Bedienung ----------
+document.addEventListener('click',e=>{
+  const z=e.target.closest('[data-size]'); if(z&&z.closest('#sizes')){st.size=z.dataset.size;render();return}
+  const th=e.target.closest('[data-theme]'); if(th&&th.closest('#themes')){st.theme=th.dataset.theme;render();return}
+  const m=e.target.closest('[data-menu]');
+  if(m){st.menu=st.menu===m.dataset.menu?null:m.dataset.menu;render();return}
+  const o=e.target.closest('[data-order]');
+  if(o&&o.closest('.menu')){st.order=o.dataset.order;st.menu=null;render();return}
+  if(e.target.closest('.menu'))return;
+  const hadMenu=!!st.menu; st.menu=null;
+  const act=e.target.closest('[data-act]')?.dataset.act;
+  const r=e.target.closest('.row');
+  if(r&&act==='toggle'){const t=byId(r.dataset.id);if(t.kind==='task'){t.done=!t.done}render();return}
+  if(r){st.open=r.dataset.id;render();return}
+  const gh=e.target.closest('.ghead');
+  if(gh&&!e.target.closest('.add')){const g=gh.dataset.group;st.closed.has(g)?st.closed.delete(g):st.closed.add(g);render();return}
+  if(act==='close'||act==='back'){st.open=null;render();return}
+  if(act==='prev'||act==='next'){const v=visible(),i=v.findIndex(t=>t.id===st.open);const n=v[i+(act==='next'?1:-1)];if(n)st.open=n.id;render();return}
+  if(act==='hide-done'){st.hideDone=!st.hideDone;render();return}
+  if(act==='toggle-d'){const t=byId(st.open);if(t&&t.kind==='task')t.done=!t.done;render();return}
+  if(hadMenu)render();
+});
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='Escape'){if(st.menu)st.menu=null;else st.open=null;render()}
+  if(e.key==='j'||e.key==='k'){const v=visible(),i=v.findIndex(t=>t.id===st.open);const n=v[Math.max(0,i+(e.key==='j'?1:-1))];if(n){st.open=n.id;render()}}
+  if(e.key==='n'){e.preventDefault();document.querySelector('.quick input')?.focus()}
+});
+addEventListener('resize',layout);
+render();
+</script>
+</body></html>
