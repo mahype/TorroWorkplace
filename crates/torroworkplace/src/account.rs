@@ -1,13 +1,15 @@
-//! The core's Nextcloud account: the stored account and its app password, signing in with
-//! Login Flow v2, revoking the app password on the server when the account is removed, and the
+//! The core's Nextcloud accounts: the stored accounts and their app passwords, signing in with
+//! Login Flow v2, revoking an app password on the server when its account is removed, and the
 //! remote wipe the server may ask for once it refuses the app password ([`remote_wipe`], task S.12).
 //!
-//! Task K.6 in `docs/tasks/kalender-aufgaben.md`. Building blocks that exist:
+//! Task K.6 in `docs/tasks/kalender-aufgaben.md`; several accounts since task M1.1: signing in
+//! adds an account, removing one leaves the others. Building blocks that exist:
 //! `torro_core::account` (accounts.json + keychain), `torro_pim_caldav::nextcloud`
 //! (`normalize_server`, `start_login`, `LoginFlow::poll`, `dav_url`), `torro_pim_caldav::
 //! http_client`, `torro_pim_caldav::CalDavClient`. `pim.rs` (task K.5) uses this module.
 
 use std::future::Future;
+use std::path::Path;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -31,20 +33,35 @@ pub struct Connected {
     pub app_password: String,
 }
 
-/// The stored Nextcloud account with its secret from the keychain; `None` when there is
-/// none (or its secret is gone).
-pub fn stored() -> Result<Option<Connected>, String> {
-    let Some(account) = account::load()
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .find(|account| account.kind == AccountKind::Nextcloud)
-    else {
-        return Ok(None);
-    };
-    let Some(app_password) = account.secret().map_err(|err| err.to_string())? else {
-        return Ok(None);
-    };
-    Ok(Some(Connected { account, app_password }))
+/// Every stored Nextcloud account with its secret from the keychain, in the order of
+/// `accounts.json` (task M1.1). An account whose secret is gone is left out with a log line: it
+/// cannot sign in, and signing in to it again brings it back.
+pub fn stored() -> Result<Vec<Connected>, String> {
+    let mut connected = Vec::new();
+    for account in account::load().map_err(|err| err.to_string())? {
+        if account.kind != AccountKind::Nextcloud {
+            continue;
+        }
+        match account.secret().map_err(|err| err.to_string())? {
+            Some(app_password) => connected.push(Connected { account, app_password }),
+            None => eprintln!("torroworkplace: {} has no secret in the keychain; sign in again", account.id),
+        }
+    }
+    Ok(connected)
+}
+
+/// The account that owned every collection before the core held several (task M1.1): the
+/// first Nextcloud account in the account list at `path`, the one the core used to pick. Ids
+/// stored back then (bare URLs) belong to it. `None` without one, or when the list cannot be
+/// read; then nothing is rewritten.
+pub fn legacy_owner(path: &Path) -> Option<String> {
+    match account::load_from(path) {
+        Ok(accounts) => accounts.into_iter().find(|account| account.kind == AccountKind::Nextcloud).map(|a| a.id),
+        Err(err) => {
+            eprintln!("torroworkplace: cannot read {} to update old collection ids: {err}", path.display());
+            None
+        }
+    }
 }
 
 /// Starts Login Flow v2 for what the user typed and opens the login URL in the browser
@@ -59,18 +76,27 @@ pub async fn start(http: &reqwest::Client, server_input: &str) -> Result<LoginFl
 }
 
 /// Polls every 2 s until the user granted access (at most 20 minutes), then stores the
-/// account (replacing any other Nextcloud account) and its app password.
+/// account next to the others ([`with_account`]) and its app password.
 pub async fn finish(http: &reqwest::Client, flow: &LoginFlow) -> Result<Connected, String> {
     let credentials = poll_until_granted(|| flow.poll(http), POLL_INTERVAL, SIGN_IN_TIMEOUT).await?;
     keychain(move || {
         let account = Account::nextcloud(&credentials.server, &credentials.login_name);
         account.set_secret(&credentials.app_password).map_err(|err| err.to_string())?;
-        let mut accounts = take_other_accounts(Some(&account.id))?;
-        accounts.push(account.clone());
+        let accounts = with_account(account::load().map_err(|err| err.to_string())?, account.clone());
         account::save(&accounts).map_err(|err| err.to_string())?;
         Ok(Connected { account, app_password: credentials.app_password })
     })
     .await
+}
+
+/// `accounts` with `account` added at the end, or in place of the one with the same id (signing
+/// in to the same account again replaces it and keeps its place). The others stay.
+fn with_account(mut accounts: Vec<Account>, account: Account) -> Vec<Account> {
+    match accounts.iter_mut().find(|stored| stored.id == account.id) {
+        Some(stored) => *stored = account,
+        None => accounts.push(account),
+    }
+    accounts
 }
 
 /// Runs keychain work on a plain thread of its own. The Secret Service client starts its own
@@ -85,9 +111,14 @@ pub async fn keychain<T: Send + 'static>(
     rx.await.unwrap_or_else(|_| Err("keychain access failed".into()))
 }
 
-/// Removes the stored account and its secret.
-pub fn forget() -> Result<(), String> {
-    let accounts = take_other_accounts(None)?;
+/// Removes the stored account `id` and its secret; the other accounts stay. The secret goes
+/// first: a list that still names the account is better than a secret nobody can find.
+pub fn forget(id: &str) -> Result<(), String> {
+    let mut accounts = account::load().map_err(|err| err.to_string())?;
+    if let Some(account) = accounts.iter().find(|account| account.id == id) {
+        account.delete_secret().map_err(|err| err.to_string())?;
+    }
+    accounts.retain(|account| account.id != id);
     account::save(&accounts).map_err(|err| err.to_string())
 }
 
@@ -174,20 +205,6 @@ pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavCli
     CalDavClient::new(http.clone(), &dav, connected.app_password.clone()).map_err(|err| err.to_string())
 }
 
-/// Deletes the secrets of all Nextcloud accounts except the one with id `keep` (its secret
-/// is about to be overwritten) and returns the accounts that stay in the list.
-fn take_other_accounts(keep: Option<&str>) -> Result<Vec<Account>, String> {
-    let mut kept = Vec::new();
-    for account in account::load().map_err(|err| err.to_string())? {
-        if account.kind != AccountKind::Nextcloud {
-            kept.push(account);
-        } else if Some(account.id.as_str()) != keep {
-            account.delete_secret().map_err(|err| err.to_string())?;
-        }
-    }
-    Ok(kept)
-}
-
 /// Calls `poll` every `interval` until it yields credentials. Errors are retried (the
 /// network is often gone while the laptop sleeps), but they count toward `timeout`.
 async fn poll_until_granted<Poll, Fut>(
@@ -234,6 +251,31 @@ mod tests {
 
     fn connected() -> Connected {
         Connected { account: Account::nextcloud("https://cloud.example.org/", "anna"), app_password: "secret".into() }
+    }
+
+    #[test]
+    fn signing_in_adds_an_account_and_replaces_only_the_same_one() {
+        let anna = Account::nextcloud("https://cloud.example.org", "anna");
+        let bob = Account::nextcloud("https://other.example.org", "bob");
+        let accounts = with_account(vec![anna.clone()], bob.clone());
+        assert_eq!(accounts, [anna.clone(), bob.clone()]);
+        let moved = Account { server: "https://cloud.example.org/".into(), ..anna.clone() };
+        assert_eq!(with_account(accounts, moved.clone()), [moved, bob], "same id: replaced in place");
+    }
+
+    #[test]
+    fn the_legacy_owner_is_the_first_nextcloud_account_of_the_given_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(account::ACCOUNTS_FILE);
+        assert_eq!(legacy_owner(&path), None, "no list, no owner");
+        let accounts = [
+            Account::nextcloud("https://cloud.example.org", "anna"),
+            Account::nextcloud("https://other.example.org", "bob"),
+        ];
+        std::fs::write(&path, serde_json::to_vec(&accounts).expect("json")).expect("written");
+        assert_eq!(legacy_owner(&path).as_deref(), Some("nextcloud:anna@cloud.example.org"));
+        std::fs::write(&path, "{ damaged").expect("damaged");
+        assert_eq!(legacy_owner(&path), None, "a damaged list rewrites nothing");
     }
 
     #[test]

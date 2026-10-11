@@ -139,14 +139,18 @@ pub enum Request {
     },
 
     /// Starts Login Flow v2 for a Nextcloud; the core opens the browser and polls in the
-    /// background ([`Response::LoginStarted`]).
+    /// background ([`Response::LoginStarted`]). The account is added to the others; signing in
+    /// to an account that exists already replaces its app password, the others stay.
     #[serde(rename = "accounts.connect_nextcloud")]
     ConnectNextcloud { server: String },
-    /// Fetch calendars and tasks from the server now.
+    /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
+    /// its own: one that fails keeps its cache and its problem, the others are updated. The
+    /// answer is the first failure, else [`Response::Ok`].
     #[serde(rename = "accounts.sync")]
     Sync,
     /// The calendars the suite shows, i.e. the collections with events that are not hidden
-    /// ([`Response::Collections`]).
+    /// ([`Response::Collections`]). Collection ids are `<account-id>/<collection URL>`; events
+    /// and tasks name their collection by this id, writes find their account through it.
     #[serde(rename = "calendar.list_calendars")]
     CalendarCollections,
     /// The task lists the suite shows, i.e. the collections with todos that are not hidden
@@ -189,10 +193,12 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
-    /// All accounts with their state and collections ([`Response::Accounts`]).
+    /// All accounts with their state and collections ([`Response::Accounts`]), in the order they
+    /// were added; a sign-in that runs is listed last with an empty id.
     #[serde(rename = "accounts.list_accounts")]
     Accounts,
-    /// Removes an account, its secret and, where the server allows, its app password there.
+    /// Removes the account `id` (from [`Request::Accounts`]), its secret, its cached data and,
+    /// where the server allows, its app password there. Other accounts stay as they are.
     #[serde(rename = "accounts.remove_account")]
     RemoveAccount { id: String },
     /// Renames a template; its id stays.
@@ -345,7 +351,8 @@ impl Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountInfo {
-    /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`.
+    /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`; the front part of
+    /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
     /// Provider: `nextcloud` (later `github`, `slack`, …).
     pub kind: String,

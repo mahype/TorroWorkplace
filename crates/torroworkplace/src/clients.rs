@@ -41,7 +41,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use torro_ipc::api::{Operation, Rights, RightsTemplate};
+use torro_ipc::api::{Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -183,6 +183,36 @@ fn legacy_rights() -> Rights {
     RightsTemplate::ReadOnly.rights()
 }
 
+/// A selection of calendars or task lists names a collection by a bare URL, as before several
+/// accounts existed ([`torro_pim::account::is_legacy_id`]).
+fn has_legacy_selection(rights: &Rights) -> bool {
+    [&rights.calendars, &rights.task_lists].into_iter().any(|selection| match selection {
+        Selection::All => false,
+        Selection::Only(ids) => ids.iter().any(|id| torro_pim::account::is_legacy_id(id)),
+    })
+}
+
+/// Puts `owner` in front of every bare URL in the selections of `clients` (task M1.1): before
+/// several accounts existed there was one, `owner`, so the rewrite is unambiguous and grants no
+/// client anything it did not have. `true` when something changed.
+fn qualify_legacy_selections(clients: &mut [Entry], owner: &str) -> bool {
+    let mut changed = false;
+    for entry in clients {
+        let rights = &mut entry.record.rights;
+        for selection in [&mut rights.calendars, &mut rights.task_lists] {
+            if let Selection::Only(ids) = selection {
+                for id in ids {
+                    if let Some(qualified) = torro_pim::account::qualify_legacy_id(id, owner) {
+                        *id = qualified;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
 /// `name` is the keychain account of a client key (`client-<id>`). Account ids of the accounts
 /// (`nextcloud:anna@cloud.example.org`) must never be one.
 pub fn is_client_keychain_account(name: &str) -> bool {
@@ -284,10 +314,27 @@ impl Clients {
     /// Fails only when the app key can neither be read nor created. A missing `clients.json`
     /// means no clients; a damaged one is reported on stderr and leaves only the app key valid
     /// (fail closed).
+    ///
+    /// Selections from before several accounts existed name collections by bare URL; they get
+    /// the id of the account that owned them in front ([`qualify_legacy_selections`]), taken
+    /// from `accounts.json` next to `file`, and the file is written once (task M1.1). When that
+    /// write fails, the rewritten ids still apply and the next start tries again.
     pub fn open(app_key: &Path, file: &Path, keychain: Box<dyn KeyStore>) -> Result<Clients, ClientsError> {
         let app_key = hash(&load_or_create_app_key(app_key)?);
+        let mut qualified = false;
         let state = match read_clients(file) {
-            Ok(clients) => State { clients, damaged: false },
+            Ok(mut clients) => {
+                let owner = || {
+                    let accounts = file.with_file_name(torro_core::account::ACCOUNTS_FILE);
+                    crate::account::legacy_owner(&accounts)
+                };
+                if clients.iter().any(|entry| has_legacy_selection(&entry.record.rights))
+                    && let Some(owner) = owner()
+                {
+                    qualified = qualify_legacy_selections(&mut clients, &owner);
+                }
+                State { clients, damaged: false }
+            }
             Err(err) => {
                 eprintln!("torroworkplace: {err}; only the suite's own programs are let in");
                 State { clients: Vec::new(), damaged: true }
@@ -301,6 +348,9 @@ impl Clients {
             writing: Mutex::new(()),
             changing: tokio::sync::Mutex::new(()),
         };
+        if qualified && let Err(err) = shared.write(false) {
+            eprintln!("torroworkplace: cannot store the new collection ids of the clients: {err}");
+        }
         Ok(Clients { shared: Arc::new(shared) })
     }
 
@@ -1237,6 +1287,74 @@ pub(crate) mod tests {
         fs::write(&file, old).expect("write");
         let entries = read_clients(&file).expect("an older file is not damaged");
         assert_eq!(entries[0].record.rights, read_only());
+    }
+
+    /// A `clients.json` with one client limited to the calendar `work` and the task lists
+    /// `tasks` (both by bare URL, as before M1.1) and `new` (already with its account).
+    fn write_legacy_selections(dir: &Path) -> PathBuf {
+        let file = clients_file(dir);
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let mut rights = read_only();
+        rights.calendars = Selection::Only(vec!["https://cloud.example.org/dav/calendars/anna/work/".into()]);
+        rights.task_lists = Selection::Only(vec![
+            "https://cloud.example.org/dav/calendars/anna/tasks/".into(),
+            "nextcloud:anna@cloud.example.org/https://cloud.example.org/dav/calendars/anna/new/".into(),
+        ]);
+        let record = ClientRecord {
+            id: "a1b2c3d4".into(),
+            name: "Script".into(),
+            kind: "script".into(),
+            key_sha256: "1".repeat(64),
+            created: Utc::now(),
+            last_used: None,
+            rights,
+        };
+        fs::write(&file, serde_json::to_vec(&ClientsFile { clients: vec![record] }).expect("json")).expect("write");
+        file
+    }
+
+    fn selections(clients: &Clients) -> (Selection, Selection) {
+        let rights = clients.records()[0].rights.clone();
+        (rights.calendars, rights.task_lists)
+    }
+
+    #[test]
+    fn selections_from_before_several_accounts_get_the_account_and_are_stored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = write_legacy_selections(dir.path());
+        let accounts = [
+            torro_core::Account::nextcloud("https://cloud.example.org", "anna"),
+            torro_core::Account::nextcloud("https://other.example.org", "bob"),
+        ];
+        let accounts_file = file.with_file_name(torro_core::account::ACCOUNTS_FILE);
+        fs::write(&accounts_file, serde_json::to_vec(&accounts).expect("json")).expect("accounts");
+
+        let anna = "nextcloud:anna@cloud.example.org";
+        let expected = (
+            Selection::Only(vec![format!("{anna}/https://cloud.example.org/dav/calendars/anna/work/")]),
+            Selection::Only(vec![
+                format!("{anna}/https://cloud.example.org/dav/calendars/anna/tasks/"),
+                format!("{anna}/https://cloud.example.org/dav/calendars/anna/new/"),
+            ]),
+        );
+        assert_eq!(selections(&open_in(dir.path())), expected, "rewritten in memory");
+        let stored = read_clients(&file).expect("still a valid file");
+        assert_eq!(
+            (stored[0].record.rights.calendars.clone(), stored[0].record.rights.task_lists.clone()),
+            expected,
+            "and in clients.json"
+        );
+        assert_eq!(selections(&open_in(dir.path())), expected, "a second start changes nothing");
+    }
+
+    #[test]
+    fn without_an_account_old_selections_stay_as_they_are() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = write_legacy_selections(dir.path());
+        let before = fs::read(&file).expect("read");
+        let clients = open_in(dir.path());
+        assert!(matches!(selections(&clients).0, Selection::Only(ids) if ids[0].starts_with("https://")));
+        assert_eq!(fs::read(&file).expect("read"), before, "nothing written");
     }
 
     #[test]

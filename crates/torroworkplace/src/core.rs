@@ -49,7 +49,7 @@ pub struct Snapshot {
     pub busy: bool,
     /// Why the last refresh could not read something, for the info line.
     pub problem: Option<String>,
-    /// The Nextcloud account, for the status line.
+    /// The accounts as one state (`torro_pim::combined_state`), for the status line.
     pub account: Option<AccountState>,
 }
 
@@ -568,8 +568,8 @@ mod tests {
         for area in Area::ALL {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
         }
-        rights.calendars = Selection::Only(vec!["/cal/work/".into()]);
-        rights.task_lists = Selection::Only(vec!["/tasks/work/".into()]);
+        rights.calendars = Selection::Only(vec![id("/cal/work/")]);
+        rights.task_lists = Selection::Only(vec![id("/tasks/work/")]);
         client(core, rights).await.1
     }
 
@@ -592,19 +592,19 @@ mod tests {
     async fn a_collection_outside_the_selection_is_not_found() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
-        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/home/")]).await;
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/"))]).await;
         let key = limited_client(&core).await;
 
         for request in [
-            Request::SaveEvent { event: event_in("/cal/home/", None) },
-            Request::DeleteEvent { event: event_in("/cal/home/", Some("/cal/home/u.ics")) },
-            Request::SaveEvent { event: event_in("/cal/work/", Some("/cal/home/u.ics")) },
-            Request::SetCollectionShown { collection: "/cal/home/".into(), shown: true },
+            Request::SaveEvent { event: event_in(&id("/cal/home/"), None) },
+            Request::DeleteEvent { event: event_in(&id("/cal/home/"), Some("/cal/home/u.ics")) },
+            Request::SaveEvent { event: event_in(&id("/cal/work/"), Some("/cal/home/u.ics")) },
+            Request::SetCollectionShown { collection: id("/cal/home/"), shown: true },
         ] {
             assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "not-found", "{request:?}");
         }
         // Inside the selection the request gets as far as the approval admin commands need.
-        let shown = Request::SetCollectionShown { collection: "/cal/work/".into(), shown: false };
+        let shown = Request::SetCollectionShown { collection: id("/cal/work/"), shown: false };
         assert_eq!(code(&ask(&core, Some(&key), shown).await), "forbidden");
         assert!(!settings_file(dir.path()).exists());
     }
@@ -616,8 +616,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
         core.pim.pretend_signed_in().await;
-        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/secret/")]).await;
-        let hide = Request::SetCollectionShown { collection: "/cal/secret/".into(), shown: false };
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/secret/"))]).await;
+        let hide = Request::SetCollectionShown { collection: id("/cal/secret/"), shown: false };
         assert_eq!(core.handle(hide).await, Response::Ok);
         let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let now = chrono::Utc::now();
@@ -635,15 +635,15 @@ mod tests {
             let answer = ask(&core, Some(&key), request.clone()).await;
             assert!(!matches!(answer, Response::Error { .. }), "{request:?}: {answer:?}");
             let json = serde_json::to_string(&answer).expect("serializes");
-            assert!(!json.contains("/cal/secret/"), "{request:?}: {json}");
+            assert!(!json.contains(&id("/cal/secret/")), "{request:?}: {json}");
         }
         let accounts = serde_json::to_string(&ask(&core, Some(&key), Request::Accounts).await).expect("json");
-        assert!(accounts.contains("/cal/work/"), "shown collections are listed: {accounts}");
+        assert!(accounts.contains(&id("/cal/work/")), "shown collections are listed: {accounts}");
 
         let app_key = crate::clients::tests::app_key(dir.path());
         for request in [Request::Settings, Request::Accounts] {
             let answer = serde_json::to_string(&ask(&core, Some(&app_key), request).await).expect("json");
-            assert!(answer.contains("/cal/secret/"), "the control centre sees what is hidden: {answer}");
+            assert!(answer.contains(&id("/cal/secret/")), "the control centre sees what is hidden: {answer}");
         }
     }
 
@@ -651,8 +651,8 @@ mod tests {
     async fn settings_from_a_client_keep_the_hidden_collections() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
-        core.pim.cache_collections(vec![calendar("/cal/secret/")]).await;
-        core.handle(Request::SetCollectionShown { collection: "/cal/secret/".into(), shown: false }).await;
+        core.pim.cache_collections(vec![calendar(&id("/cal/secret/"))]).await;
+        core.handle(Request::SetCollectionShown { collection: id("/cal/secret/"), shown: false }).await;
         let reach_rights = RightsTemplate::FullAccess.rights();
         let mut changed = settings(&core).await;
         changed.hidden_collections.clear();
@@ -660,7 +660,7 @@ mod tests {
         let answer =
             core.handle_within(Request::UpdateSettings { settings: changed }, Reach::Client(&reach_rights)).await;
         assert_eq!(answer, Response::Ok);
-        assert_eq!(settings(&core).await.hidden_collections, ["/cal/secret/"]);
+        assert_eq!(settings(&core).await.hidden_collections, [id("/cal/secret/")]);
     }
 
     #[tokio::test]
@@ -694,6 +694,11 @@ mod tests {
             Response::Settings { settings } => settings,
             other => panic!("Settings is answered with Settings, got {other:?}"),
         }
+    }
+
+    /// The collection id of `path` on the test account's server: `<account-id>/<url>` (M1.1).
+    fn id(path: &str) -> String {
+        torro_pim::account::collection_id(crate::pim::tests::ANNA, &format!("https://cloud.example.org{path}"))
     }
 
     fn calendar(id: &str) -> torro_pim::Collection {
@@ -789,26 +794,25 @@ mod tests {
     async fn a_hidden_collection_is_stored_and_left_out() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
-        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/home/")]).await;
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/"))]).await;
         let shown = |collection: &str, shown| Request::SetCollectionShown { collection: collection.into(), shown };
 
-        assert_eq!(core.handle(shown("/cal/home/", false)).await, Response::Ok);
-        assert_eq!(settings(&core).await.hidden_collections, ["/cal/home/"]);
+        assert_eq!(core.handle(shown(&id("/cal/home/"), false)).await, Response::Ok);
+        assert_eq!(settings(&core).await.hidden_collections, [id("/cal/home/")]);
         assert_eq!(
             core.handle(Request::CalendarCollections).await,
-            Response::Collections { collections: vec![calendar("/cal/work/")] }
+            Response::Collections { collections: vec![calendar(&id("/cal/work/"))] }
         );
 
-        assert_eq!(core.handle(shown("/cal/home/", true)).await, Response::Ok);
+        assert_eq!(core.handle(shown(&id("/cal/home/"), true)).await, Response::Ok);
         assert!(settings(&core).await.hidden_collections.is_empty());
     }
 
     #[tokio::test]
     async fn unknown_collection_is_not_found_and_not_written() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let response = core(dir.path())
-            .handle(Request::SetCollectionShown { collection: "/cal/nope/".into(), shown: false })
-            .await;
+        let response =
+            core(dir.path()).handle(Request::SetCollectionShown { collection: id("/cal/nope/"), shown: false }).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
         assert!(!settings_file(dir.path()).exists());
     }

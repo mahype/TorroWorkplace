@@ -7,14 +7,14 @@
 //! not running → `ProviderError::Other` with the `IpcError` message, an unexpected
 //! variant → `Other("unexpected answer …")`.
 //!
-//! Two methods combine requests, so the apps keep one call each: [`PimSource::account`] reads
-//! the state of the first account from `Accounts`, [`PimSource::collections`] joins
-//! `CalendarCollections` and `TaskCollections`.
+//! [`PimSource::accounts`] reads `Accounts` and leaves out the collections, which come with
+//! [`PimSource::collections`]; that one joins `CalendarCollections` and `TaskCollections`, so
+//! the apps keep one call each.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use torro_pim::{AccountState, Collection, Event, PimSource, ProviderError, Todo};
+use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 use crate::Request;
 use crate::Response;
@@ -79,13 +79,18 @@ fn with_uid(err: ProviderError, uid: &str) -> ProviderError {
 }
 
 impl PimSource for PimClient {
-    /// The state of the first account (today there is at most one Nextcloud); without one,
-    /// `NotConnected`. A sign-in that runs is listed as an account too, so it shows here.
-    async fn account(&self) -> Result<AccountState, ProviderError> {
+    /// Every account the core lists, in its order; a sign-in that runs is listed too (empty id).
+    async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
         match self.ask(Request::Accounts).await? {
-            Response::Accounts { accounts } => {
-                Ok(accounts.into_iter().next().map_or(AccountState::NotConnected, |account| account.state))
-            }
+            Response::Accounts { accounts } => Ok(accounts
+                .into_iter()
+                .map(|account| PimAccount {
+                    id: account.id,
+                    label: account.label,
+                    kind: account.kind,
+                    state: account.state,
+                })
+                .collect()),
             other => Err(unexpected(other)),
         }
     }
@@ -165,7 +170,7 @@ mod tests {
     use std::time::Duration;
 
     use chrono::{NaiveDate, TimeZone};
-    use torro_pim::{CollectionKind, EventTime};
+    use torro_pim::{AccountState, CollectionKind, EventTime};
 
     use super::*;
     use crate::{AccountInfo, IpcError, client, server};
@@ -327,9 +332,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_is_read() {
-        let core = start(|request| async move { answer(request) }).await;
-        assert_eq!(core.client().account().await.unwrap(), account());
+    async fn accounts_are_read_without_their_collections() {
+        let core = start(|request| async move {
+            match request {
+                Request::Accounts => {
+                    let second = AccountInfo {
+                        id: "nextcloud:bob@other.example.test".into(),
+                        label: "bob@other.example.test".into(),
+                        collections: vec![],
+                        ..account_info()
+                    };
+                    Response::Accounts { accounts: vec![account_info(), second] }
+                }
+                other => answer(other),
+            }
+        })
+        .await;
+        let accounts = core.client().accounts().await.unwrap();
+        assert_eq!(
+            accounts,
+            vec![
+                PimAccount {
+                    id: "nextcloud:anna@cloud.example.test".into(),
+                    label: "anna@cloud.example.test".into(),
+                    kind: "nextcloud".into(),
+                    state: account(),
+                },
+                PimAccount {
+                    id: "nextcloud:bob@other.example.test".into(),
+                    label: "bob@other.example.test".into(),
+                    kind: "nextcloud".into(),
+                    state: account(),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -346,7 +382,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_without_accounts_is_not_connected() {
+    async fn without_accounts_the_list_is_empty_and_not_connected() {
         let core = start(|request| async move {
             match request {
                 Request::Accounts => Response::Accounts { accounts: vec![] },
@@ -354,7 +390,9 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(core.client().account().await.unwrap(), AccountState::NotConnected);
+        let accounts = core.client().accounts().await.unwrap();
+        assert!(accounts.is_empty());
+        assert_eq!(torro_pim::combined_state(&accounts), AccountState::NotConnected);
     }
 
     #[tokio::test]
@@ -442,6 +480,6 @@ mod tests {
     async fn missing_core_is_other_with_ipc_message() {
         let dir = tempfile::tempdir().unwrap();
         let client = PimClient { socket: dir.path().join("core.sock") };
-        assert_eq!(client.account().await, Err(ProviderError::Other(IpcError::NotRunning.to_string())));
+        assert_eq!(client.accounts().await, Err(ProviderError::Other(IpcError::NotRunning.to_string())));
     }
 }

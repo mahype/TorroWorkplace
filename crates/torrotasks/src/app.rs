@@ -1161,7 +1161,10 @@ impl App {
 
     fn fetch_account(&self) -> Task<Message> {
         let source = self.source.clone();
-        Task::perform(async move { source.account().await.map_err(|e| e.to_string()) }, Message::AccountLoaded)
+        // One state for the connect screen; grouping by account is M1.3.
+        let combined =
+            async move { source.accounts().await.map(|a| torro_pim::combined_state(&a)).map_err(|e| e.to_string()) };
+        Task::perform(combined, Message::AccountLoaded)
     }
 
     fn save(&self, todo: Todo) -> Task<Message> {

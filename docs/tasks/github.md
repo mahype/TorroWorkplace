@@ -19,7 +19,7 @@ K.21 (frei)
 ## M1 Mehrere Konten
 
 ### M1.1 Kern: Konten-Liste, PIM je Konto
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/account.rs`,
   `crates/torroworkplace/src/{account,pim,core,settings_service,clients}.rs`, `crates/torro-pim/src/{account,source,demo,lib}.rs`,
   `crates/torro-ipc/src/{lib,pim,api}.rs`, `crates/torro-gui/src/source.rs`, Aufrufer von `PimSource::account` in

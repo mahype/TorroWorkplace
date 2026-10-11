@@ -8,7 +8,7 @@
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,9 @@ use crate::paths::AppPaths;
 
 /// Keychain service name all suite secrets are filed under.
 const KEYCHAIN_SERVICE: &str = "torroworkplace";
+
+/// The file name of the account list in the core's config directory.
+pub const ACCOUNTS_FILE: &str = "accounts.json";
 
 /// What kind of server an account talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +104,14 @@ impl std::error::Error for AccountError {}
 
 /// All accounts; an empty list when none are set up yet.
 pub fn load() -> Result<Vec<Account>, AccountError> {
-    match fs::read(accounts_file()?) {
+    load_from(&accounts_file()?)
+}
+
+/// All accounts in the account list at `path` (an [`ACCOUNTS_FILE`]); an empty list when the
+/// file does not exist. For callers that are handed their config directory, such as the core's
+/// tests, which must never read the user's file.
+pub fn load_from(path: &Path) -> Result<Vec<Account>, AccountError> {
+    match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(AccountError::Format),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(err) => Err(AccountError::Io(err)),
@@ -121,7 +131,7 @@ pub fn save(accounts: &[Account]) -> Result<(), AccountError> {
 }
 
 fn accounts_file() -> Result<PathBuf, AccountError> {
-    AppPaths::for_app(AppId::WORKPLACE).map(|p| p.config.join("accounts.json")).ok_or(AccountError::NoHome)
+    AppPaths::for_app(AppId::WORKPLACE).map(|p| p.config.join(ACCOUNTS_FILE)).ok_or(AccountError::NoHome)
 }
 
 #[cfg(test)]
@@ -133,5 +143,18 @@ mod tests {
         let account = Account::nextcloud("https://cloud.example.org/", "anna");
         assert_eq!(account.id, "nextcloud:anna@cloud.example.org");
         assert_eq!(account.server, "https://cloud.example.org");
+    }
+
+    #[test]
+    fn a_missing_list_is_empty_and_a_written_one_is_read() {
+        // A file of our own in the system's temp directory; never the user's list.
+        let path = std::env::temp_dir().join(format!("torro-core-{}-{ACCOUNTS_FILE}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        assert!(load_from(&path).expect("no file is no accounts").is_empty());
+        let accounts = vec![Account::nextcloud("https://cloud.example.org", "anna")];
+        fs::write(&path, serde_json::to_vec(&accounts).expect("json")).expect("written");
+        let read = load_from(&path);
+        let _ = fs::remove_file(&path);
+        assert_eq!(read.expect("read"), accounts);
     }
 }

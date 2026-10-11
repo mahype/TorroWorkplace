@@ -94,6 +94,20 @@ impl SettingsStore {
         self.change(|settings| settings.hidden_collections.retain(|id| !collections.contains(id)))
     }
 
+    /// Puts `owner` in front of every hidden collection whose id is still a bare URL from before
+    /// several accounts existed (task M1.1, [`torro_pim::account::qualify_legacy_id`]): back then
+    /// there was one account, `owner`. Runs once when the core starts; writes the file (atomically,
+    /// like every change) only when something changed.
+    pub fn qualify_legacy_collections(&self, owner: &str) -> Result<(), String> {
+        self.change(|settings| {
+            for id in &mut settings.hidden_collections {
+                if let Some(qualified) = torro_pim::account::qualify_legacy_id(id, owner) {
+                    *id = qualified;
+                }
+            }
+        })
+    }
+
     /// Reads the stored settings, lets `edit` change them, saves and applies the result. An edit
     /// that changes nothing writes nothing.
     fn change(&self, edit: impl FnOnce(&mut Settings)) -> Result<(), String> {
@@ -467,6 +481,24 @@ mod tests {
         store.set_collection_shown("other", false).expect("hide other");
         store.forget_collections(&["work".into(), "home".into()]).expect("forget");
         assert_eq!(store.current().hidden_collections, ["other"]);
+    }
+
+    #[test]
+    fn hidden_collections_from_before_several_accounts_get_their_account() {
+        let (_dir, store) = store();
+        let owner = "nextcloud:anna@cloud.example.org";
+        let new = format!("{owner}/https://cloud.example.org/dav/calendars/anna/home/");
+        store.set_collection_shown("https://cloud.example.org/dav/calendars/anna/work/", false).expect("old id");
+        store.set_collection_shown(&new, false).expect("new id");
+        store.qualify_legacy_collections(owner).expect("rewritten");
+        assert_eq!(
+            store.current().hidden_collections,
+            [format!("{owner}/https://cloud.example.org/dav/calendars/anna/work/"), new]
+        );
+        let written = fs::metadata(store.file.as_deref().expect("file")).expect("written").modified().ok();
+        store.qualify_legacy_collections(owner).expect("nothing left to do");
+        let again = fs::metadata(store.file.as_deref().expect("file")).expect("still there").modified().ok();
+        assert_eq!(written, again, "a second start writes nothing");
     }
 
     #[test]

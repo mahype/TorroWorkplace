@@ -179,7 +179,8 @@ impl AreaRights {
 pub enum Selection {
     /// Every collection of this kind, also ones added later.
     All,
-    /// Only the collections with these ids (from `accounts.list_accounts`).
+    /// Only the collections with these ids (from `accounts.list_accounts`, each
+    /// `<account-id>/<collection URL>`).
     Only(Vec<String>),
 }
 
@@ -611,8 +612,8 @@ static LIST_CALENDARS: Command = Command {
     area: Area::Calendar,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the calendars shown in the suite with id, name, colour and whether they can be written \
-                  to. Events refer to their calendar by this id.",
+    description: "Lists the calendars of all accounts shown in the suite with id, name, colour and whether they \
+                  can be written to. The id is `<account-id>/<calendar URL>`; events refer to their calendar by it.",
 };
 
 static LIST_EVENTS: Command = Command {
@@ -647,8 +648,8 @@ static LIST_LISTS: Command = Command {
     area: Area::Tasks,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the task lists shown in the suite with id, name, colour and whether they can be written \
-                  to. Tasks refer to their list by this id.",
+    description: "Lists the task lists of all accounts shown in the suite with id, name, colour and whether they \
+                  can be written to. The id is `<account-id>/<list URL>`; tasks refer to their list by it.",
 };
 
 static LIST_TODOS: Command = Command {
@@ -682,8 +683,9 @@ static LIST_ACCOUNTS: Command = Command {
     area: Area::Accounts,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the connected accounts with their state (connected, signing in, last sync, problem) and \
-                  their calendars and task lists. Passwords and tokens are never part of the answer.",
+    description: "Lists every connected account with its id, state (connected, signing in, last sync, problem) \
+                  and its calendars and task lists, whose ids start with the account id. Passwords and tokens are \
+                  never part of the answer.",
 };
 
 static SYNC: Command = Command {
@@ -691,9 +693,10 @@ static SYNC: Command = Command {
     area: Area::Accounts,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Fetches calendars, events and tasks from the server now instead of at the next automatic sync, \
-                  which runs every five minutes. If the server refuses the sign-in and has marked this device for \
-                  a remote wipe, the account and its cached data are removed from this device.",
+    description: "Fetches calendars, events and tasks from the servers of all accounts now instead of at the next \
+                  automatic sync, which runs every five minutes. An account that fails keeps its cached data; the \
+                  others are synced anyway. If a server refuses the sign-in and has marked this device for a \
+                  remote wipe, that account and its cached data are removed from this device.",
 };
 
 static CONNECT_NEXTCLOUD: Command = Command {
@@ -702,8 +705,8 @@ static CONNECT_NEXTCLOUD: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Starts signing in to a Nextcloud server and returns the login URL. A person finishes the sign-in \
-                  in the browser; the core then stores the account and syncs. Show the URL to the person; never \
-                  open it yourself.",
+                  in the browser; the core then adds the account to the others (or renews the sign-in of the same \
+                  account) and syncs it. Show the URL to the person; never open it yourself.",
 };
 
 static REMOVE_ACCOUNT: Command = Command {
@@ -711,8 +714,9 @@ static REMOVE_ACCOUNT: Command = Command {
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Removes the account from this device: revokes its app password on the server where possible \
-                  and deletes the stored secret and the cached calendars and tasks.",
+    description: "Removes one account (id from list_accounts) from this device: revokes its app password on the \
+                  server where possible and deletes its stored secret and its cached calendars and tasks. Other \
+                  accounts stay.",
 };
 
 static GET_SETTINGS: Command = Command {

@@ -2,14 +2,16 @@
 //!
 //! `torrocalendar --demo` and `torrotasks --demo` use it. Changes live until the app
 //! closes. The sample content (task K.2 in `docs/tasks/kalender-aufgaben.md`) is built
-//! around "today", so the week view is never empty.
+//! around "today", so the week view is never empty. It spreads over two accounts (task M1.1),
+//! a work and a home Nextcloud, so the apps can show calendars and lists grouped by account.
 
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
+use crate::account::{account_of, local_id};
 use crate::source::PimSource;
-use crate::{AccountState, Collection, CollectionKind, Event, EventTime, ProviderError, Todo};
+use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
 #[derive(Debug, Default)]
 struct Data {
@@ -37,14 +39,30 @@ impl DemoSource {
     }
 }
 
-const WORK: &str = "demo:/calendars/work/";
-const PERSONAL: &str = "demo:/calendars/personal/";
-const TASKS: &str = "demo:/calendars/tasks/";
-const GROCERIES: &str = "demo:/calendars/groceries/";
-const FAMILY: &str = "demo:/calendars/family/";
+/// The work account: the calendar "Work" and the list "Tasks".
+pub const WORK_ACCOUNT: &str = "nextcloud:anna@work.example.org";
+/// The home account: "Personal", "Groceries" and "Family".
+pub const HOME_ACCOUNT: &str = "nextcloud:anna@home.example.org";
+/// Both, in the order [`DemoSource::accounts`] lists them.
+const ACCOUNTS: [&str; 2] = [WORK_ACCOUNT, HOME_ACCOUNT];
 
-/// The sample content: five collections, 27 events for this week and the two after it,
-/// and 18 tasks. Dates are relative to `today`; a week runs Monday to Sunday.
+// Collection ids as the core writes them: `<account-id>/<collection URL>` (`crate::account`).
+const WORK: &str = "nextcloud:anna@work.example.org/https://work.example.org/remote.php/dav/calendars/anna/work/";
+const TASKS: &str = "nextcloud:anna@work.example.org/https://work.example.org/remote.php/dav/calendars/anna/tasks/";
+const PERSONAL: &str =
+    "nextcloud:anna@home.example.org/https://home.example.org/remote.php/dav/calendars/anna/personal/";
+const GROCERIES: &str =
+    "nextcloud:anna@home.example.org/https://home.example.org/remote.php/dav/calendars/anna/groceries/";
+const FAMILY: &str = "nextcloud:anna@home.example.org/https://home.example.org/remote.php/dav/calendars/anna/family/";
+
+/// The collection URL in a demo collection id, which item hrefs start with; an id of no demo
+/// account (tests add their own) is its own URL.
+fn url_of(collection: &str) -> &str {
+    account_of(collection, &ACCOUNTS, |id| id).and_then(|account| local_id(collection, account)).unwrap_or(collection)
+}
+
+/// The sample content: five collections in two accounts, 27 events for this week and the two
+/// after it, and 18 tasks. Dates are relative to `today`; a week runs Monday to Sunday.
 pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     let monday = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
     let collections = vec![
@@ -56,12 +74,12 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     ];
     let mut events = sample_events(monday);
     for (n, item) in events.iter_mut().enumerate() {
-        item.href = Some(format!("{}evt-{}.ics", item.collection, n + 1));
+        item.href = Some(format!("{}evt-{}.ics", url_of(&item.collection), n + 1));
         item.etag = Some(format!("\"sample-evt-{}\"", n + 1));
     }
     let mut todos = sample_todos(today);
     for (n, item) in todos.iter_mut().enumerate() {
-        item.href = Some(format!("{}todo-{}.ics", item.collection, n + 1));
+        item.href = Some(format!("{}todo-{}.ics", url_of(&item.collection), n + 1));
         item.etag = Some(format!("\"sample-todo-{}\"", n + 1));
     }
     (collections, events, todos)
@@ -301,13 +319,25 @@ fn span(event: &Event) -> (DateTime<Utc>, DateTime<Utc>) {
 }
 
 impl PimSource for DemoSource {
-    async fn account(&self) -> Result<AccountState, ProviderError> {
-        Ok(AccountState::Connected {
-            server: "demo".into(),
-            login_name: "demo".into(),
-            last_sync: Some(Utc::now()),
-            problem: None,
-        })
+    /// The work and the home account, both connected and just synced.
+    async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
+        Ok(ACCOUNTS
+            .iter()
+            .map(|id| {
+                let host = id.split_once('@').map_or(*id, |(_, host)| host);
+                PimAccount {
+                    id: (*id).into(),
+                    label: format!("anna@{host}"),
+                    kind: "nextcloud".into(),
+                    state: AccountState::Connected {
+                        server: format!("https://{host}"),
+                        login_name: "anna".into(),
+                        last_sync: Some(Utc::now()),
+                        problem: None,
+                    },
+                }
+            })
+            .collect())
     }
 
     async fn connect_nextcloud(&self, server: String) -> Result<String, ProviderError> {
@@ -348,7 +378,7 @@ impl PimSource for DemoSource {
                 if event.uid.is_empty() {
                     event.uid = format!("demo-event-{}", data.next_id);
                 }
-                event.href = Some(format!("{}{}.ics", event.collection, event.uid));
+                event.href = Some(format!("{}{}.ics", url_of(&event.collection), event.uid));
                 event.etag = Some(version);
                 data.events.push(event.clone());
             }
@@ -382,7 +412,7 @@ impl PimSource for DemoSource {
                 if todo.uid.is_empty() {
                     todo.uid = format!("demo-todo-{}", data.next_id);
                 }
-                todo.href = Some(format!("{}{}.ics", todo.collection, todo.uid));
+                todo.href = Some(format!("{}{}.ics", url_of(&todo.collection), todo.uid));
                 todo.etag = Some(version);
                 data.todos.push(todo.clone());
             }
@@ -469,19 +499,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn the_sample_spreads_over_two_connected_accounts() {
+        let accounts = DemoSource::new(sunday()).accounts().await.expect("accounts");
+        let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, [WORK_ACCOUNT, HOME_ACCOUNT]);
+        assert!(accounts.iter().all(|a| matches!(a.state, AccountState::Connected { .. })));
+        assert_eq!(accounts[0].label, "anna@work.example.org");
+
+        let (collections, _, _) = sample(sunday());
+        let owner = |c: &Collection| account_of(&c.id, &accounts, |a| a.id.as_str()).map(|a| a.id.clone());
+        let per_account = |id: &str| collections.iter().filter(|c| owner(c).as_deref() == Some(id)).count();
+        assert_eq!((per_account(WORK_ACCOUNT), per_account(HOME_ACCOUNT)), (2, 3));
+    }
+
     #[test]
     fn every_item_has_unique_href_and_etag() {
         let (_, events, todos) = sample(sunday());
         let mut hrefs = HashSet::new();
         for e in &events {
             let href = e.href.as_deref().expect("sample event has an href");
-            assert!(href.starts_with(e.collection.as_str()) && href.ends_with(".ics"), "{href}");
+            assert!(href.starts_with(url_of(&e.collection)) && href.ends_with(".ics"), "{href}");
             assert!(e.etag.is_some(), "{href}");
             assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
         }
         for t in &todos {
             let href = t.href.as_deref().expect("sample task has an href");
-            assert!(href.starts_with(t.collection.as_str()) && href.ends_with(".ics"), "{href}");
+            assert!(href.starts_with(url_of(&t.collection)) && href.ends_with(".ics"), "{href}");
             assert!(t.etag.is_some(), "{href}");
             assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
         }
