@@ -21,16 +21,22 @@
 //!
 //! `Message::Close` is handled by `accounts.rs` (closes the dialog); Cancel, Done, Escape and a
 //! click next to the dialog send it.
+//!
+//! [`view`] is the dialog's content only; `accounts::overlay` puts it on the dialog surface over
+//! the whole window (`super::dialog`). The catalog is a settings group: a row per provider, the
+//! available one with a chevron, the others with a "Coming soon" tag.
 
-use iced::widget::{button, column, container, row, space, text, text_input};
-use iced::{Alignment, Background, Element, Fill, border};
+use iced::widget::space as blank;
+use iced::widget::{column, row, text, text_input};
+use iced::{Alignment, Element, Fill, Theme};
 use torro_core::i18n::tr;
-use torro_core::theme::STATUS_ERROR;
-use torro_gui::theme;
+use torro_gui::icon::Icon;
+use torro_gui::theme::{self, palette, space};
+use torro_gui::{style, typo, widgets};
 use torro_ipc::{AccountInfo, Request};
 use torro_pim::AccountState;
 
-use super::{Action, Data};
+use super::{Action, Data, chevron, pressable, setting_row};
 
 /// The step the dialog is on. Each step has its own subtitle and footer button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -172,28 +178,17 @@ fn login_url(data: &Data) -> Option<&str> {
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let header = column![
-        text(tr("Add account")).size(18).font(theme::FONT_SEMIBOLD),
-        text(subtitle(state.step)).size(14).color(theme::MUTED)
+        typo::text(typo::TITLE, tr("Add account")),
+        typo::text(typo::BODY, subtitle(state.step)).style(theme::text_2)
     ]
-    .spacing(4);
+    .spacing(space::XS);
     let body = match state.step {
         Step::Provider => provider_step(),
         Step::Server => server_step(state),
         Step::SigningIn => signing_in_step(data),
-        Step::Done => text(tr("Your calendars and task lists are ready.")).size(14).color(theme::TEXT).into(),
+        Step::Done => typo::text(typo::BODY, tr("Your calendars and task lists are ready.")).into(),
     };
-    let card = column![header, body, footer(state)].spacing(24);
-    container(card)
-        .padding(24)
-        .width(Fill)
-        .max_width(520)
-        .style(|_| container::Style {
-            text_color: Some(theme::TEXT),
-            background: Some(Background::Color(theme::SURFACE)),
-            border: border::rounded(12),
-            ..container::Style::default()
-        })
-        .into()
+    column![header, body, footer(state)].spacing(space::XL).into()
 }
 
 /// The line under the title; it names what the current step asks for.
@@ -206,68 +201,44 @@ fn subtitle(step: Step) -> &'static str {
     }
 }
 
-/// The catalog: one card per provider, the disabled ones marked "Coming soon".
+/// The catalog: a group with one row per provider, the disabled ones marked "Coming soon".
 fn provider_step() -> Element<'static, Message> {
-    column![
-        provider_card(Provider::Nextcloud, "Nextcloud", tr("Calendars and tasks")),
-        provider_card(Provider::GitHub, "GitHub", tr("Issues and projects")),
-        provider_card(Provider::Slack, "Slack", tr("Mentions and messages")),
-        provider_card(Provider::Ai, tr("AI providers"), tr("Summaries and agents")),
-    ]
-    .spacing(8)
-    .into()
+    let rows = vec![
+        provider_row(Provider::Nextcloud, "Nextcloud", tr("Calendars and tasks")),
+        provider_row(Provider::GitHub, "GitHub", tr("Issues and projects")),
+        provider_row(Provider::Slack, "Slack", tr("Mentions and messages")),
+        provider_row(Provider::Ai, tr("AI providers"), tr("Summaries and agents")),
+    ];
+    widgets::group(tr("Services"), rows, None)
 }
 
-fn provider_card(provider: Provider, name: &'static str, summary: &'static str) -> Element<'static, Message> {
-    let enabled = provider.is_enabled();
-    let name_color = if enabled { theme::TEXT } else { theme::MUTED };
-    let label = column![
-        text(name).size(14).font(theme::FONT_SEMIBOLD).color(name_color),
-        text(summary).size(14).color(theme::MUTED),
-    ]
-    .spacing(4)
-    .width(Fill);
-    let mut content = row![label].spacing(12).align_y(Alignment::Center);
-    if enabled {
-        content = content.push(text("›").size(18).color(theme::MUTED));
+/// A provider: name and what it brings; the available one is a row to press with a chevron, the
+/// others are plain rows with a tag.
+fn provider_row(provider: Provider, name: &'static str, summary: &'static str) -> Element<'static, Message> {
+    if provider.is_enabled() {
+        let row = setting_row(None, name, Some(summary.to_string()), chevron());
+        pressable(row, Some(Message::ChooseProvider(provider)))
     } else {
-        content =
-            content.push(container(text(tr("Coming soon")).size(12).color(theme::MUTED)).padding([4, 8]).style(|_| {
-                container::Style {
-                    background: Some(Background::Color(theme::SURFACE_2)),
-                    border: border::rounded(4),
-                    ..container::Style::default()
-                }
-            }));
+        setting_row(None, name, Some(summary.to_string()), widgets::pill(None, tr("Coming soon")))
     }
-    button(content)
-        .width(Fill)
-        .padding([12, 16])
-        .style(move |_, status| provider_style(enabled, status))
-        .on_press_maybe(enabled.then_some(Message::ChooseProvider(provider)))
-        .into()
 }
 
-/// A catalog card: surface, hover lifts it one step; disabled cards stay flat.
-fn provider_style(enabled: bool, status: button::Status) -> button::Style {
-    let lifted = enabled && matches!(status, button::Status::Hovered | button::Status::Pressed);
-    button::Style {
-        background: Some(Background::Color(if lifted { theme::SURFACE_2 } else { theme::SURFACE })),
-        text_color: theme::TEXT,
-        border: border::rounded(8).color(theme::LINE).width(1),
-        ..button::Style::default()
-    }
+/// A text field in the look of the suite: `BODY`, 32 high.
+fn field<'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, Message> {
+    text_input(placeholder, value)
+        .size(typo::BODY.size)
+        .line_height(typo::BODY.line_height)
+        .font(typo::BODY.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
 }
 
 /// The server address field and Continue; Enter in the field works like Continue.
 fn server_step(state: &State) -> Element<'_, Message> {
-    text_input("cloud.example.org", &state.server)
+    field("cloud.example.org", &state.server)
         .on_input(Message::ServerChanged)
         .on_submit_maybe(can_continue(state).then_some(Message::Continue))
-        .padding(12)
-        .size(14)
-        .width(Fill)
-        .style(input_style)
         .into()
 }
 
@@ -275,73 +246,50 @@ fn server_step(state: &State) -> Element<'_, Message> {
 fn signing_in_step(data: &Data) -> Element<'_, Message> {
     let login = login_url(data);
     let mut body = column![
-        text(tr(
-            "Nextcloud handles the sign-in. You sign in on its own page; Torro Workplace never sees your password."
-        ))
-        .size(14)
-        .color(theme::TEXT),
-        text(tr("Waiting for the browser …")).size(14).color(theme::MUTED),
+        typo::text(
+            typo::BODY,
+            tr("Nextcloud handles the sign-in. You sign in on its own page; Torro Workplace never sees your password.")
+        ),
+        typo::text(typo::BODY, tr("Waiting for the browser …")).style(theme::text_2),
     ]
-    .spacing(12);
+    .spacing(space::M);
     if let Some(url) = login {
         // `text_input` without an edit handler cannot take focus, so no copying. Editing is
         // allowed but ignored: the field always shows `url`, so the text stays unchanged.
-        body = body.push(text(tr("If the browser does not open, copy this link:")).size(14).color(theme::MUTED)).push(
-            text_input("", url)
-                .on_input(|_| Message::LoginLinkEdited)
-                .padding(12)
-                .size(14)
-                .width(Fill)
-                .style(input_style),
-        );
+        body = body
+            .push(typo::text(typo::BODY, tr("If the browser does not open, copy this link:")).style(theme::text_2))
+            .push(field("", url).on_input(|_| Message::LoginLinkEdited));
     }
-    body.push(
-        button(text(tr("Open the page again")).size(14))
-            .style(button::secondary)
-            .padding([8, 16])
-            .on_press_maybe(login.map(|_| Message::OpenLoginPage)),
-    )
-    .into()
+    let again = widgets::text_button(
+        Some(Icon::ArrowUpRight),
+        tr("Open the page again"),
+        style::button::secondary,
+        login.map(|_| Message::OpenLoginPage),
+    );
+    body.push(row![again]).into()
 }
 
 /// Error text left, "Cancel" and the step's primary button right.
 fn footer(state: &State) -> Element<'_, Message> {
     let error: Element<'_, Message> = match &state.error {
-        Some(error) => text(error.as_str()).size(14).color(theme::color(STATUS_ERROR)).width(Fill).into(),
-        None => space::horizontal().width(Fill).into(),
+        Some(error) => typo::text(typo::BODY, error.as_str())
+            .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
+            .width(Fill)
+            .into(),
+        None => blank::horizontal().into(),
     };
-    let cancel = button(text(tr("Cancel")).size(14)).style(button::secondary).padding([8, 16]).on_press(Message::Close);
-    let mut footer = row![error, cancel].spacing(8).align_y(Alignment::Center);
-    match state.step {
-        Step::Provider | Step::SigningIn => {}
-        Step::Server => {
-            footer = footer.push(
-                button(text(tr("Continue")).size(14))
-                    .style(button::primary)
-                    .padding([8, 16])
-                    .on_press_maybe(can_continue(state).then_some(Message::Continue)),
-            );
-        }
-        Step::Done => {
-            footer = footer.push(
-                button(text(tr("Done")).size(14)).style(button::primary).padding([8, 16]).on_press(Message::Close),
-            );
-        }
-    }
-    footer.into()
-}
-
-/// Text fields: surface, Torro red border while focused, muted placeholder.
-fn input_style(theme: &iced::Theme, status: text_input::Status) -> text_input::Style {
-    let focused = matches!(status, text_input::Status::Focused { .. });
-    let edge = if focused { theme.palette().primary } else { theme::LINE };
-    text_input::Style {
-        background: Background::Color(theme::SURFACE_2),
-        border: border::rounded(8).color(edge).width(1),
-        placeholder: theme::MUTED,
-        value: theme::TEXT,
-        ..text_input::default(theme, status)
-    }
+    let cancel = widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close));
+    let next = match state.step {
+        Step::Provider | Step::SigningIn => None,
+        Step::Server => Some(widgets::text_button(
+            None,
+            tr("Continue"),
+            style::button::primary,
+            can_continue(state).then_some(Message::Continue),
+        )),
+        Step::Done => Some(widgets::text_button(None, tr("Done"), style::button::primary, Some(Message::Close))),
+    };
+    row![error, cancel].push(next).spacing(space::S).align_y(Alignment::Center).into()
 }
 
 #[cfg(test)]

@@ -1,19 +1,21 @@
-//! Workspace templates (task S.7): list (name, windows, last updated), rename inline, delete
-//! with confirmation (`torro_gui::widgets::modal`), load into the active workspace (Add).
-//! Requests: `RenameTemplate`, `DeleteTemplate`, `LoadTemplate { mode: Add }`. Empty: one
-//! sentence explaining how to save a workspace from the tray menu.
+//! Workspace templates (task S.7): a settings group with a row per template (name, windows,
+//! last updated), rename inline, delete with confirmation (a dialog over the whole window,
+//! [`overlay`]), load into the active workspace (Add). Requests: `RenameTemplate`,
+//! `DeleteTemplate`, `LoadTemplate { mode: Add }`. Empty: one sentence explaining how to save a
+//! workspace from the tray menu.
 
 use chrono::{DateTime, Utc};
-use iced::widget::{button, column, container, row, space, text, text_input};
-use iced::{Alignment, Background, Element, Length, Theme, border};
+use iced::widget::{row, text_input};
+use iced::{Alignment, Element, Fill};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime;
-use torro_gui::theme;
-use torro_gui::widgets::{empty_state, modal, section_title};
+use torro_gui::theme::space;
+use torro_gui::widgets::{self, empty_state};
+use torro_gui::{style, typo};
 use torro_ipc::Request;
 use torro_setups::{LoadMode, TemplateSummary};
 
-use super::{Action, Data};
+use super::{Action, Data, confirm, row_frame, setting_row};
 
 /// Page-local state: at most one row is being renamed, at most one deletion is confirmed.
 #[derive(Debug, Default)]
@@ -121,110 +123,64 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         );
     }
     let now = Utc::now();
-    let mut list = column![].spacing(8);
-    for template in &data.templates {
-        list = list.push(template_row(state, template, now));
-    }
-    let footer = text(tr("Save the active workspace from the tray menu: Save workspace.")).size(14).color(theme::MUTED);
-    let page: Element<'a, Message> =
-        column![section_title::<Message>(tr("Templates")), list, footer].spacing(16).into();
-    match state.confirm_delete.as_ref().and_then(|id| find(data, id)) {
-        Some(template) => modal(page, delete_dialog(template), 400.0, Message::CancelDelete),
-        None => page,
-    }
+    let rows = data.templates.iter().map(|template| template_row(state, template, now)).collect();
+    let footer = tr("Save the active workspace from the tray menu: Save workspace.");
+    widgets::group(tr("Templates"), rows, Some(footer.to_string()))
 }
 
-/// One template: name, meta line and actions; in rename mode the name becomes an input.
+/// The page's dialog over the whole window: the delete confirmation while it is open.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let template = state.confirm_delete.as_ref().and_then(|id| find(data, id))?;
+    Some(confirm(
+        tr("Delete this template?"),
+        trf("\"{name}\" will be deleted. Saved backups stay in the data folder.", &[("name", &template.name)]),
+        tr("Delete template"),
+        Message::ConfirmDelete,
+        Message::CancelDelete,
+    ))
+}
+
+/// One template: name, meta line and actions; in rename mode the row becomes an input.
 fn template_row<'a>(state: &'a State, template: &'a TemplateSummary, now: DateTime<Utc>) -> Element<'a, Message> {
-    let body: Element<'a, Message> = match state.renaming.as_ref().filter(|rename| rename.id == template.id) {
-        Some(rename) => rename_body(rename),
-        None => {
-            let meta = format!(
-                "{} · {}",
-                trf("{n} windows", &[("n", &template.windows)]),
-                trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
-            );
-            let actions = row![
-                button(text(tr("Rename")).size(14))
-                    .style(button::secondary)
-                    .on_press(Message::StartRename(template.id.clone())),
-                button(text(tr("Load here")).size(14))
-                    .style(button::secondary)
-                    .on_press(Message::LoadHere(template.id.clone())),
-                space().width(Length::Fill),
-                button(text(tr("Delete")).size(14))
-                    .style(button::text)
-                    .on_press(Message::AskDelete(template.id.clone())),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center);
-            column![
-                text(template.name.clone()).size(16).color(theme::TEXT),
-                text(meta).size(12).color(theme::MUTED),
-                actions,
-            ]
-            .spacing(4)
-            .into()
-        }
-    };
-    card(body, 8.0, 16)
-}
-
-/// The rename row: the input, Enter saves, "Cancel" and "Save" below it.
-fn rename_body(rename: &Rename) -> Element<'_, Message> {
-    let can_save = !rename.name.trim().is_empty();
+    if let Some(rename) = state.renaming.as_ref().filter(|rename| rename.id == template.id) {
+        return rename_row(rename);
+    }
+    let meta = format!(
+        "{} · {}",
+        trf("{n} windows", &[("n", &template.windows)]),
+        trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
+    );
+    let id = &template.id;
     let actions = row![
-        space().width(Length::Fill),
-        button(text(tr("Cancel")).size(14)).style(button::secondary).on_press(Message::CancelRename),
-        button(text(tr("Save")).size(14))
-            .style(button::primary)
-            .on_press_maybe(can_save.then_some(Message::SaveRename)),
+        widgets::text_button(None, tr("Rename"), style::button::ghost, Some(Message::StartRename(id.clone()))),
+        widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::AskDelete(id.clone()))),
+        widgets::text_button(None, tr("Load here"), style::button::secondary, Some(Message::LoadHere(id.clone()))),
     ]
-    .spacing(8)
+    .spacing(space::XS)
     .align_y(Alignment::Center);
-    column![
-        text_input(tr("Name"), &rename.name)
-            .size(14)
-            .padding(8)
-            .width(Length::Fill)
-            .on_input(Message::RenameChanged)
-            .on_submit(Message::SaveRename),
-        actions,
-    ]
-    .spacing(8)
-    .into()
+    setting_row(None, template.name.as_str(), Some(meta), actions)
 }
 
-/// The confirmation for deleting one template. Saved backups are not touched.
-fn delete_dialog(template: &TemplateSummary) -> Element<'_, Message> {
-    let body = column![
-        text(tr("Delete this template?")).size(18).color(theme::TEXT),
-        text(trf("\"{name}\" will be deleted. Saved backups stay in the data folder.", &[("name", &template.name)]))
-            .size(14)
-            .color(theme::MUTED),
-        row![
-            space().width(Length::Fill),
-            button(text(tr("Cancel")).size(14)).style(button::secondary).on_press(Message::CancelDelete),
-            button(text(tr("Delete template")).size(14)).style(button::danger).on_press(Message::ConfirmDelete),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
+/// The rename row: the input (Enter saves), "Cancel" and "Save" next to it.
+fn rename_row(rename: &Rename) -> Element<'_, Message> {
+    let can_save = !rename.name.trim().is_empty();
+    let input = text_input(tr("Name"), &rename.name)
+        .size(typo::BODY.size)
+        .line_height(typo::BODY.line_height)
+        .font(typo::BODY.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+        .on_input(Message::RenameChanged)
+        .on_submit(Message::SaveRename);
+    let content = row![
+        input,
+        widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelRename)),
+        widgets::text_button(None, tr("Save"), style::button::primary, can_save.then_some(Message::SaveRename)),
     ]
-    .spacing(16);
-    card(body, 12.0, 24)
-}
-
-/// A raised surface with rounded corners, for rows and the dialog.
-fn card<'a>(body: impl Into<Element<'a, Message>>, radius: f32, padding: u16) -> Element<'a, Message> {
-    container(body)
-        .padding(padding)
-        .width(Length::Fill)
-        .style(move |_: &Theme| container::Style {
-            background: Some(Background::Color(theme::SURFACE)),
-            border: border::rounded(radius),
-            ..container::Style::default()
-        })
-        .into()
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    row_frame(content, true)
 }
 
 fn find<'a>(data: &'a Data, id: &str) -> Option<&'a TemplateSummary> {
@@ -358,6 +314,9 @@ mod tests {
         let mut state = State::default();
         update(&mut state, Message::StartRename("dev".into()), &data);
         update(&mut state, Message::AskDelete("mail".into()), &data);
-        let _filled: Element<'_, Message> = view(&state, &data);
+        drop(view(&state, &data));
+        assert!(overlay(&state, &data).is_some(), "the delete confirmation is a window layer");
+        update(&mut state, Message::CancelDelete, &data);
+        assert!(overlay(&state, &data).is_none());
     }
 }

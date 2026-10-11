@@ -12,7 +12,11 @@
 //! pub fn update(&mut State, Message, &Data) -> Action
 //! pub fn view<'a>(&'a State, &'a Data) -> Element<'a, Message>
 //! pub fn header<'a>(&'a State, &'a Data, SizeClass) -> Header<'a, Message>   (optional)
+//! pub fn overlay<'a>(&'a State, &'a Data) -> Option<Element<'a, Message>>      (optional)
 //! ```
+//!
+//! `overlay` is the page's dialog while one is open, built with [`dialog`] or [`confirm`]: the
+//! shell lays it over the whole window (sidebar and header included), not just the page area.
 //!
 //! Pages never talk to the daemon themselves: they return an [`Action`], the shell sends the
 //! request and reloads [`Data`].
@@ -22,6 +26,9 @@
 //! put the sections into a menu at the top left ("Accounts ▾") and the sidebar into a drawer, the
 //! same way the calendar and the tasks app do. The page sits under a 44-high header bar with its
 //! title and actions, at most [`size::CONTENT_MAX`] wide.
+//!
+//! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
+//! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 
 mod accounts;
 mod apps;
@@ -33,9 +40,10 @@ mod workspaces;
 use std::time::Duration;
 
 use iced::theme::Mode;
-use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, row, scrollable, svg};
-use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
+use iced::widget::space as blank;
+use iced::widget::text::{IntoFragment, Wrapping};
+use iced::widget::{Text, button, column, container, responsive, row, scrollable, stack, svg};
+use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::Settings;
@@ -406,6 +414,11 @@ impl Ui {
             ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu),
         });
+        // The page's dialog lies under an open menu: the switcher still works above it.
+        let layer = match (self.page_overlay(), layer) {
+            (Some(dialog), Some(menu)) => Some(stack![dialog, menu].into()),
+            (dialog, menu) => dialog.or(menu),
+        };
         shell::shell(class, self.sidebar(&switcher), self.header(class, &nav), self.body(class), None)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
@@ -464,6 +477,17 @@ impl Ui {
         match self.section {
             Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
             _ => Header::default(),
+        }
+    }
+
+    /// The dialog the current page has open, laid over the whole window.
+    fn page_overlay(&self) -> Option<Element<'_, Message>> {
+        match self.section {
+            Section::Accounts => accounts::overlay(&self.accounts, &self.data).map(|e| e.map(Message::Accounts)),
+            Section::Workspaces => {
+                workspaces::overlay(&self.workspaces, &self.data).map(|e| e.map(Message::Workspaces))
+            }
+            _ => None,
         }
     }
 
@@ -548,6 +572,89 @@ fn notice<'a>(problem: String) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
     row![alert, typo::text(typo::BODY, problem)].spacing(space::S).align_y(Alignment::Center).into()
+}
+
+// ----- Building blocks of the pages -----------------------------------------------------------
+//
+// Local stand-ins for what `torro_gui::widgets` does not offer yet (proposals for torro-gui in the
+// report of task W.2): `widgets::group_row` has no mark in front, wraps long labels and cannot be
+// pressed, and there is no dialog surface of its own.
+
+/// A row of a settings group (`widgets::group`) with the metrics of `widgets::group_row` – 44
+/// high, 56 with a `detail`, 16 at the sides, 16 before the `control` – plus an optional `mark`
+/// in front (a status or calendar dot) and label and detail on one line each, clipped instead of
+/// wrapped, so a long account name never breaks the row. The label takes the text colour of a
+/// surrounding button ([`pressable`]); the detail is `META` in `text_2`.
+fn setting_row<'a, M: 'a>(
+    mark: Option<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    detail: Option<String>,
+    control: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let tall = detail.is_some();
+    let mut lines = column![one_line(typo::text(typo::BODY, label))];
+    if let Some(detail) = detail {
+        lines = lines.push(one_line(typo::text(typo::META, detail).style(theme::text_2)));
+    }
+    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::M).align_y(Alignment::Center);
+    row_frame(row![text.width(Fill), control.into()].spacing(space::L).align_y(Alignment::Center), tall)
+}
+
+/// `content` as one line of a settings group: 44 high (56 with two lines of text), 16 at the sides.
+fn row_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
+    let height = if tall { size::HEADER + space::M } else { size::HEADER };
+    container(content).width(Fill).center_y(height).padding([0.0, space::L]).into()
+}
+
+/// `text` on one line, as wide as there is room, cut off at the end instead of wrapping (Iced 0.14
+/// has no ellipsis).
+fn one_line<'a, M: 'a>(text: Text<'a>) -> Element<'a, M> {
+    container(text.wrapping(Wrapping::None)).width(Fill).clip(true).into()
+}
+
+/// `row` (a [`setting_row`]) as a button over its whole width: hover lays `hover` under it, the
+/// label stays in `text`. `None` draws it disabled (40 %).
+fn pressable<'a, M: Clone + 'a>(row: Element<'a, M>, on_press: Option<M>) -> Element<'a, M> {
+    button(row).padding(Padding::ZERO).width(Fill).style(style::button::list_row(false)).on_press_maybe(on_press).into()
+}
+
+/// The chevron at the end of a row that opens a page or a next step: 16, `text_3`.
+fn chevron<'a, M: 'a>() -> Element<'a, M> {
+    icon::icon(Icon::ChevronRight, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) })
+        .into()
+}
+
+/// A dialog over the whole window, for a page's `overlay`: `content` on the dialog surface (`menu`,
+/// radius 10, shadow, 24 inside), centred and at most `max_width` wide; the window behind it is
+/// dimmed, and a click next to it sends `on_dismiss`. Escape is the page's `escape`.
+fn dialog<'a, M: Clone + 'a>(content: impl Into<Element<'a, M>>, max_width: f32, on_dismiss: M) -> Element<'a, M> {
+    let card = container(content).padding(space::XL).width(Fill).style(style::container::popover);
+    // `modal` takes its size from its base; an empty base that fills the window.
+    widgets::modal(blank().width(Fill).height(Fill), card, max_width, on_dismiss)
+}
+
+/// The confirmation before something is removed, as a [`dialog`]: `title` in `TITLE`, the
+/// `consequence` in `text_2`, and at the right "Cancel" and the `confirm` button (danger). A
+/// click next to it cancels.
+fn confirm<'a, M: Clone + 'a>(
+    title: &'a str,
+    consequence: String,
+    confirm: &'a str,
+    on_confirm: M,
+    on_cancel: M,
+) -> Element<'a, M> {
+    let buttons = row![
+        blank::horizontal(),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(on_cancel.clone())),
+        widgets::text_button(None, confirm, style::button::danger, Some(on_confirm)),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    let content =
+        column![typo::text(typo::TITLE, title), typo::text(typo::BODY, consequence).style(theme::text_2), buttons]
+            .spacing(space::L);
+    dialog(content, widgets::POPOVER_WIDTH, on_cancel)
 }
 
 /// Escape, wherever the focus is (a text input keeps it to itself otherwise).
@@ -714,5 +821,19 @@ mod tests {
         for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
         }
+        let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = ui.window(class);
+        }
+    }
+
+    #[test]
+    fn page_dialogs_lie_over_the_whole_window() {
+        let (mut ui, _) = Ui::new(Section::Accounts);
+        assert!(ui.page_overlay().is_none());
+        let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
+        assert!(ui.page_overlay().is_some(), "the add-account dialog is a window layer");
+        let _ = ui.update(Message::Select(Section::Overview));
+        assert!(ui.page_overlay().is_none(), "another section shows no dialog of the accounts page");
     }
 }

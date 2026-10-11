@@ -1,20 +1,23 @@
-//! The apps of the suite (task S.8 in `docs/tasks/steuerzentrale.md`): one row per app the core
-//! reports with `Request::ListApps`. A row shows the name, a one-line description, the window
-//! class (for window rules), whether the app is installed, and an "Open" button that sends
-//! `Request::OpenApp`. Not installed means the button is disabled.
+//! The apps of the suite (task S.8 in `docs/tasks/steuerzentrale.md`): a settings group with one
+//! row per app the core reports with `Request::ListApps`. A row shows the name, below it a
+//! one-line description and the window class (for window rules), at the right whether the app is
+//! installed (dot and word) and an "Open" button that sends `Request::OpenApp`. Not installed
+//! means the button is disabled.
 //!
 //! The page does not look for the apps itself: the core knows where its apps are, so the control
-//! centre and the daemon agree on what they can start. Until the first answer arrives, the list
+//! centre and the daemon agree on what they can start. Until the first answer arrives, the group
 //! shows a quiet loading line.
 
-use iced::widget::{button, column, container, row, text};
-use iced::{Alignment, Background, Element, Length, border};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, row};
+use iced::{Alignment, Element};
 use torro_core::i18n::{tr, trf};
-use torro_core::theme::STATUS_OK;
-use torro_gui::{theme, widgets};
+use torro_gui::theme::{self, space};
+use torro_gui::widgets::{self, Status};
+use torro_gui::{style, typo};
 use torro_ipc::{AppInfo, Request};
 
-use super::{Action, Data};
+use super::{Action, Data, setting_row};
 
 #[derive(Debug, Default)]
 pub struct State {}
@@ -32,58 +35,41 @@ pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
 }
 
 pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let mut list = column![widgets::section_title(tr("Suite apps"))].spacing(8);
+    let title = tr("Suite apps");
     match &data.apps {
-        // The core has not answered yet: one muted line, so the page does not jump when the rows come.
-        None => list = list.push(text(tr("Loading …")).size(14).color(theme::MUTED)),
-        Some(apps) => {
-            for app in apps {
-                list = list.push(app_row(app));
-            }
-        }
+        // The core has not answered yet: one quiet line, so the page does not jump when the rows come.
+        None => column![widgets::section_title(title), typo::text(typo::META, tr("Loading …")).style(theme::text_3)]
+            .spacing(space::S)
+            .into(),
+        Some(apps) => widgets::group(
+            title,
+            apps.iter().map(app_row).collect(),
+            Some(tr("Opening an app brings its window to the front when it is already running.").to_string()),
+        ),
     }
-    column![
-        list,
-        text(tr("Opening an app brings its window to the front when it is already running."))
-            .size(14)
-            .color(theme::MUTED),
-    ]
-    .spacing(16)
-    .into()
 }
 
-/// One app as a row: name and description on the left, status and "Open" on the right.
+/// One app as a row: name, description and window class on the left, status and "Open" on the right.
 fn app_row<'a>(app: &'a AppInfo) -> Element<'a, Message> {
-    let mut details = column![text(app_name(app)).size(16).color(theme::TEXT)].spacing(4).width(Length::Fill);
-    let description = app_description(&app.binary);
-    if !description.is_empty() {
-        details = details.push(text(description).size(14).color(theme::MUTED));
-    }
-    let class = trf("Window class: {class}", &[("class", &app.window_class)]);
-    details = details.push(text(class).size(12).color(theme::MUTED));
-
-    let status = if app.installed {
-        row![widgets::color_dot(theme::color(STATUS_OK), 8.0), text(tr("Installed")).size(14).color(theme::MUTED),]
-    } else {
-        row![widgets::color_dot(theme::MUTED, 8.0), text(tr("Not installed")).size(14).color(theme::MUTED)]
-    }
-    .spacing(8)
-    .align_y(Alignment::Center);
-
+    let (status, word) =
+        if app.installed { (Status::Ok, tr("Installed")) } else { (Status::Inactive, tr("Not installed")) };
+    let state =
+        row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2).wrapping(Wrapping::None)]
+            .spacing(space::S)
+            .align_y(Alignment::Center);
     // A button without a message is drawn disabled, so a missing app cannot be opened.
-    let open =
-        button(text(tr("Open")).size(14)).style(button::secondary).padding([8, 16]).on_press_maybe(open_message(app));
+    let open = widgets::text_button(None, tr("Open"), style::button::secondary, open_message(app));
+    let control = row![state, open].spacing(space::L).align_y(Alignment::Center);
+    setting_row(None, app_name(app), Some(app_detail(app)), control)
+}
 
-    let content = row![details, status, open].spacing(16).align_y(Alignment::Center);
-    container(content)
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(theme::SURFACE)),
-            border: border::rounded(8),
-            ..container::Style::default()
-        })
-        .into()
+/// The line under an app's name: its description and the window class for window rules.
+fn app_detail(app: &AppInfo) -> String {
+    let class = trf("Window class: {class}", &[("class", &app.window_class)]);
+    match app_description(&app.binary) {
+        "" => class,
+        description => format!("{description} · {class}"),
+    }
 }
 
 /// The message "Open" sends for `app`, or `None` for an app that is not installed.
@@ -138,6 +124,15 @@ mod tests {
         assert_eq!(app_name(&app("torrotasks", "Torro Tasks", true)), tr("Tasks"));
         assert_eq!(app_name(&app("torroother", "Other", true)), "Other");
         assert_eq!(app_description("torroother"), "");
+    }
+
+    #[test]
+    fn the_detail_names_description_and_window_class() {
+        let class = trf("Window class: {class}", &[("class", &"torro-torrocalendar")]);
+        let calendar = app("torrocalendar", "Torro Calendar", true);
+        assert_eq!(app_detail(&calendar), format!("{} · {class}", tr("Day, week, month and agenda")));
+        let other = app("torroother", "Other", true);
+        assert_eq!(app_detail(&other), trf("Window class: {class}", &[("class", &"torro-torroother")]));
     }
 
     #[test]

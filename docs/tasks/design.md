@@ -237,7 +237,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   zweite Zeile. Liste in `content(CONTENT_MAX)`.
 
 ### T.2 Kopf und Schnelleingabe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** T.1
 - **Dateien:** `crates/torrotasks/src/app.rs`
 - `header_bar`: Titel `HEADLINE` mit Zahl offener in `TEXT_2`; „Show completed“ als Ghost-Icon
@@ -275,7 +275,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Fenstergröße statt fest 1100.
 
 ### W.2 Einheitliche Gruppen auf allen Seiten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** W.1
 - **Dateien:** `crates/torroworkplace/src/ui/{overview,accounts,workspaces,apps,general}.rs`
 - Die sieben eigenen Karten durch `group` ersetzen (Fläche `L1`, Radius `LG`, Zeilen 44–56 mit

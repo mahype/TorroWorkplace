@@ -3,23 +3,23 @@
 //! state, last sync, number of templates – and a "Needs your attention" card listing
 //! accounts whose state is `Connected { problem: Some(..) }` or that need a new sign-in,
 //! each with a button that jumps to Accounts (`Action::Select(Section::Accounts)`).
+//!
+//! The tiles have the surface of a settings group; a status is a dot and a word, the colour only
+//! in the dot. "Needs your attention" is a settings group with a row per account.
 
-use iced::widget::{Row, button, column, container, row, space, text};
-use iced::{Alignment, Background, Color, Element, Length, Theme, border};
+use iced::widget::{Row, column, container, row};
+use iced::{Alignment, Element, Length};
 use torro_core::i18n::{tr, trf};
-use torro_core::theme::{STATUS_ERROR, STATUS_OK};
-use torro_gui::{theme, widgets};
+use torro_gui::theme::{self, space};
+use torro_gui::widgets::{self, Status as Dot};
+use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, Status};
 use torro_pim::AccountState;
 
-use super::{Action, Data, Section};
+use super::{Action, Data, Section, setting_row};
 
 /// One status tile. Tiles wrap onto further lines when the window is narrow.
 const TILE_WIDTH: f32 = 200.0;
-/// Between tiles and between attention rows: items of one group sit close together.
-const GROUP_GAP: f32 = 8.0;
-/// Between the groups of the page.
-const SECTION_GAP: f32 = 24.0;
 
 #[derive(Debug, Default)]
 pub struct State {}
@@ -38,10 +38,10 @@ pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
 
 pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let items = attention(&data.accounts);
-    column![at_a_glance(data), needs_attention(&items, data.status.is_some())].spacing(SECTION_GAP).into()
+    column![at_a_glance(data), needs_attention(&items, data.status.is_some())].spacing(space::XL).into()
 }
 
-/// How a status is shown. The symbol carries the meaning next to the colour.
+/// How a status is shown: a dot in its colour next to the word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tone {
     /// Running, connected, fine.
@@ -57,28 +57,19 @@ enum Tone {
 }
 
 impl Tone {
-    fn symbol(self) -> &'static str {
+    /// The dot in front of the word; a plain fact has none.
+    fn dot(self) -> Option<Dot> {
         match self {
-            Tone::Ok => "●",
-            Tone::Attention => "▲",
-            Tone::Error => "■",
-            Tone::Inactive => "○",
-            Tone::Plain => "",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Tone::Ok => theme::color(STATUS_OK),
-            Tone::Attention => theme::attention(),
-            Tone::Error => theme::color(STATUS_ERROR),
-            Tone::Inactive => theme::MUTED,
-            Tone::Plain => theme::TEXT,
+            Tone::Ok => Some(Dot::Ok),
+            Tone::Attention => Some(Dot::Attention),
+            Tone::Error => Some(Dot::Error),
+            Tone::Inactive => Some(Dot::Inactive),
+            Tone::Plain => None,
         }
     }
 }
 
-/// One line of a tile: a status with its symbol, or a plain fact.
+/// One line of a tile: a status with its dot, or a plain fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Line {
     tone: Tone,
@@ -88,14 +79,6 @@ struct Line {
 impl Line {
     fn new(tone: Tone, text: impl Into<String>) -> Line {
         Line { tone, text: text.into() }
-    }
-
-    /// `● Running`, `▲ Needs sign-in`; a plain fact has no symbol.
-    fn label(&self) -> String {
-        match self.tone.symbol() {
-            "" => self.text.clone(),
-            symbol => format!("{symbol} {}", self.text),
-        }
     }
 }
 
@@ -212,63 +195,46 @@ fn counted(n: usize, one: &'static str, many: &'static str) -> String {
 
 fn at_a_glance<'a>(data: &Data) -> Element<'a, Message> {
     let grid = Row::with_children(tiles(data).into_iter().map(tile_view))
-        .spacing(GROUP_GAP)
+        .spacing(space::S)
         .width(Length::Fill)
         .wrap()
-        .vertical_spacing(GROUP_GAP);
-    column![widgets::section_title(tr("At a glance")), grid].spacing(GROUP_GAP).into()
+        .vertical_spacing(space::S);
+    column![widgets::section_title(tr("At a glance")), grid].spacing(space::S).into()
 }
 
+/// A tile: its title, the status as dot and word, and a detail line below.
 fn tile_view<'a>(tile: Tile) -> Element<'a, Message> {
-    let color = tile.headline.tone.color();
-    let mut body =
-        column![widgets::section_title(tile.title), text(tile.headline.label()).size(16).color(color)].spacing(8);
+    let headline = row![]
+        .push(tile.headline.tone.dot().map(widgets::status_dot))
+        .push(typo::text(typo::BODY_STRONG, tile.headline.text))
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+    let mut body = column![widgets::section_title(tile.title), headline].spacing(space::S);
     if let Some(detail) = tile.detail {
-        body = body.push(text(detail).size(14).color(theme::MUTED));
+        body = body.push(typo::text(typo::META, detail).style(theme::text_2));
     }
-    container(body).width(Length::Fixed(TILE_WIDTH)).padding(16).style(card).into()
+    container(body).width(TILE_WIDTH).padding(space::L).style(style::container::group).into()
 }
 
 /// The attention group, or a calm line when nothing needs the user. Without a running core
 /// the list is unknown, so the page says so instead of claiming all is well.
 fn needs_attention<'a>(items: &[Attention], core_running: bool) -> Element<'a, Message> {
     if !core_running {
-        return text(tr("Start the core to see what needs your attention.")).size(14).color(theme::MUTED).into();
+        return typo::text(typo::BODY, tr("Start the core to see what needs your attention."))
+            .style(theme::text_2)
+            .into();
     }
     if items.is_empty() {
-        return text(tr("Everything is running.")).size(14).into();
+        return typo::text(typo::BODY, tr("Everything is running.")).style(theme::text_2).into();
     }
-    column![
-        widgets::section_title(tr("Needs your attention")),
-        column(items.iter().map(attention_row)).spacing(GROUP_GAP)
-    ]
-    .spacing(GROUP_GAP)
-    .into()
+    widgets::group(tr("Needs your attention"), items.iter().map(attention_row).collect(), None)
 }
 
+/// An account that needs the user: dot, name, the reason below, and the way to Accounts.
 fn attention_row<'a>(item: &Attention) -> Element<'a, Message> {
-    let info = column![
-        text(item.label.clone()).size(14),
-        text(item.reason.line().label()).size(14).color(theme::attention()),
-    ]
-    .spacing(4);
-    let content = row![
-        info,
-        space::horizontal(),
-        button(text(tr("Open accounts")).size(14)).style(button::secondary).on_press(Message::OpenAccounts),
-    ]
-    .spacing(16)
-    .align_y(Alignment::Center);
-    container(content).padding(16).width(Length::Fill).style(card).into()
-}
-
-/// A raised card: the surface colour with a 12 px radius.
-fn card(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(theme::SURFACE)),
-        border: border::rounded(12),
-        ..container::Style::default()
-    }
+    let line = item.reason.line();
+    let open = widgets::text_button(None, tr("Open accounts"), style::button::secondary, Some(Message::OpenAccounts));
+    setting_row(line.tone.dot().map(widgets::status_dot), item.label.clone(), Some(line.text), open)
 }
 
 #[cfg(test)]
@@ -372,8 +338,23 @@ mod tests {
     }
 
     #[test]
-    fn status_is_symbol_and_word() {
-        assert_eq!(Line::new(Tone::Attention, tr("Needs sign-in")).label(), format!("▲ {}", tr("Needs sign-in")));
-        assert_eq!(Line::new(Tone::Plain, "3").label(), "3");
+    fn a_status_has_a_dot_a_fact_has_none() {
+        assert_eq!(Tone::Ok.dot(), Some(Dot::Ok));
+        assert_eq!(Tone::Attention.dot(), Some(Dot::Attention));
+        assert_eq!(Tone::Error.dot(), Some(Dot::Error));
+        assert_eq!(Tone::Inactive.dot(), Some(Dot::Inactive));
+        assert_eq!(Tone::Plain.dot(), None);
+    }
+
+    #[test]
+    fn page_builds_with_and_without_core() {
+        let state = State::default();
+        drop(view(&state, &Data::default()));
+        let data = Data {
+            status: Some(status("hyprland")),
+            accounts: vec![account("ben@cloud.example.test", AccountState::NotConnected)],
+            ..Data::default()
+        };
+        drop(view(&state, &data));
     }
 }
