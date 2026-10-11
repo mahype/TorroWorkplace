@@ -126,7 +126,8 @@ Nach dem Vorbild von TorroMail, an den Stellen verbessert, an denen TorroMail L�
   steht nur der SHA-256 mit Name, Art, Rechten und „zuletzt benutzt“.
 - **Jede Anfrage trägt den Schlüssel.** Das Protokoll bekommt einen Umschlag:
   `{"v":1,"key":"torro_…","request":{"method":"calendar.list_events",…}}`. `method` ist der Name
-  aus dem Katalog; es gibt nur einen Namen je Befehl. Ohne gültigen Schlüssel antwortet der
+  aus dem Katalog; es gibt nur einen Namen je Befehl. Antworten kommen ohne Umschlag, als eine
+  JSON-Zeile mit `result`. Ohne gültigen Schlüssel antwortet der
   Dienst nur auf `ping` (damit ein Client eine hilfreiche Meldung zeigen kann) und sonst mit
   `unauthorized`.
 - **Die eigenen Programme** (Steuerzentrale, Apps, Tray, `ctl`) nutzen den **App-Schlüssel**, den

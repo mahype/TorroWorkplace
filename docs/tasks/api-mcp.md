@@ -87,7 +87,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 
 ### A.2 Rechte im Dienst
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** A.1 · **Dateien:** `crates/torroworkplace/src/clients.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/cli.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`
+- **Modell:** Opus · **Braucht:** A.1 · **Dateien:** `crates/torroworkplace/src/clients.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/cli.rs`, `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-ipc/src/server.rs`, `crates/torro-ipc/src/pim.rs`
 - Stufe je Bereich, `Admin`-Schalter, Auswahl der Sammlungen (Filter vor dem Lesen), Vorlagen
   *Read only*, *Read and write*, *Full access*.
 - Requests `clients.list`, `clients.create` (gibt den Schlüssel genau einmal zurück),
@@ -101,6 +101,9 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Agenten nur bei Sammlungen aus seiner Auswahl.
 - Ob eine Stufe eine andere abdeckt (`Read` < `Write` < `Delete`, `Admin` als eigener Schalter),
   als Funktion an `Access`.
+- Aus dem API-Check von A.1: `Response::Pong` meldet die API-Version (`api: u32`, optional,
+  verträglich); Datei- und Schlüsselbund-Zugriffe in `clients.rs` über `spawn_blocking`, damit sie
+  den Dienst nicht blockieren; Konto-Kennungen im Schlüsselbund dürfen nie mit `client-` beginnen.
 - **Abnahme:** Tabelle-Test über alle Katalogeinträge × Stufen; fremde Sammlung = `not-found`;
   ausgeblendete Sammlung taucht für einen Client-Schlüssel in keiner Antwort auf;
   `clients.*` mit Client-Schlüssel = `forbidden`.
