@@ -100,7 +100,8 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** 1.3, 1.4
 - **Dateien:** `crates/torro-wm/src/hyprland/mod.rs`
-- **Ziel:** `active_workspace()` und `windows(workspace)` des Traits für Hyprland.
+- **Ziel:** `active_workspace()`, `windows(workspace)` und `monitors()` des Traits für Hyprland. `windows`
+  ergänzt den Monitornamen jedes Fensters über `j/monitors` (das Feld `monitor` in `j/clients` ist nur eine Nummer).
 - **Abnahme:** `#[ignore]`-Test gegen den echten Hyprland liefert die Fenster des aktiven Workspace.
 
 ### 1.6 Hyprland: Fenster steuern
