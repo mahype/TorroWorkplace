@@ -464,6 +464,7 @@ impl Request {
             Request::Todos => &LIST_TODOS,
             Request::SaveTodo { .. } => &SAVE_TODO,
             Request::DeleteTodo { .. } => &DELETE_TODO,
+            Request::MoveTodo { .. } => &MOVE_TODO,
             Request::Settings => &GET_SETTINGS,
             Request::UpdateSettings { .. } => &UPDATE_SETTINGS,
             Request::SetSetting { .. } => &SET_SETTING,
@@ -518,6 +519,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_TODOS,
     &SAVE_TODO,
     &DELETE_TODO,
+    &MOVE_TODO,
     &LIST_ACCOUNTS,
     &SYNC,
     &CONNECT_NEXTCLOUD,
@@ -696,6 +698,18 @@ static DELETE_TODO: Command = Command {
                   (needs `href` and `etag`).",
 };
 
+static MOVE_TODO: Command = Command {
+    name: "tasks.move_todo",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Puts a task (`href` and `etag` from list_todos) right before another task of the same list \
+                  (`before`, its `href`) or, without `before`, at the end, for lists ordered by hand. Tasks are \
+                  ordered among those with the same parent that are open or done like it, smaller `sort_order` \
+                  first, tasks without one last; only tasks whose number must change are written and returned. \
+                  If a write fails, the task has not moved yet: reload with list_todos and try again.",
+};
+
 static LIST_ACCOUNTS: Command = Command {
     name: "accounts.list_accounts",
     area: Area::Accounts,
@@ -769,7 +783,8 @@ static GET_SETTINGS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Returns the suite-wide settings: language, appearance, start at login, zoom, the night of the \
-                  calendar and the hidden calendars and task lists.",
+                  calendar, the hidden calendars and task lists, and the task lists ordered by hand \
+                  (`listOrders`).",
 };
 
 static SET_SETTING: Command = Command {
@@ -779,9 +794,11 @@ static SET_SETTING: Command = Command {
     mcp: Mcp::Tool,
     description: "Changes one suite-wide setting: `language` (\"system\", \"english\", \"german\"), `appearance` \
                   (\"system\", \"light\", \"dark\"), `start_at_login` (true, false), `zoom` (a number from 0.67 to \
-                  2.0, 1.0 = 100 %, rounded to the nearest browser zoom step; every open window follows) or `night` \
+                  2.0, 1.0 = 100 %, rounded to the nearest browser zoom step; every open window follows), `night` \
                   ({\"from\": \"22:00\", \"to\": \"06:00\"}, times on the quarter hour; the calendar's timeline and \
-                  radar fold or shade it and do not count it as free time; the same time twice means no night).",
+                  radar fold or shade it and do not count it as free time; the same time twice means no night) or \
+                  `list_order` ({\"list\": \"<list id>\", \"order\": \"manual\"} to order a task list by hand with \
+                  tasks.move_todo, or \"due_date\" to group it by due date again).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -952,6 +969,7 @@ mod tests {
             Request::Todos,
             Request::SaveTodo { todo: todo() },
             Request::DeleteTodo { todo: todo() },
+            Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None },
             Request::Settings,
             Request::UpdateSettings { settings: Settings::default() },
             Request::SetSetting { key: SettingKey::StartAtLogin, value: serde_json::Value::Bool(true) },
@@ -1283,7 +1301,14 @@ mod tests {
         let keys =
             schema.as_value().pointer("/properties/key/oneOf").and_then(|k| k.as_array()).expect("key is an enum");
         let keys: Vec<_> = keys.iter().filter_map(|k| k.get("const")).collect();
-        assert_eq!(keys, ["language", "appearance", "start_at_login", "zoom", "night"]);
+        assert_eq!(keys, ["language", "appearance", "start_at_login", "zoom", "night", "list_order"]);
+
+        let schema = MOVE_TODO.input_schema().expect("schema");
+        assert_eq!(schema.get("required"), Some(&serde_json::json!(["href", "etag"])));
+        for field in ["href", "etag", "before"] {
+            let described = schema.as_value().pointer(&format!("/properties/{field}/description"));
+            assert!(described.and_then(|d| d.as_str()).is_some_and(|d| !d.is_empty()), "{field}");
+        }
 
         let schema = SAVE_EVENT.input_schema().expect("schema");
         assert_eq!(schema.as_value().pointer("/properties/event/type"), Some(&serde_json::json!("object")));
@@ -1327,7 +1352,7 @@ mod tests {
             }
         }
         let settings = fields(&UPDATE_SETTINGS, "/properties/settings/properties");
-        for field in ["language", "appearance", "startAtLogin", "hiddenCollections", "zoom", "night"] {
+        for field in ["language", "appearance", "startAtLogin", "hiddenCollections", "zoom", "night", "listOrders"] {
             assert!(settings.get(field).is_some(), "update_settings lacks {field}");
         }
     }

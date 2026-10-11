@@ -154,6 +154,10 @@ impl PimSource for Source {
     async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
         delegate!(self, s => s.delete_todo(todo))
     }
+
+    async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        delegate!(self, s => s.move_todo(todo, before))
+    }
 }
 
 #[cfg(test)]

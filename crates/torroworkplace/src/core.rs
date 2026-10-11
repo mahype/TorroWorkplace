@@ -8,7 +8,8 @@ use std::sync::Arc;
 use chrono::Local;
 use tokio::sync::Mutex;
 use torro_core::AppId;
-use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, Status};
+use torro_core::settings::ListOrderEntry;
+use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_pim::AccountState;
 use torro_setups::capture::{auto_name, capture};
 use torro_setups::launch::{Launcher, SystemLauncher, command_for};
@@ -167,6 +168,9 @@ impl Core {
                 let selected = rights.calendars.contains(collection) || rights.task_lists.contains(collection);
                 (!selected).then(|| collection.clone())
             }
+            (Reach::Client(rights), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
+                list_of(value).filter(|list| !rights.task_lists.contains(list))
+            }
             (reach, request) => self.pim.out_of_reach(reach, request).await,
         }
     }
@@ -214,14 +218,18 @@ impl Core {
             | Request::SaveEvent { .. }
             | Request::DeleteEvent { .. }
             | Request::SaveTodo { .. }
-            | Request::DeleteTodo { .. }) => self.pim.handle_within(pim, reach).await,
+            | Request::DeleteTodo { .. }
+            | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
             Request::Settings => {
                 let mut settings = self.settings.current();
-                if client {
-                    settings.hidden_collections.clear();
+                if let Reach::Client(rights) = reach {
+                    // Not even the ids of lists it may not see (task P.3a).
+                    let hidden = std::mem::take(&mut settings.hidden_collections);
+                    settings.list_orders.retain(|list, _| rights.task_lists.contains(list) && !hidden.contains(list));
                 }
                 Response::Settings { settings }
             }
+            Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
             Request::UpdateSettings { settings } => {
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
@@ -303,6 +311,20 @@ impl Core {
         }
         match show_accounts_page(&self.backend, self.start_accounts).await {
             Ok(()) => Response::Opened,
+            Err(message) => Response::Error { code: "error".into(), message },
+        }
+    }
+
+    /// `settings.set_setting` with `list_order` (task P.3a): like every setting, but the list must
+    /// be a task list of a connected account, else `not-found` and nothing is written.
+    async fn set_list_order(&self, value: &serde_json::Value) -> Response {
+        if let Some(list) = list_of(value)
+            && !self.pim.knows_collection(&list).await
+        {
+            return no_collection(&list);
+        }
+        match self.settings.set(SettingKey::ListOrder, value) {
+            Ok(()) => Response::Ok,
             Err(message) => Response::Error { code: "error".into(), message },
         }
     }
@@ -435,6 +457,12 @@ fn version() -> String {
 /// does not exist.
 fn no_collection(collection: &str) -> Response {
     Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") }
+}
+
+/// The task list a `list_order` value names; `None` for a value that does not fit, which the
+/// settings refuse with `error`.
+fn list_of(value: &serde_json::Value) -> Option<String> {
+    serde_json::from_value::<ListOrderEntry>(value.clone()).ok().map(|entry| entry.list)
 }
 
 /// The answer to a new client or key: the key, this once.
@@ -758,6 +786,36 @@ mod tests {
             core.handle_within(Request::UpdateSettings { settings: changed }, Reach::Client(&reach_rights)).await;
         assert_eq!(answer, Response::Ok);
         assert_eq!(settings(&core).await.hidden_collections, [id("/cal/secret/")]);
+    }
+
+    #[tokio::test]
+    async fn a_list_is_ordered_by_hand_only_when_known_and_clients_see_only_their_lists() {
+        use torro_core::settings::ListOrder;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let list = |path: &str| torro_pim::Collection { kind: torro_pim::CollectionKind::Todos, ..calendar(&id(path)) };
+        core.pim.cache_collections(vec![list("/tasks/work/"), list("/tasks/home/")]).await;
+        let manual = |path: &str| Request::SetSetting {
+            key: SettingKey::ListOrder,
+            value: serde_json::json!({"list": id(path), "order": "manual"}),
+        };
+        assert_eq!(core.handle(manual("/tasks/work/")).await, Response::Ok);
+        assert_eq!(core.handle(manual("/tasks/home/")).await, Response::Ok);
+        assert_eq!(settings(&core).await.list_order(&id("/tasks/work/")), ListOrder::Manual);
+        assert_eq!(code(&core.handle(manual("/tasks/nope/")).await), "not-found");
+        let wrong = Request::SetSetting { key: SettingKey::ListOrder, value: serde_json::json!({"order": "manual"}) };
+        assert_eq!(code(&core.handle(wrong).await), "error");
+
+        // limited to /tasks/work/: the order of home is neither shown nor reachable.
+        let key = limited_client(&core).await;
+        let Response::Settings { settings } = ask(&core, Some(&key), Request::Settings).await else {
+            panic!("settings")
+        };
+        assert_eq!(settings.list_orders.keys().cloned().collect::<Vec<_>>(), [id("/tasks/work/")]);
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/home/")).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden", "admin: approval");
+        let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
+        assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
     }
 
     #[tokio::test]

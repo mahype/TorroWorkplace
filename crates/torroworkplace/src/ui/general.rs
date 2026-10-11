@@ -237,6 +237,7 @@ mod tests {
                 hidden_collections: vec!["work".into()],
                 zoom: torro_core::settings::Zoom::MAX,
                 night: Night::none_at(Quarter::new(6, 0).expect("quarter")),
+                list_orders: Default::default(),
             },
             ..Data::default()
         };

@@ -116,7 +116,7 @@ K.21 (frei)
 - Abnahme: Lesen/Schreiben der neuen Eigenschaften, alte JSON ohne die Felder.
 
 ### P.3a Reihenfolge von Hand: Kern, API, MCP
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** P.2 · **Dateien:** `crates/torro-ipc/src/{lib,api,pim}.rs`, `crates/torro-pim/src/source.rs`,
   `crates/torro-pim/src/demo.rs`, `crates/torro-gui/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp}.rs`,
   `crates/torro-core/src/settings.rs` (Sortierart je Liste)

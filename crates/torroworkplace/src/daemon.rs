@@ -279,6 +279,7 @@ fn describe(request: &Request) -> String {
         Request::DeleteEvent { .. } => "delete event".into(),
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
+        Request::MoveTodo { .. } => "move todo".into(),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
         Request::SetSetting { key, .. } => format!("set {key:?}"),

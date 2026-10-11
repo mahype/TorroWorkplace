@@ -259,7 +259,7 @@ pub fn tools() -> &'static [Tool] {
 
 /// Where the catalogue's schema says less than the request takes, the tool says more: the
 /// `value` of `settings.set_setting` is any JSON in the request, but every setting takes a
-/// string, a boolean, a number (`zoom`) or an object (`night`).
+/// string, a boolean, a number (`zoom`) or an object (`night`, `list_order`).
 fn narrow_schema(command: &str, schema: &mut JsonObject) {
     if command != "settings.set_setting" {
         return;
@@ -742,6 +742,29 @@ mod tests {
         let night = json!({"from": "23:30", "to": "07:00"});
         let request = request_for("settings_set_setting", args(json!({"key": "night", "value": night})), &Utc);
         assert_eq!(request, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Night, value: night }));
+    }
+
+    #[test]
+    fn moving_a_task_and_ordering_a_list_by_hand_build_their_requests() {
+        let moved = request_for(
+            "tasks_move_todo",
+            args(json!({"href": "/l/t.ics", "etag": "\"3\"", "before": "/l/u.ics"})),
+            &Utc,
+        );
+        assert_eq!(
+            moved,
+            Ok(Request::MoveTodo { href: "/l/t.ics".into(), etag: "\"3\"".into(), before: Some("/l/u.ics".into()) })
+        );
+        let to_the_end = request_for("tasks_move_todo", args(json!({"href": "/l/t.ics", "etag": "\"3\""})), &Utc);
+        assert_eq!(to_the_end, Ok(Request::MoveTodo { href: "/l/t.ics".into(), etag: "\"3\"".into(), before: None }));
+        let without_etag = request_for("tasks_move_todo", args(json!({"href": "/l/t.ics"})), &Utc);
+        assert!(matches!(without_etag, Err(ToolError::Input(_))));
+        let hints = tools().iter().find(|t| t.name == "tasks_move_todo").and_then(|t| t.annotations.clone());
+        assert_eq!(hints.and_then(|h| h.read_only_hint), Some(false));
+
+        let value = json!({"list": "nextcloud:anna@cloud/https://cloud/tasks/", "order": "manual"});
+        let order = request_for("settings_set_setting", args(json!({"key": "list_order", "value": value})), &Utc);
+        assert_eq!(order, Ok(Request::SetSetting { key: torro_ipc::SettingKey::ListOrder, value }));
     }
 
     #[test]

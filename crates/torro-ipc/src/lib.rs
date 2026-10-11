@@ -201,6 +201,31 @@ pub enum Request {
     SaveTodo { todo: Todo },
     #[serde(rename = "tasks.delete_todo")]
     DeleteTodo { todo: Todo },
+    /// Puts the task `href` right before the task `before` in its list, or at the end without
+    /// `before` (task P.3a): the order of a list in "Manual order" ([`SettingKey::ListOrder`]).
+    /// Writes `X-APPLE-SORT-ORDER` as Nextcloud Tasks does, but only to the tasks whose stored
+    /// number has to change (`torro_pim::source::move_plan`), each like [`Request::SaveTodo`]
+    /// with its etag. Answered with [`Response::Todos`]: the changed tasks as stored, empty when
+    /// the task is there already.
+    ///
+    /// Tasks are ordered among the tasks of the same list with the same parent that are open or
+    /// done like it. Codes: `not-found` when `href` or `before` is no listed task or `before` is
+    /// in another list; `conflict` when `etag` is not the task's current version; `error` when
+    /// `before` has another parent or is done while the task is open (or the other way round).
+    /// When one of several writes fails, the ones before it stay done (on the server and in the
+    /// answers of `tasks.list_todos`) and the moved task, written last, has not moved yet:
+    /// reload the list and move it again.
+    #[serde(rename = "tasks.move_todo")]
+    MoveTodo {
+        /// `href` of the task to move, as `tasks.list_todos` returned it.
+        href: String,
+        /// `etag` of the task to move, as `tasks.list_todos` returned it.
+        etag: String,
+        /// `href` of the task in the same list it goes right before; leave out to move it to
+        /// the end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+    },
 
     /// The suite-wide settings ([`Response::Settings`]).
     #[serde(rename = "settings.get_settings")]
@@ -294,6 +319,11 @@ pub enum SettingKey {
     /// "06:00"}`, two times on the quarter hour (`torro_core::settings::Night`), usually over
     /// midnight; the same time twice means no night. Open calendar windows follow.
     Night,
+    /// How one task list is ordered: `{"list": "<list id>", "order": "manual"}` (by hand, see
+    /// `tasks.move_todo`) or `"order": "due_date"` (grouped by due date, the default). The list id
+    /// comes from `tasks.list_lists`; one the core does not know is `not-found`
+    /// (`torro_core::settings::ListOrderEntry`).
+    ListOrder,
 }
 
 /// The core's answer to one [`Request`].

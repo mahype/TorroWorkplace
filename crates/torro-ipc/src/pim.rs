@@ -161,6 +161,20 @@ impl PimSource for PimClient {
         let uid = todo.uid.clone();
         expect_ok(self.ask(Request::DeleteTodo { todo }).await.map_err(|err| with_uid(err, &uid))?)
     }
+
+    /// `Request::MoveTodo` with the `href` and `etag` of `todo` and the `href` of `before`. A
+    /// task that was never saved has no place in a list yet: `Other` without asking the core.
+    async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        let Some(href) = todo.href else {
+            return Err(ProviderError::Other("the task is not saved yet".into()));
+        };
+        let request =
+            Request::MoveTodo { href, etag: todo.etag.unwrap_or_default(), before: before.and_then(|b| b.href) };
+        match self.ask(request).await.map_err(|err| with_uid(err, &todo.uid))? {
+            Response::Todos { todos } => Ok(todos),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -284,6 +298,16 @@ mod tests {
             Request::Todos => Response::Todos { todos: vec![todo()] },
             Request::SaveEvent { event } => Response::Event { event: stored_event(event) },
             Request::SaveTodo { todo } => Response::Todo { todo: stored_todo(todo) },
+            // The answer names what arrived: the moved task's href as uid, `before` as summary.
+            Request::MoveTodo { href, etag, before } => Response::Todos {
+                todos: vec![Todo {
+                    uid: href,
+                    etag: Some(etag),
+                    summary: before.unwrap_or_default(),
+                    sort_order: Some(0),
+                    ..todo()
+                }],
+            },
             other => Response::Error { code: "error".into(), message: format!("test core does not know {other:?}") },
         }
     }
@@ -459,6 +483,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_todo_sends_href_etag_and_before() {
+        let core = start(|request| async move { answer(request) }).await;
+        let moved = stored_todo(todo());
+        let before = Todo { uid: "todo-2".into(), ..stored_todo(todo()) };
+        let before = Todo { href: Some("/tasks/home/todo-2.ics".into()), ..before };
+        let written = core.client().move_todo(moved.clone(), Some(before)).await.unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(Some(written[0].uid.clone()), moved.href, "the href went out");
+        assert_eq!(written[0].etag, moved.etag, "the etag went out");
+        assert_eq!(written[0].summary, "/tasks/home/todo-2.ics", "before went out");
+        let to_the_end = core.client().move_todo(moved, None).await.unwrap();
+        assert_eq!(to_the_end[0].summary, "", "no before");
+        assert!(matches!(core.client().move_todo(todo(), None).await, Err(ProviderError::Other(_))), "not saved");
+    }
+
+    #[tokio::test]
     async fn error_codes_map_to_provider_errors() {
         assert_eq!(error_from("auth", "login refused").await, ProviderError::Auth);
         assert_eq!(error_from("offline", "no route to host").await, ProviderError::Offline);
@@ -472,6 +512,8 @@ mod tests {
         let core = start(|_| async { Response::Error { code: "conflict".into(), message: "changed".into() } }).await;
         assert_eq!(core.client().save_event(event()).await, Err(ProviderError::Conflict { uid: "meeting-1".into() }));
         assert_eq!(core.client().save_todo(todo()).await, Err(ProviderError::Conflict { uid: "todo-1".into() }));
+        let stored = stored_todo(todo());
+        assert_eq!(core.client().move_todo(stored, None).await, Err(ProviderError::Conflict { uid: "todo-1".into() }));
     }
 
     #[tokio::test]

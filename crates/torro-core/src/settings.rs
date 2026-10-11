@@ -5,6 +5,7 @@
 //! contract: add fields with `#[serde(default)]` so older files keep loading.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -52,6 +53,11 @@ pub struct Settings {
     /// neither counts it as free time. Stored as `{"from": "22:00", "to": "06:00"}`.
     #[serde(default)]
     pub night: Night,
+    /// How each task list is ordered, by list id (`<account-id>/<list URL>`, task P.3a). A list
+    /// that is not named here is grouped by due date ([`ListOrder::DueDate`]), so only lists in
+    /// [`ListOrder::Manual`] are stored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub list_orders: BTreeMap<String, ListOrder>,
 }
 
 /// A time of day on the quarter hour, `00:00` to `23:45`, the grid of [`Night`]. Kept as minutes
@@ -196,6 +202,49 @@ impl JsonSchema for Night {
                             ({\"from\": \"22:00\", \"to\": \"06:00\"}). The same time twice means no night."
         })
     }
+}
+
+impl Settings {
+    /// How the task list `list` (an id) is ordered: as stored, else grouped by due date.
+    pub fn list_order(&self, list: &str) -> ListOrder {
+        self.list_orders.get(list).copied().unwrap_or_default()
+    }
+
+    /// Orders the task list `list` by `order`. The default ([`ListOrder::DueDate`]) is not
+    /// stored, so it removes the entry.
+    pub fn set_list_order(&mut self, list: &str, order: ListOrder) {
+        match order {
+            ListOrder::DueDate => {
+                self.list_orders.remove(list);
+            }
+            ListOrder::Manual => {
+                self.list_orders.insert(list.to_string(), order);
+            }
+        }
+    }
+}
+
+/// How the tasks of one list are shown (task P.3a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListOrder {
+    /// Grouped by due date (overdue, today, later, no date): how every list starts.
+    #[default]
+    DueDate,
+    /// In the order the user put them by hand: by `X-APPLE-SORT-ORDER`, as Nextcloud Tasks
+    /// shows a list sorted manually (`torro_pim::source::manual_order`).
+    Manual,
+}
+
+/// The `value` of the setting `list_order` (`settings.set_setting`, task P.3a): one task list and
+/// how it is to be ordered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListOrderEntry {
+    /// Id of the task list, as `tasks.list_lists` reports it.
+    pub list: String,
+    /// `"due_date"` (grouped by due date, the default) or `"manual"` (by hand).
+    pub order: ListOrder,
 }
 
 /// The zoom of the suite's windows: one of the steps of a browser ([`Zoom::STEPS`], 67 % to
@@ -423,6 +472,7 @@ mod tests {
             hidden_collections: vec!["work".into()],
             zoom: Zoom::DEFAULT,
             night: Night::DEFAULT,
+            list_orders: BTreeMap::new(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -468,6 +518,7 @@ mod tests {
             hidden_collections: vec!["a".into(), "b".into()],
             zoom: Zoom::nearest(1.25),
             night: Night { from: q(23, 30), to: q(7, 0) },
+            list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -656,5 +707,35 @@ mod tests {
         assert_eq!(all[95].to_string(), "23:45");
         assert_eq!(Quarter::parse("06:45"), Some(q(6, 45)));
         assert_eq!(Quarter::new(6, 50), None);
+    }
+
+    #[test]
+    fn a_list_is_ordered_by_due_date_unless_set_to_manual() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.list_order("work"), ListOrder::DueDate);
+        settings.set_list_order("work", ListOrder::Manual);
+        assert_eq!(settings.list_order("work"), ListOrder::Manual);
+        assert_eq!(settings.list_order("home"), ListOrder::DueDate);
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["listOrders"], serde_json::json!({"work": "manual"}));
+        settings.set_list_order("work", ListOrder::DueDate);
+        assert!(settings.list_orders.is_empty(), "the default is not stored");
+        let json = serde_json::to_string(&settings).expect("serialize");
+        assert!(!json.contains("listOrders"), "{json}");
+    }
+
+    #[test]
+    fn a_list_order_entry_is_read_strictly() {
+        let entry: ListOrderEntry =
+            serde_json::from_value(serde_json::json!({"list": "work", "order": "manual"})).expect("valid");
+        assert_eq!(entry, ListOrderEntry { list: "work".into(), order: ListOrder::Manual });
+        for bad in [
+            serde_json::json!({"list": "work"}),
+            serde_json::json!({"list": "work", "order": "alphabetical"}),
+            serde_json::json!({"list": "work", "order": "manual", "extra": 1}),
+            serde_json::json!("manual"),
+        ] {
+            assert!(serde_json::from_value::<ListOrderEntry>(bad.clone()).is_err(), "{bad}");
+        }
     }
 }

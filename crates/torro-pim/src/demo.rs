@@ -11,7 +11,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{account_of, local_id};
 use crate::model::Link;
-use crate::source::PimSource;
+use crate::source::{PimSource, move_plan};
 use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
 #[derive(Debug, Default)]
@@ -449,6 +449,38 @@ impl PimSource for DemoSource {
         data.todos.retain(|t| t.href != todo.href || t.uid != todo.uid);
         if data.todos.len() == before { Err(ProviderError::Other("No such task".into())) } else { Ok(()) }
     }
+
+    /// Renumbers like the core ([`move_plan`]) and stores every changed task with a new etag. In
+    /// memory nothing fails halfway, so the move happens whole or not at all.
+    async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        let mut data = self.lock();
+        let stored = |href: &Option<String>| data.todos.iter().find(|t| href.is_some() && t.href == *href).cloned();
+        let Some(current) = stored(&todo.href) else {
+            return Err(ProviderError::Other("No such task".into()));
+        };
+        if current.etag != todo.etag {
+            return Err(ProviderError::Conflict { uid: todo.uid });
+        }
+        let before = match before {
+            Some(before) => match stored(&before.href) {
+                Some(found) if found.collection == current.collection => Some(found),
+                _ => return Err(ProviderError::Other("No such task in this list".into())),
+            },
+            None => None,
+        };
+        let plan = move_plan(&data.todos, &current, before.as_ref())
+            .ok_or_else(|| ProviderError::Other("The tasks are not on the same level".into()))?;
+        let mut written = Vec::with_capacity(plan.len());
+        for mut task in plan {
+            data.next_id += 1;
+            task.etag = Some(format!("\"demo-{}\"", data.next_id));
+            if let Some(slot) = data.todos.iter_mut().find(|t| t.href == task.href) {
+                *slot = task.clone();
+            }
+            written.push(task);
+        }
+        Ok(written)
+    }
 }
 
 #[cfg(test)]
@@ -659,6 +691,33 @@ mod tests {
             assert!(!got.is_empty());
             assert_eq!(got, expected, "week of {monday}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_task_is_moved_by_hand_and_a_stale_one_is_refused() {
+        use crate::source::manual_order;
+        let source = DemoSource::new(sunday());
+        let open_groceries = |todos: Vec<Todo>| -> Vec<Todo> {
+            let mut list: Vec<Todo> =
+                todos.into_iter().filter(|t| t.collection == GROCERIES && !t.completed && t.parent.is_none()).collect();
+            list.sort_by(manual_order);
+            list
+        };
+        let before = open_groceries(source.todos().await.expect("todos"));
+        assert!(before.len() >= 2, "the sample has a list to order");
+        let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+
+        let written = source.move_todo(last.clone(), Some(first.clone())).await.expect("moved");
+        assert!(written.iter().all(|t| t.etag != last.etag && t.etag != first.etag), "new versions");
+        let after = open_groceries(source.todos().await.expect("todos"));
+        assert_eq!(after[0].uid, last.uid, "now on top");
+        assert_eq!(after.len(), before.len());
+
+        // The version read before the move is out of date now.
+        assert!(matches!(source.move_todo(last, None).await, Err(ProviderError::Conflict { .. })));
+        let elsewhere = source.todos().await.expect("todos").into_iter().find(|t| t.collection != GROCERIES);
+        let moved = after[0].clone();
+        assert!(matches!(source.move_todo(moved, elsewhere).await, Err(ProviderError::Other(_))));
     }
 
     fn source_with_calendar() -> DemoSource {

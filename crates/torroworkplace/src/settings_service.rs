@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use torro_core::settings::{self, Language, Night, Settings, Zoom};
+use torro_core::settings::{self, Language, ListOrderEntry, Night, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -65,19 +65,23 @@ impl SettingsStore {
     /// and nothing is written (task M1.4): the old ids were rewritten once when the core started,
     /// and one coming back later would otherwise belong to no account, or by chance to the first.
     pub fn update(&self, new: Settings) -> Result<(), String> {
-        if let Some(bare) = new.hidden_collections.iter().find(|id| torro_pim::account::is_legacy_id(id)) {
+        let ids = new.hidden_collections.iter().chain(new.list_orders.keys());
+        if let Some(bare) = ids.into_iter().find(|id| torro_pim::account::is_legacy_id(id)) {
             return Err(format!("{bare:?} is not a collection id; use the ids from accounts.list_accounts"));
         }
         self.change(|settings| *settings = new)
     }
 
-    /// Like [`SettingsStore::update`], but the hidden collections stay as stored, read under the
-    /// same lock as the write, so a collection hidden meanwhile is not shown again. For clients,
-    /// which never see the hidden collections and so cannot send them back.
+    /// Like [`SettingsStore::update`], but the hidden collections and the orders of the task
+    /// lists stay as stored, read under the same lock as the write, so a collection hidden
+    /// meanwhile is not shown again. For clients, which never see the hidden collections nor the
+    /// orders of lists outside their selection, and so cannot send them back; they change those
+    /// with `set_collection_shown` and `set_setting`.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
-            *settings = Settings { hidden_collections: hidden, ..new };
+            let list_orders = std::mem::take(&mut settings.list_orders);
+            *settings = Settings { hidden_collections: hidden, list_orders, ..new };
         })
     }
 
@@ -94,11 +98,14 @@ impl SettingsStore {
         self.change(|settings| show_in(settings, collection, shown))
     }
 
-    /// Takes `collections` out of the hidden ones, for an account that is gone: its ids mean
-    /// nothing any more, and an account added later must not start with them hidden. Writes
-    /// nothing when none of them was hidden.
+    /// Takes `collections` out of the hidden ones and the list orders, for an account that is
+    /// gone: its ids mean nothing any more, and an account added later must not start with them.
+    /// Writes nothing when none of them was named.
     pub fn forget_collections(&self, collections: &[String]) -> Result<(), String> {
-        self.change(|settings| settings.hidden_collections.retain(|id| !collections.contains(id)))
+        self.change(|settings| {
+            settings.hidden_collections.retain(|id| !collections.contains(id));
+            settings.list_orders.retain(|id, _| !collections.contains(id));
+        })
     }
 
     /// Puts `owner` in front of every hidden collection whose id is still a bare URL from before
@@ -137,13 +144,15 @@ impl SettingsStore {
 }
 
 /// One setting with its value, checked against its key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Change {
     Language(Language),
     Appearance(Appearance),
     StartAtLogin(bool),
     Zoom(Zoom),
     Night(Night),
+    /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
+    ListOrder(ListOrderEntry),
 }
 
 impl Change {
@@ -164,6 +173,7 @@ impl Change {
             ),
             // Strict as well: the file's reading falls back to 22:00–06:00 instead.
             SettingKey::Night => Change::Night(Night::from_value(value)?),
+            SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
         })
     }
 
@@ -175,6 +185,7 @@ impl Change {
             Change::StartAtLogin(enabled) => settings.start_at_login = enabled,
             Change::Zoom(zoom) => settings.zoom = zoom,
             Change::Night(night) => settings.night = night,
+            Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
         }
     }
 }
@@ -435,8 +446,37 @@ mod tests {
                 hidden_collections: vec!["work".into()],
                 zoom: Zoom::nearest(1.25),
                 night: Night::from_value(&night).expect("valid night"),
+                list_orders: Default::default(),
             }
         );
+    }
+
+    #[test]
+    fn a_list_order_is_set_and_reset_and_kept_from_clients() {
+        use torro_core::settings::ListOrder;
+        let (_dir, store) = store();
+        store.set(SettingKey::ListOrder, &json!({"list": "work", "order": "manual"})).expect("manual");
+        assert_eq!(store.current().list_order("work"), ListOrder::Manual);
+        assert!(store.set(SettingKey::ListOrder, &json!({"list": "work", "order": "random"})).is_err());
+        assert!(store.set(SettingKey::ListOrder, &json!("manual")).is_err(), "the list is missing");
+        // A client sends back what it saw, without the orders: they stay.
+        store.update_keeping_hidden(Settings::default()).expect("updated");
+        assert_eq!(store.current().list_order("work"), ListOrder::Manual);
+        store.forget_collections(&["work".into()]).expect("account gone");
+        assert!(store.current().list_orders.is_empty());
+        store.set(SettingKey::ListOrder, &json!({"list": "home", "order": "manual"})).expect("manual");
+        store.set(SettingKey::ListOrder, &json!({"list": "home", "order": "due_date"})).expect("back");
+        assert!(store.current().list_orders.is_empty(), "the default is not stored");
+    }
+
+    #[test]
+    fn a_list_order_with_a_bare_url_is_refused() {
+        use torro_core::settings::ListOrder;
+        let (_dir, store) = store();
+        let mut settings = Settings::default();
+        settings.set_list_order("https://cloud.example.org/remote.php/dav/calendars/anna/tasks/", ListOrder::Manual);
+        assert!(store.update(settings).is_err());
+        assert!(!file_exists(&store));
     }
 
     #[test]

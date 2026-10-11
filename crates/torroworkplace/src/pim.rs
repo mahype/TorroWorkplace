@@ -42,6 +42,7 @@ use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::Rights;
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
+use torro_pim::source::move_plan;
 use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, ProviderError, Todo, combined_state};
 use torro_pim_caldav::CalDavClient;
 use torro_pim_caldav::nextcloud;
@@ -348,6 +349,10 @@ impl PimService {
                 Ok(()) => Response::Ok,
                 Err(err) => self.write_failed(err).await,
             },
+            Request::MoveTodo { href, etag, before } => match self.move_todo(&href, &etag, before.as_deref()).await {
+                Ok(todos) => Response::Todos { todos },
+                Err(err) => self.write_failed(err).await,
+            },
             _ => error("error", "not a calendar or task request".into()),
         }
     }
@@ -376,7 +381,49 @@ impl PimService {
             Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
                 (Role::TaskList, &todo.collection, todo.href.as_deref())
             }
-            _ => return None,
+            // Both tasks name their list only through the cache; one it does not hold, or one in a
+            // list the client may not see, is `not-found`. The tasks renumbered with them are in
+            // the same list (`move_todo` refuses `before` in another one).
+            Request::MoveTodo { href, before, .. } => {
+                let seen = ids(self.seen(reach, Role::TaskList).await);
+                let state = self.state.read().await;
+                let list_of = |href: &str| cached_todo(&state, href).map(|todo| todo.collection.clone());
+                return [Some(href.as_str()), before.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .find(|href| !list_of(href).is_some_and(|list| seen.contains(&list)))
+                    .map(str::to_string);
+            }
+            Request::Ping
+            | Request::Status
+            | Request::Quit
+            | Request::ListTemplates
+            | Request::SaveTemplate { .. }
+            | Request::UpdateTemplate { .. }
+            | Request::DeleteTemplate { .. }
+            | Request::LoadTemplate { .. }
+            | Request::ConnectNextcloud { .. }
+            | Request::ConnectGithub
+            | Request::SetGithubToken { .. }
+            | Request::Sync
+            | Request::CalendarCollections
+            | Request::TaskCollections
+            | Request::Events { .. }
+            | Request::Todos
+            | Request::Settings
+            | Request::UpdateSettings { .. }
+            | Request::SetSetting { .. }
+            | Request::SetCollectionShown { .. }
+            | Request::Accounts
+            | Request::RemoveAccount { .. }
+            | Request::RenameTemplate { .. }
+            | Request::OpenApp { .. }
+            | Request::ListApps
+            | Request::ListClients
+            | Request::CreateClient { .. }
+            | Request::UpdateClient { .. }
+            | Request::NewClientKey { .. }
+            | Request::RemoveClient { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {
@@ -848,6 +895,55 @@ impl PimService {
         Ok(())
     }
 
+    /// Puts the cached task `href` right before the task `before` of the same list, or at the
+    /// end (`Request::MoveTodo`, task P.3a), and returns the tasks written, as stored.
+    ///
+    /// The numbers come from [`move_plan`] over the cached tasks. Each changed task is written
+    /// like [`PimService::save_todo`] with its cached etag, which checks it on the server first, so
+    /// only its `X-APPLE-SORT-ORDER` changes there; the moved task needs the `etag` the client read
+    /// to be the cached one, else `conflict`, so no move rests on an outdated list.
+    ///
+    /// The writes run one after the other and stop at the first failure, whose code is the answer:
+    /// the ones written before stay on the server and in the cache (every successful write updates
+    /// it), and the moved task, written last, has not moved. Nothing is rolled back, since undoing
+    /// would be more writes that can fail; the cache always shows what the server holds.
+    async fn move_todo(&self, href: &str, etag: &str, before: Option<&str>) -> Result<Vec<Todo>, WriteError> {
+        let (plan, list) = {
+            let state = self.state.read().await;
+            let not_found = |href: &str| refused("not-found", format!("no task {href:?}: reload the tasks"));
+            let todo = cached_todo(&state, href).ok_or_else(|| not_found(href))?;
+            if todo.etag.as_deref() != Some(etag) {
+                let uid = todo.uid.clone();
+                return Err(Failed { account: None, err: ProviderError::Conflict { uid } }.into());
+            }
+            let before = match before {
+                Some(href) => match cached_todo(&state, href) {
+                    Some(found) if found.collection == todo.collection => Some(found),
+                    _ => return Err(not_found(href)),
+                },
+                None => None,
+            };
+            let list = state.owner(&todo.collection).map(|slot| slot.todos.clone()).unwrap_or_default();
+            let plan = move_plan(&list, todo, before).ok_or_else(|| {
+                refused(
+                    "error",
+                    "a task can only go before one with the same parent that is open or done like it".into(),
+                )
+            })?;
+            (plan, todo.collection.clone())
+        };
+        if plan.is_empty() {
+            return Ok(plan);
+        }
+        // Read-only lists and missing connections are refused before the first write.
+        self.place(&list).await?;
+        let mut written = Vec::with_capacity(plan.len());
+        for todo in plan {
+            written.push(self.save_todo(todo).await?);
+        }
+        Ok(written)
+    }
+
     /// Where a write to `collection` (an id) goes. Refused before anything is sent when no
     /// account is connected (`not-connected`), when no account has listed exactly this id
     /// ([`State::owner`], `not-found`) and when the server marks the collection read-only
@@ -954,6 +1050,12 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
 /// account id (`torro_core::Account::nextcloud`).
 fn host(server: &str) -> &str {
     server.split_once("://").map_or(server, |(_, rest)| rest).trim_end_matches('/')
+}
+
+/// The cached task stored at `href`, of any account, compared exactly: hrefs come from
+/// `tasks.list_todos`, which answers from this cache.
+fn cached_todo<'a>(state: &'a State, href: &str) -> Option<&'a Todo> {
+    state.accounts.iter().flat_map(|slot| &slot.todos).find(|todo| todo.href.as_deref() == Some(href))
 }
 
 /// The ids of `collections`.
@@ -2285,6 +2387,181 @@ pub(crate) mod tests {
         let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
         assert_eq!(code_of(&response), "unsupported", "{response:?}");
         assert!(lines(&record).is_empty(), "nothing created, nothing deleted: {:?}", lines(&record));
+    }
+
+    // Manual order (task P.3a).
+
+    const TASK: &str =
+        "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t\r\nSUMMARY:Water plants\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+
+    /// The task `uid` in `path` of the account at `base`, numbered `sort_order`, cached in
+    /// version `"1"` as a sync leaves it.
+    fn cached_task(base: &str, path: &str, uid: &str, sort_order: Option<i64>) -> Todo {
+        let (collection, href) = on_server(base, path, &format!("{uid}.ics"));
+        Todo { uid: uid.into(), etag: Some("\"1\"".into()), sort_order, ..todo_in(&collection, Some(href)) }
+    }
+
+    /// A service on the fake server at `base` whose cache holds `tasks`.
+    async fn service_with_tasks(base: &str, tasks: Vec<Todo>) -> Arc<PimService> {
+        let service = service_on(base).await;
+        service.state.write().await.accounts[0].todos = tasks;
+        service
+    }
+
+    fn move_request(task: &Todo, before: Option<&Todo>) -> Request {
+        Request::MoveTodo {
+            href: task.href.clone().expect("href"),
+            etag: task.etag.clone().expect("etag"),
+            before: before.and_then(|b| b.href.clone()),
+        }
+    }
+
+    /// `(uid, sort_order)` of the cached tasks, in the order the cache holds them.
+    async fn numbers(service: &PimService) -> Vec<(String, Option<i64>)> {
+        let state = service.state.read().await;
+        let mut numbers: Vec<_> = state.accounts[0].todos.iter().map(|t| (t.uid.clone(), t.sort_order)).collect();
+        numbers.sort();
+        numbers
+    }
+
+    #[tokio::test]
+    async fn a_move_writes_only_the_moved_task_when_there_is_room() {
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let tasks: Vec<Todo> =
+            [("a", 100), ("b", 200), ("c", 300)].iter().map(|(u, n)| cached_task(&base, WORK, u, Some(*n))).collect();
+        let service = service_with_tasks(&base, tasks.clone()).await;
+
+        let response = service.handle_within(move_request(&tasks[2], Some(&tasks[0])), Reach::Suite).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(todos.iter().map(|t| (t.uid.as_str(), t.sort_order)).collect::<Vec<_>>(), [("c", Some(49))]);
+        assert_eq!(todos[0].etag.as_deref(), Some("\"2\""), "as stored");
+        assert_eq!(todos[0].collection, tasks[2].collection, "answered with the list id");
+        assert_eq!(
+            lines(&record),
+            [format!("GET {WORK}c.ics"), format!("GET {WORK}c.ics"), format!("PUT {WORK}c.ics If-Match \"1\"")]
+        );
+        let state = service.state.read().await;
+        let cached = state.accounts[0].todos.iter().find(|t| t.uid == "c").expect("still cached");
+        assert_eq!((cached.sort_order, cached.etag.as_deref()), (Some(49), Some("\"2\"")));
+        drop(state);
+
+        // Where it is already: nothing to write.
+        let again = service.handle_within(move_request(&todos[0], Some(&tasks[0])), Reach::Suite).await;
+        assert_eq!(again, Response::Todos { todos: vec![] });
+        assert_eq!(lines(&record).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn moves_to_the_end_and_renumbering_write_with_the_etags() {
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let tasks: Vec<Todo> = [("p", 1), ("o", 2), ("n", 3), ("k", 10), ("z", 20)]
+            .iter()
+            .map(|(u, n)| cached_task(&base, WORK, u, Some(*n)))
+            .collect();
+        let service = service_with_tasks(&base, tasks.clone()).await;
+        let response = service.handle_within(move_request(&tasks[4], Some(&tasks[1])), Reach::Suite).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        let written: Vec<&str> = todos.iter().map(|t| t.uid.as_str()).collect();
+        assert_eq!(written, ["n", "o", "z"], "from the end up, the moved task last");
+        let puts: Vec<String> = lines(&record).into_iter().filter(|line| line.starts_with("PUT")).collect();
+        assert_eq!(
+            puts,
+            [
+                format!("PUT {WORK}n.ics If-Match \"1\""),
+                format!("PUT {WORK}o.ics If-Match \"1\""),
+                format!("PUT {WORK}z.ics If-Match \"1\""),
+            ]
+        );
+        assert_eq!(
+            numbers(&service).await,
+            [
+                ("k".into(), Some(10)),
+                ("n".into(), Some(4)),
+                ("o".into(), Some(3)),
+                ("p".into(), Some(1)),
+                ("z".into(), Some(2))
+            ]
+        );
+
+        // p to the end: the last number plus the gap.
+        let response = service.handle_within(move_request(&tasks[0], None), Reach::Suite).await;
+        let Response::Todos { todos } = response else { panic!("the written tasks, got {response:?}") };
+        assert_eq!(todos.iter().map(|t| (t.uid.as_str(), t.sort_order)).collect::<Vec<_>>(), [("p", Some(1034))]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_in_the_middle_stops_the_move_and_the_cache_shows_the_server() {
+        let (base, record) = fake_server(|seen| match seen.method.as_str() {
+            "PUT" if seen.path.ends_with("/o.ics") => (412, None, ""),
+            _ => server_holding(TASK)(seen),
+        })
+        .await;
+        let tasks: Vec<Todo> = [("p", 1), ("o", 2), ("n", 3), ("k", 10), ("z", 20)]
+            .iter()
+            .map(|(u, n)| cached_task(&base, WORK, u, Some(*n)))
+            .collect();
+        let service = service_with_tasks(&base, tasks.clone()).await;
+        let response = service.handle_within(move_request(&tasks[4], Some(&tasks[1])), Reach::Suite).await;
+        assert_eq!(code_of(&response), "conflict", "{response:?}");
+        // n was written and is cached in its new version; o failed; z, the moved task, was not sent.
+        assert!(!lines(&record).iter().any(|line| line.contains("z.ics")), "{:?}", lines(&record));
+        assert_eq!(
+            numbers(&service).await,
+            [
+                ("k".into(), Some(10)),
+                ("n".into(), Some(4)),
+                ("o".into(), Some(2)),
+                ("p".into(), Some(1)),
+                ("z".into(), Some(20))
+            ]
+        );
+        let state = service.state.read().await;
+        let etag = |uid: &str| state.accounts[0].todos.iter().find(|t| t.uid == uid).and_then(|t| t.etag.clone());
+        assert_eq!((etag("n").as_deref(), etag("o").as_deref()), (Some("\"2\""), Some("\"1\"")));
+    }
+
+    #[tokio::test]
+    async fn a_stale_etag_another_list_or_another_level_is_refused_before_anything_is_sent() {
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let a = cached_task(&base, WORK, "a", Some(1));
+        let b = cached_task(&base, WORK, "b", Some(2));
+        let elsewhere = cached_task(&base, HOME, "h", Some(1));
+        let child = Todo { parent: Some("a".into()), ..cached_task(&base, WORK, "child", Some(3)) };
+        let service = service_with_tasks(&base, vec![a.clone(), b.clone(), elsewhere.clone(), child.clone()]).await;
+        let stale = Todo { etag: Some("\"0\"".into()), ..b.clone() };
+        let unknown = Todo { href: Some(format!("{}x.ics", url("work"))), ..b.clone() };
+
+        let ask = |request| {
+            let service = Arc::clone(&service);
+            async move { service.handle_within(request, Reach::Suite).await }
+        };
+        assert_eq!(code_of(&ask(move_request(&stale, Some(&a))).await), "conflict");
+        assert_eq!(code_of(&ask(move_request(&b, Some(&elsewhere))).await), "not-found", "another list");
+        assert_eq!(code_of(&ask(move_request(&unknown, Some(&a))).await), "not-found", "no such task");
+        assert_eq!(code_of(&ask(move_request(&b, Some(&unknown))).await), "not-found", "no such before");
+        assert_eq!(code_of(&ask(move_request(&b, Some(&child))).await), "error", "another parent");
+        assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
+    }
+
+    #[tokio::test]
+    async fn a_client_moves_only_within_the_lists_it_sees() {
+        use torro_ipc::api::{RightsTemplate, Selection};
+        let service = filled_service(SettingsStore::without_file()).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.task_lists = Selection::Only(vec![cal("work")]);
+        let client = Reach::Client(&rights);
+        let (work, home) = (format!("{}t.ics", url("work")), format!("{}t.ics", url("home")));
+        let request = |href: &str, before: Option<&str>| Request::MoveTodo {
+            href: href.into(),
+            etag: "\"1\"".into(),
+            before: before.map(str::to_string),
+        };
+        assert_eq!(service.out_of_reach(client, &request(&work, None)).await, None);
+        assert_eq!(service.out_of_reach(client, &request(&home, None)).await, Some(home.clone()));
+        assert_eq!(service.out_of_reach(client, &request(&work, Some(&home))).await, Some(home.clone()));
+        let unknown = format!("{}nope.ics", url("work"));
+        assert_eq!(service.out_of_reach(client, &request(&unknown, None)).await, Some(unknown.clone()));
+        assert_eq!(service.out_of_reach(Reach::Suite, &request(&home, None)).await, None);
     }
 
     #[tokio::test]
