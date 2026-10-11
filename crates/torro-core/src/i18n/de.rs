@@ -60,7 +60,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Today", "Heute"),
     ("Week", "Woche"),
     ("Week {week} · {month} {year}", "KW {week} · {month} {year}"),
+    ("No events", "Keine Termine"),
+    ("Nothing planned in the next 30 days", "In den nächsten 30 Tagen ist nichts geplant"),
     ("all day", "ganztägig"),
+    ("all day · day {n} of {total}", "ganztägig · Tag {n} von {total}"),
     ("{n} more", "{n} weitere"),
     // Tasks
     ("All", "Alle"),

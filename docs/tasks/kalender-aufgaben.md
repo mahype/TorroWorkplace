@@ -68,7 +68,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torrocalendar/src/views/month.rs`
 
 ### K.11 Kalender: Agenda
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torrocalendar/src/views/agenda.rs`
 
