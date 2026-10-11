@@ -27,9 +27,11 @@
 //! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Local, NaiveDate};
+use chrono::{Local, NaiveDate, NaiveDateTime};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
@@ -45,6 +47,7 @@ use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
+use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, EventTime, PimSource, Todo};
 
 use crate::detail::{self, Detail};
@@ -75,6 +78,151 @@ pub enum Menu {
     Display,
 }
 
+/// A state the window can start in (`--demo --open <state>`), so that every state can be
+/// photographed from a script without clicking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Open {
+    /// The detail of the first task in the list.
+    Detail,
+    /// The navigation menu ("Today ▾"); only the medium and narrow header have it.
+    Menu,
+    /// The Display menu in the header.
+    Display,
+    /// The sidebar drawer of the medium and narrow layouts.
+    Drawer,
+    /// The app switcher at the top of the sidebar (in the drawer where there is no sidebar).
+    Switcher,
+    /// The detail of the first task with its due date card open.
+    Due,
+    /// The error state with its "Retry".
+    Error,
+    /// No tasks at all.
+    Empty,
+    /// The loading state, kept for good.
+    Loading,
+}
+
+impl Open {
+    const ALL: [(&'static str, Open); 9] = [
+        ("detail", Open::Detail),
+        ("menu", Open::Menu),
+        ("display", Open::Display),
+        ("drawer", Open::Drawer),
+        ("switcher", Open::Switcher),
+        ("due", Open::Due),
+        ("error", Open::Error),
+        ("empty", Open::Empty),
+        ("loading", Open::Loading),
+    ];
+}
+
+/// The start parameters of the window besides `--demo` (which [`Source`] reads):
+///
+/// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
+/// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
+///   one. Nothing is stored.
+/// - `--now <YYYY-MM-DDTHH:MM>`: a fixed "now" (only its day counts here) and demo data around
+///   it, for pictures that can be made again; needs `--demo`. The detail panel still reads the
+///   clock itself (`detail.rs`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Launch {
+    pub open: Option<Open>,
+    pub appearance: Option<Appearance>,
+    pub now: Option<NaiveDateTime>,
+}
+
+/// Why the start parameters were refused; `main` prints it and exits with 64, as `ctl` does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchError {
+    /// `--open` and friends without a value.
+    MissingValue(&'static str),
+    /// A value the flag does not know, with the list of valid ones.
+    UnknownValue { flag: &'static str, value: String, valid: String },
+    /// `--open` or `--now` without `--demo`: they only make sense on sample data.
+    NeedsDemo(&'static str),
+    /// `--now` is not a date and time like `2026-10-12T10:30`.
+    BadNow(String),
+}
+
+impl fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LaunchError::MissingValue(flag) => write!(f, "{flag} needs a value"),
+            LaunchError::UnknownValue { flag, value, valid } => {
+                write!(f, "unknown value {value:?} for {flag}; valid values: {valid}")
+            }
+            LaunchError::NeedsDemo(flag) => write!(f, "{flag} only works together with --demo"),
+            LaunchError::BadNow(value) => {
+                write!(f, "--now expects YYYY-MM-DDTHH:MM, e.g. 2026-10-12T10:30; got {value:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {}
+
+/// The value of `--flag value` or `--flag=value`; `None` when the flag is not there.
+fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a str>, LaunchError> {
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        if word == flag {
+            return words.next().map(|value| Some(value.as_str())).ok_or(LaunchError::MissingValue(flag));
+        }
+        if let Some(value) = word.strip_prefix(flag).and_then(|rest| rest.strip_prefix('=')) {
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+impl Launch {
+    /// Reads the start parameters from `args` (the words after the program name). Words it does
+    /// not know are left to others (`--demo`).
+    pub fn parse(args: &[String]) -> Result<Launch, LaunchError> {
+        let demo = args.iter().any(|arg| arg == "--demo");
+        let unknown = |flag, value: &str, valid: Vec<&str>| LaunchError::UnknownValue {
+            flag,
+            value: value.to_owned(),
+            valid: valid.join(", "),
+        };
+        let open = match flag_value(args, "--open")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--open")),
+            Some(word) => match Open::ALL.iter().find(|(name, _)| *name == word) {
+                Some(&(_, open)) => Some(open),
+                None => return Err(unknown("--open", word, Open::ALL.iter().map(|(name, _)| *name).collect())),
+            },
+        };
+        let appearance = match flag_value(args, "--appearance")? {
+            None => None,
+            Some("light") => Some(Appearance::Light),
+            Some("dark") => Some(Appearance::Dark),
+            Some("system") => Some(Appearance::System),
+            Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
+        };
+        let now = match flag_value(args, "--now")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--now")),
+            Some(word) => Some(
+                NaiveDateTime::parse_from_str(word, "%Y-%m-%dT%H:%M").map_err(|_| LaunchError::BadNow(word.into()))?,
+            ),
+        };
+        Ok(Launch { open, appearance, now })
+    }
+
+    /// The data source: demo data around the fixed day with `--now`, else what
+    /// [`Source::from_args`] makes of `args`.
+    pub fn source(&self, args: &[String]) -> Source {
+        match self.now {
+            Some(now) => Source::Demo(Arc::new(DemoSource::new(now.date()))),
+            None => Source::from_args(args.iter().cloned()),
+        }
+    }
+}
+
+/// The text of the forced error state.
+const DEMO_ERROR: &str = "the server did not answer (demo)";
+
 /// The id of the quick add field, so "New" can focus it.
 const QUICK_ADD: &str = "quick-add";
 /// Where the quick add text starts: past the "+" icon, which sits 12 in from the edge.
@@ -88,6 +236,10 @@ const AUTOSAVE: Duration = Duration::from_secs(1);
 
 pub struct App {
     source: Source,
+    /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
+    launch: Launch,
+    /// The one-time part of `launch.open` (the detail) has been done.
+    opened: bool,
     today: NaiveDate,
     /// The window size, for the size class ([`layout::of`]). Kept from the window events rather
     /// than asked of the view, so that subscriptions and tests know the class too.
@@ -217,10 +369,11 @@ fn typing() -> Task<bool> {
 }
 
 impl App {
-    pub fn new(source: Source) -> (App, Task<Message>) {
+    pub fn new(source: Source, launch: Launch) -> (App, Task<Message>) {
+        let open = launch.open;
         let app = App {
             source,
-            today: Local::now().date_naive(),
+            today: launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date()),
             size: torro_gui::window(AppId::TASKS).size,
             account: None,
             connect: Connect,
@@ -237,8 +390,16 @@ impl App {
             error: None,
             appearance: Appearance::System,
             system_mode: Mode::None,
-            menu: None,
-            drawer: false,
+            menu: match open {
+                Some(Open::Menu) => Some(Menu::Nav),
+                Some(Open::Display) => Some(Menu::Display),
+                Some(Open::Switcher) => Some(Menu::Switcher),
+                _ => None,
+            },
+            // Without a sidebar the app switcher lives in the drawer.
+            drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            launch,
+            opened: false,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
@@ -278,9 +439,10 @@ impl App {
         Subscription::batch(subscriptions)
     }
 
-    /// The Iced theme: the stored appearance, with "System" following the desktop.
+    /// The Iced theme: the appearance of `--appearance`, else the stored one, with "System"
+    /// following the desktop.
     pub fn theme(&self) -> Theme {
-        theme::for_appearance(self.appearance, self.system_mode)
+        theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
     }
 
     /// Asks the core for the stored appearance. Done on every tick, so a change in the control
@@ -321,6 +483,7 @@ impl App {
                         (Some(_), Some(detail)) => detail.refresh(&lists, &self.todos),
                         _ => self.detail = None,
                     }
+                    return self.open_launched();
                 }
                 Err(err) => self.error = Some(err),
             },
@@ -396,7 +559,7 @@ impl App {
                 return sync.chain(self.load());
             }
             Message::Tick => {
-                self.today = Local::now().date_naive();
+                self.today = self.launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date());
                 let appearance = self.fetch_appearance();
                 if !self.connected() {
                     return Task::batch([appearance, self.fetch_account()]);
@@ -950,12 +1113,34 @@ impl App {
         Task::perform(async move { source.save_todo(todo).await.map_err(|e| e.to_string()) }, Message::Saved)
     }
 
+    /// The detail states of `--open`, once the first tasks are in: a detail needs a task to open.
+    fn open_launched(&mut self) -> Task<Message> {
+        if std::mem::replace(&mut self.opened, true) {
+            return Task::none();
+        }
+        let Some(open @ (Open::Detail | Open::Due)) = self.launch.open else { return Task::none() };
+        let Some(first) = list::order(&self.list_data(false)).first().copied() else { return Task::none() };
+        let select = self.select(first);
+        if open == Open::Due {
+            let card = self.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
+            return Task::batch([select, card]);
+        }
+        select
+    }
+
     fn load(&self) -> Task<Message> {
+        // The forced states: loading never ends, the error comes at once, empty has no tasks.
+        match self.launch.open {
+            Some(Open::Loading) => return Task::none(),
+            Some(Open::Error) => return Task::done(Message::Loaded(Err(DEMO_ERROR.into()))),
+            _ => {}
+        }
+        let empty = self.launch.open == Some(Open::Empty);
         let source = self.source.clone();
         Task::perform(
             async move {
                 let collections = source.collections().await.map_err(|e| e.to_string())?;
-                let todos = source.todos().await.map_err(|e| e.to_string())?;
+                let todos = if empty { Vec::new() } else { source.todos().await.map_err(|e| e.to_string())? };
                 Ok((collections, todos))
             },
             Message::Loaded,
@@ -1007,7 +1192,7 @@ mod tests {
     use super::*;
 
     fn demo_app() -> App {
-        App::new(Source::from_args(["--demo".to_string()])).0
+        App::new(Source::from_args(["--demo".to_string()]), Launch::default()).0
     }
 
     #[test]
@@ -1426,5 +1611,131 @@ mod tests {
         let _ = app.update(Message::Resized(MINI));
         let mini = app.update(Message::Tick).units();
         assert!(mini > wide, "the glance has no detail to protect, so it loads as well");
+    }
+
+    fn args(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// A demo app started with these words, its account and its first tasks loaded.
+    fn launched(words: &[&str]) -> App {
+        let launch = Launch::parse(&args(words)).expect("valid parameters");
+        let (mut app, _) = App::new(launch.source(&args(words)), launch);
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        connected(&mut app);
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        app
+    }
+
+    #[test]
+    fn every_state_of_open_is_parsed_in_both_spellings() {
+        for (name, open) in Open::ALL {
+            let expected = Launch { open: Some(open), ..Launch::default() };
+            assert_eq!(Launch::parse(&args(&["--demo", "--open", name])), Ok(expected.clone()), "{name}");
+            assert_eq!(Launch::parse(&args(&["--demo", &format!("--open={name}")])), Ok(expected), "{name}");
+        }
+        assert_eq!(Launch::parse(&args(&["--demo"])), Ok(Launch::default()));
+        assert_eq!(Launch::parse(&[]), Ok(Launch::default()));
+    }
+
+    #[test]
+    fn appearance_and_now_are_parsed() {
+        let launch = Launch::parse(&args(&["--demo", "--appearance", "light", "--now", "2026-10-12T10:30"]))
+            .expect("valid parameters");
+        assert_eq!(launch.appearance, Some(Appearance::Light));
+        assert_eq!(launch.now, NaiveDate::from_ymd_opt(2026, 10, 12).and_then(|day| day.and_hms_opt(10, 30, 0)));
+        for (word, appearance) in
+            [("light", Appearance::Light), ("dark", Appearance::Dark), ("system", Appearance::System)]
+        {
+            let launch = Launch::parse(&args(&["--appearance", word])).expect("works without --demo");
+            assert_eq!(launch.appearance, Some(appearance));
+        }
+    }
+
+    #[test]
+    fn bad_parameters_name_the_valid_values() {
+        let err = Launch::parse(&args(&["--demo", "--open", "popup"])).expect_err("unknown state");
+        let text = err.to_string();
+        assert!(text.contains("\"popup\"") && text.contains("--open"), "{text}");
+        for (name, _) in Open::ALL {
+            assert!(text.contains(name), "{name} is listed in: {text}");
+        }
+        let err = Launch::parse(&args(&["--appearance", "sepia"])).expect_err("unknown appearance");
+        assert!(err.to_string().ends_with("valid values: light, dark, system"), "{err}");
+        assert_eq!(Launch::parse(&args(&["--demo", "--open"])), Err(LaunchError::MissingValue("--open")));
+        assert_eq!(Launch::parse(&args(&["--open", "detail"])), Err(LaunchError::NeedsDemo("--open")));
+        assert_eq!(Launch::parse(&args(&["--now", "2026-10-12T10:30"])), Err(LaunchError::NeedsDemo("--now")));
+        for bad in ["tomorrow", "2026-10-12", "2026-10-12 10:30", "2026-13-01T10:30"] {
+            assert_eq!(Launch::parse(&args(&["--demo", "--now", bad])), Err(LaunchError::BadNow(bad.into())), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_menu_states_start_with_the_menu_open() {
+        for (word, menu, drawer) in [
+            ("menu", Some(Menu::Nav), false),
+            ("display", Some(Menu::Display), false),
+            ("drawer", None, true),
+            // Without a sidebar the switcher is in the drawer.
+            ("switcher", Some(Menu::Switcher), true),
+        ] {
+            let app = launched(&["--demo", "--open", word]);
+            assert_eq!((app.menu, app.drawer), (menu, drawer), "{word}");
+        }
+    }
+
+    #[test]
+    fn the_detail_states_open_the_first_task_once() {
+        let detail = launched(&["--demo", "--open", "detail"]);
+        let open = detail.detail.as_ref().expect("the detail is open");
+        let first = list::order(&detail.list_data(false))[0];
+        assert_eq!(open.original.uid, detail.todos[first].uid);
+        assert!(open.layer(&Anchor::new()).is_none(), "no property editor");
+
+        let due = launched(&["--demo", "--open", "due"]);
+        assert!(due.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the due card");
+
+        // Closing it does not bring it back with the next reload.
+        let mut closed = launched(&["--demo", "--open", "detail"]);
+        let _ = closed.update(Message::Detail(detail::Message::Close));
+        let (collections, _, todos) = torro_pim::demo::sample(closed.today);
+        let _ = closed.update(Message::Loaded(Ok((collections, todos))));
+        assert!(closed.detail.is_none());
+    }
+
+    #[test]
+    fn loading_never_ends_and_the_error_comes_at_once() {
+        assert_eq!(launched(&["--demo", "--open", "loading"]).load().units(), 0, "nothing is asked for");
+        let words = ["--demo", "--open", "error"];
+        let launch = Launch::parse(&args(&words)).expect("valid parameters");
+        let (mut error, _) = App::new(launch.source(&args(&words)), launch);
+        assert_eq!(error.load().units(), 1, "the error is the answer");
+        let _ = error.update(Message::Loaded(Err(DEMO_ERROR.into())));
+        assert_eq!(error.error.as_deref(), Some(DEMO_ERROR));
+        assert!(!error.loaded);
+        assert!(launched(&["--demo"]).load().units() > 0, "an ordinary demo loads");
+    }
+
+    #[test]
+    fn now_fixes_the_day_and_the_demo_data_around_it() {
+        let words = ["--demo", "--now", "2026-03-04T08:15"];
+        let mut app = launched(&words);
+        let pinned = NaiveDate::from_ymd_opt(2026, 3, 4).expect("valid date");
+        assert_eq!(app.today, pinned);
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.today, pinned, "the clock does not run on");
+        assert!(app.launch.source(&args(&words)).is_demo());
+    }
+
+    #[test]
+    fn the_appearance_parameter_beats_the_stored_one_in_this_process_only() {
+        let mut app = launched(&["--appearance", "light", "--demo"]);
+        let _ = app.update(Message::Appearance(Ok(Appearance::Dark)));
+        assert_eq!(app.theme(), theme::light());
+        assert_eq!(app.appearance, Appearance::Dark, "the stored value is kept as it is");
+        let mut system = launched(&["--appearance", "system", "--demo"]);
+        let _ = system.update(Message::Appearance(Ok(Appearance::Dark)));
+        let _ = system.update(Message::SystemMode(Mode::Light));
+        assert_eq!(system.theme(), theme::light(), "system follows the desktop whatever is stored");
     }
 }

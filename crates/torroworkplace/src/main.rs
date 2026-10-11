@@ -5,7 +5,8 @@
 //!   accounts, sync and the app registry. `--headless` runs it without a tray icon.
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts.
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
-//!   workspaces, apps and general settings.
+//!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
+//!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
 //! - later: `mcp` (one MCP server for the whole suite).
 
 use std::process::ExitCode;
@@ -33,13 +34,23 @@ fn main() -> ExitCode {
     let command = std::env::args().nth(1);
     match command.as_deref() {
         Some("daemon") => daemon::run(std::env::args().any(|arg| arg == "--headless")),
-        None | Some("ui") => match ui::run(&std::env::args().skip(2).collect::<Vec<_>>()) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(err) => {
-                eprintln!("{}: {err}", APP.binary);
-                ExitCode::FAILURE
+        None | Some("ui") => {
+            // Refuse bad parameters before anything starts (the core, a window).
+            let launch = match ui::Launch::parse(&std::env::args().skip(2).collect::<Vec<_>>()) {
+                Ok(launch) => launch,
+                Err(err) => {
+                    eprintln!("{}: {err}", APP.binary);
+                    return ExitCode::from(64);
+                }
+            };
+            match ui::run(launch) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("{}: {err}", APP.binary);
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Some("ctl" | "status") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
         Some("mcp") => {
             eprintln!("{}: not implemented yet ({} scaffold)", APP.binary, env!("CARGO_PKG_VERSION"));

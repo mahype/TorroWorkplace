@@ -164,10 +164,11 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 ### Sichtprüfung
 
 ### Q.1 Zustände per Startparameter
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** –
 - **Dateien:** `crates/torrocalendar/src/{main,app}.rs`, `crates/torrotasks/src/{main,app}.rs`,
-  `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/main.rs`
+  `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/launch.rs` (neu: Startparameter und
+  Demo-Daten), `crates/torroworkplace/src/main.rs`
 - `--demo --open <zustand>` öffnet direkt: Kalender `editor`, `editor-new`, `day`, `month`,
   `agenda`, `error`, `empty`, `loading`; Aufgaben `detail`, `error`, `empty`, `loading`.
 - Steuerzentrale bekommt `--demo` (Beispielkonten, -vorlagen und -einstellungen im Speicher,

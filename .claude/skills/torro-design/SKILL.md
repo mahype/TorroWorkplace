@@ -276,6 +276,24 @@ speichert je ein PNG. Hyprland ab 0.56 nimmt Befehle als Lua (`hl.dsp.window.flo
 das Skript nutzt diese Form. Eine Ansicht wechseln geht per Tastenkürzel an das Fenster:
 `hyprctl dispatch "hl.dsp.send_shortcut({ mods = '', key = 'm', window = 'pid:$pid' })"`.
 
+**Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
+Zustand direkt (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
+editor editor-new menu drawer switcher error empty loading`; Aufgaben: `detail menu display drawer
+switcher due error empty loading`; Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
+Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
+remove delete-template rename-template` und `--section overview|accounts|workspaces|apps|general`.
+`menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
+Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
+light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
+entfällt jedes im Code erzwungene „hell“); `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
+„jetzt“ samt Demo-Daten für wiederholbare Bilder (das Aufgaben-Detail liest die Uhr noch selbst).
+Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
+
+```bash
+./target/debug/torrocalendar --demo --open editor --appearance light --now 2026-10-13T10:30 & pid=$!
+sleep 3; .claude/skills/torro-design/shoot.sh "$pid" cal-editor "$SCRATCH/design"; kill "$pid"
+```
+
 `$SCRATCH` = Scratchpad-Verzeichnis der Sitzung. Hat das Fenster nicht die angeforderte Größe
 (Mindestgröße), ist das ein Befund. Die PNGs mit dem Read-Werkzeug öffnen und gegen diese Regeln
 prüfen. Scheint fremder Text durch, fehlt die Deckkraft-Regel (F.7) – Befund, kein App-Fehler.

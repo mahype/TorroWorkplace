@@ -33,6 +33,7 @@
 mod accounts;
 mod apps;
 mod general;
+mod launch;
 mod overview;
 mod wizard;
 mod workspaces;
@@ -55,6 +56,8 @@ use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, 
 use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, AppInfo, Request, Response, Status, client};
 use torro_setups::TemplateSummary;
+
+pub use launch::{Launch, Open};
 
 /// The sections in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,16 +100,20 @@ impl Section {
         }
     }
 
+    /// The word for `--section`.
+    pub fn arg(self) -> &'static str {
+        match self {
+            Section::Overview => "overview",
+            Section::Accounts => "accounts",
+            Section::Workspaces => "workspaces",
+            Section::Apps => "apps",
+            Section::General => "general",
+        }
+    }
+
     /// `--section accounts` and friends.
     pub fn from_arg(arg: &str) -> Option<Section> {
-        match arg {
-            "overview" => Some(Section::Overview),
-            "accounts" => Some(Section::Accounts),
-            "workspaces" => Some(Section::Workspaces),
-            "apps" => Some(Section::Apps),
-            "general" => Some(Section::General),
-            _ => None,
-        }
+        Section::ALL.into_iter().find(|section| section.arg() == arg)
     }
 }
 
@@ -175,6 +182,9 @@ pub enum Menu {
 }
 
 pub struct Ui {
+    /// The start parameters: `--demo` keeps the window off the socket for good, `--appearance`
+    /// beats the stored appearance.
+    launch: Launch,
     section: Section,
     /// The menu that is open, if any.
     menu: Option<Menu>,
@@ -224,17 +234,13 @@ pub enum Message {
     General(general::Message),
 }
 
-/// Runs the control centre. `args` are the words after `ui` (`--section accounts`).
-pub fn run(args: &[String]) -> iced::Result {
-    let section = args
-        .windows(2)
-        .find(|w| w[0] == "--section")
-        .and_then(|w| Section::from_arg(&w[1]))
-        .unwrap_or(Section::Overview);
-    if let Some(socket) = torro_ipc::socket_path() {
+/// Runs the control centre with the start parameters of `torroworkplace ui` ([`Launch::parse`]).
+/// Demo mode does not start the core either.
+pub fn run(launch: Launch) -> iced::Result {
+    if let Some(socket) = torro_ipc::socket_path().filter(|_| !launch.demo) {
         torro_gui::source::ensure_core(&socket);
     }
-    iced::application(move || Ui::new(section), Ui::update, Ui::view)
+    iced::application(move || Ui::new(launch.clone()), Ui::update, Ui::view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| format!("Torro Workplace · {}", ui.section.label()))
         .theme(Ui::theme)
@@ -244,9 +250,11 @@ pub fn run(args: &[String]) -> iced::Result {
 }
 
 impl Ui {
-    fn new(section: Section) -> (Ui, Task<Message>) {
-        let ui = Ui {
-            section,
+    fn new(launch: Launch) -> (Ui, Task<Message>) {
+        let (open, demo) = (launch.open, launch.demo);
+        let mut ui = Ui {
+            section: launch.section,
+            launch,
             menu: None,
             drawer: false,
             loaded: false,
@@ -260,23 +268,84 @@ impl Ui {
             apps: apps::State::default(),
             general: general::State::default(),
         };
-        (ui, Task::batch([load(), iced::system::theme().map(Message::SystemMode)]))
+        if demo {
+            // No service to ask: the sample data is there from the first frame.
+            ui.data = launch::demo_data();
+            ui.appearance = ui.data.settings.appearance;
+            ui.loaded = true;
+        }
+        if let Some(open) = open {
+            ui.open(open);
+        }
+        let task = Task::batch([ui.reload(), iced::system::theme().map(Message::SystemMode)]);
+        (ui, task)
     }
 
-    /// The Iced theme: the stored appearance (the page reloads it with every `Data`), with
-    /// "System" following the desktop.
+    /// Goes to the state `--open` asks for, the way a click would: through the pages' messages.
+    fn open(&mut self, open: Open) {
+        let first_account = accounts::listed(&self.data.accounts).next().map(|account| account.id.clone());
+        let first_template = self.data.templates.first().map(|template| template.id.clone());
+        let messages = match open {
+            Open::Menu => {
+                self.menu = Some(Menu::Nav);
+                vec![]
+            }
+            Open::Drawer => {
+                self.drawer = true;
+                vec![]
+            }
+            // Without a sidebar the app switcher lives in the drawer.
+            Open::Switcher => {
+                self.menu = Some(Menu::Switcher);
+                self.drawer = true;
+                vec![]
+            }
+            Open::Wizard => vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)],
+            Open::AccountDetail | Open::Remove => {
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                messages.extend(first_account.map(|id| Message::Accounts(accounts::Message::Open(id))));
+                if open == Open::Remove {
+                    messages.push(Message::Accounts(accounts::Message::AskRemove));
+                }
+                messages
+            }
+            Open::DeleteTemplate | Open::RenameTemplate => {
+                let mut messages = vec![Message::Select(Section::Workspaces)];
+                messages.extend(first_template.map(|id| {
+                    Message::Workspaces(match open {
+                        Open::DeleteTemplate => workspaces::Message::AskDelete(id),
+                        _ => workspaces::Message::StartRename(id),
+                    })
+                }));
+                messages
+            }
+        };
+        for message in messages {
+            let _ = self.update(message);
+        }
+    }
+
+    /// Loads everything from the service; the demo has none and keeps its sample data.
+    fn reload(&self) -> Task<Message> {
+        if self.launch.demo { Task::none() } else { load() }
+    }
+
+    /// The Iced theme: the appearance of `--appearance`, else the stored one (the page reloads it
+    /// with every `Data`), with "System" following the desktop.
     fn theme(&self) -> Theme {
-        theme::for_appearance(self.appearance, self.system_mode)
+        theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
     }
 
     fn subscription(&self) -> Subscription<Message> {
         // Faster while an account is being set up, so the page follows the browser sign-in.
         let every = if self.accounts.busy() { Duration::from_secs(1) } else { Duration::from_secs(3) };
-        Subscription::batch([
-            iced::time::every(every).map(|_| Message::Tick),
-            iced::system::theme_changes().map(Message::SystemMode),
-            iced::event::listen_with(escape_key),
-        ])
+        let mut all =
+            vec![iced::system::theme_changes().map(Message::SystemMode), iced::event::listen_with(escape_key)];
+        // The demo has nothing to reload.
+        if !self.launch.demo {
+            all.push(iced::time::every(every).map(|_| Message::Tick));
+        }
+        Subscription::batch(all)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -314,13 +383,13 @@ impl Ui {
             }
             Message::Sent(result) => {
                 self.notice = result.err();
-                return load();
+                return self.reload();
             }
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
                 Action::None
             }
-            Message::Tick => return load(),
+            Message::Tick => return self.reload(),
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
@@ -383,6 +452,9 @@ impl Ui {
     fn perform(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::None => Task::none(),
+            // The demo is closed off: no request reaches the service, no page opens, so nothing
+            // is stored and nothing starts.
+            Action::Send(_) | Action::OpenUrl(_) if self.launch.demo => Task::none(),
             Action::Send(request) => send(request),
             Action::OpenUrl(url) => {
                 if let Err(err) = webbrowser::open(&url) {
@@ -721,6 +793,16 @@ fn send(request: Request) -> Task<Message> {
 mod tests {
     use super::*;
 
+    fn ui(section: Section) -> Ui {
+        Ui::new(Launch { section, ..Launch::default() }).0
+    }
+
+    /// A control centre started with `torroworkplace ui <words>`.
+    fn started(words: &[&str]) -> Ui {
+        let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
+        Ui::new(Launch::parse(&args).expect("valid parameters")).0
+    }
+
     fn loaded(appearance: Appearance, error: Option<&str>) -> Message {
         let settings = Settings { appearance, ..Settings::default() };
         Message::Loaded(Box::new(Data { settings, error: error.map(String::from), ..Data::default() }))
@@ -728,7 +810,7 @@ mod tests {
 
     #[test]
     fn theme_follows_the_stored_appearance() {
-        let (mut ui, _) = Ui::new(Section::Overview);
+        let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::SystemMode(Mode::Light));
         assert_eq!(ui.theme(), theme::light(), "System follows the desktop");
         let _ = ui.update(loaded(Appearance::Dark, None));
@@ -740,7 +822,7 @@ mod tests {
 
     #[test]
     fn an_unreachable_core_keeps_the_colours() {
-        let (mut ui, _) = Ui::new(Section::Overview);
+        let mut ui = ui(Section::Overview);
         let _ = ui.update(loaded(Appearance::Light, None));
         let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
         assert_eq!(ui.theme(), theme::light());
@@ -748,7 +830,7 @@ mod tests {
 
     #[test]
     fn the_page_loads_until_the_core_answers() {
-        let (mut ui, _) = Ui::new(Section::Accounts);
+        let mut ui = ui(Section::Accounts);
         assert!(!ui.loaded);
         let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
         assert!(ui.loaded, "a failed answer ends the loading state too");
@@ -756,7 +838,7 @@ mod tests {
 
     #[test]
     fn choosing_a_section_closes_menu_and_drawer() {
-        let (mut ui, _) = Ui::new(Section::Overview);
+        let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::ToggleDrawer);
         let _ = ui.update(Message::ToggleMenu(Menu::Nav));
         assert_eq!(ui.menu, Some(Menu::Nav));
@@ -770,7 +852,7 @@ mod tests {
 
     #[test]
     fn escape_closes_the_menu_before_the_dialog_below_it() {
-        let (mut ui, _) = Ui::new(Section::Overview);
+        let mut ui = ui(Section::Overview);
         let _ = ui.update(Message::Switcher(Switcher::New));
         assert_eq!(ui.section, Section::Accounts, "New in the switcher adds an account");
         assert!(ui.accounts.wizard.is_some());
@@ -785,7 +867,7 @@ mod tests {
 
     #[test]
     fn the_switcher_opens_other_apps_through_the_core() {
-        let (mut ui, _) = Ui::new(Section::Overview);
+        let mut ui = ui(Section::Overview);
         ui.menu = Some(Menu::Switcher);
         let action = ui.switcher(Switcher::OpenApp(AppId::CALENDAR.binary));
         assert!(matches!(action, Action::Send(Request::OpenApp { ref app }) if app == "torrocalendar"));
@@ -812,7 +894,7 @@ mod tests {
 
     #[test]
     fn the_window_builds_in_every_class_and_state() {
-        let (mut ui, _) = Ui::new(Section::Accounts);
+        let mut ui = ui(Section::Accounts);
         for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
             let _ = ui.window(class);
         }
@@ -829,11 +911,119 @@ mod tests {
 
     #[test]
     fn page_dialogs_lie_over_the_whole_window() {
-        let (mut ui, _) = Ui::new(Section::Accounts);
+        let mut ui = ui(Section::Accounts);
         assert!(ui.page_overlay().is_none());
         let _ = ui.update(Message::Accounts(accounts::Message::AddAccount));
         assert!(ui.page_overlay().is_some(), "the add-account dialog is a window layer");
         let _ = ui.update(Message::Select(Section::Overview));
         assert!(ui.page_overlay().is_none(), "another section shows no dialog of the accounts page");
+    }
+
+    #[test]
+    fn sections_are_named_by_their_argument() {
+        for section in Section::ALL {
+            assert_eq!(Section::from_arg(section.arg()), Some(section));
+        }
+        assert_eq!(Section::from_arg("mail"), None);
+    }
+
+    #[test]
+    fn the_demo_starts_loaded_with_its_sample_data() {
+        let ui = started(&["--demo"]);
+        assert!(ui.loaded && ui.data.error.is_none());
+        assert!(!ui.data.accounts.is_empty() && !ui.data.templates.is_empty() && ui.data.apps.is_some());
+        assert!(!started(&[]).loaded, "without --demo the page waits for the core");
+        let apps = started(&["--demo", "--section", "apps"]);
+        assert_eq!(apps.section, Section::Apps);
+    }
+
+    #[test]
+    fn the_open_states_go_where_a_click_would() {
+        let wizard = started(&["--demo", "--open", "wizard"]);
+        assert_eq!(wizard.section, Section::Accounts);
+        assert!(wizard.accounts.wizard.is_some() && wizard.page_overlay().is_some());
+
+        let first = wizard.data.accounts[0].id.clone();
+        let detail = started(&["--demo", "--open", "account-detail", "--section", "apps"]);
+        assert_eq!((detail.section, detail.accounts.selected.as_ref()), (Section::Accounts, Some(&first)));
+        assert!(!detail.accounts.confirm_remove && detail.page_overlay().is_none());
+
+        let remove = started(&["--demo", "--open", "remove"]);
+        assert_eq!(remove.accounts.selected.as_ref(), Some(&first));
+        assert!(remove.accounts.confirm_remove && remove.page_overlay().is_some());
+
+        let delete = started(&["--demo", "--open", "delete-template"]);
+        assert_eq!(delete.section, Section::Workspaces);
+        assert!(matches!(workspaces::escape(&delete.workspaces), Some(workspaces::Message::CancelDelete)));
+        assert!(delete.page_overlay().is_some());
+
+        let rename = started(&["--demo", "--open", "rename-template"]);
+        assert_eq!(rename.section, Section::Workspaces);
+        assert!(matches!(workspaces::escape(&rename.workspaces), Some(workspaces::Message::CancelRename)));
+        assert!(rename.page_overlay().is_none(), "renaming is in the row, not in a dialog");
+
+        let menu = started(&["--demo", "--open", "menu", "--section", "apps"]);
+        assert_eq!((menu.section, menu.menu, menu.drawer), (Section::Apps, Some(Menu::Nav), false));
+        let drawer = started(&["--demo", "--open", "drawer"]);
+        assert_eq!((drawer.menu, drawer.drawer), (None, true));
+        let switcher = started(&["--demo", "--open", "switcher"]);
+        assert_eq!((switcher.menu, switcher.drawer), (Some(Menu::Switcher), true));
+    }
+
+    #[test]
+    fn every_open_state_builds_in_every_class() {
+        for (name, _) in launch::Open::ALL {
+            let ui = started(&["--demo", "--open", name]);
+            for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = ui.window(class);
+            }
+        }
+    }
+
+    #[test]
+    fn the_demo_sends_no_request_to_a_socket_and_stores_nothing() {
+        let mut demo = started(&["--demo"]);
+        let sync = || Action::Send(Request::Sync);
+        assert_eq!(demo.perform(sync()).units(), 0);
+        assert_eq!(demo.perform(Action::OpenUrl("https://example.org".into())).units(), 0);
+        assert_eq!(demo.update(Message::Tick).units(), 0, "no reload from a service");
+        assert_eq!(demo.update(Message::Sent(Ok(Response::Ok))).units(), 0);
+        // What the pages and the shell do on their own account.
+        let messages = [
+            Message::Apps(apps::Message::Open("torrotasks".into())),
+            Message::Switcher(Switcher::OpenApp("torrocalendar")),
+            Message::Accounts(accounts::Message::SyncNow),
+            Message::Accounts(accounts::Message::SetShown { collection: "work".into(), shown: false }),
+            Message::Accounts(accounts::Message::Open(demo.data.accounts[0].id.clone())),
+            Message::Accounts(accounts::Message::AskRemove),
+            Message::Accounts(accounts::Message::Remove),
+            Message::Workspaces(workspaces::Message::Load(demo.data.templates[0].id.clone())),
+            Message::Workspaces(workspaces::Message::AskDelete(demo.data.templates[0].id.clone())),
+            Message::Workspaces(workspaces::Message::ConfirmDelete),
+        ];
+        for message in messages {
+            let text = format!("{message:?}");
+            assert_eq!(demo.update(message).units(), 0, "{text}");
+        }
+        assert_eq!(demo.data.accounts.len(), 2, "removing an account in the demo changes nothing");
+        // Without --demo the same action is a request.
+        assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
+        assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 1);
+    }
+
+    #[test]
+    fn the_demo_does_not_listen_to_a_clock_and_the_appearance_parameter_wins() {
+        let (demo, real) = (started(&["--demo"]), ui(Section::Overview));
+        assert_eq!(demo.subscription().units() + 1, real.subscription().units(), "no reload tick in the demo");
+
+        let mut light = started(&["--demo", "--appearance", "light"]);
+        let _ = light.update(Message::SystemMode(Mode::Dark));
+        assert_eq!(light.theme(), theme::light());
+        let _ = light.update(loaded(Appearance::Dark, None));
+        assert_eq!(light.theme(), theme::light(), "a reload of the stored appearance does not beat the parameter");
+        assert_eq!(light.appearance, Appearance::Dark);
+        let mut dark = started(&["--appearance", "dark"]);
+        let _ = dark.update(Message::SystemMode(Mode::Light));
+        assert_eq!(dark.theme(), theme::theme());
     }
 }
