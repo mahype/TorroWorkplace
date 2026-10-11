@@ -195,7 +195,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests mit `FakeWm` für alle drei Modi und für „herholen“.
 
 ### 1.15 Laden: Programme neu starten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku, bei Problemen Sonnet · **Braucht:** 1.14, 1.7
 - **Dateien:** `crates/torro-setups/src/restore.rs`, `crates/torro-setups/src/launch/mod.rs` (`SystemLauncher`)
 - **Ziel:** Strategie `New`: Programm losgelöst starten (eigene Prozessgruppe, Ausgabe verworfen),
