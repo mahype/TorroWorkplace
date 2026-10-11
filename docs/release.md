@@ -3,6 +3,8 @@
 Stand: 2026-10-11. Entwurf (Aufgabe K.16). Nichts davon ist veröffentlicht: kein Tag, keine Repositories,
 keine Secrets. Alles, was ein Secret braucht, ist abgeschaltet, bis die Checkliste unten abgehakt ist.
 
+**Schritt für Schritt für 0.1.0:** [release-0.1.0.md](release-0.1.0.md).
+
 Ziel: `git tag v0.1.0 && git push --tags` baut die ganze Suite (`torroworkplace`, `torrocalendar`,
 `torrotasks`) für Linux, macOS und Windows, legt sie in ein GitHub Release und aktualisiert die
 Paketquellen.
