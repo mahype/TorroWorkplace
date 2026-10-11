@@ -195,7 +195,7 @@ Achtung: Die `.p12` muss „Developer ID Application“ enthalten, nicht „Appl
 
 - [x] Apple Developer Program, Zertifikat „Developer ID Application“ (vorhanden, wie TorroMail).
 - [x] Die fünf Secrets oben in diesem Repository eingetragen (2026-10-11).
-- [ ] Repository-Variable `MACOS_APP_ENABLED` auf `true` setzen (Schalter im Workflow).
+- [x] Repository-Variable `MACOS_APP_ENABLED` auf `true` gesetzt (2026-10-11, Schalter im Workflow).
 - [x] `publish-jobs` um `"./publish-macos-app"` erweitert: Nach jedem Release entstehen signierte und
       notarisierte `Torro Workplace.app`, `Torro Calendar.app`, `Torro Tasks.app` (arm64 und x86_64).
 - [ ] Echte Icons (1024-px-PNG) in `packaging/macos/icons/` ablegen und an `make-app.sh` übergeben.
