@@ -26,7 +26,7 @@ use iced::widget::text::{self, Wrapping};
 use iced::widget::{Space, checkbox, column, container, mouse_area, row, svg};
 use iced::{Alignment, Color, Element, Fill, Padding, Size, Theme, mouse};
 use torro_core::i18n::{tr, trf};
-use torro_gui::datetime::{format_time, to_local};
+use torro_gui::datetime::{format_day_month, format_time, to_local};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::shown_rows;
 use torro_gui::theme::{self, palette, size, space};
@@ -157,7 +157,7 @@ pub fn calm() -> &'static str {
     tr("All done for today")
 }
 
-/// The due date as a row shows it: "Yesterday", "Tomorrow", "Mon, 12.10." (just "12.10." when
+/// The due date as a row shows it: "Yesterday", "Tomorrow", "Mon, 12 Oct" (just "12 Oct" when
 /// `compact`, for a tile too narrow for the weekday); a task due today with a time of day shows
 /// just the time ("18:00"), since the numbers above already say it is today.
 pub fn due_label(due: EventTime, today: NaiveDate, compact: bool) -> String {
@@ -165,7 +165,7 @@ pub fn due_label(due: EventTime, today: NaiveDate, compact: bool) -> String {
     let day = at.date();
     match due {
         EventTime::DateTime(_) if day == today => format_time(at.time()),
-        _ if compact && (day - today).num_days().abs() > 1 => day.format("%d.%m.").to_string(),
+        _ if compact && (day - today).num_days().abs() > 1 => format_day_month(day),
         _ => due_text(EventTime::Date(day), today),
     }
 }
@@ -525,7 +525,7 @@ pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use torro_gui::datetime::to_utc;
+    use torro_gui::datetime::{format_short_date, to_utc};
 
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")
@@ -658,8 +658,8 @@ mod tests {
         assert_eq!(label(evening, false), "18:00", "today with a time: just the time");
         let tomorrow = at("x", 12, 9).due.expect("due");
         assert_eq!(label(tomorrow, false), tr("Tomorrow"), "another day: the day, not the time");
-        assert_eq!(label(date(7), false), format!("{}, 07.10.", tr("Wed")));
-        assert_eq!(label(date(7), true), "07.10.", "compact: without the weekday");
+        assert_eq!(label(date(7), false), format_short_date(day(7), today()));
+        assert_eq!(label(date(7), true), format_day_month(day(7)), "compact: without the weekday");
         assert_eq!(label(date(10), true), tr("Yesterday"), "the words stay");
     }
 

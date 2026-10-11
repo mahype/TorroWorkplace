@@ -163,15 +163,15 @@ fn is_overdue(todo: &Todo, today: NaiveDate) -> bool {
     !todo.completed && todo.due.is_some_and(|due| due_date(due) < today)
 }
 
-/// `Today`, `Tomorrow`, `Yesterday`, otherwise `Mo, 12.10.` (short weekday name from
-/// `datetime::weekday_name`); a time of day is appended (`Today 14:00`).
+/// `Today`, `Tomorrow`, `Yesterday`, otherwise the short date (`Mon, 12 Oct`,
+/// `datetime::format_short_date`); a time of day is appended (`Today 14:00`).
 pub(crate) fn due_text(due: EventTime, today: NaiveDate) -> String {
     let day = due_date(due);
     let name = match (day - today).num_days() {
         0 => tr("Today").to_string(),
         1 => tr("Tomorrow").to_string(),
         -1 => tr("Yesterday").to_string(),
-        _ => format!("{}, {}", datetime::weekday_name(day, true), day.format("%d.%m.")),
+        _ => datetime::format_short_date(day, today),
     };
     match due {
         EventTime::Date(_) => name,
@@ -427,6 +427,7 @@ pub(crate) fn priority_view<'a, M: 'a>(level: usize) -> Element<'a, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torro_core::i18n::trf;
 
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")
@@ -595,8 +596,10 @@ mod tests {
         assert_eq!(due_text(EventTime::Date(day(11)), today()), tr("Today"));
         assert_eq!(due_text(EventTime::Date(day(12)), today()), tr("Tomorrow"));
         assert_eq!(due_text(EventTime::Date(day(10)), today()), tr("Yesterday"));
-        assert_eq!(due_text(EventTime::Date(day(14)), today()), format!("{}, 14.10.", tr("Wed")));
-        assert_eq!(due_text(EventTime::Date(day(5)), today()), format!("{}, 05.10.", tr("Mon")));
+        assert_eq!(due_text(EventTime::Date(day(14)), today()), datetime::format_short_date(day(14), today()));
+        assert_eq!(due_text(EventTime::Date(day(5)), today()), datetime::format_short_date(day(5), today()));
+        let short = trf("{weekday}, {day} {month}", &[("weekday", &tr("Wed")), ("day", &14), ("month", &tr("Oct"))]);
+        assert_eq!(due_text(EventTime::Date(day(14)), today()), short, "one short form, without leading zeros");
     }
 
     #[test]

@@ -353,10 +353,14 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   Abschnitt 5, Leerzustand).
 
 ### D.7 Eine Datumsform
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Dateien:** `crates/torro-gui/src/datetime.rs`, `crates/torrocalendar/src/views/agenda.rs`, `crates/torrotasks/src/list.rs`, `crates/torrotasks/src/glance.rs`
 - Statt „Wed, 07.10.“, „05.10.2026“ und „Wed, 7 Oct“ nebeneinander: eine zentrale kurze Form
   („Sat, 3 Oct“, deutsch „Sa., 3. Okt.“) über `tr`, lange Form für Felder; Eingabe bleibt tolerant.
+- Umgesetzt: `datetime::format_short_date(date, today)` („Sat, 3 Oct“, mit Jahr in anderen Jahren) und
+  `format_day_month` („3 Oct“); Aufgaben-Liste, -Mini und Kalender-Agenda nutzen sie. Offen (Kalender-Datei
+  `crates/torrocalendar/src/views/mod.rs`, nicht Teil dieser Aufgabe): `views::short_date` ruft die zentrale
+  Funktion auf (`format_short_date(date, today)`) und die eigene Monatsliste entfällt.
 
 ### D.8 Aufgaben-Detail: Achsen und Karten
 - [x] erledigt

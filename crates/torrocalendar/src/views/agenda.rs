@@ -16,7 +16,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, row, rule, scrollable};
 use iced::{Alignment, Background, Color, Element, Length, Padding};
 use torro_core::i18n::{tr, trf};
-use torro_gui::datetime::{format_time, to_local, weekday_name};
+use torro_gui::datetime::{format_day_month, format_short_date, format_time, to_local, weekday_name};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, color_dot, empty_state};
 use torro_gui::{style, typo};
@@ -168,14 +168,13 @@ fn split_label(label: &str, all_day: bool) -> (String, Option<String>) {
     }
 }
 
-/// The head of a day as `(label, date)`: `Today` / `Tomorrow` with `Mon, 12.10.`, otherwise the
-/// weekday with `12.10.` (weekday names from `weekday_name`).
+/// The head of a day as `(label, date)`: `Today` / `Tomorrow` with the short date (`Mon, 12 Oct`),
+/// otherwise the weekday with the day and month (`12 Oct`), the weekday already being the label.
 fn day_heading(day: NaiveDate, today: NaiveDate) -> (String, String) {
-    let date = day.format("%d.%m.");
     match (day - today).num_days() {
-        0 => (tr("Today").to_string(), format!("{}, {date}", weekday_name(day, true))),
-        1 => (tr("Tomorrow").to_string(), format!("{}, {date}", weekday_name(day, true))),
-        _ => (weekday_name(day, false).to_string(), date.to_string()),
+        0 => (tr("Today").to_string(), format_short_date(day, today)),
+        1 => (tr("Tomorrow").to_string(), format_short_date(day, today)),
+        _ => (weekday_name(day, false).to_string(), format_day_month(day)),
     }
 }
 
@@ -480,10 +479,10 @@ mod tests {
     fn day_headings() {
         let today = day(11);
         let heading = |d: u32| day_heading(day(d), today);
-        assert_eq!(heading(11), (tr("Today").to_string(), format!("{}, 11.10.", tr("Sun"))));
-        assert_eq!(heading(12), (tr("Tomorrow").to_string(), format!("{}, 12.10.", tr("Mon"))));
-        assert_eq!(heading(14), (tr("Wednesday").to_string(), "14.10.".to_string()));
-        assert_eq!(day_heading(day(20), day(11)), (tr("Tuesday").to_string(), "20.10.".to_string()));
+        assert_eq!(heading(11), (tr("Today").to_string(), format_short_date(day(11), today)));
+        assert_eq!(heading(12), (tr("Tomorrow").to_string(), format_short_date(day(12), today)));
+        assert_eq!(heading(14), (tr("Wednesday").to_string(), format_day_month(day(14))));
+        assert_eq!(day_heading(day(20), day(11)), (tr("Tuesday").to_string(), format_day_month(day(20))));
     }
 
     #[test]
