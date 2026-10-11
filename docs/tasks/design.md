@@ -320,7 +320,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   abzuschneiden; einzeilige Blöcke ohne Platz für den Titel zeigen nur den Titel (nicht nur die Zeit).
 
 ### D.2 Morgen-Scroll ohne angeschnittenes Label
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/week.rs`
 - Der Start bei 07:00 lässt das halbe Label „06:00“ oben stehen; Versatz so wählen, dass kein Label
   angeschnitten ist, oder angeschnittene Labels nicht zeichnen.

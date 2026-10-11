@@ -76,36 +76,60 @@ const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// Radius of the dot at the start of the now line (7 across, `.now::before`).
 const NOW_DOT: f32 = 3.5;
 
+/// Where the grid opens: 07:00 at the top, with room above the line for its label (which is
+/// centred on the line).
+const MORNING: f32 = 7.0 * HOUR_HEIGHT - space::M;
+
 /// Task that scrolls the time grid so that 07:00 is at the top, with room above the line for
 /// its label (which is centred on the line). The app should return it when the day or week
 /// view opens (switching to it, or navigating to a new anchor), e.g.
 /// `views::week::scroll_to_morning()` from `App::update`.
+///
+/// In a grid too high to scroll that far the scrollable stops short of 07:00; [`morning_pad`]
+/// makes sure it stops where no hour label is cut either.
 pub fn scroll_to_morning<T>() -> Task<T> {
-    iced::widget::operation::scroll_to(SCROLL_ID, AbsoluteOffset { x: 0.0, y: 7.0 * HOUR_HEIGHT - space::M })
+    iced::widget::operation::scroll_to(SCROLL_ID, AbsoluteOffset { x: 0.0, y: MORNING })
+}
+
+/// Empty space below 24:00 for a grid `viewport` high, so that the scroll to [`MORNING`] never
+/// leaves an hour label cut at the top edge.
+///
+/// A viewport higher than `GRID_HEIGHT - MORNING` cannot scroll down to 07:00: Iced stops at the
+/// end of the content, at an offset that falls anywhere between two hours and may halve the
+/// label "06:00". The pad (less than an hour) lengthens the content just enough that this stop
+/// lies as far above an hour line as [`MORNING`] lies above 07:00. Nothing is added when the
+/// grid scrolls to 07:00 anyway, or when it does not scroll at all.
+fn morning_pad(viewport: f32) -> f32 {
+    let furthest = GRID_HEIGHT - viewport;
+    if furthest >= MORNING || furthest <= 0.0 { 0.0 } else { (MORNING - furthest).rem_euclid(HOUR_HEIGHT) }
 }
 
 pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
     let plan = Plan::new(&data);
-    // The header has to leave room for the time axis, whose width follows the grid's width.
-    responsive(move |bounds| week(plan.clone(), bounds.width, true)).into()
+    // The header has to leave room for the time axis, whose width follows the grid's width; the
+    // pad under the grid follows its height.
+    responsive(move |bounds| week(plan.clone(), bounds, true)).into()
 }
 
 /// The day view under the week strip of the narrow layout (`super::week_strip`, task K.19):
 /// [`view`] for one day without the day header, which the strip above already shows.
 pub fn day_under_strip(data: ViewData<'_>) -> Element<'_, Message> {
     let plan = Plan::new(&data);
-    responsive(move |bounds| week(plan.clone(), bounds.width, false)).into()
+    responsive(move |bounds| week(plan.clone(), bounds, false)).into()
 }
 
-/// The header (with `with_header`), the all-day strip and the scrolling grid for a view `width`
-/// wide.
-fn week(plan: Plan, width: f32, with_header: bool) -> Element<'static, Message> {
-    let header = with_header.then(|| header(&plan.days, plan.now.date(), layout::axis_width(width)));
+/// The header (with `with_header`), the all-day strip and the scrolling grid for a view of
+/// `bounds`.
+fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message> {
+    let header = with_header.then(|| header(&plan.days, plan.now.date(), layout::axis_width(bounds.width)));
     let strip_height = layout::strip_height(layout::strip_rows(&plan.bars));
     let strip =
         iced::widget::canvas(Strip { plan: plan.clone() }).width(Length::Fill).height(Length::Fixed(strip_height));
+    // What the grid's scrollable gets: the view less the header, the strip and their lines.
+    let above = if with_header { size::HEADER + size::HAIRLINE } else { 0.0 } + strip_height + size::HAIRLINE;
+    let pad = morning_pad(bounds.height - above);
     let grid = iced::widget::canvas(Grid { plan }).width(Length::Fill).height(Length::Fixed(GRID_HEIGHT));
-    let grid = scrollable(grid)
+    let grid = scrollable(column![grid, Space::new().height(Length::Fixed(pad))])
         .id(SCROLL_ID)
         .direction(Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
@@ -660,6 +684,23 @@ mod tests {
         assert!(!two_lines_fit(HOUR_HEIGHT / 2.0 - 2.0));
         assert!(two_lines_fit(HOUR_HEIGHT * 0.75 - 2.0));
         assert!(two_lines_fit(HOUR_HEIGHT - 2.0));
+    }
+
+    #[test]
+    fn the_morning_scroll_never_halves_an_hour_label() {
+        // Low grids scroll to 07:00 as asked, grids higher than the day do not scroll: no pad.
+        assert_eq!(morning_pad(400.0), 0.0);
+        assert_eq!(morning_pad(GRID_HEIGHT - MORNING), 0.0);
+        assert_eq!(morning_pad(GRID_HEIGHT + 100.0), 0.0);
+        // In between the scroll stops at the end of grid and pad, which must lie as far above an
+        // hour line as the morning offset lies above 07:00 – whatever the height.
+        for viewport in [830.0, 852.0, 880.0, 900.0, 1000.0, 1100.0, 1150.0] {
+            let pad = morning_pad(viewport);
+            assert!((0.0..HOUR_HEIGHT).contains(&pad), "{viewport}: {pad}");
+            let stop = (GRID_HEIGHT + pad - viewport).min(MORNING);
+            let below_line = stop.rem_euclid(HOUR_HEIGHT);
+            assert!((below_line - MORNING.rem_euclid(HOUR_HEIGHT)).abs() < 1e-3, "{viewport}: stops at {stop}");
+        }
     }
 
     #[test]
