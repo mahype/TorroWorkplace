@@ -487,8 +487,12 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
   80 %, 100 %, 150 % in Breit und Mittel.
 
 ### Z.2 Strg-Kurzbefehle tippen nicht in Textfelder
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Dateien:** `crates/torro-gui/src/widgets.rs` (Hülle um `text_input`/`text_editor`), Aufrufer in den Apps
 - Gefunden bei Z.1: Iceds `text_input` fügt bei Strg + `+`/`-`/`=` das Zeichen zusätzlich ein, während
   gezoomt wird („a+--“). Eine gemeinsame Hülle verwirft Tastendrücke mit Strg (bzw. Cmd) ohne Alt, die
   ein Satzzeichen erzeugen würden; Kopieren/Einfügen/Markieren bleiben.
+- Umgesetzt als `widgets::ctrl_guard` um die ganze Ansicht jeder App (neben `zoom.view`): eine unsichtbare
+  oberste Ebene fängt solche Tastendrücke ab, bevor ein Feld sie sieht (Iced 0.14 hat ohne `advanced` keinen
+  Haken am Feld selbst); gilt damit für `text_input` und `text_editor` und für jedes künftige Feld. Neue Apps
+  rufen es wie `zoom.view` auf.

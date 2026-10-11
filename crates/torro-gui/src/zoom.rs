@@ -32,8 +32,9 @@
 //!     return Task::batch([task, size]);
 //! }
 //! // Tick: `self.zoom.fetch().map(Message::Zoom)`, so a change in another window arrives.
-//! // view: the short "110%" after a change, over everything else.
-//! self.zoom.view(content)
+//! // view: the short "110%" after a change, over everything else; and the guard that keeps Ctrl + Plus
+//! // from typing "+" into a focused text field (Z.2).
+//! widgets::ctrl_guard(self.zoom.view(content))
 //! ```
 
 use std::path::PathBuf;

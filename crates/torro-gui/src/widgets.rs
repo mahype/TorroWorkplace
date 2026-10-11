@@ -43,14 +43,16 @@ use std::time::Duration;
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{button, center, column, container, float, mouse_area, opaque, pin, row, rule, stack, svg, tooltip};
+use iced::widget::{
+    button, canvas, center, column, container, float, mouse_area, opaque, pin, row, rule, stack, svg, tooltip,
+};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Point, Rectangle, Size, Subscription, Theme, Vector};
 use iced::{border, keyboard, mouse};
 
 use torro_core::i18n::tr;
 
 use crate::icon::{self, Icon, icon};
-use crate::shell::SidebarMode;
+use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
 use crate::theme::{self, Palette, palette, radius, size, space};
 use crate::typo;
@@ -804,6 +806,81 @@ pub fn escape() -> Subscription<()> {
     })
 }
 
+// ---------------------------------------------------------------------------------------------
+// Ctrl shortcuts and text fields
+// ---------------------------------------------------------------------------------------------
+
+/// Whether a key press is a Ctrl shortcut (⌘ on macOS) that Iced's text fields would still type
+/// as a character: `text` is the character the system made of the key, and a field inserts it
+/// even though Ctrl is held (Ctrl + Plus, Ctrl + `-`, Ctrl + `0` leave "a+--" in a field while the
+/// window zooms).
+///
+/// Not a typing shortcut: Alt held (Windows reports AltGr as Ctrl + Alt, and AltGr + Q types `@`);
+/// keys with no printable character (Ctrl + letters send control characters, arrows and Backspace
+/// are named keys); Ctrl + C, X, V and A, which a field handles itself as copy, cut, paste and
+/// select all (also on non-Latin layouts, hence `to_latin`); and the sidebar key, which an app
+/// handles when no field takes it.
+pub fn is_ctrl_typing(
+    key: &keyboard::Key,
+    physical_key: keyboard::key::Physical,
+    modifiers: keyboard::Modifiers,
+    text: Option<&str>,
+) -> bool {
+    if !modifiers.command() || modifiers.alt() {
+        return false;
+    }
+    if !text.and_then(|text| text.chars().next()).is_some_and(|c| !c.is_control()) {
+        return false;
+    }
+    !matches!(key.to_latin(physical_key), Some('c' | 'x' | 'v' | 'a')) && !is_sidebar_key(key, modifiers)
+}
+
+/// Sits on top of a window and swallows the key presses [`is_ctrl_typing`] finds, before any
+/// widget below sees them. Draws nothing and never touches the mouse.
+struct CtrlGuard;
+
+impl<M> canvas::Program<M> for CtrlGuard {
+    type State = ();
+
+    fn update(
+        &self,
+        _state: &mut Self::State,
+        event: &iced::Event,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<M>> {
+        let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, text, .. }) = event
+        else {
+            return None;
+        };
+        is_ctrl_typing(key, *physical_key, *modifiers, text.as_deref()).then(canvas::Action::capture)
+    }
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        _renderer: &iced::Renderer,
+        _theme: &Theme,
+        _bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        Vec::new()
+    }
+}
+
+/// `content` (the whole window) with a guard on top so that Ctrl + character never types into a
+/// text field ([`is_ctrl_typing`]); `text_input` and `text_editor` alike, in every place of the
+/// window, now and later. Copy, cut, paste, select all, arrows and Backspace work as before.
+///
+/// Iced offers no hook on the field itself (that needs its `advanced` feature and a wrapper
+/// around every field), but an event that a layer on top captures never reaches the layers below.
+/// Subscriptions still get it, also captured (the zoom keys rely on that). Each app wraps its
+/// whole view: `widgets::ctrl_guard(self.zoom.view(self.content()))`. The layer count never
+/// changes, so the window keeps its state (focus, scroll positions).
+pub fn ctrl_guard<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    stack![content.into(), canvas(CtrlGuard).width(Fill).height(Fill)].width(Fill).height(Fill).into()
+}
+
 /// A floating card (an event in the medium calendar): 320 wide, `menu` surface, radius 10,
 /// 16 inside, shadow. `head` (calendar or list with "…" and ✕), `title` in `TITLE`, `rows`
 /// ([`prop_row`]s) and, below a line, `actions` (buttons). Show it with [`floating`].
@@ -1170,6 +1247,77 @@ mod tests {
 
     const WINDOW: Rectangle = Rectangle { x: 0.0, y: 0.0, width: 900.0, height: 700.0 };
     const MENU: Size = Size { width: MENU_WIDTH, height: 300.0 };
+
+    fn press(key: &str, code: keyboard::key::Code, modifiers: keyboard::Modifiers, text: Option<&str>) -> iced::Event {
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Character(key.into()),
+            modified_key: keyboard::Key::Character(key.into()),
+            physical_key: keyboard::key::Physical::Code(code),
+            location: keyboard::Location::Standard,
+            modifiers,
+            text: text.map(Into::into),
+            repeat: false,
+        })
+    }
+
+    /// Whether the guard captures `event`, asked the way the canvas widget does.
+    fn captured(event: &iced::Event) -> bool {
+        let action = canvas::Program::<Msg>::update(&CtrlGuard, &mut (), event, WINDOW, mouse::Cursor::Unavailable);
+        action.is_some_and(|action| action.into_inner().2 == iced::event::Status::Captured)
+    }
+
+    #[test]
+    fn ctrl_with_a_character_is_not_typed() {
+        use keyboard::key::Code;
+        let ctrl = keyboard::Modifiers::CTRL;
+        // The zoom keys that left "a+--" in a field.
+        assert!(captured(&press("+", Code::Equal, ctrl | keyboard::Modifiers::SHIFT, Some("+"))));
+        assert!(captured(&press("=", Code::Equal, ctrl, Some("="))));
+        assert!(captured(&press("-", Code::Minus, ctrl, Some("-"))));
+        assert!(captured(&press("0", Code::Digit0, ctrl, Some("0"))));
+        // Cmd on macOS (Modifiers::COMMAND) is what Ctrl is elsewhere.
+        assert!(captured(&press("-", Code::Minus, keyboard::Modifiers::COMMAND, Some("-"))));
+    }
+
+    #[test]
+    fn typing_copy_paste_and_editing_keys_stay() {
+        use keyboard::key::Code;
+        let ctrl = keyboard::Modifiers::CTRL;
+        let none = keyboard::Modifiers::empty();
+        // Plain and shifted typing.
+        assert!(!captured(&press("+", Code::Equal, keyboard::Modifiers::SHIFT, Some("+"))));
+        assert!(!captured(&press("a", Code::KeyA, none, Some("a"))));
+        // AltGr: Windows reports Ctrl + Alt, and the key types `@` or `€`.
+        assert!(!captured(&press("q", Code::KeyQ, ctrl | keyboard::Modifiers::ALT, Some("@"))));
+        assert!(!captured(&press("e", Code::KeyE, ctrl | keyboard::Modifiers::ALT, Some("€"))));
+        // Copy, cut, paste and select all, also on a Cyrillic layout (the key is `с`, the code `KeyC`).
+        for (key, code, text) in [("c", Code::KeyC, "\u{3}"), ("x", Code::KeyX, "\u{18}"), ("v", Code::KeyV, "v")] {
+            assert!(!captured(&press(key, code, ctrl, Some(text))), "{key}");
+            assert!(!captured(&press(key, code, keyboard::Modifiers::COMMAND, Some(key))), "Cmd + {key}");
+        }
+        assert!(!captured(&press("a", Code::KeyA, keyboard::Modifiers::COMMAND, Some("a"))), "Cmd + a on macOS");
+        assert!(!captured(&press("с", Code::KeyC, keyboard::Modifiers::COMMAND, Some("с"))), "Cyrillic с");
+        // Ctrl + letter sends a control character; the app shortcuts and the field get it as before.
+        assert!(!captured(&press("n", Code::KeyN, ctrl, Some("\u{e}"))));
+        assert!(!captured(&press("n", Code::KeyN, ctrl, None)));
+        // Named keys (arrows, Backspace with Ctrl for the word before) are not characters.
+        let arrow = iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::ArrowLeft),
+            modified_key: keyboard::Key::Named(keyboard::key::Named::ArrowLeft),
+            physical_key: keyboard::key::Physical::Code(Code::ArrowLeft),
+            location: keyboard::Location::Standard,
+            modifiers: ctrl,
+            text: None,
+            repeat: false,
+        });
+        assert!(!captured(&arrow));
+        // The sidebar key stays with the app.
+        assert!(!captured(&press("[", Code::BracketLeft, ctrl, Some("["))));
+        // Releasing a key and the mouse are none of its business.
+        let release = iced::Event::Keyboard(keyboard::Event::ModifiersChanged(ctrl));
+        assert!(!captured(&release));
+        assert!(!captured(&iced::Event::Mouse(mouse::Event::CursorMoved { position: Point::ORIGIN })));
+    }
 
     #[test]
     fn parses_hex_colours() {

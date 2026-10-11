@@ -564,7 +564,7 @@ impl Ui {
             SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
             class => self.window(class),
         });
-        self.zoom.view(window)
+        widgets::ctrl_guard(self.zoom.view(window))
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {

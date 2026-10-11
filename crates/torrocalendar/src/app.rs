@@ -728,7 +728,7 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        self.zoom.view(self.content())
+        widgets::ctrl_guard(self.zoom.view(self.content()))
     }
 
     fn content(&self) -> Element<'_, Message> {
