@@ -20,6 +20,7 @@ Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mi
 
 ```
 E1.1a ─┬─ E3.1 ── E3.2                  ← sofort möglich, nur neue Dateien
+       ├─ E2.2a
        │
 M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
        │
@@ -31,7 +32,7 @@ M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
 E3.5 braucht E3.2, E1.2, P.2 · E2.5 braucht E2.3, E3.2, A.8 und die Freigabe ihres Sicherheitsteils
 ```
 
-**Ausnahme von der Wartebedingung:** E1.1a, E3.1 und E3.2 legen nur neue Crates an (plus je eine
+**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1 und E3.2 legen nur neue Crates an (plus je eine
 Zeile in der Wurzel-`Cargo.toml`) und laufen mit Demo-Daten. Sie dürfen sofort starten.
 
 ## Sicherheitsregeln des Eingangs (gelten für alle Aufgaben)
@@ -186,10 +187,29 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests: Freigabe anlegen → Eintrag, entscheiden → erledigt, Ablauf → erledigt;
   Kontoproblem kommt und geht; ein Agent kann beide nicht erledigen (`forbidden`).
 
+### E2.2a Hook-Meldungen übersetzen (reine Logik)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E1.1a · **Dateien:** `crates/torro-inbox/src/{lib,hook}.rs` (`hook.rs` neu),
+  `crates/torro-inbox/tests/fixtures/hooks/*.json` (neu), `crates/torro-inbox/Cargo.toml` (falls `serde_json`
+  als normale Abhängigkeit nötig)
+- Liest das JSON eines Hooks (Claude Code, Codex, Gemini CLI) und macht daraus eine Absicht:
+  „meldet `agent_waiting`/`agent_done` mit `AgentInfo`“, „löst das Warten dieser Sitzung auf“, „löst alles
+  dieser Sitzung auf“ oder „nichts“. Zuordnung genau nach der Tabelle in E2.2; unbekannte Ereignisse und
+  kaputtes JSON → „nichts“ (nie ein Fehler, der den Agenten stört).
+- Projekt = letzter Teil von `cwd`; Branch aus dem Inhalt von `.git/HEAD`, den der Aufrufer übergibt
+  (die Funktion liest keine Dateien). `thread_key` = `<agent>:<session_id>`. Meldung des Agenten als `body`.
+- Fixtures: echte Beispiel-Payloads je Ereignis nach den offiziellen Hook-Dokumentationen (Claude Code,
+  Codex, Gemini CLI), ohne persönliche Daten.
+- **API/MCP:** keine; E2.2 schickt die Absichten als Requests.
+- **Abnahme:** Fixture-Test je Zeile der Tabelle; unbekanntes Ereignis, fehlende Felder, kaputtes JSON →
+  „nichts“; Branch aus `ref: refs/heads/x` und aus einer losgelösten Commit-Kennung.
+
 ### E2.2 `torroworkplace hook`: Agenten melden sich
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** E1.3 · **Dateien:** `crates/torroworkplace/src/hook.rs` (neu),
-  `crates/torroworkplace/src/{cli,main}.rs`, `crates/torroworkplace/tests/fixtures/hooks/*.json` (neu)
+- **Modell:** Opus · **Braucht:** E1.3, E2.2a · **Dateien:** `crates/torroworkplace/src/hook.rs` (neu),
+  `crates/torroworkplace/src/{cli,main}.rs`
+- Nutzt die Übersetzung aus E2.2a; hier kommen stdin, `.git/HEAD` lesen, Elternprozesse, Schlüssel und
+  Versand dazu.
 - `torroworkplace hook claude-code|codex|gemini` liest das JSON des Hooks von stdin und schickt
   `inbox.post_item` bzw. `inbox.resolve_items` mit einem Hook-Schlüssel (`TORRO_TOKEN`):
 
