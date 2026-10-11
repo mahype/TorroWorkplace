@@ -458,7 +458,7 @@ impl canvas::Program<Message> for Strip {
         let count = self.plan.days.len();
         let (bars, _) = layout::bar_blocks(&self.plan.bars, count, bounds.width);
         let over = cursor.position_in(bounds).and_then(|point| layout::strip_hit(&bars, count, bounds.width, point));
-        pointer_if(over.is_some())
+        pointer_if(matches!(over, Some(layout::StripHit::Bar(_))))
     }
 
     fn draw(
@@ -532,7 +532,8 @@ impl canvas::Program<Message> for Grid {
         let count = self.plan.days.len();
         let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width);
         let over = cursor.position_in(bounds).and_then(|point| layout::grid_hit(&blocks, count, bounds.width, point));
-        pointer_if(over.is_some())
+        // The hand only over events; empty slots stay calm although a click there starts a new one.
+        pointer_if(matches!(over, Some(layout::GridHit::Event(_))))
     }
 
     fn draw(
@@ -1018,14 +1019,14 @@ mod tests {
     }
 
     #[test]
-    fn the_grid_shows_the_hand_over_events_and_slots_but_not_over_the_axis() {
+    fn the_grid_shows_the_hand_only_over_events() {
         let plan = week_plan();
         let grid = Grid { plan: plan.clone() };
         let blocks = layout::timed_blocks(&plan.timed, plan.days.len(), 700.0);
         let block = blocks.first().expect("the workshop is drawn").rect;
         assert_eq!(interaction(&grid, block.center()), mouse::Interaction::Pointer, "an event");
         let slot = Point::new(block.x + 1.0, 3.0 * HOUR_HEIGHT);
-        assert_eq!(interaction(&grid, slot), mouse::Interaction::Pointer, "an empty slot starts a new event");
+        assert_eq!(interaction(&grid, slot), mouse::Interaction::Idle, "an empty slot stays calm");
         let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, block.center().y);
         assert_eq!(interaction(&grid, axis), mouse::Interaction::Idle, "the time axis does nothing");
         let below = Point::new(block.x, GRID_HEIGHT + 1.0);
@@ -1042,14 +1043,14 @@ mod tests {
     }
 
     #[test]
-    fn the_all_day_strip_shows_the_hand_over_bars_and_day_cells_but_not_over_the_axis() {
+    fn the_all_day_strip_shows_the_hand_only_over_bars() {
         let plan = week_plan();
         let strip = Strip { plan: plan.clone() };
         let (bars, _) = layout::bar_blocks(&plan.bars, plan.days.len(), 700.0);
         let bar = bars.first().expect("the holiday is drawn").rect;
         assert_eq!(interaction(&strip, bar.center()), mouse::Interaction::Pointer, "a bar");
         let day = Point::new(bar.x - 2.0 * layout::columns(700.0, 7).1, bar.y);
-        assert_eq!(interaction(&strip, day), mouse::Interaction::Pointer, "an empty day cell");
+        assert_eq!(interaction(&strip, day), mouse::Interaction::Idle, "an empty day cell stays calm");
         let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, bar.y);
         assert_eq!(interaction(&strip, axis), mouse::Interaction::Idle, "the axis cell does nothing");
     }
