@@ -9,7 +9,7 @@ Entscheidungen: [api.md, „Entscheidungen“](../api.md#entscheidungen) (2026-1
 Reihenfolge in drei Meilensteinen:
 
 1. **Alle bisherigen Funktionen über MCP, mit Rechten:** A.0 → (A.0b, A.0d parallel) → A.0c → A.1 →
-   A.2 → A.4.
+   A.2 → A.4. Bis A.3 lehnt der Dienst ab, was eine Freigabe bräuchte.
    A.4 darf ab A.1 entstehen, wird aber erst nach A.2 zusammengeführt, damit es nie einen
    Agenten-Schlüssel ohne Rechteprüfung gibt.
 2. **Sicherheit und Nachvollziehbarkeit:** A.3 und A.5 parallel.
@@ -110,10 +110,11 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 
 ### A.3 Freigaben
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** A.2 · **Dateien:** `crates/torroworkplace/src/approvals.rs` (neu), `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/account.rs`
+- **Modell:** Opus · **Braucht:** A.2, A.4 · **Dateien:** `crates/torroworkplace/src/approvals.rs` (neu), `crates/torroworkplace/src/mcp.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/account.rs`
 - Offene Freigaben in `approvals.json`, Ablauf nach 10 Minuten, `pending`-Antwort mit
   Zusammenfassung, `approvals.list/status/decide` (decide nur App-Schlüssel), Benachrichtigung mit
-  „Allow“/„Deny“, Rechte bei Ausführung erneut prüfen.
+  „Allow“/„Deny“, Rechte bei Ausführung erneut prüfen. MCP-Tools warten bei `pending` bis 60 s auf
+  die Entscheidung, sonst „waiting for approval“ mit Kennung.
   `Admin`-Befehle eines Agenten brauchen immer eine Freigabe (Entscheidung 3).
 - Bis A.3 lehnt der Dienst alles, was eine Freigabe bräuchte, mit `forbidden` ab
   (`Refused::NeedsApproval` in `Core::handle_from`); A.3 ersetzt genau diesen Zweig durch `pending`.
@@ -129,8 +130,9 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** A.1 (zusammenführen erst nach A.2) · **Dateien:** `crates/torroworkplace/src/mcp.rs` (neu), `crates/torroworkplace/src/main.rs`, `crates/torroworkplace/Cargo.toml`, `Cargo.toml`
 - `torroworkplace mcp` auf `rmcp`, stdio, Schlüssel aus `TORRO_TOKEN`. Tools aus dem Katalog
-  (`Mcp::Tool`), Schema aus `schemars`, bequeme Eingaben für Termine und Aufgaben. Wartet bei
-  `pending` bis 60 s. Startet den Dienst, wenn er nicht läuft.
+  (`Mcp::Tool`), Schema aus `schemars`, bequeme Eingaben für Termine und Aufgaben. Startet den
+  Dienst, wenn er nicht läuft. Das Warten auf `pending` (bis 60 s) kommt mit A.3, weil es erst dort
+  `approvals.approval_status` gibt.
 - **Abnahme:** Vertragstest „jedes Tool im Katalog und umgekehrt“; Ende-zu-Ende-Test gegen einen
   Dienst im Temp-Verzeichnis (`tools/list`, ein Lese-, ein Schreib-Tool, `forbidden`).
 
