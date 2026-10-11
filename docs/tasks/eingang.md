@@ -291,7 +291,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 ## E3 App `torroinbox`
 
 ### E3.1 App-Gerüst
-- [ ] erledigt
+- [x] erledigt (Befunde der Design-Prüfung in E3.2b)
 - **Modell:** Opus · **Braucht:** E1.1a · **Dateien:** `crates/torroinbox/` (neu), Wurzel-`Cargo.toml` (Mitglied)
 - Iced-App mit `torro_gui::shell`, Fensterklasse `torro-inbox`. Seitenleiste: **For me** (Zahl),
   **Info**, **Snoozed**, **Done**; Gruppe **Sources** aus `inbox.list_sources` (Suite, Agents, Scripts).
