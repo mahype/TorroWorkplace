@@ -83,7 +83,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torrotasks/src/list.rs`
 
 ### K.15 Aufgaben: Detailansicht
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0 (für die Eingaben K.1)
 - **Dateien:** `crates/torrotasks/src/detail.rs`
 

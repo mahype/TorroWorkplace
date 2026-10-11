@@ -201,7 +201,13 @@ impl App {
                 }
             }
             Message::Saved(result) => match result {
-                Ok(_) => return self.load(),
+                Ok(saved) => {
+                    // The panel keeps editing the stored version, with its new etag.
+                    if self.detail.as_ref().is_some_and(|d| d.original.uid == saved.uid) {
+                        self.detail = Some(Detail::new(&saved, &self.todo_lists(), &self.todos));
+                    }
+                    return self.load();
+                }
                 Err(err) => self.error = Some(trf("Save failed: {error}", &[("error", &err)])),
             },
             Message::Deleted(result) => match result {
