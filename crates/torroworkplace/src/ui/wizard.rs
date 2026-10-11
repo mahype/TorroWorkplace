@@ -169,7 +169,9 @@ pub enum Message {
     UseGithubCli,
     /// "Paste a token".
     PasteToken,
-    TokenChanged(String),
+    /// The token field changed. A [`Secret`], so that the derived `Debug` of this message (iced
+    /// can log messages) shows no token.
+    TokenChanged(Secret),
     /// "Create a token on GitHub".
     OpenTokenPage,
 }
@@ -299,7 +301,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::TokenChanged(token) => {
-            state.token = Secret::new(token);
+            state.token = token;
             Action::None
         }
         Message::OpenTokenPage => Action::OpenUrl(NEW_TOKEN_URL.to_string()),
@@ -458,7 +460,7 @@ fn token_step(state: &State) -> Element<'_, Message> {
     );
     let input = field("ghp_… / github_pat_…", state.token.expose())
         .secure(true)
-        .on_input(Message::TokenChanged)
+        .on_input(|token| Message::TokenChanged(Secret::new(token)))
         .on_submit_maybe((!state.token.is_blank()).then_some(Message::Continue));
     column![
         typo::text(
@@ -739,7 +741,7 @@ mod tests {
 
         update(&mut state, Message::PasteToken, &Data::default());
         assert_eq!((state.step, state.error.as_deref()), (Step::Token, None));
-        update(&mut state, Message::TokenChanged("ghp_wrong".into()), &Data::default());
+        update(&mut state, Message::TokenChanged(Secret::new("ghp_wrong")), &Data::default());
         update(&mut state, Message::Continue, &Data::default());
         assert!(answered(&mut state, &Err("GitHub did not accept the token.".into())));
         assert_eq!(state.step, Step::Token, "back at the field to paste it again");
@@ -751,10 +753,12 @@ mod tests {
         let mut state = at_github();
         update(&mut state, Message::PasteToken, &Data::default());
         assert!(matches!(update(&mut state, Message::Continue, &Data::default()), Action::None), "no token yet");
-        update(&mut state, Message::TokenChanged("  ".into()), &Data::default());
+        update(&mut state, Message::TokenChanged(Secret::new("  ")), &Data::default());
         assert!(matches!(update(&mut state, Message::Continue, &Data::default()), Action::None), "blank");
-        update(&mut state, Message::TokenChanged("ghp_SECRET".into()), &Data::default());
+        update(&mut state, Message::TokenChanged(Secret::new("ghp_SECRET")), &Data::default());
         assert!(!format!("{state:?}").contains("SECRET"));
+        let message = Message::TokenChanged(Secret::new("ghp_SECRET"));
+        assert!(!format!("{message:?}").contains("SECRET"), "the message holds the token as a Secret");
         let action = update(&mut state, Message::Continue, &Data::default());
         assert!(
             matches!(action, Action::Send(Request::SetGithubToken { ref token }) if token.expose() == "ghp_SECRET"),
@@ -848,7 +852,7 @@ mod tests {
         drop(view(&github, &empty));
         update(&mut github, Message::PasteToken, &empty);
         drop(view(&github, &empty));
-        update(&mut github, Message::TokenChanged("ghp_x".into()), &empty);
+        update(&mut github, Message::TokenChanged(Secret::new("ghp_x")), &empty);
         update(&mut github, Message::Continue, &empty);
         drop(view(&github, &empty));
         answered(&mut github, &Ok(Response::Account { account: account("github:x", connected()) }));

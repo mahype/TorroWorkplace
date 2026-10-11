@@ -98,8 +98,8 @@ where
     Err(IpcError::Unsupported)
 }
 
-/// The envelope with the request still unparsed, so that a malformed request gets serde's
-/// helpful message without the risk of quoting the key, which sits outside `request`.
+/// The envelope with the request still unparsed, so that a malformed request can be told apart
+/// from a malformed envelope, and neither error quotes the key or a value of the request.
 #[cfg(unix)]
 #[derive(serde::Deserialize)]
 struct RawEnvelope {
@@ -123,8 +123,13 @@ fn parse(line: &[u8]) -> Result<(Option<Key>, Request), (&'static str, String)> 
         let message = format!("API version {} is not supported; this core speaks version {API_VERSION}", envelope.v);
         return Err(("unsupported", message));
     }
-    let request =
-        serde_json::from_value(envelope.request).map_err(|err| ("error", format!("malformed request: {err}")))?;
+    // Like the key above, no serde message: it can quote a value, e.g. a token in the wrong field.
+    let request = serde_json::from_value(envelope.request).map_err(|_| {
+        (
+            "error",
+            "malformed request: unknown method or arguments that do not fit it (see the API reference)".to_string(),
+        )
+    })?;
     Ok((envelope.key, request))
 }
 
@@ -392,6 +397,32 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn a_malformed_request_does_not_repeat_what_was_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = socket_in(&dir);
+        let server = tokio::spawn({
+            let path = path.clone();
+            async move { serve(&path, answer).await }
+        });
+        wait_until_listening(&path).await;
+
+        // A token in a field the method does not have, in place of a string, and as the method.
+        for request in [
+            r#"{"method":"accounts.set_github_token","tokn":"ghp_SECRET"}"#,
+            r#"{"method":"accounts.connect_nextcloud","server":{"x":"ghp_SECRET"}}"#,
+            r#"{"method":"ghp_SECRET"}"#,
+        ] {
+            let line = format!(r#"{{"v":{},"request":{request}}}"#, crate::API_VERSION);
+            let response = send_line(&path, &line).await;
+            let Response::Error { code, message } = response else { panic!("an error for {request}") };
+            assert_eq!(code, "error");
+            assert!(message.starts_with("malformed request"), "{message}");
+            assert!(!message.contains("SECRET"), "{message}");
+        }
+        server.abort();
+    }
+
     /// Sends one raw line to the server at `path` and returns its answer.
     async fn send_line(path: &Path, line: &str) -> Response {
         let (read, mut write) = UnixStream::connect(path).await.expect("connects").into_split();
@@ -448,7 +479,7 @@ mod tests {
         assert!(matches!(&response, Response::Error { code, .. } if code == "error"), "{response:?}");
         let response = send_line(&path, r#"{"v":1,"request":{"method":"status"}}"#).await;
         assert!(
-            matches!(&response, Response::Error { code, message } if code == "error" && message.contains("status"))
+            matches!(&response, Response::Error { code, message } if code == "error" && message.contains("unknown method"))
         );
         server.abort();
     }

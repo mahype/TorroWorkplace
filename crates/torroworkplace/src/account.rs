@@ -348,8 +348,11 @@ pub mod github {
     /// Fine-grained personal access tokens start with this; GitHub reports no scopes for them.
     const FINE_GRAINED_PREFIX: &str = "github_pat_";
 
-    const NOT_INSTALLED: &str =
-        "The GitHub CLI (gh) is not installed. Install it and run `gh auth login`, or paste a token instead.";
+    /// Said when `gh` is nowhere: neither on the service's PATH nor in the usual install folders.
+    /// A service started by launchd or systemd has a short PATH, so "not installed" would be a
+    /// guess; the text names what was looked at and the way that always works.
+    const NOT_INSTALLED: &str = "The GitHub CLI (gh) was not found on the service's PATH or in the usual install \
+                                 folders. Install it and run `gh auth login`, or paste a token instead.";
     const NOT_SIGNED_IN: &str =
         "The GitHub CLI is not signed in. Run `gh auth login` in a terminal, or paste a token instead.";
 
@@ -484,22 +487,58 @@ pub mod github {
         header.map(|header| header.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect())
     }
 
+    /// The folders to try when a program is not on the service's PATH: a service started by
+    /// launchd or systemd gets a short one without Homebrew or the user's own `bin`. In the order
+    /// they are tried.
+    fn fallback_dirs() -> Vec<PathBuf> {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+        let mut dirs = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/local/bin")];
+        dirs.extend(home.iter().flat_map(|home| [home.join(".local").join("bin"), home.join("bin")]));
+        if cfg!(windows) {
+            dirs.extend(std::env::var_os("ProgramFiles").map(|programs| PathBuf::from(programs).join("GitHub CLI")));
+        }
+        dirs
+    }
+
     /// The GitHub CLI's token: runs `command` (program and arguments, `gh auth token`) and reads
-    /// what it prints. [`GithubError::NoCli`] when the program is missing or prints no token.
+    /// what it prints. [`GithubError::NoCli`] when the program is missing or prints no token. A
+    /// program that is not on the PATH is looked for in [`fallback_dirs`].
     pub async fn cli_token(command: &[String]) -> Result<Secret, GithubError> {
+        cli_token_in(command, &fallback_dirs()).await
+    }
+
+    /// [`cli_token`] with the folders to fall back on given, so tests need no real `gh`.
+    async fn cli_token_in(command: &[String], fallback: &[PathBuf]) -> Result<Secret, GithubError> {
         let Some((program, args)) = command.split_first() else {
             return Err(GithubError::NoCli(NOT_INSTALLED));
         };
+        let mut result = run_cli(std::path::Path::new(program), args).await;
+        // Only a bare name is searched for; a path the caller gave is taken as it is.
+        let bare = !program.contains(std::path::is_separator);
+        if bare && matches!(&result, Ok(Err(err)) if err.kind() == io::ErrorKind::NotFound) {
+            let file = format!("{program}{}", std::env::consts::EXE_SUFFIX);
+            if let Some(found) = fallback.iter().map(|dir| dir.join(&file)).find(|path| path.is_file()) {
+                result = run_cli(&found, args).await;
+            }
+        }
+        match result {
+            Ok(result) => cli_outcome(result),
+            Err(_) => Err(GithubError::Other("The GitHub CLI did not answer in time.".into())),
+        }
+    }
+
+    /// Runs `program` with `args`; the outer error is the timeout.
+    async fn run_cli(
+        program: &std::path::Path,
+        args: &[String],
+    ) -> Result<io::Result<Output>, tokio::time::error::Elapsed> {
         let run = tokio::process::Command::new(program)
             .args(args)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .output();
-        match tokio::time::timeout(CLI_TIMEOUT, run).await {
-            Ok(result) => cli_outcome(result),
-            Err(_) => Err(GithubError::Other("The GitHub CLI did not answer in time.".into())),
-        }
+        tokio::time::timeout(CLI_TIMEOUT, run).await
     }
 
     /// What a run of `gh auth token` means. Its output is the token, so it never goes into a
@@ -1017,6 +1056,47 @@ pub mod github {
             // `gh auth token` without a sign-in fails; printing nothing is no token either.
             for script in ["echo 'no oauth token' >&2; exit 1", "true", "printf 'two words'"] {
                 assert_eq!(cli_token(&run(script)).await, Err(GithubError::NoCli(NOT_SIGNED_IN)), "{script}");
+            }
+        }
+
+        /// A `gh` that prints `token`, as a script named `torro-test-gh` in `dir`.
+        #[cfg(unix)]
+        fn fake_gh(dir: &std::path::Path, token: &str) {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("torro-test-gh");
+            std::fs::write(&path, format!("#!/bin/sh\nprintf '{token}\\n'\n")).expect("script");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("executable");
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_gh_outside_the_path_is_found_in_the_fallback_folders() {
+            let (empty, usual) = (tempfile::tempdir().expect("temp dir"), tempfile::tempdir().expect("temp dir"));
+            fake_gh(usual.path(), "gho_fallback");
+            let command = vec!["torro-test-gh".to_string(), "auth".to_string(), "token".to_string()];
+            let dirs = [empty.path().to_path_buf(), usual.path().to_path_buf()];
+            assert_eq!(cli_token_in(&command, &dirs).await, Ok(Secret::new("gho_fallback")));
+            // Without the folder it is not found, and the message says where it was looked for.
+            let err = cli_token_in(&command, &dirs[..1]).await.expect_err("not found");
+            assert_eq!(err, GithubError::NoCli(NOT_INSTALLED));
+            assert!(NOT_INSTALLED.contains("PATH") && NOT_INSTALLED.contains("paste a token"));
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn a_path_given_to_the_cli_is_not_searched_for() {
+            let usual = tempfile::tempdir().expect("temp dir");
+            fake_gh(usual.path(), "gho_fallback");
+            let command = vec!["/nonexistent/torro-test-gh".to_string()];
+            let found = cli_token_in(&command, &[usual.path().to_path_buf()]).await;
+            assert_eq!(found, Err(GithubError::NoCli(NOT_INSTALLED)));
+        }
+
+        #[test]
+        fn the_fallback_folders_include_homebrew_and_the_local_bin() {
+            let dirs = fallback_dirs();
+            for wanted in ["/opt/homebrew/bin", "/usr/local/bin"] {
+                assert!(dirs.contains(&PathBuf::from(wanted)), "{wanted} in {dirs:?}");
             }
         }
 

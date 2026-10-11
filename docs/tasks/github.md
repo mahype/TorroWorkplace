@@ -165,7 +165,7 @@ K.21 (frei)
   Rechte-Test: `set_github_token` mit Client-Schlüssel → `forbidden`.
 
 ### G.1b Hinweise aus der API-Prüfung von G.1
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.1 · **Dateien:** `crates/torroworkplace/src/ui/wizard.rs`, `crates/torroworkplace/src/core.rs`,
   `crates/torroworkplace/src/account.rs`, `crates/torro-ipc/src/{server,api}.rs`
 - `Message::TokenChanged` trägt den Token als `Secret` (oder eigenes `Debug`), damit kein abgeleitetes `Debug`

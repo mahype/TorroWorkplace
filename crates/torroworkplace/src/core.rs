@@ -45,6 +45,18 @@ fn start_accounts_page() -> Result<(), String> {
     SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
 }
 
+/// Shows the control centre's accounts page. An open control centre cannot be told to change its
+/// page, so it is closed and a new one starts on the page: it holds no unsaved work but an open
+/// dialog, and the person who asked for the connection wants to see exactly this page.
+async fn show_accounts_page(wm: &impl WindowManager, start: fn() -> Result<(), String>) -> Result<(), String> {
+    // A window manager that cannot list windows has none we could close; start the page anyway.
+    let open = wm.windows(None).await.unwrap_or_default();
+    if let Some(window) = open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
+        wm.close_window(&window.id).await.map_err(|err| err.to_string())?;
+    }
+    start()
+}
+
 /// What the tray menu is built from.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
@@ -283,21 +295,13 @@ impl Core {
     }
 
     /// `accounts.connect_github`. The control centre (app key, tray) takes over the GitHub CLI's
-    /// sign-in. A client never does: the core shows the person the accounts page (an open
-    /// control centre comes to the front, else one starts there) and answers `opened`.
+    /// sign-in. A client never does: the core shows the person the accounts page
+    /// ([`show_accounts_page`]) and answers `opened`.
     async fn connect_github(&self, client: bool) -> Response {
         if !client {
             return account_answer(self.github.connect_cli().await);
         }
-        if let Ok(windows) = self.backend.windows(None).await
-            && let Some(window) = windows.iter().find(|w| w.class == AppId::WORKPLACE.window_class)
-        {
-            return match self.backend.focus_window(&window.id).await {
-                Ok(()) => Response::Opened,
-                Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
-            };
-        }
-        match (self.start_accounts)() {
+        match show_accounts_page(&self.backend, self.start_accounts).await {
             Ok(()) => Response::Opened,
             Err(message) => Response::Error { code: "error".into(), message },
         }
@@ -1027,6 +1031,32 @@ mod tests {
         let (_, key) = client(&core, admin).await;
         let refused = core.handle_from(Some(&key), Request::ConnectGithub).await;
         assert_eq!(refused, Err(Refused::NeedsApproval { command: "accounts.connect_github" }));
+    }
+
+    static FAKE_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_fake_page() -> Result<(), String> {
+        FAKE_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_open_control_centre_is_replaced_by_one_on_the_accounts_page() {
+        use torro_wm::fake::{Call, FakeWm};
+        let wm = FakeWm::new("1");
+        let other = wm.open_window("foot", None);
+        let open = wm.open_window(AppId::WORKPLACE.window_class, None);
+        let before = FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(show_accounts_page(&wm, count_fake_page).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Close(open)], "only the control centre is closed");
+        assert!(wm.all_windows().iter().any(|w| w.id == other));
+        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+
+        // None open: nothing to close, the page just starts.
+        assert_eq!(show_accounts_page(&wm, count_fake_page).await, Ok(()));
+        assert_eq!(wm.calls().len(), 1);
+        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 2);
     }
 
     #[tokio::test]
