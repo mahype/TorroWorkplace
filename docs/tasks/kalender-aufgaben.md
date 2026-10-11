@@ -335,6 +335,80 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   hinweg, Raster, Schwelle Klick/Ziehen), Kantenfarbe; fmt, clippy, test (auch `TORRO_LANG=de`)
   grün; Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
 
+### K.24 Kalender: Agenda neu gestalten
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.23 (beide ändern `app.rs`) · **Dateien:**
+  `crates/torrocalendar/src/views/agenda.rs`, `crates/torrocalendar/src/app.rs` (nur Eigenschaften-
+  Spalte der Agenda in Breit)
+- Vorlage: `docs/prototypes/calendar/agenda.html` (vom Nutzer freigegeben 2026-10-11).
+- **Oberfläche:**
+  - **Datumsspalte** links (56, Schmal 44) statt grauer Tagesbalken: Wochentag `CAPTION` in
+    `TEXT_3`, darunter die Tageszahl `HEADLINE` tabellarisch; heute im roten Kreis 32;
+    Wochenende Zahl in `TEXT_2`. Die Spalte klebt oben, solange der Tag sichtbar ist (falls Iced
+    das im `scrollable` nicht hergibt: oben am Tag stehen lassen und das berichten). Neben ihr eine
+    leise Kopfzeile „Today“/„Tomorrow“ links, „4 events“ rechts (`META`, `TEXT_3`). Tage durch
+    `LINE` getrennt.
+  - **Zeile** (≥ 44): Beginn `BODY` 500 tabellarisch, darunter die Dauer `META` `TEXT_3`
+    („15 min“, „2 h“, „1 h 30 min“); 3-px-Balken in Kalenderfarbe über die Zeilenhöhe; Titel
+    `BODY_STRONG`, darunter Ort `META` `TEXT_2` mit Icon (`MapPin`, bei Links/„Video“ `Video`).
+    Hover `HOVER`, geöffneter Termin `SELECTED`, vergangen 55 %.
+  - **Jetzt:** der laufende Termin in seiner Tönung hinterlegt, rechts Pille „40 min left“; danach
+    die Jetzt-Linie (rot 1 px, Chip mit Uhrzeit links).
+  - **Freie Zeit** ab 2 h zwischen zwei Terminen eines Tages: Zeile 28 „3 h free“ `META` `TEXT_3`
+    mit gepunkteter Linie.
+  - **Ganztägig** als Chips oben im Tag (mehrtägig mit „day 2 of 3“) statt als Zeile „all day“.
+  - **Leere Tage** zwischen Tagen mit Terminen zu einer Zeile zusammengefasst:
+    „3 d · Nothing planned · Tue 20 – Thu 22“. **Kalenderwoche** als leiser Trenner
+    („This week · Week 42“, „Week 43“) mit Linie.
+  - Breit: Inhalt höchstens `CONTENT_MAX`, rechts die Eigenschaften des geöffneten Termins wie in
+    der Woche (wenn es den Baustein gibt, sonst berichten). Mittel/Schmal: ohne.
+  - Ohne Daten bleibt weg: Teilnehmer-Avatare und „tentative“ (kommt mit K.26).
+- **API / MCP:** keiner (reine Ansicht über `Events`).
+- **Abnahme:** Unit-Tests der Logik (Gruppierung, Dauertexte, freie Zeit, leere Tage
+  zusammenfassen, Wochenwechsel, laufender Termin und Jetzt-Position, mehrtägig) mit festen
+  Zeiten; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Sichtprüfung alle Größen hell/dunkel.
+
+### K.25 Radar: auch ohne Termine lebendig
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.23 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
+  `crates/torrocalendar/src/views/radar/layout.rs`
+- Wunsch des Nutzers (2026-10-11): Ohne Termine sieht das Radar aus wie eine leere Uhr.
+- **Oberfläche:**
+  - **Ringe für alle sichtbaren Kalender**, auch ohne Termine im Fenster (Reihenfolge wie in der
+    Seitenleiste), damit die Bahnen immer zu sehen sind; feine Stundenlinien quer über die Ringe
+    (`LINE`), wie die Stundenlinien im Raster.
+  - **Nacht** 22–06 (dieselben Zeiten wie im Zeitstrahl) als Sektor in `night` hinter den Ringen,
+    mit kleinem Mond-Icon am Rand der Nacht; blendet im letzten Viertel mit aus.
+  - **Freie Zeit** ab 2 h (außerhalb der Nacht) als „3 h free“ in `TEXT_3` entlang des Bogens
+    innen an den Ringen.
+  - Leer-Zustand der Mitte: „Nothing planned“ / „Free until tomorrow 09:30“ statt nur Uhrzeit.
+  - Gerne weitere ruhige Ideen aus dem Prototyp-Gefühl, aber nichts, was blinkt oder sich ohne
+    Anlass bewegt; im Bericht nennen.
+- **API / MCP:** keiner.
+- **Abnahme:** Tests (Ringe ohne Termine, Nachtsektor im Fenster inkl. über Mitternacht, freie Zeit
+  ohne Nacht), fmt/clippy/test grün, Sichtprüfung leerer Tag und voller Tag, hell/dunkel.
+
+### K.26 Teilnehmer und Status von Terminen – und nichts mehr verlieren beim Speichern
+- [ ] erledigt
+- **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Dateien:** `crates/torro-pim/src/model.rs`,
+  `crates/torro-pim/src/demo.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`, Anzeige in
+  `crates/torrocalendar/src/views/{agenda,radar}.rs` und im Termin-Paneel (nennen)
+- **Fehler, der zuerst behoben wird:** `write.rs` baut beim Speichern ein komplett neues
+  `VCALENDAR` aus den Feldern von `Event`. Alles andere am Termin geht dabei verloren:
+  `ATTENDEE`, `ORGANIZER`, `VALARM` (Erinnerungen), `CATEGORIES`, `URL`, `STATUS` usw. Bei einer
+  Einladung, die der Nutzer selbst organisiert, kann der Server (Nextcloud/Sabre-Scheduling) dann
+  sogar Absagen an die Teilnehmer schicken. Lösung: beim Lesen das Original-`VEVENT` behalten und
+  beim Speichern nur die geänderten Eigenschaften ersetzen (Round-Trip), mit Tests an echten
+  Nextcloud-Fixtures.
+- **Neu im Modell:** `organizer` und `attendees` (Name, E-Mail, Teilnahme-Status, Rolle) sowie
+  `status` (bestätigt, vorläufig, abgesagt), alle mit `#[serde(default)]`. Damit gehen sie über
+  `Events` auch an Agenten (`list_events`, Bereich Kalender, Lesen) – Hinweis in `api.md`, dass das
+  E-Mail-Adressen Dritter sind. Ändern von Teilnehmern ist **nicht** Teil dieser Aufgabe.
+- **Oberfläche:** Avatare mit Initialen (höchstens 3 + „+N“) in Agenda-Zeile und im Paneel;
+  im Radar kleine Avatare am Ende des Bogens, wenn Platz ist; „tentative“ gestrichelt (Agenda,
+  Woche, Zeitstrahl, Radar), abgesagte durchgestrichen.
+- **API / MCP:** kein neuer Request; `Event` wird reicher (Skill `torro-api`, Review danach).
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag
