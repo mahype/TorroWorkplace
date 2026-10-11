@@ -75,7 +75,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Icon in der Omarchy-Leiste gut erkennbar, hell und dunkel.
 
 ### 1.3 Hyprland: Befehls-Socket
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-wm/src/hyprland/socket.rs`
 - **Ziel:** Funktion `request(cmd: &str) -> Result<String, WmError>`, die über
