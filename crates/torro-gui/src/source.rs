@@ -31,6 +31,23 @@ impl Source {
     pub fn is_demo(&self) -> bool {
         matches!(self, Source::Demo(_))
     }
+
+    /// Opens or raises another app of the suite by its binary name (`torrotasks`), through the
+    /// core's `Request::OpenApp`, so the core can focus a window that is already open instead of
+    /// starting a second one. Answer of the app switcher and of "Open Tasks ↗".
+    ///
+    /// Demo data has no core: nothing is opened and the result is `Ok(())`. An `Err` carries the
+    /// core's message (unknown app, cannot start, core not running).
+    pub async fn open_app(&self, binary: &str) -> Result<(), String> {
+        let Source::Core(client) = self else { return Ok(()) };
+        let request = torro_ipc::Request::OpenApp { app: binary.to_owned() };
+        match torro_ipc::client::call(&client.socket, &request).await {
+            Ok(torro_ipc::Response::Ok) => Ok(()),
+            Ok(torro_ipc::Response::Error { message, .. }) => Err(message),
+            Ok(other) => Err(format!("unexpected answer: {other:?}")),
+            Err(err) => Err(err.to_string()),
+        }
+    }
 }
 
 /// Starts `torroworkplace daemon` in the background when nothing listens on `socket`. The
@@ -122,5 +139,16 @@ impl PimSource for Source {
 
     async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
         delegate!(self, s => s.delete_todo(todo))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_data_opens_no_app() {
+        let demo = Source::from_args(["--demo".to_string()]);
+        assert_eq!(iced::futures::executor::block_on(demo.open_app("torrotasks")), Ok(()));
     }
 }

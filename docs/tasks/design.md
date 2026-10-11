@@ -177,7 +177,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 ### Kalender
 
 ### C.1 Kopfleiste und Akzent
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.5
 - **Dateien:** `crates/torrocalendar/src/app.rs`
 - `header_bar`: links „Today“ (secondary, `CONTROL_SM`), ‹ › als `icon_button`, Titel

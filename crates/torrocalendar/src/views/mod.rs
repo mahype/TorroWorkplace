@@ -3,6 +3,7 @@
 //! an event, `ShowDay(date)` on a day number in the month view.
 
 pub mod agenda;
+pub mod mini_month;
 pub mod month;
 pub mod week;
 

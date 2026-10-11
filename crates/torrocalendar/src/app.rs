@@ -1,4 +1,5 @@
-//! The calendar window: state, navigation, loading and saving. The views (`views/`) and the
+//! The calendar window: state, navigation, loading and saving, and the Linear-style frame around
+//! the views (sidebar with the small month, header bar, view menu). The views (`views/`) and the
 //! editor (`editor.rs`) only render and report clicks as [`Message`]s.
 
 use std::collections::{HashMap, HashSet};
@@ -6,18 +7,23 @@ use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
-use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Element, Length, Subscription, Task, Theme};
+use iced::widget::row;
+use iced::{Alignment, Color, Element, Size, Subscription, Task, Theme};
+use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
+use torro_gui::icon::Icon;
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::shell::{self, Switcher};
 use torro_gui::source::Source;
-use torro_gui::theme::{self, Appearance};
-use torro_gui::widgets::{collection_color, modal};
+use torro_gui::style;
+use torro_gui::theme::{self, Appearance, space};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color, modal};
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
 use crate::editor::{self, Editor};
-use crate::views::{self, Item, ViewData};
+use crate::views::{self, Item, ViewData, mini_month};
 
 /// The four views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +45,39 @@ impl CalView {
             CalView::Agenda => tr("Agenda"),
         }
     }
+
+    /// The icon in the sidebar and the view menu (`calendar.html`).
+    fn icon(self) -> Icon {
+        match self {
+            CalView::Day => Icon::CalendarDays,
+            CalView::Week => Icon::CalendarRange,
+            CalView::Month => Icon::Calendar,
+            CalView::Agenda => Icon::List,
+        }
+    }
+
+    /// The key that switches to the view ([`shortcut`]), shown as a key hint.
+    fn key(self) -> &'static str {
+        match self {
+            CalView::Day => "D",
+            CalView::Week => "W",
+            CalView::Month => "M",
+            CalView::Agenda => "A",
+        }
+    }
 }
+
+/// The menus that open over the window; at most one at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Menu {
+    /// The app switcher at the top of the sidebar.
+    Switcher,
+    /// "Week ▾" in the medium and narrow header: the views and the calendars.
+    View,
+}
+
+/// Width of the event editor dialog (until C.5 gives it its own layout).
+const EDITOR_WIDTH: f32 = 460.0;
 
 /// Days the agenda shows from its anchor on.
 const AGENDA_DAYS: i64 = 30;
@@ -56,7 +94,20 @@ pub struct App {
     hidden: HashSet<String>,
     events: Vec<Event>,
     loading: bool,
+    /// Events have been loaded once; until then the body shows the loading state.
+    loaded: bool,
     error: Option<String>,
+    /// The open menu, if any.
+    menu: Option<Menu>,
+    /// The sidebar drawer of the medium and narrow layouts is open.
+    drawer: bool,
+    /// The first of the month the small month in the sidebar shows. Follows the anchor, but its
+    /// own arrows browse it without moving the main view.
+    mini_month: NaiveDate,
+    /// The window size, for the size class ([`layout::of`]). Kept from the window events rather
+    /// than read in `iced::widget::responsive`, so `update` sees a change of layout and can
+    /// scroll the time grid back to the morning (the new widget tree loses its scroll position).
+    size: Size,
     editor: Option<Editor>,
     /// The time grid has been scrolled to the morning once; it only exists after the first load.
     scrolled: bool,
@@ -74,7 +125,27 @@ pub enum Message {
     Next,
     Today,
     Refresh,
+    /// The error state's "Retry": ask for the account again, or reload the events.
+    Retry,
     ToggleCollection(String),
+    /// The app switcher (top of the sidebar).
+    Switcher(Switcher),
+    /// Open `Menu`, or close it when it is open.
+    ToggleMenu(Menu),
+    /// Close the open menu and the drawer (click beside them, Escape).
+    CloseMenu,
+    /// Open or close the sidebar drawer (medium and narrow layouts).
+    ToggleDrawer,
+    /// From the small month: show `date` in the current view.
+    GoTo(NaiveDate),
+    /// The small month's arrows: browse it by this many months.
+    MiniMonth(i32),
+    /// "Settings" in the sidebar: open the control centre.
+    OpenSettings,
+    /// The core answered `Request::OpenApp`.
+    AppOpened(Result<(), String>),
+    /// The window has this size (at start and after every resize).
+    Resized(Size),
     /// From a view: create an event on `date`, at `time` (`None`: all-day or no slot).
     NewEvent {
         date: NaiveDate,
@@ -137,14 +208,24 @@ impl App {
             hidden: HashSet::new(),
             events: Vec::new(),
             loading: true,
+            loaded: false,
             error: None,
+            menu: None,
+            drawer: false,
+            mini_month: mini_month::shift(now.date(), 0),
+            size: torro_gui::window(AppId::CALENDAR).size,
             editor: None,
             scrolled: false,
             appearance: Appearance::System,
             system_mode: Mode::None,
         };
-        let task =
-            Task::batch([app.fetch_account(), app.fetch_appearance(), iced::system::theme().map(Message::SystemMode)]);
+        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        let task = Task::batch([
+            app.fetch_account(),
+            app.fetch_appearance(),
+            iced::system::theme().map(Message::SystemMode),
+            size,
+        ]);
         (app, task)
     }
 
@@ -157,11 +238,17 @@ impl App {
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let tick = iced::time::every(every).map(|_| Message::Tick);
         let system = iced::system::theme_changes().map(Message::SystemMode);
-        match self.editor {
+        let keys = match self.editor {
             // Escape closes the editor.
-            Some(_) => Subscription::batch([tick, system, editor::subscription().map(Message::Editor)]),
-            None => Subscription::batch([tick, system, iced::event::listen_with(shortcut)]),
+            Some(_) => editor::subscription().map(Message::Editor),
+            None => iced::event::listen_with(shortcut),
+        };
+        let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
+        let mut all = vec![tick, system, keys, resize];
+        if self.menu.is_some() || self.drawer {
+            all.push(widgets::escape().map(|()| Message::CloseMenu));
         }
+        Subscription::batch(all)
     }
 
     /// The Iced theme: the stored appearance, with "System" following the desktop.
@@ -187,7 +274,7 @@ impl App {
             }
             Message::AccountLoaded(Err(err)) => {
                 self.loading = false;
-                self.error = Some(err);
+                self.error = Some(load_failed(&err));
             }
             Message::Connect(message) => match self.connect.update(message) {
                 // The account is set up in the control centre; the polling in `Tick` picks it up.
@@ -199,30 +286,72 @@ impl App {
                     Ok((collections, events)) => {
                         self.collections = collections;
                         self.events = events;
+                        self.loaded = true;
                         self.error = None;
                         if !self.scrolled {
                             self.scrolled = true;
                             return self.scroll_to_morning();
                         }
                     }
-                    Err(err) => self.error = Some(err),
+                    Err(err) => self.error = Some(load_failed(&err)),
                 }
             }
             Message::SetView(view) => {
                 self.view = view;
+                self.close_menus();
                 return self.load().chain(self.scroll_to_morning());
             }
-            Message::Prev => {
-                self.anchor = self.step(-1);
-                return self.load().chain(self.scroll_to_morning());
+            Message::Prev => return self.go_to(self.step(-1)),
+            Message::Next => return self.go_to(self.step(1)),
+            Message::Today => return self.go_to(self.now.date()),
+            Message::GoTo(date) => {
+                self.close_menus();
+                return self.go_to(date);
             }
-            Message::Next => {
-                self.anchor = self.step(1);
-                return self.load().chain(self.scroll_to_morning());
+            Message::MiniMonth(months) => self.mini_month = mini_month::shift(self.mini_month, months),
+            Message::Retry => {
+                self.error = None;
+                if !self.connected() {
+                    self.account = None;
+                    return self.fetch_account();
+                }
+                return self.load();
             }
-            Message::Today => {
-                self.anchor = self.now.date();
-                return self.load().chain(self.scroll_to_morning());
+            Message::Switcher(Switcher::Toggle) => return self.update(Message::ToggleMenu(Menu::Switcher)),
+            Message::Switcher(Switcher::OpenApp(binary)) => {
+                self.close_menus();
+                let source = self.source.clone();
+                return Task::perform(async move { source.open_app(binary).await }, Message::AppOpened);
+            }
+            // The calendar has no search yet; the button only closes what is open.
+            Message::Switcher(Switcher::Search) => self.close_menus(),
+            Message::Switcher(Switcher::New) => {
+                self.close_menus();
+                return self.update(Message::NewEventHere);
+            }
+            Message::ToggleMenu(menu) => {
+                self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
+            }
+            Message::CloseMenu => self.close_menus(),
+            Message::ToggleDrawer => {
+                self.menu = None;
+                self.drawer = !self.drawer;
+            }
+            Message::OpenSettings => {
+                self.close_menus();
+                connect::open_settings();
+            }
+            // Nothing to show in the window: the other app either comes up or it does not.
+            Message::AppOpened(Err(err)) => eprintln!("torrocalendar: cannot open the app: {err}"),
+            Message::AppOpened(Ok(())) => {}
+            Message::Resized(size) => {
+                let before = layout::of(self.size);
+                self.size = size;
+                // Another layout builds a different widget tree, and Iced drops the time grid's
+                // scroll position with it; open the grid at the morning again instead of midnight.
+                if layout::of(size) != before && self.loaded {
+                    return self.scroll_to_morning();
+                }
             }
             Message::Refresh => {
                 let source = self.source.clone();
@@ -248,9 +377,8 @@ impl App {
                 }
             }
             Message::ShowDay(date) => {
-                self.anchor = date;
                 self.view = CalView::Day;
-                return self.load();
+                return self.go_to(date);
             }
             Message::Editor(message) => {
                 let Some(editor) = self.editor.as_mut() else { return Task::none() };
@@ -308,67 +436,188 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Message> {
         match &self.account {
-            None => return container(text(self.error.as_deref().unwrap_or(tr("Loading …")))).padding(24).into(),
+            None => {
+                return match &self.error {
+                    Some(err) => widgets::error_state(err.as_str(), Message::Retry),
+                    None => widgets::loading(),
+                };
+            }
             Some(account @ (AccountState::NotConnected | AccountState::SigningIn { .. })) => {
                 return self.connect.view(account, tr("Calendar")).map(Message::Connect);
             }
             Some(AccountState::Connected { .. }) => {}
         }
-        let main = column![self.toolbar(), row![self.sidebar(), self.current_view()].height(Length::Fill)];
-        let main = match &self.error {
-            Some(err) => main.push(container(text(err.clone()).size(13)).padding([4, 12])),
-            None => main,
-        };
+        let window = self.window(layout::of(self.size));
         match &self.editor {
-            Some(editor) => {
-                modal(main, editor.view().map(Message::Editor), 460.0, Message::Editor(editor::Message::Cancel))
+            Some(editor) => modal(
+                window,
+                editor.view().map(Message::Editor),
+                EDITOR_WIDTH,
+                Message::Editor(editor::Message::Cancel),
+            ),
+            None => window,
+        }
+    }
+
+    /// The whole window in the layout for `class`: sidebar, header and the current view in the
+    /// shell, the drawer and the open menu above it.
+    fn window(&self, class: SizeClass) -> Element<'_, Message> {
+        let (switcher, views) = (Anchor::new(), Anchor::new());
+        let layer = self.menu.and_then(|menu| match menu {
+            Menu::Switcher => Some(widgets::floating(
+                &switcher,
+                Placement::Below(Align::Start),
+                shell::switcher_menu(AppId::CALENDAR, Message::Switcher),
+                Message::CloseMenu,
+            )),
+            // Only the medium and narrow header have the "Week ▾" button the menu hangs from.
+            Menu::View => (!shell::has_sidebar(class))
+                .then(|| widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)),
+        });
+        shell::shell(class, self.sidebar(class, &switcher), self.header(class, &views), self.body(), None)
+            .drawer(self.drawer, Message::CloseMenu)
+            .overlay(layer)
+            .into()
+    }
+
+    /// The header bar (`calendar.html`, `.header`):
+    ///
+    /// - **Wide:** "October 2026 Week 41", "Today", ‹ ›; at the right the views as a segmented
+    ///   control, refresh and "New event".
+    /// - **Medium:** the sidebar toggle in front; the views (and calendars) in "Week ▾".
+    /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
+    ///   to today), and "New event" reduced to "+".
+    fn header<'a>(&'a self, class: SizeClass, views: &Anchor) -> Element<'a, Message> {
+        let (title, note) = self.title_parts();
+        let prev = widgets::icon_button(Icon::ChevronLeft, tr("Previous"), Some(Message::Prev));
+        let next = widgets::icon_button(Icon::ChevronRight, tr("Next"), Some(Message::Next));
+        let refresh = widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh));
+        let new_event = Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) };
+        let select = || widgets::select_button(views, self.view.label(), Message::ToggleMenu(Menu::View));
+        if class == SizeClass::Wide || class == SizeClass::Medium {
+            let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
+            let title = row![
+                shell::header_title(None, title, note),
+                row![today, prev, next].spacing(space::XS).align_y(Alignment::Center)
+            ]
+            .spacing(space::L)
+            .align_y(Alignment::Center);
+            let primary =
+                widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
+            if class == SizeClass::Wide {
+                let segments = CalView::ALL.map(|view| (view.label(), Message::SetView(view)));
+                let active = CalView::ALL.iter().position(|view| *view == self.view).unwrap_or_default();
+                shell::header_bar([], title, [widgets::segmented(segments, active), refresh, primary])
+            } else {
+                shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
             }
-            None => main.into(),
+        } else {
+            let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::XS)]
+                .spacing(space::S)
+                .align_y(Alignment::Center);
+            let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
+            shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
         }
     }
 
-    /// Navigation left, views and actions right; wraps onto a second line in a narrow tile.
-    fn toolbar(&self) -> Element<'_, Message> {
-        let small = |label: &'static str| text(label).size(14);
-        let mut views = row![].spacing(4);
-        for view in CalView::ALL {
-            let style = if view == self.view { button::primary } else { button::secondary };
-            views =
-                views.push(button(small(view.label())).padding([4, 10]).style(style).on_press(Message::SetView(view)));
+    /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
+    /// keys, the calendars with their colour, visibility and number of loaded events, and at the
+    /// bottom "Open Tasks ↗" and "Settings".
+    ///
+    /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
+    /// menu, and without them the drawer still fits a window 600 high.
+    fn sidebar<'a>(&'a self, class: SizeClass, switcher: &Anchor) -> Element<'a, Message> {
+        let shown = matches!(self.view, CalView::Day | CalView::Week).then(|| self.range());
+        let mut items = vec![mini_month::view(self.mini_month, shown, self.now.date())];
+        if shell::has_sidebar(class) {
+            items.push(widgets::sidebar_group(tr("Views"), None));
+            items.extend(CalView::ALL.map(|view| {
+                widgets::sidebar_item(
+                    view.icon(),
+                    view.label(),
+                    Trail::Kbd(view.key()),
+                    view == self.view,
+                    Message::SetView(view),
+                )
+            }));
         }
-        let navigation = row![
-            button(small(tr("Today"))).padding([4, 10]).style(button::secondary).on_press(Message::Today),
-            button(small("‹")).padding([4, 10]).style(button::secondary).on_press(Message::Prev),
-            button(small("›")).padding([4, 10]).style(button::secondary).on_press(Message::Next),
-            text(self.heading()).size(17),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-        let actions = row![
-            views,
-            button(small(tr("+ Event")))
-                .padding([4, 10])
-                .style(button::primary)
-                .on_press(Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) }),
-            button(small("⟳")).padding([4, 10]).style(button::secondary).on_press(Message::Refresh),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-        row![navigation, actions].spacing(16).padding(10).wrap().vertical_spacing(8).into()
+        let calendars = self.calendars();
+        if !calendars.is_empty() {
+            items.push(widgets::sidebar_group(tr("Calendars"), None));
+            items.extend(calendars.into_iter().map(|(calendar, colour, count)| {
+                widgets::sidebar_item(
+                    Mark::Check(colour, !self.hidden.contains(&calendar.id)),
+                    calendar.name.as_str(),
+                    Trail::Count(count),
+                    false,
+                    Message::ToggleCollection(calendar.id.clone()),
+                )
+            }));
+        }
+        let footer = vec![
+            widgets::sidebar_item(
+                Icon::SquareCheck,
+                tr("Open Tasks"),
+                Trail::Icon(Icon::ArrowUpRight),
+                false,
+                Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
+            ),
+            widgets::sidebar_item(Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
+        ];
+        shell::sidebar(shell::app_switcher(AppId::CALENDAR, switcher, Message::Switcher), items, footer)
     }
 
-    fn sidebar(&self) -> Element<'_, Message> {
-        let mut list = column![text(tr("Calendars")).size(13)].spacing(6).padding(10);
-        for collection in self.collections.iter().filter(|c| c.kind.has_events()) {
-            let shown = !self.hidden.contains(&collection.id);
-            let id = collection.id.clone();
-            list = list.push(
-                iced::widget::checkbox(shown)
-                    .label(collection.name.clone())
-                    .on_toggle(move |_| Message::ToggleCollection(id.clone())),
-            );
+    /// The menu under "Week ▾": the views with their keys, then the calendars with a check box
+    /// that shows and hides them (the menu stays open for that).
+    fn view_menu(&self) -> Element<'_, Message> {
+        let views = CalView::ALL
+            .map(|view| {
+                MenuItem::new(view.icon(), view.label(), Message::SetView(view))
+                    .trail(Trail::Kbd(view.key()))
+                    .current(view == self.view)
+            })
+            .to_vec();
+        let mut sections = vec![MenuSection::titled(tr("View"), views)];
+        let calendars: Vec<_> = self
+            .calendars()
+            .into_iter()
+            .map(|(calendar, colour, count)| {
+                MenuItem::new(
+                    Mark::Check(colour, !self.hidden.contains(&calendar.id)),
+                    calendar.name.as_str(),
+                    Message::ToggleCollection(calendar.id.clone()),
+                )
+                .trail(Trail::Count(count))
+            })
+            .collect();
+        if !calendars.is_empty() {
+            sections.push(MenuSection::titled(tr("Calendars"), calendars));
         }
-        container(scrollable(list)).width(200).height(Length::Fill).into()
+        widgets::menu(sections)
+    }
+
+    /// The event calendars with their colour and how many of the loaded events they hold.
+    fn calendars(&self) -> Vec<(&Collection, Color, usize)> {
+        self.collections
+            .iter()
+            .filter(|c| c.kind.has_events())
+            .map(|c| {
+                let count = self.events.iter().filter(|e| e.collection == c.id).count();
+                (c, collection_color(c.color.as_deref()), count)
+            })
+            .collect()
+    }
+
+    /// The content under the header: the error with "Retry", the calm loading state before the
+    /// first events arrive, then the current view.
+    fn body(&self) -> Element<'_, Message> {
+        if let Some(err) = &self.error {
+            return widgets::error_state(err.as_str(), Message::Retry);
+        }
+        if !self.loaded {
+            return widgets::loading();
+        }
+        self.current_view()
     }
 
     fn current_view(&self) -> Element<'_, Message> {
@@ -416,11 +665,7 @@ impl App {
         match self.view {
             CalView::Day => self.anchor + Days::days(direction),
             CalView::Week => self.anchor + Days::days(7 * direction),
-            CalView::Month => {
-                let months = self.anchor.year() * 12 + self.anchor.month0() as i32 + direction as i32;
-                NaiveDate::from_ymd_opt(months.div_euclid(12), months.rem_euclid(12) as u32 + 1, 1)
-                    .unwrap_or(self.anchor)
-            }
+            CalView::Month => mini_month::shift(self.anchor, direction as i32),
             CalView::Agenda => self.anchor + Days::days(AGENDA_DAYS * direction),
         }
     }
@@ -442,6 +687,32 @@ impl App {
             CalView::Month => format!("{} {}", month_name(self.anchor.month()), self.anchor.year()),
             CalView::Agenda => trf("From {date}", &[("date", &format_long_date(self.anchor))]),
         }
+    }
+
+    /// The header title and its quiet note: "October 2026" and "Week 41" for the week (the month
+    /// of its Thursday, as ISO weeks count), the long date for a day, the month otherwise.
+    fn title_parts(&self) -> (String, Option<String>) {
+        let month_year = |date: NaiveDate| format!("{} {}", month_name(date.month()), date.year());
+        match self.view {
+            CalView::Day => (format_long_date(self.anchor), None),
+            CalView::Week => {
+                let thursday = week_start(self.anchor) + Days::days(3);
+                (month_year(thursday), Some(trf("Week {week}", &[("week", &thursday.iso_week().week())])))
+            }
+            CalView::Month | CalView::Agenda => (month_year(self.anchor), None),
+        }
+    }
+
+    /// Moves the view to `date` (the small month follows) and loads it.
+    fn go_to(&mut self, date: NaiveDate) -> Task<Message> {
+        self.anchor = date;
+        self.mini_month = mini_month::shift(date, 0);
+        self.load().chain(self.scroll_to_morning())
+    }
+
+    fn close_menus(&mut self) {
+        self.menu = None;
+        self.drawer = false;
     }
 
     /// Day and week open at 07:00 instead of midnight.
@@ -483,6 +754,11 @@ impl App {
     }
 }
 
+/// The error state's text when the account or the events could not be loaded.
+fn load_failed(err: &str) -> String {
+    trf("The calendar could not be loaded: {error}", &[("error", &err)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +785,87 @@ mod tests {
         let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
         let _ = app.update(Message::Appearance(Err("core is not running".into())));
         assert_eq!(app.theme(), theme::light());
+    }
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
+    }
+
+    #[test]
+    fn the_small_month_browses_without_moving_the_view() {
+        let mut app = demo_app();
+        let anchor = app.anchor;
+        let _ = app.update(Message::MiniMonth(2));
+        assert_eq!(app.anchor, anchor, "the main view stays");
+        assert_eq!(app.mini_month, mini_month::shift(anchor, 2));
+        let _ = app.update(Message::GoTo(date(2026, 3, 18)));
+        assert_eq!((app.anchor, app.mini_month), (date(2026, 3, 18), date(2026, 3, 1)), "a day click moves both");
+        let _ = app.update(Message::Today);
+        assert_eq!(app.mini_month, mini_month::shift(app.now.date(), 0), "the small month follows the anchor");
+    }
+
+    #[test]
+    fn menus_and_drawer_open_one_at_a_time_and_close_together() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Switcher(Switcher::Toggle));
+        assert_eq!(app.menu, Some(Menu::Switcher));
+        let _ = app.update(Message::ToggleMenu(Menu::View));
+        assert_eq!(app.menu, Some(Menu::View), "the view menu replaces the switcher");
+        let _ = app.update(Message::ToggleDrawer);
+        assert_eq!((app.menu, app.drawer), (None, true), "opening the drawer closes the menu");
+        let _ = app.update(Message::CloseMenu);
+        assert_eq!((app.menu, app.drawer), (None, false));
+    }
+
+    #[test]
+    fn choosing_a_view_closes_the_menu_and_keeps_it() {
+        let mut app = demo_app();
+        let _ = app.update(Message::ToggleMenu(Menu::View));
+        let _ = app.update(Message::SetView(CalView::Month));
+        assert_eq!((app.view, app.menu), (CalView::Month, None));
+    }
+
+    #[test]
+    fn toggling_a_calendar_keeps_the_menu_open() {
+        let mut app = demo_app();
+        let _ = app.update(Message::ToggleMenu(Menu::View));
+        let _ = app.update(Message::ToggleCollection("work".into()));
+        assert_eq!(app.menu, Some(Menu::View));
+        assert!(app.hidden.contains("work"));
+    }
+
+    #[test]
+    fn the_week_title_names_the_month_of_its_thursday_and_the_week() {
+        let mut app = demo_app();
+        // Week 40 of 2026 runs from Mon 28 Sep to Sun 4 Oct; its Thursday is 1 October.
+        app.anchor = date(2026, 9, 29);
+        let (title, note) = app.title_parts();
+        assert_eq!(title, format!("{} 2026", month_name(10)));
+        assert_eq!(note, Some(trf("Week {week}", &[("week", &40)])));
+    }
+
+    #[test]
+    fn the_layout_follows_the_window_size() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Resized(Size::new(420.0, 780.0)));
+        assert_eq!(layout::of(app.size), SizeClass::Narrow);
+        let _ = app.update(Message::Resized(Size::new(1440.0, 900.0)));
+        assert_eq!(layout::of(app.size), SizeClass::Wide);
+    }
+
+    #[test]
+    fn retry_clears_the_error_and_loads_again() {
+        let mut app = demo_app();
+        let _ = app.update(Message::AccountLoaded(Ok(AccountState::Connected {
+            server: "demo".into(),
+            login_name: "demo".into(),
+            last_sync: None,
+            problem: None,
+        })));
+        let _ = app.update(Message::Loaded(Err("offline".into())));
+        assert_eq!(app.error, Some(load_failed("offline")));
+        let _ = app.update(Message::Retry);
+        assert_eq!((app.error.clone(), app.loading), (None, true));
     }
 
     #[test]
