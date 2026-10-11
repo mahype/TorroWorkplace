@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn all_day_event_uses_an_exclusive_end() {
         let events = [event("holiday", date(12), Some(date(13)))];
-        assert_eq!(grouped(&events, 11, 14, local(10, 8, 0)), [(12, vec![line("all day", "holiday")])]);
+        assert_eq!(grouped(&events, 11, 14, local(10, 8, 0)), [(12, vec![line(tr("all day"), "holiday")])]);
     }
 
     #[test]
@@ -306,9 +306,9 @@ mod tests {
         assert_eq!(
             grouped(&events, 11, 20, local(10, 8, 0)),
             [
-                (11, vec![line("all day · day 1 of 3", "course")]),
-                (12, vec![line("all day · day 2 of 3", "course")]),
-                (13, vec![line("all day · day 3 of 3", "course")]),
+                (11, vec![line(trf("all day · day {n} of {total}", &[("n", &1), ("total", &3)]).as_str(), "course")]),
+                (12, vec![line(trf("all day · day {n} of {total}", &[("n", &2), ("total", &3)]).as_str(), "course")]),
+                (13, vec![line(trf("all day · day {n} of {total}", &[("n", &3), ("total", &3)]).as_str(), "course")]),
             ]
         );
     }
@@ -316,7 +316,10 @@ mod tests {
     #[test]
     fn position_counts_the_whole_span_even_when_the_window_starts_later() {
         let events = [event("course", date(11), Some(date(14)))];
-        assert_eq!(grouped(&events, 12, 13, local(10, 8, 0)), [(12, vec![line("all day · day 2 of 3", "course")])]);
+        assert_eq!(
+            grouped(&events, 12, 13, local(10, 8, 0)),
+            [(12, vec![line(trf("all day · day {n} of {total}", &[("n", &2), ("total", &3)]).as_str(), "course")])]
+        );
     }
 
     #[test]
@@ -339,7 +342,7 @@ mod tests {
         ];
         assert_eq!(
             grouped(&events, 11, 12, local(10, 8, 0)),
-            [(11, vec![line("all day", "all day"), line("09:00", "timed early"), line("15:00", "timed late")])]
+            [(11, vec![line(tr("all day"), "all day"), line("09:00", "timed early"), line("15:00", "timed late")])]
         );
     }
 
@@ -389,10 +392,10 @@ mod tests {
     #[test]
     fn day_headings() {
         let today = day(11);
-        assert_eq!(day_heading(day(11), today), "Today");
-        assert_eq!(day_heading(day(12), today), "Tomorrow");
+        assert_eq!(day_heading(day(11), today), tr("Today"));
+        assert_eq!(day_heading(day(12), today), tr("Tomorrow"));
         assert_eq!(day_heading(day(14), today), "Mi, 14.10.");
-        assert_eq!(day_heading(day(12), day(11)), "Tomorrow");
+        assert_eq!(day_heading(day(12), day(11)), tr("Tomorrow"));
         assert_eq!(day_heading(day(20), day(11)), "Di, 20.10.");
     }
 
