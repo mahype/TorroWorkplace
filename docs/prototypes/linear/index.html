@@ -1,0 +1,119 @@
+<title>Torro im Linear-Stil</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: eine Spalte, je App ein Abschnitt, darin die Größen als Bildkarten (breit oben, mittel/schmal nebeneinander). */
+:root{
+  --bg:#08090A; --panel:#0F1011; --card:#141518; --line:rgba(255,255,255,.08);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98; --accent:#D50C0C;
+  --font:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#F4F5F6; --panel:#FFFFFF; --card:#FFFFFF; --line:rgba(0,0,0,.09);
+  --text:#18191B; --text2:#4F535A; --text3:#6B6F76; color-scheme:light}}
+:root[data-theme="light"]{--bg:#F4F5F6; --panel:#FFFFFF; --card:#FFFFFF; --line:rgba(0,0,0,.09);
+  --text:#18191B; --text2:#4F535A; --text3:#6B6F76; color-scheme:light}
+body{background:var(--bg);color:var(--text);font:400 15px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:32px 64px;display:grid;gap:40px}
+header{display:grid;gap:12px;max-width:68ch}
+.brand{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500;color:var(--text2)}
+.logo{width:22px;height:22px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600}
+h1{margin:0;font-size:clamp(26px,4vw,34px);line-height:1.15;font-weight:600;letter-spacing:-.015em;text-wrap:balance}
+h2{margin:0;font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em}
+p{margin:0}
+.lead{color:var(--text2)}
+.sizes{display:flex;flex-wrap:wrap;gap:8px}
+.size{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;border:1px solid var(--line);background:var(--card);font-size:12px;font-weight:500;color:var(--text2);font-variant-numeric:tabular-nums}
+.size b{color:var(--text);font-weight:600}
+section{display:grid;gap:16px}
+section > p{color:var(--text2);max-width:72ch}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));align-items:start}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:grid}
+figure.wide{grid-column:1/-1}
+figure a{display:block;background:#000}
+figure img{display:block;width:100%;height:auto}
+figcaption{display:grid;gap:2px;padding:12px 14px 14px;font-size:13px;line-height:1.45;color:var(--text2)}
+figcaption b{color:var(--text);font-weight:600;font-size:14px}
+figcaption .tag{font-size:12px;color:var(--text3);font-variant-numeric:tabular-nums}
+.rules{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
+.rule{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:6px}
+.rule b{font-weight:600}
+.rule span{color:var(--text2);font-size:14px}
+ol.q{margin:0;padding-left:20px;display:grid;gap:10px;max-width:72ch}
+ol.q li span{display:block;color:var(--text2);font-size:14px}
+a{color:inherit}
+a:focus-visible{outline:2px solid var(--text3);outline-offset:2px}
+footer{color:var(--text3);font-size:13px}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="logo">T</span>Torro Workplace · Design-Entwurf</div>
+    <h1>Kalender und Aufgaben im Linear-Stil</h1>
+    <p class="lead">Aufbau, Abstände, Schrift und Symbole nach Linear: Seitenleiste auf dunklem Grund, Inhalt als eingesetzte Fläche, Eigenschaften rechts. Jede App läuft als eigene Kachel im Tiling-Manager und baut sich je nach Größe um. Antippen öffnet ein Bild in voller Größe.</p>
+    <div class="sizes">
+      <span class="size"><b>Breit</b> ab 1024 px</span>
+      <span class="size"><b>Mittel</b> 600–1023 px</span>
+      <span class="size"><b>Schmal</b> unter 600 px</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Wie die Apps kleiner werden</h2>
+    <div class="rules">
+      <div class="rule"><b>1. Navigation ins Menü</b><span>Die Seitenleiste verschwindet; Filter, Listen und Ansichten stecken in einem Menü oben links („Today ▾“, „Week ▾“).</span></div>
+      <div class="rule"><b>2. Details in Karten und Chips</b><span>Statt der Eigenschaften-Spalte öffnet ein Termin eine schwebende Karte; Aufgaben zeigen ihre Eigenschaften als Chips unter dem Titel.</span></div>
+      <div class="rule"><b>3. Eine Ansicht ersetzt die andere</b><span>Schmal zeigt nur einen Tag bzw. nur die Liste; das Detail ersetzt die Liste, mit „‹ Zurück“.</span></div>
+    </div>
+  </section>
+
+  <section id="kalender">
+    <h2>Kalender</h2>
+    <p>Seitenleiste mit Mini-Monat zum Navigieren (wie Notion Calendar), getönte Termine mit Farbbalken, unbestätigte gestrichelt, freie Zeit in Lücken, Aufgaben als Umriss und die Ablage „This week“ unten.</p>
+    <div class="grid">
+      <figure class="wide"><a href="cal-l.png" target="_blank" rel="noopener"><img src="cal-l.png" alt="Kalender breit: Seitenleiste, Woche, Eigenschaften-Spalte" loading="lazy"></a>
+        <figcaption><b>Breit</b><span class="tag">1440 × 900</span>Seitenleiste mit Mini-Monat, Ansichten und Kalendern · Woche · rechts die Eigenschaften des gewählten Termins.</figcaption></figure>
+      <figure><a href="cal-m.png" target="_blank" rel="noopener"><img src="cal-m.png" alt="Kalender mittel mit Terminkarte" loading="lazy"></a>
+        <figcaption><b>Mittel</b><span class="tag">900 × 700</span>Woche über die volle Breite, Termin als schwebende Karte.</figcaption></figure>
+      <figure><a href="cal-m-menu.png" target="_blank" rel="noopener"><img src="cal-m-menu.png" alt="Kalender mittel mit offenem Ansichtsmenü" loading="lazy"></a>
+        <figcaption><b>Mittel · Menü</b><span class="tag">900 × 700</span>Ansichten und Kalender aus der Seitenleiste im Menü „Week ▾“.</figcaption></figure>
+      <figure><a href="cal-s.png" target="_blank" rel="noopener"><img src="cal-s.png" alt="Kalender schmal: ein Tag mit Wochenleiste" loading="lazy"></a>
+        <figcaption><b>Schmal</b><span class="tag">420 × 780</span>Ein Tag, darüber die Woche als Leiste mit Punkten; Aufgaben als „3 tasks this week ›“.</figcaption></figure>
+      <figure><a href="cal-s-menu.png" target="_blank" rel="noopener"><img src="cal-s-menu.png" alt="Kalender schmal mit offenem Menü" loading="lazy"></a>
+        <figcaption><b>Schmal · Menü</b><span class="tag">420 × 780</span>Dasselbe Menü, rechts ausgerichtet.</figcaption></figure>
+      <figure><a href="cal-m-light.png" target="_blank" rel="noopener"><img src="cal-m-light.png" alt="Kalender mittel im hellen Modus" loading="lazy"></a>
+        <figcaption><b>Mittel · hell</b><span class="tag">900 × 700</span>Heller Modus mit denselben Bausteinen.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="aufgaben">
+    <h2>Aufgaben</h2>
+    <p>Aufgebaut wie Linears Issue-Liste: Gruppen „Overdue · Today · Upcoming“, Prioritäts-Balken, Liste als Etikett, Fälligkeit rechts. Das Detail zeigt Unteraufgaben und wer was geändert hat, auch Agenten.</p>
+    <div class="grid">
+      <figure class="wide"><a href="tasks-l.png" target="_blank" rel="noopener"><img src="tasks-l.png" alt="Aufgaben breit: Seitenleiste, Liste, Detail, Eigenschaften" loading="lazy"></a>
+        <figcaption><b>Breit</b><span class="tag">1440 × 900</span>Seitenleiste · Liste · Detail · Eigenschaften-Spalte.</figcaption></figure>
+      <figure><a href="tasks-m.png" target="_blank" rel="noopener"><img src="tasks-m.png" alt="Aufgaben mittel: Liste und Detail" loading="lazy"></a>
+        <figcaption><b>Mittel</b><span class="tag">900 × 700</span>Liste und Detail; Eigenschaften als Chips unter dem Titel.</figcaption></figure>
+      <figure><a href="tasks-m-menu.png" target="_blank" rel="noopener"><img src="tasks-m-menu.png" alt="Aufgaben mittel mit offenem Menü" loading="lazy"></a>
+        <figcaption><b>Mittel · Menü</b><span class="tag">900 × 700</span>Die ganze Seitenleiste im Menü „Today ▾“.</figcaption></figure>
+      <figure><a href="tasks-s.png" target="_blank" rel="noopener"><img src="tasks-s.png" alt="Aufgaben schmal: nur die Liste" loading="lazy"></a>
+        <figcaption><b>Schmal</b><span class="tag">420 × 780</span>Nur die Liste, Etiketten fallen weg.</figcaption></figure>
+      <figure><a href="tasks-s-detail.png" target="_blank" rel="noopener"><img src="tasks-s-detail.png" alt="Aufgaben schmal: Detail ersetzt die Liste" loading="lazy"></a>
+        <figcaption><b>Schmal · Detail</b><span class="tag">420 × 780</span>Das Detail ersetzt die Liste, „‹ Today“ führt zurück.</figcaption></figure>
+      <figure><a href="tasks-m-light.png" target="_blank" rel="noopener"><img src="tasks-m-light.png" alt="Aufgaben mittel im hellen Modus" loading="lazy"></a>
+        <figcaption><b>Mittel · hell</b><span class="tag">900 × 700</span>Heller Modus.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="fragen">
+    <h2>Noch zu entscheiden</h2>
+    <ol class="q">
+      <li><b>Grundgröße 13 (Linear) oder 14?</b><span>Vorschlag: 13 wie Linear und eine Einstellung „Interface size“, mit der Iced alles skaliert.</span></li>
+      <li><b>Eingesetzter Inhalt mit Rand</b><span>Typisch Linear; mit Hyprland-Rahmen eventuell doppelt. Erst echt gekachelt beurteilen, notfalls bündig.</span></li>
+      <li><b>Mini und Leiste als Nächstes?</b><span>Kachel mit nächstem Termin und „Free until …“, Leiste als waagerechter Tageszeitstrahl wie bei HEY.</span></li>
+      <li><b>Steuerzentrale im selben Stil</b><span>Seitenleiste mit Abschnitten, Einstellungen als gruppierte Listen.</span></li>
+    </ol>
+  </section>
+
+  <footer>Entwurf in HTML, noch kein Iced-Code. Quelle im Repository unter docs/prototypes/linear/.</footer>
+</div>

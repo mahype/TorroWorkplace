@@ -23,7 +23,7 @@ Steuerelemente 28–36 hoch, Radien 4/6/10/14, neutrale Auswahl, getönte Termin
 
 ## Reihenfolge
 
-1. **Fundament** F.1 → F.2 → F.3 → F.4/F.5, dazu K.18 (Größenklassen, in
+1. **Fundament** F.1 → F.2 → (F.3, F.4, F.8, K.18 parallel) → F.5, dazu K.18 (Größenklassen, in
    [kalender-aufgaben.md](kalender-aufgaben.md)) und F.6. Danach dürfen Apps keine eigenen
    Zahlen und keine Iced-Standardstile mehr verwenden.
 2. **Q.1** Sichtprüfung für Zustände, die nur per Klick erreichbar sind.
@@ -32,8 +32,12 @@ Steuerelemente 28–36 hoch, Radien 4/6/10/14, neutrale Auswahl, getönte Termin
 4. Nach jeder App-Aufgabe: `torro-design-review` in allen sechs Größen. Abgenommen ist eine
    Aufgabe erst, wenn alle vier Ziele des Skills mindestens „erfüllt“ sind.
 
-Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen. API und MCP
-(`docs/api.md`) sind nicht betroffen.
+Vorbild ist **Linear** (entschieden am 2026-10-11); die verbindliche Referenz sind die Entwürfe in
+[docs/prototypes/linear/](../prototypes/linear/) (HTML + Screenshots in drei Größen, hell und dunkel).
+Jede App-Aufgabe vergleicht ihr Ergebnis mit dem passenden Screenshot.
+
+Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – außer F.8
+(Erscheinungsbild), die Oberfläche, API und MCP nennt. Sonst sind API und MCP (`docs/api.md`) nicht betroffen.
 
 ## Aufgaben
 
@@ -62,34 +66,42 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen. API u
 - **Abnahme:** Test, dass jede Datei eine gültige TTF ist; Sichtprüfung zeigt Inter (z. B. das
   einstöckige „a“ und das flache „t“). Im Bericht die Inter-Version.
 
-### F.2 Farben, Abstände, Radien, Maße als Tokens
+### F.2 Farben, Abstände, Radien, Maße als Tokens – hell und dunkel
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** F.1
-- **Dateien:** `crates/torro-gui/src/theme.rs`, `crates/torro-gui/src/lib.rs`
-- Werte genau aus dem Skill, Abschnitt 1 und 2: Flächen `L0`–`L3`, `TEXT`, `TEXT_2`, `TEXT_3`,
-  `FAINT`, `LINE`/`LINE_STRONG` als Alpha, `FOCUS_RING`; `space::{XS, S, M, L, XL, XXL}`;
-  `radius::{SM, MD, LG, XL}`; `size::{CONTROL_SM, CONTROL, CONTROL_LG, ROW, ROW_SIDEBAR,
-  HEADER, SIDEBAR, CONTENT_MAX, FORM_MAX}`.
-- Die alten Namen (`BACKGROUND`, `SURFACE`, `SURFACE_2`, `MUTED`) bleiben vorerst als
-  `#[deprecated]`-Aliase, damit die Apps weiter bauen; die App-Aufgaben stellen um, W.5 bzw. der
-  Abschluss entfernt sie.
-- Kontraste als Test: jede Textfarbe gegen jede Fläche, für die sie erlaubt ist (Tabelle im Skill).
-- Die geänderten Farben im Repo `torro-design` (`tokens/tokens.json`) nachziehen: im Bericht als
-  offene Rückfrage nennen, nicht selbst ändern.
+- **Dateien:** `crates/torro-gui/src/theme.rs`, `crates/torro-gui/src/typo.rs`, `crates/torro-gui/src/lib.rs`
+- Werte genau aus dem Skill (Abschnitte 1–3), Vorbild Linear, Referenz `docs/prototypes/linear/torro.css`.
+- **Hell und dunkel zur Laufzeit:** Farben sind keine festen Konstanten mehr, die Views direkt
+  benutzen. `theme.rs` bietet eine Palette je Modus (`Palette::dark()`, `Palette::light()`) mit den
+  Tokens `BG`, `PANEL`, `RAISED`, `HOVER`, `SELECTED`, `MENU`, `TEXT`, `TEXT_2`, `TEXT_3`, `LINE`,
+  `LINE_STRONG`, `FOCUS_RING`, `ACCENT`, Kalenderfarben samt Tönung; dazu `Appearance { System,
+  Light, Dark }` und die Iced-`Theme`s „Torro Dark“/„Torro Light“. Views kommen an die Farben nur
+  über `&Theme` (Style-Closures) bzw. über eine Funktion `theme::palette(&Theme) -> &Palette`. Die
+  Schnittstelle so entwerfen, dass F.3/F.5 und die App-Aufgaben sie ohne Kontext nutzen können.
+- `space::{XS, S, M, L, XL, XXL}`, `radius::{XS, SM, MD, LG}`, `size::{CONTROL_SM, CONTROL,
+  CONTROL_LG, ROW, ROW_SIDEBAR, ROW_GROUP, HEADER, SIDEBAR, PROPS, LIST, LIST_MEDIUM, HOUR, AXIS,
+  AXIS_NARROW, INSET, CONTENT_MAX, FORM_MAX}`.
+- `typo.rs` auf Grundgröße 13 umstellen (Stufen aus dem Skill inkl. neuer Stufe `MICRO`);
+  `settings()` setzt 13 als Standardgröße.
+- Die alten Konstanten (`BACKGROUND`, `SURFACE`, `MUTED` …) bleiben vorerst als
+  `#[deprecated]`-Aliase auf die dunklen Werte, damit die Apps weiter bauen; die App-Aufgaben
+  stellen um, W.5 entfernt sie.
+- Kontraste als Test: jede Textfarbe gegen jede Fläche, in beiden Modi (Werte im Skill, Abschnitt 4).
+- Geänderte Farben im Repo `torro-design` nachziehen: im Bericht als Rückfrage nennen.
 
 ### F.3 Stile für alle Iced-Widgets
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** F.2
 - **Dateien:** `crates/torro-gui/src/style.rs` (neu), `crates/torro-gui/src/lib.rs`
-- Style-Funktionen nach Skill Abschnitt 5: `button` (`primary`, `secondary`, `ghost`, `danger`,
-  `segment(active)`, `sidebar_item(active)`, `list_row(selected)`), `text_input`, `text_editor`,
-  `pick_list` samt Menü, `checkbox` (Kalenderfarbe, quadratisch R4) und `task_check` (rund, Farbe
-  der Liste), `toggler`, `radio`, `scrollable` (schmale Leiste, nur beim Scrollen sichtbar),
-  `container` (`group`, `dialog`, `popover`, `header`). Hover, gedrückt, Fokus, deaktiviert in
-  allen.
-- **Abnahme:** Unit-Tests für die Zustandslogik (z. B. Auswahl ist nie Rot, deaktiviert hat
-  keine Hover-Fläche); eine Galerie-Ansicht `torro-gui --example gallery` oder Demo-Seite, die
-  jeden Stil in jedem Zustand zeigt, mit Screenshot im Bericht.
+- Style-Funktionen nach Skill Abschnitt 5, beide Modi: `button` (`primary`, `secondary`, `ghost`,
+  `icon`, `boxed`, `danger`, `segment(active)`, `sidebar_item(active)`, `list_row(selected)`,
+  `menu_item(highlighted)`), `text_input`, `text_editor`, `pick_list` samt Menü, `checkbox`
+  (Kalenderfarbe, quadratisch) und `task_check` (rund, Listenfarbe), `toggler`, `radio`,
+  `scrollable` (schmale Leiste), `container` (`panel` = eingesetzte Inhaltsfläche, `sidebar`,
+  `header`, `group`, `menu`, `popover`, `chip`, `kbd`). Hover, gedrückt, Fokus, deaktiviert.
+- **Abnahme:** Unit-Tests für die Zustandslogik (Auswahl nie Rot, deaktiviert ohne Hover, beide
+  Modi); Galerie `cargo run -p torro-gui --example gallery [-- --light]`, die jeden Stil in jedem
+  Zustand zeigt, Screenshot hell und dunkel im Bericht.
 
 ### F.4 Icons
 - [ ] erledigt
@@ -103,18 +115,22 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen. API u
 - **Abnahme:** Test, dass jedes Icon geladen werden kann; keine Unicode-Glyphen mehr als Icons
   (gilt ab den App-Aufgaben).
 
-### F.5 Gemeinsame Bausteine
+### F.5 Gemeinsame Bausteine (Linear-Fenster)
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** F.3, F.4, K.18
-- **Dateien:** `crates/torro-gui/src/widgets.rs`
-- `header_bar(leading, title, trailing)` (Höhe `HEADER`, Ränder je Größenklasse), `icon_button`,
-  `segmented(options, active)`, `sidebar(sections)` + `sidebar_item(icon, label, count, active)`
-  (Muster aus der Steuerzentrale `ui/mod.rs` übernehmen), `list_row`, `group(title, rows,
-  footer)` (eine Kartenart für alle Einstellungsseiten), `section_title` in Satzschreibung
-  (`CAPTION`), `content(max_width, …)` (begrenzt und zentriert), `loading()`,
-  `error_state(what, retry)`, `empty_state` (vorhanden, an neue Stufen anpassen), `chip`, `badge`,
-  `status_dot`.
-- **Abnahme:** Galerie aus F.3 um die Bausteine erweitern, Screenshot in Schmal und Breit.
+- **Dateien:** `crates/torro-gui/src/widgets.rs`, `crates/torro-gui/src/shell.rs` (neu), `crates/torro-gui/src/lib.rs`
+- `shell.rs`: das Fenster aus Skill Abschnitt 0 – `shell(size_class, sidebar, header, body, props)`
+  setzt Seitenleiste auf `BG`, eingesetzte Inhaltsfläche (Breit) bzw. bündigen Inhalt (Mittel,
+  Schmal), Eigenschaften-Spalte nur in Breit. Dazu `app_switcher(current)` (Logo, App-Name ▾,
+  Suche, „Neu“; das Menü listet die Apps der Suite und gibt eine Nachricht `OpenApp(binary)` zurück).
+- Bausteine: `header_bar(leading, title, trailing)`, `icon_button`, `segmented(options, active)`,
+  `sidebar_item(icon, label, count, kbd, active)`, `sidebar_group(label)`, `list_row`, `group_head`,
+  `menu(sections)` + `menu_button` (Iced-Overlay, schließt bei Klick daneben und Escape),
+  `popover`, `chip`, `pill`, `kbd`, `prop_row(icon, value)`, `section_title`, `group(title, rows,
+  footer)`, `content(max_width, …)`, `loading()`, `error_state(what, retry)`, `empty_state`,
+  `status_dot`, `avatar_stack`.
+- **Abnahme:** Galerie aus F.3 um die Bausteine und ein Beispiel-Fenster in Breit, Mittel und Schmal
+  erweitern; Screenshots hell und dunkel; Vergleich mit `docs/prototypes/linear/*.png`.
 
 ### F.6 Prüfung im Build
 - [ ] erledigt
@@ -125,6 +141,16 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen. API u
   `.width(`/`.height(` (außer `Length::…` und Tokens), `Color::from_rgb`, `button::primary`/
   `secondary`/`text`, `Font::DEFAULT`. Ausnahmen nur mit Kommentar `// design-check: allow <Grund>`.
   Erst als Warnung, nach C/T/W als Fehler.
+
+### F.8 Erscheinungsbild hell/dunkel einstellen
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** F.2
+- **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/ui/general.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- **Oberfläche:** Steuerzentrale › General › „Appearance: System / Light / Dark“.
+  **API:** Feld `appearance` in `Settings` (über `UpdateSettings`/`settings.set`).
+  **MCP:** `settings_set` (Admin-Bereich, siehe `docs/api.md`).
+- Alle drei Programme lesen die Einstellung beim Start und folgen Änderungen (Neuladen der Settings
+  im vorhandenen Takt); „System“ folgt `prefers-color-scheme` bzw. dem Portal, sonst dunkel.
 
 ### F.7 Fenster deckend unter Omarchy
 - [ ] erledigt

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Tasks – Linear-Stil</title>
+<!-- Entwurf: Aufgaben im Linear-Stil in drei Größen.
+     Breit: Seitenleiste, Liste mit Gruppen (wie Linears Issue-Liste), Detail, Eigenschaften-Spalte rechts.
+     Mittel: Seitenleiste wandert ins Menü "Today ▾", Eigenschaften als Chips unter dem Titel.
+     Schmal: nur die Liste; das Detail ersetzt sie (?open=detail).
+     ?size=l|m|s erzwingt eine Größe, ?open=menu|detail zeigt Zustände, ?theme=light hell. -->
+<link rel="stylesheet" href="torro.css">
+<script src="size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+.body{flex:1;display:flex;min-height:0}
+.list{width:460px;flex:none;border-right:1px solid var(--line);overflow:hidden;display:flex;flex-direction:column}
+.quick{display:flex;align-items:center;gap:8px;height:36px;margin:8px 8px 4px;padding:0 10px;border-radius:6px;color:var(--text3);border:1px solid var(--line)}
+.ghead{display:flex;align-items:center;gap:8px;height:32px;padding:0 16px;margin-top:4px;background:var(--raised);border-top:1px solid var(--line);border-bottom:1px solid var(--line);font-size:12px;font-weight:500;color:var(--text2)}
+.ghead .n{font-family:"Inter Tabular",Inter,sans-serif;color:var(--text3);font-weight:400}
+.ghead .grow{flex:1}
+.ghead.overdue svg{color:#E8A33D}
+.row{display:flex;align-items:center;gap:10px;height:40px;padding:0 16px;border-bottom:1px solid var(--line)}
+.row:hover{background:var(--hover)}
+.row.sel{background:var(--selected);box-shadow:inset 2px 0 0 var(--text3)}
+.row .title{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .meta{display:flex;align-items:center;gap:8px;flex:none;font-size:12px;color:var(--text3)}
+.row .due{font-family:"Inter Tabular",Inter,sans-serif;min-width:44px;text-align:right}
+.row .due.late{color:#E8A33D}
+.row.done .title{color:var(--text3);text-decoration:line-through}
+.circle{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--text3);flex:none}
+.circle.done{border:0;background:var(--c);display:grid;place-items:center;color:#fff}
+.circle.done svg{width:11px;height:11px;stroke-width:3}
+.prio{display:inline-flex;align-items:flex-end;gap:2px;height:12px;width:14px}
+.prio i{display:block;width:3px;border-radius:1px;background:var(--line-strong)}
+.prio i:nth-child(1){height:5px}.prio i:nth-child(2){height:8px}.prio i:nth-child(3){height:12px}
+.prio.p1 i:nth-child(-n+1),.prio.p2 i:nth-child(-n+2),.prio.p3 i{background:var(--text2)}
+.urgent{width:14px;height:14px;border-radius:3px;background:#E8A33D;color:#111;display:grid;place-items:center;font-size:10px;font-weight:700}
+.tag{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 6px;border-radius:10px;border:1px solid var(--line-strong);color:var(--text2)}
+.tag .dot{width:6px;height:6px}
+
+.detail{flex:1;min-width:0;padding:32px 40px;overflow:hidden}
+.detail .crumb{display:flex;align-items:center;gap:6px;color:var(--text3);font-size:12px;margin-bottom:12px}
+.detail h1{font-size:22px;line-height:28px;font-weight:600;margin:0 0 8px;letter-spacing:-.01em}
+.detail .desc{color:var(--text2);max-width:62ch;margin:0 0 24px}
+.sub{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--text3);margin-bottom:4px}
+.subrow{display:flex;align-items:center;gap:10px;height:32px;border-bottom:1px solid var(--line)}
+.subrow.done span:last-child{color:var(--text3);text-decoration:line-through}
+.addsub{display:flex;align-items:center;gap:8px;height:32px;color:var(--text3)}
+.activity{margin-top:32px}
+.activity .item{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text3);height:28px}
+.activity .item b{font-weight:500;color:var(--text2)}
+.bar{height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden;width:48px}.bar i{display:block;height:100%;width:50%;background:var(--c-personal)}
+html[data-size="m"] .list{width:380px}
+html[data-size="m"] .detail{padding:24px 28px}
+html[data-size="s"] .list{flex:1;width:auto;border:0}
+html[data-size="s"] .detail{display:none}
+html[data-size="s"][data-open="detail"] .detail{display:block;padding:16px}
+html[data-size="s"][data-open="detail"] .list{display:none}
+html:not([data-open="detail"]) .only-detail{display:none!important}
+html[data-open="detail"] .not-detail{display:none!important}
+html:not([data-open="menu"]) .menu{display:none}
+.detail .chips{margin:0 0 20px}
+</style></head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div style="display:flex;align-items:center;gap:2px">
+      <div class="switcher" style="flex:1"><div class="logo">T</div><b>Tasks</b><i data-lucide="chevron-down" class="s14 faint"></i><span class="grow"></span></div>
+      <button class="iconbtn"><i data-lucide="search"></i></button>
+      <button class="iconbtn boxed"><i data-lucide="square-pen"></i></button>
+    </div>
+    <div style="height:8px"></div>
+    <a class="nav"><i data-lucide="inbox"></i><span class="grow">Inbox</span><span class="count">2</span></a>
+    <a class="nav active"><i data-lucide="sun"></i><span class="grow">Today</span><span class="count">5</span></a>
+    <a class="nav"><i data-lucide="calendar-clock"></i><span class="grow">Upcoming</span><span class="count">9</span></a>
+    <a class="nav"><i data-lucide="layers"></i><span class="grow">Anytime</span></a>
+    <a class="nav"><i data-lucide="circle-check"></i><span class="grow">Completed</span></a>
+    <div class="group">Lists <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><span class="ring" style="--c:var(--c-work)"></span><span class="grow">Work</span><span class="count">6</span></a>
+    <a class="nav"><span class="ring" style="--c:var(--c-personal)"></span><span class="grow">Personal</span><span class="count">4</span></a>
+    <a class="nav"><span class="ring" style="--c:var(--c-family)"></span><span class="grow">Family</span><span class="count">3</span></a>
+    <a class="nav"><span class="ring" style="--c:var(--c-groceries)"></span><span class="grow">Groceries</span><span class="count">5</span></a>
+    <div class="group">Accounts <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><i data-lucide="cloud"></i><span class="grow">cloud.example.org</span><span class="dot" style="--c:var(--c-personal);width:6px;height:6px"></span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="calendar"></i><span class="grow">Open Calendar</span><i data-lucide="arrow-up-right" class="s14 faint"></i></a>
+    <a class="nav"><i data-lucide="settings"></i><span class="grow">Settings</span></a>
+  </aside>
+
+  <main class="panel">
+    <div class="header">
+      <button class="iconbtn not-l not-detail"><i data-lucide="panel-left"></i></button>
+      <button class="btn ghost only-detail" style="padding-left:4px"><i data-lucide="chevron-left" class="s14"></i>Today</button>
+      <div class="crumbs only-l"><i data-lucide="sun"></i><b>Today</b><span class="faint">5 open</span></div>
+      <div class="dd not-l not-detail">
+        <button class="btn ghost" style="font-size:13px;color:var(--text)"><i data-lucide="sun" class="s14"></i>Today<i data-lucide="chevron-down" class="s14 chev"></i></button>
+        <div class="menu">
+          <div class="item"><i data-lucide="inbox"></i>Inbox<span class="faint">2</span></div>
+          <div class="item hl"><i data-lucide="sun"></i>Today<span class="faint">5</span></div>
+          <div class="item"><i data-lucide="calendar-clock"></i>Upcoming<span class="faint">9</span></div>
+          <div class="item"><i data-lucide="layers"></i>Anytime</div>
+          <div class="item"><i data-lucide="circle-check"></i>Completed</div>
+          <div class="sep"></div>
+          <div class="label">Lists</div>
+          <div class="item"><span class="ring" style="--c:var(--c-work)"></span>Work<span class="faint">6</span></div>
+          <div class="item"><span class="ring" style="--c:var(--c-personal)"></span>Personal<span class="faint">4</span></div>
+          <div class="item"><span class="ring" style="--c:var(--c-family)"></span>Family<span class="faint">3</span></div>
+          <div class="item"><span class="ring" style="--c:var(--c-groceries)"></span>Groceries<span class="faint">5</span></div>
+          <div class="sep"></div>
+          <div class="item"><i data-lucide="calendar"></i>Open Calendar<i data-lucide="arrow-up-right" class="s14 faint" style="margin-left:auto"></i></div>
+          <div class="item"><i data-lucide="settings"></i>Settings</div>
+        </div>
+      </div>
+      <span class="faint not-l not-s not-detail">5 open</span>
+      <span class="grow"></span>
+      <button class="btn ghost only-l"><i data-lucide="list-filter" class="s14"></i>Filter</button>
+      <button class="btn ghost only-l"><i data-lucide="sliders-horizontal" class="s14"></i>Display</button>
+      <button class="iconbtn not-l not-detail"><i data-lucide="list-filter"></i></button>
+      <button class="iconbtn only-detail"><i data-lucide="ellipsis"></i></button>
+      <button class="btn primary not-detail"><i data-lucide="plus" class="s14"></i><span class="not-s">New task</span></button>
+    </div>
+    <div class="body">
+      <section class="list">
+        <div class="quick"><i data-lucide="plus" class="s14"></i>New task… <span style="flex:1"></span><kbd>N</kbd></div>
+        <div class="ghead overdue"><i data-lucide="circle-alert" class="s14"></i>Overdue<span class="n">2</span><span class="grow"></span><i data-lucide="plus" class="s14 faint"></i></div>
+        <div class="row"><span class="circle"></span><span class="urgent">!</span><span class="title">File invoices for September</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-work)"></span>Work</span><span class="due late">Fri 9</span></span></div>
+        <div class="row"><span class="circle"></span><span class="prio p1"><i></i><i></i><i></i></span><span class="title">Call the insurance about the bike</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-personal)"></span>Personal</span><span class="due late">Thu 8</span></span></div>
+        <div class="ghead"><i data-lucide="sun" class="s14"></i>Today<span class="n">3</span><span class="grow"></span><i data-lucide="plus" class="s14 faint"></i></div>
+        <div class="row sel"><span class="circle"></span><span class="prio p2"><i></i><i></i><i></i></span><span class="title">Review API concept</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-work)"></span>Work</span><span class="due">16:00</span></span></div>
+        <div class="row"><span class="circle"></span><span class="prio p3"><i></i><i></i><i></i></span><span class="title">Buy Mum's present</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-family)"></span>Family</span><span class="due">18:00</span></span></div>
+        <div class="row done"><span class="circle done" style="--c:var(--c-personal)"><i data-lucide="check"></i></span><span class="prio"><i></i><i></i><i></i></span><span class="title">Book train tickets</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-personal)"></span>Personal</span><span class="due"></span></span></div>
+        <div class="ghead"><i data-lucide="calendar-clock" class="s14"></i>Upcoming<span class="n">4</span><span class="grow"></span><i data-lucide="plus" class="s14 faint"></i></div>
+        <div class="row"><span class="circle"></span><span class="prio p2"><i></i><i></i><i></i></span><span class="title">Prepare sprint demo</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-work)"></span>Work</span><span class="due">Mon 12</span></span></div>
+        <div class="row"><span class="circle"></span><span class="prio"><i></i><i></i><i></i></span><span class="title">Groceries for the weekend</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-groceries)"></span>Groceries</span><span class="due">Fri 16</span></span></div>
+        <div class="row"><span class="circle"></span><span class="prio p1"><i></i><i></i><i></i></span><span class="title">Renew passport</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-personal)"></span>Personal</span><span class="due">Oct 30</span></span></div>
+        <div class="row"><span class="circle"></span><span class="prio"><i></i><i></i><i></i></span><span class="title">Plan Christmas with the family</span><span class="meta"><span class="tag not-s"><span class="dot" style="--c:var(--c-family)"></span>Family</span><span class="due">Nov 15</span></span></div>
+      </section>
+
+      <section class="detail">
+        <div class="crumb"><span class="ring" style="--c:var(--c-work);width:12px;height:12px"></span>Work<i data-lucide="chevron-right" class="s14"></i>Today</div>
+        <h1>Review API concept</h1>
+        <div class="chips not-l">
+          <span class="pchip"><span class="circle" style="width:12px;height:12px"></span>Open</span>
+          <span class="pchip"><span class="prio p2"><i></i><i></i><i></i></span>Medium</span>
+          <span class="pchip"><i data-lucide="calendar"></i><span class="tab">Today, 16:00</span></span>
+          <span class="pchip"><i data-lucide="bell"></i><span class="tab">15:45</span></span>
+          <span class="pchip"><span class="ring" style="--c:var(--c-work);width:12px;height:12px"></span>Work</span>
+          <span class="pchip"><i data-lucide="ellipsis"></i></span>
+        </div>
+        <p class="desc">Read docs/api.md and decide the three open questions: HTTP API now or later, the app key as a file or in the keychain, and whether agents may change accounts and settings.</p>
+        <div class="sub"><i data-lucide="chevron-down" class="s14"></i>Sub-tasks <span class="bar" style="margin-left:4px"><i></i></span><span class="tab">2/4</span></div>
+        <div class="subrow done"><span class="circle done" style="--c:var(--c-personal)"><i data-lucide="check"></i></span><span>Read the concept</span></div>
+        <div class="subrow done"><span class="circle done" style="--c:var(--c-personal)"><i data-lucide="check"></i></span><span>Compare with TorroMail</span></div>
+        <div class="subrow"><span class="circle"></span><span>Decide the open questions</span></div>
+        <div class="subrow"><span class="circle"></span><span>Start task A.0</span></div>
+        <div class="addsub"><i data-lucide="plus" class="s14"></i>Add sub-task</div>
+        <div class="activity">
+          <div class="sub">Activity</div>
+          <div class="item"><i data-lucide="circle-plus" class="s14"></i><b>You</b> created the task · 2 days ago</div>
+          <div class="item"><i data-lucide="sparkles" class="s14"></i><b>Claude Code</b> added two sub-tasks · yesterday</div>
+          <div class="item"><i data-lucide="calendar" class="s14"></i><b>You</b> set the due date to today · 3 h ago</div>
+        </div>
+      </section>
+
+      <aside class="props only-l">
+        <h4>Properties</h4>
+        <div class="prop"><span class="circle"></span><span>Open</span></div>
+        <div class="prop"><span class="prio p2"><i></i><i></i><i></i></span><span>Medium priority</span></div>
+        <div class="prop"><i data-lucide="calendar"></i><span class="tab">Today, 16:00</span></div>
+        <div class="prop"><i data-lucide="bell"></i><span class="tab">15:45</span></div>
+        <div class="prop"><i data-lucide="repeat"></i><span class="faint">No repeat</span></div>
+        <h4>List</h4>
+        <div class="prop"><span class="ring" style="--c:var(--c-work)"></span><span>Work</span></div>
+        <h4>Tags</h4>
+        <div class="prop"><span class="tag">torroworkplace</span><span class="tag">review</span></div>
+        <h4>Calendar</h4>
+        <div class="prop"><i data-lucide="calendar-plus"></i><span class="muted">Block time in calendar</span></div>
+        <h4>Account</h4>
+        <div class="prop"><i data-lucide="cloud"></i><span class="muted">Nextcloud · Tasks</span></div>
+      </aside>
+    </div>
+  </main>
+</div>
+<script>lucide.createIcons();</script>
+</body></html>

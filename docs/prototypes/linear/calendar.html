@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Calendar – Linear-Stil</title>
+<!-- Entwurf: Kalender im Linear-Stil in drei Größen.
+     Breit: Seitenleiste mit Mini-Monat (Notion/Fantastical), Woche, Eigenschaften-Spalte rechts (Linear).
+     Mittel: Seitenleiste und Eigenschaften weg; Ansichten und Kalender im Menü "Week ▾", Termin als schwebende Karte.
+     Schmal: ein Tag mit Wochenleiste darüber, Ansicht im Menü "Day ▾".
+     ?size=l|m|s erzwingt eine Größe, ?open=menu zeigt das Menü, ?theme=light hell. -->
+<link rel="stylesheet" href="torro.css">
+<script src="size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+.mini{padding:8px 8px 4px}
+.mini .mhead{display:flex;align-items:center;height:28px;font-weight:500}
+.mini .mhead .grow{flex:1}
+.mini table{width:100%;border-collapse:collapse;font-family:"Inter Tabular",Inter,sans-serif;font-size:11px;text-align:center}
+.mini th{font-weight:500;color:var(--text3);height:22px}
+.mini td{height:24px;color:var(--text2);padding:0}
+.mini td span{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%}
+.mini td.out{color:var(--text3);opacity:.6}
+.mini tr.cur td{background:var(--hover)}
+.mini tr.cur td:first-child{border-radius:6px 0 0 6px}.mini tr.cur td:last-child{border-radius:0 6px 6px 0}
+.mini td.today span{background:var(--accent);color:#fff;font-weight:600}
+
+.cal{flex:1;display:flex;min-height:0}
+.week{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+.cols{display:grid;grid-template-columns:var(--axis) repeat(var(--n),minmax(0,1fr))}
+:root{--axis:52px;--n:7}
+html[data-size="s"]{--axis:44px;--n:1}
+.dayhead{height:52px;border-bottom:1px solid var(--line)}
+.dayhead div{display:flex;align-items:center;justify-content:center;gap:6px;color:var(--text3);font-size:12px}
+.dayhead b{font-family:"Inter Tabular",Inter,sans-serif;font-weight:500;font-size:13px;color:var(--text2);display:inline-grid;place-items:center;min-width:24px;height:24px;border-radius:12px;padding:0 4px}
+.dayhead .today{color:var(--text)}
+.dayhead .today b{background:var(--accent);color:#fff}
+.dayhead .weekend b{color:var(--text3)}
+.strip{display:grid;grid-template-columns:repeat(7,1fr);padding:4px 8px 8px;border-bottom:1px solid var(--line)}
+.strip div{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0;border-radius:8px;font-size:11px;color:var(--text3)}
+.strip b{font:500 15px/28px "Inter Tabular",Inter,sans-serif;color:var(--text2);width:28px;height:28px;border-radius:50%;text-align:center}
+.strip .today b{background:var(--accent);color:#fff}
+.strip .today{color:var(--text)}
+.strip .dots{display:flex;gap:3px;height:4px}.strip .dots i{width:4px;height:4px;border-radius:50%;background:var(--c)}
+.allday{border-bottom:1px solid var(--line);min-height:32px}
+.allday > div{padding:4px 2px;border-left:1px solid var(--line)}
+.allday .label{border:0;color:var(--text3);font-size:11px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px}
+.chip{height:22px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:500;background:color-mix(in srgb,var(--c) var(--tint),transparent);box-shadow:inset 3px 0 0 var(--c);white-space:nowrap;overflow:hidden}
+.scroll{flex:1;overflow:hidden;position:relative}
+.grid{position:relative;height:calc(15 * var(--h));--h:48px}
+.hours{position:absolute;inset:0 auto 0 0;width:var(--axis)}
+.hours span{position:absolute;right:8px;transform:translateY(-7px);font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.lines{position:absolute;inset:0 0 0 var(--axis);background:repeating-linear-gradient(to bottom,var(--line) 0 1px,transparent 1px var(--h))}
+.daycols{position:absolute;inset:0 0 0 var(--axis);display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr))}
+.daycols > div{position:relative;border-left:1px solid var(--line)}
+.daycols > .weekend{background:color-mix(in srgb,var(--bg) 35%,transparent)}
+.ev{position:absolute;left:2px;right:4px;border-radius:4px;padding:3px 6px 3px 9px;overflow:hidden;
+    background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c);font-size:12px;line-height:16px}
+.ev b{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev small{font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text2)}
+.ev .where{display:block;color:var(--text3);font-size:11px;line-height:14px}
+.ev.short{display:flex;gap:6px;align-items:center;padding-top:0;padding-bottom:0}
+.ev.short small{order:-1}
+.ev.tentative{background:transparent;box-shadow:none;border:1px dashed color-mix(in srgb,var(--c) 70%,transparent)}
+.ev.past{opacity:.55}
+.ev.sel{outline:2px solid var(--focus);outline-offset:1px}
+.task{position:absolute;left:2px;right:4px;height:22px;border-radius:4px;border:1px solid color-mix(in srgb,var(--c) 60%,transparent);display:flex;align-items:center;gap:6px;padding:0 6px;font-size:12px;background:var(--panel);white-space:nowrap;overflow:hidden}
+.task span:last-child{overflow:hidden;text-overflow:ellipsis}
+.free{position:absolute;left:0;right:0;display:grid;place-items:center;font-size:11px;color:var(--text3)}
+.now{position:absolute;left:var(--axis);right:0;height:0;border-top:1px solid var(--accent);z-index:3}
+.now::before{content:"";position:absolute;left:-4px;top:-4px;width:7px;height:7px;border-radius:50%;background:var(--accent)}
+.nowlabel{position:absolute;left:4px;transform:translateY(-8px);z-index:3;font:500 11px/16px "Inter Tabular",Inter,sans-serif;color:#fff;background:var(--accent);border-radius:4px;padding:0 4px}
+.check{width:14px;height:14px;border-radius:50%;border:1.5px solid var(--text3);flex:none}
+.check.done{background:var(--c-personal);border-color:var(--c-personal)}
+.thisweek{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px 8px 16px;border-top:1px solid var(--line);overflow:hidden}
+.thisweek .label{font-size:12px;font-weight:500;color:var(--text3);white-space:nowrap;margin-right:4px}
+.tchip{height:28px;display:flex;align-items:center;gap:8px;padding:0 10px;border-radius:6px;background:var(--raised);border:1px solid var(--line);white-space:nowrap}
+.tchip .dot{width:6px;height:6px}
+.popover h3{margin:0 0 12px;font-size:16px;line-height:22px;font-weight:600}
+.popover .prop{min-height:28px}
+.popover .actions{display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+html:not([data-open="menu"]) .menu{display:none}
+html[data-open="menu"] .popover{display:none}
+</style></head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div style="display:flex;align-items:center;gap:2px">
+      <div class="switcher" style="flex:1"><div class="logo">T</div><b>Calendar</b><i data-lucide="chevron-down" class="s14 faint"></i><span class="grow"></span></div>
+      <button class="iconbtn"><i data-lucide="search"></i></button>
+      <button class="iconbtn boxed"><i data-lucide="square-pen"></i></button>
+    </div>
+    <div class="mini">
+      <div class="mhead"><span>October 2026</span><span class="grow"></span>
+        <button class="iconbtn"><i data-lucide="chevron-left" class="s14"></i></button><button class="iconbtn"><i data-lucide="chevron-right" class="s14"></i></button></div>
+      <table><tr><th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th><th>S</th></tr>
+        <tr><td class="out"><span>28</span></td><td class="out"><span>29</span></td><td class="out"><span>30</span></td><td><span>1</span></td><td><span>2</span></td><td><span>3</span></td><td><span>4</span></td></tr>
+        <tr class="cur"><td><span>5</span></td><td><span>6</span></td><td class="today"><span>7</span></td><td><span>8</span></td><td><span>9</span></td><td><span>10</span></td><td><span>11</span></td></tr>
+        <tr><td><span>12</span></td><td><span>13</span></td><td><span>14</span></td><td><span>15</span></td><td><span>16</span></td><td><span>17</span></td><td><span>18</span></td></tr>
+        <tr><td><span>19</span></td><td><span>20</span></td><td><span>21</span></td><td><span>22</span></td><td><span>23</span></td><td><span>24</span></td><td><span>25</span></td></tr>
+        <tr><td><span>26</span></td><td><span>27</span></td><td><span>28</span></td><td><span>29</span></td><td><span>30</span></td><td><span>31</span></td><td class="out"><span>1</span></td></tr>
+      </table>
+    </div>
+    <a class="nav"><i data-lucide="sun"></i><span class="grow">Today</span><span class="count">3</span></a>
+    <a class="nav"><i data-lucide="list"></i><span class="grow">Upcoming</span></a>
+    <div class="group">Views <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><i data-lucide="calendar-days"></i><span class="grow">Day</span><kbd>D</kbd></a>
+    <a class="nav active"><i data-lucide="calendar-range"></i><span class="grow">Week</span><kbd>W</kbd></a>
+    <a class="nav"><i data-lucide="calendar"></i><span class="grow">Month</span><kbd>M</kbd></a>
+    <a class="nav"><i data-lucide="gantt-chart"></i><span class="grow">Timeline</span><kbd>T</kbd></a>
+    <div class="group">Calendars <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><span class="dot" style="--c:var(--c-work)"></span><span class="grow">Work</span><span class="count">14</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-personal)"></span><span class="grow">Personal</span><span class="count">4</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-family)"></span><span class="grow">Family</span><span class="count">2</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-birthday)"></span><span class="grow">Birthdays</span><span class="count">1</span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="check-square"></i><span class="grow">Open Tasks</span><i data-lucide="arrow-up-right" class="s14 faint"></i></a>
+    <a class="nav"><i data-lucide="settings"></i><span class="grow">Settings</span></a>
+  </aside>
+
+  <main class="panel">
+    <div class="header">
+      <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+      <div class="crumbs not-s"><b>October 2026</b><span class="faint">Week 41</span></div>
+      <div class="crumbs only-s"><b>Wed, 7 Oct</b></div>
+      <button class="btn ghost not-s" style="margin-left:8px">Today</button>
+      <button class="iconbtn"><i data-lucide="chevron-left"></i></button><button class="iconbtn"><i data-lucide="chevron-right"></i></button>
+      <span class="grow"></span>
+      <div class="seg only-l"><span>Day</span><span class="on">Week</span><span>Month</span><span>Agenda</span><span>Timeline</span></div>
+      <div class="dd not-l">
+        <button class="btn"><span class="not-s">Week</span><span class="only-s">Day</span><i data-lucide="chevron-down" class="s14 chev"></i></button>
+        <div class="menu right">
+          <div class="label">View</div>
+          <div class="item"><i data-lucide="calendar-days"></i>Day<kbd>D</kbd></div>
+          <div class="item hl"><i data-lucide="calendar-range"></i>Week<kbd>W</kbd></div>
+          <div class="item"><i data-lucide="calendar"></i>Month<kbd>M</kbd></div>
+          <div class="item"><i data-lucide="list"></i>Agenda<kbd>A</kbd></div>
+          <div class="item"><i data-lucide="gantt-chart"></i>Timeline<kbd>T</kbd></div>
+          <div class="sep"></div>
+          <div class="label">Calendars</div>
+          <div class="item"><i data-lucide="square-check" style="color:var(--c-work)"></i>Work<span class="faint">14</span></div>
+          <div class="item"><i data-lucide="square-check" style="color:var(--c-personal)"></i>Personal<span class="faint">4</span></div>
+          <div class="item"><i data-lucide="square-check" style="color:var(--c-family)"></i>Family<span class="faint">2</span></div>
+          <div class="item"><i data-lucide="square" style="color:var(--c-birthday)"></i>Birthdays<span class="faint">1</span></div>
+          <div class="sep"></div>
+          <div class="item"><i data-lucide="settings"></i>Calendar settings…</div>
+        </div>
+      </div>
+      <button class="iconbtn only-l"><i data-lucide="sliders-horizontal"></i></button>
+      <button class="btn primary"><i data-lucide="plus" class="s14"></i><span class="not-s">New event</span></button>
+    </div>
+    <div class="cal">
+      <div class="week" id="week">
+        <div class="cols dayhead not-s" id="dayhead"></div>
+        <div class="strip only-s" id="strip"></div>
+        <div class="cols allday" id="allday"></div>
+        <div class="scroll"><div class="grid" id="grid">
+          <div class="hours" id="hours"></div><div class="lines"></div>
+          <div class="daycols" id="daycols"></div>
+        </div></div>
+        <div class="thisweek not-s">
+          <span class="label">This week</span>
+          <span class="tchip"><span class="check"></span>Renew passport<span class="dot" style="--c:var(--c-personal)"></span></span>
+          <span class="tchip"><span class="check"></span>Prepare sprint demo<span class="dot" style="--c:var(--c-work)"></span></span>
+          <span class="tchip"><span class="check"></span>Buy Mum's present<span class="dot" style="--c:var(--c-family)"></span></span>
+          <span class="tchip only-l"><span class="check done"></span><s class="faint">Book train tickets</s></span>
+        </div>
+        <div class="thisweek only-s"><span class="check"></span><span class="grow" style="flex:1">3 tasks this week</span><i data-lucide="chevron-right" class="s14 faint"></i></div>
+        <div class="popover only-m-pop" id="pop">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="dot" style="--c:var(--c-work)"></span><span class="faint" style="font-size:12px">Work</span><span style="flex:1"></span><button class="iconbtn"><i data-lucide="ellipsis"></i></button><button class="iconbtn"><i data-lucide="x"></i></button></div>
+          <h3>Sprint planning</h3>
+          <div class="prop"><i data-lucide="clock"></i><span class="tab">Mon, 5 Oct · 10:00 – 11:30</span></div>
+          <div class="prop"><i data-lucide="map-pin"></i><span>Room 2 · Office Berlin</span></div>
+          <div class="prop"><i data-lucide="users"></i><span>6 guests · you accepted</span></div>
+          <div class="actions"><button class="btn">Open details</button><button class="btn ghost"><i data-lucide="video" class="s14"></i>Join</button></div>
+        </div>
+      </div>
+      <aside class="props only-l">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span class="dot" style="--c:var(--c-work)"></span><span class="faint" style="font-size:12px">Work</span><span style="flex:1"></span><button class="iconbtn"><i data-lucide="ellipsis"></i></button></div>
+        <div style="font-size:18px;line-height:24px;font-weight:600;margin-bottom:16px">Sprint planning</div>
+        <h4>When</h4>
+        <div class="prop"><i data-lucide="clock"></i><span class="tab">Mon, 5 Oct · 10:00 – 11:30</span></div>
+        <div class="prop"><i data-lucide="repeat"></i><span>Every 2 weeks</span></div>
+        <div class="prop"><i data-lucide="bell"></i><span>10 min before</span></div>
+        <h4>Where</h4>
+        <div class="prop"><i data-lucide="map-pin"></i><span>Room 2 · Office Berlin</span></div>
+        <div class="prop"><i data-lucide="video"></i><span>meet.example.org/sprint</span></div>
+        <h4>People</h4>
+        <div class="prop"><span style="display:flex"><span class="avatar" style="background:#5B8CFF">AW</span><span class="avatar" style="background:#3FB984">JK</span><span class="avatar" style="background:#E8A33D">LM</span><span class="avatar" style="background:#8A8F98">+3</span></span><span class="faint">6 guests</span></div>
+        <div class="prop"><i data-lucide="circle-check"></i><span>You accepted</span></div>
+        <h4>Notes</h4>
+        <p class="muted" style="margin:4px 0 0">Review the backlog, agree on the goal for sprint 42 and assign the API tasks.</p>
+      </aside>
+    </div>
+  </main>
+</div>
+<script>
+const size=document.documentElement.dataset.size;
+const days=[["Mon",5],["Tue",6],["Wed",7,"today"],["Thu",8],["Fri",9],["Sat",10,"weekend"],["Sun",11,"weekend"]];
+// Schmal zeigt nur den gewählten Tag (heute), die Woche steht als Leiste darüber.
+const shown=size==='s'?[2]:[0,1,2,3,4,5,6];
+const START=7,H=48,NOW=[2,14+20/60];
+const t=(h,m=0)=>((h-START)+m/60)*H;
+const ev=[
+ [0,9.5,9.75,'Daily standup','work','short'],[0,10,11.5,'Sprint planning','work','sel'],[0,14,15,'Design review','work',''],
+ [1,9.5,9.75,'Daily standup','work','short'],[1,13,14.5,'API design workshop','work',''],[1,18.5,19.5,'Run','personal',''],
+ [2,9.5,9.75,'Daily standup','work','short'],[2,12.5,13.5,'Lunch with Jana','personal','','Café Lotte'],[2,15,15.5,'1:1 with Lena','work','','Room 4'],[2,17.5,18.5,'Dentist?','personal','tentative','Dr. Weber'],
+ [3,9.5,9.75,'Daily standup','work','short'],[3,15,16,'Client presentation','work',''],[3,19,20,'Swimming','personal',''],
+ [4,9.5,9.75,'Daily standup','work','short'],[4,11,12,'Hiring sync','work',''],[4,15,16,'Retrospective','work',''],
+ [5,9.5,11,'Football','family',''],[5,19,21,'Dinner at Marta\'s','personal',''],
+ [6,10.5,12,'Brunch with family','family',''],[6,18,19,'Call Mum','family','']];
+ev.forEach(e=>{if(e[0]<NOW[0]||(e[0]==NOW[0]&&e[2]<=NOW[1]))e[5]+=' past'});
+const fmt=x=>`${String(Math.floor(x)).padStart(2,'0')}:${String(Math.round(x%1*60)).padStart(2,'0')}`;
+document.getElementById('dayhead').innerHTML='<div></div>'+shown.map(i=>{const[d,n,c='']=days[i];return `<div class="${c}">${d} <b>${n}</b></div>`}).join('');
+const dots={0:['work','work'],1:['work','personal'],2:['work','personal'],3:['work','personal'],4:['work'],5:['family','personal'],6:['family','birthday']};
+document.getElementById('strip').innerHTML=days.map(([d,n,c=''],i)=>`<div class="${c}">${d[0]}<b>${n}</b><span class="dots">${(dots[i]||[]).map(k=>`<i style="--c:var(--c-${k})"></i>`).join('')}</span></div>`).join('');
+const allday={2:['personal','Home office'],6:['birthday',"Mum's birthday"]};
+document.getElementById('allday').innerHTML=`<div class="label">${size==='s'?'':'All day'}</div>`+shown.map(i=>`<div>${allday[i]?`<div class="chip" style="--c:var(--c-${allday[i][0]})">${allday[i][1]}</div>`:''}</div>`).join('');
+document.getElementById('hours').innerHTML=Array.from({length:15},(_,i)=>i?`<span style="top:${i*H}px">${String(START+i).padStart(2,'0')}:00</span>`:'').join('');
+const cols=Object.fromEntries(shown.map(i=>[i,`<div class="${(days[i][2]||'').includes('weekend')?'weekend':''}">`]));
+ev.filter(e=>e[0] in cols).forEach(([d,s,e,title,c,cls,where])=>{
+  const top=t(s),h=(e-s)*H-2, wide=size==='s';
+  cols[d]+= cls.includes('short')
+   ? `<div class="ev short ${cls}" style="--c:var(--c-${c});top:${top}px;height:${h}px"><small>${fmt(s)}</small><b>${title}</b></div>`
+   : `<div class="ev ${cls}" style="--c:var(--c-${c});top:${top}px;height:${h}px"><b>${title}</b><small>${fmt(s)} – ${fmt(e)}</small>${wide&&where?`<span class="where">${where}</span>`:''}</div>`;
+});
+if(5 in cols)cols[5]+=`<div class="task" style="--c:var(--c-family);top:${t(14)}px"><span class="check"></span><span>Buy Mum's present</span></div>`;
+if(2 in cols&&size!=='s')cols[2]+=`<div class="free" style="top:${t(15.5)}px;height:${2*H}px">2 h free</div>`;
+if(3 in cols)cols[3]+=`<div class="free" style="top:${t(10)}px;height:${5*H}px">5 h free</div>`;
+if(size==='s')cols[2]+=`<div class="task" style="--c:var(--c-family);top:${t(16)}px"><span class="check"></span><span>Buy Mum's present</span></div>`;
+document.getElementById('daycols').innerHTML=shown.map(i=>cols[i]+'</div>').join('');
+const g=document.getElementById('grid');
+g.insertAdjacentHTML('beforeend',`<div class="now" style="top:${t(14,20)}px"></div><div class="nowlabel" style="top:${t(14,20)}px">14:20</div>`);
+lucide.createIcons();
+// Mittel: der gewählte Termin öffnet eine schwebende Karte statt der Eigenschaften-Spalte.
+const pop=document.getElementById('pop');
+if(size==='m'){const sel=document.querySelector('.ev.sel'),w=document.getElementById('week').getBoundingClientRect(),r=sel.getBoundingClientRect();
+  pop.style.left=(r.right-w.left+8)+'px';pop.style.top=(r.top-w.top)+'px';}
+else pop.style.display='none';
+</script>
+</body></html>
