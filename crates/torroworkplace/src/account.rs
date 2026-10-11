@@ -61,12 +61,27 @@ pub async fn start(http: &reqwest::Client, server_input: &str) -> Result<LoginFl
 /// account (replacing any other Nextcloud account) and its app password.
 pub async fn finish(http: &reqwest::Client, flow: &LoginFlow) -> Result<Connected, String> {
     let credentials = poll_until_granted(|| flow.poll(http), POLL_INTERVAL, SIGN_IN_TIMEOUT).await?;
-    let account = Account::nextcloud(&credentials.server, &credentials.login_name);
-    account.set_secret(&credentials.app_password).map_err(|err| err.to_string())?;
-    let mut accounts = take_other_accounts(Some(&account.id))?;
-    accounts.push(account.clone());
-    account::save(&accounts).map_err(|err| err.to_string())?;
-    Ok(Connected { account, app_password: credentials.app_password })
+    keychain(move || {
+        let account = Account::nextcloud(&credentials.server, &credentials.login_name);
+        account.set_secret(&credentials.app_password).map_err(|err| err.to_string())?;
+        let mut accounts = take_other_accounts(Some(&account.id))?;
+        accounts.push(account.clone());
+        account::save(&accounts).map_err(|err| err.to_string())?;
+        Ok(Connected { account, app_password: credentials.app_password })
+    })
+    .await
+}
+
+/// Runs keychain work on a plain thread of its own. The Secret Service client starts its own
+/// async runtime and panics when called from inside the daemon's tokio runtime.
+pub async fn keychain<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx.await.unwrap_or_else(|_| Err("keychain access failed".into()))
 }
 
 /// Removes the stored account and its secret.
@@ -182,5 +197,34 @@ mod tests {
         let poll = || async { Err::<Option<Credentials>, _>(ProviderError::Offline) };
         let result = poll_until_granted(poll, Duration::from_millis(1), Duration::from_millis(20)).await;
         assert_eq!(result, Err("sign-in timed out (last error: server not reachable)".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod keychain_tests {
+    use super::*;
+
+    /// Writes, reads and deletes a test secret in the real system keychain from inside a
+    /// multi-threaded tokio runtime, like the daemon does. Run by hand:
+    /// `cargo test -p torroworkplace keychain -- --ignored`.
+    #[test]
+    #[ignore = "uses the real system keychain"]
+    fn keychain_works_inside_the_daemon_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("runtime");
+        let read = runtime.block_on(async {
+            tokio::spawn(async {
+                keychain(|| {
+                    let account = Account::nextcloud("https://example.invalid", "torro-keychain-test");
+                    account.set_secret("secret").map_err(|err| err.to_string())?;
+                    let read = account.secret().map_err(|err| err.to_string())?;
+                    account.delete_secret().map_err(|err| err.to_string())?;
+                    Ok(read)
+                })
+                .await
+            })
+            .await
+            .expect("task")
+        });
+        assert_eq!(read, Ok(Some("secret".to_string())));
     }
 }

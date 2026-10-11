@@ -62,22 +62,23 @@ impl PimService {
                 None
             }
         };
-        let mut state = State::default();
-        match account::stored() {
-            Ok(Some(connected)) => {
-                state.client = http.as_ref().and_then(|http| account::caldav(http, &connected).ok());
-                state.account = Some(connected);
-            }
-            Ok(None) => {}
-            Err(err) => eprintln!("torroworkplace: cannot read the account: {err}"),
-        }
-        PimService { http, state: RwLock::new(state), syncing: Mutex::new(()) }
+        PimService { http, state: RwLock::new(State::default()), syncing: Mutex::new(()) }
     }
 
-    /// Syncs now and then every few minutes, for as long as the daemon runs.
+    /// Loads the stored account, then syncs now and every few minutes, for as long as the
+    /// daemon runs.
     pub fn start(self: &Arc<Self>) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
+            match account::keychain(account::stored).await {
+                Ok(Some(connected)) => {
+                    let mut state = service.state.write().await;
+                    state.client = service.http.as_ref().and_then(|http| account::caldav(http, &connected).ok());
+                    state.account = Some(connected);
+                }
+                Ok(None) => {}
+                Err(err) => eprintln!("torroworkplace: cannot read the account: {err}"),
+            }
             loop {
                 let connected = service.state.read().await.client.is_some();
                 if connected && let Err(err) = service.sync().await {
@@ -93,7 +94,7 @@ impl PimService {
         match request {
             Request::Account => Response::Account { account: self.account_state().await },
             Request::ConnectNextcloud { server } => self.connect(server).await,
-            Request::DisconnectAccount => match account::forget() {
+            Request::DisconnectAccount => match account::keychain(account::forget).await {
                 Ok(()) => {
                     *self.state.write().await = State::default();
                     Response::Ok
@@ -170,6 +171,7 @@ impl PimService {
                         state.problem = None;
                     }
                     Err(err) => {
+                        // Back to the connect screen; the apps show the state.
                         eprintln!("torroworkplace: sign-in failed: {err}");
                         return;
                     }
