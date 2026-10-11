@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::{Space, checkbox, column, container, rich_text, row, scrollable, span, text};
-use iced::{Alignment, Background, Color, Element, Fill, Theme, border};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
 use torro_core::i18n::tr;
 use torro_gui::theme::{palette, size, space};
 use torro_gui::widgets::{self, Mark};
@@ -281,6 +281,11 @@ pub const SCROLL: &str = "task-list";
 
 /// Height of a group head: the 4 above it plus the head itself (`widgets::group_head`).
 const GROUP_HEAD: f32 = space::XS + size::ROW_GROUP;
+/// The one-pixel line of a group head.
+const LINE: f32 = 1.0;
+/// What the first head leaves out: the gap above it and its line above, because the quick add box
+/// right above already ends the header area and a second line 8 below it would read as a double.
+const FIRST_TRIM: f32 = space::XS + LINE;
 
 /// Indices into `todos` of the rows as the list shows them, top to bottom.
 pub fn order(data: &ListData<'_>) -> Vec<usize> {
@@ -290,9 +295,10 @@ pub fn order(data: &ListData<'_>) -> Vec<usize> {
 /// Where `todos[index]` lies in the list's content as `(top, bottom)`. The first row of a group
 /// starts at its head, so scrolling up to it shows the head too. `None` if the row is not shown.
 pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
-    let mut y = 0.0;
+    // The first head is shorter by [`FIRST_TRIM`]; it still starts at the top of the content.
+    let mut y = -FIRST_TRIM;
     for (_, items) in grouped(data) {
-        let head = y;
+        let head = y.max(0.0);
         y += GROUP_HEAD;
         for (n, (row, _)) in items.into_iter().enumerate() {
             if row == index {
@@ -311,8 +317,9 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         return widgets::empty_state(tr("Nothing to do"), tr("Add a task above"));
     }
     let mut list = column![].width(Fill);
-    for (group, items) in groups {
-        list = list.push(widgets::group_head(group.mark(data.attention), group.label(), Some(items.len()), None));
+    for (n, (group, items)) in groups.into_iter().enumerate() {
+        let head = widgets::group_head(group.mark(data.attention), group.label(), Some(items.len()), None);
+        list = list.push(if n == 0 { without_top(head) } else { head });
         for (index, depth) in items {
             list = list.push(row_view(&data, index, depth));
         }
@@ -325,6 +332,12 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         .width(Fill)
         .height(Fill)
         .into()
+}
+
+/// The group head without its gap and line above: moved up by [`FIRST_TRIM`] inside a clipping
+/// container that is that much shorter, so only the part above the head's top line is cut off.
+fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message> {
+    container(container(head).padding(Padding { top: -FIRST_TRIM, ..Padding::ZERO })).clip(true).into()
 }
 
 /// One task: indent, check, priority, title, list pill, due date.
@@ -655,11 +668,13 @@ mod tests {
         assert_eq!(names, ["overdue", "child", "today", "later"]);
 
         let span = |uid: &str| row_span(&d, todos.iter().position(|t| t.uid == uid).expect("task"));
+        // The first head is shorter by FIRST_TRIM.
         let (head, row) = (GROUP_HEAD, size::ROW);
-        assert_eq!(span("o"), Some((0.0, head + row)), "the first row of a group starts at its head");
-        assert_eq!(span("c"), Some((head + row, head + 2.0 * row)));
-        assert_eq!(span("t"), Some((head + 2.0 * row, 2.0 * head + 3.0 * row)));
-        assert_eq!(span("u").map(|(_, bottom)| bottom), Some(3.0 * head + 4.0 * row));
+        let first = head - FIRST_TRIM;
+        assert_eq!(span("o"), Some((0.0, first + row)), "the first row of a group starts at its head");
+        assert_eq!(span("c"), Some((first + row, first + 2.0 * row)));
+        assert_eq!(span("t"), Some((first + 2.0 * row, first + head + 3.0 * row)));
+        assert_eq!(span("u").map(|(_, bottom)| bottom), Some(first + 2.0 * head + 4.0 * row));
         assert_eq!(row_span(&d, 99), None);
     }
 

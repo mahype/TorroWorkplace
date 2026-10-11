@@ -66,9 +66,9 @@ pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
     }
     let today = data.now.date();
     let mut list = column![].width(Length::Fill);
-    for day in &days {
+    for (n, day) in days.iter().enumerate() {
         let (label, date) = day_heading(day.date, today);
-        list = list.push(day_head(label, date));
+        list = list.push(day_head(label, date, n == 0));
         for entry in &day.entries {
             list = list.push(row_view(entry));
         }
@@ -85,8 +85,9 @@ pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
 
 /// The head of a day, after `widgets::group_head` (which has no slot for a date at the right):
 /// 32 high on `raised` with lines above and below, the day in `CAPTION` / `text_2`, its date in
-/// `META` tabular / `text_3`.
-fn day_head<'a>(label: String, date: String) -> Element<'a, Message> {
+/// `META` tabular / `text_3`. The `first` head sits right under the header bar, whose line already
+/// ends the header area: it has no gap and no line above, so the two do not read as a double line.
+fn day_head<'a>(label: String, date: String, first: bool) -> Element<'a, Message> {
     let content = row![
         typo::text(typo::CAPTION, label).style(theme::text_2),
         Space::new().width(Length::Fill),
@@ -101,13 +102,11 @@ fn day_head<'a>(label: String, date: String) -> Element<'a, Message> {
             background: Some(Background::Color(palette(t).raised)),
             ..container::Style::default()
         });
-    column![
-        Space::new().height(space::XS),
-        rule::horizontal(LINE).style(style::rule),
-        head,
-        rule::horizontal(LINE).style(style::rule)
-    ]
-    .into()
+    let below = rule::horizontal(LINE).style(style::rule);
+    if first {
+        return column![head, below].into();
+    }
+    column![Space::new().height(space::XS), rule::horizontal(LINE).style(style::rule), head, below].into()
 }
 
 /// One event row (`widgets::list_row`, so hover and focus come from the shared style): the time

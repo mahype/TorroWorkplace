@@ -50,7 +50,7 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     let collections = vec![
         collection(WORK, "Work", CollectionKind::Events, "#3474E6"),
         collection(PERSONAL, "Personal", CollectionKind::Events, "#119C8E"),
-        collection(TASKS, "Tasks", CollectionKind::Todos, "#C98213"),
+        collection(TASKS, "Tasks", CollectionKind::Todos, "#4F9426"),
         collection(GROCERIES, "Groceries", CollectionKind::Todos, "#7A57E3"),
         collection(FAMILY, "Family", CollectionKind::Both, "#E0485D"),
     ];
