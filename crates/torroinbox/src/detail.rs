@@ -2,11 +2,12 @@
 //! layout, over it otherwise).
 //!
 //! Head: the source and the view as path. Title: the entry's title, wrapping. Body: "Properties"
-//! (status as dot and word, lane, source, time, merged reports), for coding agents "Agent" (agent,
-//! project, branch), the message, a link to open when it is safe ([`openable`]), and a quiet note
-//! that the text comes from outside the suite. Footer: "Mark as done" / "Reopen"; approvals show
-//! "Allow" and "Deny" instead, which stay disabled until the core decides approvals from here
-//! (E1.1/E2.1) – an approval resolves itself once decided, so it has no "Mark as done".
+//! (status as dot and word, lane, source, time with how long ago, merged reports), for coding
+//! agents "Agent" (agent, project, branch), the message with – right under it – a quiet note that
+//! the text comes from outside the suite, and a link to open when it is safe ([`openable`]).
+//! Footer: "Mark as done" / "Reopen"; approvals show "Allow" and "Deny" instead, which stay
+//! disabled until the core decides approvals from here (E1.1/E2.1), with a note saying so right
+//! above them – an approval resolves itself once decided, so it has no "Mark as done".
 //!
 //! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
 //! opens the snooze menu, and at the right "Move to …" (`l`) and "Mute …" (`m`) as icon buttons.
@@ -15,7 +16,7 @@
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
-use iced::{Alignment, Element};
+use iced::{Alignment, Element, Fill};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -64,9 +65,17 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         }
         body = body.push(widgets::prop_section(tr("Agent"), rows));
     }
+    // The note on foreign text belongs to the text: right under the message, or – without one –
+    // at the end of the body, where it still speaks of the title.
+    let mut untrusted =
+        item.untrusted.then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
     if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
         let message = typo::text(typo::BODY, text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-        body = body.push(column![section(tr("Message")), panel::inset(message)].spacing(space::XS));
+        let mut block = column![message].spacing(space::S);
+        if let Some(note) = untrusted.take() {
+            block = block.push(note);
+        }
+        body = body.push(column![section(tr("Message")), panel::inset(block)].spacing(space::XS));
     }
     if let Some(link) = openable(item) {
         let row = widgets::prop_row(
@@ -76,18 +85,22 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         );
         body = body.push(widgets::prop_section(tr("Link"), vec![row]));
     }
-    let mut notes = Vec::new();
-    if item.untrusted {
-        notes.push(note(tr("This text comes from outside the suite and is shown as plain text.")));
-    }
-    if is_approval(item) {
-        notes.push(note(tr("Allow and Deny are not available here yet.")));
-    }
-    if !notes.is_empty() {
-        body = body.push(panel::inset(column(notes).spacing(space::XS)));
+    if let Some(note) = untrusted {
+        body = body.push(panel::inset(note));
     }
     panel::panel(path, panel::title(list::plain(&item.title)), body, Message::CloseDetail)
-        .footer(buttons(item, &footer))
+        .footer(footer_view(item, &footer))
+}
+
+/// The footer's content: the [`buttons`] in a row; for an approval with the note that Allow and
+/// Deny cannot be used yet right above them, where the eye goes when they do not react.
+fn footer_view<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
+    let buttons = buttons(item, footer);
+    if !is_approval(item) {
+        return buttons;
+    }
+    let buttons = row(buttons).spacing(space::S).align_y(Alignment::Center);
+    vec![column![note(tr("Allow and Deny are not available here yet.")), buttons].spacing(space::S).width(Fill).into()]
 }
 
 /// Status, lane, source, time and – from two on – the number of merged reports.
@@ -148,10 +161,15 @@ fn link_label(link: &Link) -> String {
     }
 }
 
-/// "Sat, 3 Oct · 10:26" in local time.
+/// "Sat, 3 Oct · 10:26 · 4 min ago": the moment in local time and how long ago it was.
 fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let (at, today) = (at.with_timezone(&Local), now.with_timezone(&Local).date_naive());
-    format!("{} · {}", datetime::format_short_date(at.date_naive(), today), datetime::format_time(at.time()))
+    let (local, today) = (at.with_timezone(&Local), now.with_timezone(&Local).date_naive());
+    format!(
+        "{} · {} · {}",
+        datetime::format_short_date(local.date_naive(), today),
+        datetime::format_time(local.time()),
+        list::ago_long(at, now)
+    )
 }
 
 /// The buttons below the line: Allow/Deny for an approval (disabled for now), else done or reopen;
@@ -309,6 +327,20 @@ mod tests {
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
         // Reopen, the gap, Move to, Mute: a done entry is not snoozed.
         assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 4);
+    }
+
+    #[test]
+    fn the_approval_note_sits_with_its_buttons() {
+        // One block: the note over the row of buttons.
+        assert_eq!(footer_view(&sample("demo-3"), &footer(false)).len(), 1);
+        // Other entries keep the plain row.
+        assert_eq!(footer_view(&sample("demo-1"), &footer(false)).len(), 5);
+    }
+
+    #[test]
+    fn the_time_says_how_long_ago_too() {
+        let item = sample("demo-1");
+        assert!(when(item.updated, now()).ends_with(&trf("{n} min ago", &[("n", &4)])));
     }
 
     #[test]

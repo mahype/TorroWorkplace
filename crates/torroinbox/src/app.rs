@@ -39,7 +39,7 @@ use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect;
-use torro_gui::icon::Icon;
+use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
 use torro_gui::shell::{self, SidebarMode, Switcher};
@@ -495,13 +495,33 @@ impl Launch {
 /// The text of the forced error state.
 const DEMO_ERROR: &str = "The server did not answer (demo)";
 
-/// One answer of the source: the entries of a view, the count for "For me", the sources.
+/// One answer of the source: the entries of a view, the counts for "For me" and "Info", the
+/// sources.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
     pub items: Vec<Item>,
     /// Open entries in "For me", the number in the sidebar.
     pub for_me: usize,
+    /// Open entries in "Info", the number in the sidebar. Together with `for_me` it is what the
+    /// sources count (open entries, both lanes), so the sidebar's numbers add up.
+    pub info: usize,
     pub sources: Vec<SourceInfo>,
+}
+
+/// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
+/// inbox."), and quietly below it the reason as the source gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Failure {
+    /// What did not work, a sentence in the user's language.
+    pub what: &'static str,
+    /// Why, as the source or the core said it.
+    pub why: String,
+}
+
+impl Failure {
+    fn new(what: &'static str, why: impl Into<String>) -> Failure {
+        Failure { what, why: why.into() }
+    }
 }
 
 pub struct App<S> {
@@ -521,10 +541,11 @@ pub struct App<S> {
     view: View,
     items: Vec<Item>,
     for_me: usize,
+    info: usize,
     sources: Vec<SourceInfo>,
     /// Whether entries have been loaded once; until then the list shows loading (or the error).
     loaded: bool,
-    error: Option<String>,
+    error: Option<Failure>,
     /// The entry in the panel, as last loaded or changed: always the one under the cursor. A
     /// copy, so the panel can show the answer of a change before the list is loaded again; when
     /// the entry has left the list by then, the panel moves on with the cursor.
@@ -639,11 +660,11 @@ pub enum Message {
     OpenSettings,
 }
 
-/// Asks `inbox` for the entries of `view`, the count for "For me" and the sources. `empty` (the
-/// forced empty state) asks nothing and answers an empty inbox.
+/// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
+/// `empty` (the forced empty state) asks nothing and answers an empty inbox.
 pub async fn fetch<S: InboxSource>(inbox: Arc<S>, view: View, empty: bool) -> Result<Loaded, String> {
     if empty {
-        return Ok(Loaded { items: Vec::new(), for_me: 0, sources: Vec::new() });
+        return Ok(Loaded { items: Vec::new(), for_me: 0, info: 0, sources: Vec::new() });
     }
     let failed = |err: torro_inbox::InboxError| err.to_string();
     let items = inbox.list_items(view.filter()).await.map_err(failed)?;
@@ -651,8 +672,12 @@ pub async fn fetch<S: InboxSource>(inbox: Arc<S>, view: View, empty: bool) -> Re
         View::ForMe => items.len(),
         _ => inbox.list_items(View::ForMe.filter()).await.map_err(failed)?.len(),
     };
+    let info = match view {
+        View::Info => items.len(),
+        _ => inbox.list_items(View::Info.filter()).await.map_err(failed)?.len(),
+    };
     let sources = inbox.list_sources().await.map_err(failed)?;
-    Ok(Loaded { items, for_me, sources })
+    Ok(Loaded { items, for_me, info, sources })
 }
 
 impl<S: InboxSource + 'static> App<S> {
@@ -675,6 +700,7 @@ impl<S: InboxSource + 'static> App<S> {
             },
             items: Vec::new(),
             for_me: 0,
+            info: 0,
             sources: Vec::new(),
             loaded: false,
             error: None,
@@ -823,7 +849,7 @@ impl<S: InboxSource + 'static> App<S> {
                 return self.load();
             }
             Message::Muted(Err(err), _) => {
-                self.error = Some(trf("Could not change the source: {error}", &[("error", &err)]));
+                self.error = Some(Failure::new(tr("Couldn't change the source."), err));
             }
             Message::LinkOpened(Ok(())) => {}
             Message::LinkOpened(Err(err)) => eprintln!("cannot open the link in a browser: {err}"),
@@ -834,7 +860,7 @@ impl<S: InboxSource + 'static> App<S> {
                 return self.load();
             }
             Message::Changed(Err(err)) => {
-                self.error = Some(trf("Could not change the entry: {error}", &[("error", &err)]));
+                self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
             }
             Message::OpenLink(link) => return self.open_link(link),
             Message::Refresh => return self.load(),
@@ -886,7 +912,7 @@ impl<S: InboxSource + 'static> App<S> {
             }
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => {
-                self.error = Some(trf("Could not open the app: {error}", &[("error", &err)]));
+                self.error = Some(Failure::new(tr("Couldn't open the app."), err));
             }
             Message::OpenSettings => {
                 self.close_menus();
@@ -923,11 +949,17 @@ impl<S: InboxSource + 'static> App<S> {
     /// Takes the source's answer for the view: entries, count and sources. The cursor stays on
     /// its entry; when the entry left the list (done, snoozed, moved), it moves to the row that
     /// took its place, and the panel that showed it moves along (or closes with an empty list).
+    ///
+    /// Waiting entries ([`list::is_waiting`]) go first, keeping the source's order otherwise. The
+    /// source already sorts them so ([`torro_inbox::rules`]); this makes sure that the group
+    /// "Waiting for you" holds all of them and that the keys walk the rows as they are shown.
     fn take(&mut self, loaded: Loaded) {
         let place = self.cursor_place();
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
         self.items = loaded.items;
+        self.items.sort_by_key(|item| !list::is_waiting(item));
         self.for_me = loaded.for_me;
+        self.info = loaded.info;
         self.sources = loaded.sources;
         self.loaded = true;
         self.error = None;
@@ -1039,11 +1071,11 @@ impl<S: InboxSource + 'static> App<S> {
         self.reveal(next)
     }
 
-    /// Scrolls the list the least that shows row `index` completely (every row is `ROW` high).
+    /// Scrolls the list the least that shows row `index` completely – with its group head, when
+    /// it is the first of its group ([`list::row_span`]).
     fn reveal(&mut self, index: usize) -> Task<Message> {
         let Some((offset, height)) = self.scroll else { return Task::none() };
-        let top = index as f32 * size::ROW;
-        let bottom = top + size::ROW;
+        let Some((top, bottom)) = list::row_span(&self.items, index) else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -1296,7 +1328,7 @@ impl<S: InboxSource + 'static> App<S> {
             let footer = detail::Footer { anchors: anchors.clone(), muted: self.is_muted(&item.source) };
             detail::panel(item, self.view.name(), self.now, footer)
         });
-        let placed = panel::place(class, self.body(&anchors.row), detail, layer);
+        let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
         shell::shell(class, sidebar, header, placed.body, None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
@@ -1304,16 +1336,20 @@ impl<S: InboxSource + 'static> App<S> {
             .into()
     }
 
-    /// The header: the view's title (wide) or the navigation menu (medium, narrow), its count, and
+    /// The header: the view's title (wide with the full sidebar) or the navigation menu (with the
+    /// rail, medium, narrow), its count, and
     /// "Refresh". The inbox creates nothing, so there is no primary button.
     fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
         let (name, icon) = (self.view.name(), self.view.icon());
         // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
         let note = (self.loaded && !self.items.is_empty()).then(|| self.count_note());
         let trailing = [widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh))];
+        // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
+        // as in the medium layout, and every view stays one click away.
+        let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
         match class {
-            SizeClass::Wide => shell::header_bar([], shell::header_title(Some(icon), name, note), trailing),
-            SizeClass::Medium => {
+            SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(Some(icon), name, note), trailing),
+            SizeClass::Wide | SizeClass::Medium => {
                 let mut title = row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)]
                     .spacing(space::S)
                     .align_y(Alignment::Center);
@@ -1331,20 +1367,20 @@ impl<S: InboxSource + 'static> App<S> {
         }
     }
 
-    /// The quiet number after the title: "6 for you" in "For me", the number of entries elsewhere.
+    /// The quiet number after the title: how many entries the view lists. The title already says
+    /// which view it is, so the number stands alone (as in torrotasks' header).
     fn count_note(&self) -> String {
-        match self.view {
-            View::ForMe => trf("{n} for you", &[("n", &self.items.len())]),
-            _ => self.items.len().to_string(),
-        }
+        self.items.len().to_string()
     }
 
-    /// The content below the header: an error line if there is one, and the list at most
-    /// `CONTENT_MAX` wide; loading and the error of a first load stand in for both.
-    fn body(&self, row_anchor: &Anchor) -> Element<'_, Message> {
+    /// The content below the header: an error line if there is one, and the list – left-aligned
+    /// under the header's title (design: "links mit Seitenleiste"); in the wide layout at most
+    /// `CONTENT_MAX` wide, or `LIST` while the panel stands beside it. Loading and the error of a
+    /// first load stand in for both.
+    fn body(&self, class: SizeClass, row_anchor: &Anchor) -> Element<'_, Message> {
         if !self.loaded {
             return match &self.error {
-                Some(err) => widgets::error_state(err.as_str(), Message::Refresh),
+                Some(failure) => failure_state(failure),
                 None => widgets::loading(),
             };
         }
@@ -1354,17 +1390,30 @@ impl<S: InboxSource + 'static> App<S> {
             selected: self.cursor.as_deref(),
             now: self.now,
             anchor: row_anchor.clone(),
+            // The strip is wide enough for one line; mini and narrow windows are not.
+            two_line: matches!(class, SizeClass::Narrow | SizeClass::Mini),
+            attention: palette(&self.theme()).attention_text,
         };
         let mut content = column![];
-        if let Some(err) = &self.error {
-            let line = typo::text(typo::META, err.clone())
-                .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) });
-            content = content.push(container(line).padding(Padding::new(space::S).left(space::L)));
+        if let Some(failure) = &self.error {
+            content = content.push(container(failure_line(failure)).padding(Padding::new(space::S).left(space::L)));
         }
-        widgets::content(size::CONTENT_MAX, content.push(list::view(data)).width(Fill).height(Fill))
+        let list = container(content.push(list::view(data)).width(Fill).height(Fill)).width(Fill);
+        // Only the wide layout caps the width: in the medium one the content is at most a little
+        // over `CONTENT_MAX` anyway, and a cap there would leave a thin empty strip at the right
+        // (at 800 wide about 20) that reads as a mistake rather than as a margin.
+        match class {
+            SizeClass::Wide if self.detail.is_some() => list.max_width(size::LIST).into(),
+            SizeClass::Wide => list.max_width(size::CONTENT_MAX).into(),
+            SizeClass::Medium | SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => list.into(),
+        }
     }
 
-    /// The views with their icon (and the count for "For me"), then one entry per source.
+    /// The views with their icon, then one entry per source.
+    ///
+    /// Every number is what the view behind it lists: open entries. "For me" and "Info" count
+    /// their lane, a source its open entries in both lanes – so the sources add up to "For me"
+    /// plus "Info". "Snoozed" and "Done" are put away and have no number. No "0" anywhere.
     fn nav_entries(&self) -> (Vec<NavEntry>, Vec<NavEntry>) {
         let entry = |view: View, count: Option<usize>| NavEntry {
             mark: Mark::Icon(view.icon()),
@@ -1376,7 +1425,7 @@ impl<S: InboxSource + 'static> App<S> {
         let views = vec![
             // Like a badge: no "0" when nothing waits.
             entry(View::ForMe, Some(self.for_me).filter(|&n| n > 0)),
-            entry(View::Info, None),
+            entry(View::Info, Some(self.info).filter(|&n| n > 0)),
             entry(View::Snoozed, None),
             entry(View::Done, None),
         ];
@@ -1397,7 +1446,9 @@ impl<S: InboxSource + 'static> App<S> {
         (views, sources)
     }
 
-    /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons.
+    /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. The rail leaves the
+    /// sources out: all agents share one icon and all scripts another, so as bare icons they
+    /// could not be told apart; the navigation menu and the drawer still list them.
     fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
@@ -1405,7 +1456,7 @@ impl<S: InboxSource + 'static> App<S> {
             widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::Show(e.view))
         };
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
-        if !sources.is_empty() {
+        if !sources.is_empty() && mode == SidebarMode::Expanded {
             items.push(widgets::sidebar_group_in(mode, tr("Sources"), None));
             items.extend(sources.into_iter().map(row));
         }
@@ -1592,10 +1643,46 @@ impl NavEntry {
     }
 }
 
-/// The error text when the entries could not be loaded; the error state's "Retry" is what the
-/// user can do about it.
-fn load_failed(err: &str) -> String {
-    trf("The inbox could not be loaded: {error}", &[("error", &err)])
+/// The failure when the entries could not be loaded; the error state's "Retry" is what the user
+/// can do about it.
+fn load_failed(err: &str) -> Failure {
+    Failure::new(tr("Couldn't load the inbox."), err)
+}
+
+/// The error state of a first load: the alert icon, the sentence (`BODY_STRONG`, like the title of
+/// the empty state), the reason quietly below it (`META`, `text_3`) and "Retry". The shared
+/// `widgets::error_state` has one text only, so this is it with the reason as its own line.
+fn failure_state(failure: &Failure) -> Element<'_, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
+    let words = column![
+        typo::text(typo::BODY_STRONG, failure.what).align_x(Alignment::Center),
+        typo::text(typo::META, failure.why.as_str())
+            .style(theme::text_3)
+            .align_x(Alignment::Center)
+            .wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(space::XS)
+    .align_x(Alignment::Center);
+    let content = column![
+        alert,
+        words,
+        widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::secondary, Some(Message::Refresh)),
+    ]
+    .spacing(space::M)
+    .align_x(Alignment::Center)
+    .max_width(size::FORM_MAX / 2.0);
+    iced::widget::center(content).padding(space::XL).into()
+}
+
+/// The line above the list when a later call failed: the sentence in the error colour, the
+/// reason after it in `text_3`.
+fn failure_line(failure: &Failure) -> Element<'_, Message> {
+    let what = typo::text(typo::META, failure.what)
+        .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) })
+        .wrapping(Wrapping::None);
+    let why = typo::text(typo::META, failure.why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+    row![what, why].spacing(space::XS).into()
 }
 
 #[cfg(test)]
@@ -1686,7 +1773,9 @@ mod tests {
         let app = loaded(&[]);
         assert_eq!(ids(&app), ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"]);
         assert_eq!(app.for_me, 6);
-        assert_eq!(app.count_note(), trf("{n} for you", &[("n", &6)]));
+        assert_eq!(app.count_note(), "6", "only the number: the title already says For me");
+        let groups = list::groups(&app.items);
+        assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..6)], "waiting entries get a head");
         assert_eq!(app.sources.len(), 7, "suite, two agents, four scripts");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
     }
@@ -1771,7 +1860,7 @@ mod tests {
     fn a_failed_change_says_so() {
         let mut app = loaded(&[]);
         let _ = app.update(Message::Changed(Err("boom".into())));
-        assert_eq!(app.error, Some(trf("Could not change the entry: {error}", &[("error", &"boom")])));
+        assert_eq!(app.error, Some(Failure { what: tr("Couldn't change the entry."), why: "boom".into() }));
         load(&mut app);
         assert_eq!(app.error, None, "the next load clears it");
     }
@@ -1791,7 +1880,7 @@ mod tests {
         assert!(!app.loaded, "loading stays");
         let mut app = demo(&["--demo", "--open", "error"]);
         let _ = app.update(Message::Loaded(View::ForMe, Err(DEMO_ERROR.into())));
-        assert_eq!(app.error, Some(load_failed(DEMO_ERROR)));
+        assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the inbox."), why: DEMO_ERROR.into() }));
         assert_eq!(demo(&["--demo", "--open", "menu"]).menu, Some(Menu::Nav));
         assert!(demo(&["--demo", "--open", "drawer"]).drawer);
         // The triage states of E3.2.
@@ -1826,9 +1915,11 @@ mod tests {
         assert_eq!(labels, [tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
         assert_eq!(
             views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
-            [Trail::Count(6), Trail::None],
-            "only For me counts"
+            [Trail::Count(6), Trail::Count(3)],
+            "For me and Info count their open entries"
         );
+        let by_source: usize = sources.iter().filter_map(|e| e.count).sum();
+        assert_eq!(by_source, 6 + 3, "the sources add up to For me plus Info");
         assert_eq!(sources.first().map(|e| e.label.clone()), Some(tr("Suite").to_owned()));
         assert_eq!(sources.first().map(NavEntry::trail), Some(Trail::Count(2)));
         block_on(app.inbox.mute_source(SourceRef::script("backup"), true)).expect("mute");
@@ -1996,12 +2087,18 @@ mod tests {
     #[test]
     fn moving_scrolls_the_cursor_into_view() {
         let mut app = loaded(&[]);
-        // Two rows fit.
-        let _ = app.update(Message::Scrolled(0.0, 2.0 * size::ROW));
+        // The group head and two rows fit.
+        let (_, second) = list::row_span(&app.items, 1).expect("a second row");
+        let _ = app.update(Message::Scrolled(0.0, second));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first row is in view");
         let _ = press(&mut app, Key::Down);
         assert!(press(&mut app, Key::Down).units() > 0, "the third row needs a scroll");
-        assert_eq!(app.scroll, Some((size::ROW, 2.0 * size::ROW)));
+        let (_, third) = list::row_span(&app.items, 2).expect("a third row");
+        assert_eq!(app.scroll, Some((third - second, second)));
+        // Back up to the first row: the list scrolls to its group head at the top.
+        let _ = press(&mut app, Key::Up);
+        assert!(press(&mut app, Key::Up).units() > 0);
+        assert_eq!(app.scroll, Some((0.0, second)));
     }
 
     #[test]
