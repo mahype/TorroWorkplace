@@ -104,7 +104,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Zustand zeigt, Screenshot hell und dunkel im Bericht.
 
 ### F.4 Icons
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.2
 - **Dateien:** `crates/torro-gui/assets/icons/` (neu), `crates/torro-gui/src/icon.rs` (neu),
   `crates/torro-gui/src/lib.rs`, `Cargo.toml` (Iced-Feature `svg`)
