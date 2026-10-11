@@ -49,6 +49,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.152"
 sha2 = "0.11.0"
 tempfile = "3.27.0"
+# The tray on macOS and Windows: tray-icon (menus from muda) on a winit event loop; winit is
+# the one iced already brings along.
+tray-icon = { version = "0.26.1", default-features = false }
+winit = { version = "0.30.13", default-features = false }
 tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [workspace.lints.rust]

@@ -38,5 +38,9 @@ webbrowser.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni.workspace = true
 
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon.workspace = true
+winit.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
