@@ -90,7 +90,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torro-pim-caldav/src/{client,ical}.rs`
 - `events` liefert `href` und `etag` mit; `todos(collection)` mit VTODO-Lesen (DUE, PRIORITY,
