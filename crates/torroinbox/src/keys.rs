@@ -9,8 +9,8 @@
 //!    does with `operation::is_focused`.)
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
 //!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` mute; in a menu of
-//!    choices the digits pick its entries; in the date picker the arrows change day and time; in a
-//!    dialog `Enter` confirms. Behind the navigation menu, the app switcher or the drawer no key
+//!    choices the digits pick its entries; in the date picker the arrows change day and time and
+//!    `Enter` snoozes. Behind the navigation menu, the app switcher or the drawer no key
 //!    reaches the list. Escape is not here: `widgets::escape` closes whatever is in front.
 
 use iced::keyboard::{self, Key as Name, key::Named};
@@ -56,8 +56,6 @@ pub enum Focus {
     Choices,
     /// The date and time picker of "Pick…" is open.
     Picker,
-    /// A confirmation dialog is open.
-    Dialog,
     /// The navigation menu, the app switcher or the drawer is open; only `[` works.
     Elsewhere,
 }
@@ -79,7 +77,7 @@ pub enum Command {
     Snooze,
     /// Move the entry to the other lane (asking whether always for its source).
     Lane,
-    /// Mute the entry's source (asking first), or unmute it.
+    /// Mute the entry's source, or unmute it; at once, with an undo.
     Mute,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
@@ -91,7 +89,7 @@ pub enum Command {
     EarlierTime,
     /// Picker: the next time of the day.
     LaterTime,
-    /// Confirm the dialog, or snooze to the picked time.
+    /// Picker: snooze to the picked time.
     Confirm,
     /// Collapse or expand the sidebar, open or close the drawer.
     Sidebar,
@@ -151,7 +149,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Picker, Key::Right) => Some(Command::LaterDay),
         (Focus::Picker, Key::Up) => Some(Command::EarlierTime),
         (Focus::Picker, Key::Down) => Some(Command::LaterTime),
-        (Focus::Picker | Focus::Dialog, Key::Enter) => Some(Command::Confirm),
+        (Focus::Picker, Key::Enter) => Some(Command::Confirm),
         _ => None,
     }
 }
@@ -246,11 +244,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dialog_only_confirms_and_other_menus_block_the_list() {
-        assert_eq!(command(Focus::Dialog, Key::Enter), Some(Command::Confirm));
-        for key in [Key::Down, Key::E, Key::U, Key::M, Key::Sidebar, Key::Digit(1)] {
-            assert_eq!(command(Focus::Dialog, key), None, "{key:?} behind the dialog");
-        }
+    fn other_menus_block_the_list() {
         for key in [Key::Down, Key::Up, Key::Enter, Key::E, Key::U, Key::S, Key::L, Key::M, Key::Digit(1)] {
             assert_eq!(command(Focus::Elsewhere, key), None, "{key:?} behind a menu or the drawer");
         }

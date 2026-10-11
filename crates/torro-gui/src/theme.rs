@@ -395,6 +395,10 @@ pub mod size {
     pub const CONTROL_LG: f32 = 36.0;
     /// 40: a list row (tasks).
     pub const ROW: f32 = 40.0;
+    /// 52: a list row on two lines (title over a `META` line, as the inbox shows in narrow
+    /// windows). `BODY` (20) and `META` (16) need 36; in [`ROW`] that leaves 2 above and below,
+    /// which reads cramped – 52 gives them the 8 of a one-line row.
+    pub const ROW_TWO: f32 = 52.0;
     /// 28: a sidebar row (menu rows are 30, set by the menu building block).
     pub const ROW_SIDEBAR: f32 = 28.0;
     /// 32: a group head in a list ("Overdue 2").

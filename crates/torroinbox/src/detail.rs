@@ -10,8 +10,13 @@
 //! above them – an approval resolves itself once decided, so it has no "Mark as done".
 //!
 //! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
-//! opens the snooze menu, and at the right "Move to …" (`l`) and "Mute …" (`m`) as icon buttons.
-//! The suite as a source is never muted, so its entries have no mute button.
+//! opens the snooze menu, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
+//! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`])
+//! – and "Mute …" (`m`) as an icon button, which mutes at once with an undo (E3.2c). The suite as a
+//! source is never muted, so its entries have no mute button.
+//!
+//! Commands in a message ("cargo test --workspace") should not break at their hyphens: the message
+//! shows them as non-breaking hyphens ([`unbroken`]), which Inter draws the same.
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
@@ -48,6 +53,9 @@ pub struct Footer {
     pub anchors: Anchors,
     /// The entry's source is muted: the mute button unmutes.
     pub muted: bool,
+    /// Narrow windows (the panel fills the window): "Move to …" shows only its icon, with the
+    /// words as tooltip; wider panels show icon and words.
+    pub compact: bool,
 }
 
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
@@ -70,7 +78,7 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
     let mut untrusted =
         item.untrusted.then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
     if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
-        let message = typo::text(typo::BODY, text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+        let message = typo::text(typo::BODY, unbroken(&text)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
         let mut block = column![message].spacing(space::S);
         if let Some(note) = untrusted.take() {
             block = block.push(note);
@@ -187,11 +195,16 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     }
     buttons.push(iced::widget::space::horizontal().into());
     let lane = app::other_lane(item.lane);
-    let move_to = widgets::icon_button(
+    let (icon, label, ask) = (
         app::lane_icon(lane),
         trf("Move to {lane}", &[("lane", &lane_label(lane))]),
-        Some(Message::AskLane(item.id.clone())),
+        Message::AskLane(item.id.clone()),
     );
+    let move_to = if footer.compact {
+        widgets::icon_button(icon, label, Some(ask))
+    } else {
+        widgets::text_button(Some(icon), label, style::button::ghost, Some(ask))
+    };
     buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
     if app::rules_allowed(&item.source) {
         let label = item.source.label();
@@ -262,6 +275,13 @@ fn section<'a>(title: &'a str) -> Element<'a, Message> {
     panel::inset(widgets::section_title(title))
 }
 
+/// `text` with every hyphen-minus as a non-breaking hyphen (U+2011, in Inter), so a command like
+/// "cargo test --workspace" wraps before "--workspace" instead of between its dashes. Only for
+/// showing: the entry keeps its text.
+pub fn unbroken(text: &str) -> String {
+    text.replace('-', "\u{2011}")
+}
+
 /// A quiet sentence under the content (`META`, `text_3`).
 fn note<'a>(text: &'a str) -> Element<'a, Message> {
     typo::text(typo::META, text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
@@ -316,7 +336,7 @@ mod tests {
     }
 
     fn footer(muted: bool) -> Footer {
-        Footer { anchors: Anchors::default(), muted }
+        Footer { anchors: Anchors::default(), muted, compact: false }
     }
 
     #[test]
@@ -335,6 +355,18 @@ mod tests {
         assert_eq!(footer_view(&sample("demo-3"), &footer(false)).len(), 1);
         // Other entries keep the plain row.
         assert_eq!(footer_view(&sample("demo-1"), &footer(false)).len(), 5);
+    }
+
+    #[test]
+    fn narrow_panels_keep_the_same_buttons() {
+        let compact = Footer { compact: true, ..footer(false) };
+        assert_eq!(buttons(&sample("demo-1"), &compact).len(), buttons(&sample("demo-1"), &footer(false)).len());
+    }
+
+    #[test]
+    fn commands_keep_their_dashes_together() {
+        assert_eq!(unbroken("cargo test --workspace"), "cargo test \u{2011}\u{2011}workspace");
+        assert_eq!(unbroken("no dashes"), "no dashes");
     }
 
     #[test]

@@ -16,10 +16,11 @@
 //! Triage (E3.2): a cursor marks one row (the highlighted one); the open panel always shows it.
 //! The keys (`keys.rs`) and the panel's footer do the same things: mark done ([`Edit::Done`]),
 //! snooze through a menu or the picker of "Pick…" ([`Edit::Snooze`]), move to the other lane,
-//! asking "always for this source?" ([`Edit::Lane`]), mute the source after a confirmation
-//! dialog. Every change shows a hint for [`UNDO_FOR`] with "Undo" (`u`), which sends the change
-//! that puts the entry back ([`Edit::undo`]). A change that takes the entry off the list moves the
-//! cursor – and the panel – to the row that took its place, so `e`, `e`, `e` works through a list.
+//! asking "always for this source?" ([`Edit::Lane`]), mute or unmute the source at once (E3.2c:
+//! no dialog – a change with an undo needs no question as well). Every change shows a hint for
+//! [`UNDO_FOR`] with "Undo" (`u`), which sends the change that puts it back ([`Undo`]). A change
+//! that takes the entry off the list moves the cursor – and the panel – to the row that took its
+//! place, so `e`, `e`, `e` works through a list.
 //!
 //! Security rule 1 (`docs/tasks/eingang.md`): approvals, account problems and the suite's entries
 //! belong to the human. This window is the human (it holds the app key), so it may change them,
@@ -157,11 +158,20 @@ pub struct After {
     pub undo: Option<Edit>,
 }
 
+/// What "Undo" in the hint sends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Undo {
+    /// The edit that puts an entry back ([`Edit::undo`]).
+    Edit(Edit),
+    /// Sets the source's "muted" back to the value given (`inbox.mute_source`).
+    Mute(SourceRef, bool),
+}
+
 /// The hint at the bottom of the window: what just happened, with "Undo" when it can be undone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hint {
     pub text: String,
-    pub undo: Option<Edit>,
+    pub undo: Option<Undo>,
     /// When it appeared; it goes [`UNDO_FOR`] later.
     pub shown: Instant,
 }
@@ -254,7 +264,18 @@ pub fn rules_allowed(source: &SourceRef) -> bool {
 pub struct Choice {
     pub icon: Icon,
     pub label: String,
+    /// When the choice snoozes until ([`wake_short`]: "13:30", "Wed 09:00"), shown quietly before
+    /// the digit; `None` for choices without a fixed time.
+    pub when: Option<String>,
     pub message: Message,
+}
+
+/// When a snooze choice wakes, as short as it gets: the time when it is today ("13:30"), else the
+/// short weekday and the time ("Wed 09:00"), in local time seen from `now`.
+pub fn wake_short(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let at = datetime::to_local(at);
+    let time = datetime::format_time(at.time());
+    if at.date() == local_today(now) { time } else { format!("{} {time}", datetime::weekday_name(at.date(), true)) }
 }
 
 /// What a test can see of the calls the window started (tasks do not run in tests).
@@ -262,7 +283,8 @@ pub struct Choice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sent {
     Edit(Edit, Option<After>),
-    Mute(SourceRef, bool),
+    /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
+    Mute(SourceRef, bool, bool),
     Link(String),
 }
 
@@ -354,6 +376,9 @@ pub enum Open {
     Switcher,
     /// The error state with its "Retry".
     Error,
+    /// The list with the error line above it, as after a change that did not go through; kept
+    /// for good.
+    Failed,
     /// No entries at all.
     Empty,
     /// The loading state, kept for good.
@@ -364,14 +389,15 @@ pub enum Open {
     Pick,
     /// The lane question for the first entry of "For me" not from the suite.
     Lane,
-    /// The mute dialog for the source of that entry.
+    /// The hint after muting the source of that entry, with "Undo", kept for good. Only the hint:
+    /// the demo source is not muted, so nothing else changes.
     Mute,
     /// The hint after marking the first entry done, with "Undo", kept for good.
     Undo,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 16] = [
+    const ALL: [(&'static str, Open); 17] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -381,6 +407,7 @@ impl Open {
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
         ("error", Open::Error),
+        ("failed", Open::Failed),
         ("empty", Open::Empty),
         ("loading", Open::Loading),
         ("snooze", Open::Snooze),
@@ -558,8 +585,6 @@ pub struct App<S> {
     subject: Option<Item>,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
-    /// The source the mute dialog asks about; the dialog is open while this is set.
-    confirm: Option<SourceRef>,
     /// The hint after the last change, with its undo.
     hint: Option<Hint>,
     /// The calls started, for the tests.
@@ -609,7 +634,8 @@ pub enum Message {
     /// From the panel: move the entry with this id to the other lane (asking first where a rule
     /// is possible).
     AskLane(String),
-    /// From the panel: mute the source of the entry with this id (asking first), or unmute it.
+    /// From the panel: mute the source of the entry with this id, or unmute it – at once, with
+    /// an undo.
     AskMute(String),
     /// "Pick…" in the snooze menu: the date and time picker.
     ShowPicker,
@@ -619,12 +645,8 @@ pub enum Message {
     PickHour(usize),
     /// The picker's "Snooze".
     PickConfirm,
-    /// The mute dialog's "Mute".
-    ConfirmMute,
-    /// The mute dialog's "Cancel", a click beside it.
-    CloseDialog,
-    /// The source's answer to muting or unmuting, with the hint to show.
-    Muted(Result<(), String>, String),
+    /// The source's answer to muting or unmuting, with the hint to show (`None` after an undo).
+    Muted(Result<(), String>, Option<Hint>),
     /// From the panel: open the entry's link (only what [`detail::openable`] offers).
     OpenLink(Link),
     /// The browser could not be started (or was); only logged, as in the other apps.
@@ -709,7 +731,6 @@ impl<S: InboxSource + 'static> App<S> {
             scroll: None,
             subject: None,
             pick: Pick::start(Utc::now() + offset),
-            confirm: None,
             hint: None,
             #[cfg(test)]
             sent: Vec::new(),
@@ -749,8 +770,8 @@ impl<S: InboxSource + 'static> App<S> {
             self.zoom.subscription().map(Message::Zoom),
             iced::event::listen_with(keys::listen),
         ];
-        // Escape closes an open dialog, menu, drawer or the panel; nothing listens while none is open.
-        if self.menu.is_some() || self.drawer || self.detail.is_some() || self.confirm.is_some() {
+        // Escape closes an open menu, drawer or the panel; nothing listens while none is open.
+        if self.menu.is_some() || self.drawer || self.detail.is_some() {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
         }
         if self.hint.is_some() {
@@ -805,8 +826,8 @@ impl<S: InboxSource + 'static> App<S> {
             Message::Edited(result, after) => return self.edited(result, after),
             Message::Undo => return self.undo(),
             Message::HintTick(now) => {
-                // The forced hint of `--open undo` stays, so it can be photographed.
-                let forced = self.launch.open == Some(Open::Undo);
+                // The forced hints of `--open undo` and `--open mute` stay, so they can be photographed.
+                let forced = matches!(self.launch.open, Some(Open::Undo | Open::Mute));
                 if !forced
                     && self.hint.as_ref().is_some_and(|hint| now.saturating_duration_since(hint.shown) >= UNDO_FOR)
                 {
@@ -838,14 +859,10 @@ impl<S: InboxSource + 'static> App<S> {
                     return self.edit(edit);
                 }
             }
-            Message::ConfirmMute => {
-                if let Some(source) = self.confirm.take() {
-                    return self.mute(source, true);
+            Message::Muted(Ok(()), hint) => {
+                if let Some(hint) = hint {
+                    self.hint = Some(Hint { shown: Instant::now(), ..hint });
                 }
-            }
-            Message::CloseDialog => self.confirm = None,
-            Message::Muted(Ok(()), text) => {
-                self.note(text);
                 return self.load();
             }
             Message::Muted(Err(err), _) => {
@@ -897,9 +914,7 @@ impl<S: InboxSource + 'static> App<S> {
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
-                if self.confirm.is_some() {
-                    self.confirm = None;
-                } else if self.menu.is_some() || self.drawer {
+                if self.menu.is_some() || self.drawer {
                     self.close_menus();
                 } else {
                     self.detail = None;
@@ -962,7 +977,9 @@ impl<S: InboxSource + 'static> App<S> {
         self.info = loaded.info;
         self.sources = loaded.sources;
         self.loaded = true;
-        self.error = None;
+        // The forced error line stays over every load, so it can be photographed.
+        self.error = (self.launch.open == Some(Open::Failed))
+            .then(|| Failure::new(tr("Couldn't change the entry."), DEMO_ERROR));
         if self.cursor_item().is_none() {
             let last = self.items.len().checked_sub(1);
             self.cursor =
@@ -997,12 +1014,8 @@ impl<S: InboxSource + 'static> App<S> {
         self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref()).find(|item| item.id == id)
     }
 
-    /// Where the keys go: the dialog, a menu of choices, the picker, another menu or the drawer,
-    /// else the list.
+    /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
     fn focus(&self) -> Focus {
-        if self.confirm.is_some() {
-            return Focus::Dialog;
-        }
         match self.menu {
             Some(Menu::Snooze | Menu::Lane) => Focus::Choices,
             Some(Menu::Pick) => Focus::Picker,
@@ -1047,7 +1060,6 @@ impl<S: InboxSource + 'static> App<S> {
             Command::LaterDay => self.update(Message::PickDay(self.pick.day + Days::new(1))),
             Command::EarlierTime => self.update(Message::PickHour(self.pick.hour.saturating_sub(1))),
             Command::LaterTime => self.update(Message::PickHour(self.pick.hour + 1)),
-            Command::Confirm if self.confirm.is_some() => self.update(Message::ConfirmMute),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
         }
@@ -1075,7 +1087,8 @@ impl<S: InboxSource + 'static> App<S> {
     /// it is the first of its group ([`list::row_span`]).
     fn reveal(&mut self, index: usize) -> Task<Message> {
         let Some((offset, height)) = self.scroll else { return Task::none() };
-        let Some((top, bottom)) = list::row_span(&self.items, index) else { return Task::none() };
+        let row = list::row_height(self.two_line());
+        let Some((top, bottom)) = list::row_span(&self.items, index, row) else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -1122,20 +1135,17 @@ impl<S: InboxSource + 'static> App<S> {
         Task::none()
     }
 
-    /// Mutes the source of the entry with `id` after the dialog, or unmutes it at once (that
-    /// loses nothing). The suite is never muted ([`rules_allowed`]).
+    /// Mutes the source of the entry with `id`, or unmutes it, at once; the hint offers the undo
+    /// (design: confirm *or* undo, never both). The suite is never muted ([`rules_allowed`]).
     fn ask_mute(&mut self, id: &str) -> Task<Message> {
         let Some(source) = self.find(id).map(|item| item.source.clone()) else { return Task::none() };
         if !rules_allowed(&source) {
             self.note(tr("Entries from the suite can't be muted.").to_owned());
             return Task::none();
         }
-        if self.is_muted(&source) {
-            return self.mute(source, false);
-        }
         self.close_menus();
-        self.confirm = Some(source);
-        Task::none()
+        let muted = !self.is_muted(&source);
+        self.mute(source, muted, true)
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -1143,21 +1153,16 @@ impl<S: InboxSource + 'static> App<S> {
         self.sources.iter().any(|info| info.source == *source && info.muted)
     }
 
-    /// Mutes or unmutes `source` (`inbox.mute_source`); the answer comes as [`Message::Muted`].
-    /// Muting was confirmed in the dialog, so it has no undo.
-    fn mute(&mut self, source: SourceRef, muted: bool) -> Task<Message> {
+    /// Mutes or unmutes `source` (`inbox.mute_source`); the answer comes as [`Message::Muted`],
+    /// with the hint and its undo when `with_hint` (an undo itself shows none, as for edits).
+    fn mute(&mut self, source: SourceRef, muted: bool, with_hint: bool) -> Task<Message> {
         #[cfg(test)]
-        self.sent.push(Sent::Mute(source.clone(), muted));
-        let label = source.label();
-        let text = if muted {
-            trf("Muted {source}", &[("source", &label)])
-        } else {
-            trf("Unmuted {source}", &[("source", &label)])
-        };
+        self.sent.push(Sent::Mute(source.clone(), muted, with_hint));
+        let hint = with_hint.then(|| mute_hint(&source, muted));
         let inbox = self.inbox.clone();
         Task::perform(
             async move { inbox.mute_source(source, muted).await.map_err(|err| err.to_string()) },
-            move |result| Message::Muted(result, text.clone()),
+            move |result| Message::Muted(result, hint.clone()),
         )
     }
 
@@ -1172,9 +1177,12 @@ impl<S: InboxSource + 'static> App<S> {
 
     /// "Undo": sends the undo of the hint, which then goes. Nothing while no hint can be undone.
     fn undo(&mut self) -> Task<Message> {
-        let Some(edit) = self.hint.take().and_then(|hint| hint.undo) else { return Task::none() };
+        let Some(undo) = self.hint.take().and_then(|hint| hint.undo) else { return Task::none() };
         self.close_menus();
-        self.send(edit, None)
+        match undo {
+            Undo::Edit(edit) => self.send(edit, None),
+            Undo::Mute(source, muted) => self.mute(source, muted, false),
+        }
     }
 
     fn send(&mut self, edit: Edit, after: Option<After>) -> Task<Message> {
@@ -1189,7 +1197,9 @@ impl<S: InboxSource + 'static> App<S> {
     fn edited(&mut self, result: Result<Box<Item>, String>, after: Option<After>) -> Task<Message> {
         if let Ok(item) = &result {
             match after {
-                Some(After { text, undo }) => self.hint = Some(Hint { text, undo, shown: Instant::now() }),
+                Some(After { text, undo }) => {
+                    self.hint = Some(Hint { text, undo: undo.map(Undo::Edit), shown: Instant::now() });
+                }
                 None => {
                     // Undone: the entry is back in its place, and the cursor (and panel) with it.
                     self.cursor = Some(item.id.clone());
@@ -1211,15 +1221,20 @@ impl<S: InboxSource + 'static> App<S> {
     pub fn choices(&self) -> Vec<Choice> {
         let Some(item) = &self.subject else { return Vec::new() };
         let id = || item.id.clone();
-        let choice = |icon, label: String, message| Choice { icon, label, message };
+        let choice = |icon, label: String, message| Choice { icon, label, when: None, message };
         match self.menu {
             Some(Menu::Snooze) => {
                 let [later, tomorrow, next_week] = snooze_times(self.now);
-                let snooze = |until| Message::Edit(Edit::Snooze { id: id(), until: Some(until) });
+                let snooze = |icon, label: &str, until| Choice {
+                    icon,
+                    label: label.to_owned(),
+                    when: Some(wake_short(until, self.now)),
+                    message: Message::Edit(Edit::Snooze { id: id(), until: Some(until) }),
+                };
                 let mut choices = vec![
-                    choice(Icon::Clock, tr("Later today").to_owned(), snooze(later)),
-                    choice(Icon::Sun, tr("Tomorrow").to_owned(), snooze(tomorrow)),
-                    choice(Icon::CalendarDays, tr("Next week").to_owned(), snooze(next_week)),
+                    snooze(Icon::Clock, tr("Later today"), later),
+                    snooze(Icon::Sun, tr("Tomorrow"), tomorrow),
+                    snooze(Icon::CalendarDays, tr("Next week"), next_week),
                     choice(Icon::CalendarClock, tr("Pick…").to_owned(), Message::ShowPicker),
                 ];
                 if matches!(item.state, State::Snoozed { .. }) {
@@ -1301,31 +1316,35 @@ impl<S: InboxSource + 'static> App<S> {
         let (snooze_at, lane_at) =
             if self.detail.is_some() { (&anchors.snooze, &anchors.lane) } else { (&anchors.row, &anchors.row) };
         let below = Placement::Below(Align::End);
-        let layer = match (&self.confirm, self.menu) {
-            (Some(source), _) => Some(self.mute_dialog(source)),
-            (None, None) => None,
-            (None, Some(Menu::Switcher)) => Some(widgets::floating(
+        let layer = match self.menu {
+            None => None,
+            Some(Menu::Switcher) => Some(widgets::floating(
                 &switcher,
                 Placement::Below(Align::Start),
                 shell::switcher_menu(INBOX, Message::Switcher),
                 Message::CloseMenu,
             )),
-            (None, Some(Menu::Nav)) => {
+            Some(Menu::Nav) => {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
-            (None, Some(Menu::Snooze)) => {
+            Some(Menu::Snooze) => {
                 Some(widgets::floating(snooze_at, below, self.choice_menu(tr("Snooze until")), Message::CloseMenu))
             }
-            (None, Some(Menu::Lane)) => {
+            Some(Menu::Lane) => {
                 let title = self.subject.as_ref().map_or_else(String::new, |item| {
                     trf("Move to {lane}", &[("lane", &lane_name(other_lane(item.lane)))])
                 });
                 Some(widgets::floating(lane_at, below, self.choice_menu(title), Message::CloseMenu))
             }
-            (None, Some(Menu::Pick)) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
+            Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
         };
         let detail = self.detail.as_ref().map(|item| {
-            let footer = detail::Footer { anchors: anchors.clone(), muted: self.is_muted(&item.source) };
+            let footer = detail::Footer {
+                anchors: anchors.clone(),
+                muted: self.is_muted(&item.source),
+                // The panel fills narrow windows: no room for the words of "Move to …".
+                compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
+            };
             detail::panel(item, self.view.name(), self.now, footer)
         });
         let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
@@ -1350,9 +1369,10 @@ impl<S: InboxSource + 'static> App<S> {
         match class {
             SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(Some(icon), name, note), trailing),
             SizeClass::Wide | SizeClass::Medium => {
-                let mut title = row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)]
-                    .spacing(space::S)
-                    .align_y(Alignment::Center);
+                // The count right at the button, as at the title in the wide header: the button's
+                // own padding is the gap.
+                let mut title =
+                    row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
                 if let Some(note) = note {
                     title = title.push(typo::text(typo::BODY, note).style(theme::text_3).wrapping(Wrapping::None));
                 }
@@ -1373,10 +1393,17 @@ impl<S: InboxSource + 'static> App<S> {
         self.items.len().to_string()
     }
 
+    /// Two lines per row (title over preview): mini and narrow windows. The strip is wide enough
+    /// for one line.
+    fn two_line(&self) -> bool {
+        matches!(self.class(), SizeClass::Narrow | SizeClass::Mini)
+    }
+
     /// The content below the header: an error line if there is one, and the list – left-aligned
     /// under the header's title (design: "links mit Seitenleiste"); in the wide layout at most
-    /// `CONTENT_MAX` wide, or `LIST` while the panel stands beside it. Loading and the error of a
-    /// first load stand in for both.
+    /// `CONTENT_MAX` wide, also while the panel stands beside it (its column takes its own room,
+    /// and a narrower list would only leave a gap). Loading and the error of a first load stand in
+    /// for both.
     fn body(&self, class: SizeClass, row_anchor: &Anchor) -> Element<'_, Message> {
         if !self.loaded {
             return match &self.error {
@@ -1390,8 +1417,7 @@ impl<S: InboxSource + 'static> App<S> {
             selected: self.cursor.as_deref(),
             now: self.now,
             anchor: row_anchor.clone(),
-            // The strip is wide enough for one line; mini and narrow windows are not.
-            two_line: matches!(class, SizeClass::Narrow | SizeClass::Mini),
+            two_line: self.two_line(),
             attention: palette(&self.theme()).attention_text,
         };
         let mut content = column![];
@@ -1403,7 +1429,6 @@ impl<S: InboxSource + 'static> App<S> {
         // over `CONTENT_MAX` anyway, and a cap there would leave a thin empty strip at the right
         // (at 800 wide about 20) that reads as a mistake rather than as a margin.
         match class {
-            SizeClass::Wide if self.detail.is_some() => list.max_width(size::LIST).into(),
             SizeClass::Wide => list.max_width(size::CONTENT_MAX).into(),
             SizeClass::Medium | SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => list.into(),
         }
@@ -1487,27 +1512,30 @@ impl<S: InboxSource + 'static> App<S> {
         widgets::menu(sections)
     }
 
-    /// The open menu of choices ([`App::choices`]) under `title`, each entry with its digit.
+    /// The open menu of choices ([`App::choices`]) under `title`, each entry with its time (when it
+    /// has one) and its digit. The menu card of `widgets::menu`, built from the same pieces here:
+    /// its entries end in one trail only, and these need the time quietly before the key hint.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
-        let items = self
-            .choices()
-            .into_iter()
-            .enumerate()
-            .map(|(i, choice)| {
-                MenuItem::new(choice.icon, choice.label, choice.message).trail(Trail::Kbd(keys::digit(i + 1)))
-            })
-            .collect();
-        widgets::menu(vec![MenuSection::titled(title.into(), items)])
+        let head = typo::text(typo::CAPTION, title.into()).style(theme::text_3);
+        let entries =
+            self.choices().into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1)));
+        let list = column![container(head).padding(Padding::new(space::S).bottom(space::XS))].extend(entries);
+        container(list).width(widgets::MENU_WIDTH).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
-    /// The picker of "Pick…" as a floating card: the chosen moment as title, the day with
-    /// previous / next, the time of day as segments, and "Snooze" (off for a time already past).
-    /// Iced has no date picker and the suite none of its own yet, so it steps through days instead
-    /// of showing a month; ←/→ and ↑/↓ do the same from the keyboard.
+    /// The picker of "Pick…" as a floating card: the chosen moment as title ("Wed, 14 Oct · 09:00"),
+    /// the day with previous / next, the time of day as segments, and "Snooze" at the right (off
+    /// for a time already past). Iced has no date picker and the suite none of its own yet, so it
+    /// steps through days instead of showing a month; ←/→ and ↑/↓ do the same from the keyboard.
     fn picker(&self) -> Element<'_, Message> {
         let today = local_today(self.now);
         let (day, at) = (self.pick.day, self.pick.at());
-        let title = format!("{} · {}", day_name(day, today), datetime::format_time(datetime::to_local(at).time()));
+        // The full date: the day row below already says "Tomorrow", the title should not repeat it.
+        let title = format!(
+            "{} · {}",
+            datetime::format_short_date(day, today),
+            datetime::format_time(datetime::to_local(at).time())
+        );
         let previous = (day > today).then(|| Message::PickDay(day - Days::new(1)));
         let next = (day < today + Days::new(PICK_DAYS)).then(|| Message::PickDay(day + Days::new(1)));
         let day_row = row![
@@ -1526,35 +1554,12 @@ impl<S: InboxSource + 'static> App<S> {
             widgets::prop_row(Some(Mark::Icon(Icon::Clock)), widgets::segmented(hours, self.pick.hour), None),
         ];
         let snooze = (at > self.now).then_some(Message::PickConfirm);
-        let actions = vec![widgets::text_button(Some(Icon::Clock), tr("Snooze"), style::button::primary, snooze)];
+        // At the right, where the action of a dialog is.
+        let actions = vec![
+            iced::widget::space::horizontal().into(),
+            widgets::text_button(Some(Icon::Clock), tr("Snooze"), style::button::primary, snooze),
+        ];
         widgets::popover(widgets::section_title(tr("Snooze until")), title, rows, actions)
-    }
-
-    /// The question before muting `source`, as a dialog over the window: the question as title,
-    /// what follows from it, "Cancel" and "Mute". Enter mutes, Escape or a click beside cancels.
-    fn mute_dialog<'a>(&self, source: &SourceRef) -> Element<'a, Message> {
-        let label = source.label();
-        let title = trf("Mute {source}?", &[("source", &label)]);
-        let consequence = trf(
-            "New entries from {source} no longer reach the inbox. Entries already here stay.",
-            &[("source", &label)],
-        );
-        let buttons = row![
-            Space::new().width(Fill),
-            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseDialog)),
-            widgets::text_button(None, tr("Mute"), style::button::danger, Some(Message::ConfirmMute)),
-        ]
-        .spacing(space::S)
-        .align_y(Alignment::Center);
-        let content = column![
-            typo::text(typo::TITLE, title).wrapping(Wrapping::WordOrGlyph),
-            typo::text(typo::BODY, consequence).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
-            buttons
-        ]
-        .spacing(space::L);
-        let card = container(content).padding(space::XL).width(Fill).style(style::container::popover);
-        // `modal` takes its size from its base: an empty one that fills the window.
-        widgets::modal(Space::new().width(Fill).height(Fill), card, widgets::POPOVER_WIDTH, Message::CloseDialog)
     }
 
     fn toggle_menu(&mut self, menu: Menu) {
@@ -1581,7 +1586,7 @@ impl<S: InboxSource + 'static> App<S> {
         }
         let first = self.items.first().map(|item| item.id.clone());
         // The first entry not from the suite: one with a lane question and a mute button.
-        let script = self.items.iter().find(|item| rules_allowed(&item.source)).map(|item| item.id.clone());
+        let script = self.items.iter().find(|item| rules_allowed(&item.source)).cloned();
         match self.launch.open {
             Some(Open::Detail) => self.detail = self.items.first().cloned(),
             Some(Open::Approval) => self.detail = self.items.iter().find(|item| detail::is_approval(item)).cloned(),
@@ -1592,16 +1597,22 @@ impl<S: InboxSource + 'static> App<S> {
                     let _ = self.update(Message::ShowPicker);
                 }
             }
-            Some(Open::Lane | Open::Mute) => {
-                self.cursor = script.clone();
-                let id = script.unwrap_or_default();
-                let _ = if self.launch.open == Some(Open::Lane) { self.ask_lane(&id) } else { self.ask_mute(&id) };
+            Some(Open::Lane) => {
+                let id = script.map(|item| item.id).unwrap_or_default();
+                self.cursor = Some(id.clone());
+                let _ = self.ask_lane(&id);
+            }
+            Some(Open::Mute) => {
+                if let Some(item) = script {
+                    self.cursor = Some(item.id.clone());
+                    self.hint = Some(mute_hint(&item.source, true));
+                }
             }
             Some(Open::Undo) => {
                 if let Some(item) = self.items.first() {
                     self.hint = Some(Hint {
                         text: tr("Marked as done").to_owned(),
-                        undo: Some(Edit::Done { id: item.id.clone(), done: false }),
+                        undo: Some(Undo::Edit(Edit::Done { id: item.id.clone(), done: false })),
                         shown: Instant::now(),
                     });
                 }
@@ -1643,6 +1654,38 @@ impl NavEntry {
     }
 }
 
+/// The hint after muting (`muted`) or unmuting `source`: "Muted deploy" with the undo that sets it
+/// back.
+fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
+    let label = source.label();
+    let text = if muted {
+        trf("Muted {source}", &[("source", &label)])
+    } else {
+        trf("Unmuted {source}", &[("source", &label)])
+    };
+    Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now() }
+}
+
+/// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
+/// tabular – when it snoozes until, and the digit that picks it.
+fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
+    let mark = icon::icon(choice.icon, icon::SIZE)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
+    let label = container(typo::text(typo::BODY, choice.label).wrapping(Wrapping::None)).width(Fill).clip(true);
+    let mut content = row![mark, label].spacing(space::S).align_y(Alignment::Center);
+    if let Some(when) = choice.when {
+        content = content.push(typo::text(typo::META.tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    content = content.push(widgets::kbd(key));
+    iced::widget::button(container(content).center_y(Fill))
+        .width(Fill)
+        .height(style::MENU_ITEM_HEIGHT)
+        .padding(style::ITEM_PADDING)
+        .style(style::button::menu_item(false))
+        .on_press(choice.message)
+        .into()
+}
+
 /// The failure when the entries could not be loaded; the error state's "Retry" is what the user
 /// can do about it.
 fn load_failed(err: &str) -> Failure {
@@ -1675,14 +1718,14 @@ fn failure_state(failure: &Failure) -> Element<'_, Message> {
     iced::widget::center(content).padding(space::XL).into()
 }
 
-/// The line above the list when a later call failed: the sentence in the error colour, the
-/// reason after it in `text_3`.
+/// The line above the list when a later call failed: the alert icon in the error colour, the
+/// sentence in `text_2` and the reason after it in `text_3` (status colour only on the icon).
 fn failure_line(failure: &Failure) -> Element<'_, Message> {
-    let what = typo::text(typo::META, failure.what)
-        .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) })
-        .wrapping(Wrapping::None);
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
+    let what = typo::text(typo::META, failure.what).style(theme::text_2).wrapping(Wrapping::None);
     let why = typo::text(typo::META, failure.why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
-    row![what, why].spacing(space::XS).into()
+    row![alert, row![what, why].spacing(space::XS)].spacing(space::S).align_y(Alignment::Center).into()
 }
 
 #[cfg(test)]
@@ -1889,11 +1932,20 @@ mod tests {
         assert_eq!(loaded(&["--open", "pick"]).menu, Some(Menu::Pick));
         let app = loaded(&["--open", "lane"]);
         assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::Lane), Some("demo-1")));
-        assert_eq!(loaded(&["--open", "mute"]).confirm, Some(SourceRef::agent("claude-code")));
-        let mut app = loaded(&["--open", "undo"]);
-        let shown = app.hint.as_ref().map(|hint| hint.shown).expect("the hint");
-        let _ = app.update(Message::HintTick(shown + UNDO_FOR));
-        assert!(app.hint.is_some(), "the forced hint stays");
+        let claude = SourceRef::agent("claude-code");
+        let failed = loaded(&["--open", "failed"]);
+        assert!(failed.loaded && !failed.items.is_empty(), "the list is there");
+        assert_eq!(failed.error, Some(Failure { what: tr("Couldn't change the entry."), why: DEMO_ERROR.into() }));
+        let app = loaded(&["--open", "mute"]);
+        let hint = app.hint.as_ref().expect("the hint after muting");
+        assert_eq!(hint.text, trf("Muted {source}", &[("source", &claude.label())]));
+        assert_eq!(hint.undo, Some(Undo::Mute(claude, false)));
+        for state in ["undo", "mute"] {
+            let mut app = loaded(&["--open", state]);
+            let shown = app.hint.as_ref().map(|hint| hint.shown).expect("the hint");
+            let _ = app.update(Message::HintTick(shown + UNDO_FOR));
+            assert!(app.hint.is_some(), "{state}: the forced hint stays");
+        }
     }
 
     #[test]
@@ -1974,8 +2026,14 @@ mod tests {
 
     #[test]
     fn the_window_builds_in_every_size_with_panel_menus_and_drawer() {
-        for open in [&[][..], &["--open", "detail"], &["--open", "approval"], &["--open", "done"], &["--open", "empty"]]
-        {
+        for open in [
+            &[][..],
+            &["--open", "detail"],
+            &["--open", "approval"],
+            &["--open", "done"],
+            &["--open", "empty"],
+            &["--open", "failed"],
+        ] {
             let mut app = loaded(open);
             for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
                 let _ = app.update(Message::UiState(UiState { sidebar }));
@@ -1987,7 +2045,7 @@ mod tests {
                     let _ = app.update(Message::ShowDrawer);
                     let _ = app.view();
                     let _ = app.update(Message::CloseMenu);
-                    // The triage layers: snooze menu, picker, lane question, mute dialog, hint.
+                    // The triage layers: snooze menu, picker, lane question, mute (a hint), hint.
                     let _ = press(&mut app, Key::Down);
                     for key in [Key::S, Key::Digit(4)] {
                         let _ = press(&mut app, key);
@@ -2038,10 +2096,10 @@ mod tests {
                 let result = block_on(edit.apply(app.inbox.clone())).map(Box::new);
                 let _ = app.update(Message::Edited(result, after));
             }
-            Some(Sent::Mute(source, muted)) => {
-                let text = source.label();
+            Some(Sent::Mute(source, muted, with_hint)) => {
+                let hint = with_hint.then(|| mute_hint(&source, muted));
                 let result = block_on(app.inbox.mute_source(source, muted)).map_err(|err| err.to_string());
-                let _ = app.update(Message::Muted(result, text));
+                let _ = app.update(Message::Muted(result, hint));
             }
             other => panic!("no call to deliver: {other:?}"),
         }
@@ -2088,12 +2146,13 @@ mod tests {
     fn moving_scrolls_the_cursor_into_view() {
         let mut app = loaded(&[]);
         // The group head and two rows fit.
-        let (_, second) = list::row_span(&app.items, 1).expect("a second row");
+        let row = list::row_height(app.two_line());
+        let (_, second) = list::row_span(&app.items, 1, row).expect("a second row");
         let _ = app.update(Message::Scrolled(0.0, second));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first row is in view");
         let _ = press(&mut app, Key::Down);
         assert!(press(&mut app, Key::Down).units() > 0, "the third row needs a scroll");
-        let (_, third) = list::row_span(&app.items, 2).expect("a third row");
+        let (_, third) = list::row_span(&app.items, 2, row).expect("a third row");
         assert_eq!(app.scroll, Some((third - second, second)));
         // Back up to the first row: the list scrolls to its group head at the top.
         let _ = press(&mut app, Key::Up);
@@ -2228,6 +2287,20 @@ mod tests {
     }
 
     #[test]
+    fn the_snooze_menu_says_when_each_choice_wakes() {
+        let mut app = at("demo-2");
+        let _ = press(&mut app, Key::S);
+        let [later, tomorrow, next_week] = snooze_times(app.now);
+        let whens: Vec<Option<String>> = app.choices().into_iter().map(|c| c.when).collect();
+        let short = |at| Some(wake_short(at, app.now));
+        assert_eq!(whens, [short(later), short(tomorrow), short(next_week), None], "Pick… has no time of its own");
+        // Tuesday, 13 October 2026, 10:30: today only the time, other days with their weekday.
+        assert_eq!(wake_short(later, app.now), "13:30");
+        let wed = datetime::weekday_name(local_today(app.now) + Days::new(1), true);
+        assert_eq!(wake_short(tomorrow, app.now), format!("{wed} 09:00"));
+    }
+
+    #[test]
     fn pick_steps_through_days_and_times() {
         let mut app = at("demo-2");
         let _ = press(&mut app, Key::S);
@@ -2294,32 +2367,37 @@ mod tests {
     }
 
     #[test]
-    fn m_asks_before_muting_and_unmutes_at_once() {
+    fn m_mutes_at_once_and_u_unmutes() {
         let mut app = at("demo-6");
         let deploy = SourceRef::script("deploy");
         let _ = press(&mut app, Key::M);
-        assert_eq!((app.confirm.as_ref(), app.focus()), (Some(&deploy), Focus::Dialog));
-        let _ = press(&mut app, Key::Down);
-        assert_eq!(cursor(&app), Some("demo-6"), "the list waits behind the dialog");
-        let _ = app.update(Message::Escape);
-        assert!(app.confirm.is_none() && app.sent.is_empty(), "Escape cancels");
-        let _ = press(&mut app, Key::M);
-        let _ = press(&mut app, Key::Enter);
-        assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), true)));
-        assert!(app.confirm.is_none());
+        assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), true, true)), "no question first");
+        assert_eq!(app.focus(), Focus::List, "nothing in front of the list");
         deliver(&mut app);
         assert!(app.is_muted(&deploy));
-        assert_eq!(app.hint.as_ref().map(|hint| hint.undo.clone()), Some(None), "confirmed, so no undo");
+        let hint = app.hint.clone().expect("the hint");
+        assert_eq!(hint.text, trf("Muted {source}", &[("source", &"deploy")]));
+        assert_eq!(hint.undo, Some(Undo::Mute(deploy.clone(), false)));
+        let _ = press(&mut app, Key::U);
+        assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), false, false)), "undo unmutes");
+        assert!(app.hint.is_none(), "the hint goes with the undo");
+        deliver(&mut app);
+        assert!(!app.is_muted(&deploy));
+        assert!(app.hint.is_none(), "an undo shows no new hint");
+        // Unmuting works the same way, with its own undo.
         let _ = press(&mut app, Key::M);
-        assert!(app.confirm.is_none(), "unmuting needs no question");
-        assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy, false)));
+        deliver(&mut app);
+        let _ = press(&mut app, Key::M);
+        assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), false, true)));
+        deliver(&mut app);
+        assert_eq!(app.hint.and_then(|hint| hint.undo), Some(Undo::Mute(deploy, true)));
     }
 
     #[test]
     fn the_suite_is_never_muted() {
         let mut app = at("demo-3");
         let _ = press(&mut app, Key::M);
-        assert!(app.confirm.is_none() && app.sent.is_empty());
+        assert!(app.sent.is_empty());
         assert_eq!(
             app.hint.as_ref().map(|hint| hint.text.as_str()),
             Some(tr("Entries from the suite can't be muted."))
@@ -2364,8 +2442,8 @@ mod tests {
         let _ = app.update(Message::AskLane("demo-6".into()));
         assert_eq!(app.menu, Some(Menu::Lane));
         let _ = app.update(Message::AskMute("demo-6".into()));
-        assert!(app.menu.is_none() && app.confirm.is_some(), "the dialog replaces the menu");
-        let _ = app.update(Message::CloseDialog);
+        assert!(app.menu.is_none(), "muting closes the menu");
+        assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
         let _ = app.update(Message::SetDone("demo-6".into(), true));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, Some(_)))), "with undo");
     }

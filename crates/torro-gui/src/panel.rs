@@ -339,10 +339,25 @@ fn over<'a, M: Clone + 'a>(panel: Panel<'a, M>, class: SizeClass) -> Element<'a,
         ..container::Style::default()
     });
     let catcher = opaque(mouse_area(scrim).on_press(on_close));
-    let sheet = container(panel.view(class)).width(width_for(class)).height(Fill).style(|t| {
+    // Two surfaces on purpose. Iced snaps a quad with a shadow to the pixel grid by the corner of
+    // the shadow, not of the quad (`iced_wgpu` quad shader): at a fractional scale (1.6) the
+    // quad's own edges then sit a fraction of a pixel off and are blended – the dimmed list
+    // showed through in a one-pixel column at the window's edge, the selected row's bar with it.
+    // So the shadow lives on an outer quad, and the opaque surface is an inner one without a
+    // shadow, which snaps exactly and covers the panel's whole width.
+    let surface = container(panel.view(class)).width(Fill).height(Fill).style(|t| container::Style {
+        background: Some(Background::Color(palette(t).panel)),
+        ..container::Style::default()
+    });
+    let sheet = container(surface).width(width_for(class)).height(Fill).style(move |t| {
         let p = palette(t);
-        // The menu shadow falls sideways, to the left: the panel's edge is vertical.
-        let shadow = Shadow { offset: Vector::new(-space::M, 0.0), ..p.shadow };
+        // The menu shadow falls sideways, to the left: the panel's edge is vertical. A panel that
+        // fills the window has nothing beside it to cast a shadow on.
+        let shadow = if width_for(class) == Fill {
+            Shadow::default()
+        } else {
+            Shadow { offset: Vector::new(-space::M, 0.0), ..p.shadow }
+        };
         container::Style { background: Some(Background::Color(p.panel)), shadow, ..container::Style::default() }
     });
     // The aligning container has no interaction of its own, so a click beside the sheet reaches
