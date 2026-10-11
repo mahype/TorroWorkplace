@@ -226,6 +226,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Save", "Speichern"),
     ("Title", "Titel"),
     ("Save failed: {error}", "Speichern fehlgeschlagen: {error}"),
+    ("New", "Neu"),
+    ("Retry", "Erneut versuchen"),
+    ("Search", "Suchen"),
+    ("Show sidebar", "Seitenleiste zeigen"),
+    ("Workplace", "Workplace"),
     // Calendar
     ("(no title)", "(ohne Titel)"),
     ("All day", "Ganztägig"),
