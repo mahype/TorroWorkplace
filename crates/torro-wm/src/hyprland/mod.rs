@@ -29,6 +29,12 @@ impl Hyprland {
         let dir = socket::socket_dir(env("XDG_RUNTIME_DIR").as_deref(), env("HYPRLAND_INSTANCE_SIGNATURE").as_deref())?;
         Ok(Hyprland { socket_dir: dir })
     }
+
+    /// Sends one dispatcher expression (`hl.dsp…`) as `dispatch <expression>` and checks the answer.
+    async fn dispatch(&self, expression: &str) -> Result<(), WmError> {
+        let answer = socket::request(&self.socket_dir, &format!("dispatch {expression}")).await?;
+        dispatch::check_answer(&answer)
+    }
 }
 
 /// The normal windows from the answers to `j/clients` and `j/monitors`, with monitor names
@@ -70,20 +76,17 @@ impl WindowManager for Hyprland {
 
     /// Task 1.6.
     async fn focus_window(&self, window: &WindowId) -> Result<(), WmError> {
-        let _ = window;
-        Err(WmError::NotImplemented("hyprland focus_window (task 1.6)"))
+        self.dispatch(&dispatch::focus_window(window)?).await
     }
 
     /// Task 1.6.
     async fn move_to_workspace(&self, window: &WindowId, workspace: &WorkspaceId) -> Result<(), WmError> {
-        let _ = (window, workspace);
-        Err(WmError::NotImplemented("hyprland move_to_workspace (task 1.6)"))
+        self.dispatch(&dispatch::move_to_workspace(window, workspace)?).await
     }
 
     /// Task 1.6.
     async fn close_window(&self, window: &WindowId) -> Result<(), WmError> {
-        let _ = window;
-        Err(WmError::NotImplemented("hyprland close_window (task 1.6)"))
+        self.dispatch(&dispatch::close_window(window)?).await
     }
 
     /// Task 1.8.
@@ -133,6 +136,74 @@ mod tests {
     fn workspace_without_windows_gives_empty_list() {
         let windows = windows_from_answers(CLIENTS, MONITORS, Some(&WorkspaceId("42".into()))).expect("fixtures parse");
         assert!(windows.is_empty());
+    }
+
+    /// A temporary directory standing in for the Hyprland instance directory.
+    #[cfg(unix)]
+    fn temp_instance_dir(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!("torro-wm-{name}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp instance dir");
+        dir
+    }
+
+    /// Stands in for Hyprland's request socket: takes one request and answers `answer`.
+    /// The returned task yields the request text.
+    #[cfg(unix)]
+    async fn answer_one_request(dir: &std::path::Path, answer: &'static str) -> tokio::task::JoinHandle<String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::UnixListener::bind(dir.join(".socket.sock")).expect("bind fake socket");
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.expect("accept");
+            let mut received = String::new();
+            conn.read_to_string(&mut received).await.expect("read request");
+            conn.write_all(answer.as_bytes()).await.expect("write answer");
+            received
+        })
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn focus_sends_dispatch_line_and_accepts_ok() {
+        let dir = temp_instance_dir("focus-ok");
+        let server = answer_one_request(&dir, "ok\n").await;
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let result = wm.focus_window(&WindowId("0xABC".into())).await;
+        let received = server.await.expect("server task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(received, r#"dispatch hl.dsp.focus({ window = "address:0xabc" })"#);
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn refused_dispatch_becomes_protocol_error() {
+        let dir = temp_instance_dir("close-refused");
+        let server = answer_one_request(&dir, "err: no such window\n").await;
+        let wm = Hyprland { socket_dir: dir.clone() };
+        let result = wm.close_window(&WindowId("0x1f".into())).await;
+        let received = server.await.expect("server task");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(received, r#"dispatch hl.dsp.window.close({ window = "address:0x1f" })"#);
+        assert_eq!(result, Err(WmError::Protocol("err: no such window".into())));
+    }
+
+    /// Needs a running Hyprland on this machine: `cargo test -p torro-wm -- --ignored`.
+    /// Focuses the window that already has focus, so nothing visibly changes.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "needs a running Hyprland instance"]
+    async fn live_focus_on_the_focused_window_again() {
+        let wm = Hyprland::from_env(|key| std::env::var(key).ok()).expect("Hyprland environment");
+        let answer = socket::request(&wm.socket_dir, "j/activewindow").await.expect("active window");
+        let active: serde_json::Value = serde_json::from_str(&answer).expect("j/activewindow is JSON");
+        let address = active["address"].as_str().filter(|address| !address.is_empty());
+        let address = address.expect("no focused window; focus one and run the test again");
+        wm.focus_window(&WindowId(address.into())).await.expect("focus the focused window");
     }
 
     /// Needs a running Hyprland on this machine: `cargo test -p torro-wm -- --ignored`.
