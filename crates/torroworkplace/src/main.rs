@@ -15,6 +15,7 @@ use torro_core::AppId;
 mod account;
 mod apps;
 mod cli;
+mod clients;
 mod core;
 mod daemon;
 mod notify;

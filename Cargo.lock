@@ -4592,11 +4592,15 @@ name = "torroworkplace"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "getrandom 0.4.3",
  "iced",
+ "keyring",
  "ksni",
  "notify-rust",
  "reqwest",
+ "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "torro-core",

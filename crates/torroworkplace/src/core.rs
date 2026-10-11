@@ -1,13 +1,14 @@
-//! The commands of the core, shared by every way in: the socket (`ctl`, hotkeys, later the
-//! control centre) and the tray menu. Each [`Request`] gets one [`Response`]; the logic
-//! exists only here.
+//! The commands of the core, shared by every way in: the socket (`ctl`, hotkeys, the control
+//! centre, the apps, scripts and agents) and the tray menu. Each [`Request`] gets one
+//! [`Response`]; the logic exists only here. Requests from the socket pass the key check first
+//! ([`Core::handle_from`]); the tray menu runs inside the core and needs none.
 
 use std::sync::Arc;
 
 use chrono::Local;
 use tokio::sync::Mutex;
 use torro_core::AppId;
-use torro_ipc::{Request, Response, Status};
+use torro_ipc::{Key, Request, Response, Status};
 use torro_pim::AccountState;
 use torro_setups::capture::{auto_name, capture};
 use torro_setups::launch::{Launcher, SystemLauncher, command_for};
@@ -16,6 +17,7 @@ use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
+use crate::clients::{Clients, Refused};
 use crate::pim::PimService;
 use crate::settings_service::SettingsStore;
 
@@ -45,24 +47,38 @@ pub struct Snapshot {
     pub account: Option<AccountState>,
 }
 
-/// The core's state: window manager, template store, settings, and a lock so only one save or
-/// load runs at a time.
+/// The core's state: window manager, template store, settings, the keys that may talk to it,
+/// and a lock so only one save or load runs at a time.
 pub struct Core {
     backend: Backend,
     store: Store,
     work: Mutex<()>,
     pim: Arc<PimService>,
     settings: SettingsStore,
+    clients: Clients,
 }
 
 impl Core {
     /// The core over `backend` and `store`. The settings are the ones `pim` reads
     /// ([`PimService::settings`]), so hiding a collection and filtering it use the same file.
-    pub fn new(backend: Backend, store: Store, pim: Arc<PimService>) -> Core {
+    /// `clients` decides which keys get in ([`Core::handle_from`]).
+    pub fn new(backend: Backend, store: Store, pim: Arc<PimService>, clients: Clients) -> Core {
         let settings = pim.settings().clone();
-        Core { backend, store, work: Mutex::new(()), pim, settings }
+        Core { backend, store, work: Mutex::new(()), pim, settings, clients }
     }
 
+    /// A request from the socket with the key the client sent: answered only when the key may
+    /// run it ([`Clients::admit`]). Every request from outside the core goes through here.
+    ///
+    /// `Err` when it was refused; the caller sends [`Refused::response`] (`unauthorized` or
+    /// `forbidden`) and must not treat it as a command that ran (no notification, no refresh).
+    pub async fn handle_from(&self, key: Option<&Key>, request: Request) -> Result<Response, Refused> {
+        self.clients.admit(key, &request)?;
+        Ok(self.handle(request).await)
+    }
+
+    /// Answers `request` without a key check, with all rights: for the tray menu inside the core
+    /// and, after [`Core::handle_from`] admitted it, for the socket.
     pub async fn handle(&self, request: Request) -> Response {
         match request {
             Request::Ping => Response::Pong { version: version() },
@@ -259,14 +275,75 @@ fn error(err: &SetupsError) -> Response {
 mod tests {
     use super::*;
 
-    /// Templates in `dir`, settings in `dir/config/settings.json`: nothing of the user's.
+    /// Templates in `dir`, settings in `dir/config/settings.json`, keys in `dir/state/app.key`
+    /// and `dir/config/clients.json` with a keychain in memory: nothing of the user's.
     fn core(dir: &std::path::Path) -> Core {
         let settings = SettingsStore::at(settings_file(dir));
         Core::new(
             Backend::Unsupported { name: "test".into() },
             Store::at(dir.to_path_buf()),
             Arc::new(PimService::with_settings(settings)),
+            crate::clients::tests::open_in(dir),
         )
+    }
+
+    /// What a client on the socket gets back for `request` with `key`.
+    async fn ask(core: &Core, key: Option<&Key>, request: Request) -> Response {
+        core.handle_from(key, request).await.unwrap_or_else(Refused::response)
+    }
+
+    fn code(response: &Response) -> &str {
+        match response {
+            Response::Error { code, .. } => code,
+            other => panic!("expected an error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn requests_from_outside_need_the_app_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        assert!(matches!(ask(&core, None, Request::Ping).await, Response::Pong { .. }));
+        assert_eq!(code(&ask(&core, None, Request::ListTemplates).await), "unauthorized");
+        let wrong = Key::new("torro_app_wrong");
+        assert_eq!(code(&ask(&core, Some(&wrong), Request::ListTemplates).await), "unauthorized");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListTemplates).await, Response::Templates { templates: vec![] });
+    }
+
+    #[tokio::test]
+    async fn a_client_key_is_forbidden_and_refused_once_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (id, key) = core.clients.add("Claude Code", "claude-code").expect("added");
+
+        assert!(matches!(ask(&core, Some(&key), Request::Ping).await, Response::Pong { .. }));
+        assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "forbidden");
+        core.clients.remove(&id).expect("removed");
+        assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn refused_requests_change_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let request = Request::SetSetting { key: torro_ipc::SettingKey::StartAtLogin, value: serde_json::json!(true) };
+        assert_eq!(code(&ask(&core, None, request).await), "unauthorized");
+        assert!(!settings_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_damaged_clients_json_still_lets_the_app_in() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = crate::clients::tests::clients_file(dir.path());
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        std::fs::write(&file, "{ not json").expect("damage");
+
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert!(matches!(ask(&core, Some(&app_key), Request::Status).await, Response::Status(_)));
+        assert_eq!(code(&ask(&core, None, Request::Status).await), "unauthorized");
     }
 
     fn settings_file(dir: &std::path::Path) -> std::path::PathBuf {

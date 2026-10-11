@@ -82,11 +82,9 @@ pub enum Mcp {
 /// One command of the API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
-    /// `area.verb_object` in snake_case: `calendar.delete_event`. Stable like the wire format.
+    /// `area.verb_object` in snake_case: `calendar.delete_event`. It is also the request's
+    /// `method` on the wire (decision 6 in `docs/api.md`), so it is stable like the wire format.
     pub name: &'static str,
-    /// The `method` tag of the request on the wire (`delete-event`). It predates the catalogue
-    /// and differs from the name for some commands; renaming it would break v1 clients.
-    pub method: &'static str,
     pub area: Area,
     /// The access the command needs at least. [`Request::operation`] may ask for more.
     pub access: Access,
@@ -103,18 +101,18 @@ impl Command {
     }
 
     /// The JSON Schema of the request's fields without its `method` tag: the input of the MCP
-    /// tool and of `POST /v1/<area>/<command>` later. `None` when no request has
-    /// [`Command::method`], which the catalogue tests rule out.
+    /// tool and of `POST /v1/<area>/<command>` later. `None` when no request has the `method`
+    /// [`Command::name`], which the catalogue tests rule out.
     ///
     /// The schemas of all commands are built once per process ([`input_schemas`]), not on every
     /// call: generating the request schema walks every request type.
     pub fn input_schema(&self) -> Option<Schema> {
-        input_schemas().get(self.method).cloned()
+        input_schemas().get(self.name).cloned()
     }
 }
 
-/// The input schema of every request, by its `method`, built from [`request_schema`] on first
-/// use.
+/// The input schema of every request, by its `method` (the command name), built from
+/// [`request_schema`] on first use.
 fn input_schemas() -> &'static HashMap<&'static str, Schema> {
     static SCHEMAS: OnceLock<HashMap<&'static str, Schema>> = OnceLock::new();
     SCHEMAS.get_or_init(|| {
@@ -123,8 +121,8 @@ fn input_schemas() -> &'static HashMap<&'static str, Schema> {
         CATALOGUE
             .iter()
             .filter_map(|command| {
-                let variant = variants?.iter().find(|v| method_of(v) == Some(command.method))?;
-                Some((command.method, input_of(variant.clone())?))
+                let variant = variants?.iter().find(|v| method_of(v) == Some(command.name))?;
+                Some((command.name, input_of(variant.clone())?))
             })
             .collect()
     })
@@ -255,16 +253,15 @@ pub static CATALOGUE: &[&Command] = &[
 
 static PING: Command = Command {
     name: "system.ping",
-    method: "ping",
     area: Area::System,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Checks that the Torro Workplace core is running and returns its version.",
+    description: "Checks that the Torro Workplace core is running and returns its version. The only command that \
+                  works without a valid key.",
 };
 
 static STATUS: Command = Command {
     name: "system.status",
-    method: "status",
     area: Area::System,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -274,7 +271,6 @@ static STATUS: Command = Command {
 
 static LIST_TEMPLATES: Command = Command {
     name: "workspaces.list_templates",
-    method: "list-templates",
     area: Area::Workspaces,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -283,7 +279,6 @@ static LIST_TEMPLATES: Command = Command {
 
 static SAVE_TEMPLATE: Command = Command {
     name: "workspaces.save_template",
-    method: "save-template",
     area: Area::Workspaces,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -293,7 +288,6 @@ static SAVE_TEMPLATE: Command = Command {
 
 static UPDATE_TEMPLATE: Command = Command {
     name: "workspaces.update_template",
-    method: "update-template",
     area: Area::Workspaces,
     access: Access::Delete,
     mcp: Mcp::Tool,
@@ -303,7 +297,6 @@ static UPDATE_TEMPLATE: Command = Command {
 
 static DELETE_TEMPLATE: Command = Command {
     name: "workspaces.delete_template",
-    method: "delete-template",
     area: Area::Workspaces,
     access: Access::Delete,
     mcp: Mcp::Tool,
@@ -312,7 +305,6 @@ static DELETE_TEMPLATE: Command = Command {
 
 static LOAD_TEMPLATE: Command = Command {
     name: "workspaces.load_template",
-    method: "load-template",
     area: Area::Workspaces,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -323,7 +315,6 @@ static LOAD_TEMPLATE: Command = Command {
 
 static RENAME_TEMPLATE: Command = Command {
     name: "workspaces.rename_template",
-    method: "rename-template",
     area: Area::Workspaces,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -332,7 +323,6 @@ static RENAME_TEMPLATE: Command = Command {
 
 static LIST_CALENDARS: Command = Command {
     name: "calendar.list_calendars",
-    method: "calendar-collections",
     area: Area::Calendar,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -342,7 +332,6 @@ static LIST_CALENDARS: Command = Command {
 
 static LIST_EVENTS: Command = Command {
     name: "calendar.list_events",
-    method: "events",
     area: Area::Calendar,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -352,7 +341,6 @@ static LIST_EVENTS: Command = Command {
 
 static SAVE_EVENT: Command = Command {
     name: "calendar.save_event",
-    method: "save-event",
     area: Area::Calendar,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -362,7 +350,6 @@ static SAVE_EVENT: Command = Command {
 
 static DELETE_EVENT: Command = Command {
     name: "calendar.delete_event",
-    method: "delete-event",
     area: Area::Calendar,
     access: Access::Delete,
     mcp: Mcp::Tool,
@@ -372,7 +359,6 @@ static DELETE_EVENT: Command = Command {
 
 static LIST_LISTS: Command = Command {
     name: "tasks.list_lists",
-    method: "task-collections",
     area: Area::Tasks,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -382,7 +368,6 @@ static LIST_LISTS: Command = Command {
 
 static LIST_TODOS: Command = Command {
     name: "tasks.list_todos",
-    method: "todos",
     area: Area::Tasks,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -391,7 +376,6 @@ static LIST_TODOS: Command = Command {
 
 static SAVE_TODO: Command = Command {
     name: "tasks.save_todo",
-    method: "save-todo",
     area: Area::Tasks,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -401,7 +385,6 @@ static SAVE_TODO: Command = Command {
 
 static DELETE_TODO: Command = Command {
     name: "tasks.delete_todo",
-    method: "delete-todo",
     area: Area::Tasks,
     access: Access::Delete,
     mcp: Mcp::Tool,
@@ -411,7 +394,6 @@ static DELETE_TODO: Command = Command {
 
 static LIST_ACCOUNTS: Command = Command {
     name: "accounts.list_accounts",
-    method: "accounts",
     area: Area::Accounts,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -421,7 +403,6 @@ static LIST_ACCOUNTS: Command = Command {
 
 static SYNC: Command = Command {
     name: "accounts.sync",
-    method: "sync",
     area: Area::Accounts,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -432,7 +413,6 @@ static SYNC: Command = Command {
 
 static CONNECT_NEXTCLOUD: Command = Command {
     name: "accounts.connect_nextcloud",
-    method: "connect-nextcloud",
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
@@ -443,7 +423,6 @@ static CONNECT_NEXTCLOUD: Command = Command {
 
 static REMOVE_ACCOUNT: Command = Command {
     name: "accounts.remove_account",
-    method: "remove-account",
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
@@ -453,7 +432,6 @@ static REMOVE_ACCOUNT: Command = Command {
 
 static GET_SETTINGS: Command = Command {
     name: "settings.get_settings",
-    method: "settings",
     area: Area::Settings,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -463,7 +441,6 @@ static GET_SETTINGS: Command = Command {
 
 static SET_SETTING: Command = Command {
     name: "settings.set_setting",
-    method: "set-setting",
     area: Area::Settings,
     access: Access::Admin,
     mcp: Mcp::Tool,
@@ -473,7 +450,6 @@ static SET_SETTING: Command = Command {
 
 static SET_COLLECTION_SHOWN: Command = Command {
     name: "settings.set_collection_shown",
-    method: "set-collection-shown",
     area: Area::Settings,
     access: Access::Admin,
     mcp: Mcp::Tool,
@@ -483,7 +459,6 @@ static SET_COLLECTION_SHOWN: Command = Command {
 
 static UPDATE_SETTINGS: Command = Command {
     name: "settings.update_settings",
-    method: "update-settings",
     area: Area::Settings,
     access: Access::Admin,
     mcp: Mcp::Tool,
@@ -493,7 +468,6 @@ static UPDATE_SETTINGS: Command = Command {
 
 static LIST_APPS: Command = Command {
     name: "apps.list_apps",
-    method: "list-apps",
     area: Area::Apps,
     access: Access::Read,
     mcp: Mcp::Tool,
@@ -503,7 +477,6 @@ static LIST_APPS: Command = Command {
 
 static OPEN_APP: Command = Command {
     name: "apps.open_app",
-    method: "open-app",
     area: Area::Apps,
     access: Access::Write,
     mcp: Mcp::Tool,
@@ -619,12 +592,10 @@ mod tests {
         assert_eq!(names.len(), CATALOGUE.len(), "command names are unique");
         let tools: HashSet<_> = CATALOGUE.iter().map(|c| c.tool_name()).collect();
         assert_eq!(tools.len(), CATALOGUE.len(), "tool names are unique");
-        let methods: HashSet<_> = CATALOGUE.iter().map(|c| c.method).collect();
-        assert_eq!(methods.len(), CATALOGUE.len(), "every command has a request of its own");
 
         let mut from_schema = schema_methods();
         from_schema.sort();
-        let mut from_catalogue: Vec<String> = CATALOGUE.iter().map(|c| c.method.to_string()).collect();
+        let mut from_catalogue: Vec<String> = CATALOGUE.iter().map(|c| c.name.to_string()).collect();
         from_catalogue.sort();
         assert_eq!(from_schema, from_catalogue, "every request has exactly one command and vice versa");
     }
@@ -635,11 +606,23 @@ mod tests {
         assert_eq!(methods.len(), CATALOGUE.len());
     }
 
+    /// Decision 6: one name per command. Every request goes on the wire with its catalogue name
+    /// and comes back as the same request.
+    #[test]
+    fn every_request_is_serialized_with_its_catalogue_name() {
+        for request in samples() {
+            let name = request.operation().name();
+            assert_eq!(wire_method(&request), name, "{request:?}");
+            let json = serde_json::to_string(&request).expect("requests serialize");
+            assert_eq!(serde_json::from_str::<Request>(&json).expect("and parse again"), request, "{name}");
+        }
+    }
+
     #[test]
     fn operation_names_the_command_of_the_request() {
         for request in samples() {
             let operation = request.operation();
-            assert_eq!(operation.command.method, wire_method(&request), "{request:?}");
+            assert_eq!(operation.command.name, wire_method(&request), "{request:?}");
             assert!(CATALOGUE.iter().any(|c| std::ptr::eq(*c, operation.command)), "{request:?} not in CATALOGUE");
         }
     }
@@ -695,7 +678,7 @@ mod tests {
         let schema = request_schema();
         let variants = schema.get("oneOf").and_then(|v| v.as_array()).expect("requests are a oneOf");
         for command in CATALOGUE {
-            let variant = variants.iter().find(|v| method_of(v) == Some(command.method)).expect("a branch");
+            let variant = variants.iter().find(|v| method_of(v) == Some(command.name)).expect("a branch");
             assert_eq!(command.input_schema(), input_of(variant.clone()), "{}", command.name);
         }
     }

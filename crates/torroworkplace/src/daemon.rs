@@ -2,7 +2,8 @@
 //!
 //! One process per session. The main task owns a multi-threaded tokio runtime and runs:
 //!
-//! - the socket (`torro_ipc::server`) for `ctl`, hotkeys and later the control centre,
+//! - the socket (`torro_ipc::server`) for `ctl`, hotkeys, the control centre, the apps and
+//!   agents; every request there passes the key check ([`Core::handle_from`]),
 //! - the tray icon (Linux: ksni; it runs its own D-Bus task on the same runtime),
 //! - a refresher that rebuilds the tray menu after every command and on window manager
 //!   events (debounced),
@@ -15,9 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use torro_ipc::{Request, Response, client, server, socket_path};
+use torro_core::AppId;
+use torro_core::paths::AppPaths;
+use torro_ipc::{Request, Response, app_key_path, client, server, socket_path};
 use torro_setups::storage::Store;
 
+use crate::clients::{Clients, SystemKeychain};
 use crate::core::{Core, Snapshot};
 use crate::tray;
 
@@ -111,11 +115,15 @@ async fn serve(headless: bool) -> Result<(), String> {
     if let Ok(Response::Pong { .. }) = client::call(&socket, &Request::Ping).await {
         return Err("already running".into());
     }
+    // The app key goes next to the socket, where `torro_ipc::client` looks for it.
+    let config = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.config;
+    let clients = Clients::open(&app_key_path(&socket), &config.join("clients.json"), Box::new(SystemKeychain))
+        .map_err(|err| err.to_string())?;
     let store = Store::open_default().map_err(|err| err.to_string())?;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();
-    let core = Arc::new(Core::new(backend, store, pim));
+    let core = Arc::new(Core::new(backend, store, pim, clients));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -125,14 +133,19 @@ async fn serve(headless: bool) -> Result<(), String> {
         let refresh = refresh_tx.clone();
         let socket = socket.clone();
         tokio::spawn(async move {
-            server::serve(&socket, move |request| {
+            server::serve_with_key(&socket, move |key, request| {
                 let core = Arc::clone(&core);
                 let refresh = refresh.clone();
                 async move {
                     // Hotkeys go through `ctl`, so commands from the socket get the same
                     // notifications as clicks in the tray.
                     let changes = changes_state(&request).then(|| describe(&request));
-                    let response = core.handle(request).await;
+                    // A refused request ran nothing: no notification, no new menu, so a foreign
+                    // client cannot flood the desktop.
+                    let response = match core.handle_from(key.as_ref(), request).await {
+                        Ok(response) => response,
+                        Err(refused) => return refused.response(),
+                    };
                     if let Some(what) = changes {
                         report(&what, &response);
                         let _ = refresh.send(());
