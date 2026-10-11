@@ -46,3 +46,10 @@ its id with `torroworkplace ctl setups list`. Example for `~/.config/hypr/bindin
 ```lua
 o.bind("SUPER + ALT + 1", "Workspace: dev", "torroworkplace ctl setups load <id>")
 ```
+
+**Opaque Torro windows (Omarchy).** Omarchy makes every window slightly transparent, so text behind
+the very dark Torro windows shows through. `hyprland/windowrules.lua` keeps the windows of all Torro
+apps (`^torro-.*$`) fully opaque. Install it with
+`cp integrations/hyprland/windowrules.lua ~/.config/hypr/torro-windowrules.lua`, then add
+`require("hypr.torro-windowrules")` to `~/.config/hypr/hyprland.lua` after `require("hypr.autostart")`.
+The rule applies to windows opened afterwards; restart the Torro apps once.

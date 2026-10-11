@@ -154,7 +154,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   im vorhandenen Takt); „System“ folgt `prefers-color-scheme` bzw. dem Portal, sonst dunkel.
 
 ### F.7 Fenster deckend unter Omarchy
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku
 - **Dateien:** `integrations/hyprland/` (Fensterregel-Datei, neu), `README.md` (ein Absatz)
 - Omarchy macht alle Fenster leicht durchsichtig; auf dem sehr dunklen Hintergrund scheint
