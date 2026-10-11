@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Tasks
+GenericName=Task manager
+Comment=Tasks for the tiled desktop
+Exec=torrotasks
+Icon=torro-tasks
+Terminal=false
+Categories=Office;ProjectManagement;
+# Must equal the window class / Wayland app id set in torro-core (AppId::TASKS).
+StartupWMClass=torro-tasks

@@ -11,6 +11,8 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   mehrere Teile ineinandergreifen; dort lohnt das größere Modell.
 - Reihenfolge: Eine Aufgabe beginnt erst, wenn alle unter **Braucht** erledigt sind. Aufgaben ohne
   gegenseitige Abhängigkeit können parallel laufen.
+- Die Signaturen aus 1.0 stehen im Code, jeweils mit Doc-Kommentar. Der Doc-Kommentar ist Teil der
+  Aufgabe: Was dort steht, soll die Umsetzung erfüllen.
 - Startprompt für eine neue Sitzung:
 
   > Lies CLAUDE.md und erledige Aufgabe 1.X aus docs/tasks/phase-1.md. Halte dich an die
@@ -23,7 +25,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
  ├─ 1.1 Tray-Versuch ─ 1.2 Icon
  ├─ 1.3 Hyprland-Socket ─ 1.4 JSON lesen ─ 1.5 Abfragen ─┬─ 1.6 Steuern ─ 1.8 Layout-Befehle
  │                                                       └─ 1.7 Ereignisse
- ├─ 1.9 Backend erkennen
+ ├─ 1.9 Backend erkennen (nach 1.3)
  ├─ 1.10 Layout erfassen   1.11 Ablage   1.12 Startbefehle
  │        └──────────┬───────────┘──────────┘
  │               1.13 Erfassen ─ 1.14 Laden: Modi + herholen ─ 1.15 Laden: neu starten ─ 1.16 Laden: Layout
@@ -34,7 +36,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 ## Aufgaben
 
 ### 1.0 Gerüst und Schnittstellen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** –
 - **Ziel:** Alles, worauf die anderen Aufgaben aufbauen, steht als kompilierender Code mit
   festgelegten Typen und Signaturen. Implementierungen geben vorerst `Err(…NotImplemented)` zurück.
@@ -73,7 +75,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Icon in der Omarchy-Leiste gut erkennbar, hell und dunkel.
 
 ### 1.3 Hyprland: Befehls-Socket
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-wm/src/hyprland/socket.rs`
 - **Ziel:** Funktion `request(cmd: &str) -> Result<String, WmError>`, die über
@@ -84,7 +86,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   markierter Test fragt den echten Hyprland ab.
 
 ### 1.4 Hyprland: Antworten lesen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-wm/src/hyprland/json.rs`, `crates/torro-wm/tests/fixtures/hyprland-*.json`
 - **Ziel:** serde-Strukturen für `j/clients`, `j/activeworkspace`, `j/monitors` und Umwandlung in die
@@ -95,14 +97,15 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests lesen die Fixtures und prüfen Felder und Filter.
 
 ### 1.5 Hyprland: Fenster und Workspace abfragen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.3, 1.4
 - **Dateien:** `crates/torro-wm/src/hyprland/mod.rs`
-- **Ziel:** `active_workspace()` und `windows(workspace)` des Traits für Hyprland.
+- **Ziel:** `active_workspace()`, `windows(workspace)` und `monitors()` des Traits für Hyprland. `windows`
+  ergänzt den Monitornamen jedes Fensters über `j/monitors` (das Feld `monitor` in `j/clients` ist nur eine Nummer).
 - **Abnahme:** `#[ignore]`-Test gegen den echten Hyprland liefert die Fenster des aktiven Workspace.
 
 ### 1.6 Hyprland: Fenster steuern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.5
 - **Dateien:** `crates/torro-wm/src/hyprland/dispatch.rs`, `crates/torro-wm/src/hyprland/mod.rs`
 - **Ziel:** `focus_window`, `move_to_workspace`, `close_window`. Hyprland 0.56 unter Omarchy 4 nimmt
@@ -113,7 +116,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests für das Bauen der Ausdrücke inkl. Escaping und Prüfung der Fenster-Adresse.
 
 ### 1.7 Hyprland: Ereignisse
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.5
 - **Dateien:** `crates/torro-wm/src/hyprland/events.rs`
 - **Ziel:** `.socket2.sock` zeilenweise lesen (`openwindow>>…`, `closewindow>>…`, `movewindow>>…`,
@@ -121,7 +124,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests für das Zerlegen einzelner Zeilen; unbekannte Ereignisse werden ignoriert.
 
 ### 1.8 Hyprland: Layout-Befehle
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.6
 - **Dateien:** `crates/torro-wm/src/hyprland/mod.rs`, `crates/torro-wm/src/hyprland/dispatch.rs`
 - **Ziel:** `prepare_insert` (Fenster fokussieren, dann `hl.dsp.layout("preselect r|l|u|d")`) und
@@ -131,15 +134,15 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests für die erzeugten Ausdrücke.
 
 ### 1.9 Backend erkennen
-- [ ] erledigt
-- **Modell:** Haiku · **Braucht:** 1.0
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** 1.3
 - **Dateien:** `crates/torro-wm/src/detect.rs`
-- **Ziel:** `detect(env) -> Backend`: Hyprland, wenn `HYPRLAND_INSTANCE_SIGNATURE` gesetzt ist; sonst
+- **Ziel:** `detect(env) -> Backend`: Hyprland, wenn `Hyprland::from_env(env)` gelingt; sonst
   `Unsupported` mit einem lesbaren Namen („AeroSpace (macOS)“, „GlazeWM (Windows)“, „unbekannt“).
 - **Abnahme:** Unit-Tests mit gesetzter und fehlender Variable.
 
 ### 1.10 Layout aus Fensterrechtecken erfassen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-setups/src/layout.rs`
 - **Ziel:** `infer_tree(&[(id, Rect)]) -> LayoutTree`: Binärbaum aus Teilungen mit Richtung und
@@ -150,7 +153,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   rechts zwei übereinander), nicht teilbar → Rückfall.
 
 ### 1.11 Vorlagen ablegen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-setups/src/storage.rs`
 - **Ziel:** `list`, `load`, `save`, `delete` für Vorlagen in `<data>/templates/<id>.json`
@@ -162,7 +165,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   überschreiben mit Sicherung, Sicherungen begrenzt, löschen.
 
 ### 1.12 Startbefehle unter Linux
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-setups/src/launch/linux.rs`, `crates/torro-setups/src/launch/mod.rs`
 - **Ziel:** Aus PID und Fensterklasse einen Startbefehl ermitteln: `/proc/<pid>/cmdline`, bei
@@ -173,17 +176,17 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests mit Fake-`/proc` und Fake-`.desktop`-Dateien.
 
 ### 1.13 Workspace erfassen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.10, 1.11, 1.12
 - **Dateien:** `crates/torro-setups/src/capture.rs`
-- **Ziel:** `capture(&impl WindowManager) -> Template`: Fenster des aktiven Workspace, Baum (1.10),
-  Startbefehle (1.12), Name automatisch „Workspace 3, 11.10. 14:20“, Standardstrategie je Fenster
+- **Ziel:** `capture(wm, id, resolve, now) -> Template` (Signatur steht in `capture.rs`): Fenster des
+  aktiven Workspace, Baum (1.10), Startbefehle über `resolve`, Name automatisch „Workspace 3, 11.10. 14:20“, Standardstrategie je Fenster
   (`Move` für Programme, die nur einmal laufen, z. B. Spotify, Slack, Signal; sonst `New`).
 - **Referenz:** `apps/workspace-setups/workspace_setups/capture.py`.
 - **Abnahme:** Test mit `FakeWm` und drei Fenstern ergibt die erwartete Vorlage.
 
 ### 1.14 Laden: Modi und „herholen“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.13
 - **Dateien:** `crates/torro-setups/src/restore.rs`
 - **Ziel:** Ziel-Workspace zu Beginn festhalten. Modus `Empty` bricht bei belegtem Workspace mit
@@ -192,9 +195,9 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests mit `FakeWm` für alle drei Modi und für „herholen“.
 
 ### 1.15 Laden: Programme neu starten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku, bei Problemen Sonnet · **Braucht:** 1.14, 1.7
-- **Dateien:** `crates/torro-setups/src/restore.rs`, `crates/torro-setups/src/launch/linux.rs`
+- **Dateien:** `crates/torro-setups/src/restore.rs`, `crates/torro-setups/src/launch/mod.rs` (`SystemLauncher`)
 - **Ziel:** Strategie `New`: Programm losgelöst starten (eigene Prozessgruppe, Ausgabe verworfen),
   auf ein neues Fenster warten (Ereignisse, Zeitlimit z. B. 15 s) und es dem Eintrag zuordnen:
   zuerst über die PID-Abstammung, sonst über die Klasse. Fehler bei einem Fenster brechen nicht das
@@ -203,15 +206,17 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests mit `FakeWm`, der nach dem Start ein Fenster-Ereignis liefert; Test für das Zeitlimit.
 
 ### 1.16 Laden: Layout aufbauen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.15, 1.8
 - **Dateien:** `crates/torro-setups/src/restore.rs`
-- **Ziel:** Fenster in Baum-Reihenfolge aufbauen: vor jedem Fenster `prepare_insert` am
-  Geschwisterfenster, danach `place` mit dem Verhältnis.
+- **Ziel:** Den Baum **von oben nach unten** aufbauen, wie im Doc-Kommentar von `restore.rs`
+  beschrieben: Bei einer Teilung kommt das erste Blatt von `second` neben das erste Blatt von
+  `first` (`prepare_insert`, öffnen bzw. herholen, `place` mit dem Verhältnis), danach werden beide
+  Hälften genauso aufgebaut.
 - **Abnahme:** Test mit `FakeWm` prüft die Reihenfolge der Aufrufe für einen verschachtelten Baum.
 
 ### 1.17 IPC zwischen Dienst und Clients
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/server.rs`, `crates/torro-ipc/src/client.rs`
 - **Ziel:** Unix-Socket `core.sock` im State-Verzeichnis (Windows: vorerst „nicht unterstützt“).
@@ -221,7 +226,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   Test für die Einzelinstanz.
 
 ### 1.18 `ctl` und `status`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.17
 - **Dateien:** `crates/torroworkplace/src/cli.rs`, `crates/torroworkplace/src/main.rs`
 - **Ziel:** `torroworkplace ctl setups list|save|update <name>|delete <name>|load <name> [--mode empty|add|replace]`
@@ -241,7 +246,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   Modi), aktualisieren, löschen.
 
 ### 1.20 Benachrichtigungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.19
 - **Dateien:** `crates/torroworkplace/src/notify.rs`, `crates/torroworkplace/src/daemon.rs`
 - **Ziel:** Desktop-Benachrichtigung nach Speichern und Laden (Erfolg, Teilfehler mit Anzahl,

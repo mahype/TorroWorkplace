@@ -1,0 +1,12 @@
+{
+    "id": 2,
+    "name": "2",
+    "monitor": "HDMI-A-1",
+    "monitorID": 0,
+    "windows": 2,
+    "hasfullscreen": false,
+    "lastwindow": "0x5c719ce92aa0",
+    "lastwindowtitle": "(154) YouTube - Chromium",
+    "ispersistent": false,
+    "tiledLayout": "dwindle"
+}

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Workplace
+GenericName=Workspace templates
+Comment=Control centre of the TorroWorkplace suite
+Exec=torroworkplace ui
+Icon=torro-workplace
+Terminal=false
+Categories=Utility;
+# Must equal the window class / Wayland app id set in torro-core (AppId::WORKPLACE).
+StartupWMClass=torro-workplace

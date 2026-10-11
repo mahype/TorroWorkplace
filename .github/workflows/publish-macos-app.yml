@@ -1,0 +1,115 @@
+# DRAFT - INACTIVE until the maintainer enables it (docs/release.md, section "Einmal einrichten").
+#
+# Builds signed and notarised macOS `.app` bundles for the two GUIs from the binaries that dist already
+# put into the GitHub Release, and attaches them to the same release as `<bin>-<arch>-apple-darwin.app.zip`.
+# dist itself only ships bare binaries and no `.app` bundles.
+#
+# Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
+#   * automatically after a release: add `publish-jobs = ["./publish-macos-app"]` to dist-workspace.toml,
+#     run `dist generate`;
+#   * by hand: Actions -> "Publish macOS app" -> Run workflow, with the tag (e.g. v0.1.0).
+#
+# Needs an Apple Developer Program membership (99 USD/year) and these repository secrets:
+#   APPLE_CERTIFICATE_P12_BASE64   "Developer ID Application" certificate with private key, exported as .p12, base64
+#   APPLE_CERTIFICATE_PASSWORD     password of that .p12
+#   APPLE_SIGNING_IDENTITY         e.g. "Developer ID Application: Your Name (TEAMID)"
+#   APPLE_API_KEY_P8               contents of the App Store Connect API key (AuthKey_XXXX.p8)
+#   APPLE_API_KEY_ID               key id
+#   APPLE_API_ISSUER_ID            issuer id (UUID)
+
+name: Publish macOS app
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: JSON plan produced by `dist plan` (passed by release.yml)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the apps to, e.g. v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: write # upload the .app.zip to the release
+
+jobs:
+  macos-app:
+    name: ${{ matrix.bin }} (${{ matrix.arch }})
+    if: ${{ vars.MACOS_APP_ENABLED == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: aarch64, runner: macos-14 }
+          - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
+          - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
+          - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: x86_64, runner: macos-15-intel }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
+      TARGET: ${{ matrix.arch }}-apple-darwin
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download the released binary
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "${{ matrix.bin }}-${TARGET}.tar.xz"
+          tar -xf "${{ matrix.bin }}-${TARGET}.tar.xz"
+
+      - name: Build the .app bundle
+        run: |
+          version="${TAG#v}"
+          # Pass a 1024x1024 PNG as the last argument once real artwork exists (packaging/macos/icons/).
+          packaging/macos/make-app.sh "${{ matrix.bin }}" "${{ matrix.appid }}" "${{ matrix.title }}" \
+            "$version" "${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}" out
+
+      - name: Import the signing certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain
+          rm "$RUNNER_TEMP/cert.p12"
+
+      - name: Sign (hardened runtime)
+        env:
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --timestamp --options runtime --sign "$IDENTITY" "out/${{ matrix.title }}.app"
+          codesign --verify --strict --verbose=2 "out/${{ matrix.title }}.app"
+
+      - name: Notarise and staple
+        env:
+          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          echo "$API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k --keepParent "out/${{ matrix.title }}.app" "$RUNNER_TEMP/notarise.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" \
+            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID" --wait
+          # A zip cannot be stapled; staple the bundle, then zip it for the release.
+          xcrun stapler staple "out/${{ matrix.title }}.app"
+          rm "$RUNNER_TEMP/AuthKey.p8"
+
+      - name: Upload to the release
+        run: |
+          asset="${{ matrix.bin }}-${TARGET}.app.zip"
+          ditto -c -k --keepParent "out/${{ matrix.title }}.app" "$asset"
+          shasum -a 256 "$asset" > "$asset.sha256"
+          gh release upload "$TAG" "$asset" "$asset.sha256" --repo "$GITHUB_REPOSITORY" --clobber

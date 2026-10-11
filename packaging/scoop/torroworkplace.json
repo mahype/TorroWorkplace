@@ -1,0 +1,23 @@
+{
+    "version": "0.1.0",
+    "description": "TorroWorkplace core: background service, tray icon and workspace templates",
+    "homepage": "https://github.com/mahype/TorroWorkplace",
+    "license": "MIT OR Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroworkplace-x86_64-pc-windows-msvc.zip",
+            "hash": "TODO-sha256-of-the-zip"
+        }
+    },
+    "bin": "torroworkplace.exe",
+    "checkver": {
+        "github": "https://github.com/mahype/TorroWorkplace"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroworkplace-x86_64-pc-windows-msvc.zip"
+            }
+        }
+    }
+}

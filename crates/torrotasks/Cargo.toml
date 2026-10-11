@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Tasks for the tiled desktop: CalDAV to-dos as a TUI on the torroworkplace core."
+homepage.workspace = true
+description = "Tasks for the tiled desktop: Nextcloud/CalDAV to-dos in an Iced window on the torroworkplace core."
 
 [lints]
 workspace = true
@@ -13,5 +14,6 @@ workspace = true
 [dependencies]
 torro-core.workspace = true
 torro-pim.workspace = true
-torro-ipc.workspace = true
-torro-tui.workspace = true
+torro-gui.workspace = true
+chrono.workspace = true
+iced.workspace = true

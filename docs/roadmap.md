@@ -1,6 +1,6 @@
 # Roadmap
 
-Die Arbeitspakete stehen als Issues in den [Meilensteinen](https://github.com/mahype/TorroWorkplace/milestones) auf GitHub, eine Phase pro Meilenstein.
+Die Planung steht in diesem Dokument, die Aufgaben der aktuellen Phase unter [tasks/](tasks/). GitHub-Issues sind für Fehler und Einzelthemen da, nicht für die Vorausplanung.
 
 ## Phase 0: Planung und Gerüst ✅
 
@@ -25,6 +25,19 @@ Aufgaben, klein genug für Haiku: [tasks/phase-1.md](tasks/phase-1.md).
 
 Fertig ist Phase 1, wenn das Icon unter Omarchy erscheint und sich Workspaces aus dem Menü und mit
 `ctl` speichern und laden lassen (Abnahme in [core.md](core.md#prototyp-umfang-und-abnahme)).
+
+## Vorgezogen: Kalender und To-dos (erste Version)
+
+Am 2026-10-11 entschieden: Die beiden Apps kommen direkt nach dem Kern-Prototyp, mit Nextcloud im
+Kern (Konto, CalDAV, Zwischenspeicher). Aufgaben: [tasks/kalender-aufgaben.md](tasks/kalender-aufgaben.md).
+Damit ziehen Teile aus Phase 3 und 4 nach vorn.
+
+## Als Nächstes: Steuerzentrale (zentrale Einstellungen)
+
+Alle suite-weiten Einstellungen, vor allem die Konten, an einer Stelle in der Haupt-App, nach dem
+Vorbild von TorroWhisper und TorroMail. Konzept: [settings.md](settings.md). Vorgemerkte Konten:
+**GitHub** (OAuth Device Flow, Issues und Pull Requests), **Slack** (Erwähnungen, Nachrichten),
+**KI-Anbieter** (API-Schlüssel, Agenten).
 
 ## Phase 2: Kern auf allen Systemen
 

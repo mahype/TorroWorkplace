@@ -1,29 +1,26 @@
 //! `torrotasks` — tasks for the tiled desktop.
 //!
-//! A client of the core (`torroworkplace daemon`): the core owns accounts and sync, this
-//! app shows and edits tasks. Faces: the TUI (default), `status --json` and `ctl` for bars
-//! and scripts. AI agents reach tasks through the core's MCP server. Scaffold only.
+//! An Iced window with the fixed app id `torro-tasks`. Data comes from the core
+//! (`torroworkplace daemon`) over its socket; `--demo` runs on sample data instead.
+//! Lists, smart lists (Heute, Geplant, Alle), quick add, subtasks, due dates, priorities.
 
-use std::process::ExitCode;
+mod app;
+mod detail;
+mod list;
 
 use torro_core::AppId;
+use torro_gui::source::Source;
 
-const APP: AppId = AppId::TASKS;
-
-fn main() -> ExitCode {
-    let command = std::env::args().nth(1);
-    match command.as_deref() {
-        None | Some("tui") | Some("status") | Some("ctl") => {
-            eprintln!("{}: not implemented yet ({} scaffold)", APP.binary, env!("CARGO_PKG_VERSION"));
-            ExitCode::from(2)
-        }
-        Some("--version") | Some("-V") => {
-            println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
-            ExitCode::SUCCESS
-        }
-        Some(other) => {
-            eprintln!("{}: unknown command {other:?}; try tui, status or ctl", APP.binary);
-            ExitCode::from(64)
-        }
+fn main() -> iced::Result {
+    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{} {}", AppId::TASKS.binary, env!("CARGO_PKG_VERSION"));
+        return Ok(());
     }
+    let source = Source::from_args(std::env::args().skip(1));
+    iced::application(move || app::App::new(source.clone()), app::App::update, app::App::view)
+        .title(app::App::title)
+        .theme(|_: &app::App| torro_gui::theme::theme())
+        .subscription(app::App::subscription)
+        .window(torro_gui::window(AppId::TASKS))
+        .run()
 }

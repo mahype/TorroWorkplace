@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Calendar for the tiled desktop: CalDAV events as a TUI on the torroworkplace core."
+homepage.workspace = true
+description = "Calendar for the tiled desktop: Nextcloud/CalDAV events in an Iced window on the torroworkplace core."
 
 [lints]
 workspace = true
@@ -13,5 +14,6 @@ workspace = true
 [dependencies]
 torro-core.workspace = true
 torro-pim.workspace = true
-torro-ipc.workspace = true
-torro-tui.workspace = true
+torro-gui.workspace = true
+chrono.workspace = true
+iced.workspace = true

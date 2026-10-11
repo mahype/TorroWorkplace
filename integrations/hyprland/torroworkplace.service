@@ -1,0 +1,23 @@
+# systemd user unit for the TorroWorkplace core (tray icon, workspace templates).
+#
+# Install:  cp torroworkplace.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload
+#           systemctl --user enable --now torroworkplace
+#
+# Use either this unit or the Lua autostart (autostart.lua), not both.
+
+[Unit]
+Description=TorroWorkplace core
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+# The path depends on how you installed the binary. `cargo install` puts it in
+# ~/.cargo/bin; if you installed it elsewhere, change this line
+# (`command -v torroworkplace` shows where it is).
+ExecStart=%h/.cargo/bin/torroworkplace daemon
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

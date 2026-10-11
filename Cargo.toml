@@ -4,7 +4,10 @@ members = [
     "crates/torro-pim",
     "crates/torro-pim-caldav",
     "crates/torro-ipc",
+    "crates/torro-wm",
+    "crates/torro-setups",
     "crates/torro-tui",
+    "crates/torro-gui",
     "crates/torroworkplace",
     "crates/torrotasks",
     "crates/torrocalendar",
@@ -17,6 +20,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["TorroWorkplace contributors"]
 repository = "https://github.com/mahype/TorroWorkplace"
+homepage = "https://github.com/mahype/TorroWorkplace"
 
 [workspace.dependencies]
 torro-core = { path = "crates/torro-core" }
@@ -24,6 +28,22 @@ torro-pim = { path = "crates/torro-pim" }
 torro-pim-caldav = { path = "crates/torro-pim-caldav" }
 torro-tui = { path = "crates/torro-tui" }
 torro-ipc = { path = "crates/torro-ipc" }
+torro-wm = { path = "crates/torro-wm" }
+torro-setups = { path = "crates/torro-setups" }
+torro-gui = { path = "crates/torro-gui" }
+
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
+iced = { version = "0.14.0", features = ["canvas", "tokio"] }
+keyring = "4.2.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "charset", "http2", "json", "form"] }
+roxmltree = "0.21.1"
+webbrowser = "1.2.4"
+ksni = "0.3.6"
+notify-rust = "4.18.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.152"
+tempfile = "3.27.0"
+tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -32,3 +52,9 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 dbg_macro = "deny"
 todo = "deny"
+
+# Profile for release builds made by `dist` (see dist-workspace.toml and docs/release.md).
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = "debuginfo"

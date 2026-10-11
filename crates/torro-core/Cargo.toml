@@ -5,7 +5,12 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Shared ground for every TorroWorkplace app: app ids, per-OS paths, theme tokens."
+description = "Shared ground for every TorroWorkplace app: app ids, per-OS paths, accounts, theme tokens."
 
 [lints]
 workspace = true
+
+[dependencies]
+keyring.workspace = true
+serde.workspace = true
+serde_json.workspace = true

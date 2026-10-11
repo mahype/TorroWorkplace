@@ -1,0 +1,138 @@
+//! The "no account yet" screen every app shows.
+//!
+//! Task S.10 in `docs/tasks/steuerzentrale.md`. The apps no longer sign in themselves: while
+//! the core has no account ([`torro_pim::AccountState::NotConnected`]) the screen names the
+//! app and points to the control centre, whose "Open Settings" button starts
+//! `torroworkplace ui --section accounts`. While a sign-in runs (`SigningIn`) it only says so.
+//! The app keeps polling the core and loads by itself once the account is `Connected`.
+//!
+//! UI text is English (the base language); German comes through the translation table.
+
+use std::process::Command;
+
+use iced::font::Weight;
+use iced::widget::{button, center, column, container, text};
+use iced::{Element, Fill, Font, border};
+
+use torro_core::i18n::tr;
+use torro_pim::AccountState;
+
+use crate::source::sibling;
+use crate::theme;
+
+/// The screen keeps no state of its own; the app decides when it is shown.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Connect;
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// The user pressed "Open Settings".
+    OpenSettings,
+}
+
+/// What the app should do after an update.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Action {
+    /// Call [`open_settings`].
+    OpenSettings,
+}
+
+impl Connect {
+    pub fn update(&mut self, message: Message) -> Action {
+        match message {
+            Message::OpenSettings => Action::OpenSettings,
+        }
+    }
+
+    /// The screen for the current account state (`NotConnected` or `SigningIn`).
+    ///
+    /// Any state other than `SigningIn` shows the hint and the button, so a `Connected`
+    /// account that is still on screen does not show a blank card.
+    pub fn view<'a>(&'a self, account: &'a AccountState, app_name: &'a str) -> Element<'a, Message> {
+        let heading =
+            text(app_name).size(18).font(Font { weight: Weight::Semibold, ..Font::DEFAULT }).color(theme::TEXT);
+
+        let body: Element<'a, Message> = match account {
+            AccountState::SigningIn { .. } => text(tr("Signing in to Nextcloud …")).size(14).color(theme::TEXT).into(),
+            _ => column![
+                text(tr("Set up your Nextcloud in Torro Workplace's settings to see events and tasks here."))
+                    .size(14)
+                    .color(theme::MUTED),
+                button(text(tr("Open Settings")).size(14))
+                    .style(button::primary)
+                    .padding([8, 16])
+                    .on_press(Message::OpenSettings),
+            ]
+            .spacing(16)
+            .into(),
+        };
+
+        let card = container(column![heading, body].spacing(16).width(Fill))
+            .padding(24)
+            .width(Fill)
+            .max_width(420)
+            .style(card_style);
+
+        center(card).padding(16).into()
+    }
+}
+
+/// Opens the control centre on the accounts page. The app does not wait for it; the process
+/// is reaped in the background once it exits. Failures are only logged, the app keeps polling.
+pub fn open_settings() {
+    let program = sibling(torro_core::AppId::WORKPLACE.binary);
+    let mut command = Command::new(&program);
+    command
+        .args(["ui", "--section", "accounts"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // Own process group, so closing the app does not take the settings window with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    match command.spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(err) => eprintln!("cannot open {}: {err}", program.display()),
+    }
+}
+
+/// The card the hint sits on.
+fn card_style(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        text_color: Some(theme::TEXT),
+        background: Some(iced::Background::Color(theme::SURFACE)),
+        border: border::rounded(12).color(theme::LINE).width(1),
+        ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn open_settings_button_asks_for_settings() {
+        let mut connect = Connect;
+        assert_eq!(connect.update(Message::OpenSettings), Action::OpenSettings);
+    }
+
+    #[test]
+    fn view_builds_for_each_account_state() {
+        let connect = Connect;
+        let states = [
+            AccountState::NotConnected,
+            AccountState::SigningIn {
+                server: "https://cloud.example.org".into(),
+                login_url: "https://cloud.example.org/login/v2/flow/abc".into(),
+            },
+        ];
+        for state in &states {
+            let _element = connect.view(state, "Calendar");
+        }
+    }
+}
