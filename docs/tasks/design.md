@@ -472,7 +472,7 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
 - Wunsch: Schrift und Oberfläche insgesamt größer und kleiner stellen wie im Browser.
 - **Oberfläche:** In jeder App vergrößert Strg + Plus (auch Strg + `=` und Ziffernblock-Plus),
   verkleinert Strg + Minus, setzt Strg + 0 zurück. Stufen wie im Browser: 67 %, 75 %, 80 %, 90 %,
-  100 %, 110 %, 125 %, 150 %, 175 %, 200 %. Umgesetzt über Icelds `scale_factor` für das ganze Fenster
+  100 %, 110 %, 125 %, 150 %, 175 %, 200 %. Umgesetzt über Iceds `scale_factor` für das ganze Fenster
   (Layout, Abstände und Schrift wachsen gemeinsam; die Größenklassen rechnen in logischen Pixeln weiter).
   Steuerzentrale › General: Zeile „Zoom“ mit −, Prozentwert, + und „Reset“. Beim Ändern kurz eine
   ruhige Anzeige „110 %“ (wie im Browser), keine Benachrichtigung.
