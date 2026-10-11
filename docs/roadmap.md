@@ -13,6 +13,7 @@ Die Arbeitspakete stehen als Issues in den [Meilensteinen](https://github.com/ma
 
 Der Kern ist ein Dienst mit Tray-Icon, der Workspaces des Tiling-Managers als Vorlagen speichert
 und wieder aufbaut. Konzept: [core.md](core.md). Neu in Rust, workspace-setups dient nur als Referenz.
+Aufgaben, klein genug für Haiku: [tasks/phase-1.md](tasks/phase-1.md).
 
 1. **Versuch:** `ksni`-Icon mit Untermenüs im Tray der Omarchy-Leiste.
 2. **`torro-wm`:** Trait `WindowManager`, Backend Hyprland (Abfragen, Steuern, Ereignisse).
@@ -63,7 +64,7 @@ werden und der Kern mit einem Befehl installiert ist.
 
 - Der Kern synchronisiert für alle Apps.
 - Tiling-Manager: **Hyprland** (Linux), **AeroSpace** (macOS), **GlazeWM** (Windows).
-- workspace-setups wird nicht übernommen, sondern im Kern in Rust neu gebaut.
+- workspace-setups wird nicht übernommen, sondern im Kern in Rust neu gebaut; das Omarchy-Plugin wird nicht weiterentwickelt.
 - GUI: Iced.
 
 ## Offene Fragen
@@ -71,4 +72,3 @@ werden und der Kern mit einem Befehl installiert ist.
 - Zeigt die Omarchy-Leiste (Quickshell) Icon und Untermenüs von `ksni` sauber an?
 - Wie genau lassen sich Layouts unter AeroSpace und GlazeWM aufbauen?
 - Bundle-IDs und Signierung auf macOS (Team-ID wie bei TorroMail?)
-- Was passiert mit dem bisherigen Omarchy-Plugin workspace-setups, sobald der Kern es ersetzt?
