@@ -229,6 +229,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} windows", "{n} Fenster"),
     ("{restored} windows in place, {failed} failed", "{restored} Fenster da, {failed} fehlgeschlagen"),
     // Dates (torro-gui::datetime)
+    ("{day} {month}", "{day}. {month}"),
     ("{weekday}, {day} {month} {year}", "{weekday}, {day}. {month} {year}"),
     ("Monday", "Montag"),
     ("Tuesday", "Dienstag"),
@@ -354,6 +355,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("all day · day {n} of {total}", "ganztägig · Tag {n} von {total}"),
     ("{n} more", "{n} weitere"),
     // Tasks
+    ("Parent", "Übergeordnet"),
+    ("Tasks could not be loaded: {error}", "Aufgaben konnten nicht geladen werden: {error}"),
     ("{n} overdue", "{n} überfällig"),
     ("{n} today", "{n} heute"),
     ("All done for today", "Heute alles erledigt"),
