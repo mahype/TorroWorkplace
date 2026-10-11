@@ -117,8 +117,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Templates", "Vorlagen"),
     ("Templates can't be saved or loaded.", "Vorlagen lassen sich nicht speichern oder laden."),
     (
-        "This only removes the account from Torro Workplace. Your data stays on the server.",
-        "Das Konto wird nur aus Torro Workplace entfernt. Deine Daten bleiben auf dem Server.",
+        "This removes {account} from Torro Workplace. Your data stays on the server.",
+        "Dadurch wird {account} aus Torro Workplace entfernt. Deine Daten bleiben auf dem Server.",
     ),
     ("Unknown", "Unbekannt"),
     ("Updated {when}", "Aktualisiert {when}"),
