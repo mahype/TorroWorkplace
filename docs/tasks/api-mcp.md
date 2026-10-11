@@ -122,7 +122,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 
 ### A.2c Tray-Befehle in der API
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** A.2 · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/src/apps.rs`, `crates/torroworkplace/src/tray/linux.rs`, `crates/torroworkplace/src/cli.rs`
+- **Modell:** Haiku · **Braucht:** A.2 · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/src/apps.rs`, `crates/torroworkplace/src/tray/linux.rs`, `crates/torroworkplace/src/cli.rs`, `crates/torroworkplace/src/clients.rs`
 - Entscheidung 8 in `api.md`:
   - **Oberfläche:** Tray „Settings…“ und „Quit“
   - **API:** `apps.open_app` nimmt auch die Steuerzentrale (`torroworkplace`, öffnet `torroworkplace ui`);
