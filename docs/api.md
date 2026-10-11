@@ -157,6 +157,12 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    einen Menschen in der Oberfläche oder per Benachrichtigung.
 4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
+5. **Geheimnisse entgegennehmen** (Token einfügen `accounts.set_github_token`, später Anmeldung mit
+   Passwort, Import aus einem fremden Schlüsselbund): nur mit dem App-Schlüssel, also nur aus der
+   Oberfläche. Solche Requests landen nie in einer Freigabe.
+
+Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
+setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
 
 Anmeldungen bei Anbietern (Login Flow v2, GitHub) gibt es über die API, sie enden aber immer im
 Browser des Menschen; ein Agent bekommt nie ein Passwort zu sehen.

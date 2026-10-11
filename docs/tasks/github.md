@@ -164,6 +164,23 @@ K.21 (frei)
 - Abnahme: Tests mit aufgezeichneten Antworten (kein Netz), Token nie in Antworten, `Debug` oder Log;
   Rechte-Test: `set_github_token` mit Client-Schlüssel → `forbidden`.
 
+### G.1b Hinweise aus der API-Prüfung von G.1
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** G.1 · **Dateien:** `crates/torroworkplace/src/ui/wizard.rs`, `crates/torroworkplace/src/core.rs`,
+  `crates/torroworkplace/src/account.rs`, `crates/torro-ipc/src/{server,api}.rs`
+- `Message::TokenChanged` trägt den Token als `Secret` (oder eigenes `Debug`), damit kein abgeleitetes `Debug`
+  den Klartext zeigt.
+- `accounts.connect_github` für Clients: Ist die Steuerzentrale schon offen, wechselt sie auch zur Kontoseite
+  (wie die Katalogbeschreibung verspricht).
+- `gh` auch finden, wenn der Dienst unter launchd/systemd ohne vollen PATH läuft: bekannte Orte als Rückfall
+  (`/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/bin`; Windows: Programme-Verzeichnis), sonst Meldung,
+  dass `gh` nicht gefunden wurde, mit dem Hinweis auf den Token-Weg.
+- `torro-ipc/src/server.rs`: „malformed request“ ohne die serde-Meldung (sie kann Werte zitieren, z. B. einen
+  Token im falschen Feld), wie schon beim Schlüssel.
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Tests für `Debug` der Message, Suche nach `gh` (Rückfall-Pfade mit Temp-Verzeichnis), feste Meldung bei
+  kaputtem Request.
+
 ### G.2 Filterlisten im Kern
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** G.1, P.2 · **Dateien:** `crates/torro-pim-github/` (neu), Wurzel-`Cargo.toml`,
