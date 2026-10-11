@@ -11,6 +11,9 @@
 //! Click on an empty slot → `NewEvent { date, time }` (time rounded down to the half hour), on
 //! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`.
 //!
+//! In the wide layout the day view's properties column lists what is left of the day
+//! ([`day_props`], "Up next"); a click on an entry opens it like a click on its block.
+//!
 //! Every colour comes from the theme's [`Palette`] at draw time, so light and dark both work.
 //! The geometry (time ↔ y, splitting at midnight, lanes, free gaps, hit-testing) is in
 //! `week/layout.rs`.
@@ -29,12 +32,13 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
 use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::typo::{ellipsize, text_width};
-use torro_gui::{style, typo};
+use torro_gui::widgets::{self, Mark};
+use torro_gui::{icon, style, typo};
 use torro_pim::{Event as CalendarEvent, EventTime};
 
 use layout::{GRID_HEIGHT, GridHit, HOUR_HEIGHT, StripHit};
 
-use super::ViewData;
+use super::{ViewData, short_date};
 use crate::app::Message;
 
 /// Id of the time grid's scrollable, used by [`scroll_to_morning`].
@@ -306,6 +310,79 @@ fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, M
         );
     }
     header.into()
+}
+
+/// What a property row in [`day_props`] has room for: the column less its padding and the row's,
+/// the dot and the gaps around the title.
+const PROPS_ROOM: f32 = size::PROPS - 4.0 * space::S - icon::SIZE - 2.0 * space::S;
+
+/// One entry of "Up next": an event of the shown day as the properties column lists it.
+#[derive(Debug, Clone, PartialEq)]
+struct Next {
+    /// Index into the app's event list, for `OpenEvent`.
+    index: usize,
+    color: Color,
+    title: String,
+    /// "All day", "Now" for one running, or its start "15:00".
+    when: String,
+}
+
+/// The events of the day view's day (`data.start`) for its properties column, all-day ones first,
+/// then by start. On today only what has not ended yet: that is what comes next. On other days
+/// the whole day.
+fn up_next(data: &ViewData<'_>) -> Vec<Next> {
+    let today = data.start == data.now.date();
+    let mut found: Vec<(bool, NaiveDateTime, Next)> = data
+        .items
+        .iter()
+        .filter_map(|item| {
+            let (start, end, all_day) = local_span(item.event);
+            // All-day events last the whole day, even those stored without an end.
+            if today && !all_day && end <= data.now {
+                return None;
+            }
+            let when = if all_day {
+                tr("All day").to_string()
+            } else if today && start <= data.now {
+                tr("Now").to_string()
+            } else {
+                format_time(start.time())
+            };
+            let next = Next { index: item.index, color: item.color, title: title(item.event), when };
+            Some((!all_day, start, next))
+        })
+        .collect();
+    found.sort_by(|a, b| (a.0, a.1, &a.2.title).cmp(&(b.0, b.1, &b.2.title)));
+    found.into_iter().map(|(_, _, next)| next).collect()
+}
+
+/// The properties column of the day view in the wide layout: "Up next" on today (the short date
+/// on other days), a row per event with its colour dot, title and when; a click opens it. With
+/// nothing (left) to show, a quiet line says so.
+pub fn day_props(data: &ViewData<'_>) -> Element<'static, Message> {
+    let today = data.start == data.now.date();
+    let heading = if today { tr("Up next").to_string() } else { short_date(data.start) };
+    let entries = up_next(data);
+    let rows: Vec<Element<'static, Message>> = if entries.is_empty() {
+        let calm = if today { tr("Nothing else today") } else { tr("No events") };
+        vec![widgets::prop_row(None, typo::text(typo::BODY, calm).style(theme::text_3), None)]
+    } else {
+        entries.into_iter().map(next_row).collect()
+    };
+    widgets::prop_section(heading, rows)
+}
+
+/// A row of [`day_props`]: dot, title cut to the room left beside the time, the time at the right.
+fn next_row(next: Next) -> Element<'static, Message> {
+    let when_width = text_width(&next.when, typo::META);
+    let title = ellipsize(&next.title, typo::BODY, PROPS_ROOM - when_width - space::S);
+    let value = row![
+        typo::text(typo::BODY, title).wrapping(iced::widget::text::Wrapping::None),
+        Space::new().width(Length::Fill),
+        typo::text(typo::META.tabular(), next.when).style(theme::text_3),
+    ]
+    .align_y(Vertical::Center);
+    widgets::prop_row(Some(Mark::Dot(next.color)), value, Some(Message::OpenEvent(next.index)))
 }
 
 /// The all-day strip above the grid (`.allday`): a chip per entry, an empty cell in the axis.
@@ -684,6 +761,61 @@ mod tests {
         assert!(!two_lines_fit(HOUR_HEIGHT / 2.0 - 2.0));
         assert!(two_lines_fit(HOUR_HEIGHT * 0.75 - 2.0));
         assert!(two_lines_fit(HOUR_HEIGHT - 2.0));
+    }
+
+    fn calendar_event(summary: &str, start: EventTime, end: Option<EventTime>) -> CalendarEvent {
+        CalendarEvent {
+            uid: summary.into(),
+            collection: String::new(),
+            href: None,
+            etag: None,
+            summary: summary.into(),
+            start,
+            end,
+            location: None,
+            description: None,
+            recurring: false,
+        }
+    }
+
+    fn local(day: u32, hour: u32, minute: u32) -> EventTime {
+        EventTime::DateTime(at(day, hour, minute).and_local_timezone(chrono::Local).single().expect("local").to_utc())
+    }
+
+    #[test]
+    fn up_next_lists_what_is_left_of_today_and_all_of_another_day() {
+        let events = [
+            calendar_event("Review", local(7, 16, 0), Some(local(7, 17, 0))),
+            calendar_event("Standup", local(7, 9, 30), Some(local(7, 9, 45))),
+            calendar_event("Holiday", EventTime::Date(at(7, 0, 0).date()), None),
+            calendar_event("Workshop", local(7, 14, 0), Some(local(7, 15, 0))),
+        ];
+        let items =
+            events.iter().enumerate().map(|(index, event)| super::super::Item { index, event, color: Color::BLACK });
+        let day = at(7, 0, 0).date();
+        let mut data = ViewData {
+            items: items.collect(),
+            start: day,
+            end: day + Duration::days(1),
+            anchor: day,
+            now: at(7, 14, 20),
+        };
+        let listed =
+            |data: &ViewData<'_>| up_next(data).into_iter().map(|next| (next.title, next.when)).collect::<Vec<_>>();
+        let all_day = tr("All day").to_string();
+        assert_eq!(
+            listed(&data),
+            [
+                ("Holiday".into(), all_day.clone()),
+                ("Workshop".into(), tr("Now").to_string()),
+                ("Review".into(), "16:00".to_string()),
+            ],
+            "the standup is over"
+        );
+        data.now = at(6, 18, 0);
+        assert_eq!(listed(&data).len(), 4, "seen from the day before, the whole day comes");
+        assert_eq!(listed(&data)[1], ("Standup".into(), "09:30".to_string()));
+        let _: Element<'_, Message> = day_props(&data);
     }
 
     #[test]

@@ -371,7 +371,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   Aufgaben-Mini: Kopfzahl in `DISPLAY`, Orange nur im Punkt.
 
 ### D.10 Tagesansicht in Breit
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Dateien:** `crates/torrocalendar/src/views/week.rs`, `crates/torrocalendar/src/app.rs`
 - Ein Tag wird nicht über 1600 px gestreckt: Spalte auf `CONTENT_MAX`, rechts „Up next“ bzw. die
   Eigenschaften des gewählten Termins (wie die Eigenschaften-Spalte im Entwurf).

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
-use iced::widget::{column, row};
+use iced::widget::{column, container, row};
 use iced::{Alignment, Color, Element, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -25,7 +25,7 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Switcher};
 use torro_gui::source::Source;
 use torro_gui::style;
-use torro_gui::theme::{self, Appearance, space};
+use torro_gui::theme::{self, Appearance, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color, modal};
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimSource};
@@ -703,7 +703,7 @@ impl App {
             Menu::View => (!shell::has_sidebar(class))
                 .then(|| widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)),
         });
-        shell::shell(class, self.sidebar(class, &switcher), self.header(class, &views), self.body(), None)
+        shell::shell(class, self.sidebar(class, &switcher), self.header(class, &views), self.body(), self.props(class))
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
             .into()
@@ -852,12 +852,29 @@ impl App {
         self.current_view()
     }
 
-    fn current_view(&self) -> Element<'_, Message> {
+    /// The properties column of the wide layout: what is left of the day beside the day view
+    /// (`views::week::day_props`). The other views fill the width and have none.
+    fn props(&self, class: SizeClass) -> Option<Element<'_, Message>> {
+        let shows_day = shell::has_props(class) && self.shown() == CalView::Day;
+        (shows_day && self.loaded && self.error.is_none()).then(|| views::week::day_props(&self.view_data()))
+    }
+
+    /// What the current view gets to draw.
+    fn view_data(&self) -> ViewData<'_> {
         let (start, end) = self.range();
-        let data = ViewData { items: self.items(), start, end, anchor: self.anchor, now: self.now };
+        ViewData { items: self.items(), start, end, anchor: self.anchor, now: self.now }
+    }
+
+    fn current_view(&self) -> Element<'_, Message> {
+        let data = self.view_data();
         match self.shown() {
             CalView::Day if self.class() == SizeClass::Narrow => {
                 column![week_strip::view(&data), views::week::day_under_strip(data)].into()
+            }
+            // One day is not stretched over a wide window: it keeps a list's reading width at the
+            // sidebar (design skill, section 6), and the properties column says what comes next.
+            CalView::Day if shell::has_props(self.class()) => {
+                container(views::week::view(data)).max_width(size::CONTENT_MAX).into()
             }
             CalView::Day | CalView::Week => views::week::view(data),
             CalView::Month => views::month::view(data),
