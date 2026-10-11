@@ -344,7 +344,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   hoch (`CONTROL_LG`); `pick_list` mit Lucide `chevron-down` statt Iced-Dreieck.
 
 ### D.6 Fehler- und Leertexte mit Zusammenhang
-- [ ] erledigt
+- [x] erledigt
 - Kalender-Teil erledigt (Commit `fix(torrocalendar): say so when the week or day has no events (D.6)`)
 - Steuerzentralen-Teil erledigt (Commit e379459): Demo-Fehlertext in `ui/launch.rs` mit großem Satzanfang.
 - **Modell:** Haiku · **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/launch.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/week.rs`
@@ -387,7 +387,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   Eigenschaften des gewählten Termins (wie die Eigenschaften-Spalte im Entwurf).
 
 ### D.11 Kleinigkeiten
-- [ ] erledigt
+- [x] erledigt
 - Kalender-Teil erledigt (Commit `fix(torrocalendar): hide the empty all-day strip, dim neighbouring months (D.11)`): leerer Ganztagsstreifen ausgeblendet (`views/week.rs`), Nachbarmonate abgeblendet (`views/month.rs`).
 - Steuerzentralen-Teil erledigt (Commit e4c5f6b): Drawer mit Scrim und Schatten, Kopftitel und Inhalt in Mittel auf einer Achse, „Coming soon“-Zeilen auf 40 %, „colours“ → „colors“, Rollbalken hell nur bei Zeigerkontakt (`shell.rs`, `style.rs`, `widgets.rs`, `ui/`).
 - **Modell:** Haiku · **Dateien:** je nach Punkt (nennen)
