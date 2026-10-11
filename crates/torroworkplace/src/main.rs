@@ -13,6 +13,7 @@ use torro_core::AppId;
 mod cli;
 mod core;
 mod daemon;
+mod notify;
 mod tray;
 
 const APP: AppId = AppId::WORKPLACE;

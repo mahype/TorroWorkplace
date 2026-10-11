@@ -202,7 +202,7 @@ fn describe(request: &Request) -> String {
     }
 }
 
-/// Tells the user how a tray command went. Desktop notifications follow with task 1.20.
+/// Tells the user how a tray command went: on stderr, and as a desktop notification.
 fn report(what: &str, response: &Response) {
     match response {
         Response::Error { message, .. } => eprintln!("torroworkplace: {what} failed: {message}"),
@@ -214,5 +214,8 @@ fn report(what: &str, response: &Response) {
         }
         Response::Saved { template } => eprintln!("torroworkplace: saved {:?} ({})", template.name, template.id),
         _ => eprintln!("torroworkplace: {what}: ok"),
+    }
+    if let Some((summary, body)) = crate::notify::message(what, response) {
+        crate::notify::show(summary, body);
     }
 }
