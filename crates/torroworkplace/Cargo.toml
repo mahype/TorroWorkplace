@@ -30,6 +30,8 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
 webbrowser.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]

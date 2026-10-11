@@ -7,7 +7,8 @@
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
-//! - later: `mcp` (one MCP server for the whole suite).
+//! - `mcp`: one MCP server for the whole suite, on stdio, with the agent's key from
+//!   `TORRO_TOKEN`.
 
 use std::process::ExitCode;
 
@@ -19,6 +20,7 @@ mod cli;
 mod clients;
 mod core;
 mod daemon;
+mod mcp;
 mod notify;
 mod pim;
 mod settings_service;
@@ -49,16 +51,13 @@ fn main() -> ExitCode {
             }
         }
         Some("ctl" | "status") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
-        Some("mcp") => {
-            eprintln!("{}: not implemented yet ({} scaffold)", APP.binary, env!("CARGO_PKG_VERSION"));
-            ExitCode::from(2)
-        }
+        Some("mcp") => mcp::run(),
         Some("--version") | Some("-V") => {
             println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("{}: unknown command {other:?}; try daemon, status or ctl", APP.binary);
+            eprintln!("{}: unknown command {other:?}; try daemon, status, ctl or mcp", APP.binary);
             ExitCode::from(64)
         }
     }

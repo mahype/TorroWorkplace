@@ -154,7 +154,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Admin-Befehl eines Agenten wartet auch bei „Freigabe vorher: Nie“.
 
 ### A.4 MCP-Server
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** A.1 (zusammenführen erst nach A.2) · **Dateien:** `crates/torroworkplace/src/mcp.rs` (neu), `crates/torroworkplace/src/main.rs`, `crates/torroworkplace/Cargo.toml`, `Cargo.toml`
 - `torroworkplace mcp` auf `rmcp`, stdio, Schlüssel aus `TORRO_TOKEN`. Tools aus dem Katalog
   (`Mcp::Tool`), Schema aus `schemars`, bequeme Eingaben für Termine und Aufgaben. Startet den

@@ -55,21 +55,12 @@ impl Source {
 pub fn ensure_core(socket: &std::path::Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
-        use std::process::{Command, Stdio};
-
         if std::os::unix::net::UnixStream::connect(socket).is_ok() {
             return;
         }
         let program = sibling(torro_core::AppId::WORKPLACE.binary);
-        match Command::new(&program)
-            .arg("daemon")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-        {
+        let home = std::env::var_os("HOME").filter(|home| !home.is_empty()).map(std::path::PathBuf::from);
+        match daemon_command(&program, home).spawn() {
             // Reap the daemon if it ever exits while the app still runs.
             Ok(mut child) => {
                 std::thread::spawn(move || child.wait());
@@ -79,6 +70,29 @@ pub fn ensure_core(socket: &std::path::Path) {
     }
     #[cfg(not(unix))]
     let _ = socket;
+}
+
+/// The command [`ensure_core`] starts the core with: `program daemon`, detached from the
+/// caller's terminal and process group, so it outlives the app or MCP server that started it.
+///
+/// It runs in `home` (else `/`), not in the caller's directory, which it would otherwise keep
+/// busy for as long as it runs. `TORRO_TOKEN` is not passed on: it is the key of the agent whose
+/// MCP server started the core, and the core has no use for it.
+#[cfg(unix)]
+fn daemon_command(program: &std::path::Path, home: Option<std::path::PathBuf>) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let mut command = Command::new(program);
+    command
+        .arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .env_remove("TORRO_TOKEN")
+        .current_dir(home.unwrap_or_else(|| std::path::PathBuf::from("/")))
+        .process_group(0);
+    command
 }
 
 /// `name` next to the running binary (an install puts the suite in one directory), else
@@ -150,5 +164,22 @@ mod tests {
     fn demo_data_opens_no_app() {
         let demo = Source::from_args(["--demo".to_string()]);
         assert_eq!(iced::futures::executor::block_on(demo.open_app("torrotasks")), Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_core_starts_in_home_without_the_agent_key() {
+        use std::ffi::OsStr;
+        use std::path::{Path, PathBuf};
+
+        let program = Path::new("/opt/torro/torroworkplace");
+        let command = daemon_command(program, Some(PathBuf::from("/home/anna")));
+        assert_eq!(command.get_program(), program.as_os_str());
+        assert_eq!(command.get_args().collect::<Vec<_>>(), [OsStr::new("daemon")]);
+        assert_eq!(command.get_current_dir(), Some(Path::new("/home/anna")));
+        assert!(command.get_envs().any(|(name, value)| name == "TORRO_TOKEN" && value.is_none()));
+
+        let homeless = daemon_command(program, None);
+        assert_eq!(homeless.get_current_dir(), Some(Path::new("/")));
     }
 }
