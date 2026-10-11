@@ -74,6 +74,9 @@ Am 2026-10-11 aus der Übersicht über die Nextcloud-Schnittstellen ausgewählt.
 Fertig ist Phase 2, wenn Vorlagen unter Hyprland, AeroSpace und GlazeWM gespeichert und geladen
 werden und der Kern mit einem Befehl installiert ist.
 
+Aufgaben für macOS und Windows (Named Pipes, Tray, AeroSpace, GlazeWM, Autostart, Signatur):
+[tasks/plattformen.md](tasks/plattformen.md).
+
 ## Phase 3: Konten, Sync und MCP im Kern
 
 - Konten einmal im Kern einrichten, Passwörter im Schlüsselbund; Nextcloud zuerst, Anmeldung über

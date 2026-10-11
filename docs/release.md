@@ -193,6 +193,10 @@ diesem Repository noch einmal eingetragen werden.
 
 ### Windows (später)
 
+Was Windows bis zur vollen Unterstützung fehlt (Named Pipes, Konsolenfenster, Tray, GlazeWM, Signatur):
+[tasks/plattformen.md](tasks/plattformen.md).
+
+
 - [ ] Entscheiden: unsigniert lassen oder Azure Artifact Signing einrichten (Konto, Identitätsprüfung,
       Zertifikatsprofil, OIDC-Verknüpfung, Environment `release`).
 - [ ] Repository `mahype/scoop-torro` anlegen, wenn Windows unterstützt wird.
