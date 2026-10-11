@@ -4296,6 +4296,7 @@ name = "torroworkplace"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "iced",
  "ksni",
  "notify-rust",
  "reqwest",
@@ -4303,6 +4304,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "torro-core",
+ "torro-gui",
  "torro-ipc",
  "torro-pim",
  "torro-pim-caldav",

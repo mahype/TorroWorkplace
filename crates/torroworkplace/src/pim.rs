@@ -133,6 +133,18 @@ impl PimService {
         }
     }
 
+    /// All accounts with state and all collections, for the control centre (task S.2).
+    pub async fn accounts(&self) -> Vec<torro_ipc::AccountInfo> {
+        Vec::new()
+    }
+
+    /// Removes the account `id`: revokes its app password on the server (best effort),
+    /// forgets account and secret, empties the cache (task S.2).
+    pub async fn remove_account(&self, id: &str) -> Result<(), String> {
+        let _ = id;
+        Err("remove_account not implemented yet (task S.2)".into())
+    }
+
     pub async fn account_state(&self) -> AccountState {
         let state = self.state.read().await;
         if let Some((server, login_url)) = &state.signing_in {

@@ -92,6 +92,27 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::SaveTodo { .. }
             | Request::DeleteTodo { .. }) => self.pim.handle(pim).await,
+            Request::Settings => Response::Settings { settings: crate::settings_service::current() },
+            Request::UpdateSettings { settings } => match crate::settings_service::update(settings) {
+                Ok(()) => Response::Ok,
+                Err(message) => Response::Error { code: "error".into(), message },
+            },
+            Request::Accounts => Response::Accounts { accounts: self.pim.accounts().await },
+            Request::RemoveAccount { id } => match self.pim.remove_account(&id).await {
+                Ok(()) => Response::Ok,
+                Err(message) => Response::Error { code: "error".into(), message },
+            },
+            Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
+                Ok(template) => Response::Saved { template },
+                Err(err) => error(&err),
+            },
+            Request::OpenApp { app } => match AppId::ALL.iter().find(|a| a.binary == app) {
+                Some(app) => match self.open_app(*app).await {
+                    Ok(()) => Response::Ok,
+                    Err(message) => Response::Error { code: "error".into(), message },
+                },
+                None => Response::Error { code: "not-found".into(), message: format!("no app {app:?}") },
+            },
         }
     }
 
@@ -162,6 +183,19 @@ impl Core {
         template.name = name;
         self.store.save(&template)?;
         Ok(Response::Saved { template: TemplateSummary::from(&template) })
+    }
+
+    /// Gives a template a new name; empty names are refused.
+    fn rename(&self, id: &str, name: &str) -> Result<TemplateSummary, SetupsError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(SetupsError::Format("a template needs a name".into()));
+        }
+        let mut template = self.store.load(id)?;
+        template.name = name.to_string();
+        template.updated = chrono::Utc::now();
+        self.store.save(&template)?;
+        Ok(TemplateSummary::from(&template))
     }
 
     /// Captures the active workspace again under an existing template, keeping its name and

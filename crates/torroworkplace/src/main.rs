@@ -4,7 +4,9 @@
 //!   connection and the workspace templates, and the socket clients talk to; later also
 //!   accounts, sync and the app registry. `--headless` runs it without a tray icon.
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts.
-//! - later: `ui` (control centre, Iced) and `mcp` (one MCP server for the whole suite).
+//! - `ui` (also without a command): the control centre, an Iced window for accounts,
+//!   workspaces, apps and general settings.
+//! - later: `mcp` (one MCP server for the whole suite).
 
 use std::process::ExitCode;
 
@@ -16,7 +18,9 @@ mod core;
 mod daemon;
 mod notify;
 mod pim;
+mod settings_service;
 mod tray;
+mod ui;
 
 const APP: AppId = AppId::WORKPLACE;
 
@@ -24,8 +28,15 @@ fn main() -> ExitCode {
     let command = std::env::args().nth(1);
     match command.as_deref() {
         Some("daemon") => daemon::run(std::env::args().any(|arg| arg == "--headless")),
+        None | Some("ui") => match ui::run(&std::env::args().skip(2).collect::<Vec<_>>()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("{}: {err}", APP.binary);
+                ExitCode::FAILURE
+            }
+        },
         Some("ctl" | "status") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
-        None | Some("ui") | Some("mcp") => {
+        Some("mcp") => {
             eprintln!("{}: not implemented yet ({} scaffold)", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::from(2)
         }

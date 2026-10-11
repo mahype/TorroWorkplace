@@ -35,7 +35,7 @@ impl Source {
 
 /// Starts `torroworkplace daemon` in the background when nothing listens on `socket`. The
 /// app then retries until the core answers. Unix only for now.
-fn ensure_core(socket: &std::path::Path) {
+pub fn ensure_core(socket: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

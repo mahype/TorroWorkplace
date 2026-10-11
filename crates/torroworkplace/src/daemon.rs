@@ -232,6 +232,12 @@ fn describe(request: &Request) -> String {
         Request::DeleteEvent { .. } => "delete event".into(),
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
+        Request::Settings => "settings".into(),
+        Request::UpdateSettings { .. } => "update settings".into(),
+        Request::Accounts => "accounts".into(),
+        Request::RemoveAccount { id } => format!("remove account {id}"),
+        Request::RenameTemplate { id, .. } => format!("rename {id}"),
+        Request::OpenApp { app } => format!("open {app}"),
     }
 }
 

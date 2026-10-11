@@ -4,8 +4,9 @@
 //! German system language the German text from [`de`] is shown; a text missing there stays
 //! English. Texts with values use named placeholders: `trf("{n} windows", &[("n", &3)])`.
 //!
-//! The language comes from `TORRO_LANG` (`en`, `de`), else from `LC_ALL`, `LC_MESSAGES`,
-//! `LANG` (anything starting with `de` → German), else English. It is read once per process.
+//! The language comes from `TORRO_LANG` (`en`, `de`), else from the language chosen in the
+//! control centre (`settings.json`), else from `LC_ALL`, `LC_MESSAGES`, `LANG` (anything
+//! starting with `de` → German), else English. It is read once per process.
 
 mod de;
 
@@ -24,7 +25,14 @@ static LANG: OnceLock<Lang> = OnceLock::new();
 
 /// The language of this process.
 pub fn lang() -> Lang {
-    *LANG.get_or_init(|| detect(|key| std::env::var(key).ok()))
+    *LANG.get_or_init(|| {
+        let forced = std::env::var("TORRO_LANG").ok().filter(|v| !v.trim().is_empty());
+        match (forced, crate::settings::load().language) {
+            (None, crate::settings::Language::English) => Lang::En,
+            (None, crate::settings::Language::German) => Lang::De,
+            _ => detect(|key| std::env::var(key).ok()),
+        }
+    })
 }
 
 /// The language from environment variables, looked up through `env`.

@@ -9,6 +9,7 @@ pub mod account;
 pub mod app;
 pub mod i18n;
 pub mod paths;
+pub mod settings;
 pub mod theme;
 
 pub use account::Account;

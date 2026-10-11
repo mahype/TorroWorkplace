@@ -21,6 +21,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_core::settings::Settings;
 use torro_pim::{AccountState, Collection, Event, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
@@ -89,6 +90,29 @@ pub enum Request {
     DeleteTodo {
         todo: Todo,
     },
+
+    /// The suite-wide settings ([`Response::Settings`]).
+    Settings,
+    /// Replaces the settings; the core applies what changed (start at login, hidden
+    /// collections; the language applies to processes started afterwards).
+    UpdateSettings {
+        settings: Settings,
+    },
+    /// All accounts with their state and collections ([`Response::Accounts`]).
+    Accounts,
+    /// Removes an account, its secret and, where the server allows, its app password there.
+    RemoveAccount {
+        id: String,
+    },
+    /// Renames a template; its id stays.
+    RenameTemplate {
+        id: String,
+        name: String,
+    },
+    /// Opens or focuses one of the suite's apps by binary name (`torrocalendar`, `torrotasks`).
+    OpenApp {
+        app: String,
+    },
 }
 
 /// The core's answer to one [`Request`].
@@ -132,6 +156,12 @@ pub enum Response {
     Todo {
         todo: Todo,
     },
+    Settings {
+        settings: Settings,
+    },
+    Accounts {
+        accounts: Vec<AccountInfo>,
+    },
     /// The request failed; `code` is stable for scripts (`workspace-not-empty`, `not-found`,
     /// `unsupported`, `busy`, `not-connected`, `offline`, `auth`, `conflict`, `error`),
     /// `message` is for people.
@@ -145,6 +175,21 @@ impl Response {
     pub fn loaded(report: &RestoreReport) -> Response {
         Response::Loaded { restored: report.restored.len(), failed: report.failed.clone() }
     }
+}
+
+/// One account as the control centre shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountInfo {
+    /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`.
+    pub id: String,
+    /// Provider: `nextcloud` (later `github`, `slack`, …).
+    pub kind: String,
+    /// `anna@cloud.example.org`
+    pub label: String,
+    pub state: AccountState,
+    /// All collections of the account, hidden ones included.
+    pub collections: Vec<Collection>,
 }
 
 /// What `status --json` prints.
