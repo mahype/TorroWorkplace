@@ -58,7 +58,8 @@ sha2 = "0.11.0"
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 tempfile = "3.27.0"
 tokio = { version = "1.53.2", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_System_Console"] }
+# Win32_System_Pipes: the owner check of the pipe client in torro-ipc (X.1b).
+windows-sys = { version = "0.59.0", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Pipes"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

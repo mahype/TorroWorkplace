@@ -49,6 +49,26 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   oder in der CI: `torroworkplace daemon --headless`, dann `torroworkplace status`, dann `torrocalendar` ohne
   `--demo` mit Konto.
 
+### X.1b Windows: Client prüft den Besitzer der Pipe
+- [x] erledigt
+- **Modell:** Opus (Sicherheit, FFI) · **Braucht:** X.1 · **Dateien:** `crates/torro-ipc/src/{lib,client}.rs`,
+  `crates/torro-ipc/Cargo.toml`, `Cargo.toml` (nur `[workspace.dependencies]`), `docs/api.md`, `docs/architecture.md`
+- Der Client verbindet sich mit `\\.\pipe\torro-workplace-<SID>` und schickt dann den App-Schlüssel. Läuft der
+  Kern nicht, könnte ein Prozess eines anderen Benutzers den Namen besetzt haben und Anfrage samt Schlüssel
+  empfangen. Darum prüft der Client vor dem Senden, wem der Server-Prozess der Pipe gehört:
+  `GetNamedPipeServerProcessId` auf dem Client-Handle → SID dieses Prozesses (`sysinfo`) → Vergleich mit der
+  eigenen SID. Stimmt sie nicht oder ist sie nicht feststellbar: nichts senden, `IpcError::Io` mit
+  `PermissionDenied` (wie der Kern, wenn ein fremdes Programm den Namen hält).
+- `interprocess` liefert die Server-PID zwar sicher, öffnet die Pipe aber ohne Security-QoS (der Server dürfte
+  den Benutzer imitieren); der Client bleibt deshalb bei tokio, und die PID kommt über einen einzigen
+  FFI-Aufruf (`windows-sys`). Dafür hat `torro-ipc` eine eigene Lint-Tabelle mit `unsafe_code = "deny"` und
+  genau eine `#[allow(unsafe_code)]`-Stelle mit `// SAFETY:`, nur unter Windows.
+- `docs/api.md` und `docs/architecture.md`: Windows nutzt Named Pipes (Name, Zugriffsliste nur für den
+  Benutzer, erste Instanz exklusiv, keine Remote-Clients, Client prüft den Besitzer).
+- Abnahme: Vergleichslogik als plattformneutrale Funktion mit Test (gleiche SID ja; fremde, fehlende oder
+  leere SID nein). Windows-Test (CI): Verbindung zum eigenen Server besteht die Prüfung. `cargo clippy -p
+  torro-ipc --all-targets --target x86_64-pc-windows-msvc -- -D warnings` grün.
+
 ### X.2 Windows: kein Konsolenfenster neben den Apps
 - [x] erledigt
 - **Modell:** Opus (Weiche für den Kern) · **Braucht:** – · **Dateien:** `crates/torrocalendar/src/main.rs`,
