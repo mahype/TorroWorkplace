@@ -4501,7 +4501,7 @@ dependencies = [
 
 [[package]]
 name = "torro-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "keyring",
  "schemars",
@@ -4511,7 +4511,7 @@ dependencies = [
 
 [[package]]
 name = "torro-gui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
@@ -4522,7 +4522,7 @@ dependencies = [
 
 [[package]]
 name = "torro-ipc"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -4537,7 +4537,7 @@ dependencies = [
 
 [[package]]
 name = "torro-pim"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -4548,7 +4548,7 @@ dependencies = [
 
 [[package]]
 name = "torro-pim-caldav"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -4559,7 +4559,7 @@ dependencies = [
 
 [[package]]
 name = "torro-setups"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -4573,14 +4573,14 @@ dependencies = [
 
 [[package]]
 name = "torro-tui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "torro-core",
 ]
 
 [[package]]
 name = "torro-wm"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4589,7 +4589,7 @@ dependencies = [
 
 [[package]]
 name = "torrocalendar"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
@@ -4600,7 +4600,7 @@ dependencies = [
 
 [[package]]
 name = "torrotasks"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
@@ -4612,7 +4612,7 @@ dependencies = [
 
 [[package]]
 name = "torroworkplace"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",

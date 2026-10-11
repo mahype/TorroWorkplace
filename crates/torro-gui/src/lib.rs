@@ -71,6 +71,8 @@ pub fn settings() -> iced::Settings {
 
 /// Window settings for an app: its fixed app id (Wayland app id / X11 class, which
 /// Hyprland rules and workspace templates match on) and a sensible default size.
+// Only Linux reads the app id here (Wayland app id); macOS and Windows identify windows otherwise.
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
 pub fn window(app: torro_core::AppId) -> iced::window::Settings {
     iced::window::Settings {
         size: iced::Size::new(1100.0, 760.0),
