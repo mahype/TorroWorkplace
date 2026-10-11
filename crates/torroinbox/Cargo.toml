@@ -1,0 +1,20 @@
+[package]
+name = "torroinbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Inbox for the tiled desktop: what wants your attention from agents, the suite and scripts, in an Iced window on the torroworkplace core."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+torro-gui.workspace = true
+torro-inbox.workspace = true
+chrono.workspace = true
+iced.workspace = true
+webbrowser.workspace = true

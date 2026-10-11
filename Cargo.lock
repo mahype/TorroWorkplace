@@ -4630,6 +4630,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "torroinbox"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "torro-core",
+ "torro-gui",
+ "torro-inbox",
+ "webbrowser",
+]
+
+[[package]]
 name = "torrotasks"
 version = "0.1.0"
 dependencies = [
