@@ -19,7 +19,7 @@ Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mi
 > M-, G-, P-Aufgaben).
 
 ```
-E1.1a ─┬─ E3.1 ── E3.2                  ← sofort möglich, nur neue Dateien
+E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b         ← sofort möglich, nur neue Dateien
        ├─ E2.2a
        │
 M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
@@ -32,7 +32,7 @@ M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
 E3.5 braucht E3.2, E1.2, P.2 · E2.5 braucht E2.3, E3.2, A.8 und die Freigabe ihres Sicherheitsteils
 ```
 
-**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1 und E3.2 legen nur neue Crates an (plus je eine
+**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1, E3.2 und E3.2b legen nur neue Crates an (plus je eine
 Zeile in der Wurzel-`Cargo.toml`) und laufen mit Demo-Daten. Sie dürfen sofort starten.
 
 ## Sicherheitsregeln des Eingangs (gelten für alle Aufgaben)
@@ -314,6 +314,24 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - Läuft mit der Demo-Quelle, bevor der Kern steht.
 - **API/MCP:** nutzt `inbox.set_item_done`, `snooze_item`, `set_item_lane`, `mute_source`.
 - **Abnahme:** Tests je Taste, Rückgängig.
+
+### E3.2b Feinschliff nach der Design-Prüfung von E3.1
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E3.2 · **Dateien:** `crates/torroinbox/src/{app,list,detail}.rs`
+- Aus der Prüfung am 2026-10-11 (Bilder: Scratchpad `review-inbox/`):
+  - **Muss:** Kein hart abgeschnittener Text. Vorschau nur, wenn neben dem Titel genug Platz ist
+    (etwa 120 px), sonst weglassen; in Schmal zweizeilige Zeilen (Titel oben, Vorschau darunter in META).
+  - **Muss:** Dringendes nicht nur über die Farbe. „For me“ gruppiert wie torrotasks
+    („Waiting for you“ / „Earlier“, Gruppenkopf) oder ein Status-Punkt mit Wort vor der Zeit.
+  - **Muss:** Fehlertext als ganzer Satz, z. B. Titel „Couldn't load the inbox.“ und darunter leise der Grund.
+  - **Soll:** Liste in Breit links bündig wie die Schwester-Apps (mit offenem Paneel Breite `LIST`), nicht
+    mittig; in der Leiste (Rail) die Quellen weglassen oder unterscheidbar machen; Zahlen der Quellen nur
+    für die gezeigte Spur oder als „offen insgesamt“ erkennbar; im Kopf nur die Zahl statt „6 for you“;
+    im Freigabe-Paneel den Hinweis zu Allow/Deny direkt über die Knöpfe; leerer Zustand mit Symbol.
+  - **Schön:** „until Wed, 14 Oct“ bei Vertagtem; im Paneel zusätzlich die relative Zeit.
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne Muss-Befund; Bilder mit Fenster ganz auf dem Bildschirm
+  (die weißen Streifen der ersten Prüfung kamen vom Fenster über dem Bildschirmrand).
 
 ### E3.3 Mini, Leiste und Tray
 - [ ] erledigt
