@@ -9,7 +9,7 @@ Entscheidungen: [api.md, „Entscheidungen“](../api.md#entscheidungen) (2026-1
 Reihenfolge in drei Meilensteinen:
 
 1. **Alle bisherigen Funktionen über MCP, mit Rechten:** A.0 → (A.0b, A.0d parallel) → A.0c → A.1 →
-   A.2 → (A.4, A.2b parallel). Bis A.3 lehnt der Dienst ab, was eine Freigabe bräuchte.
+   A.2 → (A.4, A.2b, A.2c parallel). Bis A.3 lehnt der Dienst ab, was eine Freigabe bräuchte.
    A.4 darf ab A.1 entstehen, wird aber erst nach A.2 zusammengeführt, damit es nie einen
    Agenten-Schlüssel ohne Rechteprüfung gibt.
 2. **Sicherheit und Nachvollziehbarkeit:** A.3 und A.5 parallel.
@@ -119,6 +119,21 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Elemente. Neu anlegen bleibt `If-None-Match: *`.
 - **Abnahme:** Tests: Serie mit `recurring: false` überschreiben → abgelehnt; Update ohne `etag` →
   abgelehnt; normales Update mit `etag` → geht.
+
+### A.2c Tray-Befehle in der API
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** A.2 · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/src/apps.rs`, `crates/torroworkplace/src/tray/linux.rs`, `crates/torroworkplace/src/cli.rs`
+- Entscheidung 8 in `api.md`:
+  - **Oberfläche:** Tray „Settings…“ und „Quit“
+  - **API:** `apps.open_app` nimmt auch die Steuerzentrale (`torroworkplace`, öffnet `torroworkplace ui`);
+    `apps.list_apps` bleibt ohne sie. Neu `Request::Quit` · `system.quit` · Zugriff `Admin`, nur App-Schlüssel
+    (Client-Schlüssel → `forbidden`, wie `clients.*`).
+  - **MCP:** `apps_open_app` deckt die Steuerzentrale mit ab; `system.quit`: Never (Punkt 4 in „Was nie
+    nach außen geht“).
+- Tray schickt beide als Request an den eigenen Kern statt `daemon.open_settings()`/`quit()` direkt;
+  `ctl quit` dazu.
+- **Abnahme:** Tests: `system.quit` mit Client-Schlüssel → `forbidden`; Tray-Einträge bauen die Requests;
+  Katalog- und Vertragstests grün.
 
 ### A.3 Freigaben
 - [ ] erledigt

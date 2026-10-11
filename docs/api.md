@@ -155,6 +155,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide`): nur mit dem App-Schlüssel, also nur durch
    einen Menschen in der Oberfläche oder per Benachrichtigung.
+4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
+   Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 
 Anmeldungen bei Anbietern (Login Flow v2, GitHub) gibt es über die API, sie enden aber immer im
 Browser des Menschen; ein Agent bekommt nie ein Passwort zu sehen.
@@ -287,6 +289,8 @@ Getroffen am 2026-10-11.
    `Delete`.
 5. **Ein-Konto-Requests entfallen**: `Account` und `DisconnectAccount` gehen in `Accounts` und
    `RemoveAccount` auf.
+8. **Tray-Befehle**: „Settings…“ öffnet die Steuerzentrale über `apps.open_app` (auch für API
+   und MCP); „Quit“ wird `system.quit`, nur App-Schlüssel (siehe „Was nie nach außen geht“).
 6. **Ein Name je Befehl**: Mit dem Umschlag (A.1) trägt `method` den Katalognamen
    (`calendar.list_calendars`); die alten Draht-Namen (`calendar-collections`) entfallen.
 7. **Volle Schemata**: `Event`, `Todo`, `Settings` und `LoadMode` bekommen JSON-Schemata
