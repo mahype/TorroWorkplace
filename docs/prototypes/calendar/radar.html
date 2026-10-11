@@ -87,7 +87,7 @@ html[data-size="s"] .proto{left:16px;right:16px;flex-wrap:wrap}
 </div>
 <div class="proto"><span>Entwurf</span>
   <span>Uhrzeit</span><input type="range" id="clock" min="360" max="1380" step="5"><span id="clockv" class="tab"></span>
-  <span>Ende</span><button data-mode="fade">Ausblenden</button><button data-mode="blur" class="on">Unscharf</button><span>Sichtbar</span><button data-vis="8">2/3</button><button data-vis="9" class="on">3/4</button>
+  <span>Ende</span><button data-mode="fade" class="on">Ausblenden</button><button data-mode="blur">Unscharf</button><span>Sichtbar</span><button data-vis="8">2/3</button><button data-vis="9" class="on">3/4</button>
   <a href="?">Breit</a><a href="?size=s">Schmal</a><a href="?theme=light">Hell</a><a href="zeitstrahl.html">← Zeitstrahl</a></div>
 
 <script>
@@ -117,7 +117,7 @@ const EVENTS = [
 ].map(([s, e, title, cal, tent], i) => ({i, s, e, title, cal, tent: !!tent}));
 const ALLDAY = [["Home office", "personal"]];
 
-let now = t(14, 20), view = now, visH = 9, mode = "blur", selected = null;
+let now = t(14, 20), view = now, visH = 9, mode = "fade", selected = null;
 const pad = n => String(n).padStart(2, "0");
 const clock = m => `${pad(Math.floor(((m % DAY) + DAY) % DAY / H))}:${pad(((m % H) + H) % H)}`;
 const dur = m => m >= 60 ? (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`) : `${m} min`;
