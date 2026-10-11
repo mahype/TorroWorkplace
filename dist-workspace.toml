@@ -20,9 +20,12 @@ targets = [
 ]
 # Homebrew tap that receives one formula per app. The repository does not exist yet.
 # tap = "mahype/homebrew-torro"
-# Publish the formulae to the tap after the GitHub Release is created.
-# Needs the secret HOMEBREW_TAP_TOKEN and the existing tap repository.
-# publish-jobs = ["homebrew"]
+# Jobs that run after the GitHub Release is created.
+# "./publish-macos-app": signed, notarised .app bundles for the GUIs (.github/workflows/publish-macos-app.yml).
+# Add "homebrew" once the tap exists (needs the secret HOMEBREW_TAP_TOKEN).
+publish-jobs = ["./publish-macos-app"]
+# Reusable workflows get only the permissions the caller passes; the macOS job uploads to the release.
+github-custom-job-permissions = { "publish-macos-app" = { contents = "write" } }
 # Where the shell and PowerShell installers put the binaries.
 install-path = "CARGO_HOME"
 # No self-updater: updates go through the package managers.

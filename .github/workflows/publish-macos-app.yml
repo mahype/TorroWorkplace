@@ -1,21 +1,18 @@
-# DRAFT - INACTIVE until the maintainer enables it (docs/release.md, section "Einmal einrichten").
-#
 # Builds signed and notarised macOS `.app` bundles for the two GUIs from the binaries that dist already
 # put into the GitHub Release, and attaches them to the same release as `<bin>-<arch>-apple-darwin.app.zip`.
-# dist itself only ships bare binaries and no `.app` bundles.
+# dist itself only ships bare binaries and no `.app` bundles. Background: docs/release.md.
 #
-# Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
-#   * automatically after a release: add `publish-jobs = ["./publish-macos-app"]` to dist-workspace.toml,
-#     run `dist generate`;
+# Two ways to run it:
+#   * automatically after a release: dist calls it as a custom publish job
+#     (`publish-jobs = ["./publish-macos-app"]` in dist-workspace.toml);
 #   * by hand: Actions -> "Publish macOS app" -> Run workflow, with the tag (e.g. v0.1.0).
 #
-# Needs an Apple Developer Program membership (99 USD/year) and these repository secrets:
-#   APPLE_CERTIFICATE_P12_BASE64   "Developer ID Application" certificate with private key, exported as .p12, base64
-#   APPLE_CERTIFICATE_PASSWORD     password of that .p12
-#   APPLE_SIGNING_IDENTITY         e.g. "Developer ID Application: Your Name (TEAMID)"
-#   APPLE_API_KEY_P8               contents of the App Store Connect API key (AuthKey_XXXX.p8)
-#   APPLE_API_KEY_ID               key id
-#   APPLE_API_ISSUER_ID            issuer id (UUID)
+# Uses the same secrets and the same Developer ID as TorroMail:
+#   MACOS_CERTIFICATE_P12         "Developer ID Application" certificate with private key, .p12, base64
+#   MACOS_CERTIFICATE_PASSWORD    password of that .p12
+#   APPLE_ID                      Apple ID of the developer account (notarisation)
+#   APPLE_TEAM_ID                 10-character team id
+#   APPLE_APP_SPECIFIC_PASSWORD   app-specific password from appleid.apple.com (notarisation)
 
 name: Publish macOS app
 
@@ -39,8 +36,8 @@ permissions:
 jobs:
   macos-app:
     name: ${{ matrix.bin }} (${{ matrix.arch }})
-    if: ${{ vars.MACOS_APP_ENABLED == 'true' }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -53,6 +50,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
       TARGET: ${{ matrix.arch }}-apple-darwin
+      APP: out/${{ matrix.title }}.app
     steps:
       - uses: actions/checkout@v6
         with:
@@ -72,44 +70,61 @@ jobs:
 
       - name: Import the signing certificate
         env:
-          CERT_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          CERT_B64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PW: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
+          set -euo pipefail
           keychain="$RUNNER_TEMP/signing.keychain-db"
-          keychain_password="$(uuidgen)"
-          security create-keychain -p "$keychain_password" "$keychain"
+          kpw="$(openssl rand -base64 24)"
+          security create-keychain -p "$kpw" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain
-          rm "$RUNNER_TEMP/cert.p12"
+          security unlock-keychain -p "$kpw" "$keychain"
+          printf '%s' "$CERT_B64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PW" -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Prepend our keychain to the search list without dropping the runner's own keychains.
+          existing="$(security list-keychains -d user | xargs)"
+          security list-keychains -d user -s "$keychain" $existing
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$kpw" "$keychain"
+          # Take the identity from the certificate itself, so no secret has to repeat its name.
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$identity" ]; then
+            echo "::error::No 'Developer ID Application' identity in MACOS_CERTIFICATE_P12" >&2
+            security find-identity -v -p codesigning "$keychain" >&2 || true
+            exit 1
+          fi
+          echo "Signing as: $identity"
+          echo "MACOS_SIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
 
       - name: Sign (hardened runtime)
-        env:
-          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          codesign --force --timestamp --options runtime --sign "$IDENTITY" "out/${{ matrix.title }}.app"
-          codesign --verify --strict --verbose=2 "out/${{ matrix.title }}.app"
+          set -euo pipefail
+          codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" \
+            "$APP/Contents/MacOS/${{ matrix.bin }}"
+          codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Notarise and staple
         env:
-          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: |
-          echo "$API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
-          ditto -c -k --keepParent "out/${{ matrix.title }}.app" "$RUNNER_TEMP/notarise.zip"
+          set -euo pipefail
+          # ditto keeps extended attributes and symlinks; plain zip can break notarisation.
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarise.zip"
           xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" \
-            --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER_ID" --wait
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait --timeout 30m
           # A zip cannot be stapled; staple the bundle, then zip it for the release.
-          xcrun stapler staple "out/${{ matrix.title }}.app"
-          rm "$RUNNER_TEMP/AuthKey.p8"
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          spctl --assess --type execute --verbose=4 "$APP"
 
       - name: Upload to the release
         run: |
           asset="${{ matrix.bin }}-${TARGET}.app.zip"
-          ditto -c -k --keepParent "out/${{ matrix.title }}.app" "$asset"
+          ditto -c -k --keepParent "$APP" "$asset"
           shasum -a 256 "$asset" > "$asset.sha256"
           gh release upload "$TAG" "$asset" "$asset.sha256" --repo "$GITHUB_REPOSITORY" --clobber

@@ -14,8 +14,8 @@ Paketquellen.
 | Baustein | Aufgabe | Wer |
 |---|---|---|
 | `dist-workspace.toml` + `.github/workflows/release.yml` | Binärarchive für 5 Ziele, Shell-/PowerShell-Installer, Homebrew-Formeln, GitHub Release | `dist` (Workflow ist generiert, nicht von Hand ändern) |
-| `.github/workflows/publish-aur.yml` | AUR-Pakete `-bin` und `torro-suite` aktualisieren | von Hand, als „custom publish job“ eingehängt |
-| `.github/workflows/publish-macos-app.yml` | signierte, notarisierte `.app`-Bündel für die GUIs | von Hand, als „custom publish job“ eingehängt |
+| `.github/workflows/publish-aur.yml` | AUR-Pakete `-bin` und `torro-suite` aktualisieren | automatisch nach dem Release („custom publish job“) oder von Hand |
+| `.github/workflows/publish-macos-app.yml` | signierte, notarisierte `.app`-Bündel für die GUIs | automatisch nach dem Release („custom publish job“) oder von Hand |
 | `packaging/` | `.desktop`-Dateien, Icons, PKGBUILD-Vorlagen, Meta-Formel, Brewfile, Scoop-Vorlage | von Hand |
 
 Gründe:
@@ -53,7 +53,7 @@ Gründe:
 | 5 | CI `build-local-artifacts` | Baut je Ziel `.tar.xz` (Windows `.zip`) mit Binary, Lizenzen, README: macOS arm64 (`macos-14`), macOS x86_64 (`macos-15-intel`), Linux x86_64 (`ubuntu-22.04`), Linux arm64 (`ubuntu-22.04-arm`), Windows (`windows-2022`). |
 | 6 | CI `build-global-artifacts` | Erzeugt Shell-/PowerShell-Installer je App, Homebrew-Formeln, `sha256.sum`, `source.tar.gz`. |
 | 7 | CI `host` | Legt das GitHub Release an und lädt alle Dateien hoch. |
-| 8 | CI Publish-Jobs (abgeschaltet) | Homebrew-Formeln in den Tap, AUR-Pakete, macOS-`.app.zip` ans Release. |
+| 8 | CI Publish-Jobs | macOS-`.app.zip` (signiert, notarisiert) ans Release. Noch abgeschaltet: Homebrew-Tap, AUR. |
 | 9 | CI `announce` | Schließt den Lauf ab. |
 
 Wo die Artefakte landen: GitHub Release `v0.1.0` im Repository (Archive, Installer, Formeln, Prüfsummen);
@@ -102,13 +102,18 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
 - Warum die nackten Binaries reichen: Was per `curl | sh` oder `brew` kommt, trägt kein Quarantäne-Attribut,
   Gatekeeper prüft es nicht. Das gilt für den Kern und für Start aus dem Terminal. Ein Doppelklick auf eine
   heruntergeladene GUI-App ohne Notarisierung wird blockiert.
-- Für die GUIs gibt es deshalb den Entwurf `publish-macos-app.yml`: lädt das fertige Binary aus dem
+- Für die GUIs gibt es deshalb `publish-macos-app.yml`: lädt das fertige Binary aus dem
   Release, `packaging/macos/make-app.sh` baut `Torro Calendar.app` (Info.plist aus `Info.plist.in`, optional
   `.icns` aus einem 1024-px-PNG), dann `codesign --options runtime`, `xcrun notarytool submit --wait`,
   `xcrun stapler staple`, `ditto` zu `<bin>-<arch>-apple-darwin.app.zip`, Upload ans Release.
-- Nötig dafür: Apple Developer Program (99 USD/Jahr), Zertifikat „Developer ID Application“, ein App-Store-
-  Connect-API-Schlüssel (`.p8`, Key-ID, Issuer-ID). `notarytool` nimmt `.zip`, `.dmg` und `.pkg`; eine `.zip`
-  lässt sich nicht heften, daher wird das Bündel geheftet und danach gezippt.
+- Signiert wird mit demselben Zertifikat „Developer ID Application: Sven Wagener (2GA7DQ3P3Z)“ wie
+  TorroMail, notarisiert mit Apple-ID und app-spezifischem Passwort, mit denselben Secret-Namen wie dort
+  (siehe „Einmal einrichten“). Die Signier-Identität liest der Workflow aus dem importierten Zertifikat.
+  `notarytool` nimmt `.zip`, `.dmg` und `.pkg`; eine `.zip` lässt sich nicht heften, daher wird das Bündel
+  geheftet und danach gezippt. Zum Schluss prüft `spctl --assess`, dass Gatekeeper die App annimmt.
+- Das Zertifikat läuft am **2027-02-01** ab. Bereits signierte, notarisierte Apps bleiben gültig (Zeitstempel);
+  für neue Releases vorher im Developer-Portal ein neues „Developer ID Application“ erzeugen, als `.p12`
+  exportieren und `MACOS_CERTIFICATE_P12` und `MACOS_CERTIFICATE_PASSWORD` hier und bei TorroMail ersetzen.
 - Keine Universal-Binary: `dist` kann `universal2-apple-darwin` (noch) nicht als Ziel. Es gibt zwei Archive.
   GitHub stellt den letzten Intel-Runner (`macos-15-intel`) bis Herbst 2027 bereit; danach entfällt
   `x86_64-apple-darwin` oder muss gecrosscompiled werden.
@@ -172,13 +177,16 @@ Reihenfolge ist egal, außer wo vermerkt. Erst wenn ein Punkt erledigt ist, die 
 
 ### macOS
 
-- [ ] Apple Developer Program beitreten (99 USD/Jahr), Zertifikat „Developer ID Application“ erzeugen,
-      mit privatem Schlüssel als `.p12` exportieren, App-Store-Connect-API-Schlüssel anlegen.
-- [ ] Secrets `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-      `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`.
-- [ ] Repository-Variable `MACOS_APP_ENABLED` auf `true` setzen (Schalter im Workflow).
+- [x] Apple Developer Program, Zertifikat „Developer ID Application“ (Team `2GA7DQ3P3Z`, wie TorroMail).
+- [x] Secrets (2026-10-11): `MACOS_CERTIFICATE_P12` (Base64 der `.p12`: `base64 -i cert.p12 | gh secret set
+      MACOS_CERTIFICATE_P12`), `MACOS_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`,
+      `APPLE_APP_SPECIFIC_PASSWORD` (appleid.apple.com → App-spezifische Passwörter).
+      Achtung: Die `.p12` muss „Developer ID Application“ enthalten, nicht „Apple Development“. Prüfen mit
+      `openssl pkcs12 -legacy -in cert.p12 -nokeys | openssl x509 -noout -subject -enddate`.
+- [x] `publish-jobs` um `"./publish-macos-app"` erweitert; läuft nach jedem Release. Von Hand: Actions →
+      „Publish macOS app“ → Tag angeben.
 - [ ] Echte Icons (1024-px-PNG) in `packaging/macos/icons/` ablegen und an `make-app.sh` übergeben.
-- [ ] Entweder `publish-jobs` um `"./publish-macos-app"` erweitern oder den Workflow von Hand mit dem Tag starten.
+- [ ] Vor 2027-02-01: Zertifikat erneuern (siehe oben).
 
 ### Windows (später)
 
