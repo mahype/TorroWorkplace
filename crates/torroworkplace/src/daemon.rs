@@ -54,6 +54,35 @@ impl Daemon {
         });
     }
 
+    /// Opens the control centre (`torroworkplace ui`) in its own process, so it neither blocks
+    /// the tray nor goes away with it.
+    pub fn open_settings(&self) {
+        let program = match std::env::current_exe() {
+            Ok(program) => program,
+            Err(err) => {
+                eprintln!("torroworkplace: cannot find the settings: {err}");
+                return;
+            }
+        };
+        let mut command = std::process::Command::new(program);
+        command
+            .arg("ui")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        match command.spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(err) => eprintln!("torroworkplace: cannot open the settings: {err}"),
+        }
+    }
+
     pub fn quit(&self) {
         let _ = self.quit.send(());
     }

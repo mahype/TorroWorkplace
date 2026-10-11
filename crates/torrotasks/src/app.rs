@@ -49,7 +49,6 @@ pub struct App {
 pub enum Message {
     AccountLoaded(Result<AccountState, String>),
     Connect(connect::Message),
-    ConnectStarted(Result<String, String>),
     Loaded(Result<(Vec<Collection>, Vec<Todo>), String>),
     SetFilter(Filter),
     ShowCompleted(bool),
@@ -72,7 +71,7 @@ impl App {
             source,
             today: Local::now().date_naive(),
             account: None,
-            connect: Connect::default(),
+            connect: Connect,
             collections: Vec::new(),
             todos: Vec::new(),
             filter: Filter::Today,
@@ -105,23 +104,10 @@ impl App {
                 }
             }
             Message::AccountLoaded(Err(err)) => self.error = Some(err),
-            Message::Connect(message) => {
-                if let connect::Action::Connect(server) = self.connect.update(message) {
-                    let source = self.source.clone();
-                    return Task::perform(
-                        async move { source.connect_nextcloud(server).await.map_err(|e| e.to_string()) },
-                        Message::ConnectStarted,
-                    );
-                }
-            }
-            Message::ConnectStarted(result) => {
-                self.connect.busy = false;
-                match result {
-                    Ok(url) => self.connect.status = Some(trf("Sign in in your browser … ({url})", &[("url", &url)])),
-                    Err(err) => self.connect.status = Some(err),
-                }
-                return self.fetch_account();
-            }
+            Message::Connect(message) => match self.connect.update(message) {
+                // The account is set up in the control centre; the polling in `Tick` picks it up.
+                connect::Action::OpenSettings => connect::open_settings(),
+            },
             Message::Loaded(result) => match result {
                 Ok((collections, todos)) => {
                     self.collections = collections;

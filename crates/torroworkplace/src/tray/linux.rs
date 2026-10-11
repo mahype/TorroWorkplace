@@ -112,6 +112,14 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     menu.push(MenuItem::Separator);
     menu.push(
         StandardItem {
+            label: tr("Settings…").into(),
+            activate: Box::new(|tray: &mut Tray| tray.daemon.open_settings()),
+            ..Default::default()
+        }
+        .into(),
+    );
+    menu.push(
+        StandardItem {
             label: tr("Quit").into(),
             activate: Box::new(|tray: &mut Tray| tray.daemon.quit()),
             ..Default::default()
@@ -252,6 +260,7 @@ mod tests {
                     trf("Workspace {workspace} · {backend}", &[("workspace", &"3"), ("backend", &"hyprland")])
                 ),
                 "-".to_string(),
+                tr("Settings…").to_string(),
                 tr("Quit").to_string(),
             ]
         );
