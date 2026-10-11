@@ -1,0 +1,6 @@
+# Alternative to the meta formula: `brew bundle --file=Brewfile` installs the whole suite.
+# Needs the tap mahype/homebrew-torro (created by the maintainer, see docs/release.md).
+tap "mahype/torro"
+brew "mahype/torro/torroworkplace"
+brew "mahype/torro/torrocalendar"
+brew "mahype/torro/torrotasks"

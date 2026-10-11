@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
 description = "Tasks for the tiled desktop: Nextcloud/CalDAV to-dos in an Iced window on the torroworkplace core."
 
 [lints]

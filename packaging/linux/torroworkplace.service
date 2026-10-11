@@ -1,0 +1,16 @@
+# systemd user unit for the packaged TorroWorkplace core (installed to /usr/lib/systemd/user/).
+# Enable with: systemctl --user enable --now torroworkplace
+# For a manual install from a tarball see integrations/hyprland/torroworkplace.service.
+
+[Unit]
+Description=TorroWorkplace core
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/torroworkplace daemon
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

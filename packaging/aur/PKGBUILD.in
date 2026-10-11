@@ -1,0 +1,50 @@
+# Template for the AUR `-bin` packages (torroworkplace-bin, torrocalendar-bin, torrotasks-bin).
+# .github/workflows/publish-aur.yml replaces the @PLACEHOLDERS@ with sed and lets updpkgsums fill
+# in the checksums. Maintainer of the AUR package: see docs/release.md.
+#
+# @BIN@     binary name, e.g. torrocalendar
+# @APPID@   window class / desktop file / icon name, e.g. torro-calendar
+# @TITLE@   human name, e.g. "Torro Calendar"
+# @DESC@    one-line description
+# @VERSION@ version without the leading "v"
+
+# Maintainer: TorroWorkplace contributors
+pkgname=@BIN@-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='@DESC@'
+arch=('x86_64' 'aarch64')
+url='https://github.com/mahype/TorroWorkplace'
+license=('MIT OR Apache-2.0')
+# The Iced GUIs dlopen these at runtime (wayland, xkbcommon, vulkan/EGL; X11 is optional).
+depends=('glibc' 'gcc-libs' 'libxkbcommon' 'wayland' 'libglvnd' 'vulkan-icd-loader')
+optdepends=('libx11: run on X11 instead of Wayland')
+provides=('@BIN@')
+conflicts=('@BIN@')
+
+_repo="https://github.com/mahype/TorroWorkplace"
+source=("@APPID@-$pkgver.desktop::$_repo/raw/v$pkgver/packaging/linux/@APPID@.desktop"
+        "@APPID@-$pkgver.svg::$_repo/raw/v$pkgver/packaging/linux/icons/@APPID@.svg"
+        "torroworkplace-$pkgver.service::$_repo/raw/v$pkgver/packaging/linux/torroworkplace.service")
+source_x86_64=("@BIN@-$pkgver-x86_64.tar.xz::$_repo/releases/download/v$pkgver/@BIN@-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("@BIN@-$pkgver-aarch64.tar.xz::$_repo/releases/download/v$pkgver/@BIN@-aarch64-unknown-linux-gnu.tar.xz")
+# SKIP is replaced by `updpkgsums` in the publish workflow before the package is pushed.
+sha256sums=('SKIP' 'SKIP' 'SKIP')
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  # dist archives contain one top-level directory named after the archive.
+  cd "$srcdir/@BIN@-${CARCH}-unknown-linux-gnu"
+  install -Dm755 "@BIN@" "$pkgdir/usr/bin/@BIN@"
+  install -Dm644 LICENSE-MIT "$pkgdir/usr/share/licenses/$pkgname/LICENSE-MIT"
+  install -Dm644 LICENSE-APACHE "$pkgdir/usr/share/licenses/$pkgname/LICENSE-APACHE"
+
+  install -Dm644 "$srcdir/@APPID@-$pkgver.desktop" "$pkgdir/usr/share/applications/@APPID@.desktop"
+  install -Dm644 "$srcdir/@APPID@-$pkgver.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/@APPID@.svg"
+
+  # Only the core ships the systemd user unit.
+  if [ "@BIN@" = "torroworkplace" ]; then
+    install -Dm644 "$srcdir/torroworkplace-$pkgver.service" "$pkgdir/usr/lib/systemd/user/torroworkplace.service"
+  fi
+}

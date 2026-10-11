@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Torro Calendar
+GenericName=Calendar
+Comment=Calendar for the tiled desktop (Nextcloud/CalDAV)
+Exec=torrocalendar
+Icon=torro-calendar
+Terminal=false
+Categories=Office;Calendar;
+# Must equal the window class / Wayland app id set in torro-core (AppId::CALENDAR).
+StartupWMClass=torro-calendar

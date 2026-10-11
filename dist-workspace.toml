@@ -1,0 +1,31 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for `dist` (https://github.com/axodotdev/cargo-dist). Background: docs/release.md.
+[dist]
+# The dist version that generated .github/workflows/release.yml. Upgrade with `dist init`.
+cargo-dist-version = "0.32.0"
+# CI backend to use
+ci = "github"
+# Installers to generate for the release. Pure Rust, no system libraries needed at build time.
+installers = ["shell", "powershell", "homebrew"]
+# Target platforms to build apps for. Linux uses gnu (not musl): the Iced GUIs dlopen
+# libwayland, libxkbcommon, libvulkan and libEGL at runtime, which a static musl binary cannot do.
+targets = [
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+# Homebrew tap that receives one formula per app. The repository does not exist yet.
+# tap = "mahype/homebrew-torro"
+# Publish the formulae to the tap after the GitHub Release is created.
+# Needs the secret HOMEBREW_TAP_TOKEN and the existing tap repository.
+# publish-jobs = ["homebrew"]
+# Where the shell and PowerShell installers put the binaries.
+install-path = "CARGO_HOME"
+# No self-updater: updates go through the package managers.
+install-updater = false
+# Pull requests only run the plan step (no artefact builds).
+pr-run-mode = "plan"

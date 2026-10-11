@@ -20,6 +20,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 authors = ["TorroWorkplace contributors"]
 repository = "https://github.com/mahype/TorroWorkplace"
+homepage = "https://github.com/mahype/TorroWorkplace"
 
 [workspace.dependencies]
 torro-core = { path = "crates/torro-core" }
@@ -51,3 +52,9 @@ unsafe_code = "forbid"
 unwrap_used = "deny"
 dbg_macro = "deny"
 todo = "deny"
+
+# Profile for release builds made by `dist` (see dist-workspace.toml and docs/release.md).
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = "debuginfo"

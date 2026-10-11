@@ -127,7 +127,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   entfernen; Test mit der Nextcloud des Nutzers.
 
 ### K.16 Release-Pipeline für alle Systeme
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** –
 - Recherche und Entwurf: bei einem Release-Tag Binaries für Linux, macOS und Windows bauen,
   Installer, Homebrew-Tap, AUR. Ergebnis: `docs/release.md` und Workflow-Entwurf. Nichts pushen,

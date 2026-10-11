@@ -1,0 +1,89 @@
+# DRAFT - INACTIVE until the maintainer enables it (docs/release.md, section "Einmal einrichten").
+#
+# Pushes the `-bin` packages and the `torro-suite` meta package to the AUR after a release.
+# It is a reusable workflow: it only runs when dist-workspace.toml lists it as a custom publish job
+#     publish-jobs = ["./publish-aur"]
+# followed by `dist generate`, which adds the call to release.yml (dist then passes `plan`).
+# Without that line this file does nothing.
+#
+# Needs (repository secrets): AUR_SSH_PRIVATE_KEY, AUR_USERNAME, AUR_EMAIL.
+# The public half of the key belongs into the AUR account of the package maintainer.
+
+name: Publish AUR
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: JSON plan produced by `dist plan` (passed by release.yml)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  aur-bin:
+    name: ${{ matrix.bin }}-bin
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, desc: "TorroWorkplace core: tray icon, workspace templates and one MCP server for the suite" }
+          - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, desc: "Calendar for the tiled desktop (Nextcloud/CalDAV)" }
+          - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, desc: "Tasks for the tiled desktop" }
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Render PKGBUILD
+        env:
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+          BIN: ${{ matrix.bin }}
+          APPID: ${{ matrix.appid }}
+          TITLE: ${{ matrix.title }}
+          DESC: ${{ matrix.desc }}
+        run: |
+          version="${TAG#v}"
+          sed -e "s|@BIN@|${BIN}|g" -e "s|@APPID@|${APPID}|g" -e "s|@TITLE@|${TITLE}|g" \
+              -e "s|@DESC@|${DESC}|g" -e "s|@VERSION@|${version}|g" \
+              packaging/aur/PKGBUILD.in > PKGBUILD
+          cat PKGBUILD
+      - name: Publish to the AUR
+        # Verify the newest tag of the action on its Releases page before the first run; pin a commit SHA if you prefer.
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: ${{ matrix.bin }}-bin
+          pkgbuild: ./PKGBUILD
+          updpkgsums: true
+          # Builds the package in a container before pushing; slow but catches broken URLs and sums.
+          test: true
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ fromJson(inputs.plan).announcement_tag }}"
+
+  aur-suite:
+    name: torro-suite
+    needs: aur-bin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Render PKGBUILD
+        env:
+          TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+        run: |
+          sed -e "s|@VERSION@|${TAG#v}|g" packaging/aur/PKGBUILD.suite.in > PKGBUILD
+          cat PKGBUILD
+      - name: Publish to the AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: torro-suite
+          pkgbuild: ./PKGBUILD
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ fromJson(inputs.plan).announcement_tag }}"

@@ -1,0 +1,12 @@
+# Template for the AUR meta package `torro-suite`: installs the core and all apps.
+# @VERSION@ is replaced by .github/workflows/publish-aur.yml. The package has no files of its own.
+#
+# Maintainer: TorroWorkplace contributors
+pkgname=torro-suite
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='TorroWorkplace suite: core with tray icon, Torro Calendar and Torro Tasks'
+arch=('any')
+url='https://github.com/mahype/TorroWorkplace'
+license=('MIT OR Apache-2.0')
+depends=('torroworkplace-bin' 'torrocalendar-bin' 'torrotasks-bin')
