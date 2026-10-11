@@ -351,6 +351,8 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 - Aufgaben wie der Kalender: „Tasks could not be loaded: …“ plus was zu tun ist; Demo-Fehlertexte
   mit großem Satzanfang. Leeres Wochen-/Tagesraster mit leiser Zeile „No events this week“ (Skill
   Abschnitt 5, Leerzustand).
+- Aufgaben-Teil erledigt (Commit 7843db8): „Tasks could not be loaded: …“, Demo-Fehlertexte in
+  torrotasks/torro-pim mit großem Satzanfang. Offen: Kalender, `launch.rs`.
 
 ### D.7 Eine Datumsform
 - [x] erledigt
@@ -374,6 +376,8 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/glance.rs`, `crates/torrotasks/src/glance.rs`
 - Kalender-Mini: „Tomorrow“ über der Zeit statt darunter, Mini hoch füllt mit Folgetagen.
   Aufgaben-Mini: Kopfzahl in `DISPLAY`, Orange nur im Punkt.
+- Aufgaben-Teil erledigt (Commit c8b54f9): Mini mit `DISPLAY`-Zahlen, Orange nur im Punkt. Offen: Kalender-Mini;
+  die Leiste der Aufgaben zeigt „overdue“ noch orange (eigener Punkt).
 
 ### D.10 Tagesansicht in Breit
 - [x] erledigt
@@ -389,6 +393,8 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   Achse; „Coming soon“-Zeilen auf 40 %; „colours“ → „colors“; Doppellinie unter Kopfleiste und
   erstem Gruppenkopf; Rollbalken hell nur beim Scrollen; leerer Ganztagsstreifen ausblenden;
   Nachbarmonate im Monat abblenden; Demo-Liste „Tasks“ nicht orange (verschmilzt mit Überfällig).
+- Aufgaben-Teil erledigt (Commit c787827): Demo-Liste „Tasks“ grün; Doppellinie unter dem ersten
+  Gruppenkopf der Aufgaben-Liste und der Kalender-Agenda. Offen: alle anderen Punkte.
 
 Größere Lücken zum Entwurf sind **neue Funktionen** und werden eigens geplant (Oberfläche, API,
 MCP – siehe `docs/api.md`): Eigenschaften-Spalte im Kalender, Timeline-Ansicht, „This week“ mit
