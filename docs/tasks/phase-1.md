@@ -86,7 +86,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   markierter Test fragt den echten Hyprland ab.
 
 ### 1.4 Hyprland: Antworten lesen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.0
 - **Dateien:** `crates/torro-wm/src/hyprland/json.rs`, `crates/torro-wm/tests/fixtures/hyprland-*.json`
 - **Ziel:** serde-Strukturen für `j/clients`, `j/activeworkspace`, `j/monitors` und Umwandlung in die
