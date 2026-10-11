@@ -186,6 +186,18 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Modell:** Haiku · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/ui/approvals.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/tray/linux.rs`
 - Liste mit „Allow“/„Deny“, Zahl am Tray-Icon.
 
+### A.11 Kleinkram aus den API-Checks
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** A.3 · **Dateien:** `crates/torro-pim-caldav/src/write.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-ipc/src/pim.rs`
+- `write.rs` `stored_item`: ohne `ETag`-Header im GET mit `conflict` ablehnen statt per PROPFIND
+  nachholen (Inhalt und etag aus derselben Version); `precondition` meldet fehlenden etag als
+  `Conflict` statt `Other`.
+- `pim.rs` `check_writable`: unbekannte Sammlungen auch für die Suite ablehnen (`knows_collection`).
+- `stored_item` gibt die Art (VEVENT/VTODO) zurück; der Kern gleicht sie mit dem Befehl ab.
+- Katalog: `tasks.save_todo`/`delete_todo` nennen, dass wiederkehrende Aufgaben noch nicht änderbar sind.
+- `PimClient` reicht den Code `unsupported` als eigenen Fehler durch, damit die Apps einen übersetzten
+  Text zeigen statt der englischen API-Meldung (Text in der App mit `tr()`).
+
 ### A.9 API-Referenz und Abschluss
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** A.4, A.6, A.8
