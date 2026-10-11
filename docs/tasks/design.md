@@ -314,7 +314,7 @@ Aufgaben ändern nur Aussehen und Bedienung, keine Funktionen (API/MCP nicht bet
 Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abschnitt 9).
 
 ### D.1 Titel mit Auslassung im Kalender
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/week.rs`, `views/month.rs`
 - Termintitel und Monatszeilen mit `torro_gui::typo::ellipsize` kürzen statt mitten im Wort
   abzuschneiden; einzeilige Blöcke ohne Platz für den Titel zeigen nur den Titel (nicht nur die Zeit).

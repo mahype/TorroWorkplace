@@ -28,6 +28,7 @@ use iced::{Background, Border, Color, Element, Length, Padding, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
 use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
+use torro_gui::typo::{ellipsize, text_width};
 use torro_gui::{style, typo};
 use torro_pim::{Event, EventTime};
 
@@ -59,14 +60,15 @@ const HEADER_HEIGHT: f32 = size::CONTROL_SM;
 const INNER_LINES: f32 = 6.0;
 
 pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
-    // The number of entry rows depends on the height the cells get.
-    responsive(move |bounds| month(&data, bounds.height)).into()
+    // The number of entry rows depends on the height the cells get, the cut titles on their width.
+    responsive(move |bounds| month(&data, bounds.width, bounds.height)).into()
 }
 
-/// The header and the six weeks for a view `height` high.
-fn month<'a>(data: &ViewData<'a>, height: f32) -> Element<'a, Message> {
+/// The header and the six weeks for a view `width` × `height`.
+fn month<'a>(data: &ViewData<'a>, width: f32, height: f32) -> Element<'a, Message> {
     let today = data.now;
     let cell_height = (height - HEADER_HEIGHT - INNER_LINES) / 6.0;
+    let cell_width = ((width - 6.0 * size::HAIRLINE) / 7.0).max(0.0);
     let lines = lines_that_fit(cell_height);
     let horizontal = || rule::horizontal(1).style(style::rule);
     let mut weeks = column![header(data.start), horizontal()].height(Length::Fill);
@@ -77,7 +79,7 @@ fn month<'a>(data: &ViewData<'a>, height: f32) -> Element<'a, Message> {
                 cells = cells.push(rule::vertical(1).style(style::rule));
             }
             let date = data.start + Duration::days(week * 7 + day);
-            cells = cells.push(cell(date, data.anchor, today, &data.items, lines));
+            cells = cells.push(cell(date, data.anchor, today, &data.items, lines, cell_width));
         }
         if week > 0 {
             weeks = weeks.push(horizontal());
@@ -107,14 +109,15 @@ fn header<'a>(start: NaiveDate) -> Element<'a, Message> {
     names.into()
 }
 
-/// One day: the day number, then its events as far as `lines` rows go. Empty space in the cell
-/// creates an event on that day.
+/// One day `width` wide: the day number, then its events as far as `lines` rows go. Empty space
+/// in the cell creates an event on that day.
 fn cell<'a>(
     date: NaiveDate,
     anchor: NaiveDate,
     today: NaiveDateTime,
     items: &[Item<'a>],
     lines: usize,
+    width: f32,
 ) -> Element<'a, Message> {
     let in_month = date.year() == anchor.year() && date.month() == anchor.month();
     let day = day_items(items, date);
@@ -122,7 +125,7 @@ fn cell<'a>(
     let mut rows = column![].spacing(LINE_GAP);
     for item in &day[..shown] {
         let faded = !in_month || ends_before(item.event, today);
-        rows = rows.push(event_row(*item, date, faded));
+        rows = rows.push(event_row(*item, date, faded, width - 2.0 * space::XS));
     }
     if more > 0 {
         let summary = trf("{n} more", &[("n", &more)]);
@@ -183,10 +186,12 @@ fn day_number<'a>(date: NaiveDate, today: NaiveDate, in_month: bool) -> Element<
         .into()
 }
 
-/// One event row in a cell: all-day entries as a tinted chip with a bar, timed ones with a dot.
-/// `faded` rows (over, or in a neighbouring month) are drawn at [`FADE_OPACITY`].
-fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool) -> Element<'a, Message> {
+/// One event row `width` wide in a cell: all-day entries as a tinted chip with a bar, timed ones
+/// with a dot. The title is cut with "…" to what is left of the row ([`title_room`]). `faded`
+/// rows (over, or in a neighbouring month) are drawn at [`FADE_OPACITY`].
+fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, width: f32) -> Element<'a, Message> {
     let (prefix, title) = entry_parts(item.event, date);
+    let title = ellipsize(&title, typo::CAPTION, title_room(item.event.all_day(), prefix.as_deref(), width));
     let color = item.color;
     let title = typo::text(typo::CAPTION, title)
         .style(move |theme: &Theme| TextStyle { color: Some(shade(palette(theme), palette(theme).text, faded)) })
@@ -233,6 +238,18 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool) -> Element<'a, Me
         .on_press(Message::OpenEvent(item.index))
         .interaction(mouse::Interaction::Pointer)
         .into()
+}
+
+/// The width left for the title in an event row `width` wide: an all-day chip less its bar and
+/// its padding; a timed row less its left padding, the dot, the time and the gaps between them.
+fn title_room(all_day: bool, prefix: Option<&str>, width: f32) -> f32 {
+    let room = if all_day {
+        width - BAR - 2.0 * space::S
+    } else {
+        let prefix = prefix.map_or(0.0, |prefix| text_width(prefix, typo::MICRO) + space::XS);
+        width - space::XS - DOT - space::XS - prefix
+    };
+    room.max(0.0)
 }
 
 /// `color` as it is drawn on the panel: faded towards it when `faded`, like CSS `opacity`.
@@ -443,6 +460,14 @@ mod tests {
         assert_eq!(entry_parts(&review, d(12)), (Some("…".into()), "Review".into()));
         let holiday = all_day("Holiday", 11, None);
         assert_eq!(entry_parts(&holiday, d(11)), (None, "Holiday".into()));
+    }
+
+    #[test]
+    fn titles_get_what_is_left_of_the_row() {
+        assert_eq!(title_room(true, None, 100.0), 100.0 - BAR - 2.0 * space::S);
+        let timed = title_room(false, Some("14:00"), 100.0);
+        assert!(timed < 100.0 - DOT - 2.0 * space::XS - space::XS, "the time takes its share");
+        assert_eq!(title_room(false, Some("14:00"), 10.0), 0.0, "never negative");
     }
 
     #[test]

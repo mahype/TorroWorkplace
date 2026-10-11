@@ -28,6 +28,7 @@ use iced::{Background, Color, Element, Event, Length, Point, Rectangle, Size, Ta
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
 use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
+use torro_gui::typo::{ellipsize, text_width};
 use torro_gui::{style, typo};
 use torro_pim::{Event as CalendarEvent, EventTime};
 
@@ -57,6 +58,9 @@ const TEXT_TOP: f32 = 3.0;
 /// Width of "09:30" in `MICRO` (tabular figures, so the same for every time) plus the gap of 6
 /// before the title in a one-line event (`.ev.short{gap:6px}`).
 const SHORT_TIME_WIDTH: f32 = 36.0;
+/// A one-line event keeps its start time in front of the title only while at least this many
+/// letters of the title fit beside it; otherwise the title alone is worth more than the time.
+const MIN_TITLE_LETTERS: usize = 4;
 /// Past events and chips are drawn at this opacity over their background (`.ev.past`).
 const PAST_OPACITY: f32 = 0.55;
 /// Weekend columns get this much of the window background over the panel (`.daycols > .weekend`).
@@ -336,7 +340,8 @@ impl canvas::Program<Message> for Strip {
                 surface(&mut frame, bar.rect, &tone);
                 frame.with_clip(text_clip(bar.rect), |frame| {
                     let at = Point::new(bar.rect.x + TEXT_LEFT, bar.rect.center_y());
-                    label(frame, &entry.title, at, typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
+                    let title = ellipsize(&entry.title, typo::CAPTION, text_room(bar.rect));
+                    label(frame, &title, at, typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
                 });
             }
         }
@@ -492,34 +497,73 @@ fn text_clip(rect: Rectangle) -> Rectangle {
     Rectangle { width: (rect.width - TEXT_RIGHT).max(0.0), ..rect }
 }
 
+/// The width the text of an event or chip has: from its text edge to short of its right edge.
+fn text_room(rect: Rectangle) -> f32 {
+    (rect.width - TEXT_LEFT - TEXT_RIGHT).max(0.0)
+}
+
 /// Smallest event height that takes the title and the time on two lines.
 fn two_lines_fit(height: f32) -> bool {
     height >= TEXT_TOP + line_height(typo::CAPTION) + line_height(typo::MICRO)
 }
 
+/// The time line under the title in `room`: the range "10:00 – 11:30", or the start alone when
+/// the range does not fit (a narrow lane), cut with "…" as a last resort.
+fn time_line(entry: &Entry, room: f32) -> String {
+    let range = entry.time_range();
+    if text_width(&range, typo::MICRO) <= room {
+        range
+    } else {
+        ellipsize(&format_time(entry.start.time()), typo::MICRO, room)
+    }
+}
+
+/// The one line of a short event in `room`: the start time and the title cut with "…" to the
+/// rest ("09:30 Daily St…"), or – when fewer than [`MIN_TITLE_LETTERS`] of the title would be
+/// left – the title alone, since a bare "14:30" does not say what happens.
+fn short_line(title: &str, time: String, room: f32) -> (Option<String>, String) {
+    if text_width(title, typo::CAPTION) <= room - SHORT_TIME_WIDTH {
+        return (Some(time), title.to_string());
+    }
+    let cut = ellipsize(title, typo::CAPTION, room - SHORT_TIME_WIDTH);
+    let letters = cut.trim_end_matches(typo::ELLIPSIS).chars().count();
+    if letters >= MIN_TITLE_LETTERS.min(title.chars().count()) && !cut.is_empty() {
+        (Some(time), cut)
+    } else {
+        (None, ellipsize(title, typo::CAPTION, room))
+    }
+}
+
 /// The text of a timed event. Title (`CAPTION`) over the time range (`MICRO`), and the place
 /// below when `with_place` and there is room; a block too low for two lines (under half an
-/// hour) gets one: "09:30 Daily standup". Never wrapped: in a narrow tile wrapping would break
-/// words into single letters; the clip cuts what does not fit.
+/// hour) gets one: "09:30 Daily standup" ([`short_line`]). Never wrapped: in a narrow tile
+/// wrapping would break words into single letters; every line is cut with "…" to the block.
 fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, with_place: bool) {
     let x = rect.x + TEXT_LEFT;
+    let room = text_room(rect);
     frame.with_clip(text_clip(rect), |frame| {
         if two_lines_fit(rect.height) {
             let mut y = rect.y + TEXT_TOP;
-            label(frame, &entry.title, Point::new(x, y), typo::CAPTION, tone.title, Alignment::Left, Vertical::Top);
+            let title = ellipsize(&entry.title, typo::CAPTION, room);
+            label(frame, &title, Point::new(x, y), typo::CAPTION, tone.title, Alignment::Left, Vertical::Top);
             y += line_height(typo::CAPTION);
-            label(frame, &entry.time_range(), Point::new(x, y), typo::MICRO, tone.time, Alignment::Left, Vertical::Top);
+            let time = time_line(entry, room);
+            label(frame, &time, Point::new(x, y), typo::MICRO, tone.time, Alignment::Left, Vertical::Top);
             y += line_height(typo::MICRO);
-            let room = y + line_height(typo::META) <= rect.y + rect.height;
-            if let Some(place) = entry.location.as_deref().filter(|_| with_place && room) {
-                label(frame, place, Point::new(x, y), typo::META, tone.place, Alignment::Left, Vertical::Top);
+            let fits = y + line_height(typo::META) <= rect.y + rect.height;
+            if let Some(place) = entry.location.as_deref().filter(|_| with_place && fits) {
+                let place = ellipsize(place, typo::META, room);
+                label(frame, &place, Point::new(x, y), typo::META, tone.place, Alignment::Left, Vertical::Top);
             }
         } else {
             let y = rect.center_y();
-            let time = format_time(entry.start.time());
-            label(frame, &time, Point::new(x, y), typo::MICRO, tone.time, Alignment::Left, Vertical::Center);
-            let at = Point::new(x + SHORT_TIME_WIDTH, y);
-            label(frame, &entry.title, at, typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
+            let (time, title) = short_line(&entry.title, format_time(entry.start.time()), room);
+            let mut title_x = x;
+            if let Some(time) = time {
+                label(frame, &time, Point::new(x, y), typo::MICRO, tone.time, Alignment::Left, Vertical::Center);
+                title_x += SHORT_TIME_WIDTH;
+            }
+            label(frame, &title, Point::new(title_x, y), typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
         }
     });
 }
@@ -616,6 +660,28 @@ mod tests {
         assert!(!two_lines_fit(HOUR_HEIGHT / 2.0 - 2.0));
         assert!(two_lines_fit(HOUR_HEIGHT * 0.75 - 2.0));
         assert!(two_lines_fit(HOUR_HEIGHT - 2.0));
+    }
+
+    #[test]
+    fn short_lines_keep_the_time_while_the_title_has_room() {
+        let time = || "09:30".to_string();
+        let wide = short_line("Daily Standup", time(), 400.0);
+        assert_eq!(wide, (Some(time()), "Daily Standup".to_string()));
+        // A week column of an 800-wide window: the title is cut with "…", the time stays.
+        let (lead, title) = short_line("Daily Standup", time(), 88.0);
+        assert_eq!(lead, Some(time()));
+        assert!(title.ends_with(typo::ELLIPSIS) && title.starts_with("Dai"), "{title}");
+        // A half lane: no room for the title beside the time, so the title goes alone.
+        let (lead, title) = short_line("1:1 with Lena", time(), 50.0);
+        assert_eq!(lead, None);
+        assert!(title.starts_with("1:1"), "{title}");
+    }
+
+    #[test]
+    fn narrow_blocks_show_the_start_instead_of_a_cut_range() {
+        let entry = entry(at(7, 13, 0), at(7, 15, 0));
+        assert_eq!(time_line(&entry, 200.0), "13:00 – 15:00");
+        assert_eq!(time_line(&entry, 50.0), "13:00");
     }
 
     #[test]
