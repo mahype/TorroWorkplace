@@ -4,12 +4,13 @@
 //! Task S.1 in `docs/tasks/steuerzentrale.md` fills in [`load`] and [`save`]. The type is the
 //! contract: add fields with `#[serde(default)]` so older files keep loading.
 
+use std::borrow::Cow;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::AppId;
 use crate::paths::AppPaths;
@@ -43,6 +44,116 @@ pub struct Settings {
     /// Collections (calendar and task list ids) the apps do not show.
     #[serde(default)]
     pub hidden_collections: Vec<String>,
+    /// How large every window of the suite draws, like the zoom of a browser (task Z.1). One
+    /// value for all apps, so tiled windows stay alike; stored as the factor (`1.1`).
+    #[serde(default)]
+    pub zoom: Zoom,
+}
+
+/// The zoom of the suite's windows: one of the steps of a browser ([`Zoom::STEPS`], 67 % to
+/// 200 %). The apps scale the whole window with it (Iced `scale_factor`), so text, spacing and
+/// layout grow together.
+///
+/// Kept as a whole percentage, so the steps compare exactly and `Settings` stays `Eq`. In JSON it
+/// is the factor (`1.1` for 110 %); reading rounds any number to the nearest step
+/// ([`Zoom::nearest`]), so a hand-edited file never keeps the suite from starting. Whether a
+/// value sent to the core is in range is [`Zoom::from_factor`]'s check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Zoom(u16);
+
+impl Zoom {
+    /// The steps in percent, as in Firefox and Chrome.
+    pub const STEPS: [u16; 10] = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+    /// 100 %.
+    pub const DEFAULT: Zoom = Zoom(100);
+    /// The smallest step (67 %).
+    pub const MIN: Zoom = Zoom(Zoom::STEPS[0]);
+    /// The largest step (200 %).
+    pub const MAX: Zoom = Zoom(Zoom::STEPS[Zoom::STEPS.len() - 1]);
+
+    /// The step nearest to `factor` (`1.1` → 110 %), or `None` when `factor` is not a number
+    /// between 0.67 and 2.0. Compared in whole percent, so `0.666` still counts as 67 %. For
+    /// values from outside (`settings.set_setting`), which are refused when out of range.
+    pub fn from_factor(factor: f64) -> Option<Zoom> {
+        let percent = (factor * 100.0).round();
+        let range = f64::from(Zoom::MIN.0)..=f64::from(Zoom::MAX.0);
+        range.contains(&percent).then(|| Zoom::nearest(factor))
+    }
+
+    /// The step nearest to `factor`; out of range it is the smallest or largest step, a value
+    /// that is not a number gives [`Zoom::DEFAULT`]. Halfway between two steps the smaller wins.
+    pub fn nearest(factor: f64) -> Zoom {
+        if !factor.is_finite() {
+            return Zoom::DEFAULT;
+        }
+        let percent = factor * 100.0;
+        let distance = |step: u16| (f64::from(step) - percent).abs();
+        let mut best = Zoom::MIN.0;
+        for step in Zoom::STEPS {
+            if distance(step) < distance(best) {
+                best = step;
+            }
+        }
+        Zoom(best)
+    }
+
+    /// The factor for Iced's `scale_factor` (1.1 for 110 %).
+    pub fn factor(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+
+    /// The whole percentage (110), for showing it.
+    pub fn percent(self) -> u16 {
+        self.0
+    }
+
+    /// The next larger step; the largest stays.
+    pub fn larger(self) -> Zoom {
+        Zoom::STEPS.into_iter().find(|&step| step > self.0).map_or(Zoom::MAX, Zoom)
+    }
+
+    /// The next smaller step; the smallest stays.
+    pub fn smaller(self) -> Zoom {
+        Zoom::STEPS.into_iter().rev().find(|&step| step < self.0).map_or(Zoom::MIN, Zoom)
+    }
+}
+
+impl Default for Zoom {
+    fn default() -> Zoom {
+        Zoom::DEFAULT
+    }
+}
+
+impl Serialize for Zoom {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(f64::from(self.0) / 100.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Zoom {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Zoom, D::Error> {
+        f64::deserialize(deserializer).map(Zoom::nearest)
+    }
+}
+
+impl JsonSchema for Zoom {
+    fn schema_name() -> Cow<'static, str> {
+        "Zoom".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "number",
+            "minimum": 0.67,
+            "maximum": 2.0,
+            "description": "Zoom of every window as a factor (1.0 = 100 %), rounded to the nearest step: 0.67, 0.75, \
+                            0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0."
+        })
+    }
 }
 
 /// `settings.json` in the core's config directory; `None` without a home directory.
@@ -162,6 +273,7 @@ mod tests {
             appearance: Appearance::Dark,
             start_at_login: true,
             hidden_collections: vec!["work".into()],
+            zoom: Zoom::DEFAULT,
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -205,6 +317,7 @@ mod tests {
             appearance: Appearance::Light,
             start_at_login: true,
             hidden_collections: vec!["a".into(), "b".into()],
+            zoom: Zoom::nearest(1.25),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -231,5 +344,85 @@ mod tests {
         let text = fs::read_to_string(&path).expect("read");
         assert!(text.contains("\n  \"language\""), "expected indented JSON, got {text:?}");
         assert!(text.contains("\"startAtLogin\""));
+    }
+
+    #[test]
+    fn a_file_from_before_zoom_loads_at_100_percent() {
+        let dir = TempDir::new("no-zoom");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","appearance":"dark","startAtLogin":true}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.zoom, Zoom::DEFAULT);
+        assert_eq!(loaded.appearance, Appearance::Dark, "the other fields still load");
+    }
+
+    #[test]
+    fn zoom_is_stored_as_its_factor() {
+        for (percent, json) in [(67, "0.67"), (100, "1.0"), (110, "1.1"), (125, "1.25"), (200, "2.0")] {
+            let zoom = Zoom::nearest(f64::from(percent) / 100.0);
+            assert_eq!(zoom.percent(), percent);
+            assert_eq!(serde_json::to_string(&zoom).expect("serialize"), json);
+            assert_eq!(serde_json::from_str::<Zoom>(json).expect("parse"), zoom);
+        }
+        // Integers are numbers too.
+        assert_eq!(serde_json::from_str::<Zoom>("2").expect("parse"), Zoom::MAX);
+    }
+
+    #[test]
+    fn zoom_steps_go_up_and_down_and_stop_at_the_ends() {
+        let mut zoom = Zoom::MIN;
+        let mut seen = vec![zoom.percent()];
+        while zoom != Zoom::MAX {
+            zoom = zoom.larger();
+            seen.push(zoom.percent());
+        }
+        assert_eq!(seen, Zoom::STEPS);
+        assert_eq!(Zoom::MAX.larger(), Zoom::MAX);
+        assert_eq!(Zoom::MIN.smaller(), Zoom::MIN);
+        assert_eq!(Zoom::DEFAULT.larger().percent(), 110);
+        assert_eq!(Zoom::DEFAULT.smaller().percent(), 90);
+        assert_eq!(Zoom::nearest(1.5).smaller().percent(), 125);
+        assert_eq!(Zoom::DEFAULT.factor(), 1.0);
+        assert_eq!(Zoom::nearest(1.5).factor(), 1.5);
+    }
+
+    #[test]
+    fn zoom_rounds_to_the_nearest_step() {
+        let percent = |factor: f64| Zoom::nearest(factor).percent();
+        assert_eq!(percent(1.0), 100);
+        assert_eq!(percent(1.04), 100);
+        assert_eq!(percent(1.06), 110);
+        assert_eq!(percent(1.3), 125);
+        assert_eq!(percent(0.7), 67);
+        assert_eq!(percent(0.72), 75);
+        // Halfway between 100 and 110: the smaller step.
+        assert_eq!(percent(1.05), 100);
+        // Out of range or not a number: clamped, or the default.
+        assert_eq!(percent(0.1), 67);
+        assert_eq!(percent(9.0), 200);
+        assert_eq!(percent(f64::NAN), 100);
+        assert_eq!(percent(f64::INFINITY), 100);
+    }
+
+    #[test]
+    fn zoom_from_outside_must_be_in_range() {
+        assert_eq!(Zoom::from_factor(1.1), Some(Zoom::nearest(1.1)));
+        assert_eq!(Zoom::from_factor(1.3).map(Zoom::percent), Some(125));
+        assert_eq!(Zoom::from_factor(0.67), Some(Zoom::MIN));
+        assert_eq!(Zoom::from_factor(0.666), Some(Zoom::MIN), "rounds to 67 %");
+        assert_eq!(Zoom::from_factor(2.0), Some(Zoom::MAX));
+        for bad in [0.5, 0.66, 2.01, 3.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(Zoom::from_factor(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_zoom_in_a_file_is_rounded_to_a_step() {
+        let dir = TempDir::new("zoom-rounded");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"zoom":1.3}"#).expect("write");
+        assert_eq!(load_from(&path).zoom.percent(), 125);
+        fs::write(&path, r#"{"zoom":7}"#).expect("write");
+        assert_eq!(load_from(&path).zoom, Zoom::MAX, "out of range is clamped, not a broken file");
     }
 }

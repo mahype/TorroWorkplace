@@ -16,6 +16,8 @@
 //! - [`ui_state`]: what a window remembers between starts (`ui.json`: the sidebar choice).
 //! - [`widgets`]: the building blocks inside it (buttons, sidebar and list rows, menus, floating
 //!   cards, chips, property rows, settings groups, empty/loading/error states).
+//! - [`zoom`]: zoom like a browser (Ctrl + Plus / Minus / 0) for the whole suite, with the short
+//!   badge that shows the new level.
 
 pub mod connect;
 pub mod datetime;
@@ -29,6 +31,7 @@ pub mod theme;
 pub mod typo;
 pub mod ui_state;
 pub mod widgets;
+pub mod zoom;
 
 use std::borrow::Cow;
 

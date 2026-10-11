@@ -50,6 +50,7 @@ use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
+use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
 use torro_pim::demo::DemoSource;
@@ -273,6 +274,8 @@ pub struct App {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
+    /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
+    zoom: Zoom,
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +302,8 @@ pub enum Message {
     SystemMode(Mode),
     /// The appearance stored in the suite settings; an error keeps the one we have.
     Appearance(Result<Appearance, String>),
+    /// The zoom keys, the stored zoom and its badge.
+    Zoom(zoom::Message),
     /// From the app switcher at the top of the sidebar.
     Switcher(Switcher),
     /// Open or close the navigation menu ("Today ▾").
@@ -386,6 +391,7 @@ fn typing() -> Task<bool> {
 impl App {
     pub fn new(source: Source, launch: Launch) -> (App, Task<Message>) {
         let open = launch.open;
+        let zoom = Zoom::for_source(&source);
         let app = App {
             source,
             today: launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date()),
@@ -414,6 +420,7 @@ impl App {
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
+            zoom,
             launch,
             opened: false,
         };
@@ -422,6 +429,7 @@ impl App {
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
+            app.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
@@ -438,6 +446,8 @@ impl App {
             iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            // Zoom keys work everywhere, glance views and the open detail included.
+            self.zoom.subscription().map(Message::Zoom),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
@@ -460,6 +470,11 @@ impl App {
     /// following the desktop.
     pub fn theme(&self) -> Theme {
         theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
+    }
+
+    /// The factor the whole window draws at (`.scale_factor` in `main`): the suite-wide zoom.
+    pub fn scale_factor(&self) -> f32 {
+        self.zoom.factor()
     }
 
     /// Asks the core for the stored appearance. Done on every tick, so a change in the control
@@ -577,7 +592,7 @@ impl App {
             }
             Message::Tick => {
                 self.today = self.launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date());
-                let appearance = self.fetch_appearance();
+                let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
                 if !self.connected() {
                     return Task::batch([appearance, self.fetch_account()]);
                 }
@@ -592,6 +607,18 @@ impl App {
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            Message::Zoom(message) => {
+                let before = self.zoom.factor();
+                let task = self.zoom.update(message).map(Message::Zoom);
+                if self.zoom.factor() == before {
+                    return task;
+                }
+                // The window keeps its pixels, so its logical size changes with the zoom: at once
+                // by arithmetic, then exactly from the window.
+                self.size = zoom::rescale(self.size, before, self.zoom.factor());
+                let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+                return Task::batch([task, size]);
+            }
             Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
             Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app)),
             Message::Switcher(Switcher::New) => {
@@ -772,7 +799,12 @@ impl App {
         operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
     }
 
+    /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
+        self.zoom.view(self.content())
+    }
+
+    fn content(&self) -> Element<'_, Message> {
         match &self.account {
             None => {
                 return match &self.error {
@@ -1828,5 +1860,23 @@ mod tests {
         let _ = system.update(Message::Appearance(Ok(Appearance::Dark)));
         let _ = system.update(Message::SystemMode(Mode::Light));
         assert_eq!(system.theme(), theme::light(), "system follows the desktop whatever is stored");
+    }
+
+    /// Zooming in shrinks the window in logical pixels, so the layout changes like a browser's:
+    /// 1440 wide at 150 % is 960, the medium layout. The demo keeps the zoom in the process.
+    #[test]
+    fn zooming_in_switches_the_size_class_like_a_browser() {
+        use torro_gui::zoom::Step;
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(1440.0, 900.0)));
+        assert_eq!(app.class(), SizeClass::Wide);
+        for _ in 0..3 {
+            let _ = app.update(Message::Zoom(zoom::Message::Step(Step::In)));
+        }
+        assert_eq!(app.scale_factor(), 1.5);
+        assert!((app.size.width - 960.0).abs() < 0.01, "{:?}", app.size);
+        assert_eq!(app.class(), SizeClass::Medium);
+        let _ = app.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
+        assert_eq!((app.scale_factor(), app.class()), (1.0, SizeClass::Wide));
     }
 }

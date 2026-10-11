@@ -467,7 +467,7 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
   „Liste schmaler“ bzw. „Detail ersetzt die Liste“. Inhalt und Verhalten bleiben.
 
 ### Z.1 Zoomen wie im Browser (Strg + Plus / Minus / 0)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs` (bzw. wo `SetSetting` behandelt wird), `crates/torro-gui/src/{lib,shell}.rs` (oder neues `zoom.rs`), `crates/torrocalendar/src/{main,app}.rs`, `crates/torrotasks/src/{main,app}.rs`, `crates/torroworkplace/src/ui/{mod,general}.rs`, `crates/torroworkplace/src/main.rs`, Skill `torro-design` (Abschnitt 3)
 - Wunsch: Schrift und Oberfläche insgesamt größer und kleiner stellen wie im Browser.
 - **Oberfläche:** In jeder App vergrößert Strg + Plus (auch Strg + `=` und Ziffernblock-Plus),

@@ -144,8 +144,12 @@ aus einem Guss wirkt:
 
 - **Schrift: Inter 4** (SIL OFL), mit der App ausgeliefert (`torro_gui::fonts()`,
   `torro_gui::settings()`), **Grundgröße 13** wie Linear. Nie `Font::DEFAULT`.
-  Größere Darstellung später über die Einstellung „Interface size“ (Iced `scale_factor`), nicht über
-  andere Schriftgrößen.
+  Größer oder kleiner nur über den **Zoom** der Suite (Z.1, `torro_gui::zoom`): Strg + Plus /
+  Minus / 0 in jeder App, Stufen wie im Browser (67–200 %), eine Einstellung für alle (`Settings::zoom`,
+  Steuerzentrale › General › Interface). Umgesetzt mit Iceds `scale_factor`, nie über andere
+  Schriftgrößen. Die Größenklassen rechnen in logischen Pixeln *nach* dem Zoom (1440 breit bei
+  150 % = 960 = Mittel), wie Breakpoints im Browser. Jede App: `.scale_factor(…)` im Builder,
+  `zoom.subscription()`, `zoom.view(…)` um die ganze Ansicht (kurze Anzeige „110%“ unten mittig).
 - **Stufen** (`torro_gui::typo`), Zeilenhöhe immer absolut:
 
 | Stufe | Größe / Zeile | Gewicht | Wofür |

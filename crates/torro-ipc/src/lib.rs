@@ -246,6 +246,10 @@ pub enum SettingKey {
     Appearance,
     /// Start the core when the user logs in: `true` or `false`.
     StartAtLogin,
+    /// How large every window draws, like a browser's zoom: a number from `0.67` to `2.0`
+    /// (1.0 = 100 %), rounded to the nearest step (`torro_core::settings::Zoom::STEPS`). Open
+    /// windows follow.
+    Zoom,
 }
 
 /// The core's answer to one [`Request`].

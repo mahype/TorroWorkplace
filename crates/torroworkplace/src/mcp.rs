@@ -259,14 +259,14 @@ pub fn tools() -> &'static [Tool] {
 
 /// Where the catalogue's schema says less than the request takes, the tool says more: the
 /// `value` of `settings.set_setting` is any JSON in the request, but every setting takes a
-/// string or a boolean.
+/// string, a boolean or (`zoom`) a number.
 fn narrow_schema(command: &str, schema: &mut JsonObject) {
     if command != "settings.set_setting" {
         return;
     }
     let Some(Value::Object(properties)) = schema.get_mut("properties") else { return };
     let description = properties.get("value").and_then(|value| value.get("description")).cloned();
-    let mut value = json!({ "anyOf": [{ "type": "string" }, { "type": "boolean" }] });
+    let mut value = json!({ "anyOf": [{ "type": "string" }, { "type": "boolean" }, { "type": "number" }] });
     if let (Some(description), Some(object)) = (description, value.as_object_mut()) {
         object.insert("description".into(), description);
     }
@@ -708,11 +708,17 @@ mod tests {
         assert!(schema("calendar_list_events")["properties"]["start"].get("description").is_some());
         assert!(schema("workspaces_load_template")["properties"].get("mode").is_some());
         let value = &schema("settings_set_setting")["properties"]["value"];
-        assert_eq!(value["anyOf"], json!([{"type": "string"}, {"type": "boolean"}]));
+        assert_eq!(value["anyOf"], json!([{"type": "string"}, {"type": "boolean"}, {"type": "number"}]));
         for name in ["calendar_save_event", "tasks_save_todo", "workspaces_load_template"] {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }
         assert_eq!(hints("workspaces_save_template").and_then(|h| h.destructive_hint), Some(false));
+    }
+
+    #[test]
+    fn the_zoom_is_set_with_a_number() {
+        let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);
+        assert_eq!(zoom, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: json!(1.25) }));
     }
 
     #[test]

@@ -37,6 +37,7 @@ fn main() -> ExitCode {
             .settings(torro_gui::settings())
             .title(app::App::title)
             .theme(app::App::theme)
+            .scale_factor(app::App::scale_factor)
             .subscription(app::App::subscription)
             .window(torro_gui::window(AppId::TASKS))
             .run();

@@ -40,6 +40,7 @@ use torro_gui::style;
 use torro_gui::theme::{self, Appearance, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
+use torro_gui::zoom::{self, Zoom};
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
@@ -326,6 +327,8 @@ pub struct App {
     scrolled: bool,
     appearance: Appearance,
     system_mode: Mode,
+    /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
+    zoom: Zoom,
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +389,8 @@ pub enum Message {
     SystemMode(Mode),
     /// The appearance stored in the suite settings; an error keeps the one we have.
     Appearance(Result<Appearance, String>),
+    /// The zoom keys, the stored zoom and its badge.
+    Zoom(zoom::Message),
 }
 
 /// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
@@ -423,6 +428,7 @@ impl App {
     pub fn new(source: Source, launch: Launch) -> (App, Task<Message>) {
         let now = launch.now.unwrap_or_else(|| Local::now().naive_local());
         let open = launch.open;
+        let zoom = Zoom::for_source(&source);
         let app = App {
             source,
             now,
@@ -451,6 +457,7 @@ impl App {
             scrolled: false,
             appearance: Appearance::System,
             system_mode: Mode::None,
+            zoom,
             launch,
             opened: false,
         };
@@ -459,6 +466,7 @@ impl App {
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
+            app.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
@@ -475,7 +483,8 @@ impl App {
         let tick = iced::time::every(every).map(|_| Message::Tick);
         let system = iced::system::theme_changes().map(Message::SystemMode);
         let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
-        let mut all = vec![tick, system, resize];
+        // Zoom keys work everywhere, glance views and open panels included.
+        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom)];
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
             // Over the view the panel is all there is to work with; beside it the view still is.
@@ -498,6 +507,11 @@ impl App {
     /// following the desktop.
     pub fn theme(&self) -> Theme {
         theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
+    }
+
+    /// The factor the whole window draws at (`.scale_factor` in `main`): the suite-wide zoom.
+    pub fn scale_factor(&self) -> f32 {
+        self.zoom.factor()
     }
 
     /// Asks the core for the stored appearance. Done on every tick, so a change in the control
@@ -683,7 +697,7 @@ impl App {
             },
             Message::Tick => {
                 self.now = self.launch.now.unwrap_or_else(|| Local::now().naive_local());
-                let appearance = self.fetch_appearance();
+                let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
                 if !self.connected() {
                     return Task::batch([appearance, self.fetch_account()]);
                 }
@@ -696,11 +710,28 @@ impl App {
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            Message::Zoom(message) => {
+                let before = self.zoom.factor();
+                let task = self.zoom.update(message).map(Message::Zoom);
+                if self.zoom.factor() == before {
+                    return task;
+                }
+                // The window keeps its pixels, so its logical size changes with the zoom: at once
+                // by arithmetic, then exactly from the window.
+                self.size = zoom::rescale(self.size, before, self.zoom.factor());
+                let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+                return Task::batch([task, size]);
+            }
         }
         Task::none()
     }
 
+    /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
+        self.zoom.view(self.content())
+    }
+
+    fn content(&self) -> Element<'_, Message> {
         match &self.account {
             None => {
                 return match &self.error {
@@ -1669,5 +1700,23 @@ mod tests {
     #[test]
     fn without_a_preference_the_system_appearance_is_dark() {
         assert_eq!(demo_app().theme(), theme::theme());
+    }
+
+    /// Zooming in shrinks the window in logical pixels, so the layout changes like a browser's:
+    /// 1440 wide at 150 % is 960, the medium layout. The demo keeps the zoom in the process.
+    #[test]
+    fn zooming_in_switches_the_size_class_like_a_browser() {
+        use torro_gui::zoom::Step;
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(1440.0, 900.0)));
+        assert_eq!(app.class(), SizeClass::Wide);
+        for _ in 0..3 {
+            let _ = app.update(Message::Zoom(zoom::Message::Step(Step::In)));
+        }
+        assert_eq!(app.scale_factor(), 1.5);
+        assert!((app.size.width - 960.0).abs() < 0.01, "{:?}", app.size);
+        assert_eq!(app.class(), SizeClass::Medium);
+        let _ = app.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
+        assert_eq!((app.scale_factor(), app.class()), (1.0, SizeClass::Wide));
     }
 }

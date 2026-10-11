@@ -60,6 +60,7 @@ use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, AppInfo, Request, Response, Status, client};
 use torro_setups::TemplateSummary;
@@ -147,6 +148,9 @@ pub enum Action {
     OpenUrl(String),
     /// Jump to another section.
     Select(Section),
+    /// Zoom every window of the suite one step (General › Zoom). Goes through the window's own
+    /// zoom, so it applies at once and, with `--demo`, stays in the process.
+    Zoom(zoom::Step),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -210,6 +214,10 @@ pub struct Ui {
     /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
     /// (an empty `Data`) does not flip the colours.
     appearance: Appearance,
+    /// The suite-wide zoom (Ctrl + Plus / Minus / 0 and General › Zoom), the factor of the whole
+    /// window. `data.settings.zoom` follows it, so the General page shows the level the window
+    /// uses, also while a change is being saved.
+    zoom: Zoom,
     data: Data,
     /// The last failed request, kept across reloads until the next success or section change.
     notice: Option<String>,
@@ -244,6 +252,8 @@ pub enum Message {
     SystemMode(Mode),
     /// Reload everything (every few seconds, and "Retry" when the core does not answer).
     Tick,
+    /// The zoom keys, the stored zoom and its badge.
+    Zoom(zoom::Message),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
     Escape,
     Overview(overview::Message),
@@ -263,6 +273,7 @@ pub fn run(launch: Launch) -> iced::Result {
         .settings(torro_gui::settings())
         .title(|ui: &Ui| format!("Torro Workplace · {}", ui.section.label()))
         .theme(Ui::theme)
+        .scale_factor(|ui: &Ui| ui.zoom.factor())
         .subscription(Ui::subscription)
         .window(torro_gui::window(AppId::WORKPLACE))
         .run()
@@ -281,6 +292,8 @@ impl Ui {
             loaded: false,
             system_mode: Mode::None,
             appearance: Appearance::System,
+            // The demo keeps the zoom in the process, like everything else it changes.
+            zoom: Zoom::new(torro_ipc::socket_path().filter(|_| !demo)),
             data: Data::default(),
             notice: None,
             overview: overview::State::default(),
@@ -301,6 +314,7 @@ impl Ui {
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
             ui.reload(),
+            ui.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
             size,
@@ -370,6 +384,7 @@ impl Ui {
             iced::system::theme_changes().map(Message::SystemMode),
             iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            self.zoom.subscription().map(Message::Zoom),
         ];
         // The demo has nothing to reload.
         if !self.launch.demo {
@@ -425,6 +440,7 @@ impl Ui {
                 if self.data.error.is_none() {
                     self.appearance = self.data.settings.appearance;
                 }
+                self.data.settings.zoom = self.zoom.level();
                 // The add-account dialog follows the sign-in through the reloaded accounts.
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
@@ -439,7 +455,10 @@ impl Ui {
                 self.system_mode = mode;
                 Action::None
             }
-            Message::Tick => return self.reload(),
+            // The zoom is asked for apart from `Data`, so a reload from before a zoom change does
+            // not bring back the old level (`zoom::Message::Stored`).
+            Message::Tick => return Task::batch([self.reload(), self.zoom.fetch().map(Message::Zoom)]),
+            Message::Zoom(message) => return self.zoom(message),
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
@@ -516,19 +535,36 @@ impl Ui {
                 self.select(section);
                 Task::none()
             }
+            Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
         }
+    }
+
+    /// Hands `message` to the window's zoom. The window keeps its pixels, so the size kept for
+    /// `update` changes with the zoom; the General page shows the new level.
+    fn zoom(&mut self, message: zoom::Message) -> Task<Message> {
+        let before = self.zoom.factor();
+        let task = self.zoom.update(message).map(Message::Zoom);
+        self.data.settings.zoom = self.zoom.level();
+        if self.zoom.factor() == before {
+            return task;
+        }
+        // At once by arithmetic, then exactly from the window.
+        self.size = zoom::rescale(self.size, before, self.zoom.factor());
+        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        Task::batch([task, size])
     }
 
     /// The window in the layout of its real size: `responsive` hands over the size Iced laid out,
     /// so the first frame already fits the tile (no assumed start width).
+    /// The zoom badge lies over everything.
     fn view(&self) -> Element<'_, Message> {
-        responsive(move |size| match layout::of(size) {
+        let window = responsive(move |size| match layout::of(size) {
             // Tiles too small for a window show the status as a glance, without any chrome.
             SizeClass::Mini => glance::mini(&self.data, self.loaded, size),
             SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
             class => self.window(class),
-        })
-        .into()
+        });
+        self.zoom.view(window)
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
@@ -1142,7 +1178,7 @@ mod tests {
         assert_eq!(demo.data.accounts.len(), 2, "removing an account in the demo changes nothing");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
-        assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 1);
+        assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");
     }
 
     #[test]
@@ -1159,5 +1195,23 @@ mod tests {
         let mut dark = started(&["--appearance", "dark"]);
         let _ = dark.update(Message::SystemMode(Mode::Light));
         assert_eq!(dark.theme(), theme::theme());
+    }
+
+    #[test]
+    fn the_general_zoom_buttons_zoom_this_window_and_the_page_shows_it() {
+        use torro_gui::zoom::Step;
+        let mut demo = started(&["--demo", "--section", "general"]);
+        let _ = demo.update(Message::Resized(Size::new(1440.0, 900.0)));
+        for _ in 0..3 {
+            let _ = demo.update(Message::General(general::Message::Zoom(Step::In)));
+        }
+        assert_eq!(demo.zoom.factor(), 1.5);
+        assert_eq!(demo.data.settings.zoom.percent(), 150, "the page shows the level");
+        assert_eq!(layout::of(demo.size), SizeClass::Medium, "1440 at 150 % is 960 wide");
+        // A reload keeps the level of the window, not the one the reload brought.
+        let _ = demo.update(loaded(Appearance::System, None));
+        assert_eq!(demo.data.settings.zoom.percent(), 150);
+        let _ = demo.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
+        assert_eq!((demo.zoom.factor(), layout::of(demo.size)), (1.0, SizeClass::Wide));
     }
 }

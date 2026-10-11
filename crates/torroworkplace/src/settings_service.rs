@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use torro_core::settings::{self, Language, Settings};
+use torro_core::settings::{self, Language, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -121,6 +121,7 @@ enum Change {
     Language(Language),
     Appearance(Appearance),
     StartAtLogin(bool),
+    Zoom(Zoom),
 }
 
 impl Change {
@@ -131,6 +132,14 @@ impl Change {
             SettingKey::Language => Change::Language(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Appearance => Change::Appearance(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::StartAtLogin => Change::StartAtLogin(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Not through `Zoom`'s own reading, which clamps any number for the sake of old files:
+            // a value from outside must be in range.
+            SettingKey::Zoom => Change::Zoom(
+                value
+                    .as_f64()
+                    .and_then(Zoom::from_factor)
+                    .ok_or_else(|| format!("{value} is not a zoom: send a number from 0.67 to 2.0"))?,
+            ),
         })
     }
 
@@ -140,6 +149,7 @@ impl Change {
             Change::Language(language) => settings.language = language,
             Change::Appearance(appearance) => settings.appearance = appearance,
             Change::StartAtLogin(enabled) => settings.start_at_login = enabled,
+            Change::Zoom(zoom) => settings.zoom = zoom,
         }
     }
 }
@@ -388,6 +398,7 @@ mod tests {
         Change::parse(SettingKey::Language, &json!("german")).expect("valid language").apply(&mut settings);
         Change::parse(SettingKey::Appearance, &json!("dark")).expect("valid appearance").apply(&mut settings);
         Change::parse(SettingKey::StartAtLogin, &json!(true)).expect("valid flag").apply(&mut settings);
+        Change::parse(SettingKey::Zoom, &json!(1.25)).expect("valid zoom").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -395,6 +406,7 @@ mod tests {
                 appearance: Appearance::Dark,
                 start_at_login: true,
                 hidden_collections: vec!["work".into()],
+                zoom: Zoom::nearest(1.25),
             }
         );
     }
@@ -414,6 +426,20 @@ mod tests {
         assert!(Change::parse(SettingKey::Language, &json!("klingon")).is_err());
         assert!(Change::parse(SettingKey::StartAtLogin, &json!("yes")).is_err());
         assert!(Change::parse(SettingKey::Appearance, &json!(1)).is_err());
+        for bad in [json!(0.5), json!(2.5), json!("1.1"), json!(true), json!(null)] {
+            assert!(Change::parse(SettingKey::Zoom, &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_zoom_is_rounded_to_the_nearest_step_and_stored() {
+        let (_dir, store) = store();
+        store.set(SettingKey::Zoom, &json!(1.3)).expect("in range");
+        assert_eq!(store.current().zoom.percent(), 125);
+        store.set(SettingKey::Zoom, &json!(2)).expect("an integer is a number too");
+        assert_eq!(store.current().zoom, Zoom::MAX);
+        assert!(store.set(SettingKey::Zoom, &json!(3.0)).is_err());
+        assert_eq!(store.current().zoom, Zoom::MAX, "a refused value changes nothing");
     }
 
     #[test]

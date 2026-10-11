@@ -720,8 +720,8 @@ static GET_SETTINGS: Command = Command {
     area: Area::Settings,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns the suite-wide settings: language, appearance, start at login and the hidden calendars \
-                  and task lists.",
+    description: "Returns the suite-wide settings: language, appearance, start at login, zoom and the hidden \
+                  calendars and task lists.",
 };
 
 static SET_SETTING: Command = Command {
@@ -730,7 +730,8 @@ static SET_SETTING: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Changes one suite-wide setting: `language` (\"system\", \"english\", \"german\"), `appearance` \
-                  (\"system\", \"light\", \"dark\") or `start_at_login` (true, false).",
+                  (\"system\", \"light\", \"dark\"), `start_at_login` (true, false) or `zoom` (a number from 0.67 to \
+                  2.0, 1.0 = 100 %, rounded to the nearest browser zoom step; every open window follows).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -1200,7 +1201,7 @@ mod tests {
         let keys =
             schema.as_value().pointer("/properties/key/oneOf").and_then(|k| k.as_array()).expect("key is an enum");
         let keys: Vec<_> = keys.iter().filter_map(|k| k.get("const")).collect();
-        assert_eq!(keys, ["language", "appearance", "start_at_login"]);
+        assert_eq!(keys, ["language", "appearance", "start_at_login", "zoom"]);
 
         let schema = SAVE_EVENT.input_schema().expect("schema");
         assert_eq!(schema.as_value().pointer("/properties/event/type"), Some(&serde_json::json!("object")));
@@ -1244,7 +1245,7 @@ mod tests {
             }
         }
         let settings = fields(&UPDATE_SETTINGS, "/properties/settings/properties");
-        for field in ["language", "appearance", "startAtLogin", "hiddenCollections"] {
+        for field in ["language", "appearance", "startAtLogin", "hiddenCollections", "zoom"] {
             assert!(settings.get(field).is_some(), "update_settings lacks {field}");
         }
     }
