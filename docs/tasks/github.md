@@ -59,6 +59,34 @@ K.21 (frei)
   bleiben kontoübergreifend.
 - Abnahme: Sichtprüfung mit `--demo` (zwei Konten), mit einem Konto unverändert.
 
+### M1.4 Konten absichern (aus der API-Prüfung von M1.1)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M1.1 · **Dateien:** `crates/torroworkplace/src/{pim,account,core,clients,settings_service}.rs`,
+  `crates/torro-pim-caldav/src/{client,write,nextcloud}.rs`, `crates/torro-pim/src/account.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-core/src/i18n/de.rs` (nur die Meldung zur Fernlöschung)
+- **Geheimnis nie an fremde Server (hoch):** `place`/`State::owner` lösen Schreibziele nur über eine **exakte**
+  Kennung aus den zwischengespeicherten Sammlungen auf, sonst `not-found` (heute reicht der Präfix: Suite-Request
+  `<anna>/<URL eines anderen Hosts>` schickt Annas App-Passwort dorthin). Zusätzlich lehnt der CalDAV-Client jede
+  URL ab, deren Origin nicht der seines Servers ist (`request`, PUT/DELETE, `home.join(href)` beim PROPFIND).
+- **Anmeldung kann kein Konto übernehmen (mittel):** In `finish` muss der Origin von `credentials.server` zum
+  Start-Server passen, sonst ablehnen. Bei erneuter Anmeldung am selben Konto das alte App-Passwort nach
+  Möglichkeit widerrufen. Kennungen, die mit `/https:` o. Ä. einen Präfix-Trick in `account_of` erlauben, gibt
+  es dann nicht mehr; zusätzlich Zuordnung exakt (siehe oben).
+- **Fehlercodes und Beschreibungen:** `accounts.remove_account` mit unbekannter Kennung → `not-found` (Doc-Kommentar
+  nennen). `calendar.save_event`/`tasks.save_todo`: „Changing `collection` moves it to another calendar of the same
+  account; moving to another account fails with `unsupported`.“ (Katalog und Doc-Kommentar).
+- **Robust laden:** Ein Schlüsselbund-Fehler oder ein fehlendes Geheimnis bei einem Konto bricht das Laden der
+  anderen nicht ab; das Konto erscheint in `accounts.list_accounts` mit Problem („Sign in again“) und lässt sich
+  entfernen.
+- **Alte Kennungen nur einmal umschreiben:** `UpdateClient` und `UpdateSettings` lehnen nackte URLs ab (`error`),
+  damit eine alte Auswahl nicht später still dem ersten Konto zufällt.
+- Meldung zur Fernlöschung nennt das Konto (`trf("… {account} …")`, Übersetzung in `de.rs`).
+- **Oberfläche:** keine neue. **API/MCP:** keine neuen Requests; Beschreibungen wie oben.
+- Abnahme: Test mit zwei Fake-Servern (Suite schreibt auf `<anna>/<URL von bob>` → `not-found`, an keinen Server
+  geht etwas); Origin-Prüfung im Client; Anmeldung mit abweichendem `server` → abgelehnt; `remove_account`
+  unbekannt → `not-found`; Konto ohne Geheimnis erscheint mit Problem und lässt sich entfernen; nackte URL in
+  `UpdateClient` → `error`.
+
 ## P Aufgaben-Modell (auch für Nextcloud)
 
 ### P.1 CalDAV behält fremde Eigenschaften
