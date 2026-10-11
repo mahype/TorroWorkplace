@@ -125,7 +125,8 @@ Nach dem Vorbild von TorroMail, an den Stellen verbessert, an denen TorroMail L�
   `client-<id>`) und in der Konfiguration des Clients. In `clients.json` (Config-Verzeichnis, 0600)
   steht nur der SHA-256 mit Name, Art, Rechten und „zuletzt benutzt“.
 - **Jede Anfrage trägt den Schlüssel.** Das Protokoll bekommt einen Umschlag:
-  `{"v":1,"key":"torro_…","request":{"method":"…",…}}`. Ohne gültigen Schlüssel antwortet der
+  `{"v":1,"key":"torro_…","request":{"method":"calendar.list_events",…}}`. `method` ist der Name
+  aus dem Katalog; es gibt nur einen Namen je Befehl. Ohne gültigen Schlüssel antwortet der
   Dienst nur auf `ping` (damit ein Client eine hilfreiche Meldung zeigen kann) und sonst mit
   `unauthorized`.
 - **Die eigenen Programme** (Steuerzentrale, Apps, Tray, `ctl`) nutzen den **App-Schlüssel**, den
@@ -278,3 +279,7 @@ Getroffen am 2026-10-11.
    `Delete`.
 5. **Ein-Konto-Requests entfallen**: `Account` und `DisconnectAccount` gehen in `Accounts` und
    `RemoveAccount` auf.
+6. **Ein Name je Befehl**: Mit dem Umschlag (A.1) trägt `method` den Katalognamen
+   (`calendar.list_calendars`); die alten Draht-Namen (`calendar-collections`) entfallen.
+7. **Volle Schemata**: `Event`, `Todo`, `Settings` und `LoadMode` bekommen JSON-Schemata
+   (`schemars`), damit Agenten wissen, welche Felder nötig sind (A.0c).

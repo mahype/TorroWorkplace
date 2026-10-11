@@ -8,7 +8,8 @@ Entscheidungen: [api.md, „Entscheidungen“](../api.md#entscheidungen) (2026-1
 
 Reihenfolge in drei Meilensteinen:
 
-1. **Alle bisherigen Funktionen über MCP, mit Rechten:** A.0 → (A.0b, A.1 parallel) → A.2 → A.4.
+1. **Alle bisherigen Funktionen über MCP, mit Rechten:** A.0 → (A.0b, A.0d parallel) → A.0c → A.1 →
+   A.2 → A.4.
    A.4 darf ab A.1 entstehen, wird aber erst nach A.2 zusammengeführt, damit es nie einen
    Agenten-Schlüssel ohne Rechteprüfung gibt.
 2. **Sicherheit und Nachvollziehbarkeit:** A.3 und A.5 parallel.
@@ -49,13 +50,40 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** Tests prüfen, dass jede Aktion den gezielten Request schickt; Design-Prüfung
   der Apps-Seite.
 
+### A.0c Volle Schemata für Termin, Aufgabe und Einstellungen
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** A.0d · **Dateien:** `crates/torro-pim/Cargo.toml`, `crates/torro-pim/src/*.rs`, `crates/torro-core/Cargo.toml`, `crates/torro-core/src/settings.rs`, `crates/torro-setups/Cargo.toml`, `crates/torro-setups/src/template.rs`, `crates/torro-ipc/src/api.rs`
+- `JsonSchema` für `Event`, `Todo`, `Settings`, `LoadMode` und deren Feldtypen ableiten (Entscheidung
+  7); in `api.rs` die Platzhalter `{"type":"object"}` und `LoadModeSchema` ersetzen. Doc-Kommentare
+  der Felder sind die Beschreibungen für Agenten, also prüfen, dass `href`, `etag` und `collection`
+  erklärt sind.
+- **Abnahme:** Schema-Test: `save_event`, `delete_event`, `save_todo`, `delete_todo`, `update_settings`,
+  `load_template` haben keine leeren Objekte mehr.
+
+### A.0d Nacharbeit aus dem API-Check von A.0
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** A.0 · **Dateien:** `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/settings_service.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`
+- Beschreibungen: `accounts.list_accounts` verspricht keine ausgeblendeten Sammlungen mehr;
+  `delete_event`/`delete_todo`: „Pass the item as returned by list_… (needs `href` and `etag`).“;
+  `connect_nextcloud`: „Show the URL to the person; never open it yourself.“; `sync`: Remote Wipe
+  kann das Konto entfernen.
+- `SetSetting`: Wert prüfen, bevor die Datei geladen wird; `settings_service` bekommt den Pfad
+  (bzw. `AppPaths`) übergeben, damit Tests nie die echte `settings.json` lesen.
+- Handler-Tests für `SetSetting` und `SetCollectionShown` über `Core::handle` im Temp-Verzeichnis.
+- `remove_account` entfernt die Sammlungen des Kontos aus `hidden_collections`.
+- `input_schema()` einmal erzeugen (`OnceLock`).
+- **Abnahme:** kein Test liest oder schreibt die echte Konfiguration; neue Tests grün.
+
 ### A.1 Schlüssel und Anmeldung
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** A.0 · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/client.rs`, `crates/torro-ipc/src/server.rs`, `crates/torroworkplace/src/clients.rs` (neu), `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`
+- **Modell:** Opus · **Braucht:** A.0c · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-ipc/src/client.rs`, `crates/torro-ipc/src/server.rs`, `crates/torroworkplace/src/clients.rs` (neu), `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`
 - Umschlag `{"v":1,"key":…,"request":…}`; App-Schlüssel `app.key` (0600) anlegen und im Client
   automatisch senden; `clients.json` mit SHA-256, Schlüssel im Schlüsselbund; Prüfung je Anfrage,
   `ping` ohne Schlüssel, sonst `unauthorized`; fail closed.
-- **Abnahme:** Tests für gültig / falsch / widerrufen mitten in der Sitzung / kaputte `clients.json`.
+- `method` im Umschlag ist der Katalogname (Entscheidung 6); das Feld `Command::method` mit den alten
+  Draht-Namen entfällt.
+- **Abnahme:** Tests für gültig / falsch / widerrufen mitten in der Sitzung / kaputte `clients.json`;
+  jeder Request wird mit seinem Katalognamen serialisiert.
 
 ### A.2 Rechte im Dienst
 - [ ] erledigt
@@ -67,7 +95,14 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   nur mit App-Schlüssel.
 - `torroworkplace ctl clients list|add|remove|new-key`, damit sich Agenten schon vor A.6 verbinden
   lassen.
+- **Ausgeblendetes bleibt verborgen:** Für Client-Schlüssel filtert der Dienst ausgeblendete und nicht
+  freigegebene Sammlungen auch aus `accounts.list_accounts` und `settings.get_settings`
+  (`hidden_collections`). Nur der App-Schlüssel sieht alle. `set_collection_shown` geht für einen
+  Agenten nur bei Sammlungen aus seiner Auswahl.
+- Ob eine Stufe eine andere abdeckt (`Read` < `Write` < `Delete`, `Admin` als eigener Schalter),
+  als Funktion an `Access`.
 - **Abnahme:** Tabelle-Test über alle Katalogeinträge × Stufen; fremde Sammlung = `not-found`;
+  ausgeblendete Sammlung taucht für einen Client-Schlüssel in keiner Antwort auf;
   `clients.*` mit Client-Schlüssel = `forbidden`.
 
 ### A.3 Freigaben
