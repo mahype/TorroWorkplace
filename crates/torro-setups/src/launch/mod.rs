@@ -32,6 +32,21 @@ impl Launcher for SystemLauncher {
 /// The command that starts `window` again; empty when it cannot be found out. Linux:
 /// `/proc/<pid>/cmdline`, else the `.desktop` entry of the class. Other systems: empty
 /// for now.
+#[cfg(target_os = "linux")]
+pub fn command_for(window: &Window) -> Vec<String> {
+    if let Some(pid) = window.pid
+        && let Some(command) = linux::command_from_proc(std::path::Path::new("/proc"), pid)
+    {
+        return command;
+    }
+    let dirs = linux::desktop_dirs(|key| std::env::var(key).ok());
+    linux::desktop_command(&dirs, &window.class).unwrap_or_default()
+}
+
+/// The command that starts `window` again; empty when it cannot be found out. Linux:
+/// `/proc/<pid>/cmdline`, else the `.desktop` entry of the class. Other systems: empty
+/// for now.
+#[cfg(not(target_os = "linux"))]
 pub fn command_for(window: &Window) -> Vec<String> {
     let _ = window;
     Vec::new()
