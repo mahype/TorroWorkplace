@@ -3,6 +3,10 @@
 
 pub(super) static TABLE: &[(&str, &str)] = &[
     // Control centre (torroworkplace ui)
+    (
+        "Torro Workplace isn't responding. It may still be starting.",
+        "Torro Workplace antwortet nicht. Vielleicht startet es noch.",
+    ),
     ("1 account", "1 Konto"),
     ("{n} accounts", "{n} Konten"),
     ("1 template", "1 Vorlage"),
@@ -213,6 +217,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("November", "November"),
     ("December", "Dezember"),
     // Shared app texts (torro-gui, torrocalendar, torrotasks)
+    ("Back", "Zurück"),
+    ("Could not open the app: {error}", "App konnte nicht geöffnet werden: {error}"),
+    ("Refresh", "Aktualisieren"),
+    ("Settings", "Einstellungen"),
     ("Delete failed: {error}", "Löschen fehlgeschlagen: {error}"),
     ("Cancel", "Abbrechen"),
     ("Close", "Schließen"),
@@ -275,6 +283,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("all day · day {n} of {total}", "ganztägig · Tag {n} von {total}"),
     ("{n} more", "{n} weitere"),
     // Tasks
+    ("{n} open", "{n} offen"),
+    ("No date", "Ohne Datum"),
+    ("Open Calendar", "Kalender öffnen"),
+    ("Overdue", "Überfällig"),
+    ("Upcoming", "Demnächst"),
     ("All", "Alle"),
     ("Completed", "Erledigte"),
     ("List", "Liste"),
