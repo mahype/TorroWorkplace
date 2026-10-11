@@ -7,8 +7,10 @@
 //!   sign-in. Reads are answered from the cache, so the apps never wait for the network;
 //!   ranges outside the window are fetched from the server directly.
 //! - Writes go to the server first (ETag-guarded) and update the cache with the answer.
-//!   Recurring occurrences are refused until series editing exists, because writing one
-//!   would overwrite the whole series.
+//!   Series are refused until series editing exists, because writing one occurrence back would
+//!   overwrite the whole series. The core decides what a series is, not the client (task
+//!   A.2b): from the cached item in the version the client names, else from the server. An
+//!   existing item is only changed, moved or deleted with the `etag` it was read with.
 //! - When the server refuses the app password (401/403), the core asks once whether this device
 //!   was marked for a remote wipe and, if so, removes the account, its secret and the cache
 //!   (task S.12, `account::remote_wipe`).
@@ -194,19 +196,19 @@ impl PimService {
             }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
-                Err(err) => self.failed(err).await,
+                Err(err) => self.write_failed(err).await,
             },
             Request::DeleteEvent { event } => match self.delete_event(event).await {
                 Ok(()) => Response::Ok,
-                Err(err) => self.failed(err).await,
+                Err(err) => self.write_failed(err).await,
             },
             Request::SaveTodo { todo } => match self.save_todo(todo).await {
                 Ok(todo) => Response::Todo { todo },
-                Err(err) => self.failed(err).await,
+                Err(err) => self.write_failed(err).await,
             },
             Request::DeleteTodo { todo } => match self.delete_todo(todo).await {
                 Ok(()) => Response::Ok,
-                Err(err) => self.failed(err).await,
+                Err(err) => self.write_failed(err).await,
             },
             _ => error("error", "not a calendar or task request".into()),
         }
@@ -338,6 +340,15 @@ impl PimService {
             self.on_refused().await;
         }
         provider_error(&err)
+    }
+
+    /// The response for a failed write: the core's own refusal as it is, a provider failure as
+    /// in [`PimService::failed`].
+    async fn write_failed(&self, err: WriteError) -> Response {
+        match err {
+            WriteError::Provider(err) => self.failed(err).await,
+            WriteError::Refused { code, message } => error(code, message),
+        }
     }
 
     /// The server refused the app password: asks once whether this device is to be wiped and
@@ -520,24 +531,33 @@ impl PimService {
         Ok(events)
     }
 
-    async fn save_event(&self, event: Event) -> Result<Event, ProviderError> {
+    async fn save_event(&self, event: Event) -> Result<Event, WriteError> {
         if event.recurring {
-            return Err(recurring());
+            return Err(series(Role::Calendar));
         }
         self.check_writable(&event.collection).await?;
         let client = self.client().await?;
+        let (uid, etag) = (event.uid.clone(), event.etag.clone());
         let saved = match moved(event.href.as_deref(), &event.collection) {
             // Moving to another calendar: create there, then remove the old one from the
             // calendar that holds it.
             Some(old_href) => {
                 let holder = self.holder_of(&old_href).await?;
+                let item = Item::new(Role::Calendar, &holder, &old_href, etag.as_deref(), &uid);
+                self.check_existing(&client, item).await?;
                 let old = Event { href: Some(old_href), collection: holder, ..event.clone() };
                 let new = client.save_event(Event { href: None, etag: None, ..event }).await?;
                 client.delete_event(&old).await?;
                 self.state.write().await.events.retain(|e| e.href != old.href);
                 new
             }
-            None => client.save_event(event).await?,
+            None => {
+                if let Some(href) = event.href.as_deref() {
+                    let item = Item::new(Role::Calendar, &event.collection, href, etag.as_deref(), &uid);
+                    self.check_existing(&client, item).await?;
+                }
+                client.save_event(event).await?
+            }
         };
         let mut state = self.state.write().await;
         state.events.retain(|e| e.href != saved.href);
@@ -545,12 +565,17 @@ impl PimService {
         Ok(saved)
     }
 
-    async fn delete_event(&self, event: Event) -> Result<(), ProviderError> {
+    async fn delete_event(&self, event: Event) -> Result<(), WriteError> {
         if event.recurring {
-            return Err(recurring());
+            return Err(series(Role::Calendar));
         }
         self.check_writable(&event.collection).await?;
-        self.client().await?.delete_event(&event).await?;
+        let client = self.client().await?;
+        if let Some(href) = event.href.as_deref() {
+            let item = Item::new(Role::Calendar, &event.collection, href, event.etag.as_deref(), &event.uid);
+            self.check_existing(&client, item).await?;
+        }
+        client.delete_event(&event).await?;
         self.state.write().await.events.retain(|e| e.href != event.href);
         Ok(())
     }
@@ -563,19 +588,28 @@ impl PimService {
         holder.map(|c| c.id.clone()).ok_or_else(|| ProviderError::Other(format!("{href} is in no known collection")))
     }
 
-    async fn save_todo(&self, todo: Todo) -> Result<Todo, ProviderError> {
+    async fn save_todo(&self, todo: Todo) -> Result<Todo, WriteError> {
         self.check_writable(&todo.collection).await?;
         let client = self.client().await?;
+        let (uid, etag) = (todo.uid.clone(), todo.etag.clone());
         let saved = match moved(todo.href.as_deref(), &todo.collection) {
             Some(old_href) => {
                 let holder = self.holder_of(&old_href).await?;
+                let item = Item::new(Role::TaskList, &holder, &old_href, etag.as_deref(), &uid);
+                self.check_existing(&client, item).await?;
                 let old = Todo { href: Some(old_href), collection: holder, ..todo.clone() };
                 let new = client.save_todo(Todo { href: None, etag: None, ..todo }).await?;
                 client.delete_todo(&old).await?;
                 self.state.write().await.todos.retain(|t| t.href != old.href);
                 new
             }
-            None => client.save_todo(todo).await?,
+            None => {
+                if let Some(href) = todo.href.as_deref() {
+                    let item = Item::new(Role::TaskList, &todo.collection, href, etag.as_deref(), &uid);
+                    self.check_existing(&client, item).await?;
+                }
+                client.save_todo(todo).await?
+            }
         };
         let mut state = self.state.write().await;
         state.todos.retain(|t| t.href != saved.href);
@@ -583,11 +617,48 @@ impl PimService {
         Ok(saved)
     }
 
-    async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
+    async fn delete_todo(&self, todo: Todo) -> Result<(), WriteError> {
         self.check_writable(&todo.collection).await?;
-        self.client().await?.delete_todo(&todo).await?;
+        let client = self.client().await?;
+        if let Some(href) = todo.href.as_deref() {
+            let item = Item::new(Role::TaskList, &todo.collection, href, todo.etag.as_deref(), &todo.uid);
+            self.check_existing(&client, item).await?;
+        }
+        client.delete_todo(&todo).await?;
         self.state.write().await.todos.retain(|t| t.href != todo.href);
         Ok(())
+    }
+
+    /// Checks an item on the server before it is changed, moved away or deleted (task A.2b), so
+    /// nothing is sent when it fails:
+    ///
+    /// - without the `etag` it was read with: `conflict` ("reload the item and pass its etag"),
+    ///   because a write without `If-Match` would replace whatever the server holds now;
+    /// - a series: `unsupported`, whatever the client says in `recurring`;
+    /// - gone from the server: `not-found`; changed since it was read: `conflict`.
+    ///
+    /// Whether it is a series comes from the cache when the cache holds the item in the version
+    /// `etag` names (events only: the cache does not record series for tasks), else from the
+    /// server ([`CalDavClient::stored_item`]). The write that follows sends the same `etag` as
+    /// `If-Match`, so the version checked is the version written.
+    async fn check_existing(&self, client: &CalDavClient, item: Item<'_>) -> Result<(), WriteError> {
+        let Some(url) = item_url(item.collection, item.href) else {
+            return Err(ProviderError::Other(format!("{} is not an item in {}", item.href, item.collection)).into());
+        };
+        let Some(etag) = item.etag.filter(|etag| !etag.trim().is_empty()) else {
+            return Err(refused("conflict", format!("{} has no etag: reload the item and pass its etag", item.href)));
+        };
+        if item.role == Role::Calendar
+            && let Some(recurring) = cached_series(&*self.state.read().await, &url, etag)
+        {
+            return if recurring { Err(series(item.role)) } else { Ok(()) };
+        }
+        match client.stored_item(item.collection, item.href).await? {
+            None => Err(refused("not-found", format!("{} is not on the server any more: reload", item.href))),
+            Some(stored) if stored.recurring => Err(series(item.role)),
+            Some(stored) if stored.etag != etag => Err(ProviderError::Conflict { uid: item.uid.to_string() }.into()),
+            Some(_) => Ok(()),
+        }
     }
 
     /// Refuses writes to collections the server marks read-only (contact birthdays, shared
@@ -736,8 +807,65 @@ fn not_connected() -> ProviderError {
     ProviderError::Other("not connected to a Nextcloud".into())
 }
 
-fn recurring() -> ProviderError {
-    ProviderError::Other("recurring events cannot be edited yet".into())
+/// Why a write failed: the server's answer, or the core's own refusal before anything was sent.
+#[derive(Debug, PartialEq)]
+enum WriteError {
+    Provider(ProviderError),
+    /// `code` is one of the API's error codes (`docs/api.md`), `message` is for people.
+    Refused {
+        code: &'static str,
+        message: String,
+    },
+}
+
+impl From<ProviderError> for WriteError {
+    fn from(err: ProviderError) -> WriteError {
+        WriteError::Provider(err)
+    }
+}
+
+fn refused(code: &'static str, message: String) -> WriteError {
+    WriteError::Refused { code, message }
+}
+
+/// The refusal for a series: `unsupported` until series editing exists.
+fn series(role: Role) -> WriteError {
+    let message = match role {
+        Role::Calendar => "recurring events cannot be edited yet",
+        Role::TaskList => "recurring tasks cannot be edited yet",
+    };
+    refused("unsupported", message.into())
+}
+
+/// An item on the server that a write is about to change, move away or delete.
+#[derive(Debug, Clone, Copy)]
+struct Item<'a> {
+    role: Role,
+    /// The collection that holds it; `href` must be an item directly in it ([`item_url`]).
+    collection: &'a str,
+    href: &'a str,
+    /// The version the client read; `None` is refused.
+    etag: Option<&'a str>,
+    uid: &'a str,
+}
+
+impl<'a> Item<'a> {
+    fn new(role: Role, collection: &'a str, href: &'a str, etag: Option<&'a str>, uid: &'a str) -> Item<'a> {
+        Item { role, collection, href, etag, uid }
+    }
+}
+
+/// Whether the cached event at `url` is a series, when the cache holds it in the version `etag`;
+/// `None` when it does not (not cached, or cached in another version), so the server decides.
+/// A series is cached once per occurrence, all with the same href and etag.
+fn cached_series(state: &State, url: &reqwest::Url, etag: &str) -> Option<bool> {
+    let cached: Vec<&Event> = state
+        .events
+        .iter()
+        .filter(|e| e.href.as_deref().and_then(|href| item_url(&e.collection, href)).as_ref() == Some(url))
+        .collect();
+    let same_version = !cached.is_empty() && cached.iter().all(|e| e.etag.as_deref() == Some(etag));
+    same_version.then(|| cached.iter().any(|e| e.recurring))
 }
 
 fn error(code: &str, message: String) -> Response {
@@ -809,7 +937,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(response, Response::Error { ref message, .. } if message.contains("recurring")),
+            matches!(response, Response::Error { ref code, ref message } if code == "unsupported" && message.contains("recurring")),
             "{response:?}"
         );
     }
@@ -1257,5 +1385,356 @@ mod tests {
             Some("https://cloud/dav/calendars/a/home/u.ics".into())
         );
         assert_eq!(moved(None, collection), None);
+    }
+
+    // Series and overwriting (task A.2b): against a fake CalDAV server on the loopback
+    // interface, so the tests see exactly which requests reach the server and with which
+    // preconditions. Nothing leaves the machine.
+
+    /// One request the fake server received.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Seen {
+        method: String,
+        path: String,
+        if_match: Option<String>,
+        if_none_match: Option<String>,
+    }
+
+    impl Seen {
+        /// `"PUT /…/e.ics If-Match \"1\""`, for short assertions.
+        fn line(&self) -> String {
+            let precondition = match (&self.if_match, &self.if_none_match) {
+                (Some(etag), _) => format!(" If-Match {etag}"),
+                (None, Some(any)) => format!(" If-None-Match {any}"),
+                (None, None) => String::new(),
+            };
+            format!("{} {}{precondition}", self.method, self.path)
+        }
+    }
+
+    /// The fake server's answer: status, `ETag` header, body.
+    type Reply = (u16, Option<&'static str>, &'static str);
+
+    const SINGLE: &str =
+        "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    const SERIES: &str = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u\r\nDTSTART:20261011T080000Z\r\nRRULE:FREQ=WEEKLY\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+    const TASK_SERIES: &str = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t\r\nSUMMARY:Water plants\r\nRRULE:FREQ=DAILY\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+
+    /// Answers every write with a new version `"2"` and a GET with `item` in version `"1"`.
+    fn server_holding(item: &'static str) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        move |seen| match seen.method.as_str() {
+            "GET" => (200, Some("\"1\""), item),
+            "PUT" => (201, Some("\"2\""), ""),
+            "DELETE" => (204, None, ""),
+            _ => (405, None, ""),
+        }
+    }
+
+    /// A CalDAV server on `127.0.0.1` that answers with `reply` and records every request,
+    /// one request per connection. Returns its DAV base URL and the record.
+    async fn fake_server(
+        reply: impl Fn(&Seen) -> Reply + Send + Sync + 'static,
+    ) -> (String, Arc<std::sync::Mutex<Vec<Seen>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let base = format!("http://{}/remote.php/dav/", listener.local_addr().expect("address"));
+        let record = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (log, reply) = (Arc::clone(&record), Arc::new(reply));
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let (log, reply) = (Arc::clone(&log), Arc::clone(&reply));
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let head_end = loop {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                        if let Some(at) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break at + 4;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+                    let header = |name: &str| {
+                        head.lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(key, _)| key.trim().eq_ignore_ascii_case(name))
+                            .map(|(_, value)| value.trim().to_string())
+                    };
+                    let length: usize = header("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    while buf.len() < head_end + length {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let mut first = head.lines().next().unwrap_or_default().split(' ');
+                    let seen = Seen {
+                        method: first.next().unwrap_or_default().to_string(),
+                        path: first.next().unwrap_or_default().to_string(),
+                        if_match: header("if-match"),
+                        if_none_match: header("if-none-match"),
+                    };
+                    let (status, etag, body) = reply(&seen);
+                    log.lock().expect("record").push(seen);
+                    let etag = etag.map(|etag| format!("ETag: {etag}\r\n")).unwrap_or_default();
+                    let answer = format!(
+                        "HTTP/1.1 {status} Fake\r\n{etag}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(answer.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (base, record)
+    }
+
+    /// The requests the fake server saw so far, as [`Seen::line`]s.
+    fn lines(record: &std::sync::Mutex<Vec<Seen>>) -> Vec<String> {
+        record.lock().expect("record").iter().map(Seen::line).collect()
+    }
+
+    const WORK: &str = "/remote.php/dav/calendars/anna/work/";
+    const HOME: &str = "/remote.php/dav/calendars/anna/home/";
+
+    /// A service connected to the fake server at `base`, with the collections `work` and `home`
+    /// and an empty cache.
+    async fn service_on(base: &str) -> Arc<PimService> {
+        let service = service();
+        let http = reqwest::Client::builder().no_proxy().build().expect("http client");
+        let account = torro_pim_caldav::CalDavAccount { url: base.into(), username: "anna".into() };
+        let client = CalDavClient::new(http, &account, "secret".into()).expect("client");
+        let origin = base.trim_end_matches("/remote.php/dav/");
+        {
+            let mut state = service.state.write().await;
+            state.client = Some(client);
+            state.collections = vec![
+                of_kind(&format!("{origin}{WORK}"), torro_pim::CollectionKind::Both),
+                of_kind(&format!("{origin}{HOME}"), torro_pim::CollectionKind::Both),
+            ];
+        }
+        service
+    }
+
+    /// `name` in the collection at `path` on the fake server of `service`.
+    async fn on_server(service: &PimService, path: &str, name: &str) -> (String, String) {
+        let state = service.state.read().await;
+        let collection =
+            state.collections.iter().map(|c| c.id.clone()).find(|id| id.ends_with(path)).expect("collection");
+        let href = format!("{collection}{name}");
+        (collection, href)
+    }
+
+    /// An event in `work` with `href` and `etag`, as list_events returns it.
+    async fn listed_event(service: &PimService, etag: Option<&str>) -> Event {
+        let (collection, href) = on_server(service, WORK, "e.ics").await;
+        Event { collection, href: Some(href), etag: etag.map(str::to_string), ..event(Utc::now(), 1) }
+    }
+
+    /// A task in `work` with `href` and `etag`, as list_todos returns it.
+    async fn listed_todo(service: &PimService, etag: Option<&str>) -> Todo {
+        let (collection, href) = on_server(service, WORK, "t.ics").await;
+        Todo {
+            uid: "t".into(),
+            collection,
+            href: Some(href),
+            etag: etag.map(str::to_string),
+            summary: "Water plants".into(),
+            due: None,
+            priority: None,
+            completed: false,
+            parent: None,
+            description: None,
+        }
+    }
+
+    /// Puts two occurrences of `event` into the cache, as the expanded sync does for a series.
+    async fn cache_occurrences(service: &PimService, event: &Event, recurring: bool) {
+        let mut state = service.state.write().await;
+        let now = Utc::now();
+        state.window = Some((now - Span::days(90), now + Span::days(365)));
+        for days in [0, 7] {
+            let start = EventTime::DateTime(now + Span::days(days));
+            state.events.push(Event { recurring, start, ..event.clone() });
+        }
+    }
+
+    fn code_of(response: &Response) -> &str {
+        match response {
+            Response::Error { code, .. } => code,
+            _ => "ok",
+        }
+    }
+
+    #[tokio::test]
+    async fn a_series_cannot_be_overwritten_by_claiming_it_is_a_single_event() {
+        let (base, record) = fake_server(server_holding(SERIES)).await;
+        let service = service_on(&base).await;
+        let listed = listed_event(&service, Some("\"1\"")).await;
+        cache_occurrences(&service, &listed, true).await;
+        let single = Event { recurring: false, summary: "Replaced".into(), ..listed.clone() };
+
+        // The cache knows this version is a series: refused without asking the server.
+        for request in [Request::SaveEvent { event: single.clone() }, Request::DeleteEvent { event: single.clone() }] {
+            let response = service.handle_within(request, Reach::Suite).await;
+            assert_eq!(code_of(&response), "unsupported", "{response:?}");
+        }
+        // The same with a relative href, which resolves to the same item.
+        let relative = Event { href: Some(format!("{WORK}e.ics")), ..single.clone() };
+        let response = service.handle_within(Request::SaveEvent { event: relative }, Reach::Suite).await;
+        assert_eq!(code_of(&response), "unsupported", "{response:?}");
+        assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
+
+        // A version the cache does not hold: the server is asked, and nothing is written.
+        let newer = Event { etag: Some("\"1b\"".into()), ..single };
+        let response = service.handle_within(Request::SaveEvent { event: newer }, Reach::Suite).await;
+        assert_eq!(code_of(&response), "unsupported", "{response:?}");
+        assert_eq!(lines(&record), [format!("GET {WORK}e.ics")]);
+    }
+
+    #[tokio::test]
+    async fn an_uncached_series_is_read_from_the_server() {
+        let (base, record) = fake_server(server_holding(SERIES)).await;
+        let service = service_on(&base).await;
+        let event = listed_event(&service, Some("\"1\"")).await;
+        for request in [Request::SaveEvent { event: event.clone() }, Request::DeleteEvent { event }] {
+            let response = service.handle_within(request, Reach::Suite).await;
+            assert_eq!(code_of(&response), "unsupported", "{response:?}");
+        }
+        assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("GET {WORK}e.ics")], "only reads");
+    }
+
+    #[tokio::test]
+    async fn a_recurring_task_is_neither_changed_nor_deleted() {
+        let (base, record) = fake_server(server_holding(TASK_SERIES)).await;
+        let service = service_on(&base).await;
+        let todo = listed_todo(&service, Some("\"1\"")).await;
+        let done = Todo { completed: true, ..todo.clone() };
+        for request in [Request::SaveTodo { todo: done }, Request::DeleteTodo { todo }] {
+            let response = service.handle_within(request, Reach::Suite).await;
+            assert!(
+                matches!(&response, Response::Error { code, message } if code == "unsupported" && message.contains("recurring tasks")),
+                "{response:?}"
+            );
+        }
+        assert_eq!(lines(&record), [format!("GET {WORK}t.ics"), format!("GET {WORK}t.ics")], "only reads");
+    }
+
+    #[tokio::test]
+    async fn changing_deleting_or_moving_without_etag_is_refused() {
+        let (base, record) = fake_server(server_holding(SINGLE)).await;
+        let service = service_on(&base).await;
+        let event = listed_event(&service, None).await;
+        let todo = listed_todo(&service, None).await;
+        let (home, _) = on_server(&service, HOME, "").await;
+        let moved_event = Event { collection: home.clone(), ..event.clone() };
+        let moved_todo = Todo { collection: home, ..todo.clone() };
+        let blank_etag = Event { etag: Some(String::new()), ..event.clone() };
+        for request in [
+            Request::SaveEvent { event: event.clone() },
+            Request::DeleteEvent { event },
+            Request::SaveEvent { event: moved_event },
+            Request::SaveEvent { event: blank_etag },
+            Request::SaveTodo { todo: todo.clone() },
+            Request::DeleteTodo { todo },
+            Request::SaveTodo { todo: moved_todo },
+        ] {
+            let response = service.handle_within(request.clone(), Reach::Suite).await;
+            assert!(
+                matches!(&response, Response::Error { code, message }
+                    if code == "conflict" && message.contains("reload the item and pass its etag")),
+                "{request:?}: {response:?}"
+            );
+        }
+        assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
+    }
+
+    #[tokio::test]
+    async fn a_normal_update_with_its_etag_is_written_with_if_match() {
+        let (base, record) = fake_server(server_holding(SINGLE)).await;
+        let service = service_on(&base).await;
+        let listed = listed_event(&service, Some("\"1\"")).await;
+        cache_occurrences(&service, &listed, false).await;
+
+        // The cache holds this version as a single event: written straight away.
+        let renamed = Event { summary: "Renamed".into(), ..listed.clone() };
+        let response = service.handle_within(Request::SaveEvent { event: renamed }, Reach::Suite).await;
+        let Response::Event { event: saved } = response else { panic!("expected the saved event, got {response:?}") };
+        assert_eq!(saved.etag.as_deref(), Some("\"2\""));
+        assert_eq!(lines(&record), [format!("PUT {WORK}e.ics If-Match \"1\"")]);
+
+        // A task: the cache does not know series of tasks, so the server is read first.
+        let todo = listed_todo(&service, Some("\"1\"")).await;
+        let done = Todo { completed: true, ..todo };
+        let response = service.handle_within(Request::SaveTodo { todo: done }, Reach::Suite).await;
+        assert!(matches!(response, Response::Todo { .. }), "{response:?}");
+        // Deleting with the new etag, and creating, which must not overwrite anything.
+        let response = service.handle_within(Request::DeleteEvent { event: saved }, Reach::Suite).await;
+        assert_eq!(response, Response::Ok);
+        let new = Event { href: None, etag: None, uid: "new".into(), ..listed };
+        let response = service.handle_within(Request::SaveEvent { event: new }, Reach::Suite).await;
+        assert!(matches!(response, Response::Event { .. }), "{response:?}");
+        assert_eq!(
+            lines(&record)[1..],
+            [
+                format!("GET {WORK}t.ics"),
+                format!("PUT {WORK}t.ics If-Match \"1\""),
+                // The saved version is cached as a single event, so no read before the delete.
+                format!("DELETE {WORK}e.ics If-Match \"2\""),
+                format!("PUT {WORK}new.ics If-None-Match *"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_a_single_event_checks_it_and_then_moves_it() {
+        let (base, record) = fake_server(server_holding(SINGLE)).await;
+        let service = service_on(&base).await;
+        let listed = listed_event(&service, Some("\"1\"")).await;
+        let (home, _) = on_server(&service, HOME, "").await;
+        let moved = Event { collection: home, ..listed };
+        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        assert!(matches!(response, Response::Event { .. }), "{response:?}");
+        assert_eq!(
+            lines(&record),
+            [
+                format!("GET {WORK}e.ics"),
+                format!("PUT {HOME}u.ics If-None-Match *"),
+                format!("DELETE {WORK}e.ics If-Match \"1\""),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn moving_a_series_out_of_its_calendar_is_refused() {
+        let (base, record) = fake_server(server_holding(SERIES)).await;
+        let service = service_on(&base).await;
+        let listed = listed_event(&service, Some("\"1\"")).await;
+        cache_occurrences(&service, &listed, true).await;
+        let (home, _) = on_server(&service, HOME, "").await;
+        let moved = Event { collection: home, recurring: false, ..listed };
+        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        assert_eq!(code_of(&response), "unsupported", "{response:?}");
+        assert!(lines(&record).is_empty(), "nothing created, nothing deleted: {:?}", lines(&record));
+    }
+
+    #[tokio::test]
+    async fn a_changed_or_vanished_item_is_not_written() {
+        let (base, record) = fake_server(|seen| match seen.method.as_str() {
+            "GET" if seen.path.ends_with("gone.ics") => (404, None, ""),
+            "GET" => (200, Some("\"3\""), SINGLE),
+            _ => (500, None, ""),
+        })
+        .await;
+        let service = service_on(&base).await;
+        let stale = listed_event(&service, Some("\"1\"")).await;
+        let response = service.handle_within(Request::SaveEvent { event: stale.clone() }, Reach::Suite).await;
+        assert_eq!(code_of(&response), "conflict", "{response:?}");
+        let gone = Event { href: stale.href.map(|href| href.replace("e.ics", "gone.ics")), ..stale };
+        let response = service.handle_within(Request::DeleteEvent { event: gone }, Reach::Suite).await;
+        assert_eq!(code_of(&response), "not-found", "{response:?}");
+        assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("GET {WORK}gone.ics")], "only reads");
     }
 }

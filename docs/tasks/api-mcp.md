@@ -109,7 +109,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   `clients.*` mit Client-Schlüssel = `forbidden`.
 
 ### A.2b Serien und Überschreiben im Kern absichern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** A.2 · **Dateien:** `crates/torroworkplace/src/pim.rs`, `crates/torro-pim-caldav/src/write.rs`, `crates/torro-pim-caldav/src/*.rs` (nur falls für das Lesen eines Elements nötig)
 - Aus dem API-Check von A.4: Ob ein Termin zu einer Serie gehört, prüft der Kern heute nur am
   mitgeschickten `recurring`. Künftig bestimmt er es selbst aus Cache oder Server anhand von `href`;

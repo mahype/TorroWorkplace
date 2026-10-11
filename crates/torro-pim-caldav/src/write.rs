@@ -7,6 +7,11 @@
 //! `If-Match: <etag>`) and DELETE with `If-Match`. A 412 answer becomes
 //! `ProviderError::Conflict`. The new ETag comes from the PUT answer's `ETag` header; when
 //! the server sends none, it is fetched with a PROPFIND `getetag` on the href.
+//!
+//! An existing item (with `href`) is never written or deleted without its ETag (task A.2b): a
+//! PUT or DELETE without `If-Match` would blindly replace whatever the server holds now, a
+//! whole series included. [`CalDavClient::stored_item`] reads what is there, so the core can
+//! check for a series before it writes.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{StatusCode, Url};
@@ -33,7 +38,8 @@ pub fn to_ics_todo(todo: &Todo) -> String {
 
 impl CalDavClient {
     /// Creates (`href: None`; a new uid when empty) or updates the event; returns it with
-    /// `href` and `etag` set.
+    /// `href` and `etag` set. An update needs the `etag` it was read with; without one nothing
+    /// is sent and the answer is an error.
     pub async fn save_event(&self, mut event: Event) -> Result<Event, ProviderError> {
         if event.uid.is_empty() {
             event.uid = new_uid();
@@ -47,13 +53,15 @@ impl CalDavClient {
     }
 
     /// Deletes the event if its ETag still matches. An event that was never saved has
-    /// nothing on the server to delete and counts as done.
+    /// nothing on the server to delete and counts as done; one with `href` but without `etag`
+    /// is refused before anything is sent.
     pub async fn delete_event(&self, event: &Event) -> Result<(), ProviderError> {
         self.delete_item(&event.collection, &event.uid, event.href.as_deref(), event.etag.as_deref()).await
     }
 
     /// Creates (`href: None`; a new uid when empty) or updates the task; returns it with
-    /// `href` and `etag` set.
+    /// `href` and `etag` set. An update needs the `etag` it was read with; without one nothing
+    /// is sent and the answer is an error.
     pub async fn save_todo(&self, mut todo: Todo) -> Result<Todo, ProviderError> {
         if todo.uid.is_empty() {
             todo.uid = new_uid();
@@ -67,13 +75,15 @@ impl CalDavClient {
     }
 
     /// Deletes the task if its ETag still matches. A task that was never saved has nothing
-    /// on the server to delete and counts as done.
+    /// on the server to delete and counts as done; one with `href` but without `etag` is
+    /// refused before anything is sent.
     pub async fn delete_todo(&self, todo: &Todo) -> Result<(), ProviderError> {
         self.delete_item(&todo.collection, &todo.uid, todo.href.as_deref(), todo.etag.as_deref()).await
     }
 
     /// PUTs one iCalendar object and returns the `(href, etag)` the item now has. `href`
-    /// `None` means a new item, which must not overwrite anything (`If-None-Match: *`).
+    /// `None` means a new item, which must not overwrite anything (`If-None-Match: *`); an
+    /// existing one is only replaced in the version `etag` names ([`precondition`]).
     async fn put_item(
         &self,
         collection: &str,
@@ -82,7 +92,7 @@ impl CalDavClient {
         etag: Option<&str>,
         ics: String,
     ) -> Result<(String, String), ProviderError> {
-        let existing = href.is_some();
+        let (header, value) = precondition(href, etag)?;
         let (url, href) = match href {
             Some(href) => (resolve(collection, href)?, href.to_string()),
             None => {
@@ -90,29 +100,19 @@ impl CalDavClient {
                 (url.clone(), url.to_string())
             }
         };
-        let mut request = self
+        let request = self
             .http
             .put(url.clone())
             .basic_auth(&self.username, Some(&self.password))
             .header("Content-Type", "text/calendar; charset=utf-8")
-            .body(ics);
-        request = match (existing, etag) {
-            (false, _) => request.header("If-None-Match", "*"),
-            (true, Some(etag)) => request.header("If-Match", etag),
-            (true, None) => request,
-        };
+            .body(ics)
+            .header(header, value);
         let response = request.send().await.map_err(transport_error)?;
         let status = response.status();
         if !status.is_success() {
             return Err(status_error(status, uid, &url));
         }
-        let header_etag = response
-            .headers()
-            .get("etag")
-            .and_then(|value| value.to_str().ok())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
+        let header_etag = etag_header(&response);
         let etag = match header_etag {
             Some(etag) => etag,
             None => self.fetch_etag(&url).await?,
@@ -120,7 +120,8 @@ impl CalDavClient {
         Ok((href, etag))
     }
 
-    /// DELETEs one item. `href` `None` (never saved) is done without a request.
+    /// DELETEs one item, only in the version `etag` names. `href` `None` (never saved) is done
+    /// without a request.
     async fn delete_item(
         &self,
         collection: &str,
@@ -129,11 +130,10 @@ impl CalDavClient {
         etag: Option<&str>,
     ) -> Result<(), ProviderError> {
         let Some(href) = href else { return Ok(()) };
+        let (header, value) = precondition(Some(href), etag)?;
         let url = resolve(collection, href)?;
-        let mut request = self.http.delete(url.clone()).basic_auth(&self.username, Some(&self.password));
-        if let Some(etag) = etag {
-            request = request.header("If-Match", etag);
-        }
+        let request =
+            self.http.delete(url.clone()).basic_auth(&self.username, Some(&self.password)).header(header, value);
         let response = request.send().await.map_err(transport_error)?;
         let status = response.status();
         // 404: already gone, which is what the caller wanted.
@@ -144,12 +144,75 @@ impl CalDavClient {
         }
     }
 
+    /// What the server holds at `href`, an item directly in `collection` ([`item_url`]): its
+    /// ETag and whether it is a series. `Ok(None)` when there is no such item (404).
+    ///
+    /// The core asks before it changes, moves or deletes an item it has not cached in that
+    /// version: only the object itself tells whether writing it back would drop a rule.
+    pub async fn stored_item(&self, collection: &str, href: &str) -> Result<Option<StoredItem>, ProviderError> {
+        let url = resolve(collection, href)?;
+        let response = self
+            .http
+            .get(url.clone())
+            .basic_auth(&self.username, Some(&self.password))
+            .send()
+            .await
+            .map_err(transport_error)?;
+        let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(status_error(status, href, &url));
+        }
+        let header_etag = etag_header(&response);
+        let ics = response.text().await.map_err(transport_error)?;
+        let etag = match header_etag {
+            Some(etag) => etag,
+            None => self.fetch_etag(&url).await?,
+        };
+        Ok(Some(StoredItem { etag, recurring: crate::ical::is_series(&ics) }))
+    }
+
     /// The ETag of one item, for servers that do not send it with the PUT answer.
     async fn fetch_etag(&self, url: &Url) -> Result<String, ProviderError> {
         let body = r#"<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#;
         let xml = self.request("PROPFIND", url, "0", body).await?;
         etag_from_multistatus(&xml).ok_or_else(|| ProviderError::Other(format!("{url}: server sent no ETag")))
     }
+}
+
+/// What an item on the server is, as [`CalDavClient::stored_item`] read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredItem {
+    /// The ETag of the version read, quotes as the server sends them.
+    pub etag: String,
+    /// The object is a series (`RRULE`, `RDATE` or `RECURRENCE-ID`): writing it back from one
+    /// event or task would drop the rule and every exception.
+    pub recurring: bool,
+}
+
+/// The precondition header of a PUT or DELETE: `If-None-Match: *` for a new item (no `href`),
+/// so nothing is overwritten, and `If-Match: <etag>` for an existing one. An existing item
+/// without `etag` is refused: without `If-Match` the write would blindly replace whatever the
+/// server holds now.
+fn precondition<'a>(href: Option<&str>, etag: Option<&'a str>) -> Result<(&'static str, &'a str), ProviderError> {
+    match (href, etag) {
+        (None, _) => Ok(("If-None-Match", "*")),
+        (Some(_), Some(etag)) if !etag.trim().is_empty() => Ok(("If-Match", etag)),
+        (Some(href), _) => Err(ProviderError::Other(format!("{href} has no etag: reload the item and pass its etag"))),
+    }
+}
+
+/// The `ETag` header of an answer, when there is a non-empty one.
+fn etag_header(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn event_ics(event: &Event, now: DateTime<Utc>) -> String {
@@ -640,6 +703,20 @@ mod tests {
   </d:response></d:multistatus>"#;
         assert_eq!(etag_from_multistatus(missing), None);
         assert_eq!(etag_from_multistatus("not xml"), None);
+    }
+
+    #[test]
+    fn new_items_must_not_overwrite_and_existing_ones_need_their_etag() {
+        assert_eq!(precondition(None, None), Ok(("If-None-Match", "*")));
+        assert_eq!(precondition(None, Some("\"1\"")), Ok(("If-None-Match", "*")), "a new item never replaces one");
+        assert_eq!(precondition(Some("evt-1.ics"), Some("\"1\"")), Ok(("If-Match", "\"1\"")));
+        for etag in [None, Some(""), Some("  ")] {
+            let refused = precondition(Some("evt-1.ics"), etag);
+            assert!(
+                matches!(&refused, Err(ProviderError::Other(message)) if message.contains("reload the item and pass its etag")),
+                "{etag:?}: {refused:?}"
+            );
+        }
     }
 
     #[test]
