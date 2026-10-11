@@ -4,12 +4,14 @@
 //! Task S.1 in `docs/tasks/steuerzentrale.md` fills in [`load`] and [`save`]. The type is the
 //! contract: add fields with `#[serde(default)]` so older files keep loading.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::AppId;
 use crate::paths::AppPaths;
@@ -43,6 +45,312 @@ pub struct Settings {
     /// Collections (calendar and task list ids) the apps do not show.
     #[serde(default)]
     pub hidden_collections: Vec<String>,
+    /// How large every window of the suite draws, like the zoom of a browser (task Z.1). One
+    /// value for all apps, so tiled windows stay alike; stored as the factor (`1.1`).
+    #[serde(default)]
+    pub zoom: Zoom,
+    /// When the night is (task K.27): the calendar's timeline folds it, the radar shades it, and
+    /// neither counts it as free time. Stored as `{"from": "22:00", "to": "06:00"}`.
+    #[serde(default)]
+    pub night: Night,
+    /// How each task list is ordered, by list id (`<account-id>/<list URL>`, task P.3a). A list
+    /// that is not named here is grouped by due date ([`ListOrder::DueDate`]), so only lists in
+    /// [`ListOrder::Manual`] are stored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub list_orders: BTreeMap<String, ListOrder>,
+}
+
+/// A time of day on the quarter hour, `00:00` to `23:45`, the grid of [`Night`]. Kept as minutes
+/// since midnight; written and read as `"HH:MM"` (its `Display`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Quarter(u16);
+
+impl Quarter {
+    /// Minutes in a day.
+    const DAY: u16 = 24 * 60;
+
+    /// `hour:minute`, or `None` when the hour is 24 or more or the minute is not 0, 15, 30 or 45.
+    pub fn new(hour: u32, minute: u32) -> Option<Quarter> {
+        (hour < 24 && minute < 60 && minute.is_multiple_of(15)).then(|| Quarter((hour * 60 + minute) as u16))
+    }
+
+    /// Every quarter of a day in order, `00:00` to `23:45` (96), for the time fields.
+    pub fn all() -> impl Iterator<Item = Quarter> {
+        (0..Quarter::DAY).step_by(15).map(Quarter)
+    }
+
+    /// `"22:00"` as a quarter; `None` for anything else, also `"22:10"` or `"7:00"`.
+    pub fn parse(text: &str) -> Option<Quarter> {
+        let (hour, minute) = text.split_once(':')?;
+        let digits = |part: &str| part.len() == 2 && part.bytes().all(|b| b.is_ascii_digit());
+        if !digits(hour) || !digits(minute) {
+            return None;
+        }
+        Quarter::new(hour.parse().ok()?, minute.parse().ok()?)
+    }
+
+    pub fn hour(self) -> u32 {
+        u32::from(self.0 / 60)
+    }
+
+    pub fn minute(self) -> u32 {
+        u32::from(self.0 % 60)
+    }
+
+    /// Minutes since midnight.
+    pub fn minutes(self) -> u32 {
+        u32::from(self.0)
+    }
+}
+
+impl std::fmt::Display for Quarter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour(), self.minute())
+    }
+}
+
+/// The night of the suite (task K.27): from `from` to `to`, mostly over midnight (22:00–06:00).
+/// `from == to` means no night at all: nothing is folded or shaded.
+///
+/// Reading a settings file is lenient, like [`Zoom`]: a night that is not two quarter hours gives
+/// [`Night::DEFAULT`], so a hand-edited file never keeps the suite from starting. A value sent to
+/// the core is checked with [`Night::from_value`], which refuses it with a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Night {
+    pub from: Quarter,
+    pub to: Quarter,
+}
+
+impl Night {
+    /// 22:00 to 06:00.
+    pub const DEFAULT: Night = Night { from: Quarter(22 * 60), to: Quarter(6 * 60) };
+
+    /// No night (both ends at `at`).
+    pub fn none_at(at: Quarter) -> Night {
+        Night { from: at, to: at }
+    }
+
+    /// There is no night: `from == to`.
+    pub fn is_none(self) -> bool {
+        self.from == self.to
+    }
+
+    /// How long the night lasts, in minutes (480 for 22:00–06:00, 0 for none).
+    pub fn minutes(self) -> u32 {
+        (self.to.minutes() + u32::from(Quarter::DAY) - self.from.minutes()) % u32::from(Quarter::DAY)
+    }
+
+    /// The night in `value`, which must be `{"from": "HH:MM", "to": "HH:MM"}` on the quarter hour;
+    /// otherwise why not. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<Night, String> {
+        let shape = || format!("{value} is not a night: send {{\"from\": \"22:00\", \"to\": \"06:00\"}}");
+        let object = value.as_object().ok_or_else(shape)?;
+        if object.keys().any(|key| key != "from" && key != "to") {
+            return Err(shape());
+        }
+        let end = |name: &str| {
+            let text = object.get(name).and_then(|v| v.as_str()).ok_or_else(shape)?;
+            Quarter::parse(text).ok_or_else(|| {
+                format!("{text:?} is not a time for {name}: use HH:MM on the quarter hour (00, 15, 30, 45)")
+            })
+        };
+        Ok(Night { from: end("from")?, to: end("to")? })
+    }
+
+    /// The night as `settings.set_setting` takes it: `{"from": "22:00", "to": "06:00"}`.
+    pub fn to_value(self) -> serde_json::Value {
+        serde_json::json!({ "from": self.from.to_string(), "to": self.to.to_string() })
+    }
+}
+
+impl Default for Night {
+    fn default() -> Night {
+        Night::DEFAULT
+    }
+}
+
+impl Serialize for Night {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Night {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Night, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Night::from_value(&value).unwrap_or_default())
+    }
+}
+
+impl JsonSchema for Night {
+    fn schema_name() -> Cow<'static, str> {
+        "Night".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        let time = json_schema!({ "type": "string", "pattern": "^([01][0-9]|2[0-3]):(00|15|30|45)$" });
+        json_schema!({
+            "type": "object",
+            "properties": { "from": time, "to": time },
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "description": "The night as two times of day on the quarter hour, usually over midnight \
+                            ({\"from\": \"22:00\", \"to\": \"06:00\"}). The same time twice means no night."
+        })
+    }
+}
+
+impl Settings {
+    /// How the task list `list` (an id) is ordered: as stored, else grouped by due date.
+    pub fn list_order(&self, list: &str) -> ListOrder {
+        self.list_orders.get(list).copied().unwrap_or_default()
+    }
+
+    /// Orders the task list `list` by `order`. The default ([`ListOrder::DueDate`]) is not
+    /// stored, so it removes the entry.
+    pub fn set_list_order(&mut self, list: &str, order: ListOrder) {
+        match order {
+            ListOrder::DueDate => {
+                self.list_orders.remove(list);
+            }
+            ListOrder::Manual => {
+                self.list_orders.insert(list.to_string(), order);
+            }
+        }
+    }
+}
+
+/// How the tasks of one list are shown (task P.3a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListOrder {
+    /// Grouped by due date (overdue, today, later, no date): how every list starts.
+    #[default]
+    DueDate,
+    /// In the order the user put them by hand: by `X-APPLE-SORT-ORDER`, as Nextcloud Tasks
+    /// shows a list sorted manually (`torro_pim::source::manual_order`).
+    Manual,
+}
+
+/// The `value` of the setting `list_order` (`settings.set_setting`, task P.3a): one task list and
+/// how it is to be ordered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListOrderEntry {
+    /// Id of the task list, as `tasks.list_lists` reports it.
+    pub list: String,
+    /// `"due_date"` (grouped by due date, the default) or `"manual"` (by hand).
+    pub order: ListOrder,
+}
+
+/// The zoom of the suite's windows: one of the steps of a browser ([`Zoom::STEPS`], 67 % to
+/// 200 %). The apps scale the whole window with it (Iced `scale_factor`), so text, spacing and
+/// layout grow together.
+///
+/// Kept as a whole percentage, so the steps compare exactly and `Settings` stays `Eq`. In JSON it
+/// is the factor (`1.1` for 110 %); reading rounds any number to the nearest step
+/// ([`Zoom::nearest`]), so a hand-edited file never keeps the suite from starting. Whether a
+/// value sent to the core is in range is [`Zoom::from_factor`]'s check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Zoom(u16);
+
+impl Zoom {
+    /// The steps in percent, as in Firefox and Chrome.
+    pub const STEPS: [u16; 10] = [67, 75, 80, 90, 100, 110, 125, 150, 175, 200];
+    /// 100 %.
+    pub const DEFAULT: Zoom = Zoom(100);
+    /// The smallest step (67 %).
+    pub const MIN: Zoom = Zoom(Zoom::STEPS[0]);
+    /// The largest step (200 %).
+    pub const MAX: Zoom = Zoom(Zoom::STEPS[Zoom::STEPS.len() - 1]);
+
+    /// The step nearest to `factor` (`1.1` → 110 %), or `None` when `factor` is not a number
+    /// between 0.67 and 2.0. Compared in whole percent, so `0.666` still counts as 67 %. For
+    /// values from outside (`settings.set_setting`), which are refused when out of range.
+    pub fn from_factor(factor: f64) -> Option<Zoom> {
+        let percent = (factor * 100.0).round();
+        let range = f64::from(Zoom::MIN.0)..=f64::from(Zoom::MAX.0);
+        range.contains(&percent).then(|| Zoom::nearest(factor))
+    }
+
+    /// The step nearest to `factor`; out of range it is the smallest or largest step, a value
+    /// that is not a number gives [`Zoom::DEFAULT`]. Halfway between two steps the smaller wins.
+    pub fn nearest(factor: f64) -> Zoom {
+        if !factor.is_finite() {
+            return Zoom::DEFAULT;
+        }
+        let percent = factor * 100.0;
+        let distance = |step: u16| (f64::from(step) - percent).abs();
+        let mut best = Zoom::MIN.0;
+        for step in Zoom::STEPS {
+            if distance(step) < distance(best) {
+                best = step;
+            }
+        }
+        Zoom(best)
+    }
+
+    /// The factor for Iced's `scale_factor` (1.1 for 110 %).
+    pub fn factor(self) -> f32 {
+        f32::from(self.0) / 100.0
+    }
+
+    /// The whole percentage (110), for showing it.
+    pub fn percent(self) -> u16 {
+        self.0
+    }
+
+    /// The next larger step; the largest stays.
+    pub fn larger(self) -> Zoom {
+        Zoom::STEPS.into_iter().find(|&step| step > self.0).map_or(Zoom::MAX, Zoom)
+    }
+
+    /// The next smaller step; the smallest stays.
+    pub fn smaller(self) -> Zoom {
+        Zoom::STEPS.into_iter().rev().find(|&step| step < self.0).map_or(Zoom::MIN, Zoom)
+    }
+}
+
+impl Default for Zoom {
+    fn default() -> Zoom {
+        Zoom::DEFAULT
+    }
+}
+
+impl Serialize for Zoom {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_f64(f64::from(self.0) / 100.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Zoom {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Zoom, D::Error> {
+        f64::deserialize(deserializer).map(Zoom::nearest)
+    }
+}
+
+impl JsonSchema for Zoom {
+    fn schema_name() -> Cow<'static, str> {
+        "Zoom".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "number",
+            "minimum": 0.67,
+            "maximum": 2.0,
+            "description": "Zoom of every window as a factor (1.0 = 100 %), rounded to the nearest step: 0.67, 0.75, \
+                            0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0."
+        })
+    }
 }
 
 /// `settings.json` in the core's config directory; `None` without a home directory.
@@ -162,6 +470,9 @@ mod tests {
             appearance: Appearance::Dark,
             start_at_login: true,
             hidden_collections: vec!["work".into()],
+            zoom: Zoom::DEFAULT,
+            night: Night::DEFAULT,
+            list_orders: BTreeMap::new(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -205,6 +516,9 @@ mod tests {
             appearance: Appearance::Light,
             start_at_login: true,
             hidden_collections: vec!["a".into(), "b".into()],
+            zoom: Zoom::nearest(1.25),
+            night: Night { from: q(23, 30), to: q(7, 0) },
+            list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -231,5 +545,197 @@ mod tests {
         let text = fs::read_to_string(&path).expect("read");
         assert!(text.contains("\n  \"language\""), "expected indented JSON, got {text:?}");
         assert!(text.contains("\"startAtLogin\""));
+    }
+
+    #[test]
+    fn a_file_from_before_zoom_loads_at_100_percent() {
+        let dir = TempDir::new("no-zoom");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","appearance":"dark","startAtLogin":true}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.zoom, Zoom::DEFAULT);
+        assert_eq!(loaded.appearance, Appearance::Dark, "the other fields still load");
+    }
+
+    #[test]
+    fn zoom_is_stored_as_its_factor() {
+        for (percent, json) in [(67, "0.67"), (100, "1.0"), (110, "1.1"), (125, "1.25"), (200, "2.0")] {
+            let zoom = Zoom::nearest(f64::from(percent) / 100.0);
+            assert_eq!(zoom.percent(), percent);
+            assert_eq!(serde_json::to_string(&zoom).expect("serialize"), json);
+            assert_eq!(serde_json::from_str::<Zoom>(json).expect("parse"), zoom);
+        }
+        // Integers are numbers too.
+        assert_eq!(serde_json::from_str::<Zoom>("2").expect("parse"), Zoom::MAX);
+    }
+
+    #[test]
+    fn zoom_steps_go_up_and_down_and_stop_at_the_ends() {
+        let mut zoom = Zoom::MIN;
+        let mut seen = vec![zoom.percent()];
+        while zoom != Zoom::MAX {
+            zoom = zoom.larger();
+            seen.push(zoom.percent());
+        }
+        assert_eq!(seen, Zoom::STEPS);
+        assert_eq!(Zoom::MAX.larger(), Zoom::MAX);
+        assert_eq!(Zoom::MIN.smaller(), Zoom::MIN);
+        assert_eq!(Zoom::DEFAULT.larger().percent(), 110);
+        assert_eq!(Zoom::DEFAULT.smaller().percent(), 90);
+        assert_eq!(Zoom::nearest(1.5).smaller().percent(), 125);
+        assert_eq!(Zoom::DEFAULT.factor(), 1.0);
+        assert_eq!(Zoom::nearest(1.5).factor(), 1.5);
+    }
+
+    #[test]
+    fn zoom_rounds_to_the_nearest_step() {
+        let percent = |factor: f64| Zoom::nearest(factor).percent();
+        assert_eq!(percent(1.0), 100);
+        assert_eq!(percent(1.04), 100);
+        assert_eq!(percent(1.06), 110);
+        assert_eq!(percent(1.3), 125);
+        assert_eq!(percent(0.7), 67);
+        assert_eq!(percent(0.72), 75);
+        // Halfway between 100 and 110: the smaller step.
+        assert_eq!(percent(1.05), 100);
+        // Out of range or not a number: clamped, or the default.
+        assert_eq!(percent(0.1), 67);
+        assert_eq!(percent(9.0), 200);
+        assert_eq!(percent(f64::NAN), 100);
+        assert_eq!(percent(f64::INFINITY), 100);
+    }
+
+    #[test]
+    fn zoom_from_outside_must_be_in_range() {
+        assert_eq!(Zoom::from_factor(1.1), Some(Zoom::nearest(1.1)));
+        assert_eq!(Zoom::from_factor(1.3).map(Zoom::percent), Some(125));
+        assert_eq!(Zoom::from_factor(0.67), Some(Zoom::MIN));
+        assert_eq!(Zoom::from_factor(0.666), Some(Zoom::MIN), "rounds to 67 %");
+        assert_eq!(Zoom::from_factor(2.0), Some(Zoom::MAX));
+        for bad in [0.5, 0.66, 2.01, 3.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(Zoom::from_factor(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_zoom_in_a_file_is_rounded_to_a_step() {
+        let dir = TempDir::new("zoom-rounded");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"zoom":1.3}"#).expect("write");
+        assert_eq!(load_from(&path).zoom.percent(), 125);
+        fs::write(&path, r#"{"zoom":7}"#).expect("write");
+        assert_eq!(load_from(&path).zoom, Zoom::MAX, "out of range is clamped, not a broken file");
+    }
+
+    fn q(hour: u32, minute: u32) -> Quarter {
+        Quarter::new(hour, minute).expect("a quarter hour")
+    }
+
+    #[test]
+    fn the_night_is_ten_to_six_by_default_and_from_before_k27() {
+        assert_eq!(Night::default(), Night { from: q(22, 0), to: q(6, 0) });
+        assert_eq!(Night::DEFAULT.minutes(), 8 * 60, "over midnight is the normal case");
+        let dir = TempDir::new("no-night");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","zoom":1.1}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.night, Night::DEFAULT);
+        assert_eq!(loaded.zoom.percent(), 110, "the other fields still load");
+    }
+
+    #[test]
+    fn the_night_is_stored_as_two_times() {
+        let night = Night { from: q(23, 30), to: q(7, 0) };
+        assert_eq!(
+            serde_json::to_value(night).expect("serialize"),
+            serde_json::json!({"from": "23:30", "to": "07:00"})
+        );
+        assert_eq!(serde_json::from_str::<Night>(r#"{"from":"23:30","to":"07:00"}"#).expect("parse"), night);
+        assert_eq!(night.minutes(), 7 * 60 + 30);
+        let day_sleeper = Night { from: q(1, 0), to: q(9, 15) };
+        assert_eq!(day_sleeper.minutes(), 8 * 60 + 15, "a night after midnight only");
+    }
+
+    #[test]
+    fn the_same_time_twice_is_no_night() {
+        let none = Night::none_at(q(22, 0));
+        assert!(none.is_none());
+        assert_eq!(none.minutes(), 0);
+        assert!(!Night::DEFAULT.is_none());
+        assert_eq!(
+            Night::from_value(&serde_json::json!({"from": "06:00", "to": "06:00"})).map(Night::is_none),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn a_night_from_outside_must_be_two_quarter_hours() {
+        let night = |value: serde_json::Value| Night::from_value(&value);
+        assert_eq!(night(serde_json::json!({"from": "22:00", "to": "06:00"})), Ok(Night::DEFAULT));
+        for bad in [
+            serde_json::json!({"from": "22:10", "to": "06:00"}),
+            serde_json::json!({"from": "24:00", "to": "06:00"}),
+            serde_json::json!({"from": "7:00", "to": "06:00"}),
+            serde_json::json!({"from": "22:00"}),
+            serde_json::json!({"from": "22:00", "to": "06:00", "extra": 1}),
+            serde_json::json!({"from": 22, "to": 6}),
+            serde_json::json!("22:00-06:00"),
+            serde_json::json!(null),
+        ] {
+            let refused = night(bad.clone());
+            assert!(refused.as_ref().is_err_and(|reason| !reason.is_empty()), "{bad}: {refused:?}");
+        }
+        let reason = night(serde_json::json!({"from": "22:10", "to": "06:00"})).expect_err("refused");
+        assert!(reason.contains("quarter hour"), "the reason says what is wrong: {reason}");
+    }
+
+    #[test]
+    fn a_broken_night_in_a_file_is_the_default() {
+        let dir = TempDir::new("night-broken");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"night":{"from":"25:00","to":"x"},"startAtLogin":true}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.night, Night::DEFAULT);
+        assert!(loaded.start_at_login, "not a broken file");
+    }
+
+    #[test]
+    fn quarters_cover_the_day_and_print_as_hh_mm() {
+        let all: Vec<Quarter> = Quarter::all().collect();
+        assert_eq!(all.len(), 96);
+        assert_eq!(all[0].to_string(), "00:00");
+        assert_eq!(all[95].to_string(), "23:45");
+        assert_eq!(Quarter::parse("06:45"), Some(q(6, 45)));
+        assert_eq!(Quarter::new(6, 50), None);
+    }
+
+    #[test]
+    fn a_list_is_ordered_by_due_date_unless_set_to_manual() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.list_order("work"), ListOrder::DueDate);
+        settings.set_list_order("work", ListOrder::Manual);
+        assert_eq!(settings.list_order("work"), ListOrder::Manual);
+        assert_eq!(settings.list_order("home"), ListOrder::DueDate);
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["listOrders"], serde_json::json!({"work": "manual"}));
+        settings.set_list_order("work", ListOrder::DueDate);
+        assert!(settings.list_orders.is_empty(), "the default is not stored");
+        let json = serde_json::to_string(&settings).expect("serialize");
+        assert!(!json.contains("listOrders"), "{json}");
+    }
+
+    #[test]
+    fn a_list_order_entry_is_read_strictly() {
+        let entry: ListOrderEntry =
+            serde_json::from_value(serde_json::json!({"list": "work", "order": "manual"})).expect("valid");
+        assert_eq!(entry, ListOrderEntry { list: "work".into(), order: ListOrder::Manual });
+        for bad in [
+            serde_json::json!({"list": "work"}),
+            serde_json::json!({"list": "work", "order": "alphabetical"}),
+            serde_json::json!({"list": "work", "order": "manual", "extra": 1}),
+            serde_json::json!("manual"),
+        ] {
+            assert!(serde_json::from_value::<ListOrderEntry>(bad.clone()).is_err(), "{bad}");
+        }
     }
 }

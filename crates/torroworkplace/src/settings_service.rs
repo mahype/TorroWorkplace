@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use torro_core::settings::{self, Language, Settings};
+use torro_core::settings::{self, Language, ListOrderEntry, Night, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -60,17 +60,28 @@ impl SettingsStore {
     }
 
     /// Saves `new` and applies what changed compared to the stored settings.
+    ///
+    /// A hidden collection named by a bare URL, as before several accounts existed, is refused
+    /// and nothing is written (task M1.4): the old ids were rewritten once when the core started,
+    /// and one coming back later would otherwise belong to no account, or by chance to the first.
     pub fn update(&self, new: Settings) -> Result<(), String> {
+        let ids = new.hidden_collections.iter().chain(new.list_orders.keys());
+        if let Some(bare) = ids.into_iter().find(|id| torro_pim::account::is_legacy_id(id)) {
+            return Err(format!("{bare:?} is not a collection id; use the ids from accounts.list_accounts"));
+        }
         self.change(|settings| *settings = new)
     }
 
-    /// Like [`SettingsStore::update`], but the hidden collections stay as stored, read under the
-    /// same lock as the write, so a collection hidden meanwhile is not shown again. For clients,
-    /// which never see the hidden collections and so cannot send them back.
+    /// Like [`SettingsStore::update`], but the hidden collections and the orders of the task
+    /// lists stay as stored, read under the same lock as the write, so a collection hidden
+    /// meanwhile is not shown again. For clients, which never see the hidden collections nor the
+    /// orders of lists outside their selection, and so cannot send them back; they change those
+    /// with `set_collection_shown` and `set_setting`.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
-            *settings = Settings { hidden_collections: hidden, ..new };
+            let list_orders = std::mem::take(&mut settings.list_orders);
+            *settings = Settings { hidden_collections: hidden, list_orders, ..new };
         })
     }
 
@@ -87,11 +98,28 @@ impl SettingsStore {
         self.change(|settings| show_in(settings, collection, shown))
     }
 
-    /// Takes `collections` out of the hidden ones, for an account that is gone: its ids mean
-    /// nothing any more, and an account added later must not start with them hidden. Writes
-    /// nothing when none of them was hidden.
+    /// Takes `collections` out of the hidden ones and the list orders, for an account that is
+    /// gone: its ids mean nothing any more, and an account added later must not start with them.
+    /// Writes nothing when none of them was named.
     pub fn forget_collections(&self, collections: &[String]) -> Result<(), String> {
-        self.change(|settings| settings.hidden_collections.retain(|id| !collections.contains(id)))
+        self.change(|settings| {
+            settings.hidden_collections.retain(|id| !collections.contains(id));
+            settings.list_orders.retain(|id, _| !collections.contains(id));
+        })
+    }
+
+    /// Puts `owner` in front of every hidden collection whose id is still a bare URL from before
+    /// several accounts existed (task M1.1, [`torro_pim::account::qualify_legacy_id`]): back then
+    /// there was one account, `owner`. Runs once when the core starts; writes the file (atomically,
+    /// like every change) only when something changed.
+    pub fn qualify_legacy_collections(&self, owner: &str) -> Result<(), String> {
+        self.change(|settings| {
+            for id in &mut settings.hidden_collections {
+                if let Some(qualified) = torro_pim::account::qualify_legacy_id(id, owner) {
+                    *id = qualified;
+                }
+            }
+        })
     }
 
     /// Reads the stored settings, lets `edit` change them, saves and applies the result. An edit
@@ -116,11 +144,15 @@ impl SettingsStore {
 }
 
 /// One setting with its value, checked against its key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Change {
     Language(Language),
     Appearance(Appearance),
     StartAtLogin(bool),
+    Zoom(Zoom),
+    Night(Night),
+    /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
+    ListOrder(ListOrderEntry),
 }
 
 impl Change {
@@ -131,6 +163,17 @@ impl Change {
             SettingKey::Language => Change::Language(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Appearance => Change::Appearance(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::StartAtLogin => Change::StartAtLogin(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Not through `Zoom`'s own reading, which clamps any number for the sake of old files:
+            // a value from outside must be in range.
+            SettingKey::Zoom => Change::Zoom(
+                value
+                    .as_f64()
+                    .and_then(Zoom::from_factor)
+                    .ok_or_else(|| format!("{value} is not a zoom: send a number from 0.67 to 2.0"))?,
+            ),
+            // Strict as well: the file's reading falls back to 22:00–06:00 instead.
+            SettingKey::Night => Change::Night(Night::from_value(value)?),
+            SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
         })
     }
 
@@ -140,6 +183,9 @@ impl Change {
             Change::Language(language) => settings.language = language,
             Change::Appearance(appearance) => settings.appearance = appearance,
             Change::StartAtLogin(enabled) => settings.start_at_login = enabled,
+            Change::Zoom(zoom) => settings.zoom = zoom,
+            Change::Night(night) => settings.night = night,
+            Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
         }
     }
 }
@@ -388,6 +434,9 @@ mod tests {
         Change::parse(SettingKey::Language, &json!("german")).expect("valid language").apply(&mut settings);
         Change::parse(SettingKey::Appearance, &json!("dark")).expect("valid appearance").apply(&mut settings);
         Change::parse(SettingKey::StartAtLogin, &json!(true)).expect("valid flag").apply(&mut settings);
+        Change::parse(SettingKey::Zoom, &json!(1.25)).expect("valid zoom").apply(&mut settings);
+        let night = json!({"from": "23:30", "to": "07:00"});
+        Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -395,8 +444,39 @@ mod tests {
                 appearance: Appearance::Dark,
                 start_at_login: true,
                 hidden_collections: vec!["work".into()],
+                zoom: Zoom::nearest(1.25),
+                night: Night::from_value(&night).expect("valid night"),
+                list_orders: Default::default(),
             }
         );
+    }
+
+    #[test]
+    fn a_list_order_is_set_and_reset_and_kept_from_clients() {
+        use torro_core::settings::ListOrder;
+        let (_dir, store) = store();
+        store.set(SettingKey::ListOrder, &json!({"list": "work", "order": "manual"})).expect("manual");
+        assert_eq!(store.current().list_order("work"), ListOrder::Manual);
+        assert!(store.set(SettingKey::ListOrder, &json!({"list": "work", "order": "random"})).is_err());
+        assert!(store.set(SettingKey::ListOrder, &json!("manual")).is_err(), "the list is missing");
+        // A client sends back what it saw, without the orders: they stay.
+        store.update_keeping_hidden(Settings::default()).expect("updated");
+        assert_eq!(store.current().list_order("work"), ListOrder::Manual);
+        store.forget_collections(&["work".into()]).expect("account gone");
+        assert!(store.current().list_orders.is_empty());
+        store.set(SettingKey::ListOrder, &json!({"list": "home", "order": "manual"})).expect("manual");
+        store.set(SettingKey::ListOrder, &json!({"list": "home", "order": "due_date"})).expect("back");
+        assert!(store.current().list_orders.is_empty(), "the default is not stored");
+    }
+
+    #[test]
+    fn a_list_order_with_a_bare_url_is_refused() {
+        use torro_core::settings::ListOrder;
+        let (_dir, store) = store();
+        let mut settings = Settings::default();
+        settings.set_list_order("https://cloud.example.org/remote.php/dav/calendars/anna/tasks/", ListOrder::Manual);
+        assert!(store.update(settings).is_err());
+        assert!(!file_exists(&store));
     }
 
     #[test]
@@ -414,6 +494,36 @@ mod tests {
         assert!(Change::parse(SettingKey::Language, &json!("klingon")).is_err());
         assert!(Change::parse(SettingKey::StartAtLogin, &json!("yes")).is_err());
         assert!(Change::parse(SettingKey::Appearance, &json!(1)).is_err());
+        for bad in [json!(0.5), json!(2.5), json!("1.1"), json!(true), json!(null)] {
+            assert!(Change::parse(SettingKey::Zoom, &bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_zoom_is_rounded_to_the_nearest_step_and_stored() {
+        let (_dir, store) = store();
+        store.set(SettingKey::Zoom, &json!(1.3)).expect("in range");
+        assert_eq!(store.current().zoom.percent(), 125);
+        store.set(SettingKey::Zoom, &json!(2)).expect("an integer is a number too");
+        assert_eq!(store.current().zoom, Zoom::MAX);
+        assert!(store.set(SettingKey::Zoom, &json!(3.0)).is_err());
+        assert_eq!(store.current().zoom, Zoom::MAX, "a refused value changes nothing");
+    }
+
+    #[test]
+    fn a_night_is_stored_and_a_bad_one_refused_with_its_reason() {
+        let (_dir, store) = store();
+        store.set(SettingKey::Night, &json!({"from": "23:30", "to": "07:00"})).expect("valid night");
+        let stored = store.current().night;
+        assert_eq!((stored.from.to_string(), stored.to.to_string()), ("23:30".into(), "07:00".into()));
+        store.set(SettingKey::Night, &json!({"from": "06:00", "to": "06:00"})).expect("no night");
+        assert!(store.current().night.is_none());
+        let refused = store.set(SettingKey::Night, &json!({"from": "22:10", "to": "06:00"}));
+        assert!(refused.as_ref().is_err_and(|reason| reason.contains("quarter hour")), "{refused:?}");
+        for bad in [json!("22:00-06:00"), json!(22), json!({"from": "22:00"})] {
+            assert!(store.set(SettingKey::Night, &bad).is_err(), "{bad}");
+        }
+        assert!(store.current().night.is_none(), "a refused value changes nothing");
     }
 
     #[test]
@@ -441,6 +551,24 @@ mod tests {
         store.set_collection_shown("other", false).expect("hide other");
         store.forget_collections(&["work".into(), "home".into()]).expect("forget");
         assert_eq!(store.current().hidden_collections, ["other"]);
+    }
+
+    #[test]
+    fn hidden_collections_from_before_several_accounts_get_their_account() {
+        let (_dir, store) = store();
+        let owner = "nextcloud:anna@cloud.example.org";
+        let new = format!("{owner}/https://cloud.example.org/dav/calendars/anna/home/");
+        store.set_collection_shown("https://cloud.example.org/dav/calendars/anna/work/", false).expect("old id");
+        store.set_collection_shown(&new, false).expect("new id");
+        store.qualify_legacy_collections(owner).expect("rewritten");
+        assert_eq!(
+            store.current().hidden_collections,
+            [format!("{owner}/https://cloud.example.org/dav/calendars/anna/work/"), new]
+        );
+        let written = fs::metadata(store.file.as_deref().expect("file")).expect("written").modified().ok();
+        store.qualify_legacy_collections(owner).expect("nothing left to do");
+        let again = fs::metadata(store.file.as_deref().expect("file")).expect("still there").modified().ok();
+        assert_eq!(written, again, "a second start writes nothing");
     }
 
     #[test]

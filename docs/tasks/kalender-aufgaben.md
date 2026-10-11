@@ -197,6 +197,259 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   mit festem Datum; fmt, clippy, test (auch `TORRO_LANG=de`) grün; `torro-design-review` mit allen
   sechs Größen – alle vier Ziele mindestens „erfüllt“ für Mini, Leiste und Schmal.
 
+### Neue Ansichten: Zeitstrahl und Radar (2026-10-11)
+
+Konzept und Prototypen: [calendar-views.md](../calendar-views.md), Abschnitt „Vorschlag 2026-10-11“;
+`docs/prototypes/calendar/zeitstrahl.html` und `radar.html` sind die Vorlage (Maße, Verhalten).
+Beide sind **reine Ansichten**: Sie lesen Termine über den vorhandenen Request `Events` und legen
+über `SaveEvent` an (Platzhalter → Editor wie im Wochenraster). Kein neuer Request, kein
+Katalogeintrag, kein MCP-Tool – was sie zeigen, liefert Agenten schon `list_events`; Ansicht,
+Scrollposition, aufgeklappte Nächte und Vorausschau sind Fensterzustand wie die Scrollposition.
+K.21 und K.22 laufen parallel: in `app.rs`, `views/mod.rs` und `icon.rs` nur die genannten
+Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordination trägt sie ein).
+
+### K.21 Kalender: Zeitstrahl (Timeline)
+- [x] erledigt
+- **Modell:** Opus · **Dateien:** `crates/torrocalendar/src/views/timeline.rs` (neu, bei Bedarf
+  `views/timeline/layout.rs` wie bei der Woche), `crates/torrocalendar/src/views/mod.rs` (nur
+  `pub mod timeline;`), `crates/torrocalendar/src/app.rs` (`CalView::Timeline`, Taste `T`,
+  `Open::Timeline`/`--open timeline`, `range`, Navigation, Titel, Anfangs-Scrollposition, Zustand
+  der Nächte), `crates/torro-gui/src/theme.rs` (Token `night`), `crates/torro-gui/src/icon.rs` +
+  `assets/icons/moon.svg` (Lucide, ISC, wie die anderen)
+- **Oberfläche:** neue Ansicht „Timeline“ (Icon `ChartGantt`, Taste `T`) in Seitenleiste,
+  Segment und Ansichtsmenü, nach „Agenda“. Waagerechter Filmstreifen auf einem `Canvas` in einem
+  waagerechten `scrollable` (Mausrad scrollt waagerecht):
+  - Zeitraum `anchor − 1 Tag` bis `anchor + 7 Tage`; ‹ › verschieben um 7 Tage; „Today“ und der
+    Start scrollen so, dass „jetzt“ bei 30 % der Breite steht.
+  - Stundenbreite 56; oben Tageskopf 28 (Wochentag + Zahl, heute im roten Kreis, klebt links,
+    solange der Tag sichtbar ist), Stundenachse 24 (`MICRO`, `TEXT_3`, nicht neben der Jetzt-Zeit),
+    Ganztägiges 28 (mehrtägig als durchgehender Chip, endet am Beginn der Nacht), dann die Termine,
+    unten 28 für freie Zeit.
+  - **Nacht 22–06 eingeklappt** (Konstanten) als Band 48 breit in `night` (dunkel `#121626`, hell
+    `#E3E7F1`) mit gezackter Ober- und Unterkante (Zacken ~8 breit, 5 hoch), Mond-Icon und
+    „Night · 8 h“ (gedreht, von unten lesbar); Termine in der Nacht als Punkte in Kalenderfarbe im
+    Band plus „· 1 event“ / „· 2 events“. Klick auf das Band klappt diese Nacht auf (Stunden normal
+    breit, Grund `night` 60 % über `PANEL`), oben ein Knopf „Collapse night“. Kopfleiste: Knopf
+    „Nights“ (Mond) klappt alle auf bzw. zu. Mitternacht als Linie in `LINE_STRONG`.
+  - **Termine** als volle Säulen über die Terminhöhe, Tönung + 3-px-Balken links wie im Raster,
+    Titel (12/500) und Zeit (`MICRO`, `TEXT_2`) um −90° gedreht, von unten nach oben, gekürzt mit „…“;
+    unter 40 breit nur der Titel; Mindestbreite 16. Überschneidungen teilen sich die **Höhe** in
+    Bahnen. Unbestätigt gestrichelt, vergangen 55 %, geöffneter Termin mit Fokusring.
+    Klick → `OpenEvent`; Klick in freie Zeit → `NewEvent` (auf 15 min gerundet); in der
+    eingeklappten Nacht klappt der Klick nur auf.
+  - Freie Zeit ab 2 h zwischen Terminen (nur außerhalb der Nacht) als „3 h free“ unten in `TEXT_3`.
+  - Jetzt: rote Linie 1 px mit Uhrzeit-Chip in der Achse (wie im Raster).
+  - Gedrehter Text: `Frame::rotate` zeichnet Text in Iced als Pfade. Per Screenshot prüfen, ob 12 px
+    scharf genug ist; wenn nicht, Titel waagerecht oben in der Säule und das im Bericht sagen.
+  - Größen: Breit/Mittel wie beschrieben. **Schmal zeigt die Tagesansicht** (`shown_in`); der
+    senkrechte Zeitstrahl aus dem Prototyp kommt später. Mini/Leiste unverändert.
+- **API / MCP:** keiner (siehe oben).
+- **Abnahme:** Unit-Tests für die Geometrie (Zeit ↔ x mit eingeklappter und aufgeklappter Nacht,
+  Bahnen, freie Zeit, Treffer: Termin, Nacht, freie Fläche) mit festen Zeiten; `--demo --open
+  timeline --now 2026-10-13T14:20` funktioniert; fmt, clippy, test (auch `TORRO_LANG=de`) grün;
+  Screenshots Breit und Mittel (hell und dunkel) ansehen und im Bericht bewerten.
+- **Umgesetzt (abweichend):** Taste **Shift+T** statt `T` (`T` ist „Today“, in Schmal der einzige
+  Weg zurück). Unbestätigte Termine nicht gestrichelt – `torro_pim::Event` kennt keinen Status
+  (wie die Woche). `views/week.rs` nur in der Sichtbarkeit geöffnet (`pub(super)`), damit der
+  Zeitstrahl die Helfer der Woche nutzt. `Icon::tinted` für das Mond-Icon im `Canvas`. Iced 0.14
+  zeichnet Formen in `Frame::with_clip` nach waagerechtem Scrollen falsch; der Zeitstrahl zeichnet
+  deshalb ohne Clip und kürzt Text selbst.
+- **Entschieden 2026-10-11:** Säulen höchstens 8 × `HOUR` = 384 hoch, „3 h free“ direkt darunter.
+- **Offen (Design-Prüfung):** In Schmal zeigt das Menü „Day“ statt „Timeline“. Termine im
+  `Canvas` nicht per Tastatur erreichbar (gleiche Lücke wie im Wochenraster).
+
+### K.22 Kalender: Radar
+- [x] erledigt
+- **Modell:** Opus · **Dateien:** `crates/torrocalendar/src/views/radar.rs` (neu, bei Bedarf
+  `views/radar/layout.rs`), `crates/torrocalendar/src/views/mod.rs` (nur `pub mod radar;`),
+  `crates/torrocalendar/src/app.rs` (`CalView::Radar`, Taste `R`, `Open::Radar`/`--open radar`,
+  `range`, Navigation, Titel, Zustand „Vorausschau“), `crates/torro-gui/src/icon.rs` +
+  `assets/icons/radar.svg` (Lucide, ISC)
+- **Oberfläche:** neue Ansicht „Radar“ (Icon `Radar`, Taste `R`) nach „Timeline“. Zifferblatt auf
+  einem `Canvas`, Vorlage `radar.html` im Modus „Ausblenden“, 3/4:
+  - **12-Stunden-Zifferblatt**, 12 oben, im Uhrzeigersinn. Ziffern zeigen die echte Stunde im
+    Fenster (`15` an der 3); an 3/6/9/12 13/500 in `TEXT`, sonst 11/400 in `TEXT_2`; Ticks je
+    halbe Stunde. Keine Ziffer neben der Jetzt-Zeit.
+  - **Fenster** = `jetzt + Versatz` bis 12 h später. Die Linie am Fensterbeginn (rot 1.5 px,
+    Uhrzeit-Chip rot außen) ist eine klare Kante. **Die ersten 9 h voll sichtbar**, die letzten 3 h
+    **blenden aus** bis 0 kurz vor der Kante (Deckkraft `1 − smoothstep(f)^0.8`, `f` 0 → 1 über das
+    Viertel): Ringe, Termine, Ticks und Ziffern dort in kleinen Stücken (≈ 2°) mit der Deckkraft
+    ihrer Mitte zeichnen – Iced hat keine Masken.
+  - **Ringe je Kalender** (nur Kalender mit Terminen mit Uhrzeit im Fenster), Reihenfolge wie in der
+    Seitenleiste, der erste außen; gleich breit (höchstens 64), 4 Abstand; Spur `TEXT` 7 %.
+    Überschneidungen teilen einen Ring in Bahnen. Termine als Ringsegmente mit Tönung, 3-px-Balken
+    am Beginn, unbestätigt gestrichelt, geöffneter mit Fokusring.
+  - **Titel entlang des Bogens** (Glyphe für Glyphe gedreht, untere Hälfte gespiegelt, damit er
+    aufrecht steht), gekürzt mit „…“, nur wenn die Bahn ≥ 22 breit ist; zweite Zeile mit der Zeit ab
+    40. Ist der Text per Screenshot zu unscharf: Titel weglassen (die Liste reicht) und berichten.
+  - **Mitte:** Datum (`META`, `TEXT_3`), Uhrzeit (`DISPLAY`, tabellarisch), laufender Termin mit
+    Farbpunkt und „40 min left“ bzw. „Free for 1 h 20 min“, „Next 15:00 · Titel“, Ganztägiges als
+    Chips; beim Vorausschauen ein Knopf „Back to now“, die Linie dann `TEXT_2` statt rot.
+  - **Vorausschauen:** Mausrad über dem Zifferblatt verschiebt den Versatz in 15-min-Schritten
+    (−12 h … +24 h); ‹ › in der Kopfleiste um 1 h; „Today“ setzt auf 0.
+  - **Liste daneben** (Breit 300, Mittel 260) bzw. **darunter** (Schmal): „Next 9 hours“ und
+    „Fading out, until 02:20“ mit Zeit, Farbpunkt, Titel; Klick öffnet den Termin.
+  - Klick auf ein Segment → `OpenEvent`. Mini/Leiste unverändert.
+- **API / MCP:** keiner (siehe oben).
+- **Abnahme:** Unit-Tests für die Geometrie (Zeit ↔ Winkel mit Versatz, Fenster und Deckkraft am
+  Beginn/in der Mitte/am Ende des Viertels, Ziffernwerte, Ringe nur für Kalender mit Terminen,
+  Bahnen, Treffer Winkel/Radius → Termin) mit festen Zeiten; `--demo --open radar --now
+  2026-10-13T14:20` funktioniert; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Screenshots
+  Breit, Mittel und Schmal (hell und dunkel) ansehen und im Bericht bewerten.
+- **Umgesetzt (abweichend):** Klick auf freie Fläche in einem Ring legt einen Termin an
+  (`NewEvent`, auf 15 min gerundet), wie im Wochenraster. Unbestätigte Termine nicht gestrichelt
+  (kein Status in `torro_pim::Event`). „Back to now“ ohne Icon. Die Termin-Tönung liegt über der
+  Spur statt über `PANEL` (sonst wirkten dunkle Kalenderfarben schwächer als freie Zeit); das
+  Ausblenden läuft in 1°-Stücken (2° zeigte in hell Streifen).
+- **Entschieden 2026-10-11:** Zifferblatt höchstens 720 breit (`MAX_DIAMETER`).
+- **Offen (Design-Prüfung):** Maße
+  `LIST_MEDIUM` 260 und `NARROW_DIAL` 440 sind lokale Konstanten, gehören als Tokens nach
+  `torro-gui`. In Schmal liegen Liste und Kopftitel nicht auf einer Achse.
+
+### K.23 Radar: Tage blättern, Uhrzeit am Zifferblatt drehen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.22 · **Dateien:** `crates/torrocalendar/src/app.rs`,
+  `crates/torrocalendar/src/views/radar.rs`, `crates/torrocalendar/src/views/radar/layout.rs`
+- Wunsch des Nutzers (2026-10-11): Mit ‹ › kam man nur stundenweise voran und höchstens bis morgen;
+  zu einem fernen Datum ging es gar nicht. Die Kopfleiste soll wie überall Tage blättern, die
+  Uhrzeit wird am Zifferblatt gesteuert.
+- **Oberfläche:**
+  - **Tage:** ‹ › und ← → blättern einen Tag, „Today“ führt zu jetzt. Ein Klick auf einen Tag im
+    kleinen Monat (bzw. in der Wochenleiste in Schmal) öffnet das Radar an diesem Tag und bleibt
+    in der Radar-Ansicht.
+  - **Fensterbeginn:** heute (ohne Drehen) bei „jetzt“, rote Kante. An jedem anderen Tag um
+    **08:00**, bei einem früheren Termin mit Uhrzeit an diesem Tag zur vollen Stunde davor, nie vor
+    06:00 (Ende der Nacht); ganztägige Termine und solche vom Vortag zählen nicht. Kante dann
+    `TEXT_2`, in der Mitte das Datum und „Back to now“.
+  - **Uhrzeit drehen** (Versatz zum Fensterbeginn, weiter −12 h … +24 h): Mausrad wie bisher in
+    15-min-Schritten; **↑ ↓** je eine Stunde; **Ziehen**: Drücken auf dem Zifferblatt (außerhalb
+    eines Termins) und Bewegen dreht wie ein Drehknopf – im Uhrzeigersinn später, 360° = 12 h, aus
+    dem Winkelunterschied zwischen zwei Mausbewegungen (über 0°/360° hinweg stetig), auf 5 min
+    gerastet. Erst ab ~4 px Bewegung ist es ein Ziehen; ein Klick bleibt ein Klick (Termin öffnen,
+    neuer Termin). Zeiger `Grab` über dem Zifferblatt, `Grabbing` beim Ziehen, `Pointer` über Terminen.
+  - Titel der Kopfleiste: der Tag des Fensterbeginns.
+- **API / MCP:** keiner – Ansicht und Versatz sind Fensterzustand (wie K.22).
+- **Abnahme:** Unit-Tests: Fensterbeginn (heute, anderer Tag ohne Termine, früher Termin 06:30 →
+  06:00, Termin 05:00 → 06:00, Termin 09:00 → 08:00, ganztägig ignoriert), ‹ › und ← → um einen Tag
+  mit Versatz 0, Klick im kleinen Monat bleibt im Radar, ↑ ↓, Ziehen (Winkel → Minuten, über 0°
+  hinweg, Raster, Schwelle Klick/Ziehen), Kantenfarbe; fmt, clippy, test (auch `TORRO_LANG=de`)
+  grün; Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
+- **Umgesetzt (abweichend):** Schmal zeigt das Radar jetzt unter der Wochenleiste (vorher ohne).
+  ‹ › blättern vom gewählten Tag aus; ist das Zifferblatt über Mitternacht gedreht, nennt der
+  Titel schon den Folgetag. `Message::LookAhead` heißt jetzt `Message::Turn`. Termine öffnen
+  beim Drücken, ein Klick in freie Zeit legt beim Loslassen an. Greifen geht vom halben Radius bis
+  zum Rand des Zifferblatts. Ziehen nur per Unit-Test geprüft.
+
+### K.24 Kalender: Agenda neu gestalten
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.23 (beide ändern `app.rs`) · **Dateien:**
+  `crates/torrocalendar/src/views/agenda.rs`, `crates/torrocalendar/src/app.rs` (nur Eigenschaften-
+  Spalte der Agenda in Breit)
+- Vorlage: `docs/prototypes/calendar/agenda.html` (vom Nutzer freigegeben 2026-10-11).
+- **Oberfläche:**
+  - **Datumsspalte** links (56, Schmal 44) statt grauer Tagesbalken: Wochentag `CAPTION` in
+    `TEXT_3`, darunter die Tageszahl `HEADLINE` tabellarisch; heute im roten Kreis 32;
+    Wochenende Zahl in `TEXT_2`. Die Spalte klebt oben, solange der Tag sichtbar ist (falls Iced
+    das im `scrollable` nicht hergibt: oben am Tag stehen lassen und das berichten). Neben ihr eine
+    leise Kopfzeile „Today“/„Tomorrow“ links, „4 events“ rechts (`META`, `TEXT_3`). Tage durch
+    `LINE` getrennt.
+  - **Zeile** (≥ 44): Beginn `BODY` 500 tabellarisch, darunter die Dauer `META` `TEXT_3`
+    („15 min“, „2 h“, „1 h 30 min“); 3-px-Balken in Kalenderfarbe über die Zeilenhöhe; Titel
+    `BODY_STRONG`, darunter Ort `META` `TEXT_2` mit Icon (`MapPin`, bei Links/„Video“ `Video`).
+    Hover `HOVER`, geöffneter Termin `SELECTED`, vergangen 55 %.
+  - **Jetzt:** der laufende Termin in seiner Tönung hinterlegt, rechts Pille „40 min left“; danach
+    die Jetzt-Linie (rot 1 px, Chip mit Uhrzeit links).
+  - **Freie Zeit** ab 2 h zwischen zwei Terminen eines Tages: Zeile 28 „3 h free“ `META` `TEXT_3`
+    mit gepunkteter Linie.
+  - **Ganztägig** als Chips oben im Tag (mehrtägig mit „day 2 of 3“) statt als Zeile „all day“.
+  - **Leere Tage** zwischen Tagen mit Terminen zu einer Zeile zusammengefasst:
+    „3 d · Nothing planned · Tue 20 – Thu 22“. **Kalenderwoche** als leiser Trenner
+    („This week · Week 42“, „Week 43“) mit Linie.
+  - Breit: Inhalt höchstens `CONTENT_MAX`, rechts die Eigenschaften des geöffneten Termins wie in
+    der Woche (wenn es den Baustein gibt, sonst berichten). Mittel/Schmal: ohne.
+  - Ohne Daten bleibt weg: Teilnehmer-Avatare und „tentative“ (kommt mit K.26).
+- **API / MCP:** keiner (reine Ansicht über `Events`).
+- **Abnahme:** Unit-Tests der Logik (Gruppierung, Dauertexte, freie Zeit, leere Tage
+  zusammenfassen, Wochenwechsel, laufender Termin und Jetzt-Position, mehrtägig) mit festen
+  Zeiten; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Sichtprüfung alle Größen hell/dunkel.
+
+### K.25 Radar: auch ohne Termine lebendig
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.23 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
+  `crates/torrocalendar/src/views/radar/layout.rs`
+- Wunsch des Nutzers (2026-10-11): Ohne Termine sieht das Radar aus wie eine leere Uhr.
+- **Oberfläche:**
+  - **Ringe für alle sichtbaren Kalender**, auch ohne Termine im Fenster (Reihenfolge wie in der
+    Seitenleiste), damit die Bahnen immer zu sehen sind; feine Stundenlinien quer über die Ringe
+    (`LINE`), wie die Stundenlinien im Raster.
+  - **Nacht** 22–06 (dieselben Zeiten wie im Zeitstrahl) als Sektor in `night` hinter den Ringen,
+    mit kleinem Mond-Icon am Rand der Nacht; blendet im letzten Viertel mit aus.
+  - **Freie Zeit** ab 2 h (außerhalb der Nacht) als „3 h free“ in `TEXT_3` entlang des Bogens
+    innen an den Ringen.
+  - Leer-Zustand der Mitte: „Nothing planned“ / „Free until tomorrow 09:30“ statt nur Uhrzeit.
+  - Gerne weitere ruhige Ideen aus dem Prototyp-Gefühl, aber nichts, was blinkt oder sich ohne
+    Anlass bewegt; im Bericht nennen.
+- **API / MCP:** keiner.
+- **Abnahme:** Tests (Ringe ohne Termine, Nachtsektor im Fenster inkl. über Mitternacht, freie Zeit
+  ohne Nacht), fmt/clippy/test grün, Sichtprüfung leerer Tag und voller Tag, hell/dunkel.
+
+### K.26 Teilnehmer und Status von Terminen – und nichts mehr verlieren beim Speichern
+- [ ] erledigt
+- **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Dateien:** `crates/torro-pim/src/model.rs`,
+  `crates/torro-pim/src/demo.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`, Anzeige in
+  `crates/torrocalendar/src/views/{agenda,radar}.rs` und im Termin-Paneel (nennen)
+- **Fehler, der zuerst behoben wird:** `write.rs` baut beim Speichern ein komplett neues
+  `VCALENDAR` aus den Feldern von `Event`. Alles andere am Termin geht dabei verloren:
+  `ATTENDEE`, `ORGANIZER`, `VALARM` (Erinnerungen), `CATEGORIES`, `URL`, `STATUS` usw. Bei einer
+  Einladung, die der Nutzer selbst organisiert, kann der Server (Nextcloud/Sabre-Scheduling) dann
+  sogar Absagen an die Teilnehmer schicken. Lösung: beim Lesen das Original-`VEVENT` behalten und
+  beim Speichern nur die geänderten Eigenschaften ersetzen (Round-Trip), mit Tests an echten
+  Nextcloud-Fixtures.
+  **Erledigt mit P.1** ([github.md](github.md), Commit „keep foreign properties when writing
+  items“): `CalDavClient::save_*` holt das gespeicherte Objekt und ersetzt nur geänderte Felder
+  (`write::merge_ics_event`/`merge_ics_todo`), `ATTENDEE`, `ORGANIZER`, `VALARM`, `VTIMEZONE`,
+  `X-*` bleiben. Für K.26 bleibt das Lesen und Anzeigen der Teilnehmer und des Status.
+- **Neu im Modell:** `organizer` und `attendees` (Name, E-Mail, Teilnahme-Status, Rolle) sowie
+  `status` (bestätigt, vorläufig, abgesagt), alle mit `#[serde(default)]`. Damit gehen sie über
+  `Events` auch an Agenten (`list_events`, Bereich Kalender, Lesen) – Hinweis in `api.md`, dass das
+  E-Mail-Adressen Dritter sind. Ändern von Teilnehmern ist **nicht** Teil dieser Aufgabe.
+- **Oberfläche:** Avatare mit Initialen (höchstens 3 + „+N“) in Agenda-Zeile und im Paneel;
+  im Radar kleine Avatare am Ende des Bogens, wenn Platz ist; „tentative“ gestrichelt (Agenda,
+  Woche, Zeitstrahl, Radar), abgesagte durchgestrichen.
+- **API / MCP:** kein neuer Request; `Event` wird reicher (Skill `torro-api`, Review danach).
+
+### K.27 Nachtzeiten einstellen
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.21, K.25 · **Dateien:** `crates/torro-core/src/settings.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs` (bzw. wo
+  `SetSetting` behandelt wird), `crates/torroworkplace/src/ui/{general,apps}.rs` (eins davon, nennen),
+  `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/{timeline,radar}.rs` und ihre
+  `layout.rs`, `docs/api-reference.md`; nachgetragen (Rückfrage): `crates/torrocalendar/Cargo.toml`
+  (+ `Cargo.lock`, Abhängigkeit `torro-ipc`), `crates/torroworkplace/src/mcp.rs` (`object` im
+  Eingabeschema von `settings_set_setting.value`)
+- Wunsch des Nutzers (2026-10-11): die Nacht selbst festlegen, per Doppelklick auf den Mond und in den
+  Einstellungen. Heute stehen 22–06 als Konstanten in Zeitstrahl und Radar.
+- **Einstellung:** `Settings::night { from, to }` (Uhrzeiten auf 15 min, Standard 22:00–06:00,
+  `#[serde(default)]`); über Mitternacht ist der Normalfall, `from == to` heißt „keine Nacht“ (nichts
+  eingeklappt, kein Nachtsektor). Gilt suite-weit; offene Kalenderfenster übernehmen eine Änderung live
+  (wie `appearance`/`zoom`).
+- **Oberfläche:**
+  - Kalender: **Doppelklick auf den Mond** – im Radar auf das Mond-Icon, im Zeitstrahl auf den Mond im
+    eingeklappten Band (ein einfacher Klick klappt weiter auf) – öffnet eine schwebende Karte „Night“
+    mit zwei Zeitfeldern „From“/„To“ (15-min-Raster), „Save“ und „No night“. Tooltip am Mond:
+    „Double-click to set the night“. Zeitstrahl, Radar und die freie Zeit (die die Nacht auslässt)
+    rechnen mit den eingestellten Zeiten.
+  - Steuerzentrale: Zeile „Night“ mit denselben Feldern (Abschnitt General oder Apps › Calendar, je
+    nachdem, wo es App-Einstellungen gibt; im Bericht nennen).
+- **API:** `SettingKey::Night` mit Wert `{ "from": "22:00", "to": "06:00" }` über den vorhandenen
+  `Request::SetSetting` · `settings.set_setting` · Admin; Katalogbeschreibung ergänzen; gelesen über
+  `settings.get_settings`.
+- **MCP:** vorhandenes Tool `settings_set_setting` (Beschreibung nennt `night`).
+- **Abnahme:** Tests: Standard, über Mitternacht, `from == to`, ungültige Werte abgelehnt (`error` mit
+  Grund), Zeitstrahl-Segmente und Radar-Nachtsektor mit anderen Zeiten (z. B. 23:30–07:00), freie Zeit
+  ohne Nacht, Doppelklick-Erkennung; API-Referenz neu erzeugt; fmt/clippy/test (auch `TORRO_LANG=de`)
+  grün; Sichtprüfung der Karte und der Einstellungszeile, hell/dunkel.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag

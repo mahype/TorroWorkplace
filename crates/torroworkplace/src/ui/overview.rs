@@ -165,8 +165,12 @@ fn window_manager_tile(status: Option<&Status>) -> Tile {
     Tile { title: tr("Window manager"), headline, detail }
 }
 
-fn accounts_tile(accounts: &[AccountInfo]) -> Tile {
-    let items = attention(accounts);
+/// Counts every account, each once; a sign-in in progress (no id yet) is not an account. It names
+/// the worst state among them, so one broken account out of several is not hidden.
+fn accounts_tile(all: &[AccountInfo]) -> Tile {
+    let accounts: Vec<&AccountInfo> = super::accounts::listed(all).collect();
+    let signing_in = super::accounts::pending(all).next().is_some();
+    let items = attention(all);
     let problems = items.iter().filter(|item| matches!(item.reason, Reason::Problem(_))).count();
     // The heaviest reason names the tile: a problem outweighs a missing sign-in.
     let headline = if problems > 0 {
@@ -174,14 +178,17 @@ fn accounts_tile(accounts: &[AccountInfo]) -> Tile {
     } else if !items.is_empty() {
         Line::new(Tone::Attention, tr("Needs sign-in"))
     } else if accounts.is_empty() {
-        Line::new(Tone::Inactive, tr("Not set up"))
-    } else if accounts.iter().all(|account| matches!(account.state, AccountState::Connected { .. })) {
-        Line::new(Tone::Ok, tr("Connected"))
+        if signing_in {
+            Line::new(Tone::Attention, tr("Signing in …"))
+        } else {
+            Line::new(Tone::Inactive, tr("Not set up"))
+        }
     } else {
-        Line::new(Tone::Attention, tr("Signing in …"))
+        Line::new(Tone::Ok, tr("Connected"))
     };
     let detail = if accounts.is_empty() {
-        tr("Add one in Accounts").to_string()
+        // The first account is on its way: the browser is where the user is needed.
+        if signing_in { tr("Waiting for the browser …") } else { tr("Add one in Accounts") }.to_string()
     } else {
         counted(accounts.len(), "1 account", "{n} accounts")
     };
@@ -285,6 +292,20 @@ mod tests {
         }
     }
 
+    fn signing_in_entry() -> AccountInfo {
+        AccountInfo {
+            id: String::new(),
+            kind: "nextcloud".into(),
+            label: "https://cloud.example.test".into(),
+            state: AccountState::SigningIn {
+                server: "https://cloud.example.test".into(),
+                login_url: "https://cloud.example.test/login".into(),
+            },
+            collections: Vec::new(),
+            scopes: None,
+        }
+    }
+
     fn account(label: &str, state: AccountState) -> AccountInfo {
         AccountInfo {
             id: format!("nextcloud:{label}"),
@@ -292,6 +313,7 @@ mod tests {
             label: label.into(),
             state,
             collections: Vec::new(),
+            scopes: None,
         }
     }
 
@@ -378,6 +400,15 @@ mod tests {
             account("carla", connected(Some("Timeout"))),
         ]);
         assert_eq!(two.headline, Line::new(Tone::Error, trf("{n} problems", &[("n", &2)])));
+
+        // A sign-in in progress is no account: the others are still counted and connected.
+        let adding =
+            accounts_tile(&[account("anna", connected(None)), account("ben", connected(None)), signing_in_entry()]);
+        assert_eq!(adding.headline, Line::new(Tone::Ok, tr("Connected")));
+        assert_eq!(adding.detail, Some(trf("{n} accounts", &[("n", &2)])));
+        let first = accounts_tile(&[signing_in_entry()]);
+        assert_eq!(first.headline, Line::new(Tone::Attention, tr("Signing in …")));
+        assert_eq!(first.detail.as_deref(), Some(tr("Waiting for the browser …")));
 
         let none = accounts_tile(&[]);
         assert_eq!(none.headline, Line::new(Tone::Inactive, tr("Not set up")));

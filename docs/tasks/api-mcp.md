@@ -173,6 +173,9 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** A.2, A.5 · **Dateien:** `crates/torroworkplace/src/ui/agents.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`
 - Karten, Detailseite mit Rechten je Bereich und Sammlungen, „Create new key“, „Disconnect…“.
+- Seit G.2 ([github.md](../github.md), „Rechte für Agenten“): Bereich **GitHub** mit Stufe und der Auswahl
+  `github_repos` (Repos `owner/name` oder ganze Konten `owner`, „All“ oder ausgewählte). Ohne Lesen auf GitHub
+  sieht ein Agent keine Filterliste; die Auswahl filtert jeden Treffer.
 
 ### A.7 Assistent „Connect agent“
 - [ ] erledigt

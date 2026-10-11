@@ -403,3 +403,96 @@ Offen aus D.9: In der Aufgaben-Leiste sind „overdue“ und die Rahmen überfä
 Größere Lücken zum Entwurf sind **neue Funktionen** und werden eigens geplant (Oberfläche, API,
 MCP – siehe `docs/api.md`): Eigenschaften-Spalte im Kalender, Timeline-Ansicht, „This week“ mit
 Aufgaben im Kalender, Filter Inbox/Anytime, Unteraufgaben anlegen, Aktivität im Detail.
+
+## Rückmeldungen 2026-10-11 (Abend)
+
+Drei Wünsche des Nutzers nach dem ersten Ausprobieren. Alle drei ändern Darstellung und Bedienung,
+keine Funktionen der Suite: kein neuer API-Befehl, kein MCP-Tool (wie Scrollposition oder offene Menüs
+ist der Zustand der Seitenleiste reine Fensteransicht).
+
+### U.1 Zeiger-Cursor auf allem, was klickbar ist
+- [x] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/{week,month,glance,mini_month,week_strip}.rs`, `crates/torrotasks/src/{list,glance}.rs`, ggf. `crates/torroworkplace/src/ui/*` (nennen)
+- Termine im Wochen-/Tagesraster (Canvas: `canvas::Program::mouse_interaction` → `Interaction::Pointer`
+  über einem Termin bzw. einer klickbaren Fläche, sonst `Idle`), Monatszellen und -termine, Mini-Monat,
+  Wochenleiste, Zeitstrahl der Leiste, Chips. Alle `mouse_area` mit `on_press` bekommen
+  `.interaction(Interaction::Pointer)`. Iced-Knöpfe haben den Zeiger schon.
+- Abnahme: Test für `mouse_interaction` (Punkt über Termin → Pointer, leere Fläche → Idle);
+  Liste aller `mouse_area` ohne Zeiger im Bericht (soll leer sein).
+
+### U.2 Seitenleiste einklappbar (nur Icons)
+- [x] erledigt
+- **Modell:** Opus · **Dateien:** `crates/torro-gui/src/{shell,widgets,lib}.rs`, `crates/torro-gui/src/ui_state.rs` (neu), `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- Drei Zustände der Seitenleiste: **ausgeklappt** (232, wie heute), **Leiste** (nur Icons, ca. 52 breit,
+  Name als Tooltip, Zähler als kleiner Punkt bzw. weggelassen, Gruppentitel werden zu Trennlinien,
+  App-Umschalter nur als Logo, Mini-Monat ausgeblendet) und **Schublade** (Overlay wie heute).
+- Breit: der Nutzer wählt ausgeklappt oder Leiste – Knopf oben in der Seitenleiste (Icon `panel-left`)
+  und Kurzbefehl `[` (wie Linear). Mittel: Leiste statt ganz ausgeblendet; der Knopf öffnet die
+  ausgeklappte Seitenleiste als Schublade. Schmal: wie heute (Schublade).
+- Die Wahl merkt sich jede App (Datei im State-Verzeichnis der App, z. B. `ui.json`; fehlend/kaputt →
+  ausgeklappt) und stellt sie beim Start wieder her. Eingeklappt schiebt sich der Inhalt nach links,
+  nichts überlagert.
+- Abnahme: Tests für Zustandswechsel, Größenklassen und Speichern/Laden (Temp-Verzeichnis);
+  Sichtprüfung aller drei Apps breit und mittel, hell und dunkel, ein- und ausgeklappt.
+
+### U.3 Seitenpaneel: rechts daneben oder darüber
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/panel.rs` (neu), `crates/torro-gui/src/lib.rs`, `crates/torro-gui/examples/gallery.rs`
+- Ein gemeinsamer Baustein für Details (Termin, Aufgabe, später mehr): `panel(header, body, footer)`
+  sieht immer gleich aus wie die rechte Spalte (Fläche `PANEL`, Linie links, Kopf mit Pfad, Titel und
+  Schließen-Knopf, scrollender Inhalt, feste Fußzeile für Aktionen).
+- Zwei Darstellungen, gewählt aus der verfügbaren Breite: **daneben** (inline rechts, `size::PANEL`
+  z. B. 400 breit) bei genug Platz (Breit), sonst **darüber** (gleiches Paneel rechts über dem Inhalt,
+  volle Höhe, Scrim und Schatten links, Klick daneben bzw. Escape schließt; in Schmal volle Breite).
+  Kein mittiger Dialog mehr.
+- Doc-Kommentar mit Verwendungsbeispiel, damit U.4/U.5 es ohne Kontext nutzen können; Galerie zeigt beide
+  Darstellungen.
+
+### U.4 Kalender: Termin im Seitenpaneel statt Dialog
+- [x] erledigt (auch `views/{mod,month,agenda}.rs` für die Markierung; neuer Startzustand
+  `--open editor-read-only` für die Sichtprüfung eines Nur-Lesen-Termins)
+- **Modell:** Opus · **Braucht:** U.2, U.3 · **Dateien:** `crates/torrocalendar/src/{app,editor}.rs`, ggf. `views/week.rs` (nennen)
+- Klick auf einen Termin (und „New event“) öffnet das Paneel aus U.3 statt des Dialogs: Titel groß und
+  randlos, darunter die Eigenschaften als Zeilen (Zeit, Kalender, ganztägig, Ort, Notizen) wie im
+  Aufgaben-Detail; in Breit daneben (ersetzt dann die Eigenschaften-Spalte bzw. „Up next“), sonst darüber.
+- Speichern wie im Aufgaben-Detail: automatisch nach Änderungen (gleiche Requests wie heute, ETag-sicher),
+  neue Termine erst beim ersten gültigen Stand; Fehler nach dem ersten Versuch; „Delete event“ als
+  `danger` mit Rückfrage. Nur-Lesen-Termine zeigen dieselbe Ansicht ohne Bearbeitung.
+- Der gewählte Termin ist im Raster markiert (`focus_ring`-Umriss, offener Punkt aus C.2).
+
+### U.5 Aufgaben: Detail im selben Paneel
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** U.3 · **Dateien:** `crates/torrotasks/src/{app,detail}.rs`
+- Das Detail nutzt das Paneel aus U.3: Breit daneben (wie heute), Mittel und Schmal darüber statt
+  „Liste schmaler“ bzw. „Detail ersetzt die Liste“. Inhalt und Verhalten bleiben.
+
+### Z.1 Zoomen wie im Browser (Strg + Plus / Minus / 0)
+- [x] erledigt
+- **Modell:** Opus · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs` (bzw. wo `SetSetting` behandelt wird), `crates/torro-gui/src/{lib,shell}.rs` (oder neues `zoom.rs`), `crates/torrocalendar/src/{main,app}.rs`, `crates/torrotasks/src/{main,app}.rs`, `crates/torroworkplace/src/ui/{mod,general}.rs`, `crates/torroworkplace/src/main.rs`, Skill `torro-design` (Abschnitt 3)
+- Wunsch: Schrift und Oberfläche insgesamt größer und kleiner stellen wie im Browser.
+- **Oberfläche:** In jeder App vergrößert Strg + Plus (auch Strg + `=` und Ziffernblock-Plus),
+  verkleinert Strg + Minus, setzt Strg + 0 zurück. Stufen wie im Browser: 67 %, 75 %, 80 %, 90 %,
+  100 %, 110 %, 125 %, 150 %, 175 %, 200 %. Umgesetzt über Iceds `scale_factor` für das ganze Fenster
+  (Layout, Abstände und Schrift wachsen gemeinsam; die Größenklassen rechnen in logischen Pixeln weiter).
+  Steuerzentrale › General: Zeile „Zoom“ mit −, Prozentwert, + und „Reset“. Beim Ändern kurz eine
+  ruhige Anzeige „110 %“ (wie im Browser), keine Benachrichtigung.
+- **Gilt für die ganze Suite:** Der Wert steht in `Settings` (`zoom`, Standard 1.0, `#[serde(default)]`),
+  damit gekachelte Fenster gleich groß bleiben; alle Apps übernehmen eine Änderung live (wie
+  `appearance`, F.8). Mit `--demo` nur im Prozess, nichts speichern.
+- **API:** `SettingKey::Zoom` für `settings.set_setting` (Wert: Zahl 0.67–2.0, wird auf die nächste
+  Stufe gerundet), Beschreibung im Katalog ergänzen; `settings.get_settings` liefert das Feld mit.
+- **MCP:** `settings_set_setting` kann `zoom` setzen (gleicher Katalogeintrag, Beschreibung nennt den Wert).
+- Abnahme: Tests für Stufen (nächste/vorige, Grenzen, Runden), Tastenerkennung, Settings-Lesen alter
+  Dateien ohne `zoom`, `SetSetting` mit gültigem und ungültigem Wert; Sichtprüfung aller drei Apps bei
+  80 %, 100 %, 150 % in Breit und Mittel.
+
+### Z.2 Strg-Kurzbefehle tippen nicht in Textfelder
+- [x] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torro-gui/src/widgets.rs` (Hülle um `text_input`/`text_editor`), Aufrufer in den Apps
+- Gefunden bei Z.1: Iceds `text_input` fügt bei Strg + `+`/`-`/`=` das Zeichen zusätzlich ein, während
+  gezoomt wird („a+--“). Eine gemeinsame Hülle verwirft Tastendrücke mit Strg (bzw. Cmd) ohne Alt, die
+  ein Satzzeichen erzeugen würden; Kopieren/Einfügen/Markieren bleiben.
+- Umgesetzt als `widgets::ctrl_guard` um die ganze Ansicht jeder App (neben `zoom.view`): eine unsichtbare
+  oberste Ebene fängt solche Tastendrücke ab, bevor ein Feld sie sieht (Iced 0.14 hat ohne `advanced` keinen
+  Haken am Feld selbst); gilt damit für `text_input` und `text_editor` und für jedes künftige Feld. Neue Apps
+  rufen es wie `zoom.view` auf.

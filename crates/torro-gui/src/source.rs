@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use torro_ipc::pim::PimClient;
 use torro_pim::demo::DemoSource;
-use torro_pim::{AccountState, Collection, Event, PimSource, ProviderError, Todo};
+use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 /// The core over the socket, or demo data in memory (`--demo`). Cheap to clone, so every
 /// Iced task can own one.
@@ -115,8 +115,8 @@ macro_rules! delegate {
 }
 
 impl PimSource for Source {
-    async fn account(&self) -> Result<AccountState, ProviderError> {
-        delegate!(self, s => s.account())
+    async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
+        delegate!(self, s => s.accounts())
     }
 
     async fn connect_nextcloud(&self, server: String) -> Result<String, ProviderError> {
@@ -153,6 +153,10 @@ impl PimSource for Source {
 
     async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
         delegate!(self, s => s.delete_todo(todo))
+    }
+
+    async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        delegate!(self, s => s.move_todo(todo, before))
     }
 }
 

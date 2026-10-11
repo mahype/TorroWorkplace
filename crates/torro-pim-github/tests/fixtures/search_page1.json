@@ -1,0 +1,43 @@
+{
+  "data": {
+    "search": {
+      "issueCount": 3,
+      "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29yOjI=" },
+      "nodes": [
+        {
+          "__typename": "Issue",
+          "number": 123,
+          "title": "Calendar crashes on DST change",
+          "body": "Steps:\n\n1. Open the week of the change\n2. Watch it crash",
+          "url": "https://github.com/mahype/TorroWorkplace/issues/123",
+          "state": "OPEN",
+          "updatedAt": "2026-10-10T08:15:00Z",
+          "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+          "labels": { "nodes": [ { "name": "bug", "color": "d73a4a" } ] },
+          "assignees": { "nodes": [ { "login": "mahype" } ] },
+          "milestone": { "title": "1.0", "dueOn": "2026-11-01T07:00:00Z" },
+          "parent": { "number": 100, "repository": { "nameWithOwner": "mahype/TorroWorkplace" } }
+        },
+        {
+          "__typename": "PullRequest",
+          "number": 45,
+          "title": "Draw the now line in the week view",
+          "body": "",
+          "url": "https://github.com/mahype/TorroWorkplace/pull/45",
+          "state": "OPEN",
+          "isDraft": true,
+          "updatedAt": "2026-10-09T17:02:11Z",
+          "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+          "labels": { "nodes": [] },
+          "assignees": { "nodes": [] },
+          "milestone": null,
+          "reviewDecision": "CHANGES_REQUESTED",
+          "mergeable": "CONFLICTING",
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "FAILURE" } } } ] }
+        },
+        { "__typename": "Discussion" },
+        null
+      ]
+    }
+  }
+}

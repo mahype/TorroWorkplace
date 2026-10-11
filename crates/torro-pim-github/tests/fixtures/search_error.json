@@ -1,0 +1,11 @@
+{
+  "data": null,
+  "errors": [
+    {
+      "type": "INVALID_SEARCH",
+      "path": ["search"],
+      "locations": [ { "line": 1, "column": 62 } ],
+      "message": "The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them."
+    }
+  ]
+}

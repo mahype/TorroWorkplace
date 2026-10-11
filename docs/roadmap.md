@@ -36,7 +36,7 @@ Damit ziehen Teile aus Phase 3 und 4 nach vorn.
 
 Alle suite-weiten Einstellungen, vor allem die Konten, an einer Stelle in der Haupt-App, nach dem
 Vorbild von TorroWhisper und TorroMail. Konzept: [settings.md](settings.md). Vorgemerkte Konten:
-**GitHub** (OAuth Device Flow, Issues und Pull Requests), **Slack** (Erwähnungen, Nachrichten),
+**GitHub** (Issues und Pull Requests als Filterlisten und Verweise, Konzept: [github.md](github.md)), **Slack** (Erwähnungen, Nachrichten),
 **KI-Anbieter** (API-Schlüssel, Agenten).
 
 ## Vorgemerkt: Tiling- und Fenster-Modus (grundlegend)

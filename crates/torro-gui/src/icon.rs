@@ -10,6 +10,7 @@
 //! one with `.style(…)` for a quieter colour, e.g. `text_3` for a secondary icon. Use [`SIZE`]
 //! for icons on their own and [`SIZE_SM`] inside buttons.
 
+use iced::Color;
 use iced::widget::{Svg, svg};
 
 use crate::theme::palette;
@@ -27,6 +28,7 @@ pub enum Icon {
     ChevronRight,
     ChevronDown,
     Plus,
+    Minus,
     RefreshCw,
     Check,
     X,
@@ -39,6 +41,7 @@ pub enum Icon {
     ListTodo,
     Inbox,
     Sun,
+    Moon,
     Settings,
     User,
     Users,
@@ -57,6 +60,7 @@ pub enum Icon {
     SquarePen,
     Clock,
     ChartGantt,
+    Radar,
     List,
     ListFilter,
     MapPin,
@@ -75,6 +79,7 @@ impl Icon {
         Icon::ChevronRight,
         Icon::ChevronDown,
         Icon::Plus,
+        Icon::Minus,
         Icon::RefreshCw,
         Icon::Check,
         Icon::X,
@@ -87,6 +92,7 @@ impl Icon {
         Icon::ListTodo,
         Icon::Inbox,
         Icon::Sun,
+        Icon::Moon,
         Icon::Settings,
         Icon::User,
         Icon::Users,
@@ -105,6 +111,7 @@ impl Icon {
         Icon::SquarePen,
         Icon::Clock,
         Icon::ChartGantt,
+        Icon::Radar,
         Icon::List,
         Icon::ListFilter,
         Icon::MapPin,
@@ -116,6 +123,16 @@ impl Icon {
         Icon::Sparkles,
     ];
 
+    /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
+    /// where the colour filter of the [`icon`] widget does not reach:
+    /// `frame.draw_svg(bounds, &Icon::Moon.tinted(palette(theme).text_3))`. Take the colour from the
+    /// current [`palette`] at draw time, so it follows light and dark.
+    pub fn tinted(self, color: Color) -> svg::Handle {
+        let [r, g, b, _] = color.into_rgba8();
+        let svg = String::from_utf8_lossy(self.svg()).replace("currentColor", &format!("#{r:02X}{g:02X}{b:02X}"));
+        svg::Handle::from_memory(svg.into_bytes())
+    }
+
     /// The SVG file bytes, compiled into the binary.
     fn svg(self) -> &'static [u8] {
         match self {
@@ -123,6 +140,7 @@ impl Icon {
             Icon::ChevronRight => include_bytes!("../assets/icons/chevron-right.svg"),
             Icon::ChevronDown => include_bytes!("../assets/icons/chevron-down.svg"),
             Icon::Plus => include_bytes!("../assets/icons/plus.svg"),
+            Icon::Minus => include_bytes!("../assets/icons/minus.svg"),
             Icon::RefreshCw => include_bytes!("../assets/icons/refresh-cw.svg"),
             Icon::Check => include_bytes!("../assets/icons/check.svg"),
             Icon::X => include_bytes!("../assets/icons/x.svg"),
@@ -135,6 +153,7 @@ impl Icon {
             Icon::ListTodo => include_bytes!("../assets/icons/list-todo.svg"),
             Icon::Inbox => include_bytes!("../assets/icons/inbox.svg"),
             Icon::Sun => include_bytes!("../assets/icons/sun.svg"),
+            Icon::Moon => include_bytes!("../assets/icons/moon.svg"),
             Icon::Settings => include_bytes!("../assets/icons/settings.svg"),
             Icon::User => include_bytes!("../assets/icons/user.svg"),
             Icon::Users => include_bytes!("../assets/icons/users.svg"),
@@ -153,6 +172,7 @@ impl Icon {
             Icon::SquarePen => include_bytes!("../assets/icons/square-pen.svg"),
             Icon::Clock => include_bytes!("../assets/icons/clock.svg"),
             Icon::ChartGantt => include_bytes!("../assets/icons/chart-gantt.svg"),
+            Icon::Radar => include_bytes!("../assets/icons/radar.svg"),
             Icon::List => include_bytes!("../assets/icons/list.svg"),
             Icon::ListFilter => include_bytes!("../assets/icons/list-filter.svg"),
             Icon::MapPin => include_bytes!("../assets/icons/map-pin.svg"),
@@ -201,5 +221,13 @@ mod tests {
             let _ = icon(which, SIZE_SM);
         }
         assert_eq!((SIZE, SIZE_SM), (16.0, 14.0));
+    }
+
+    #[test]
+    fn a_tinted_icon_strokes_in_the_given_colour() {
+        let svg = std::str::from_utf8(Icon::Moon.svg()).expect("UTF-8");
+        assert!(svg.contains("currentColor"), "the files leave the colour to the user");
+        let tinted = format!("{:?}", Icon::Moon.tinted(Color::from_rgb8(0x8A, 0x8F, 0x98)));
+        assert_ne!(tinted, format!("{:?}", Icon::Moon.tinted(Color::BLACK)), "another colour, another image");
     }
 }

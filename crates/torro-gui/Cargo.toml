@@ -16,3 +16,5 @@ torro-pim.workspace = true
 torro-ipc.workspace = true
 chrono.workspace = true
 iced.workspace = true
+serde.workspace = true
+serde_json.workspace = true

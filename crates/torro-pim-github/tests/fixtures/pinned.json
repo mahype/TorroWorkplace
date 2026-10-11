@@ -1,0 +1,45 @@
+{
+  "data": {
+    "i0": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 7,
+        "title": "Write the release notes",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/issues/7",
+        "state": "CLOSED",
+        "updatedAt": "2026-09-30T09:00:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "parent": null
+      }
+    },
+    "i1": null,
+    "i2": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 9,
+        "title": "Pinned from another repository",
+        "body": "Text",
+        "url": "https://github.com/mahype/other/issues/9",
+        "state": "OPEN",
+        "updatedAt": "2026-10-02T09:00:00Z",
+        "repository": { "nameWithOwner": "mahype/other" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "parent": null
+      }
+    }
+  },
+  "errors": [
+    {
+      "type": "NOT_FOUND",
+      "path": ["i1"],
+      "locations": [ { "line": 1, "column": 120 } ],
+      "message": "Could not resolve to a Repository with the name 'mahype/gone'."
+    }
+  ]
+}

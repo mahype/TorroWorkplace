@@ -6,17 +6,18 @@
 //! sync engine.
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use torro_pim::model::Link;
 use torro_pim::{Event, EventTime, Todo};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
-struct Property<'a> {
-    name: &'a str,
-    params: Vec<(&'a str, &'a str)>,
-    value: &'a str,
+pub(crate) struct Property<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) params: Vec<(&'a str, &'a str)>,
+    pub(crate) value: &'a str,
 }
 
 impl Property<'_> {
-    fn param(&self, name: &str) -> Option<&str> {
+    pub(crate) fn param(&self, name: &str) -> Option<&str> {
         self.params.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| *value)
     }
 }
@@ -76,19 +77,22 @@ fn find<'p, 'a>(props: &'p [Property<'a>], name: &str) -> Option<&'p Property<'a
     props.iter().find(|p| p.name.eq_ignore_ascii_case(name))
 }
 
-fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
+/// The property links to the parent task: `RELATED-TO` with `RELTYPE=PARENT` or without
+/// `RELTYPE`, which means PARENT (RFC 5545 §3.2.15). Other kinds (`CHILD`, `SIBLING`, `X-…`)
+/// are not the model's.
+pub(crate) fn is_parent_link(prop: &Property<'_>) -> bool {
+    prop.name.eq_ignore_ascii_case("RELATED-TO")
+        && prop.param("RELTYPE").is_none_or(|t| t.eq_ignore_ascii_case("PARENT"))
+}
+
+/// The task one VTODO's own properties describe; `None` for a cancelled one.
+pub(crate) fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
     let get = |name: &str| find(props, name);
     // Cancelled tasks are skipped, like cancelled events.
     if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
         return None;
     }
-    // RELATED-TO without RELTYPE means PARENT (RFC 5545 §3.2.15).
-    let parent = props
-        .iter()
-        .filter(|p| p.name.eq_ignore_ascii_case("RELATED-TO"))
-        .find(|p| p.param("RELTYPE").is_none_or(|t| t.eq_ignore_ascii_case("PARENT")))
-        .map(|p| p.value.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let parent = props.iter().find(|p| is_parent_link(p)).map(|p| p.value.trim().to_string()).filter(|s| !s.is_empty());
     let completed =
         get("COMPLETED").is_some() || get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("COMPLETED"));
     Some(Todo {
@@ -103,10 +107,51 @@ fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
         completed,
         parent,
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
+        url: get("URL").map(|p| p.value.trim().to_string()).filter(|s| !s.is_empty()),
+        categories: categories(props),
+        sort_order: get("X-APPLE-SORT-ORDER").and_then(|p| p.value.trim().parse().ok()),
+        link: get("X-TORRO-LINK")
+            .map(|p| unescape(p.value).trim().to_string())
+            .filter(|id| !id.is_empty())
+            .map(|id| Link { id, github: None }),
     })
 }
 
-fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
+/// The tags of all `CATEGORIES` properties, in order: each holds a comma-separated list, and
+/// a comma escaped as `\,` belongs to the tag. Empty tags are dropped.
+fn categories(props: &[Property<'_>]) -> Vec<String> {
+    props
+        .iter()
+        .filter(|p| p.name.eq_ignore_ascii_case("CATEGORIES"))
+        .flat_map(|p| split_list(p.value))
+        .map(|tag| unescape(tag).trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+/// A list value split at the commas that are not escaped; the parts stay escaped.
+fn split_list(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (i, c) in value.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            ',' => {
+                parts.push(&value[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&value[start..]);
+    parts
+}
+
+/// The event one VEVENT's own properties describe; `None` for a cancelled one or one without
+/// a readable `DTSTART`.
+pub(crate) fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
     let get = |name: &str| find(props, name);
     if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
         return None;
@@ -182,8 +227,9 @@ fn parse_duration(value: &str) -> Option<Duration> {
     Some(Duration::seconds(sign * seconds))
 }
 
-/// Joins folded lines (a line break followed by a space or tab continues the line).
-fn unfold(ics: &str) -> Vec<String> {
+/// Joins folded lines (a line break followed by a space or tab continues the line). Bare LF
+/// line ends are accepted like CRLF; empty lines are dropped.
+pub(crate) fn unfold(ics: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for raw in ics.split('\n') {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
@@ -196,7 +242,8 @@ fn unfold(ics: &str) -> Vec<String> {
     lines
 }
 
-fn parse_line(line: &str) -> Option<Property<'_>> {
+/// One unfolded content line as a [`Property`]; `None` when it has no value part.
+pub(crate) fn parse_line(line: &str) -> Option<Property<'_>> {
     // The value starts at the first colon outside a quoted parameter value.
     let mut quoted = false;
     let colon = line.char_indices().find_map(|(i, c)| match c {
@@ -300,6 +347,26 @@ BEGIN:VEVENT\r\nUID:not-a-task\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:
         assert_eq!(plain.due, None);
         assert_eq!(plain.parent.as_deref(), Some("done-1"), "RELATED-TO without RELTYPE is a parent");
         assert!(!plain.completed);
+    }
+
+    #[test]
+    fn reads_url_categories_sort_order_and_link() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:x\r\nURL:https://github.com/mahype/TorroWorkplace/issues/123 \r\n\
+CATEGORIES:Work,Finanzen\\, Steuer, ,Privat\r\ncategories:Later\r\nX-APPLE-SORT-ORDER:-42\r\n\
+X-TORRO-LINK:github:mahype/TorroWorkplace#123\r\nBEGIN:VALARM\r\nCATEGORIES:Alarm\r\nEND:VALARM\r\n\
+END:VTODO\r\nEND:VCALENDAR\r\n";
+        let todo = parse_todos(ics, "/tasks/").remove(0);
+        assert_eq!(todo.url.as_deref(), Some("https://github.com/mahype/TorroWorkplace/issues/123"));
+        assert_eq!(todo.categories, ["Work", "Finanzen, Steuer", "Privat", "Later"], "the alarm's are not the task's");
+        assert_eq!(todo.sort_order, Some(-42));
+        assert_eq!(todo.link, Some(Link::github("mahype/TorroWorkplace", 123)));
+
+        let plain = parse_todos(TODOS, "/tasks/").remove(2);
+        assert_eq!((plain.url, plain.categories, plain.sort_order, plain.link), (None, Vec::new(), None, None));
+        let odd = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:y\r\nURL:\r\nX-APPLE-SORT-ORDER:soon\r\nX-TORRO-LINK: \r\n\
+END:VTODO\r\nEND:VCALENDAR\r\n";
+        let odd = parse_todos(odd, "/tasks/").remove(0);
+        assert_eq!((odd.url, odd.sort_order, odd.link), (None, None, None), "empty or unreadable values are none");
     }
 
     #[test]

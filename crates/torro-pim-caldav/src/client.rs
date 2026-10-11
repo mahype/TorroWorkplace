@@ -1,4 +1,9 @@
 //! Talking CalDAV (RFC 4791): discovery, calendars, events in a time range.
+//!
+//! The client sends the account's password with every request, so it only talks to its own
+//! server (task M1.4): every URL it is handed or finds in an answer must have the origin
+//! (scheme, host, port) of the account URL it was made with ([`CalDavClient::on_server`]).
+//! Anything else is refused before a request is built.
 
 use chrono::{DateTime, Utc};
 use reqwest::{Method, StatusCode, Url};
@@ -25,7 +30,19 @@ impl CalDavClient {
         Ok(CalDavClient { http, base, username: account.username.clone(), password })
     }
 
-    /// The calendars and task lists of the account.
+    /// `url` when it lies on this client's server (same origin as the account URL), else an
+    /// error. Every request the client sends goes through here first, so the password never
+    /// reaches another host, whatever a caller or a server answer names.
+    pub(crate) fn on_server(&self, url: Url) -> Result<Url, ProviderError> {
+        if url.origin() == self.base.origin() {
+            Ok(url)
+        } else {
+            Err(ProviderError::Other(format!("{url} is not on the server of this account")))
+        }
+    }
+
+    /// The calendars and task lists of the account. A calendar the server lists on another
+    /// host is left out: the client would have to send the password there to read it.
     pub async fn collections(&self) -> Result<Vec<Collection>, ProviderError> {
         let principal =
             self.find_href(&self.base, "<d:current-user-principal/>", NS_DAV, "current-user-principal").await?;
@@ -45,6 +62,7 @@ impl CalDavClient {
             }
             let Some(href) = child(response, NS_DAV, "href").and_then(|n| n.text()) else { continue };
             let url = home.join(href.trim()).map_err(|err| ProviderError::Other(err.to_string()))?;
+            let Ok(url) = self.on_server(url) else { continue };
             let components: Vec<&str> = child(prop, NS_CALDAV, "supported-calendar-component-set")
                 .map(|set| set.children().filter_map(|c| c.attribute("name")).collect())
                 .unwrap_or_default();
@@ -66,7 +84,7 @@ impl CalDavClient {
                 .map(|c| c.trim().chars().take(7).collect::<String>())
                 .filter(|c| c.len() == 7 && c.starts_with('#'));
             let writable = writable(prop);
-            collections.push(Collection { id: url.to_string(), name, kind, color, writable });
+            collections.push(Collection { id: url.to_string(), name, kind, color, writable, source: None });
         }
         Ok(collections)
     }
@@ -125,6 +143,7 @@ impl CalDavClient {
         body: &str,
     ) -> Result<String, ProviderError> {
         let method = Method::from_bytes(method.as_bytes()).map_err(|err| ProviderError::Other(err.to_string()))?;
+        let url = self.on_server(url.clone())?;
         let response = self
             .http
             .request(method, url.clone())
@@ -337,6 +356,26 @@ END:VCALENDAR
             .and_then(|p| child(p, NS_DAV, "displayname"))
             .and_then(|n| n.text());
         assert_eq!(name, Some("Persönlich"));
+    }
+
+    #[test]
+    fn only_urls_on_the_accounts_server_are_used() {
+        let account =
+            CalDavAccount { url: "https://cloud.example.org/remote.php/dav/".into(), username: "anna".into() };
+        let client = CalDavClient::new(reqwest::Client::new(), &account, "secret".into()).expect("client");
+        let url = |text: &str| Url::parse(text).expect("url");
+        for good in [COLLECTION, "https://cloud.example.org:443/other/path/", "https://CLOUD.example.org/x.ics"] {
+            assert!(client.on_server(url(good)).is_ok(), "{good}");
+        }
+        for foreign in [
+            "https://evil.example.org/remote.php/dav/calendars/anna/personal/",
+            "http://cloud.example.org/remote.php/dav/",
+            "https://cloud.example.org:8443/remote.php/dav/",
+            "https://cloud.example.org.evil.example/remote.php/dav/",
+            "https://anna:pw@evil.example.org/",
+        ] {
+            assert!(client.on_server(url(foreign)).is_err(), "{foreign}");
+        }
     }
 
     #[test]

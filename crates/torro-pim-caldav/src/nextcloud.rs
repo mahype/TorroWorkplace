@@ -26,6 +26,9 @@ use crate::http_error;
 /// A sign-in in progress.
 #[derive(Debug, Clone)]
 pub struct LoginFlow {
+    /// The server the sign-in was started at, as [`normalize_server`] made it. The account is
+    /// named after this address, not after what the server reports when it is done (task M1.4).
+    pub server: String,
     /// Open this in the browser.
     pub login_url: String,
     poll_endpoint: String,
@@ -102,7 +105,12 @@ pub async fn start_login(http: &reqwest::Client, server: &str) -> Result<LoginFl
     }
     let start: StartResponse =
         response.json().await.map_err(|_| ProviderError::Other(format!("{server} does not look like a Nextcloud")))?;
-    Ok(LoginFlow { login_url: start.login, poll_endpoint: start.poll.endpoint, poll_token: start.poll.token })
+    Ok(LoginFlow {
+        server: server.to_string(),
+        login_url: start.login,
+        poll_endpoint: start.poll.endpoint,
+        poll_token: start.poll.token,
+    })
 }
 
 impl LoginFlow {
@@ -203,6 +211,16 @@ fn wipe_status_error(what: &str, status: StatusCode) -> ProviderError {
     })
 }
 
+/// Whether `a` and `b` are URLs with the same origin (scheme, host, port). A finished sign-in
+/// must name the server it was started at: a server that reports another one could otherwise
+/// pose as an account the user has elsewhere (task M1.4). Unparsable addresses never match.
+pub fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin().is_tuple() && a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
 /// CalDAV root of a Nextcloud.
 pub fn dav_url(server: &str) -> String {
     format!("{}/remote.php/dav/", server.trim_end_matches('/'))
@@ -220,6 +238,23 @@ mod tests {
         assert_eq!(ok("https://example.org/nc/apps/files/?dir=/"), Some("https://example.org/nc".into()));
         assert_eq!(ok("http://localhost:8080/index.php/login"), Some("http://localhost:8080".into()));
         assert!(normalize_server("").is_err());
+    }
+
+    #[test]
+    fn only_the_same_scheme_host_and_port_is_the_same_server() {
+        assert!(same_origin("https://cloud.example.org", "https://cloud.example.org/"));
+        assert!(same_origin("https://example.org/nc", "https://example.org:443/nc"));
+        assert!(same_origin("https://cloud.example.org", "https://cloud.example.org/https:"), "path is not origin");
+        for other in [
+            "https://other.example.org",
+            "http://cloud.example.org",
+            "https://cloud.example.org:8443",
+            "https://cloud.example.org.evil.example",
+            "cloud.example.org",
+            "",
+        ] {
+            assert!(!same_origin("https://cloud.example.org", other), "{other}");
+        }
     }
 
     #[test]

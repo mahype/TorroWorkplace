@@ -1,8 +1,9 @@
 //! The window frame every app of the suite shares, after Linear (design skill, section 0):
 //! sidebar on the window background, the content as an inset panel with a 44-high header bar,
-//! and the properties column on the right – in the wide layout. Medium and narrow windows drop
-//! the sidebar (its rows move into a menu at the top left, or into a drawer) and the properties
-//! (they become chips), and the content runs flush to the window edges.
+//! and the properties column on the right – in the wide layout. Medium windows shrink the sidebar
+//! to a rail of icons (its full form opens as a drawer) and drop the properties (they become
+//! chips); narrow windows drop the sidebar too (its rows move into a menu at the top left, or into
+//! a drawer), and the content runs flush to the window edges.
 //!
 //! ```text
 //! Wide    ┌ sidebar 232 ┐┌ panel (inset 8, radius 8) ───────────────────────────┐
@@ -10,8 +11,13 @@
 //!         │ rows …      │├──────────────────────────────────┬─────────────────┤
 //!         │             ││ body                             │ properties 300  │
 //!         └─────────────┘└──────────────────────────────────┴─────────────────┘
-//! Medium, ┌ header 44 (flush) ─────────────────────────────────────────────────┐
-//! Narrow  │ body                                                               │
+//! Medium  ┌rail┐┌ panel (inset 8, radius 8) ──────────────────────────────────────┐
+//!         │ T  ││ header 44                                                      │
+//!         │ ☀  │├────────────────────────────────────────────────────────────────┤
+//!         │ ○  ││ body                                                           │
+//!         └────┘└────────────────────────────────────────────────────────────────┘
+//! Narrow  ┌ header 44 (flush) ─────────────────────────────────────────────────┐
+//!         │ body                                                               │
 //!         └────────────────────────────────────────────────────────────────────┘
 //! ```
 //!
@@ -50,15 +56,49 @@
 //! Mini and strip windows have no chrome (skill, section 6): apps show their glance view there
 //! instead of a shell. A shell built for them anyway looks like the narrow one.
 //!
+//! # Collapsed sidebar (rail)
+//!
+//! The sidebar has three states: **expanded** (232, as above), **rail** (only the icons, 52 wide,
+//! names in tooltips, group titles as lines) and **drawer** (the expanded sidebar over the content,
+//! [`Shell::drawer`]). In the wide layout the user picks expanded or rail with the panel button at
+//! the top of the sidebar ([`sidebar_head`]) or the key `[` ([`is_sidebar_key`]); the app stores the
+//! choice with [`crate::ui_state`]. The medium layout always shows the rail, and its panel button
+//! opens the expanded sidebar as a drawer. Narrow windows keep the drawer alone.
+//!
+//! The rows know how to draw themselves in both modes ([`widgets::sidebar_item_in`],
+//! [`widgets::sidebar_group_in`]), so an app writes its sidebar once, takes the mode as a parameter
+//! and builds it twice where both are needed:
+//!
+//! ```ignore
+//! use torro_gui::shell::{self, SidebarMode};
+//!
+//! fn sidebar(&self, mode: SidebarMode, toggle: Message, switcher: &Anchor) -> Element<'_, Message> {
+//!     let items = vec![widgets::sidebar_item_in(mode, Icon::Sun, tr("Today"), Trail::Count(5), true, Message::Today)];
+//!     let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, toggle);
+//!     shell::sidebar(head, items, vec![])
+//! }
+//!
+//! // view: the panel button flips the stored choice in wide windows, else it opens or closes the drawer.
+//! let toggle = if shell::has_sidebar(class) { Message::ToggleSidebar } else { Message::ToggleDrawer };
+//! let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+//!     .then(|| self.sidebar(SidebarMode::Rail, toggle.clone(), &switcher));
+//! shell(class, self.sidebar(SidebarMode::Expanded, toggle, &switcher), header, body, props)
+//!     .rail(rail)
+//!     .drawer(self.drawer, Message::CloseMenu)
+//!     .into()
+//! ```
+//!
 //! The drawer of the medium and narrow layouts dims the window behind it (scrim) and has a shadow.
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Element, Fill, Padding, Shadow, Vector};
+use iced::{Alignment, Background, Element, Fill, Padding, Shadow, Vector, keyboard};
+use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
 use torro_core::i18n::tr;
+use torro_pim::{PimAccount, account::account_of};
 
 use crate::icon::{self, Icon};
 use crate::layout::SizeClass;
@@ -75,6 +115,53 @@ const SWITCHER_HEIGHT: f32 = size::CONTROL;
 const LOGO: f32 = 20.0;
 /// Gap between the rows of the sidebar (`torro.css`: `.sidebar{gap:2px}`).
 const SIDEBAR_GAP: f32 = 2.0;
+/// Width of the collapsed sidebar (rail): rows as wide as a large control (36), 8 at both sides –
+/// room for a 16 icon on its hover surface, and the icons sit on the same axis as the logo.
+pub const RAIL: f32 = size::CONTROL_LG + 2.0 * space::S;
+
+/// How a sidebar is drawn. The user's choice for the wide layout, stored per app in
+/// [`crate::ui_state::UiState::sidebar`] (`"expanded"` / `"rail"` in `ui.json`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarMode {
+    /// 232 wide: icons, names, counters, group titles (design skill, section 0).
+    #[default]
+    Expanded,
+    /// [`RAIL`] wide: only the icons, names and counters in tooltips, group titles as lines, the app
+    /// switcher as its logo. Apps leave out what has no icon (the small month, the version line).
+    Rail,
+}
+
+impl SidebarMode {
+    /// The other mode: what the panel button and `[` switch to in the wide layout.
+    pub fn toggled(self) -> Self {
+        match self {
+            SidebarMode::Expanded => SidebarMode::Rail,
+            SidebarMode::Rail => SidebarMode::Expanded,
+        }
+    }
+}
+
+/// The sidebar a window of `class` shows beside its content, given the user's `choice`: the
+/// choice in the wide layout, always the rail in the medium one, none in the smaller ones (they
+/// open the sidebar only as a drawer). Pass the rail to [`Shell::rail`] when this is
+/// `Some(SidebarMode::Rail)`.
+pub fn sidebar_mode(class: SizeClass, choice: SidebarMode) -> Option<SidebarMode> {
+    match class {
+        SizeClass::Wide => Some(choice),
+        SizeClass::Medium => Some(SidebarMode::Rail),
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => None,
+    }
+}
+
+/// Whether a key press is the sidebar shortcut `[` (as in Linear): the app then flips its choice
+/// (wide) or opens or closes the drawer (medium, narrow) – the same as the panel button. Ctrl and
+/// Alt are allowed, because some layouts type `[` with AltGr (German: AltGr+8, which Windows
+/// reports as Ctrl+Alt); the logo key is not. Check it before an app drops keys with modifiers,
+/// and only for keys no widget captured (a text field types the bracket).
+pub fn is_sidebar_key(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
+    !modifiers.logo() && matches!(key.as_ref(), keyboard::Key::Character("["))
+}
 
 /// Whether `class` shows the sidebar beside the content (only the wide layout). Otherwise the
 /// header carries [`sidebar_toggle`] and a navigation menu ([`widgets::menu_button`]).
@@ -95,6 +182,7 @@ pub struct Shell<'a, M> {
     header: Element<'a, M>,
     body: Element<'a, M>,
     props: Option<Element<'a, M>>,
+    rail: Option<Element<'a, M>>,
     drawer: Option<M>,
     overlay: Option<Element<'a, M>>,
 }
@@ -105,7 +193,8 @@ pub struct Shell<'a, M> {
 ///   (8 margin top/right/bottom, radius 8, 1-px line): `header` in a 44-high bar with a line below,
 ///   then `body`, and `props` in a 300-wide column at the right (scrolls on its own).
 /// - **Medium, narrow (and mini, strip):** `header` and `body` flush with the window; `sidebar`
-///   only appears as a drawer ([`Shell::drawer`]) and `props` is not shown.
+///   only appears as a drawer ([`Shell::drawer`]) and `props` is not shown. With a rail
+///   ([`Shell::rail`]; wide and medium) the content is inset beside the rail instead.
 ///
 /// The header bar adds the padding (16 left, 12 right; 8 and 8 in narrow), so `header` is just the
 /// row from [`header_bar`]. `body` gets the free space and scrolls itself. Build `props` from
@@ -123,6 +212,7 @@ pub fn shell<'a, M: 'a>(
         header: header.into(),
         body: body.into(),
         props,
+        rail: None,
         drawer: None,
         overlay: None,
     }
@@ -136,9 +226,20 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
         self
     }
 
+    /// Shows `rail` – the sidebar built in [`SidebarMode::Rail`] – beside the content instead of the
+    /// expanded `sidebar`: pass it when [`sidebar_mode`] says `Some(SidebarMode::Rail)` (wide with
+    /// the rail chosen, medium always), `None` otherwise. The content is inset as in the wide layout
+    /// and gets the width the rail leaves; nothing overlaps. In the medium layout the expanded
+    /// `sidebar` still opens as drawer over it. Ignored in the narrow (and mini, strip) layouts.
+    pub fn rail(mut self, rail: Option<Element<'a, M>>) -> Self {
+        self.rail = rail;
+        self
+    }
+
     /// In the medium and narrow layouts, shows the sidebar as a drawer over the left edge while
-    /// `open`; a click next to it sends `on_dismiss`. Open it from [`sidebar_toggle`]. No effect in
-    /// the wide layout, where the sidebar is always there.
+    /// `open`; a click next to it sends `on_dismiss`. Open it from [`sidebar_toggle`] or the panel
+    /// button of the rail ([`sidebar_head`]). No effect in the wide layout, where the sidebar (or the
+    /// rail) is always there.
     pub fn drawer(mut self, open: bool, on_dismiss: M) -> Self {
         self.drawer = open.then_some(on_dismiss);
         self
@@ -147,11 +248,20 @@ impl<'a, M: Clone + 'a> Shell<'a, M> {
 
 impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
     fn from(shell: Shell<'a, M>) -> Self {
-        let Shell { class, sidebar, header, body, props, drawer: on_dismiss, overlay } = shell;
+        let Shell { class, sidebar, header, body, props, rail, drawer: on_dismiss, overlay } = shell;
         let header = header_box(class, header);
         let mut layers = Vec::new();
+        let rail = rail.filter(|_| matches!(class, SizeClass::Wide | SizeClass::Medium));
         if class == SizeClass::Wide {
-            layers.push(wide_window(sidebar, header, body, props));
+            match rail {
+                Some(rail) => layers.push(inset_window(rail, RAIL, header, body, props)),
+                None => layers.push(inset_window(sidebar, size::SIDEBAR, header, body, props)),
+            }
+        } else if let Some(rail) = rail {
+            layers.push(inset_window(rail, RAIL, header, body, props));
+            if let Some(on_dismiss) = on_dismiss {
+                layers.push(drawer(sidebar, on_dismiss));
+            }
         } else {
             let window = container(column![header, container(body).width(Fill).height(Fill)])
                 .width(Fill)
@@ -177,8 +287,11 @@ fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a
     column![bar, rule::horizontal(LINE).style(style::rule)].into()
 }
 
-fn wide_window<'a, M: 'a>(
+/// The sidebar (`width` 232) or the rail ([`RAIL`]) on the window background, and the content as
+/// an inset panel beside it.
+fn inset_window<'a, M: 'a>(
     sidebar: Element<'a, M>,
+    width: f32,
     header: Element<'a, M>,
     body: Element<'a, M>,
     props: Option<Element<'a, M>>,
@@ -203,7 +316,7 @@ fn wide_window<'a, M: 'a>(
         .height(Fill)
         .padding(LINE)
         .style(style::container::panel);
-    let side = container(sidebar).width(size::SIDEBAR).height(Fill).padding(space::S);
+    let side = container(sidebar).width(width).height(Fill).padding(space::S);
     container(row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(size::INSET) })])
         .width(Fill)
         .height(Fill)
@@ -232,9 +345,10 @@ fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<
     stack![catcher, opaque(panel)].into()
 }
 
-/// The content of the sidebar: the `switcher` row ([`app_switcher`]) with 12 below it, the `items`
-/// (navigation, [`widgets::sidebar_group`]s with their rows) from the top, and the `footer` rows
-/// ("Open Calendar ↗", "Settings") at the bottom. Rows are 2 apart.
+/// The content of the sidebar: the `switcher` row ([`app_switcher`], or [`sidebar_head`] with the
+/// panel button) with 8 below it, the `items` (navigation, [`widgets::sidebar_group`]s with their
+/// rows) from the top, and the `footer` rows ("Open Calendar ↗", "Settings") at the bottom. Rows
+/// are 2 apart. The same for both [`SidebarMode`]s: build the pieces in the mode you want.
 pub fn sidebar<'a, M: 'a>(
     switcher: impl Into<Element<'a, M>>,
     items: Vec<Element<'a, M>>,
@@ -321,37 +435,97 @@ fn app_icon(app: AppId) -> Icon {
 /// with a chevron (registers `anchor` and sends [`Switcher::Toggle`]), then search and a framed
 /// "New" button. `on` wraps the switcher's messages in the app's (`Message::Switcher`).
 pub fn app_switcher<'a, M: Clone + 'a>(current: AppId, anchor: &Anchor, on: fn(Switcher) -> M) -> Element<'a, M> {
-    let logo = container(
-        typo::text(typo::CAPTION, "T").style(|t| iced::widget::text::Style { color: Some(palette(t).on_accent) }),
-    )
-    .center(LOGO)
-    .style(|t| container::Style {
-        background: Some(Background::Color(palette(t).accent)),
-        border: iced::border::rounded(radius::XS),
-        ..container::Style::default()
-    });
+    switcher_row(current, anchor, on, None)
+}
+
+/// The top of the sidebar with the panel button that collapses and expands it:
+///
+/// - [`SidebarMode::Expanded`]: the [`app_switcher`] row, the panel button (`panel-left`,
+///   "Collapse sidebar") at its end.
+/// - [`SidebarMode::Rail`]: the logo alone (opens the switcher menu, registers `anchor`; the app's
+///   name is its tooltip), search, "New" and the panel button ("Expand sidebar") below each other.
+///
+/// `on_toggle` is what the panel button sends: in the wide layout the app flips its stored choice
+/// ([`SidebarMode::toggled`], saved with [`crate::ui_state`]); in the medium and narrow layouts it
+/// opens the drawer from the rail and closes it from the drawer. [`has_sidebar`] tells the cases
+/// apart in `view`, and `[` ([`is_sidebar_key`]) does the same.
+pub fn sidebar_head<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    current: AppId,
+    anchor: &Anchor,
+    on: fn(Switcher) -> M,
+    on_toggle: M,
+) -> Element<'a, M> {
+    match mode {
+        SidebarMode::Expanded => switcher_row(current, anchor, on, Some(on_toggle)),
+        SidebarMode::Rail => {
+            // The logo on a full-width row, as the other rows of the rail.
+            let logo = button(center_x(logo()))
+                .width(Fill)
+                .height(SWITCHER_HEIGHT)
+                .padding(0)
+                .style(style::button::sidebar_item(false))
+                .on_press(on(Switcher::Toggle));
+            column![
+                widgets::anchored(anchor, widgets::tooltip_right(logo, app_name(current), Trail::None)),
+                widgets::icon_button(Icon::Search, tr("Search"), Some(on(Switcher::Search))),
+                widgets::boxed_button(Icon::SquarePen, tr("New"), Some(on(Switcher::New))),
+                widgets::icon_button(Icon::PanelLeft, tr("Expand sidebar"), Some(on_toggle)),
+            ]
+            .spacing(SIDEBAR_GAP)
+            .align_x(Alignment::Center)
+            .into()
+        }
+    }
+}
+
+/// `content` centred across the full width, at its own height.
+fn center_x<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    container(content).center_x(Fill).center_y(Fill).into()
+}
+
+/// The red app logo (20 × 20, radius 4, a white "T").
+fn logo<'a, M: 'a>() -> Element<'a, M> {
+    container(typo::text(typo::CAPTION, "T").style(|t| iced::widget::text::Style { color: Some(palette(t).on_accent) }))
+        .center(LOGO)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).accent)),
+            border: iced::border::rounded(radius::XS),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The switcher row of [`app_switcher`], with the panel button at its end when `on_toggle` is given.
+fn switcher_row<'a, M: Clone + 'a>(
+    current: AppId,
+    anchor: &Anchor,
+    on: fn(Switcher) -> M,
+    on_toggle: Option<M>,
+) -> Element<'a, M> {
     let name = row![
-        logo,
+        logo(),
         typo::text(typo::BODY_STRONG, app_name(current)).style(theme::text).wrapping(Wrapping::None),
         widgets::toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3),
     ]
     .spacing(space::S)
     .align_y(Alignment::Center);
     // 6 inside, as `.switcher{padding:0 6px}`, so the logo lines up with the row icons below.
-    let trigger = button(container(name).center_y(Fill))
+    let trigger = button(container(name).center_y(Fill).clip(true))
         .width(Fill)
         .height(SWITCHER_HEIGHT)
         .padding(Padding::new(0.0).left(6.0).right(6.0))
         .style(style::button::sidebar_item(false))
         .on_press(on(Switcher::Toggle));
-    row![
+    let mut top = row![
         widgets::anchored(anchor, trigger),
         widgets::icon_button(Icon::Search, tr("Search"), Some(on(Switcher::Search))),
         widgets::boxed_button(Icon::SquarePen, tr("New"), Some(on(Switcher::New))),
-    ]
-    .spacing(SIDEBAR_GAP)
-    .align_y(Alignment::Center)
-    .into()
+    ];
+    if let Some(on_toggle) = on_toggle {
+        top = top.push(widgets::icon_button(Icon::PanelLeft, tr("Collapse sidebar"), Some(on_toggle)));
+    }
+    top.spacing(SIDEBAR_GAP).align_y(Alignment::Center).into()
 }
 
 /// The menu of the app switcher: every app of the suite ([`AppId::ALL`]), `current` marked. A click
@@ -370,9 +544,52 @@ pub fn switcher_menu<'a, M: Clone + 'a>(current: AppId, on: fn(Switcher) -> M) -
     widgets::menu(vec![MenuSection::titled(tr("Apps"), items)])
 }
 
+/// The part of a sidebar list (calendars, task lists) that belongs to one account.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccountGroup<'a, T> {
+    /// The owner; `None` for collections no known account owns (a stale cache), shown last
+    /// without a title.
+    pub account: Option<&'a PimAccount>,
+    pub items: Vec<T>,
+}
+
+/// Splits `items` (calendars, lists) by the account their collection id names (`id`, see
+/// [`torro_pim::account`]), for a sidebar that groups per account (task M1.3). The groups follow
+/// the order of `accounts`, the items keep their order, accounts without items get no group.
+///
+/// `Err(items)` – the items given back – with fewer than two accounts: one account looks like it
+/// always did, a flat list under the app's own title, so the caller needs no second code path,
+/// only `Err(items) => flat`.
+pub fn account_groups<'a, T>(
+    accounts: &'a [PimAccount],
+    items: Vec<T>,
+    id: impl Fn(&T) -> &str,
+) -> Result<Vec<AccountGroup<'a, T>>, Vec<T>> {
+    if accounts.len() < 2 {
+        return Err(items);
+    }
+    let mut groups: Vec<AccountGroup<'a, T>> =
+        accounts.iter().map(|account| AccountGroup { account: Some(account), items: Vec::new() }).collect();
+    let mut strays = Vec::new();
+    for item in items {
+        let owner = account_of(id(&item), accounts, |a| a.id.as_str())
+            .and_then(|owner| accounts.iter().position(|a| std::ptr::eq(a, owner)));
+        match owner {
+            Some(index) => groups[index].items.push(item),
+            None => strays.push(item),
+        }
+    }
+    groups.retain(|group| !group.items.is_empty());
+    if !strays.is_empty() {
+        groups.push(AccountGroup { account: None, items: strays });
+    }
+    Ok(groups)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torro_pim::AccountState;
 
     #[derive(Debug, Clone, PartialEq)]
     enum Msg {
@@ -386,6 +603,84 @@ mod tests {
             assert!(!has_sidebar(class) && !has_props(class), "{class:?}");
         }
         assert!(has_sidebar(SizeClass::Wide) && has_props(SizeClass::Wide));
+    }
+
+    #[test]
+    fn the_rail_shows_where_the_user_chose_it_and_in_medium() {
+        for choice in [SidebarMode::Expanded, SidebarMode::Rail] {
+            assert_eq!(sidebar_mode(SizeClass::Wide, choice), Some(choice), "wide follows the choice");
+            assert_eq!(sidebar_mode(SizeClass::Medium, choice), Some(SidebarMode::Rail), "medium has the rail");
+            for class in [SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
+                assert_eq!(sidebar_mode(class, choice), None, "{class:?} has only the drawer");
+            }
+        }
+    }
+
+    fn account(id: &str) -> PimAccount {
+        let state =
+            AccountState::Connected { server: "s".into(), login_name: "l".into(), last_sync: None, problem: None };
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+    }
+
+    #[test]
+    fn one_account_or_none_stays_a_flat_list() {
+        let items = vec!["a/x".to_string()];
+        assert_eq!(account_groups(&[], items.clone(), |i| i), Err(items.clone()));
+        assert_eq!(account_groups(&[account("a")], items.clone(), |i| i), Err(items));
+    }
+
+    #[test]
+    fn two_accounts_split_the_items_in_account_order() {
+        let accounts = [account("a"), account("b"), account("c")];
+        let items: Vec<String> = ["b/1", "a/1", "b/2", "a/2", "gone/3"].map(String::from).to_vec();
+        let groups = account_groups(&accounts, items, |i| i).expect("grouped");
+        let shape: Vec<(Option<&str>, Vec<&str>)> = groups
+            .iter()
+            .map(|g| (g.account.map(|a| a.id.as_str()), g.items.iter().map(String::as_str).collect()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![(Some("a"), vec!["a/1", "a/2"]), (Some("b"), vec!["b/1", "b/2"]), (None, vec!["gone/3"]),],
+            "account c has no items and no group; strays come last"
+        );
+    }
+
+    #[test]
+    fn toggling_switches_between_expanded_and_rail() {
+        assert_eq!(SidebarMode::default(), SidebarMode::Expanded);
+        assert_eq!(SidebarMode::Expanded.toggled(), SidebarMode::Rail);
+        assert_eq!(SidebarMode::Rail.toggled(), SidebarMode::Expanded);
+    }
+
+    #[test]
+    fn the_bracket_is_the_sidebar_key() {
+        use keyboard::{Key, Modifiers};
+        let bracket = Key::Character("[".into());
+        assert!(is_sidebar_key(&bracket, Modifiers::empty()));
+        assert!(is_sidebar_key(&bracket, Modifiers::CTRL | Modifiers::ALT), "AltGr on Windows");
+        assert!(!is_sidebar_key(&bracket, Modifiers::LOGO));
+        assert!(!is_sidebar_key(&Key::Character("]".into()), Modifiers::empty()));
+    }
+
+    #[test]
+    fn rails_and_heads_build_in_every_class() {
+        for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let anchor = Anchor::new();
+            let side = |mode| {
+                let items = vec![
+                    widgets::sidebar_item_in(mode, Icon::Sun, "Today", Trail::Count(5), true, Msg::Close),
+                    widgets::sidebar_group_in(mode, "Lists", Some((true, Msg::Close))),
+                ];
+                sidebar(sidebar_head(mode, AppId::TASKS, &anchor, Msg::Switcher, Msg::Close), items, vec![])
+            };
+            let rail =
+                (sidebar_mode(class, SidebarMode::Rail) == Some(SidebarMode::Rail)).then(|| side(SidebarMode::Rail));
+            let header = header_bar([], header_title(None, "Today", None), []);
+            let _: Element<'_, Msg> = shell(class, side(SidebarMode::Expanded), header, blank(), None)
+                .rail(rail)
+                .drawer(true, Msg::Close)
+                .into();
+        }
     }
 
     #[test]

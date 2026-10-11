@@ -1,0 +1,31 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Nextcloud Tasks v0.16.1
+CALSCALE:GREGORIAN
+BEGIN:VTODO
+UID:4c3f2a1e-8d9b-4f7a-9e2c-1b5d6a7c8e9f
+CREATED:20261001T080000Z
+LAST-MODIFIED:20261005T091500Z
+DTSTAMP:20261005T091500Z
+SUMMARY:Steuererklärung abgeben
+DESCRIPTION:Belege aus dem Ordner „Steuer 2025“ zusammensuchen\, Anlage N
+  ausfüllen und alles bis Ende Oktober abschicken.
+PRIORITY:5
+STATUS:IN-PROCESS
+PERCENT-COMPLETE:40
+DUE;VALUE=DATE:20261031
+CATEGORIES:Finanzen,Privat
+URL:https://www.elster.de/eportal/start
+X-APPLE-SORT-ORDER:2
+CLASS:PRIVATE
+RELATED-TO;RELTYPE=PARENT:b7e1d2c3-0000-4a5b-8c9d-aaaaaaaaaaaa
+RELATED-TO;RELTYPE=SIBLING:c8f2e3d4-1111-4b6c-9d0e-bbbbbbbbbbbb
+ATTACH;FMTTYPE=application/pdf:https://cloud.example.org/remote.php/dav/files/anna/Steuer/Bescheid-2025.pdf
+X-NEXTCLOUD-PINNED:TRUE
+BEGIN:VALARM
+ACTION:DISPLAY
+TRIGGER;RELATED=END:-P1D
+DESCRIPTION:Erinnerung: Steuererklärung
+END:VALARM
+END:VTODO
+END:VCALENDAR

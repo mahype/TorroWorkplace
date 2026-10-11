@@ -4,7 +4,10 @@
 //! `cargo run -p torro-gui --example gallery` shows the styles (dark), `-- --light` in light mode,
 //! `-- --blocks` the building blocks, `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
-//! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start. The "Styles ·
+//! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
+//! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
+//! the list in the wide layout, over the window in medium and narrow (a click on a task opens it, ✕,
+//! Escape or a click on the dimmed window closes it). The "Styles ·
 //! Blocks · Window" switch in the header changes the page, "Dark · Light" the mode.
 //!
 //! States are forced through the style closure (`.style(move |theme, _| f(theme,
@@ -21,6 +24,7 @@ use iced::{Alignment, Background, Color, Element, Fill, Length, Subscription, Th
 use torro_core::AppId;
 use torro_gui::icon::{self, Icon, icon};
 use torro_gui::layout::{self, SizeClass};
+use torro_gui::panel;
 use torro_gui::shell::{self, Switcher};
 use torro_gui::style;
 use torro_gui::theme::{self, Palette, palette, size, space};
@@ -75,6 +79,7 @@ struct Start {
     page: Page,
     menu: Option<Menu>,
     drawer: bool,
+    panel: bool,
 }
 
 impl Start {
@@ -93,7 +98,7 @@ impl Start {
             Some("switcher") => Some(Menu::Switcher),
             _ => None,
         };
-        Self { light: has("--light"), page, menu, drawer: open == Some("drawer") }
+        Self { light: has("--light"), page, menu, drawer: open == Some("drawer"), panel: open == Some("panel") }
     }
 }
 
@@ -110,6 +115,10 @@ struct Gallery {
     /// Example window: the open menu, the drawer, the selected task and which tasks are done.
     menu: Option<Menu>,
     drawer: bool,
+    /// The selected task is shown in the side panel instead of the detail (`--open panel`), and
+    /// whether that panel is open.
+    side_panel: bool,
+    panel: bool,
     selected: usize,
     done: Vec<bool>,
 }
@@ -130,6 +139,9 @@ enum Msg {
     OpenMenu(Menu),
     CloseMenu,
     Drawer,
+    /// Escape: closes the menu or drawer, else the side panel.
+    Escape,
+    ClosePanel,
     Select(usize),
     Done(usize, bool),
 }
@@ -155,6 +167,8 @@ impl Gallery {
             choice: Some(1),
             menu: start.menu,
             drawer: start.drawer,
+            side_panel: start.panel,
+            panel: start.panel,
             selected: 2,
             done: TASKS.iter().map(|t| t.done).collect(),
         }
@@ -165,8 +179,8 @@ impl Gallery {
     }
 
     fn subscription(&self) -> Subscription<Msg> {
-        if self.menu.is_some() || self.drawer {
-            widgets::escape().map(|()| Msg::CloseMenu)
+        if self.menu.is_some() || self.drawer || self.panel {
+            widgets::escape().map(|()| Msg::Escape)
         } else {
             Subscription::none()
         }
@@ -194,9 +208,15 @@ impl Gallery {
             }
             Msg::OpenMenu(menu) => self.menu = Some(menu),
             Msg::Drawer => self.drawer = !self.drawer,
+            Msg::Escape if self.menu.is_some() || self.drawer => {
+                self.menu = None;
+                self.drawer = false;
+            }
+            Msg::Escape | Msg::ClosePanel => self.panel = false,
             Msg::Select(i) => {
                 self.selected = i;
                 self.menu = None;
+                self.panel = self.side_panel;
             }
             Msg::Done(i, done) => {
                 if let Some(d) = self.done.get_mut(i) {
@@ -889,7 +909,9 @@ impl Gallery {
         let (switcher, nav) = (Anchor::new(), Anchor::new());
         let sidebar = self.tasks_sidebar(&switcher);
         let header = self.tasks_header(class, &nav);
-        let props = shell::has_props(class).then(|| self.tasks_props());
+        let task_panel = self.panel.then(|| self.task_panel());
+        // The panel takes the place of the properties column while it is beside the list.
+        let props = (shell::has_props(class) && !self.side_panel).then(|| self.tasks_props());
         let layer = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
                 &switcher,
@@ -899,9 +921,11 @@ impl Gallery {
             ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Msg::CloseMenu),
         });
-        shell::shell(class, sidebar, header, self.tasks_body(class), props)
+        let body = if self.side_panel { self.task_list(class) } else { self.tasks_body(class) };
+        let placed = panel::place(class, body, task_panel, layer);
+        shell::shell(class, sidebar, header, placed.body, props)
             .drawer(self.drawer, Msg::CloseMenu)
-            .overlay(layer)
+            .overlay(placed.overlay)
             .into()
     }
 
@@ -1231,6 +1255,28 @@ impl Gallery {
         ]
         .spacing(space::L)
         .into()
+    }
+
+    /// The selected task in the side panel: path, title, properties as rows, the description and
+    /// "Delete task" in the footer.
+    fn task_panel(&self) -> panel::Panel<'_, Msg> {
+        let t = &TASKS[self.selected.min(TASKS.len() - 1)];
+        let description = "Read docs/api.md and decide the three open questions: HTTP API now or later, the app key as \
+                           a file or in the keychain, and whether agents may change accounts and settings.";
+        let body = column![panel::inset(typo::text(typo::BODY, description).style(theme::text_2)), self.tasks_props(),]
+            .spacing(space::L);
+        panel::panel(
+            panel::path(Some(Mark::Ring(self.palette().calendar[t.list])), [t.list_name, "Today"]),
+            panel::title(t.title),
+            body,
+            Msg::ClosePanel,
+        )
+        .actions(vec![widgets::icon_button(Icon::Ellipsis, "More", Some(Msg::Noop))])
+        .footer(vec![
+            widgets::text_button(None, "Delete task", style::button::danger, Some(Msg::Noop)),
+            Space::new().width(Fill).into(),
+            widgets::text_button(Some(Icon::CalendarPlus), "Block time", style::button::secondary, Some(Msg::Noop)),
+        ])
     }
 
     /// The building blocks, each in place (menus and cards are drawn where they would float).
