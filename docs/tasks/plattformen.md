@@ -158,7 +158,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   Fehler, Ereignisse). Von Hand auf Windows mit GlazeWM: Vorlage speichern und laden.
 
 ### X.8 Startbefehle für Fenster auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** X.6, X.7 · **Dateien:** `crates/torro-setups/src/launch/{mod,macos,windows}.rs` (neu: `macos.rs`,
   `windows.rs`)
 - `command_for(window)` ist heute nur für Linux echt (liest `/proc`). Damit gespeicherte Vorlagen fehlende
