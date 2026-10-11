@@ -403,3 +403,64 @@ Offen aus D.9: In der Aufgaben-Leiste sind „overdue“ und die Rahmen überfä
 Größere Lücken zum Entwurf sind **neue Funktionen** und werden eigens geplant (Oberfläche, API,
 MCP – siehe `docs/api.md`): Eigenschaften-Spalte im Kalender, Timeline-Ansicht, „This week“ mit
 Aufgaben im Kalender, Filter Inbox/Anytime, Unteraufgaben anlegen, Aktivität im Detail.
+
+## Rückmeldungen 2026-10-11 (Abend)
+
+Drei Wünsche des Nutzers nach dem ersten Ausprobieren. Alle drei ändern Darstellung und Bedienung,
+keine Funktionen der Suite: kein neuer API-Befehl, kein MCP-Tool (wie Scrollposition oder offene Menüs
+ist der Zustand der Seitenleiste reine Fensteransicht).
+
+### U.1 Zeiger-Cursor auf allem, was klickbar ist
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/{week,month,glance,mini_month,week_strip}.rs`, `crates/torrotasks/src/{list,glance}.rs`, ggf. `crates/torroworkplace/src/ui/*` (nennen)
+- Termine im Wochen-/Tagesraster (Canvas: `canvas::Program::mouse_interaction` → `Interaction::Pointer`
+  über einem Termin bzw. einer klickbaren Fläche, sonst `Idle`), Monatszellen und -termine, Mini-Monat,
+  Wochenleiste, Zeitstrahl der Leiste, Chips. Alle `mouse_area` mit `on_press` bekommen
+  `.interaction(Interaction::Pointer)`. Iced-Knöpfe haben den Zeiger schon.
+- Abnahme: Test für `mouse_interaction` (Punkt über Termin → Pointer, leere Fläche → Idle);
+  Liste aller `mouse_area` ohne Zeiger im Bericht (soll leer sein).
+
+### U.2 Seitenleiste einklappbar (nur Icons)
+- [ ] erledigt
+- **Modell:** Opus · **Dateien:** `crates/torro-gui/src/{shell,widgets,lib}.rs`, `crates/torro-gui/src/ui_state.rs` (neu), `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- Drei Zustände der Seitenleiste: **ausgeklappt** (232, wie heute), **Leiste** (nur Icons, ca. 52 breit,
+  Name als Tooltip, Zähler als kleiner Punkt bzw. weggelassen, Gruppentitel werden zu Trennlinien,
+  App-Umschalter nur als Logo, Mini-Monat ausgeblendet) und **Schublade** (Overlay wie heute).
+- Breit: der Nutzer wählt ausgeklappt oder Leiste – Knopf oben in der Seitenleiste (Icon `panel-left`)
+  und Kurzbefehl `[` (wie Linear). Mittel: Leiste statt ganz ausgeblendet; der Knopf öffnet die
+  ausgeklappte Seitenleiste als Schublade. Schmal: wie heute (Schublade).
+- Die Wahl merkt sich jede App (Datei im State-Verzeichnis der App, z. B. `ui.json`; fehlend/kaputt →
+  ausgeklappt) und stellt sie beim Start wieder her. Eingeklappt schiebt sich der Inhalt nach links,
+  nichts überlagert.
+- Abnahme: Tests für Zustandswechsel, Größenklassen und Speichern/Laden (Temp-Verzeichnis);
+  Sichtprüfung aller drei Apps breit und mittel, hell und dunkel, ein- und ausgeklappt.
+
+### U.3 Seitenpaneel: rechts daneben oder darüber
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-gui/src/panel.rs` (neu), `crates/torro-gui/src/lib.rs`, `crates/torro-gui/examples/gallery.rs`
+- Ein gemeinsamer Baustein für Details (Termin, Aufgabe, später mehr): `panel(header, body, footer)`
+  sieht immer gleich aus wie die rechte Spalte (Fläche `PANEL`, Linie links, Kopf mit Pfad, Titel und
+  Schließen-Knopf, scrollender Inhalt, feste Fußzeile für Aktionen).
+- Zwei Darstellungen, gewählt aus der verfügbaren Breite: **daneben** (inline rechts, `size::PANEL`
+  z. B. 400 breit) bei genug Platz (Breit), sonst **darüber** (gleiches Paneel rechts über dem Inhalt,
+  volle Höhe, Scrim und Schatten links, Klick daneben bzw. Escape schließt; in Schmal volle Breite).
+  Kein mittiger Dialog mehr.
+- Doc-Kommentar mit Verwendungsbeispiel, damit U.4/U.5 es ohne Kontext nutzen können; Galerie zeigt beide
+  Darstellungen.
+
+### U.4 Kalender: Termin im Seitenpaneel statt Dialog
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** U.2, U.3 · **Dateien:** `crates/torrocalendar/src/{app,editor}.rs`, ggf. `views/week.rs` (nennen)
+- Klick auf einen Termin (und „New event“) öffnet das Paneel aus U.3 statt des Dialogs: Titel groß und
+  randlos, darunter die Eigenschaften als Zeilen (Zeit, Kalender, ganztägig, Ort, Notizen) wie im
+  Aufgaben-Detail; in Breit daneben (ersetzt dann die Eigenschaften-Spalte bzw. „Up next“), sonst darüber.
+- Speichern wie im Aufgaben-Detail: automatisch nach Änderungen (gleiche Requests wie heute, ETag-sicher),
+  neue Termine erst beim ersten gültigen Stand; Fehler nach dem ersten Versuch; „Delete event“ als
+  `danger` mit Rückfrage. Nur-Lesen-Termine zeigen dieselbe Ansicht ohne Bearbeitung.
+- Der gewählte Termin ist im Raster markiert (`focus_ring`-Umriss, offener Punkt aus C.2).
+
+### U.5 Aufgaben: Detail im selben Paneel
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** U.3 · **Dateien:** `crates/torrotasks/src/{app,detail}.rs`
+- Das Detail nutzt das Paneel aus U.3: Breit daneben (wie heute), Mittel und Schmal darüber statt
+  „Liste schmaler“ bzw. „Detail ersetzt die Liste“. Inhalt und Verhalten bleiben.

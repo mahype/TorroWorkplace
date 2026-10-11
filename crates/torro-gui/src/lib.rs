@@ -20,6 +20,7 @@ pub mod connect;
 pub mod datetime;
 pub mod icon;
 pub mod layout;
+pub mod panel;
 pub mod shell;
 pub mod source;
 pub mod style;
