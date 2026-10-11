@@ -12,7 +12,8 @@
 //! - [`icon`]: the bundled Lucide icons.
 //! - [`layout`]: the size classes of tiled windows (`layout::of(size)`).
 //! - [`shell`]: the Linear window frame (sidebar, inset panel, header bar, properties column)
-//!   and the app switcher.
+//!   and the app switcher; the sidebar expanded, collapsed to a rail of icons, or as a drawer.
+//! - [`ui_state`]: what a window remembers between starts (`ui.json`: the sidebar choice).
 //! - [`widgets`]: the building blocks inside it (buttons, sidebar and list rows, menus, floating
 //!   cards, chips, property rows, settings groups, empty/loading/error states).
 
@@ -26,6 +27,7 @@ pub mod source;
 pub mod style;
 pub mod theme;
 pub mod typo;
+pub mod ui_state;
 pub mod widgets;
 
 use std::borrow::Cow;

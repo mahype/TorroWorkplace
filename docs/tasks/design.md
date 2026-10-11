@@ -421,7 +421,7 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
   Liste aller `mouse_area` ohne Zeiger im Bericht (soll leer sein).
 
 ### U.2 Seitenleiste einklappbar (nur Icons)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torro-gui/src/{shell,widgets,lib}.rs`, `crates/torro-gui/src/ui_state.rs` (neu), `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`
 - Drei Zustände der Seitenleiste: **ausgeklappt** (232, wie heute), **Leiste** (nur Icons, ca. 52 breit,
   Name als Tooltip, Zähler als kleiner Punkt bzw. weggelassen, Gruppentitel werden zu Trennlinien,

@@ -24,8 +24,10 @@
 //! The window is the Linear frame of the suite (`torro_gui::shell`, design skill section 0):
 //! wide windows show the sidebar with the app switcher and the sections; medium and narrow ones
 //! put the sections into a menu at the top left ("Accounts ▾") and the sidebar into a drawer, the
-//! same way the calendar and the tasks app do. The page sits under a 44-high header bar with its
-//! title and actions, at most [`size::CONTENT_MAX`] wide.
+//! same way the calendar and the tasks app do. In wide windows the sidebar collapses to a rail of
+//! icons (U.2: panel button at its top or `[`, remembered in `ui.json`); medium windows always show
+//! that rail, whose panel button opens the drawer. The page sits under a 44-high header bar with
+//! its title and actions, at most [`size::CONTENT_MAX`] wide.
 //!
 //! Mini and strip tiles have no window frame: [`glance`] shows the status instead (design skill,
 //! section 6).
@@ -48,14 +50,15 @@ use iced::theme::Mode;
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{Text, button, column, container, responsive, row, scrollable, stack, svg};
-use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
+use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::Settings;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Switcher};
+use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::theme::{self, Appearance, palette, size, space};
+use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, AppInfo, Request, Response, Status, client};
@@ -194,6 +197,11 @@ pub struct Ui {
     menu: Option<Menu>,
     /// Medium and narrow: the sidebar drawer is open.
     drawer: bool,
+    /// The sidebar the user chose for the wide layout, kept in `ui.json`.
+    sidebar: SidebarMode,
+    /// The window size, for the size class in `update` (the panel button and `[` act on the stored
+    /// choice only in the wide layout). `view` lays out with the size `responsive` hands over.
+    size: Size,
     /// The core has answered at least once (successfully or not); until then the page shows the
     /// loading state instead of empty lists.
     loaded: bool,
@@ -221,6 +229,13 @@ pub enum Message {
     CloseMenu,
     /// Open or close the sidebar drawer (medium and narrow).
     ToggleDrawer,
+    /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
+    /// opens or closes the drawer (medium, narrow).
+    ToggleSidebar,
+    /// The view state stored in `ui.json`, loaded at start.
+    UiState(UiState),
+    /// The window has this size (at start and after every resize).
+    Resized(Size),
     /// The app switcher and its search and "New" buttons.
     Switcher(Switcher),
     Loaded(Box<Data>),
@@ -261,6 +276,8 @@ impl Ui {
             launch,
             menu: None,
             drawer: false,
+            sidebar: SidebarMode::default(),
+            size: torro_gui::window(AppId::WORKPLACE).size,
             loaded: false,
             system_mode: Mode::None,
             appearance: Appearance::System,
@@ -281,7 +298,13 @@ impl Ui {
         if let Some(open) = open {
             ui.open(open);
         }
-        let task = Task::batch([ui.reload(), iced::system::theme().map(Message::SystemMode)]);
+        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        let task = Task::batch([
+            ui.reload(),
+            iced::system::theme().map(Message::SystemMode),
+            ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
+            size,
+        ]);
         (ui, task)
     }
 
@@ -343,8 +366,11 @@ impl Ui {
     fn subscription(&self) -> Subscription<Message> {
         // Faster while an account is being set up, so the page follows the browser sign-in.
         let every = if self.accounts.busy() { Duration::from_secs(1) } else { Duration::from_secs(3) };
-        let mut all =
-            vec![iced::system::theme_changes().map(Message::SystemMode), iced::event::listen_with(escape_key)];
+        let mut all = vec![
+            iced::system::theme_changes().map(Message::SystemMode),
+            iced::event::listen_with(keys),
+            iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+        ];
         // The demo has nothing to reload.
         if !self.launch.demo {
             all.push(iced::time::every(every).map(|_| Message::Tick));
@@ -370,6 +396,26 @@ impl Ui {
             Message::ToggleDrawer => {
                 self.drawer = !self.drawer;
                 self.menu = None;
+                Action::None
+            }
+            Message::ToggleSidebar => {
+                if !shell::has_sidebar(layout::of(self.size)) {
+                    return self.update(Message::ToggleDrawer);
+                }
+                self.close_menus();
+                self.sidebar = self.sidebar.toggled();
+                // The demo stores nothing.
+                if self.launch.demo {
+                    return Task::none();
+                }
+                return ui_state::save_task(AppId::WORKPLACE, UiState { sidebar: self.sidebar });
+            }
+            Message::UiState(state) => {
+                self.sidebar = state.sidebar;
+                Action::None
+            }
+            Message::Resized(size) => {
+                self.size = size;
                 Action::None
             }
             Message::Switcher(switcher) => self.switcher(switcher),
@@ -501,10 +547,19 @@ impl Ui {
             (Some(dialog), Some(menu)) => Some(stack![dialog, menu].into()),
             (dialog, menu) => dialog.or(menu),
         };
-        shell::shell(class, self.sidebar(&switcher), self.header(class, &nav), self.body(class), None)
-            .drawer(self.drawer, Message::CloseMenu)
-            .overlay(layer)
-            .into()
+        let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+            .then(|| self.sidebar(SidebarMode::Rail, &switcher));
+        shell::shell(
+            class,
+            self.sidebar(SidebarMode::Expanded, &switcher),
+            self.header(class, &nav),
+            self.body(class),
+            None,
+        )
+        .rail(rail)
+        .drawer(self.drawer, Message::CloseMenu)
+        .overlay(layer)
+        .into()
     }
 
     /// The count after a section in the sidebar and the menu: accounts and templates.
@@ -517,10 +572,12 @@ impl Ui {
         if count > 0 { Trail::Count(count) } else { Trail::None }
     }
 
-    /// The sidebar: app switcher, the sections, and "General" with the version at the foot.
-    fn sidebar(&self, switcher: &Anchor) -> Element<'_, Message> {
+    /// The sidebar in `mode`: app switcher, the sections, and "General" with the version at the
+    /// foot. The rail (U.2) has no room for the version line.
+    fn sidebar(&self, mode: SidebarMode, switcher: &Anchor) -> Element<'_, Message> {
         let item = |section: Section| {
-            widgets::sidebar_item(
+            widgets::sidebar_item_in(
+                mode,
                 section.icon(),
                 section.label(),
                 self.trail(section),
@@ -533,10 +590,14 @@ impl Ui {
             .center_y(size::ROW_SIDEBAR)
             .padding(style::ITEM_PADDING)
             .clip(true);
+        let mut footer = vec![item(Section::General)];
+        if mode == SidebarMode::Expanded {
+            footer.push(version.into());
+        }
         shell::sidebar(
-            shell::app_switcher(AppId::WORKPLACE, switcher, Message::Switcher),
+            shell::sidebar_head(mode, AppId::WORKPLACE, switcher, Message::Switcher, Message::ToggleSidebar),
             Section::nav().map(item).collect(),
-            vec![item(Section::General), version.into()],
+            footer,
         )
     }
 
@@ -573,8 +634,9 @@ impl Ui {
         }
     }
 
-    /// The header bar: the title (wide) or the section menu with the drawer button (medium,
-    /// narrow); on a page below the section a back button and its name; the page's actions right.
+    /// The header bar: the title (wide) or the section menu (medium, narrow; with the drawer button
+    /// in narrow, where no rail has it); on a page below the section a back button and its name; the
+    /// page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
         let section = self.section;
@@ -587,7 +649,11 @@ impl Ui {
             }
             None if wide => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
             None => (
-                vec![shell::sidebar_toggle(Message::ToggleDrawer)],
+                shell::sidebar_mode(class, self.sidebar)
+                    .is_none()
+                    .then(|| shell::sidebar_toggle(Message::ToggleDrawer))
+                    .into_iter()
+                    .collect(),
                 widgets::menu_button(nav, Some(section.icon()), section.label(), Message::ToggleMenu(Menu::Nav)),
             ),
         };
@@ -747,13 +813,15 @@ fn confirm<'a, M: Clone + 'a>(
     dialog(content, widgets::POPOVER_WIDTH, on_cancel)
 }
 
-/// Escape, wherever the focus is (a text input keeps it to itself otherwise).
-fn escape_key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
-    match event {
-        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
-            ..
-        }) => Some(Message::Escape),
+/// Escape, wherever the focus is (a text input keeps it to itself otherwise), and `[` for the
+/// sidebar when no text field took it.
+fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event else { return None };
+    match key {
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => Some(Message::Escape),
+        key if status == iced::event::Status::Ignored && shell::is_sidebar_key(&key, modifiers) => {
+            Some(Message::ToggleSidebar)
+        }
         _ => None,
     }
 }
@@ -819,6 +887,54 @@ mod tests {
     fn started(words: &[&str]) -> Ui {
         let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
         Ui::new(Launch::parse(&args).expect("valid parameters")).0
+    }
+
+    #[test]
+    fn the_sidebar_collapses_in_wide_and_opens_the_drawer_elsewhere() {
+        let mut ui = started(&["--demo"]);
+        assert_eq!(ui.sidebar, SidebarMode::Expanded, "expanded until ui.json says otherwise");
+        let _ = ui.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+        let _ = ui.update(Message::Resized(Size::new(1440.0, 900.0)));
+        let _ = ui.update(Message::ToggleSidebar);
+        assert_eq!((ui.sidebar, ui.drawer), (SidebarMode::Expanded, false), "wide: the choice flips");
+        for size in [Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = ui.update(Message::Resized(size));
+            let _ = ui.update(Message::ToggleSidebar);
+            assert!(ui.drawer, "{size:?}: the panel button opens the drawer");
+            let _ = ui.update(Message::ToggleSidebar);
+            assert!(!ui.drawer, "{size:?}: and closes it");
+            assert_eq!(ui.sidebar, SidebarMode::Expanded, "{size:?}: the wide choice stays");
+        }
+    }
+
+    #[test]
+    fn the_bracket_toggles_the_sidebar_unless_a_field_took_it() {
+        use iced::keyboard::{Event, Key, Location, Modifiers, key::Physical};
+        let press = || {
+            iced::Event::Keyboard(Event::KeyPressed {
+                key: Key::Character("[".into()),
+                modified_key: Key::Character("[".into()),
+                physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+                location: Location::Standard,
+                modifiers: Modifiers::empty(),
+                text: Some("[".into()),
+                repeat: false,
+            })
+        };
+        let id = iced::window::Id::unique();
+        assert!(matches!(keys(press(), iced::event::Status::Ignored, id), Some(Message::ToggleSidebar)));
+        assert!(keys(press(), iced::event::Status::Captured, id).is_none(), "typed into a text field");
+    }
+
+    #[test]
+    fn the_window_builds_with_the_rail_in_every_layout() {
+        let mut ui = started(&["--demo"]);
+        for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+            let _ = ui.update(Message::UiState(UiState { sidebar }));
+            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = ui.window(class);
+            }
+        }
     }
 
     fn loaded(appearance: Appearance, error: Option<&str>) -> Message {

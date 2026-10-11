@@ -6,6 +6,10 @@
 //! glances without any frame (`views::glance`); narrow shows a week as one day under the week
 //! strip and a month as the agenda, and opens the editor full-window; medium and wide show the
 //! chosen view. State (view, date, selection, open editor) survives every change of size.
+//!
+//! In the wide layout the sidebar collapses to a rail of icons (U.2: panel button at its top or
+//! `[`, remembered in `ui.json`); the rail leaves out the small month. The medium layout always
+//! shows the rail, whose panel button opens the full sidebar as a drawer.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -22,10 +26,11 @@ use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Switcher};
+use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::style;
 use torro_gui::theme::{self, Appearance, size, space};
+use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color, modal};
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimSource};
@@ -289,6 +294,8 @@ pub struct App {
     menu: Option<Menu>,
     /// The sidebar drawer of the medium and narrow layouts is open.
     drawer: bool,
+    /// The sidebar the user chose for the wide layout, kept in `ui.json`.
+    sidebar: SidebarMode,
     /// The first of the month the small month in the sidebar shows. Follows the anchor, but its
     /// own arrows browse it without moving the main view.
     mini_month: NaiveDate,
@@ -324,6 +331,11 @@ pub enum Message {
     CloseMenu,
     /// Open or close the sidebar drawer (medium and narrow layouts).
     ToggleDrawer,
+    /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
+    /// opens or closes the drawer (medium, narrow).
+    ToggleSidebar,
+    /// The view state stored in `ui.json`, loaded at start.
+    UiState(UiState),
     /// From the small month: show `date` in the current view.
     GoTo(NaiveDate),
     /// The small month's arrows: browse it by this many months.
@@ -356,13 +368,16 @@ pub enum Message {
 }
 
 /// Keyboard shortcuts while no dialog is open: N new event, T today, ←/→ back/forward,
-/// D/W/M/A the views. Keys a text input already used are ignored.
+/// D/W/M/A the views, `[` the sidebar. Keys a text input already used are ignored.
 fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     use iced::keyboard::{Event as Key, Key as Name, key::Named};
     if status == iced::event::Status::Captured {
         return None;
     }
     let iced::Event::Keyboard(Key::KeyPressed { key, modifiers, .. }) = event else { return None };
+    if shell::is_sidebar_key(&key, modifiers) {
+        return Some(Message::ToggleSidebar);
+    }
     if modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
     }
@@ -406,6 +421,7 @@ impl App {
             },
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            sidebar: SidebarMode::default(),
             mini_month: mini_month::shift(now.date(), 0),
             size: torro_gui::window(AppId::CALENDAR).size,
             editor: None,
@@ -417,6 +433,7 @@ impl App {
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
+            ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
             iced::system::theme().map(Message::SystemMode),
@@ -539,6 +556,18 @@ impl App {
                 self.menu = None;
                 self.drawer = !self.drawer;
             }
+            Message::ToggleSidebar => {
+                if !shell::has_sidebar(self.class()) {
+                    return self.update(Message::ToggleDrawer);
+                }
+                self.close_menus();
+                self.sidebar = self.sidebar.toggled();
+                // The demo stores nothing.
+                if !self.source.is_demo() {
+                    return ui_state::save_task(AppId::CALENDAR, UiState { sidebar: self.sidebar });
+                }
+            }
+            Message::UiState(state) => self.sidebar = state.sidebar,
             Message::OpenSettings => {
                 self.close_menus();
                 connect::open_settings();
@@ -703,7 +732,11 @@ impl App {
             Menu::View => (!shell::has_sidebar(class))
                 .then(|| widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)),
         });
-        shell::shell(class, self.sidebar(class, &switcher), self.header(class, &views), self.body(), self.props(class))
+        let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+            .then(|| self.sidebar(SidebarMode::Rail, class, &switcher));
+        let sidebar = self.sidebar(SidebarMode::Expanded, class, &switcher);
+        shell::shell(class, sidebar, self.header(class, &views), self.body(), self.props(class))
+            .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
             .into()
@@ -713,7 +746,7 @@ impl App {
     ///
     /// - **Wide:** "October 2026 Week 41", "Today", ‹ ›; at the right the views as a segmented
     ///   control, refresh and "New event".
-    /// - **Medium:** the sidebar toggle in front; the views (and calendars) in "Week ▾".
+    /// - **Medium:** the views (and calendars) in "Week ▾"; the rail beside it has the panel button.
     /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
     ///   to today), the day as "Wed, 7 Oct", and "New event" reduced to "+". "Day ▾" names the
     ///   view shown ([`App::shown`]).
@@ -739,7 +772,7 @@ impl App {
                 let active = CalView::ALL.iter().position(|view| *view == self.view).unwrap_or_default();
                 shell::header_bar([], title, [widgets::segmented(segments, active), refresh, primary])
             } else {
-                shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
+                shell::header_bar([], title, [select(), refresh, primary])
             }
         } else {
             // The short date: the long one ("Monday, 12 October 2026") squeezes the buttons.
@@ -757,14 +790,19 @@ impl App {
     /// bottom "Open Tasks ↗" and "Settings".
     ///
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
-    /// menu, and without them the drawer still fits a window 600 high.
-    fn sidebar<'a>(&'a self, class: SizeClass, switcher: &Anchor) -> Element<'a, Message> {
-        let shown = matches!(self.shown(), CalView::Day | CalView::Week).then(|| self.range());
-        let mut items = vec![mini_month::view(self.mini_month, shown, self.now.date())];
-        if shell::has_sidebar(class) {
-            items.push(widgets::sidebar_group(tr("Views"), None));
+    /// menu, and without them the drawer still fits a window 600 high. As the rail (`mode`, U.2) it
+    /// leaves out the small month, which has no icon form, and keeps the views as icons.
+    fn sidebar<'a>(&'a self, mode: SidebarMode, class: SizeClass, switcher: &Anchor) -> Element<'a, Message> {
+        let mut items = Vec::new();
+        if mode == SidebarMode::Expanded {
+            let shown = matches!(self.shown(), CalView::Day | CalView::Week).then(|| self.range());
+            items.push(mini_month::view(self.mini_month, shown, self.now.date()));
+        }
+        if shell::has_sidebar(class) || mode == SidebarMode::Rail {
+            items.push(widgets::sidebar_group_in(mode, tr("Views"), None));
             items.extend(CalView::ALL.map(|view| {
-                widgets::sidebar_item(
+                widgets::sidebar_item_in(
+                    mode,
                     view.icon(),
                     view.label(),
                     Trail::Kbd(view.key()),
@@ -775,9 +813,10 @@ impl App {
         }
         let calendars = self.calendars();
         if !calendars.is_empty() {
-            items.push(widgets::sidebar_group(tr("Calendars"), None));
+            items.push(widgets::sidebar_group_in(mode, tr("Calendars"), None));
             items.extend(calendars.into_iter().map(|(calendar, colour, count)| {
-                widgets::sidebar_item(
+                widgets::sidebar_item_in(
+                    mode,
                     Mark::Check(colour, !self.hidden.contains(&calendar.id)),
                     calendar.name.as_str(),
                     Trail::Count(count),
@@ -787,16 +826,18 @@ impl App {
             }));
         }
         let footer = vec![
-            widgets::sidebar_item(
+            widgets::sidebar_item_in(
+                mode,
                 Icon::SquareCheck,
                 tr("Open Tasks"),
                 Trail::Icon(Icon::ArrowUpRight),
                 false,
                 Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
             ),
-            widgets::sidebar_item(Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
+            widgets::sidebar_item_in(mode, Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
         ];
-        shell::sidebar(shell::app_switcher(AppId::CALENDAR, switcher, Message::Switcher), items, footer)
+        let head = shell::sidebar_head(mode, AppId::CALENDAR, switcher, Message::Switcher, Message::ToggleSidebar);
+        shell::sidebar(head, items, footer)
     }
 
     /// The menu under "Week ▾": the views with their keys, then the calendars with a check box
@@ -1072,6 +1113,60 @@ mod tests {
 
     fn demo_app() -> App {
         App::new(Source::from_args(["--demo".to_string()]), Launch::default()).0
+    }
+
+    #[test]
+    fn the_sidebar_collapses_in_wide_and_opens_the_drawer_elsewhere() {
+        let mut app = demo_app();
+        assert_eq!(app.sidebar, SidebarMode::Expanded, "expanded until ui.json says otherwise");
+        let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+        let _ = app.update(Message::Resized(Size::new(1440.0, 900.0)));
+        let _ = app.update(Message::ToggleSidebar);
+        assert_eq!((app.sidebar, app.drawer), (SidebarMode::Expanded, false), "wide: the choice flips");
+        for size in [Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ToggleSidebar);
+            assert!(app.drawer, "{size:?}: the panel button opens the drawer");
+            let _ = app.update(Message::ToggleSidebar);
+            assert!(!app.drawer, "{size:?}: and closes it");
+            assert_eq!(app.sidebar, SidebarMode::Expanded, "{size:?}: the wide choice stays");
+        }
+    }
+
+    #[test]
+    fn the_bracket_toggles_the_sidebar() {
+        use iced::keyboard::{Event, Key, Location, Modifiers, key::Physical};
+        let press = iced::Event::Keyboard(Event::KeyPressed {
+            key: Key::Character("[".into()),
+            modified_key: Key::Character("[".into()),
+            physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: Some("[".into()),
+            repeat: false,
+        });
+        let message = shortcut(press, iced::event::Status::Ignored, iced::window::Id::unique());
+        assert!(matches!(message, Some(Message::ToggleSidebar)));
+    }
+
+    #[test]
+    fn the_window_builds_with_rail_and_drawer_in_every_layout() {
+        let mut app = demo_app();
+        let connected = AccountState::Connected {
+            server: "demo".into(),
+            login_name: "demo".into(),
+            last_sync: None,
+            problem: None,
+        };
+        let _ = app.update(Message::AccountLoaded(Ok(connected)));
+        for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+            let _ = app.update(Message::UiState(UiState { sidebar }));
+            for size in [Size::new(1440.0, 900.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.update(Message::ToggleDrawer);
+                let _ = app.view();
+            }
+        }
     }
 
     #[test]

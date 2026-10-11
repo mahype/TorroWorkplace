@@ -1,6 +1,8 @@
 //! The tasks window: state, loading, quick add, saving, and the Linear window around it (task
 //! T.1): `torro_gui::shell` with the sidebar (filters, lists, "Open Calendar", "Settings") in the
-//! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. The
+//! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. In the
+//! wide layout the sidebar collapses to a rail of icons (U.2: panel button or `[`, remembered in
+//! `ui.json`); the medium layout always shows that rail. The
 //! list (`list.rs`) and the detail panel (`detail.rs`) only render and report clicks as
 //! [`Message`]s.
 //!
@@ -41,9 +43,10 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Switcher};
+use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
+use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
@@ -268,6 +271,8 @@ pub struct App {
     menu: Option<Menu>,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     drawer: bool,
+    /// The sidebar the user chose for the wide layout, kept in `ui.json`.
+    sidebar: SidebarMode,
 }
 
 #[derive(Debug, Clone)]
@@ -302,6 +307,11 @@ pub enum Message {
     ToggleDisplay,
     /// Open the sidebar drawer (medium and narrow layouts).
     ShowDrawer,
+    /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
+    /// opens or closes the drawer (medium, narrow).
+    ToggleSidebar,
+    /// The view state stored in `ui.json`, loaded at start.
+    UiState(UiState),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, the detail's editor, the detail.
@@ -333,6 +343,8 @@ pub enum Shortcut {
     Toggle,
     /// N: a new task, in the quick add row.
     New,
+    /// `[`: collapse or expand the sidebar ([`Message::ToggleSidebar`]).
+    Sidebar,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
@@ -343,6 +355,9 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         return None;
     }
     let iced::Event::Keyboard(Key::KeyPressed { key, modifiers, .. }) = event else { return None };
+    if shell::is_sidebar_key(&key, modifiers) {
+        return Some(Message::Shortcut(Shortcut::Sidebar));
+    }
     if modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
     }
@@ -398,11 +413,13 @@ impl App {
             },
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            sidebar: SidebarMode::default(),
             launch,
             opened: false,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
+            ui_state::load_task(AppId::TASKS).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
             iced::system::theme().map(Message::SystemMode),
@@ -590,6 +607,8 @@ impl App {
                 self.menu = None;
                 self.drawer = true;
             }
+            Message::ToggleSidebar => return self.toggle_sidebar(),
+            Message::UiState(state) => self.sidebar = state.sidebar,
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
@@ -616,6 +635,10 @@ impl App {
                 return typing().map(move |typing| Message::ShortcutChecked(key, typing));
             }
             Message::ShortcutChecked(key, typing) => {
+                // `[` works wherever the sidebar is (it also closes the drawer it opened).
+                if !typing && key == Shortcut::Sidebar {
+                    return self.toggle_sidebar();
+                }
                 // Menus and the drawer are in front of the list; the keys are not for the list then.
                 if !typing && self.menu.is_none() && !self.drawer {
                     return self.run_shortcut(key);
@@ -640,7 +663,24 @@ impl App {
             },
             // The same as "New task" in the header.
             Shortcut::New => self.update(Message::Switcher(Switcher::New)),
+            Shortcut::Sidebar => self.toggle_sidebar(),
         }
+    }
+
+    /// The panel button and `[`: in the wide layout the other sidebar mode, remembered for the
+    /// next start (not in the demo, which stores nothing); else the drawer opens or closes.
+    fn toggle_sidebar(&mut self) -> Task<Message> {
+        if !shell::has_sidebar(self.class()) {
+            self.menu = None;
+            self.drawer = !self.drawer;
+            return Task::none();
+        }
+        self.close_menus();
+        self.sidebar = self.sidebar.toggled();
+        if self.source.is_demo() {
+            return Task::none();
+        }
+        ui_state::save_task(AppId::TASKS, UiState { sidebar: self.sidebar })
     }
 
     /// The layout class of the window.
@@ -781,7 +821,9 @@ impl App {
     /// The whole window in the layout of `class`.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
-        let sidebar = self.sidebar(&switcher);
+        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
+        let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+            .then(|| self.sidebar(SidebarMode::Rail, &switcher));
         let header = self.header(class, &nav, &display);
         let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
@@ -803,6 +845,7 @@ impl App {
             .filter(|_| shell::has_props(class))
             .map(|detail| detail.properties(&property).map(Message::Detail));
         shell::shell(class, sidebar, header, self.body(class, &property), props)
+            .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(layer)
             .into()
@@ -858,7 +901,8 @@ impl App {
                     row![menu, typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None)]
                         .spacing(space::S)
                         .align_y(Alignment::Center);
-                shell::header_bar([shell::sidebar_toggle(Message::ShowDrawer)], title, trailing)
+                // The rail at the left has the panel button.
+                shell::header_bar([], title, trailing)
             }
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
                 [shell::sidebar_toggle(Message::ShowDrawer)],
@@ -963,28 +1007,31 @@ impl App {
         (views, lists)
     }
 
-    fn sidebar<'a>(&'a self, switcher: &Anchor) -> Element<'a, Message> {
+    /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons (U.2).
+    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
         let (views, lists) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
-            widgets::sidebar_item(e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
+            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
         };
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
         if !lists.is_empty() {
-            items.push(widgets::sidebar_group(tr("Lists"), None));
+            items.push(widgets::sidebar_group_in(mode, tr("Lists"), None));
             items.extend(lists.into_iter().map(row));
         }
         let footer = vec![
-            widgets::sidebar_item(
+            widgets::sidebar_item_in(
+                mode,
                 Icon::Calendar,
                 tr("Open Calendar"),
                 Trail::Icon(Icon::ArrowUpRight),
                 false,
                 Message::OpenApp(AppId::CALENDAR.binary),
             ),
-            widgets::sidebar_item(Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
+            widgets::sidebar_item_in(mode, Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
         ];
-        shell::sidebar(shell::app_switcher(AppId::TASKS, switcher, Message::Switcher), items, footer)
+        let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, Message::ToggleSidebar);
+        shell::sidebar(head, items, footer)
     }
 
     /// The navigation menu of the medium and narrow layouts: the sidebar's rows as a menu.
@@ -1199,6 +1246,48 @@ mod tests {
 
     fn demo_app() -> App {
         App::new(Source::from_args(["--demo".to_string()]), Launch::default()).0
+    }
+
+    #[test]
+    fn the_sidebar_collapses_in_wide_and_opens_the_drawer_elsewhere() {
+        let mut app = demo_app();
+        assert_eq!(app.sidebar, SidebarMode::Expanded, "expanded until ui.json says otherwise");
+        let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+        assert_eq!(app.sidebar, SidebarMode::Rail, "the stored choice comes back");
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::ToggleSidebar);
+        assert_eq!((app.sidebar, app.drawer), (SidebarMode::Expanded, false), "wide: the choice flips");
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Sidebar, false));
+        assert_eq!(app.sidebar, SidebarMode::Rail, "[ does the same");
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Sidebar, true));
+        assert_eq!(app.sidebar, SidebarMode::Rail, "not while typing");
+        for size in [Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ToggleSidebar);
+            assert!(app.drawer, "{size:?}: the panel button opens the drawer");
+            let _ = app.update(Message::ShortcutChecked(Shortcut::Sidebar, false));
+            assert!(!app.drawer, "{size:?}: [ closes it again");
+            assert_eq!(app.sidebar, SidebarMode::Rail, "{size:?}: the wide choice stays");
+        }
+    }
+
+    #[test]
+    fn the_window_builds_with_rail_and_drawer_in_every_layout() {
+        let mut app = demo_app();
+        let connected = AccountState::Connected {
+            server: "demo".into(),
+            login_name: "demo".into(),
+            last_sync: None,
+            problem: None,
+        };
+        let _ = app.update(Message::AccountLoaded(Ok(connected)));
+        for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+            let _ = app.update(Message::UiState(UiState { sidebar }));
+            for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
     }
 
     #[test]

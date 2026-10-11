@@ -45,11 +45,12 @@ use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, center, column, container, float, mouse_area, opaque, pin, row, rule, stack, svg, tooltip};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Point, Rectangle, Size, Subscription, Theme, Vector};
-use iced::{border, keyboard};
+use iced::{border, keyboard, mouse};
 
 use torro_core::i18n::tr;
 
 use crate::icon::{self, Icon, icon};
+use crate::shell::SidebarMode;
 use crate::style;
 use crate::theme::{self, Palette, palette, radius, size, space};
 use crate::typo;
@@ -260,10 +261,33 @@ pub fn text_button<'a, M: Clone + 'a>(
 
 /// `content` with `label` as tooltip below it (a small menu-style card, after a short delay).
 fn with_tooltip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
-    let tip = container(typo::text(typo::CAPTION, label).style(theme::text_2))
+    tip(content, typo::text(typo::CAPTION, label).style(theme::text_2), tooltip::Position::Bottom)
+}
+
+/// `content` with `label` and its `trail` (count, key hint …) as tooltip at its right: the names of
+/// the rows in the collapsed sidebar, which point into the content.
+pub(crate) fn tooltip_right<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+) -> Element<'a, M> {
+    let text = row![typo::text(typo::CAPTION, label).style(theme::text_2).wrapping(Wrapping::None)]
+        .push(trail_view(trail))
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+    tip(content, text, tooltip::Position::Right)
+}
+
+/// The tooltip card (menu surface, after a short delay) with `text` at `position` of `content`.
+fn tip<'a, M: 'a>(
+    content: impl Into<Element<'a, M>>,
+    text: impl Into<Element<'a, M>>,
+    position: tooltip::Position,
+) -> Element<'a, M> {
+    let card = container(text)
         .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::S])
         .style(style::container::menu);
-    tooltip(content, tip, tooltip::Position::Bottom).gap(space::XS).delay(Duration::from_millis(500)).into()
+    tooltip(content, card, position).gap(space::XS).delay(Duration::from_millis(500)).into()
 }
 
 /// An icon-only button in `style`, 28 high; `square` makes it 28 × 28, otherwise it keeps the
@@ -353,24 +377,68 @@ pub fn sidebar_item<'a, M: Clone + 'a>(
     active: bool,
     on_press: M,
 ) -> Element<'a, M> {
+    sidebar_item_in(SidebarMode::Expanded, mark, label, trail, active, on_press)
+}
+
+/// A sidebar row ([`sidebar_item`]) drawn for `mode`: expanded as there; in the rail
+/// ([`SidebarMode::Rail`]) only `mark` centred on the 28-high row, with `label` and `trail` as
+/// tooltip at its right. `active` and `on_press` work the same in both, so an app builds its rows
+/// once with the mode as a parameter ([`crate::shell`], "Collapsed sidebar").
+///
+/// ```ignore
+/// widgets::sidebar_item_in(mode, Icon::Sun, tr("Today"), Trail::Count(5), view == View::Today, Message::Show(View::Today))
+/// ```
+pub fn sidebar_item_in<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    mark: impl Into<Mark>,
+    label: impl IntoFragment<'a>,
+    trail: Trail,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
     let tone = if active { Tone::Text } else { Tone::Text2 };
-    let content = row![mark_view(mark.into(), Scale::Row, tone), line_label(typo::BODY, label)]
-        .push(trail_view(trail))
-        .spacing(space::S)
-        .align_y(Alignment::Center);
-    button(container(content).center_y(Fill))
-        .width(Fill)
-        .height(size::ROW_SIDEBAR)
-        .padding(style::ITEM_PADDING)
-        .style(style::button::sidebar_item(active))
-        .on_press(on_press)
-        .into()
+    let mark = mark_view(mark.into(), Scale::Row, tone);
+    let row_button = |content: Element<'a, M>, padding: Padding| {
+        button(content)
+            .width(Fill)
+            .height(size::ROW_SIDEBAR)
+            .padding(padding)
+            .style(style::button::sidebar_item(active))
+            .on_press(on_press)
+    };
+    match mode {
+        SidebarMode::Expanded => {
+            let content = row![mark, line_label(typo::BODY, label)]
+                .push(trail_view(trail))
+                .spacing(space::S)
+                .align_y(Alignment::Center);
+            row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING).into()
+        }
+        SidebarMode::Rail => {
+            let content = container(mark).center_x(Fill).center_y(Fill).into();
+            tooltip_right(row_button(content, Padding::ZERO), label, trail)
+        }
+    }
 }
 
 /// The title of a group in the sidebar ("Lists", "Calendars"): `CAPTION` in `text_3`, 28 high,
 /// 12 above it. With `toggle = Some((expanded, message))` a chevron follows the title and a click
 /// sends `message` (the app shows or hides the rows).
 pub fn sidebar_group<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, toggle: Option<(bool, M)>) -> Element<'a, M> {
+    sidebar_group_in(SidebarMode::Expanded, label, toggle)
+}
+
+/// A sidebar group title ([`sidebar_group`]) drawn for `mode`: expanded as there; in the rail a
+/// 1-px line in `line` with 8 above and below it instead of the title (the rail has no room for
+/// words), and no chevron – the app decides whether the group's rows are shown, as before.
+pub fn sidebar_group_in<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    label: impl IntoFragment<'a>,
+    toggle: Option<(bool, M)>,
+) -> Element<'a, M> {
+    if mode == SidebarMode::Rail {
+        return container(rule::horizontal(LINE).style(style::rule)).padding([space::S, space::XS]).into();
+    }
     let mut title =
         row![typo::text(typo::CAPTION, label).style(theme::text_3)].spacing(space::XS).align_y(Alignment::Center);
     if let Some((expanded, _)) = &toggle {
@@ -379,7 +447,7 @@ pub fn sidebar_group<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, toggle: Op
     }
     let bar = container(title).height(size::ROW_SIDEBAR).padding(style::ITEM_PADDING).center_y(size::ROW_SIDEBAR);
     let bar: Element<'a, M> = match toggle {
-        Some((_, message)) => mouse_area(bar).on_press(message).into(),
+        Some((_, message)) => mouse_area(bar).on_press(message).interaction(mouse::Interaction::Pointer).into(),
         None => bar.into(),
     };
     container(bar).padding(Padding::new(0.0).top(space::M)).into()
@@ -789,7 +857,7 @@ pub fn chip<'a, M: Clone + 'a>(
     let chip =
         container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
     match on_press {
-        Some(message) => mouse_area(chip).on_press(message).into(),
+        Some(message) => mouse_area(chip).on_press(message).interaction(mouse::Interaction::Pointer).into(),
         None => chip.into(),
     }
 }
