@@ -12,3 +12,7 @@ workspace = true
 
 [dependencies]
 torro-pim.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+roxmltree.workspace = true
+serde.workspace = true

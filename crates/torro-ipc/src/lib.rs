@@ -11,14 +11,17 @@
 //! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`].
 
 pub mod client;
+pub mod pim;
 pub mod server;
 
 use std::fmt;
 use std::path::PathBuf;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_pim::{AccountState, Collection, Event, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
@@ -54,6 +57,38 @@ pub enum Request {
         id: String,
         mode: LoadMode,
     },
+
+    /// The account state ([`Response::Account`]).
+    Account,
+    /// Starts Login Flow v2 for a Nextcloud; the core opens the browser and polls in the
+    /// background ([`Response::LoginStarted`]).
+    ConnectNextcloud {
+        server: String,
+    },
+    /// Forgets the account and its secret.
+    DisconnectAccount,
+    /// Fetch calendars and tasks from the server now.
+    Sync,
+    Collections,
+    /// Events overlapping `[start, end)`.
+    Events {
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    },
+    Todos,
+    /// Creates (`href: None`) or updates; answered with [`Response::Event`].
+    SaveEvent {
+        event: Event,
+    },
+    DeleteEvent {
+        event: Event,
+    },
+    SaveTodo {
+        todo: Todo,
+    },
+    DeleteTodo {
+        todo: Todo,
+    },
 }
 
 /// The core's answer to one [`Request`].
@@ -76,8 +111,30 @@ pub enum Response {
     },
     /// Done, nothing to report.
     Ok,
+    Account {
+        account: AccountState,
+    },
+    LoginStarted {
+        login_url: String,
+    },
+    Collections {
+        collections: Vec<Collection>,
+    },
+    Events {
+        events: Vec<Event>,
+    },
+    Todos {
+        todos: Vec<Todo>,
+    },
+    Event {
+        event: Event,
+    },
+    Todo {
+        todo: Todo,
+    },
     /// The request failed; `code` is stable for scripts (`workspace-not-empty`, `not-found`,
-    /// `unsupported`, `busy`, `error`), `message` is for people.
+    /// `unsupported`, `busy`, `not-connected`, `offline`, `auth`, `conflict`, `error`),
+    /// `message` is for people.
     Error {
         code: String,
         message: String,

@@ -217,6 +217,8 @@ pub fn render(response: &Response) -> String {
         }
         Response::Ok => "ok".to_string(),
         Response::Error { message, .. } => message.clone(),
+        // Calendar and task answers are for the apps; show them as JSON.
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|err| err.to_string()),
     }
 }
 

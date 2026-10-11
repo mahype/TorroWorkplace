@@ -34,7 +34,7 @@ pub fn message(what: &str, response: &Response) -> Option<(String, String)> {
             Some(id) => Some(("Vorlage gelöscht".into(), id.to_string())),
             None => Some(("Erledigt".into(), what.to_string())),
         },
-        Response::Pong { .. } | Response::Status(_) | Response::Templates { .. } => None,
+        _ => None,
     }
 }
 

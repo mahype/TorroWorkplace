@@ -10,10 +10,14 @@ use std::process::ExitCode;
 
 use torro_core::AppId;
 
+// Used by pim.rs once task K.5 wires it in.
+#[allow(dead_code)]
+mod account;
 mod cli;
 mod core;
 mod daemon;
 mod notify;
+mod pim;
 mod tray;
 
 const APP: AppId = AppId::WORKPLACE;

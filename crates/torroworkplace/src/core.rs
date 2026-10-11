@@ -12,6 +12,8 @@ use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
+use crate::pim::PimService;
+
 /// What the tray menu is built from.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
@@ -33,11 +35,12 @@ pub struct Core {
     backend: Backend,
     store: Store,
     work: Mutex<()>,
+    pim: PimService,
 }
 
 impl Core {
-    pub fn new(backend: Backend, store: Store) -> Core {
-        Core { backend, store, work: Mutex::new(()) }
+    pub fn new(backend: Backend, store: Store, pim: PimService) -> Core {
+        Core { backend, store, work: Mutex::new(()), pim }
     }
 
     pub async fn handle(&self, request: Request) -> Response {
@@ -63,6 +66,17 @@ impl Core {
                 })
                 .await
             }
+            pim @ (Request::Account
+            | Request::ConnectNextcloud { .. }
+            | Request::DisconnectAccount
+            | Request::Sync
+            | Request::Collections
+            | Request::Events { .. }
+            | Request::Todos
+            | Request::SaveEvent { .. }
+            | Request::DeleteEvent { .. }
+            | Request::SaveTodo { .. }
+            | Request::DeleteTodo { .. }) => self.pim.handle(pim).await,
         }
     }
 
@@ -163,7 +177,7 @@ mod tests {
     use super::*;
 
     fn core(dir: &std::path::Path) -> Core {
-        Core::new(Backend::Unsupported { name: "test".into() }, Store::at(dir.to_path_buf()))
+        Core::new(Backend::Unsupported { name: "test".into() }, Store::at(dir.to_path_buf()), PimService::new())
     }
 
     #[tokio::test]

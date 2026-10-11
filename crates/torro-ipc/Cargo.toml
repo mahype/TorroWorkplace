@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 torro-core.workspace = true
 torro-setups.workspace = true
+torro-pim.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

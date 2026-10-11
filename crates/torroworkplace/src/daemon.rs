@@ -74,7 +74,7 @@ async fn serve(headless: bool) -> Result<(), String> {
     }
     let store = Store::open_default().map_err(|err| err.to_string())?;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
-    let core = Arc::new(Core::new(backend, store));
+    let core = Arc::new(Core::new(backend, store, crate::pim::PimService::new()));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -187,9 +187,16 @@ async fn refresher(core: Arc<Core>, mut requests: mpsc::UnboundedReceiver<()>, f
     }
 }
 
-/// Requests after which the menu may look different.
+/// Template commands: they change the menu and get a notification. Calendar and task
+/// requests from the apps get neither; the apps show their own feedback.
 fn changes_state(request: &Request) -> bool {
-    !matches!(request, Request::Ping | Request::Status | Request::ListTemplates)
+    matches!(
+        request,
+        Request::SaveTemplate { .. }
+            | Request::UpdateTemplate { .. }
+            | Request::DeleteTemplate { .. }
+            | Request::LoadTemplate { .. }
+    )
 }
 
 /// A short name for a request, for messages.
@@ -202,6 +209,17 @@ fn describe(request: &Request) -> String {
         Request::UpdateTemplate { id } => format!("update {id}"),
         Request::DeleteTemplate { id } => format!("delete {id}"),
         Request::LoadTemplate { id, .. } => format!("load {id}"),
+        Request::Account => "account".into(),
+        Request::ConnectNextcloud { server } => format!("connect {server}"),
+        Request::DisconnectAccount => "disconnect".into(),
+        Request::Sync => "sync".into(),
+        Request::Collections => "collections".into(),
+        Request::Events { .. } => "events".into(),
+        Request::Todos => "todos".into(),
+        Request::SaveEvent { .. } => "save event".into(),
+        Request::DeleteEvent { .. } => "delete event".into(),
+        Request::SaveTodo { .. } => "save todo".into(),
+        Request::DeleteTodo { .. } => "delete todo".into(),
     }
 }
 

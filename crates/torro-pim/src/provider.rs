@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::{Collection, Event, Todo};
 
 /// Opaque position in a collection's change history (CalDAV: the sync-token of
@@ -18,7 +20,7 @@ pub enum Change {
 }
 
 /// Why a provider call failed, in the terms the UI shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProviderError {
     /// Credentials missing or refused.
     Auth,

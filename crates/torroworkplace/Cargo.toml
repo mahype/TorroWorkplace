@@ -22,6 +22,8 @@ chrono.workspace = true
 notify-rust.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+reqwest.workspace = true
+webbrowser.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni.workspace = true

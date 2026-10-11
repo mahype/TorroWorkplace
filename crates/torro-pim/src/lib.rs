@@ -1,14 +1,17 @@
 //! Calendars and tasks, independent of where they come from.
 //!
-//! The apps only ever talk to this crate. A provider (`torro-pim-caldav` first, Google
-//! or Todoist later as their own crates) fills the offline cache; the UIs read and write
-//! the cache, and the sync engine carries changes both ways. Adding a provider never
-//! changes an app.
-//!
-//! Scaffold: the model and the provider contract. Cache and sync follow in the MVP.
+//! The model ([`Event`], [`Todo`], [`Collection`]) is shared by the core, the apps and
+//! every provider. The apps read and write through [`PimSource`]: the core over the socket,
+//! or [`demo::DemoSource`] for trying the UIs. Providers (`torro-pim-caldav` first) sit
+//! behind the core.
 
+mod account;
+pub mod demo;
 pub mod model;
 pub mod provider;
+pub mod source;
 
-pub use model::{Collection, CollectionKind, Event, Todo};
+pub use account::AccountState;
+pub use model::{Collection, CollectionKind, Event, EventTime, Todo};
 pub use provider::{Change, Provider, ProviderError, SyncToken};
+pub use source::PimSource;

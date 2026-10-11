@@ -12,3 +12,8 @@ workspace = true
 
 [dependencies]
 torro-core.workspace = true
+chrono.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
