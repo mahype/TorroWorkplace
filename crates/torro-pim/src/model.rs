@@ -2,6 +2,7 @@
 //! other providers map onto it.
 
 use chrono::{DateTime, NaiveDate, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A calendar or task list on an account.
@@ -43,7 +44,7 @@ impl CollectionKind {
 }
 
 /// When an event starts or ends, or a task is due.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EventTime {
     /// A calendar day (all-day entries, VALUE=DATE).
@@ -54,17 +55,22 @@ pub enum EventTime {
 
 /// A calendar entry (VEVENT). A recurring event appears once per occurrence, each with
 /// the start of that occurrence.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Event {
     /// iCalendar UID; shared by all occurrences of a recurring event.
     pub uid: String,
-    /// [`Collection::id`] it belongs to.
+    /// Id of the calendar it belongs to, as `calendar.list_calendars` reports it. Must name a
+    /// calendar that can be written to when saving.
     pub collection: String,
-    /// Where the item lives on the server; `None` for an event not saved yet.
+    /// Where the item lives on the server (CalDAV URL). `None` only for an event not saved yet;
+    /// pass the event back with its `href` and `etag` to change or delete it.
     pub href: Option<String>,
-    /// Version on the server, guards writes; `None` for an event not saved yet.
+    /// Server version of the item, sent back on changes so the server can refuse stale writes.
+    /// `None` only for an event not saved yet.
     pub etag: Option<String>,
+    /// Title of the event.
     pub summary: String,
+    /// Start: a calendar day for all-day events, otherwise an instant in UTC.
     pub start: EventTime,
     /// Exclusive end (DTEND, or DTSTART + DURATION); `None` when the entry has neither.
     pub end: Option<EventTime>,
@@ -83,14 +89,22 @@ impl Event {
 }
 
 /// A task (VTODO).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Todo {
     /// iCalendar UID.
     pub uid: String,
+    /// Id of the task list it belongs to, as `tasks.list_lists` reports it. Must name a list
+    /// that can be written to when saving.
     pub collection: String,
+    /// Where the item lives on the server (CalDAV URL). `None` only for a task not saved yet;
+    /// pass the task back with its `href` and `etag` to change or delete it.
     pub href: Option<String>,
+    /// Server version of the item, sent back on changes so the server can refuse stale writes.
+    /// `None` only for a task not saved yet.
     pub etag: Option<String>,
+    /// Title of the task.
     pub summary: String,
+    /// When the task is due: a day or an instant. `None` when it has no due date.
     pub due: Option<EventTime>,
     /// iCalendar priority: 1 highest … 9 lowest, `None` undefined.
     pub priority: Option<u8>,

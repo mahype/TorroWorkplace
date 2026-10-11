@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use schemars::Schema;
 use schemars::generate::SchemaSettings;
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use torro_setups::LoadMode;
 
@@ -221,23 +221,6 @@ pub fn request_schema() -> Schema {
 /// The `method` constant of one `oneOf` branch of [`request_schema`].
 fn method_of(variant: &serde_json::Value) -> Option<&str> {
     variant.pointer("/properties/method/const")?.as_str()
-}
-
-/// Schema for fields whose types live in crates without `schemars` (`Event`, `Todo`,
-/// `Settings`): an object, described by the field's doc comment.
-pub(crate) fn object_schema(_: &mut SchemaGenerator) -> Schema {
-    json_schema!({ "type": "object" })
-}
-
-/// Schema stand-in for [`LoadMode`], which lives in `torro-setups` without `schemars`. Only its
-/// schema is used; a test keeps the variants in step with `LoadMode`.
-#[derive(JsonSchema)]
-#[schemars(rename_all = "lowercase")]
-#[allow(dead_code)]
-pub(crate) enum LoadModeSchema {
-    Empty,
-    Add,
-    Replace,
 }
 
 /// Every command, grouped by area. The API reference and the MCP tools are built from it.
@@ -539,6 +522,21 @@ mod tests {
     use super::*;
     use crate::SettingKey;
 
+    /// The values an enum schema allows: `enum` for plain enums, `oneOf` with `const` for enums
+    /// whose variants have doc comments (schemars then keeps each variant's description).
+    fn enum_values(schema: &serde_json::Value) -> Vec<serde_json::Value> {
+        if let Some(values) = schema.get("enum").and_then(|e| e.as_array()) {
+            return values.clone();
+        }
+        schema
+            .get("oneOf")
+            .and_then(|o| o.as_array())
+            .expect("an enum schema")
+            .iter()
+            .map(|branch| branch.get("const").expect("every branch is a const").clone())
+            .collect()
+    }
+
     fn event() -> Event {
         Event {
             uid: "u".into(),
@@ -706,8 +704,8 @@ mod tests {
     fn input_schemas_describe_the_fields() {
         let schema = LOAD_TEMPLATE.input_schema().expect("schema");
         assert_eq!(schema.get("required"), Some(&serde_json::json!(["id", "mode"])));
-        let modes = schema.as_value().pointer("/properties/mode/enum").expect("mode is an enum");
-        assert_eq!(modes, &serde_json::json!(["empty", "add", "replace"]));
+        let mode = schema.as_value().pointer("/properties/mode").expect("mode is a field");
+        assert_eq!(serde_json::Value::Array(enum_values(mode)), serde_json::json!(["empty", "add", "replace"]));
 
         let schema = LIST_EVENTS.input_schema().expect("schema");
         assert_eq!(schema.as_value().pointer("/properties/start/format"), Some(&serde_json::json!("date-time")));
@@ -726,17 +724,56 @@ mod tests {
     }
 
     #[test]
-    fn load_mode_schema_matches_load_mode() {
-        let schema = schemars::schema_for!(LoadModeSchema);
-        let names = schema.get("enum").expect("an enum of strings");
+    fn load_mode_schema_matches_its_serialization() {
+        let schema = schemars::schema_for!(LoadMode);
         let modes: Vec<_> = [LoadMode::Empty, LoadMode::Add, LoadMode::Replace]
             .iter()
             .map(|mode| serde_json::to_value(mode).expect("serializes"))
             .collect();
-        assert_eq!(names, &serde_json::Value::Array(modes));
-        // A new `LoadMode` without a schema twin fails to build here.
+        assert_eq!(enum_values(schema.as_value()), modes);
+        // A new `LoadMode` variant without a schema entry fails to build here.
         match LoadMode::default() {
             LoadMode::Empty | LoadMode::Add | LoadMode::Replace => {}
+        }
+    }
+
+    /// Write commands take an item or the settings: their schemas list the fields, not an
+    /// empty object.
+    #[test]
+    fn write_commands_describe_their_fields() {
+        let fields = |command: &Command, path: &str| {
+            let schema = command.input_schema().expect("schema");
+            schema.as_value().pointer(path).cloned().unwrap_or_default()
+        };
+        for command in [&SAVE_EVENT, &DELETE_EVENT] {
+            let event = fields(command, "/properties/event/properties");
+            for field in ["uid", "collection", "href", "etag", "summary", "start", "end", "recurring"] {
+                assert!(event.get(field).is_some(), "{} lacks {field}", command.name);
+            }
+        }
+        for command in [&SAVE_TODO, &DELETE_TODO] {
+            let todo = fields(command, "/properties/todo/properties");
+            for field in ["uid", "collection", "href", "etag", "summary", "due", "priority", "completed"] {
+                assert!(todo.get(field).is_some(), "{} lacks {field}", command.name);
+            }
+        }
+        let settings = fields(&UPDATE_SETTINGS, "/properties/settings/properties");
+        for field in ["language", "appearance", "startAtLogin", "hiddenCollections"] {
+            assert!(settings.get(field).is_some(), "update_settings lacks {field}");
+        }
+    }
+
+    /// Agents read the field descriptions, so the identifying fields must have one.
+    #[test]
+    fn identifying_fields_are_explained() {
+        let described = |command: &Command, path: &str| {
+            let schema = command.input_schema().expect("schema");
+            let field = schema.as_value().pointer(path).cloned().unwrap_or_default();
+            field.get("description").and_then(|d| d.as_str()).is_some_and(|d| !d.is_empty())
+        };
+        for field in ["href", "etag", "collection"] {
+            assert!(described(&SAVE_EVENT, &format!("/properties/event/properties/{field}")), "event.{field}");
+            assert!(described(&SAVE_TODO, &format!("/properties/todo/properties/{field}")), "todo.{field}");
         }
     }
 }

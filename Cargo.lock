@@ -4481,6 +4481,7 @@ name = "torro-core"
 version = "0.0.1"
 dependencies = [
  "keyring",
+ "schemars",
  "serde",
  "serde_json",
 ]
@@ -4516,6 +4517,7 @@ name = "torro-pim"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "schemars",
  "serde",
  "tokio",
  "torro-core",
@@ -4537,6 +4539,7 @@ name = "torro-setups"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

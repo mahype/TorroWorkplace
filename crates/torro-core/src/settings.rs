@@ -8,6 +8,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::AppId;
@@ -15,7 +16,7 @@ use crate::paths::AppPaths;
 use crate::theme::Appearance;
 
 /// The language the suite speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     /// Follow the system (`LANG` and friends).
@@ -26,9 +27,11 @@ pub enum Language {
 }
 
 /// All suite-wide settings.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    /// Language of the suite: `system` follows the desktop, `english` and `german` fix it.
+    /// Applies to processes started afterwards.
     #[serde(default)]
     pub language: Language,
     /// Light or dark colours for every app; `System` follows the desktop.

@@ -4,6 +4,7 @@
 //! GUI read them from here, so both look like the same family. Red is brand, never
 //! status: status uses the system-like colours below.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// An sRGB colour.
@@ -27,7 +28,7 @@ pub const STATUS_INACTIVE: Rgb = Rgb(0x8E, 0x8E, 0x93);
 /// The appearance the user picked (control centre › General › Appearance), stored in the
 /// suite settings. The apps turn it into a light or dark Iced theme
 /// (`torro_gui::theme::for_appearance`); it lives here because the core stores and serves it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Appearance {
     /// Follow the desktop's light/dark preference; dark when the desktop has none.

@@ -41,8 +41,8 @@ pub fn socket_path() -> Option<PathBuf> {
 /// [`Request::operation`]: its API name, area, access and whether agents get it as an MCP tool.
 /// A new case does not build until `operation` names its command.
 ///
-/// Fields whose types live in other crates (`Event`, `Todo`, `Settings`) appear in the JSON
-/// Schema as plain objects; see [`api::request_schema`].
+/// The JSON Schema of every field comes from the types themselves (`schemars`, see
+/// [`api::request_schema`]); the doc comments of those types are the descriptions for agents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case", tag = "method")]
 pub enum Request {
@@ -67,7 +67,6 @@ pub enum Request {
     LoadTemplate {
         id: String,
         /// `empty` (only into an empty workspace), `add` or `replace` (closes the windows there).
-        #[schemars(with = "api::LoadModeSchema")]
         mode: LoadMode,
     },
 
@@ -92,19 +91,15 @@ pub enum Request {
     Todos,
     /// Creates (`href: None`) or updates; answered with [`Response::Event`].
     SaveEvent {
-        #[schemars(schema_with = "api::object_schema")]
         event: Event,
     },
     DeleteEvent {
-        #[schemars(schema_with = "api::object_schema")]
         event: Event,
     },
     SaveTodo {
-        #[schemars(schema_with = "api::object_schema")]
         todo: Todo,
     },
     DeleteTodo {
-        #[schemars(schema_with = "api::object_schema")]
         todo: Todo,
     },
 
@@ -113,7 +108,6 @@ pub enum Request {
     /// Replaces the settings; the core applies what changed (start at login, hidden
     /// collections; the language applies to processes started afterwards).
     UpdateSettings {
-        #[schemars(schema_with = "api::object_schema")]
         settings: Settings,
     },
     /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit

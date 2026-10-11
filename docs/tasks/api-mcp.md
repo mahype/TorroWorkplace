@@ -51,7 +51,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   der Apps-Seite.
 
 ### A.0c Volle Schemata für Termin, Aufgabe und Einstellungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.0d · **Dateien:** `crates/torro-pim/Cargo.toml`, `crates/torro-pim/src/*.rs`, `crates/torro-core/Cargo.toml`, `crates/torro-core/src/settings.rs`, `crates/torro-core/src/theme.rs`, `crates/torro-setups/Cargo.toml`, `crates/torro-setups/src/template.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `Cargo.lock`
 - `JsonSchema` für `Event`, `Todo`, `Settings`, `LoadMode` und deren Feldtypen ableiten (Entscheidung
   7); in `api.rs` die Platzhalter `{"type":"object"}` und `LoadModeSchema` ersetzen. Doc-Kommentare
