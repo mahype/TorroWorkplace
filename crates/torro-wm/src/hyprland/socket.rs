@@ -11,6 +11,11 @@ use crate::WmError;
 #[cfg(unix)]
 const REQUEST_SOCKET: &str = ".socket.sock";
 
+/// How long a request may take; a Hyprland that accepts but never answers must not block
+/// the daemon.
+#[cfg(unix)]
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// `<runtime_dir>/hypr/<signature>`; an error when either is missing or empty.
 pub fn socket_dir(runtime_dir: Option<&str>, signature: Option<&str>) -> Result<PathBuf, WmError> {
     let runtime_dir = non_empty(runtime_dir, "XDG_RUNTIME_DIR")?;
@@ -29,6 +34,13 @@ fn non_empty<'a>(value: Option<&'a str>, name: &str) -> Result<&'a str, WmError>
 /// systems an `Unsupported` error.
 #[cfg(unix)]
 pub async fn request(dir: &Path, command: &str) -> Result<String, WmError> {
+    tokio::time::timeout(TIMEOUT, request_unbounded(dir, command))
+        .await
+        .map_err(|_| WmError::Io(format!("Hyprland did not answer {command:?} within {} s", TIMEOUT.as_secs())))?
+}
+
+#[cfg(unix)]
+async fn request_unbounded(dir: &Path, command: &str) -> Result<String, WmError> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
