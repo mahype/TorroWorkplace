@@ -8,8 +8,17 @@ repository.workspace = true
 homepage.workspace = true
 description = "The TorroWorkplace core: background service, tray icon, control centre TUI and one MCP server for the whole suite."
 
-[lints]
-workspace = true
+# The workspace lints, with one difference: `unsafe_code` is `deny` instead of `forbid`. `forbid`
+# cannot be lifted locally, and attaching to the caller's console on Windows (`main.rs`, X.2) needs
+# one FFI call behind a single `#[allow(unsafe_code)]`. Keep the rest in sync with `[workspace.lints]`
+# (Cargo does not allow `workspace = true` next to overrides).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
 
 [dependencies]
 torro-core.workspace = true
@@ -37,6 +46,9 @@ webbrowser.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
