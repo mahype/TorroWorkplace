@@ -1,13 +1,18 @@
 //! The calendar window: state, navigation, loading and saving, and the Linear-style frame around
 //! the views (sidebar with the small month, header bar, view menu). The views (`views/`) and the
 //! editor (`editor.rs`) only render and report clicks as [`Message`]s.
+//!
+//! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
+//! glances without any frame (`views::glance`); narrow shows a week as one day under the week
+//! strip and a month as the agenda, and opens the editor full-window; medium and wide show the
+//! chosen view. State (view, date, selection, open editor) survives every change of size.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
-use iced::widget::row;
+use iced::widget::{column, row};
 use iced::{Alignment, Color, Element, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -23,7 +28,7 @@ use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Place
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
 use crate::editor::{self, Editor};
-use crate::views::{self, Item, ViewData, mini_month};
+use crate::views::{self, Item, ViewData, glance, mini_month, short_date, week_strip};
 
 /// The four views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +72,22 @@ impl CalView {
     }
 }
 
+/// The view the narrow layout shows for the chosen `view`: a week as one day (under the week
+/// strip), a month as the agenda; seven columns or a month grid do not fit 360–600 px. Every other
+/// layout shows the chosen view.
+fn shown_in(view: CalView, class: SizeClass) -> CalView {
+    match (class, view) {
+        (SizeClass::Narrow, CalView::Week) => CalView::Day,
+        (SizeClass::Narrow, CalView::Month) => CalView::Agenda,
+        _ => view,
+    }
+}
+
+/// Mini and strip: displays without header, sidebar, menus or dialogs.
+fn is_glance(class: SizeClass) -> bool {
+    matches!(class, SizeClass::Mini | SizeClass::Strip)
+}
+
 /// The menus that open over the window; at most one at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
@@ -82,6 +103,8 @@ const AGENDA_DAYS: i64 = 30;
 pub struct App {
     source: Source,
     now: NaiveDateTime,
+    /// The chosen view. The narrow layout may show another one ([`App::shown`]); this one comes
+    /// back when the window is wider again.
     view: CalView,
     /// The date the view is built around.
     anchor: NaiveDate,
@@ -241,9 +264,13 @@ impl App {
             None => iced::event::listen_with(shortcut),
         };
         let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
-        let mut all = vec![tick, system, keys, resize];
-        if self.menu.is_some() || self.drawer {
-            all.push(widgets::escape().map(|()| Message::CloseMenu));
+        let mut all = vec![tick, system, resize];
+        // Mini and strip are displays: no keys, nothing open to close.
+        if !is_glance(self.class()) {
+            all.push(keys);
+            if self.menu.is_some() || self.drawer {
+                all.push(widgets::escape().map(|()| Message::CloseMenu));
+            }
         }
         Subscription::batch(all)
     }
@@ -342,12 +369,14 @@ impl App {
             Message::AppOpened(Err(err)) => eprintln!("torrocalendar: cannot open the app: {err}"),
             Message::AppOpened(Ok(())) => {}
             Message::Resized(size) => {
-                let before = layout::of(self.size);
+                let before = self.class();
                 self.size = size;
-                // Another layout builds a different widget tree, and Iced drops the time grid's
-                // scroll position with it; open the grid at the morning again instead of midnight.
-                if layout::of(size) != before && self.loaded {
-                    return self.scroll_to_morning();
+                // Another layout may need other days (the narrow day loads its week for the strip,
+                // mini and strip load from today on), and it builds a different widget tree, in
+                // which Iced drops the time grid's scroll position: load again and open the grid at
+                // the morning instead of midnight.
+                if self.class() != before && self.loaded {
+                    return self.load().chain(self.scroll_to_morning());
                 }
             }
             Message::Refresh => {
@@ -446,8 +475,14 @@ impl App {
             }
             Some(AccountState::Connected { .. }) => {}
         }
-        let window = self.window(layout::of(self.size));
+        let class = self.class();
+        if is_glance(class) {
+            // An open editor stays in the state and comes back with a larger window.
+            return self.glance(class);
+        }
+        let window = self.window(class);
         match &self.editor {
+            Some(editor) if class == SizeClass::Narrow => editor.view_full_window().map(Message::Editor),
             Some(editor) => modal(
                 window,
                 editor.view().map(Message::Editor),
@@ -455,6 +490,23 @@ impl App {
                 Message::Editor(editor::Message::Cancel),
             ),
             None => window,
+        }
+    }
+
+    /// Mini or strip: the error and the loading state as in every layout, then the glance at
+    /// today and the days after it (`views::glance`).
+    fn glance(&self, class: SizeClass) -> Element<'_, Message> {
+        if let Some(err) = &self.error {
+            return widgets::error_state(err.as_str(), Message::Retry);
+        }
+        if !self.loaded {
+            return widgets::loading();
+        }
+        let (start, end) = self.load_range();
+        let data = ViewData { items: self.items(), start, end, anchor: self.now.date(), now: self.now };
+        match class {
+            SizeClass::Strip => glance::strip(&data, self.size),
+            _ => glance::mini(&data, self.size),
         }
     }
 
@@ -485,14 +537,15 @@ impl App {
     ///   control, refresh and "New event".
     /// - **Medium:** the sidebar toggle in front; the views (and calendars) in "Week ▾".
     /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
-    ///   to today), and "New event" reduced to "+".
+    ///   to today), the day as "Wed, 7 Oct", and "New event" reduced to "+". "Day ▾" names the
+    ///   view shown ([`App::shown`]).
     fn header<'a>(&'a self, class: SizeClass, views: &Anchor) -> Element<'a, Message> {
         let (title, note) = self.title_parts();
         let prev = widgets::icon_button(Icon::ChevronLeft, tr("Previous"), Some(Message::Prev));
         let next = widgets::icon_button(Icon::ChevronRight, tr("Next"), Some(Message::Next));
         let refresh = widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh));
         let new_event = Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) };
-        let select = || widgets::select_button(views, self.view.label(), Message::ToggleMenu(Menu::View));
+        let select = || widgets::select_button(views, self.shown().label(), Message::ToggleMenu(Menu::View));
         if class == SizeClass::Wide || class == SizeClass::Medium {
             let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
             let title = row![
@@ -511,6 +564,8 @@ impl App {
                 shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
             }
         } else {
+            // The short date: the long one ("Monday, 12 October 2026") squeezes the buttons.
+            let title = if self.shown() == CalView::Day { short_date(self.anchor) } else { title };
             let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::XS)]
                 .spacing(space::S)
                 .align_y(Alignment::Center);
@@ -526,7 +581,7 @@ impl App {
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
     /// menu, and without them the drawer still fits a window 600 high.
     fn sidebar<'a>(&'a self, class: SizeClass, switcher: &Anchor) -> Element<'a, Message> {
-        let shown = matches!(self.view, CalView::Day | CalView::Week).then(|| self.range());
+        let shown = matches!(self.shown(), CalView::Day | CalView::Week).then(|| self.range());
         let mut items = vec![mini_month::view(self.mini_month, shown, self.now.date())];
         if shell::has_sidebar(class) {
             items.push(widgets::sidebar_group(tr("Views"), None));
@@ -573,7 +628,7 @@ impl App {
             .map(|view| {
                 MenuItem::new(view.icon(), view.label(), Message::SetView(view))
                     .trail(Trail::Kbd(view.key()))
-                    .current(view == self.view)
+                    .current(view == self.shown())
             })
             .to_vec();
         let mut sections = vec![MenuSection::titled(tr("View"), views)];
@@ -620,10 +675,23 @@ impl App {
     }
 
     fn current_view(&self) -> Element<'_, Message> {
+        let (start, end) = self.range();
+        let data = ViewData { items: self.items(), start, end, anchor: self.anchor, now: self.now };
+        match self.shown() {
+            CalView::Day if self.class() == SizeClass::Narrow => {
+                column![week_strip::view(&data), views::week::day_under_strip(data)].into()
+            }
+            CalView::Day | CalView::Week => views::week::view(data),
+            CalView::Month => views::month::view(data),
+            CalView::Agenda => views::agenda::view(data),
+        }
+    }
+
+    /// The loaded events of the shown calendars, with their calendar's colour.
+    fn items(&self) -> Vec<Item<'_>> {
         let colors: HashMap<&str, iced::Color> =
             self.collections.iter().map(|c| (c.id.as_str(), collection_color(c.color.as_deref()))).collect();
-        let items = self
-            .events
+        self.events
             .iter()
             .enumerate()
             .filter(|(_, e)| !self.hidden.contains(&e.collection))
@@ -632,19 +700,39 @@ impl App {
                 event,
                 color: colors.get(event.collection.as_str()).copied().unwrap_or(collection_color(None)),
             })
-            .collect();
-        let (start, end) = self.range();
-        let data = ViewData { items, start, end, anchor: self.anchor, now: self.now };
-        match self.view {
-            CalView::Day | CalView::Week => views::week::view(data),
-            CalView::Month => views::month::view(data),
-            CalView::Agenda => views::agenda::view(data),
+            .collect()
+    }
+
+    /// The layout class of the window.
+    fn class(&self) -> SizeClass {
+        layout::of(self.size)
+    }
+
+    /// The view on screen: the chosen one, or what the narrow layout shows for it ([`shown_in`]).
+    fn shown(&self) -> CalView {
+        shown_in(self.view, self.class())
+    }
+
+    /// The days [`App::load`] fetches: those the view shows; for the narrow day its whole week,
+    /// for the dots of the week strip; for mini and strip today and the [`AGENDA_DAYS`] after it,
+    /// so the glance finds the next event when today is done.
+    fn load_range(&self) -> (NaiveDate, NaiveDate) {
+        match self.class() {
+            SizeClass::Mini | SizeClass::Strip => {
+                let today = self.now.date();
+                (today, today + Days::days(AGENDA_DAYS))
+            }
+            SizeClass::Narrow if self.shown() == CalView::Day => {
+                let start = week_start(self.anchor);
+                (start, start + Days::days(7))
+            }
+            _ => self.range(),
         }
     }
 
     /// First and last+1 day the current view shows.
     fn range(&self) -> (NaiveDate, NaiveDate) {
-        match self.view {
+        match self.shown() {
             CalView::Day => (self.anchor, self.anchor + Days::days(1)),
             CalView::Week => {
                 let start = week_start(self.anchor);
@@ -661,7 +749,7 @@ impl App {
 
     /// The anchor one view-length back (`-1`) or ahead (`1`).
     fn step(&self, direction: i64) -> NaiveDate {
-        match self.view {
+        match self.shown() {
             CalView::Day => self.anchor + Days::days(direction),
             CalView::Week => self.anchor + Days::days(7 * direction),
             CalView::Month => mini_month::shift(self.anchor, direction as i32),
@@ -670,7 +758,7 @@ impl App {
     }
 
     fn heading(&self) -> String {
-        match self.view {
+        match self.shown() {
             CalView::Day => format_long_date(self.anchor),
             CalView::Week => {
                 let start = week_start(self.anchor);
@@ -692,7 +780,7 @@ impl App {
     /// of its Thursday, as ISO weeks count), the long date for a day, the month otherwise.
     fn title_parts(&self) -> (String, Option<String>) {
         let month_year = |date: NaiveDate| format!("{} {}", month_name(date.month()), date.year());
-        match self.view {
+        match self.shown() {
             CalView::Day => (format_long_date(self.anchor), None),
             CalView::Week => {
                 let thursday = week_start(self.anchor) + Days::days(3);
@@ -716,7 +804,7 @@ impl App {
 
     /// Day and week open at 07:00 instead of midnight.
     fn scroll_to_morning(&self) -> Task<Message> {
-        match self.view {
+        match self.shown() {
             CalView::Day | CalView::Week => views::week::scroll_to_morning(),
             CalView::Month | CalView::Agenda => Task::none(),
         }
@@ -739,7 +827,7 @@ impl App {
 
     fn load(&mut self) -> Task<Message> {
         self.loading = true;
-        let (start, end) = self.range();
+        let (start, end) = self.load_range();
         let (start, end) = (to_utc(start.and_time(NaiveTime::MIN)), to_utc(end.and_time(NaiveTime::MIN)));
         let source = self.source.clone();
         Task::perform(
@@ -865,6 +953,54 @@ mod tests {
         assert_eq!(app.error, Some(load_failed("offline")));
         let _ = app.update(Message::Retry);
         assert_eq!((app.error.clone(), app.loading), (None, true));
+    }
+
+    const NARROW: Size = Size::new(420.0, 780.0);
+    const WIDE: Size = Size::new(1440.0, 900.0);
+    const MINI: Size = Size::new(240.0, 160.0);
+
+    #[test]
+    fn narrow_shows_a_week_as_a_day_and_a_month_as_the_agenda_and_keeps_the_choice() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!((app.view, app.shown()), (CalView::Week, CalView::Day));
+        let _ = app.update(Message::SetView(CalView::Month));
+        assert_eq!((app.view, app.shown()), (CalView::Month, CalView::Agenda));
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!((app.view, app.shown()), (CalView::Month, CalView::Month), "the month comes back");
+    }
+
+    #[test]
+    fn the_narrow_day_steps_by_a_day_and_loads_its_week() {
+        let mut app = demo_app();
+        let _ = app.update(Message::Resized(NARROW));
+        app.anchor = date(2026, 10, 7);
+        assert_eq!(app.range(), (date(2026, 10, 7), date(2026, 10, 8)));
+        assert_eq!(app.step(1), date(2026, 10, 8));
+        assert_eq!(app.load_range(), (date(2026, 10, 5), date(2026, 10, 12)), "Monday to Sunday for the strip");
+    }
+
+    #[test]
+    fn mini_and_strip_load_from_today_and_keep_the_view_and_the_date() {
+        let mut app = demo_app();
+        let _ = app.update(Message::SetView(CalView::Month));
+        app.anchor = date(2026, 3, 18);
+        let today = app.now.date();
+        for size in [MINI, Size::new(1200.0, 200.0)] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(app.load_range(), (today, today + Days::days(AGENDA_DAYS)));
+            assert_eq!((app.view, app.anchor), (CalView::Month, date(2026, 3, 18)));
+        }
+    }
+
+    #[test]
+    fn an_open_editor_survives_a_trip_through_mini() {
+        let mut app = demo_app();
+        let _ = app.update(Message::NewEvent { date: date(2026, 10, 7), time: None });
+        let _ = app.update(Message::Resized(MINI));
+        assert!(app.editor.is_some());
+        let _ = app.update(Message::Resized(NARROW));
+        assert!(app.editor.is_some(), "and opens full-window in narrow");
     }
 
     #[test]

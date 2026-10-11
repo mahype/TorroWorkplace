@@ -143,7 +143,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 
 ### K.19 Kalender in jeder Größe: Mini, Leiste, Schmal
 - **Nach C.1** aus [design.md](design.md): Bausteine und Tokens von dort verwenden (Skill `torro-design`).
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.18 (K.17 hilfreich, nicht nötig)
 - **Dateien:** `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/{mod,glance}.rs`
   (`glance.rs` neu)

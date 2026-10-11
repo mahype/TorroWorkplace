@@ -83,12 +83,20 @@ pub fn scroll_to_morning<T>() -> Task<T> {
 pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
     let plan = Plan::new(&data);
     // The header has to leave room for the time axis, whose width follows the grid's width.
-    responsive(move |bounds| week(plan.clone(), bounds.width)).into()
+    responsive(move |bounds| week(plan.clone(), bounds.width, true)).into()
 }
 
-/// The header, the all-day strip and the scrolling grid for a view `width` wide.
-fn week(plan: Plan, width: f32) -> Element<'static, Message> {
-    let header = header(&plan.days, plan.now.date(), layout::axis_width(width));
+/// The day view under the week strip of the narrow layout (`super::week_strip`, task K.19):
+/// [`view`] for one day without the day header, which the strip above already shows.
+pub fn day_under_strip(data: ViewData<'_>) -> Element<'_, Message> {
+    let plan = Plan::new(&data);
+    responsive(move |bounds| week(plan.clone(), bounds.width, false)).into()
+}
+
+/// The header (with `with_header`), the all-day strip and the scrolling grid for a view `width`
+/// wide.
+fn week(plan: Plan, width: f32, with_header: bool) -> Element<'static, Message> {
+    let header = with_header.then(|| header(&plan.days, plan.now.date(), layout::axis_width(width)));
     let strip_height = layout::strip_height(layout::strip_rows(&plan.bars));
     let strip =
         iced::widget::canvas(Strip { plan: plan.clone() }).width(Length::Fill).height(Length::Fixed(strip_height));
@@ -100,7 +108,11 @@ fn week(plan: Plan, width: f32) -> Element<'static, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
     let line = || rule::horizontal(1).style(style::rule);
-    column![header, line(), strip, line(), grid].height(Length::Fill).into()
+    let mut parts = column![].height(Length::Fill);
+    if let Some(header) = header {
+        parts = parts.push(header).push(line());
+    }
+    parts.push(strip).push(line()).push(grid).into()
 }
 
 /// Everything the grid draws, built once per view. Entry ids are positions in `entries`.

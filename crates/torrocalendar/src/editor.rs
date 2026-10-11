@@ -382,7 +382,17 @@ impl Editor {
     }
 
     pub fn view(&self) -> Element<'_, Message> {
-        if self.is_recurring() { self.read_only_view() } else { self.form_view() }
+        self.view_in(Frame::Dialog)
+    }
+
+    /// The editor filling the window (narrow layout, task K.19): the same content on the dialog
+    /// surface, without the dialog's border and shadow, scrolling within the window's height.
+    pub fn view_full_window(&self) -> Element<'_, Message> {
+        self.view_in(Frame::Window)
+    }
+
+    fn view_in(&self, frame: Frame) -> Element<'_, Message> {
+        if self.is_recurring() { self.read_only_view(frame) } else { self.form_view(frame) }
     }
 
     fn is_recurring(&self) -> bool {
@@ -399,7 +409,7 @@ impl Editor {
         if self.attempted { self.check().err() } else { None }
     }
 
-    fn form_view(&self) -> Element<'_, Message> {
+    fn form_view(&self, frame: Frame) -> Element<'_, Message> {
         let form = &self.form;
         let shown = self.shown_problem();
         let invalid = |input: &str| shown.is_some_and(|problem| problem.input() == Some(input));
@@ -496,12 +506,12 @@ impl Editor {
             group(Some(tr("Notes")), notes, None),
         ]
         .spacing(space::L);
-        card(column![fields, rule::horizontal(1).style(style::rule), actions].spacing(space::L))
+        card(column![fields, rule::horizontal(1).style(style::rule), actions].spacing(space::L), frame)
     }
 
     /// A recurring occurrence or an event in a read-only calendar: the details as text, a
     /// note, and Close.
-    fn read_only_view(&self) -> Element<'_, Message> {
+    fn read_only_view(&self, frame: Frame) -> Element<'_, Message> {
         let form = &self.form;
         let when = if form.all_day {
             format!("{} · {} – {}", tr("All day"), form.start_date, form.end_date)
@@ -537,7 +547,7 @@ impl Editor {
         let close =
             row![blank::horizontal(), text_button(None, tr("Close"), style::button::secondary, Some(Message::Cancel))]
                 .align_y(Alignment::Center);
-        card(body.push(rule::horizontal(1).style(style::rule)).push(close).spacing(space::L))
+        card(body.push(rule::horizontal(1).style(style::rule)).push(close).spacing(space::L), frame)
     }
 }
 
@@ -684,20 +694,34 @@ fn detail<'a>(label: &'static str, value: impl Into<Element<'a, Message>>) -> El
         .into()
 }
 
-/// The surface the editor sits on: a dialog ([`style::container::popover`]: `menu`, radius 10).
-/// The whole card scrolls when the window is too low for it, since Iced cannot pin the buttons
-/// below a scrolling part.
-fn card<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+/// Where the editor sits: in a dialog over the window, or filling the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Frame {
+    Dialog,
+    Window,
+}
+
+/// The surface the editor sits on: a dialog ([`style::container::popover`]: `menu`, radius 10),
+/// or the whole window on the same `menu` colour without border and shadow. The whole card
+/// scrolls when the window is too low for it, since Iced cannot pin the buttons below a
+/// scrolling part.
+fn card<'a>(body: impl Into<Element<'a, Message>>, frame: Frame) -> Element<'a, Message> {
     let inner = container(body).padding(space::XL).width(Length::Fill);
-    container(
-        scrollable(inner)
+    let scroll = scrollable(inner)
+        .width(Length::Fill)
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable);
+    match frame {
+        Frame::Dialog => container(scroll).width(Length::Fill).style(style::container::popover).into(),
+        Frame::Window => container(scroll.height(Length::Fill))
             .width(Length::Fill)
-            .direction(scrollable::Direction::Vertical(style::scrollbar()))
-            .style(style::scrollable),
-    )
-    .width(Length::Fill)
-    .style(style::container::popover)
-    .into()
+            .height(Length::Fill)
+            .style(|t: &Theme| container::Style {
+                background: Some(Background::Color(palette(t).menu)),
+                ..container::Style::default()
+            })
+            .into(),
+    }
 }
 
 #[cfg(test)]
@@ -1018,6 +1042,8 @@ mod tests {
         let event = stored("Review", EventTime::Date(day(2026, 10, 11)), None);
         let editor = Editor::edit(&event, &calendars());
         let _view: Element<'_, Message> = editor.view();
+        // The narrow layout fills the window with the same editor (K.19).
+        let _view: Element<'_, Message> = editor.view_full_window();
     }
 
     #[test]
