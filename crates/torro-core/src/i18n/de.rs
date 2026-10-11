@@ -155,6 +155,39 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Startup", "Start"),
     ("System", "System"),
+    // Command line (torroworkplace ctl clients)
+    ("--kind and --template only apply to ctl clients add", "--kind und --template gelten nur für ctl clients add"),
+    ("--kind needs a value, e.g. claude-code or script", "--kind braucht einen Wert, z. B. claude-code oder script"),
+    (
+        "--template needs a value: read-only, read-and-write or full-access",
+        "--template braucht einen Wert: read-only, read-and-write oder full-access",
+    ),
+    ("Custom rights", "Eigene Rechte"),
+    ("Full access", "Voller Zugriff"),
+    (
+        "Key for {name} ({id}). It is shown only this once:",
+        "Schlüssel für {name} ({id}). Er wird nur dieses eine Mal angezeigt:",
+    ),
+    ("No agents or scripts are connected.", "Keine Agenten oder Skripte verbunden."),
+    ("Read and write", "Lesen und schreiben"),
+    ("Read only", "Nur lesen"),
+    ("ctl clients add needs a name", "ctl clients add braucht einen Namen"),
+    (
+        "ctl clients needs a subcommand: list, add, remove or new-key",
+        "ctl clients braucht einen Unterbefehl: list, add, remove oder new-key",
+    ),
+    ("ctl clients {verb} needs a client id", "ctl clients {verb} braucht eine Client-Kennung"),
+    ("last used {time}", "zuletzt benutzt {time}"),
+    ("never used", "nie benutzt"),
+    ("too many arguments for ctl clients {verb}", "zu viele Argumente für ctl clients {verb}"),
+    (
+        "unknown subcommand {verb}; try list, add, remove or new-key",
+        "unbekannter Unterbefehl {verb}; versuche list, add, remove oder new-key",
+    ),
+    (
+        "unknown template {template}; use read-only, read-and-write or full-access",
+        "unbekannte Vorlage {template}; nimm read-only, read-and-write oder full-access",
+    ),
     // Tray menu (torroworkplace)
     ("Add", "Hinzufügen"),
     ("Busy …", "Läuft gerade …"),
