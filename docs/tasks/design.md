@@ -90,7 +90,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 - Geänderte Farben im Repo `torro-design` nachziehen: im Bericht als Rückfrage nennen.
 
 ### F.3 Stile für alle Iced-Widgets
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** F.2
 - **Dateien:** `crates/torro-gui/src/style.rs` (neu), `crates/torro-gui/src/lib.rs`
 - Style-Funktionen nach Skill Abschnitt 5, beide Modi: `button` (`primary`, `secondary`, `ghost`,
