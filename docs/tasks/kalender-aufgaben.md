@@ -63,7 +63,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - Zeitraster auf einem Iced-`Canvas`, siehe Doc-Kommentar.
 
 ### K.10 Kalender: Monat
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torrocalendar/src/views/month.rs`
 

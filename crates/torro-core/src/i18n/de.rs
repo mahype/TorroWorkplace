@@ -47,6 +47,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Dieses Fenster aktualisiert sich, sobald du angemeldet bist.",
     ),
     // Calendar
+    ("(no title)", "(ohne Titel)"),
     ("(untitled)", "(ohne Titel)"),
     ("+ Event", "+ Termin"),
     ("Agenda", "Agenda"),
@@ -60,6 +61,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Week", "Woche"),
     ("Week {week} · {month} {year}", "KW {week} · {month} {year}"),
     ("all day", "ganztägig"),
+    ("{n} more", "{n} weitere"),
     // Tasks
     ("All", "Alle"),
     ("Completed", "Erledigte"),
