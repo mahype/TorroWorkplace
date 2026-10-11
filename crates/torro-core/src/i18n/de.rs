@@ -258,6 +258,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("November", "November"),
     ("December", "Dezember"),
     // Shared app texts (torro-gui, torrocalendar, torrotasks)
+    ("Collapse sidebar", "Seitenleiste einklappen"),
+    ("Expand sidebar", "Seitenleiste ausklappen"),
     ("Back", "Zurück"),
     ("Could not open the app: {error}", "App konnte nicht geöffnet werden: {error}"),
     ("Refresh", "Aktualisieren"),
