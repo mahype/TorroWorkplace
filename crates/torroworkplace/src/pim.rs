@@ -20,6 +20,8 @@ use torro_ipc::{Request, Response};
 use torro_pim::{AccountState, Collection, Event, EventTime, ProviderError, Todo};
 use torro_pim_caldav::CalDavClient;
 
+use torro_core::i18n::tr;
+
 use crate::account::{self, Connected};
 
 /// How often the cache is refreshed in the background.
@@ -297,7 +299,12 @@ async fn fetch_all(
     let start = today - Span::days(WINDOW_BACK_DAYS);
     let end = today + Span::days(WINDOW_AHEAD_DAYS);
     let window = (start.and_time(chrono::NaiveTime::MIN).and_utc(), end.and_time(chrono::NaiveTime::MIN).and_utc());
-    let collections = client.collections().await?;
+    let mut collections = client.collections().await?;
+    for collection in &mut collections {
+        if let Some(name) = placeholder_name(&collection.name) {
+            collection.name = name.to_string();
+        }
+    }
     let mut events = Vec::new();
     let mut todos = Vec::new();
     for collection in &collections {
@@ -309,6 +316,16 @@ async fn fetch_all(
         }
     }
     Ok((collections, events, window, todos))
+}
+
+/// Nextcloud stores translation keys instead of names for the collections it creates on its
+/// own and leaves translating them to the clients.
+fn placeholder_name(name: &str) -> Option<&'static str> {
+    match name {
+        "DEFAULT_TASK_CALENDAR_NAME" => Some(tr("Tasks")),
+        "DEFAULT_CALENDAR_NAME" => Some(tr("Personal")),
+        _ => None,
+    }
 }
 
 /// The old href when an item moves to another collection (its href is not inside the
@@ -423,6 +440,12 @@ mod tests {
         let e = event(now, 2);
         assert!(overlaps(&e, now - Span::hours(1), now + Span::hours(1)));
         assert!(!overlaps(&e, now + Span::hours(2), now + Span::hours(3)));
+    }
+
+    #[test]
+    fn nextcloud_placeholder_names_are_translated() {
+        assert_eq!(placeholder_name("DEFAULT_TASK_CALENDAR_NAME"), Some(tr("Tasks")));
+        assert_eq!(placeholder_name("Persönlich"), None);
     }
 
     #[test]

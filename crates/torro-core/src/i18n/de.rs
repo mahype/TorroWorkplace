@@ -116,6 +116,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Day", "Tag"),
     ("From {date}", "Ab {date}"),
     ("Month", "Monat"),
+    ("Personal", "Persönlich"),
     ("Today", "Heute"),
     ("Week", "Woche"),
     ("Week {week} · {month} {year}", "KW {week} · {month} {year}"),
