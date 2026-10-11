@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Calendar – Timeline</title>
+<!-- Entwurf: Zeitstrahl nach dem Vorbild der HEY-Tagesansicht, im Linear-Stil von Torro.
+     Breit/Mittel: waagerechter Filmstreifen über mehrere Tage, Nächte eingeklappt (gezackte Kanten),
+     Klick auf eine Nacht klappt sie auf, Klick auf freie Zeit legt einen Platzhalter "New event" an.
+     Schmal: derselbe Zeitstrahl senkrecht. ?size=s erzwingt schmal, ?theme=light hell.
+     Mausrad scrollt waagerecht, Strg+Mausrad zoomt die Stundenbreite. Alle Termine sind Beispieldaten. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--night:#121626}
+:root[data-theme="light"]{--night:#E3E7F1}
+.body{flex:1;display:flex;min-height:0}
+.tl{flex:1;min-width:0;overflow:auto;position:relative;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+.track{position:relative}
+.abs{position:absolute}
+.hline{position:absolute;background:var(--line)}
+.mid{position:absolute;background:var(--line-strong)}
+.hl{position:absolute;font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3);white-space:nowrap}
+.daywrap{position:absolute}
+.daylabel{position:sticky;left:0;top:0;display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;color:var(--text2);font-size:12px;white-space:nowrap;background:var(--panel)}
+.daylabel b{font:500 13px/24px "Inter Tabular",Inter,sans-serif;color:var(--text2);min-width:24px;height:24px;border-radius:12px;text-align:center;padding:0 4px}
+.daylabel.today{color:var(--text)} .daylabel.today b{background:var(--accent);color:#fff}
+.chip{position:absolute;height:22px;display:flex;align-items:center;gap:6px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:500;
+  background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c);white-space:nowrap;overflow:hidden}
+.chip .faint{font-weight:400}
+
+/* Nacht: eingeklappt als schmales Band mit gezackten Kanten (HEY: "Night time"), aufgeklappt dunkler hinterlegt. */
+.night{position:absolute;background:var(--night);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;color:var(--text3);font-size:12px}
+.night:hover{background:color-mix(in srgb,var(--night) 80%,var(--text3))}
+.night .lbl{display:flex;align-items:center;gap:6px;white-space:nowrap}
+html:not([data-size="s"]) .night .lbl{writing-mode:vertical-rl;transform:rotate(180deg)}
+.night .stars{position:absolute;inset:0;pointer-events:none;
+  background-image:radial-gradient(1px 1px at 20% 30%,var(--text3) 50%,transparent 51%),radial-gradient(1px 1px at 70% 55%,var(--text3) 50%,transparent 51%),radial-gradient(1px 1px at 40% 80%,var(--text3) 50%,transparent 51%),radial-gradient(1px 1px at 80% 15%,var(--text3) 50%,transparent 51%);
+  background-size:48px 64px;opacity:.6}
+.night .mark{position:absolute;width:6px;height:6px;border-radius:50%;background:var(--c);box-shadow:0 0 0 2px var(--night)}
+.nightbg{position:absolute;background:color-mix(in srgb,var(--night) 60%,var(--panel))}
+.fold{position:absolute;height:22px;display:flex;align-items:center;gap:4px;padding:0 6px;border-radius:4px;font-size:11px;color:var(--text3);background:var(--raised);border:1px solid var(--line-strong);cursor:pointer;white-space:nowrap}
+.fold:hover{color:var(--text);background:var(--hover)}
+.fold svg{width:12px;height:12px}
+
+/* Termine: waagerecht als volle Säule mit gedrehtem Titel (HEY), senkrecht wie im Tagesraster. */
+.ev{position:absolute;border-radius:4px;overflow:hidden;cursor:pointer;
+  background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c)}
+.ev:hover{background:color-mix(in srgb,var(--c) calc(var(--tint) + 8%),var(--panel))}
+.ev.sel{outline:2px solid var(--focus);outline-offset:1px}
+.ev.tent{background:transparent;box-shadow:none;border:1px dashed var(--c)}
+.ev.past{opacity:.55}
+.ev .txt{position:absolute;font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden}
+.ev .txt b{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.ev .txt small{display:block;font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text2);overflow:hidden;text-overflow:ellipsis}
+html:not([data-size="s"]) .ev .txt{left:3px;top:0;bottom:0;padding:8px 3px;writing-mode:vertical-rl;transform:rotate(180deg)}
+html[data-size="s"] .ev .txt{left:3px;right:0;top:0;padding:3px 6px}
+.ev.ghost{background:transparent;box-shadow:none;border:1px dashed var(--text3);color:var(--text2)}
+.free{position:absolute;font-size:12px;color:var(--text3);white-space:nowrap;text-align:center}
+.now{position:absolute;background:var(--accent);pointer-events:none}
+.nowpill{position:absolute;height:18px;padding:0 5px;border-radius:4px;background:var(--accent);color:#fff;font:500 11px/18px "Inter Tabular",Inter,sans-serif;pointer-events:none}
+.nowdot{position:absolute;width:7px;height:7px;border-radius:50%;background:var(--accent);pointer-events:none}
+
+.props .title{font-size:22px;line-height:28px;font-weight:600;margin:8px 0 16px}
+.proto{position:fixed;right:16px;bottom:16px;display:flex;gap:4px;align-items:center;padding:4px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);font-size:12px;color:var(--text3);z-index:40}
+.proto span{padding:0 6px}
+.proto a{color:var(--text2);text-decoration:none;padding:4px 8px;border-radius:6px}
+.proto a:hover{background:var(--hover);color:var(--text)}
+html[data-size="s"] body{max-width:440px;margin:0 auto;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+</style></head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="switcher"><span class="logo">T</span><b>Calendar</b><i data-lucide="chevron-down" class="s14 faint"></i><span class="grow"></span>
+      <button class="iconbtn"><i data-lucide="search"></i></button><button class="iconbtn boxed"><i data-lucide="square-pen"></i></button></div>
+    <a class="nav"><i data-lucide="sun"></i><span class="grow">Today</span><span class="count">9</span></a>
+    <a class="nav"><i data-lucide="list"></i><span class="grow">Upcoming</span></a>
+    <div class="group">Views <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><i data-lucide="calendar-days"></i><span class="grow">Day</span><kbd>D</kbd></a>
+    <a class="nav"><i data-lucide="calendar-range"></i><span class="grow">Week</span><kbd>W</kbd></a>
+    <a class="nav"><i data-lucide="calendar"></i><span class="grow">Month</span><kbd>M</kbd></a>
+    <a class="nav"><i data-lucide="list"></i><span class="grow">Agenda</span><kbd>A</kbd></a>
+    <a class="nav active"><i data-lucide="gantt-chart"></i><span class="grow">Timeline</span><kbd>T</kbd></a>
+    <div class="group">Calendars <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><span class="dot" style="--c:var(--c-work)"></span><span class="grow">Work</span><span class="count">12</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-personal)"></span><span class="grow">Personal</span><span class="count">7</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-family)"></span><span class="grow">Family</span><span class="count">3</span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="settings"></i><span class="grow">Settings</span></a>
+  </aside>
+  <main class="panel">
+    <div class="header">
+      <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+      <div class="crumbs"><b>October 2026</b><span class="faint not-s">Week 41</span></div>
+      <button class="btn ghost" id="today" style="margin-left:8px">Today</button>
+      <button class="iconbtn"><i data-lucide="chevron-left"></i></button><button class="iconbtn"><i data-lucide="chevron-right"></i></button>
+      <span class="grow"></span>
+      <button class="btn ghost not-s" id="nights" title="Expand or collapse all nights"><i data-lucide="moon" class="s14"></i><span>Nights</span></button>
+      <div class="seg only-l"><span>Day</span><span>Week</span><span>Month</span><span>Agenda</span><span class="on">Timeline</span></div>
+      <button class="btn not-l">Timeline<i data-lucide="chevron-down" class="s14 chev"></i></button>
+      <button class="btn primary not-s"><i data-lucide="plus" class="s14"></i>New event</button>
+    </div>
+    <div class="body">
+      <div class="tl" id="tl"><div class="track" id="track"></div></div>
+      <aside class="props only-l" id="props"></aside>
+    </div>
+  </main>
+</div>
+<div class="proto"><span>Entwurf</span><a href="?">Breit</a><a href="?size=s">Schmal</a><a href="?theme=light">Hell</a><a href="radar.html">Radar →</a></div>
+
+<script>
+// Zeit in Minuten ab Di, 6. Okt. 2026, 00:00. Tag 0 = Di, 1 = Mi (heute), 2 = Do, 3 = Fr.
+const DAY = 1440, H = 60;
+const t = (d, h, m = 0) => d * DAY + h * H + m;
+const DAYS = [["Tue", 6], ["Wed", 7], ["Thu", 8], ["Fri", 9]];
+const NOW = t(1, 14, 20);
+const START = t(0, 12), END = t(3, 14);
+const NIGHT_FROM = 22, NIGHT_TO = 6;
+const CAL = {work: ["Work", "var(--c-work)"], personal: ["Personal", "var(--c-personal)"], family: ["Family", "var(--c-family)"]};
+
+const EVENTS = [
+  [t(0, 13), t(0, 14, 30), "API design workshop", "work", "Room 2 · Office Berlin"],
+  [t(0, 18, 30), t(0, 19, 30), "Run", "personal", "Tiergarten"],
+  [t(0, 20, 30), t(0, 21, 45), "Series night", "personal", ""],
+  [t(1, 9, 30), t(1, 9, 45), "Daily standup", "work", "meet.example.org/daily"],
+  [t(1, 10), t(1, 11, 30), "Sprint review", "work", "Room 2 · Office Berlin"],
+  [t(1, 12, 30), t(1, 13, 30), "Lunch with Jana", "personal", "Café Kranzler"],
+  [t(1, 14), t(1, 15), "Design review", "work", "meet.example.org/design"],
+  [t(1, 14, 30), t(1, 15), "1:1 with Lena", "work", "Room 4"],
+  [t(1, 16, 30), t(1, 17), "Pick up kids", "family", "School"],
+  [t(1, 17, 30), t(1, 18, 30), "Dentist?", "personal", "Dr. Weber", true],
+  [t(1, 19), t(1, 20, 30), "Family dinner", "family", "Home"],
+  [t(1, 23), t(1, 23, 45), "Server maintenance", "work", "On call"],
+  [t(2, 6, 30), t(2, 7, 15), "Run", "personal", "Tiergarten"],
+  [t(2, 9, 30), t(2, 9, 45), "Daily standup", "work", "meet.example.org/daily"],
+  [t(2, 11), t(2, 12), "Hiring sync", "work", "Room 4"],
+  [t(2, 15), t(2, 16), "Client presentation", "work", "Stadtwerke, Hall B"],
+  [t(2, 19), t(2, 20), "Swimming", "personal", "Stadtbad"],
+  [t(3, 9, 30), t(3, 9, 45), "Daily standup", "work", "meet.example.org/daily"],
+  [t(3, 10), t(3, 11), "Retrospective", "work", "Room 2"],
+].map(([s, e, title, cal, where, tent], i) => ({i, s, e, title, cal, where, tent: !!tent}));
+const ALLDAY = [[1, 2, "Home office", "personal"], [2, 4, "Berlin trip", "family"]];
+
+const vertical = document.documentElement.dataset.size === "s";
+let hourW = vertical ? 48 : 56;           // Länge einer Stunde auf der Zeitachse
+const NIGHT_W = vertical ? 44 : 48;       // Länge einer eingeklappten Nacht
+const expanded = new Set();               // aufgeklappte Nächte (Index des Abends)
+let selected = 6, ghost = null;
+
+const pad = n => String(n).padStart(2, "0");
+const clock = m => `${pad(Math.floor(((m % DAY) + DAY) % DAY / H))}:${pad(((m % H) + H) % H)}`;
+const dur = m => m % H ? `${Math.floor(m / H)} h ${m % H}` : `${m / H} h`;
+
+// Abschnitte der Achse: Tag (volle Länge) und Nacht (eingeklappt oder aufgeklappt).
+function segments() {
+  const segs = []; let x = 0, s = START;
+  for (let d = 0; d <= 3; d++) {
+    const nFrom = t(d, NIGHT_FROM), nTo = t(d + 1, NIGHT_TO);
+    if (nFrom > s && s < END) { const e = Math.min(nFrom, END); segs.push({kind: "day", s, e, x, len: (e - s) / H * hourW}); x += (e - s) / H * hourW; s = e; }
+    if (nFrom < END && s < END) {
+      const open = expanded.has(d), len = open ? (nTo - nFrom) / H * hourW : NIGHT_W;
+      segs.push({kind: "night", d, s: nFrom, e: nTo, x, len, open}); x += len; s = nTo;
+    }
+  }
+  return {segs, total: x};
+}
+function pos(m, segs) {
+  for (const g of segs) if (m <= g.e) return g.x + Math.max(0, m - g.s) / (g.e - g.s) * g.len;
+  const g = segs[segs.length - 1]; return g.x + g.len;
+}
+function inCollapsedNight(m, segs) { return segs.find(g => g.kind === "night" && !g.open && m >= g.s && m < g.e); }
+
+// Lanes für Überschneidungen: im Waagerechten teilen sich Termine die Höhe, im Senkrechten die Breite.
+function lanes(evs) {
+  const sorted = [...evs].sort((a, b) => a.s - b.s || b.e - a.e); let cluster = [], end = -1;
+  const flush = () => { const lanesEnd = []; cluster.forEach(ev => { let l = lanesEnd.findIndex(e => e <= ev.s); if (l < 0) { l = lanesEnd.length; lanesEnd.push(0); } lanesEnd[l] = ev.e; ev.lane = l; }); cluster.forEach(ev => ev.lanes = lanesEnd.length); cluster = []; };
+  sorted.forEach(ev => { if (ev.s >= end) flush(); cluster.push(ev); end = Math.max(end, ev.e); }); flush();
+}
+
+function render() {
+  const tl = document.getElementById("tl"), track = document.getElementById("track");
+  const {segs, total} = segments();
+  const cross = vertical ? tl.clientWidth : tl.clientHeight;
+  // Querschnitt: Tageskopf 28 · Achse 24 · Ganztägig 28 · Termine · freie Zeit 28 (waagerecht);
+  // senkrecht: Achse 44 links, Termine bis zum Rand, freie Zeit rechts im Termin-Bereich.
+  const R = vertical ? {axis: [0, 44], lanes: [48, cross - 8]} : {day: [0, 28], axis: [28, 52], allday: [52, 80], lanes: [84, cross - 32], free: [cross - 28, cross - 4]};
+  const html = [];
+  const box = (main0, main1, c0, c1) => vertical
+    ? `left:${c0}px;width:${c1 - c0}px;top:${main0}px;height:${main1 - main0}px`
+    : `left:${main0}px;width:${main1 - main0}px;top:${c0}px;height:${c1 - c0}px`;
+  track.style.width = vertical ? "100%" : total + "px";
+  track.style.height = vertical ? total + "px" : "100%";
+
+  // Stundenlinien und -beschriftung (Tag und aufgeklappte Nacht).
+  for (const g of segs) {
+    if (g.kind === "night" && g.open) html.push(`<div class="nightbg" style="${box(g.x, g.x + g.len, vertical ? R.axis[1] : R.axis[1], cross)}"></div>`);
+    if (g.kind === "night" && !g.open) continue;
+    for (let m = Math.ceil(g.s / H) * H; m < g.e; m += H) {
+      const p = pos(m, segs);
+      html.push(`<div class="hline" style="${box(p, p + 1, vertical ? R.axis[1] : R.axis[1], cross)}"></div>`);
+      if (Math.abs(m - NOW) < 25) continue;
+      html.push(vertical ? `<span class="hl" style="top:${p - 7}px;right:${cross - R.axis[1] + 6}px">${clock(m)}</span>`
+                         : `<span class="hl" style="left:${p + 4}px;top:${R.axis[0] + 5}px">${clock(m)}</span>`);
+    }
+  }
+  // Tageskopf (waagerecht): klebt links, solange der Tag sichtbar ist.
+  for (let d = 0; d <= 3; d++) {
+    const a = Math.max(START, t(d, 0)), b = Math.min(END, t(d + 1, 0)); if (a >= b) continue;
+    const p0 = pos(a, segs), p1 = pos(b, segs), today = d === 1;
+    const lbl = `<span class="daylabel${today ? " today" : ""}">${DAYS[d][0]} <b>${DAYS[d][1]}</b>${today ? "<span class='faint'>Today</span>" : ""}</span>`;
+    html.push(vertical ? `<div class="daywrap" style="left:${R.lanes[0]}px;right:8px;top:${p0}px;height:${p1 - p0}px;z-index:3">${lbl.replace('class="daylabel', 'style="top:0;left:auto;border-radius:6px" class="daylabel')}</div>`
+                       : `<div class="daywrap" style="left:${p0}px;width:${p1 - p0}px;top:0;height:28px;z-index:3">${lbl}</div>`);
+    if (d > 0) { const p = pos(t(d, 0), segs); html.push(`<div class="mid" style="${box(p, p + 1, 0, cross)}"></div>`); }
+  }
+  // Ganztägig: eigener Streifen unter der Achse (senkrecht: rechts im Tageskopf).
+  ALLDAY.forEach(([d0, d1, title, cal]) => {
+    const p0 = pos(Math.max(START, t(d0, NIGHT_TO)), segs) + 2, p1 = pos(Math.min(END, t(d1 - 1, NIGHT_FROM)), segs) - 4;
+    const days = d1 - d0 > 1 ? ` <span class="faint">${d1 - d0} days</span>` : "";
+    if (!vertical) html.push(`<div class="chip" style="${box(p0, p1, R.allday[0] + 3, R.allday[0] + 25)};--c:${CAL[cal][1]}">${title}${days}</div>`);
+    else html.push(`<div class="chip" style="right:16px;top:${pos(t(d0, 0), segs) + 3}px;--c:${CAL[cal][1]};z-index:4">${title}</div>`);
+  });
+
+  // Nächte: eingeklappt mit Zacken, Punkten für Termine darin und Dauer.
+  for (const g of segs.filter(g => g.kind === "night" && !g.open)) {
+    const z = zigzag(g.len, vertical);
+    const inner = EVENTS.filter(e => e.s >= g.s && e.s < g.e);
+    const marks = inner.map(e => { const f = (e.s - g.s) / (g.e - g.s); return vertical
+      ? `<span class="mark" style="--c:${CAL[e.cal][1]};top:${(g.len - 6) / 2}px;left:${8 + f * 60}%" title="${clock(e.s)} ${e.title}"></span>`
+      : `<span class="mark" style="--c:${CAL[e.cal][1]};left:${(g.len - 6) / 2}px;top:${12 + f * 70}%" title="${clock(e.s)} ${e.title}"></span>`; }).join("");
+    const extra = inner.length ? ` · ${inner.length} event` : "";
+    html.push(`<div class="night" data-night="${g.d}" title="Expand night" style="${box(g.x, g.x + g.len, vertical ? R.axis[1] : R.axis[0], cross)};clip-path:${z}">
+      <span class="stars"></span>${marks}<span class="lbl"><i data-lucide="moon" class="s14"></i>Night · ${dur(g.e - g.s)}${extra}</span></div>`);
+    const mid = pos(t(g.d + 1, 0), segs);
+  }
+  for (const g of segs.filter(g => g.kind === "night" && g.open)) {
+    html.push(vertical ? `<div class="fold" data-fold="${g.d}" style="top:${g.x + 4}px;right:16px;z-index:4"><i data-lucide="fold-vertical"></i>Collapse night</div>`
+                       : `<div class="fold" data-fold="${g.d}" style="left:${g.x + 4}px;top:${R.allday[0] + 3}px;z-index:4"><i data-lucide="fold-horizontal"></i>Collapse night</div>`);
+  }
+
+  // Freie Zeit ab 2 h zwischen Terminen, nur in Tagesabschnitten (HEY: "Freetime").
+  for (const g of segs.filter(g => g.kind === "day")) {
+    const busy = EVENTS.filter(e => e.e > g.s && e.s < g.e).sort((a, b) => a.s - b.s);
+    let cur = g.s; const gaps = [];
+    busy.forEach(e => { if (e.s - cur >= 120) gaps.push([cur, e.s]); cur = Math.max(cur, e.e); });
+    if (g.e - cur >= 120) gaps.push([cur, g.e]);
+    gaps.forEach(([a, b]) => { if (b <= START || a >= END) return; const p0 = pos(a, segs), p1 = pos(b, segs);
+      html.push(vertical ? `<span class="free" style="left:${R.lanes[0]}px;right:8px;top:${(p0 + p1) / 2 - 10}px">${dur(Math.floor((b - a) / 30) * 30)} free</span>`
+                         : `<span class="free" style="left:${p0}px;width:${p1 - p0}px;top:${R.free[0] + 4}px">${dur(Math.floor((b - a) / 30) * 30)} free</span>`); });
+  }
+
+  // Termine (außerhalb eingeklappter Nächte).
+  const shown = EVENTS.filter(e => e.e > START && e.s < END && !inCollapsedNight(e.s, segs)).map(e => ({...e}));
+  if (ghost && !inCollapsedNight(ghost.s, segs)) shown.push({...ghost});
+  lanes(shown);
+  for (const e of shown) {
+    const p0 = pos(e.s, segs), p1 = Math.max(pos(e.e, segs), p0 + 16) - 2;
+    const [c0, c1] = R.lanes, laneLen = (c1 - c0) / e.lanes;
+    const q0 = c0 + e.lane * laneLen, q1 = q0 + laneLen - 3;
+    const cls = ["ev", e.tent ? "tent" : "", e.e <= NOW ? "past" : "", e.i === selected ? "sel" : "", e.ghost ? "ghost" : ""].join(" ");
+    const wide = (p1 - p0) >= 40;
+    const time = `${clock(e.s)}–${clock(e.e)}`;
+    const body = vertical
+      ? ((p1 - p0) < 36 ? `<b>${time.slice(0, 5)}  ${e.title}</b>` : `<b>${e.title}</b><small>${time}</small>`)
+      : (wide ? `<b>${e.title}</b><small>${time}</small>` : `<b>${e.title}</b>`);
+    html.push(`<div class="${cls}" data-ev="${e.i}" title="${time} ${e.title}" style="${box(p0, p1, q0, q1)};--c:${e.ghost ? "var(--text3)" : CAL[e.cal][1]}"><div class="txt">${body}</div></div>`);
+  }
+
+  // Jetzt: rote Linie mit Zeit in der Achse.
+  const np = pos(NOW, segs);
+  if (vertical) html.push(`<div class="now" style="top:${np}px;height:1px;left:${R.axis[1]}px;right:0"></div><div class="nowpill" style="top:${np - 9}px;left:2px">${clock(NOW)}</div>`);
+  else html.push(`<div class="now" style="left:${np}px;width:1px;top:${R.axis[1]}px;bottom:0"></div><div class="nowpill" style="left:${np - 20}px;top:${R.axis[0] + 3}px">${clock(NOW)}</div>`);
+
+  track.innerHTML = html.join("");
+  lucide.createIcons();
+  renderProps();
+}
+
+// Gezackte Kanten der eingeklappten Nacht: oben und unten (senkrecht: links und rechts).
+function zigzag(len, vert) {
+  const n = Math.max(2, Math.round(len / 8)), a = [], b = [];
+  for (let k = 0; k <= n; k++) { const f = (k / n * 100).toFixed(2) + "%", up = k % 2 ? "0px" : "5px", dn = k % 2 ? "100%" : "calc(100% - 5px)";
+    a.push(vert ? `${up} ${f}` : `${f} ${up}`); b.unshift(vert ? `${dn} ${f}` : `${f} ${dn}`); }
+  return `polygon(${a.join(",")},${b.join(",")})`;
+}
+
+function renderProps() {
+  const p = document.getElementById("props"); const e = EVENTS[selected];
+  if (!e) { p.innerHTML = `<h4>Wednesday, 7 October</h4><div class="faint">Select an event to see its details.</div>`; return; }
+  p.innerHTML = `<div class="prop" style="margin-top:-6px"><span class="dot" style="--c:${CAL[e.cal][1]}"></span>${CAL[e.cal][0]}</div>
+    <div class="title">${e.title}</div>
+    <h4>When</h4><div class="prop"><i data-lucide="clock"></i>${DAYS[Math.floor(e.s / DAY)][0]}, ${DAYS[Math.floor(e.s / DAY)][1]} Oct · ${clock(e.s)} – ${clock(e.e)}</div>
+    ${e.tent ? `<div class="prop"><i data-lucide="circle-help"></i>Tentative</div>` : ""}
+    ${e.where ? `<h4>Where</h4><div class="prop"><i data-lucide="map-pin"></i>${e.where}</div>` : ""}
+    <h4>Later in the plan</h4><div class="faint" style="font-size:12px;line-height:16px">Day note, day label and photos (HEY: Journal, Day Labels) come in step 2 and need their own API command.</div>`;
+  lucide.createIcons();
+}
+
+const tl = document.getElementById("tl");
+tl.addEventListener("click", ev => {
+  const n = ev.target.closest("[data-night]"), f = ev.target.closest("[data-fold]"), e = ev.target.closest("[data-ev]");
+  if (n) { expanded.add(+n.dataset.night); render(); return; }
+  if (f) { expanded.delete(+f.dataset.fold); render(); return; }
+  if (e) { selected = +e.dataset.ev; ghost = null; render(); return; }
+  // Freie Fläche: Platzhalter "New event" auf 15 min gerastert, eine Stunde lang.
+  const r = document.getElementById("track").getBoundingClientRect();
+  const p = vertical ? ev.clientY - r.top : ev.clientX - r.left;
+  const {segs} = segments(); const g = segs.find(g => p >= g.x && p < g.x + g.len); if (!g) return;
+  const m = Math.round((g.s + (p - g.x) / g.len * (g.e - g.s)) / 15) * 15;
+  ghost = {i: -1, s: m, e: m + 60, title: "New event", cal: "work", ghost: true}; selected = -1; render();
+});
+tl.addEventListener("wheel", ev => {
+  if (ev.ctrlKey) { ev.preventDefault(); const before = tl.scrollLeft / hourW; hourW = Math.min(112, Math.max(36, hourW - Math.sign(ev.deltaY) * 8)); render(); tl.scrollLeft = before * hourW; return; }
+  if (!vertical && Math.abs(ev.deltaY) > Math.abs(ev.deltaX)) { ev.preventDefault(); tl.scrollLeft += ev.deltaY; }
+}, {passive: false});
+document.getElementById("nights").onclick = () => { if (expanded.size) expanded.clear(); else for (let d = 0; d <= 3; d++) expanded.add(d); render(); };
+const toNow = () => { const {segs} = segments(); const p = pos(NOW, segs); if (vertical) tl.scrollTop = p - tl.clientHeight * 0.3; else tl.scrollLeft = p - tl.clientWidth * 0.3; };
+document.getElementById("today").onclick = toNow;
+addEventListener("resize", render);
+render(); toNow();
+</script>
+</body></html>
