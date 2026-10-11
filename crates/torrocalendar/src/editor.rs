@@ -3,7 +3,8 @@
 //! A dialog over the calendar, after Linear (task C.5): a large borderless title, then the
 //! calendar (pick list with its colour dot), the all-day switch, start and end (date and time
 //! side by side, `torro_gui::datetime::parse_*`), location and notes; Delete (danger) on the
-//! left, Cancel (ghost) and Save (the one primary button) on the right.
+//! left, Cancel (ghost) and Save (the one primary button, 36 high as in a Linear dialog) on the
+//! right. The fields scroll when the window is too low for them; the actions stay below them.
 //!
 //! Errors stay hidden until the first attempt to save. Save is always active: with problems it
 //! marks the field that is wrong, says why under it and hands the app an [`Action::Focus`] for
@@ -20,7 +21,8 @@
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::{
-    column, container, pick_list, row, rule, scrollable, space as blank, svg, text, text_editor, text_input, toggler,
+    button, column, container, pick_list, row, rule, scrollable, space as blank, stack, svg, text, text_editor,
+    text_input, toggler,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Subscription, Theme, keyboard};
 use torro_core::i18n::tr;
@@ -429,23 +431,25 @@ impl Editor {
         if let Some(choice) = &form.calendar {
             calendar = calendar.push(color_dot(collection_color(choice.color.as_deref()), space::S));
         }
-        calendar = calendar.push(
-            pick_list(self.choices.as_slice(), form.calendar.clone(), Message::Calendar)
-                .placeholder(tr("Choose a calendar"))
-                .padding(style::INPUT_PADDING)
-                .text_size(typo::BODY.size)
-                .text_line_height(typo::BODY.line_height)
-                .font(typo::BODY.font)
-                .width(Length::Fill)
-                .style(move |theme, status| {
-                    let mut look = style::pick_list(theme, status);
-                    if calendar_invalid {
-                        look.border.color = palette(theme).error_text;
-                    }
-                    look
-                })
-                .menu_style(style::pick_list_menu),
-        );
+        let choices = pick_list(self.choices.as_slice(), form.calendar.clone(), Message::Calendar)
+            .placeholder(tr("Choose a calendar"))
+            // Iced's handle is a glyph from a font; the design wants the Lucide chevron, which is an
+            // SVG, so it lies over the list instead ([`chevron_over`]) and the text keeps clear of it.
+            .handle(pick_list::Handle::None)
+            .padding(Padding { right: style::INPUT_PADDING.right + icon::SIZE_SM + space::S, ..style::INPUT_PADDING })
+            .text_size(typo::BODY.size)
+            .text_line_height(typo::BODY.line_height)
+            .font(typo::BODY.font)
+            .width(Length::Fill)
+            .style(move |theme, status| {
+                let mut look = style::pick_list(theme, status);
+                if calendar_invalid {
+                    look.border.color = palette(theme).error_text;
+                }
+                look
+            })
+            .menu_style(style::pick_list_menu);
+        calendar = calendar.push(chevron_over(choices));
 
         let all_day = toggler(form.all_day)
             .label(tr("All day"))
@@ -494,7 +498,7 @@ impl Editor {
         actions = actions
             .push(blank::horizontal())
             .push(text_button(None, tr("Cancel"), style::button::ghost, Some(Message::Cancel)))
-            .push(text_button(None, tr("Save"), style::button::primary, Some(Message::Save)));
+            .push(dialog_primary(tr("Save"), Message::Save));
 
         let fields = column![
             column![head, title].spacing(space::S),
@@ -506,7 +510,7 @@ impl Editor {
             group(Some(tr("Notes")), notes, None),
         ]
         .spacing(space::L);
-        card(column![fields, rule::horizontal(1).style(style::rule), actions].spacing(space::L), frame)
+        card(fields, actions, frame)
     }
 
     /// A recurring occurrence or an event in a read-only calendar: the details as text, a
@@ -547,7 +551,7 @@ impl Editor {
         let close =
             row![blank::horizontal(), text_button(None, tr("Close"), style::button::secondary, Some(Message::Cancel))]
                 .align_y(Alignment::Center);
-        card(body.push(rule::horizontal(1).style(style::rule)).push(close).spacing(space::L), frame)
+        card(body, close, frame)
     }
 }
 
@@ -701,19 +705,63 @@ enum Frame {
     Window,
 }
 
+/// Height of the footer under the fields: the line, the gap above the buttons, the 36-high
+/// primary button and the card's padding below it.
+const FOOTER: f32 = size::HAIRLINE + space::L + size::CONTROL_LG + space::XL;
+
+/// The primary button of a dialog: 36 high ([`size::CONTROL_LG`]), the label in `BODY_STRONG`.
+fn dialog_primary<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
+    button(container(typo::text(typo::BODY_STRONG, label)).center_y(Length::Fill))
+        .height(size::CONTROL_LG)
+        .padding(style::BUTTON_PADDING)
+        .style(style::button::primary)
+        .on_press(on_press)
+        .into()
+}
+
+/// `list` with Lucide's `chevron-down` in `text_3` over its right end, where Iced draws its own
+/// arrow. The icon takes no input, so clicks on it reach the list.
+fn chevron_over<'a>(list: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let chevron =
+        icon(Icon::ChevronDown, icon::SIZE_SM).style(|theme, _| svg::Style { color: Some(palette(theme).text_3) });
+    let chevron = container(chevron)
+        .padding(Padding::ZERO.right(style::INPUT_PADDING.right))
+        .align_right(Length::Fill)
+        .center_y(Length::Fill);
+    stack![list.into(), chevron].width(Length::Fill).into()
+}
+
 /// The surface the editor sits on: a dialog ([`style::container::popover`]: `menu`, radius 10),
-/// or the whole window on the same `menu` colour without border and shadow. The whole card
-/// scrolls when the window is too low for it, since Iced cannot pin the buttons below a
-/// scrolling part.
-fn card<'a>(body: impl Into<Element<'a, Message>>, frame: Frame) -> Element<'a, Message> {
-    let inner = container(body).padding(space::XL).width(Length::Fill);
-    let scroll = scrollable(inner)
+/// or the whole window on the same `menu` colour without border and shadow. `body` scrolls when
+/// the window is too low for it; `actions` stay fixed below it, under a line.
+///
+/// Iced lays out a column from the top and would give the actions what the scrolling body left,
+/// which is nothing in a low window. So the body is the base of a stack and keeps the footer's
+/// height free below it, and the footer is a layer aligned to the bottom of that base: the stack
+/// is as high as the base, at most the window, and the actions always show.
+fn card<'a>(
+    body: impl Into<Element<'a, Message>>,
+    actions: impl Into<Element<'a, Message>>,
+    frame: Frame,
+) -> Element<'a, Message> {
+    let inner = container(body).padding(Padding::new(space::XL).bottom(space::L)).width(Length::Fill);
+    let mut scroll = scrollable(inner)
         .width(Length::Fill)
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable);
+    if frame == Frame::Window {
+        scroll = scroll.height(Length::Fill);
+    }
+    let base = container(scroll).padding(Padding::ZERO.bottom(FOOTER)).width(Length::Fill);
+    let footer = column![rule::horizontal(1).style(style::rule), container(actions).center_y(Length::Fill)]
+        .spacing(space::L)
+        .height(FOOTER - space::XL);
+    let footer = container(footer).padding([0.0, space::XL]).align_bottom(Length::Fill).width(Length::Fill);
+    let footer = container(footer).padding(Padding::ZERO.bottom(space::XL)).height(Length::Fill);
+    let content = stack![base, footer].width(Length::Fill);
     match frame {
-        Frame::Dialog => container(scroll).width(Length::Fill).style(style::container::popover).into(),
-        Frame::Window => container(scroll.height(Length::Fill))
+        Frame::Dialog => container(content).width(Length::Fill).style(style::container::popover).into(),
+        Frame::Window => container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(|t: &Theme| container::Style {

@@ -338,7 +338,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   vs. „Needs sign-in“), Problem überall `Tone::Error`, Anmeldung nötig überall Attention.
 
 ### D.5 Editor: Aktionen immer sichtbar
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/editor.rs`
 - Felder scrollen, Aktionen (Delete · Cancel · Save) bleiben unten fest; Primärknopf im Dialog 36
   hoch (`CONTROL_LG`); `pick_list` mit Lucide `chevron-down` statt Iced-Dreieck.
