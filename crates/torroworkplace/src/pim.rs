@@ -107,12 +107,20 @@ impl PimService {
                 Ok(()) => Response::Ok,
                 Err(err) => provider_error(&err),
             },
-            Request::Collections => Response::Collections { collections: self.state.read().await.collections.clone() },
+            Request::Collections => {
+                let collections = self.state.read().await.collections.clone();
+                Response::Collections { collections: without_hidden(collections, &hidden_collections(), |c| &c.id) }
+            }
             Request::Events { start, end } => match self.events(start, end).await {
-                Ok(events) => Response::Events { events },
+                Ok(events) => {
+                    Response::Events { events: without_hidden(events, &hidden_collections(), |e| &e.collection) }
+                }
                 Err(err) => provider_error(&err),
             },
-            Request::Todos => Response::Todos { todos: self.state.read().await.todos.clone() },
+            Request::Todos => {
+                let todos = self.state.read().await.todos.clone();
+                Response::Todos { todos: without_hidden(todos, &hidden_collections(), |t| &t.collection) }
+            }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
                 Err(err) => provider_error(&err),
@@ -135,30 +143,34 @@ impl PimService {
 
     /// All accounts with state and all collections, for the control centre (task S.2).
     pub async fn accounts(&self) -> Vec<torro_ipc::AccountInfo> {
-        Vec::new()
+        account_infos(&*self.state.read().await)
     }
 
     /// Removes the account `id`: revokes its app password on the server (best effort),
     /// forgets account and secret, empties the cache (task S.2).
     pub async fn remove_account(&self, id: &str) -> Result<(), String> {
-        let _ = id;
-        Err("remove_account not implemented yet (task S.2)".into())
+        let Some(connected) = self.state.read().await.account.clone().filter(|c| c.account.id == id) else {
+            return Err(format!("no account {id:?}"));
+        };
+        // Revoke first: afterwards the secret is gone and the device would stay valid in
+        // the user's "Devices & sessions" for good. Offline or refused only costs a log line.
+        match &self.http {
+            Some(http) => {
+                if let Err(err) = account::revoke(http, &connected).await {
+                    eprintln!("torroworkplace: app password not revoked on the server: {err}");
+                }
+            }
+            None => eprintln!("torroworkplace: app password not revoked on the server: no HTTP client"),
+        }
+        account::keychain(account::forget).await?;
+        let mut state = self.state.write().await;
+        // A sign-in that runs meanwhile goes on; everything of the removed account goes.
+        *state = State { signing_in: state.signing_in.take(), ..State::default() };
+        Ok(())
     }
 
     pub async fn account_state(&self) -> AccountState {
-        let state = self.state.read().await;
-        if let Some((server, login_url)) = &state.signing_in {
-            return AccountState::SigningIn { server: server.clone(), login_url: login_url.clone() };
-        }
-        match &state.account {
-            Some(connected) => AccountState::Connected {
-                server: connected.account.server.clone(),
-                login_name: connected.account.login_name.clone(),
-                last_sync: state.last_sync,
-                problem: state.problem.clone(),
-            },
-            None => AccountState::NotConnected,
-        }
+        state_of(&*self.state.read().await)
     }
 
     /// Starts Login Flow v2 and finishes it in the background.
@@ -203,9 +215,14 @@ impl PimService {
     pub async fn sync(&self) -> Result<(), ProviderError> {
         let _running = self.syncing.lock().await;
         let client = self.client().await?;
-        match fetch_all(&client).await {
+        let result = fetch_all(&client).await;
+        let mut state = self.state.write().await;
+        if state.client.is_none() {
+            // The account was removed while the sync ran; keep the cache empty.
+            return Err(not_connected());
+        }
+        match result {
             Ok((collections, events, window, todos)) => {
-                let mut state = self.state.write().await;
                 state.collections = collections;
                 state.events = events;
                 state.window = Some(window);
@@ -215,7 +232,7 @@ impl PimService {
                 Ok(())
             }
             Err(err) => {
-                self.state.write().await.problem = Some(err.to_string());
+                state.problem = Some(err.to_string());
                 Err(err)
             }
         }
@@ -315,6 +332,69 @@ impl PimService {
     async fn client(&self) -> Result<CalDavClient, ProviderError> {
         self.state.read().await.client.clone().ok_or_else(not_connected)
     }
+}
+
+/// The account state as the apps see it: a running sign-in wins over the stored account.
+fn state_of(state: &State) -> AccountState {
+    if let Some((server, login_url)) = &state.signing_in {
+        return AccountState::SigningIn { server: server.clone(), login_url: login_url.clone() };
+    }
+    match &state.account {
+        Some(connected) => AccountState::Connected {
+            server: connected.account.server.clone(),
+            login_name: connected.account.login_name.clone(),
+            last_sync: state.last_sync,
+            problem: state.problem.clone(),
+        },
+        None => AccountState::NotConnected,
+    }
+}
+
+/// One entry per stored account (today at most one Nextcloud) with all cached collections,
+/// hidden ones included: the control centre shows a switch for each. While the first sign-in
+/// runs there is no account yet; an entry with an empty id stands in for it so the
+/// add-account dialog can follow the sign-in.
+fn account_infos(state: &State) -> Vec<torro_ipc::AccountInfo> {
+    if let Some(connected) = &state.account {
+        let account = &connected.account;
+        return vec![torro_ipc::AccountInfo {
+            id: account.id.clone(),
+            kind: "nextcloud".into(),
+            label: format!("{}@{}", account.login_name, host(&account.server)),
+            state: state_of(state),
+            collections: state.collections.clone(),
+        }];
+    }
+    match &state.signing_in {
+        Some((server, _)) => vec![torro_ipc::AccountInfo {
+            id: String::new(),
+            kind: "nextcloud".into(),
+            label: server.clone(),
+            state: state_of(state),
+            collections: Vec::new(),
+        }],
+        None => Vec::new(),
+    }
+}
+
+/// `https://cloud.example.org/` → `cloud.example.org`; a sub-path stays, like in the
+/// account id (`torro_core::Account::nextcloud`).
+fn host(server: &str) -> &str {
+    server.split_once("://").map_or(server, |(_, rest)| rest).trim_end_matches('/')
+}
+
+/// The collections the user hid in the control centre. Read on every request: the file is
+/// tiny and the control centre writes it from another process.
+fn hidden_collections() -> Vec<String> {
+    torro_core::settings::load().hidden_collections
+}
+
+/// Leaves out the items whose collection (`collection_of`) is hidden.
+fn without_hidden<T>(items: Vec<T>, hidden: &[String], collection_of: impl Fn(&T) -> &String) -> Vec<T> {
+    if hidden.is_empty() {
+        return items;
+    }
+    items.into_iter().filter(|item| !hidden.contains(collection_of(item))).collect()
 }
 
 /// Everything the cache holds, fetched from the server.
@@ -472,6 +552,110 @@ mod tests {
     fn nextcloud_placeholder_names_are_translated() {
         assert_eq!(placeholder_name("DEFAULT_TASK_CALENDAR_NAME"), Some(tr("Tasks")));
         assert_eq!(placeholder_name("Persönlich"), None);
+    }
+
+    fn collection(id: &str) -> Collection {
+        Collection {
+            id: id.into(),
+            name: id.into(),
+            kind: torro_pim::CollectionKind::Events,
+            color: None,
+            writable: true,
+        }
+    }
+
+    fn connected() -> Connected {
+        Connected {
+            account: torro_core::Account::nextcloud("https://cloud.example.org/", "anna"),
+            app_password: "secret".into(),
+        }
+    }
+
+    #[test]
+    fn no_account_and_no_sign_in_lists_nothing() {
+        assert_eq!(account_infos(&State::default()), vec![]);
+    }
+
+    #[test]
+    fn a_running_sign_in_is_listed_without_id() {
+        let state = State {
+            signing_in: Some(("cloud.example.org".into(), "https://cloud.example.org/login/v2/flow/x".into())),
+            ..State::default()
+        };
+        let infos = account_infos(&state);
+        assert_eq!(
+            infos,
+            vec![torro_ipc::AccountInfo {
+                id: String::new(),
+                kind: "nextcloud".into(),
+                label: "cloud.example.org".into(),
+                state: AccountState::SigningIn {
+                    server: "cloud.example.org".into(),
+                    login_url: "https://cloud.example.org/login/v2/flow/x".into(),
+                },
+                collections: vec![],
+            }]
+        );
+    }
+
+    #[test]
+    fn a_connected_account_lists_all_collections() {
+        let now = Utc::now();
+        let state = State {
+            account: Some(connected()),
+            last_sync: Some(now),
+            problem: Some("server not reachable".into()),
+            collections: vec![collection("work"), collection("home")],
+            ..State::default()
+        };
+        let infos = account_infos(&state);
+        assert_eq!(
+            infos,
+            vec![torro_ipc::AccountInfo {
+                id: "nextcloud:anna@cloud.example.org".into(),
+                kind: "nextcloud".into(),
+                label: "anna@cloud.example.org".into(),
+                state: AccountState::Connected {
+                    server: "https://cloud.example.org".into(),
+                    login_name: "anna".into(),
+                    last_sync: Some(now),
+                    problem: Some("server not reachable".into()),
+                },
+                collections: vec![collection("work"), collection("home")],
+            }]
+        );
+    }
+
+    #[test]
+    fn hidden_collections_and_their_items_are_left_out() {
+        let hidden = vec!["home".to_string()];
+        let collections = without_hidden(vec![collection("work"), collection("home")], &hidden, |c| &c.id);
+        assert_eq!(collections, vec![collection("work")]);
+        let mut private = event(Utc::now(), 1);
+        private.collection = "home".into();
+        let mut work = event(Utc::now(), 1);
+        work.collection = "work".into();
+        let events = without_hidden(vec![private, work.clone()], &hidden, |e| &e.collection);
+        assert_eq!(events, vec![work]);
+        let all = without_hidden(vec![collection("home")], &[], |c| &c.id);
+        assert_eq!(all, vec![collection("home")]);
+    }
+
+    #[test]
+    fn host_strips_scheme_and_slash() {
+        assert_eq!(host("https://cloud.example.org/"), "cloud.example.org");
+        assert_eq!(host("https://example.org/nextcloud"), "example.org/nextcloud");
+        assert_eq!(host("cloud.example.org"), "cloud.example.org");
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_account_fails_and_keeps_the_state() {
+        let service = service();
+        assert!(service.remove_account("nextcloud:anna@cloud.example.org").await.is_err());
+        service.state.write().await.account = Some(connected());
+        assert!(service.remove_account("nextcloud:bob@cloud.example.org").await.is_err());
+        assert!(service.remove_account("").await.is_err());
+        assert_eq!(service.accounts().await.len(), 1);
     }
 
     #[test]

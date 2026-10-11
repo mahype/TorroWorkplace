@@ -1,5 +1,5 @@
-//! The core's Nextcloud account: the stored account and its app password, and signing in
-//! with Login Flow v2.
+//! The core's Nextcloud account: the stored account and its app password, signing in with
+//! Login Flow v2 and revoking the app password on the server when the account is removed.
 //!
 //! Task K.6 in `docs/tasks/kalender-aufgaben.md`. Building blocks that exist:
 //! `torro_core::account` (accounts.json + keychain), `torro_pim_caldav::nextcloud`
@@ -90,6 +90,44 @@ pub fn forget() -> Result<(), String> {
     account::save(&accounts).map_err(|err| err.to_string())
 }
 
+/// Revokes the account's app password on the server, so it disappears from "Devices &
+/// sessions" instead of staying valid after the user removed the account here.
+///
+/// Nextcloud OCS `DELETE <server>/ocs/v2.php/core/apppassword`, authenticated with the very
+/// app password it revokes (`core/Controller/AppPasswordController.php::deleteAppPassword`
+/// in nextcloud/server): 200 = revoked; 403 = the request was not made with an app password
+/// or the token is unknown. Any other status (401 = already revoked or account disabled,
+/// 503 = maintenance) is reported as an error too; callers treat revoking as best effort.
+pub async fn revoke(http: &reqwest::Client, connected: &Connected) -> Result<(), String> {
+    let request = revoke_request(http, connected)?;
+    let response = http.execute(request).await.map_err(|err| format!("cannot revoke the app password: {err}"))?;
+    revoke_outcome(response.status())
+}
+
+/// The OCS request that revokes the app password. Kept apart from [`revoke`] so it can be
+/// checked without a network. The secret only travels in the `Authorization` header.
+fn revoke_request(http: &reqwest::Client, connected: &Connected) -> Result<reqwest::Request, String> {
+    let url = format!("{}/ocs/v2.php/core/apppassword", connected.account.server.trim_end_matches('/'));
+    http.delete(url)
+        .basic_auth(&connected.account.login_name, Some(&connected.app_password))
+        // Without this header OCS refuses the call as a possible CSRF attempt.
+        .header("OCS-APIRequest", "true")
+        .header(reqwest::header::ACCEPT, "application/json")
+        .build()
+        .map_err(|err| format!("cannot build the revoke request: {err}"))
+}
+
+/// Maps the server's answer to the revoke request.
+fn revoke_outcome(status: reqwest::StatusCode) -> Result<(), String> {
+    match status.as_u16() {
+        200..=299 => Ok(()),
+        401 => Err("the server no longer accepts the app password (already revoked?)".into()),
+        403 => Err("the server refused to revoke the app password".into()),
+        503 => Err("the server is in maintenance mode".into()),
+        _ => Err(format!("revoking the app password failed: HTTP {status}")),
+    }
+}
+
 /// A CalDAV client for the account (`<server>/remote.php/dav/`).
 pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavClient, String> {
     let dav = CalDavAccount {
@@ -154,6 +192,36 @@ mod tests {
             server: "https://cloud.example.org".into(),
             login_name: "anna".into(),
             app_password: "app-password".into(),
+        }
+    }
+
+    fn connected() -> Connected {
+        Connected { account: Account::nextcloud("https://cloud.example.org/", "anna"), app_password: "secret".into() }
+    }
+
+    #[test]
+    fn revoke_request_is_an_authenticated_ocs_delete() {
+        let http = reqwest::Client::new();
+        let request = revoke_request(&http, &connected()).expect("request");
+        assert_eq!(request.method(), reqwest::Method::DELETE);
+        assert_eq!(request.url().as_str(), "https://cloud.example.org/ocs/v2.php/core/apppassword");
+        assert!(!request.url().as_str().contains("secret"), "the secret never goes into the URL");
+        let headers = request.headers();
+        assert_eq!(headers.get("OCS-APIRequest").and_then(|v| v.to_str().ok()), Some("true"));
+        // "anna:secret" in base64.
+        assert_eq!(
+            headers.get(reqwest::header::AUTHORIZATION).and_then(|v| v.to_str().ok()),
+            Some("Basic YW5uYTpzZWNyZXQ=")
+        );
+        assert!(request.body().is_none());
+    }
+
+    #[test]
+    fn revoke_outcome_accepts_only_success() {
+        assert_eq!(revoke_outcome(reqwest::StatusCode::OK), Ok(()));
+        for status in [401, 403, 404, 500, 503] {
+            let status = reqwest::StatusCode::from_u16(status).expect("status");
+            assert!(revoke_outcome(status).is_err(), "{status}");
         }
     }
 
