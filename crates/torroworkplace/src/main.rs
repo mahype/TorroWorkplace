@@ -13,6 +13,7 @@ use std::process::ExitCode;
 use torro_core::AppId;
 
 mod account;
+mod apps;
 mod cli;
 mod core;
 mod daemon;

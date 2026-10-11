@@ -4,8 +4,17 @@
 //! file; this module applies changes: start at login (an XDG autostart entry on Linux,
 //! `~/.config/autostart/torro-workplace.desktop`; macOS and Windows later). Hidden collections
 //! are applied by `pim.rs`, which reads [`current`] on every request.
+//!
+//! Changes go through one lock: requests run concurrently, and two targeted changes
+//! ([`set`], [`set_collection_shown`]) must not lose each other in read, change, write.
+
+use std::sync::{Mutex, PoisonError};
 
 use torro_core::settings::{self, Settings};
+use torro_ipc::SettingKey;
+
+/// Held while the settings file is read, changed and written.
+static WRITING: Mutex<()> = Mutex::new(());
 
 /// The settings as stored now.
 pub fn current() -> Settings {
@@ -14,12 +23,58 @@ pub fn current() -> Settings {
 
 /// Saves `new` and applies what changed compared to the stored settings.
 pub fn update(new: Settings) -> Result<(), String> {
+    change(|settings| {
+        *settings = new;
+        Ok(())
+    })
+}
+
+/// Sets one setting (`Request::SetSetting`). A value that does not fit the key changes nothing.
+pub fn set(key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
+    change(|settings| set_in(settings, key, value))
+}
+
+/// Shows or hides one collection in all apps (`Request::SetCollectionShown`).
+pub fn set_collection_shown(collection: &str, shown: bool) -> Result<(), String> {
+    change(|settings| {
+        show_in(settings, collection, shown);
+        Ok(())
+    })
+}
+
+/// Reads the stored settings, lets `edit` change them, saves and applies the result.
+fn change(edit: impl FnOnce(&mut Settings) -> Result<(), String>) -> Result<(), String> {
+    // A panic while holding the lock leaves no half-written state behind (the file is written
+    // atomically), so a poisoned lock is still good to use.
+    let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
     let old = settings::load();
+    let mut new = old.clone();
+    edit(&mut new)?;
     settings::save(&new)?;
     if old.start_at_login != new.start_at_login {
         apply_start_at_login(new.start_at_login)?;
     }
     Ok(())
+}
+
+/// Puts `value` into the field `key` names.
+fn set_in(settings: &mut Settings, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
+    let invalid = |err: serde_json::Error| format!("{value} is not a value for {key:?}: {err}");
+    match key {
+        SettingKey::Language => settings.language = serde_json::from_value(value.clone()).map_err(invalid)?,
+        SettingKey::Appearance => settings.appearance = serde_json::from_value(value.clone()).map_err(invalid)?,
+        SettingKey::StartAtLogin => settings.start_at_login = serde_json::from_value(value.clone()).map_err(invalid)?,
+    }
+    Ok(())
+}
+
+/// Removes `collection` from the hidden ones, or adds it once.
+fn show_in(settings: &mut Settings, collection: &str, shown: bool) {
+    let hidden = &mut settings.hidden_collections;
+    hidden.retain(|id| id != collection);
+    if !shown {
+        hidden.push(collection.to_string());
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -188,5 +243,52 @@ mod autostart {
             assert!(!path.exists());
             remove_entry(&path).expect("removing a missing entry is fine");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use torro_core::settings::Language;
+    use torro_core::theme::Appearance;
+
+    use super::*;
+
+    #[test]
+    fn set_changes_only_the_named_setting() {
+        let mut settings = Settings { hidden_collections: vec!["work".into()], ..Settings::default() };
+        set_in(&mut settings, SettingKey::Language, &json!("german")).expect("valid language");
+        set_in(&mut settings, SettingKey::Appearance, &json!("dark")).expect("valid appearance");
+        set_in(&mut settings, SettingKey::StartAtLogin, &json!(true)).expect("valid flag");
+        assert_eq!(
+            settings,
+            Settings {
+                language: Language::German,
+                appearance: Appearance::Dark,
+                start_at_login: true,
+                hidden_collections: vec!["work".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn a_value_that_does_not_fit_changes_nothing() {
+        let mut settings = Settings::default();
+        assert!(set_in(&mut settings, SettingKey::Language, &json!("klingon")).is_err());
+        assert!(set_in(&mut settings, SettingKey::StartAtLogin, &json!("yes")).is_err());
+        assert!(set_in(&mut settings, SettingKey::Appearance, &json!(1)).is_err());
+        assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn showing_and_hiding_keeps_each_id_once() {
+        let mut settings = Settings { hidden_collections: vec!["work".into()], ..Settings::default() };
+        show_in(&mut settings, "home", false);
+        show_in(&mut settings, "home", false);
+        assert_eq!(settings.hidden_collections, ["work", "home"]);
+        show_in(&mut settings, "work", true);
+        assert_eq!(settings.hidden_collections, ["home"]);
+        show_in(&mut settings, "unknown", true);
+        assert_eq!(settings.hidden_collections, ["home"]);
     }
 }

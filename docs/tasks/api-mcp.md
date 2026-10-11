@@ -20,7 +20,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 ## Aufgaben
 
 ### A.0 Befehlskatalog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs` (neu), `crates/torro-ipc/src/pim.rs`, `Cargo.toml`, `crates/torro-ipc/Cargo.toml`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/settings_service.rs`, `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/src/apps.rs` (neu), `crates/torroworkplace/src/main.rs`
 - `Area`, `Access`, `Mcp`, `Operation`; `Request::operation()` als vollständiges `match`;
   `CATALOGUE` mit englischer Beschreibung je Befehl, Namen wie in der Tabelle in `api.md`.

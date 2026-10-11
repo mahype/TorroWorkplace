@@ -104,24 +104,14 @@ impl PimService {
     /// Answers the calendar, task and account requests; other requests are not ours.
     pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
         match request {
-            Request::Account => Response::Account { account: self.account_state().await },
             Request::ConnectNextcloud { server } => self.connect(server).await,
-            Request::DisconnectAccount => match account::keychain(account::forget).await {
-                Ok(()) => {
-                    *self.state.write().await = State::default();
-                    Response::Ok
-                }
-                Err(err) => error("error", err),
-            },
             // `sync` runs the remote wipe check itself.
             Request::Sync => match self.sync().await {
                 Ok(()) => Response::Ok,
                 Err(err) => provider_error(&err),
             },
-            Request::Collections => {
-                let collections = self.state.read().await.collections.clone();
-                Response::Collections { collections: without_hidden(collections, &hidden_collections(), |c| &c.id) }
-            }
+            Request::CalendarCollections => self.shown_collections(|c| c.kind.has_events()).await,
+            Request::TaskCollections => self.shown_collections(|c| c.kind.has_todos()).await,
             Request::Events { start, end } => match self.events(start, end).await {
                 Ok(events) => {
                     Response::Events { events: without_hidden(events, &hidden_collections(), |e| &e.collection) }
@@ -150,6 +140,17 @@ impl PimService {
             },
             _ => error("error", "not a calendar or task request".into()),
         }
+    }
+
+    /// The cached collections that `fit` (calendars or task lists) and are not hidden.
+    async fn shown_collections(&self, fit: impl Fn(&Collection) -> bool) -> Response {
+        let collections = self.state.read().await.collections.clone();
+        Response::Collections { collections: shown(collections, &hidden_collections(), fit) }
+    }
+
+    /// `id` is a collection of the connected account, hidden or not.
+    pub async fn knows_collection(&self, id: &str) -> bool {
+        self.state.read().await.collections.iter().any(|c| c.id == id)
     }
 
     /// All accounts with state and all collections, for the control centre (task S.2).
@@ -516,6 +517,12 @@ fn without_hidden<T>(items: Vec<T>, hidden: &[String], collection_of: impl Fn(&T
     items.into_iter().filter(|item| !hidden.contains(collection_of(item))).collect()
 }
 
+/// The `collections` that `fit` and are not `hidden`.
+fn shown(collections: Vec<Collection>, hidden: &[String], fit: impl Fn(&Collection) -> bool) -> Vec<Collection> {
+    let fitting = collections.into_iter().filter(|c| fit(c)).collect();
+    without_hidden(fitting, hidden, |c| &c.id)
+}
+
 /// Everything the cache holds, fetched from the server.
 async fn fetch_all(
     client: &CalDavClient,
@@ -634,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn without_account_reads_are_empty_and_writes_fail() {
         let service = service();
-        assert_eq!(service.handle(Request::Account).await, Response::Account { account: AccountState::NotConnected });
+        assert_eq!(service.account_state().await, AccountState::NotConnected);
         assert_eq!(service.handle(Request::Todos).await, Response::Todos { todos: vec![] });
         let now = Utc::now();
         assert_eq!(
@@ -758,6 +765,31 @@ mod tests {
         assert_eq!(events, vec![work]);
         let all = without_hidden(vec![collection("home")], &[], |c| &c.id);
         assert_eq!(all, vec![collection("home")]);
+    }
+
+    fn of_kind(id: &str, kind: torro_pim::CollectionKind) -> Collection {
+        Collection { kind, ..collection(id) }
+    }
+
+    #[test]
+    fn calendars_and_task_lists_are_told_apart() {
+        use torro_pim::CollectionKind::{Both, Events, Todos};
+        let all = vec![of_kind("work", Both), of_kind("birthdays", Events), of_kind("home", Todos)];
+        let calendars = shown(all.clone(), &[], |c| c.kind.has_events());
+        assert_eq!(calendars, vec![of_kind("work", Both), of_kind("birthdays", Events)]);
+        let lists = shown(all.clone(), &[], |c| c.kind.has_todos());
+        assert_eq!(lists, vec![of_kind("work", Both), of_kind("home", Todos)]);
+        let hidden = vec!["work".to_string()];
+        assert_eq!(shown(all, &hidden, |c| c.kind.has_todos()), vec![of_kind("home", Todos)]);
+    }
+
+    #[tokio::test]
+    async fn only_cached_collections_are_known() {
+        let service = service();
+        assert!(!service.knows_collection("work").await);
+        service.state.write().await.collections = vec![collection("work")];
+        assert!(service.knows_collection("work").await);
+        assert!(!service.knows_collection("home").await);
     }
 
     #[test]

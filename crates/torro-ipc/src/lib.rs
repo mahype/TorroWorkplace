@@ -8,8 +8,10 @@
 //!
 //! Wire format: one JSON object per line in each direction, one request per connection.
 //!
-//! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`].
+//! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`]. The request set is
+//! the API of the suite (`docs/api.md`); [`api`] describes every request for API and MCP.
 
+pub mod api;
 pub mod client;
 pub mod pim;
 pub mod server;
@@ -18,6 +20,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
@@ -33,7 +36,14 @@ pub fn socket_path() -> Option<PathBuf> {
 }
 
 /// What a client can ask the core for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Every case has an entry in the command catalogue ([`api::CATALOGUE`]), reached through
+/// [`Request::operation`]: its API name, area, access and whether agents get it as an MCP tool.
+/// A new case does not build until `operation` names its command.
+///
+/// Fields whose types live in other crates (`Event`, `Todo`, `Settings`) appear in the JSON
+/// Schema as plain objects; see [`api::request_schema`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case", tag = "method")]
 pub enum Request {
     /// Version and health; also how a client finds out the core is up.
@@ -56,21 +66,24 @@ pub enum Request {
     /// Loads a template onto the active workspace.
     LoadTemplate {
         id: String,
+        /// `empty` (only into an empty workspace), `add` or `replace` (closes the windows there).
+        #[schemars(with = "api::LoadModeSchema")]
         mode: LoadMode,
     },
 
-    /// The account state ([`Response::Account`]).
-    Account,
     /// Starts Login Flow v2 for a Nextcloud; the core opens the browser and polls in the
     /// background ([`Response::LoginStarted`]).
     ConnectNextcloud {
         server: String,
     },
-    /// Forgets the account and its secret.
-    DisconnectAccount,
     /// Fetch calendars and tasks from the server now.
     Sync,
-    Collections,
+    /// The calendars the suite shows, i.e. the collections with events that are not hidden
+    /// ([`Response::Collections`]).
+    CalendarCollections,
+    /// The task lists the suite shows, i.e. the collections with todos that are not hidden
+    /// ([`Response::Collections`]). A collection with both appears in both lists.
+    TaskCollections,
     /// Events overlapping `[start, end)`.
     Events {
         start: DateTime<Utc>,
@@ -79,15 +92,19 @@ pub enum Request {
     Todos,
     /// Creates (`href: None`) or updates; answered with [`Response::Event`].
     SaveEvent {
+        #[schemars(schema_with = "api::object_schema")]
         event: Event,
     },
     DeleteEvent {
+        #[schemars(schema_with = "api::object_schema")]
         event: Event,
     },
     SaveTodo {
+        #[schemars(schema_with = "api::object_schema")]
         todo: Todo,
     },
     DeleteTodo {
+        #[schemars(schema_with = "api::object_schema")]
         todo: Todo,
     },
 
@@ -96,7 +113,23 @@ pub enum Request {
     /// Replaces the settings; the core applies what changed (start at login, hidden
     /// collections; the language applies to processes started afterwards).
     UpdateSettings {
+        #[schemars(schema_with = "api::object_schema")]
         settings: Settings,
+    },
+    /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
+    /// the key (see [`SettingKey`]); otherwise the answer is the error code `error` and
+    /// nothing changes. Answered with [`Response::Ok`].
+    SetSetting {
+        key: SettingKey,
+        /// The new value; its type depends on `key`.
+        value: serde_json::Value,
+    },
+    /// Shows (`shown: true`) or hides a calendar or task list in every app of the suite.
+    /// `collection` is a collection id of a connected account ([`AccountInfo::collections`]);
+    /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
+    SetCollectionShown {
+        collection: String,
+        shown: bool,
     },
     /// All accounts with their state and collections ([`Response::Accounts`]).
     Accounts,
@@ -113,6 +146,22 @@ pub enum Request {
     OpenApp {
         app: String,
     },
+    /// The suite's apps, the core itself excepted, and whether each is installed
+    /// ([`Response::Apps`]).
+    ListApps,
+}
+
+/// A setting [`Request::SetSetting`] can change, with the `value` it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKey {
+    /// The language of the suite: `"system"`, `"english"` or `"german"`. Applies to processes
+    /// started afterwards.
+    Language,
+    /// Light or dark colours: `"system"`, `"light"` or `"dark"`.
+    Appearance,
+    /// Start the core when the user logs in: `true` or `false`.
+    StartAtLogin,
 }
 
 /// The core's answer to one [`Request`].
@@ -135,9 +184,6 @@ pub enum Response {
     },
     /// Done, nothing to report.
     Ok,
-    Account {
-        account: AccountState,
-    },
     LoginStarted {
         login_url: String,
     },
@@ -162,9 +208,23 @@ pub enum Response {
     Accounts {
         accounts: Vec<AccountInfo>,
     },
-    /// The request failed; `code` is stable for scripts (`workspace-not-empty`, `not-found`,
-    /// `unsupported`, `busy`, `not-connected`, `offline`, `auth`, `conflict`, `error`),
-    /// `message` is for people.
+    Apps {
+        apps: Vec<AppInfo>,
+    },
+    /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
+    ///
+    /// - `not-found`: no such template, account, collection or app (also a collection the
+    ///   client may not see),
+    /// - `workspace-not-empty`: a load with mode `empty` found windows,
+    /// - `busy`: another save or load is running,
+    /// - `unsupported`: no supported window manager,
+    /// - `not-connected`: no account to read from or write to,
+    /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
+    ///   or the item changed there meanwhile,
+    /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
+    /// - `forbidden`: the client's rights do not cover the command,
+    /// - `pending`: the command waits for a person to approve it,
+    /// - `error`: anything else.
     Error {
         code: String,
         message: String,
@@ -190,6 +250,20 @@ pub struct AccountInfo {
     pub state: AccountState,
     /// All collections of the account, hidden ones included.
     pub collections: Vec<Collection>,
+}
+
+/// One of the suite's apps, as [`Request::ListApps`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// Binary name, also what [`Request::OpenApp`] takes: `torrocalendar`.
+    pub binary: String,
+    /// English product name: `Torro Calendar`. Front ends may show a translated name.
+    pub name: String,
+    /// Window class, for window rules: `torro-calendar`.
+    pub window_class: String,
+    /// The binary was found next to the core or on `PATH`, so `OpenApp` can start it.
+    pub installed: bool,
 }
 
 /// What `status --json` prints.

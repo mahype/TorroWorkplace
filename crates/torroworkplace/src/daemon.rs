@@ -250,11 +250,10 @@ fn describe(request: &Request) -> String {
         Request::UpdateTemplate { id } => format!("update {id}"),
         Request::DeleteTemplate { id } => format!("delete {id}"),
         Request::LoadTemplate { id, .. } => format!("load {id}"),
-        Request::Account => "account".into(),
         Request::ConnectNextcloud { server } => format!("connect {server}"),
-        Request::DisconnectAccount => "disconnect".into(),
         Request::Sync => "sync".into(),
-        Request::Collections => "collections".into(),
+        Request::CalendarCollections => "calendars".into(),
+        Request::TaskCollections => "task lists".into(),
         Request::Events { .. } => "events".into(),
         Request::Todos => "todos".into(),
         Request::SaveEvent { .. } => "save event".into(),
@@ -263,10 +262,15 @@ fn describe(request: &Request) -> String {
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
+        Request::SetSetting { key, .. } => format!("set {key:?}"),
+        Request::SetCollectionShown { collection, shown } => {
+            format!("{} {collection}", if *shown { "show" } else { "hide" })
+        }
         Request::Accounts => "accounts".into(),
         Request::RemoveAccount { id } => format!("remove account {id}"),
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
         Request::OpenApp { app } => format!("open {app}"),
+        Request::ListApps => "apps".into(),
     }
 }
 

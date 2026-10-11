@@ -81,11 +81,10 @@ impl Core {
                 })
                 .await
             }
-            pim @ (Request::Account
-            | Request::ConnectNextcloud { .. }
-            | Request::DisconnectAccount
+            pim @ (Request::ConnectNextcloud { .. }
             | Request::Sync
-            | Request::Collections
+            | Request::CalendarCollections
+            | Request::TaskCollections
             | Request::Events { .. }
             | Request::Todos
             | Request::SaveEvent { .. }
@@ -97,6 +96,11 @@ impl Core {
                 Ok(()) => Response::Ok,
                 Err(message) => Response::Error { code: "error".into(), message },
             },
+            Request::SetSetting { key, value } => match crate::settings_service::set(key, &value) {
+                Ok(()) => Response::Ok,
+                Err(message) => Response::Error { code: "error".into(), message },
+            },
+            Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::Accounts => Response::Accounts { accounts: self.pim.accounts().await },
             Request::RemoveAccount { id } => match self.pim.remove_account(&id).await {
                 Ok(()) => Response::Ok,
@@ -113,6 +117,19 @@ impl Core {
                 },
                 None => Response::Error { code: "not-found".into(), message: format!("no app {app:?}") },
             },
+            Request::ListApps => Response::Apps { apps: crate::apps::list() },
+        }
+    }
+
+    /// Shows or hides a collection the account has; an unknown id is `not-found` and is not
+    /// written to the settings.
+    async fn set_collection_shown(&self, collection: &str, shown: bool) -> Response {
+        if !self.pim.knows_collection(collection).await {
+            return Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") };
+        }
+        match crate::settings_service::set_collection_shown(collection, shown) {
+            Ok(()) => Response::Ok,
+            Err(message) => Response::Error { code: "error".into(), message },
         }
     }
 
@@ -262,6 +279,43 @@ mod tests {
         let snapshot = core.snapshot().await;
         assert_eq!(snapshot.unsupported.as_deref(), Some("test"));
         assert!(!snapshot.busy);
+    }
+
+    #[tokio::test]
+    async fn apps_are_listed_without_the_core() {
+        let dir = tempfile::tempdir().unwrap();
+        let Response::Apps { apps } = core(dir.path()).handle(Request::ListApps).await else {
+            panic!("ListApps is answered with Apps");
+        };
+        let binaries: Vec<_> = apps.iter().map(|app| app.binary.as_str()).collect();
+        assert_eq!(binaries, ["torrotasks", "torrocalendar"]);
+    }
+
+    #[tokio::test]
+    async fn without_account_there_are_no_calendars_or_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let core = core(dir.path());
+        assert_eq!(core.handle(Request::CalendarCollections).await, Response::Collections { collections: vec![] });
+        assert_eq!(core.handle(Request::TaskCollections).await, Response::Collections { collections: vec![] });
+    }
+
+    // The successful paths of SetSetting and SetCollectionShown write the user's settings file;
+    // `settings_service` tests the changes themselves. Here only the refusals, which write nothing.
+    #[tokio::test]
+    async fn unknown_collection_is_not_found_and_not_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let response = core(dir.path())
+            .handle(Request::SetCollectionShown { collection: "/cal/nope/".into(), shown: false })
+            .await;
+        assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn a_setting_value_of_the_wrong_type_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let request = Request::SetSetting { key: torro_ipc::SettingKey::StartAtLogin, value: serde_json::json!("yes") };
+        let response = core(dir.path()).handle(request).await;
+        assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
     }
 
     #[tokio::test]
