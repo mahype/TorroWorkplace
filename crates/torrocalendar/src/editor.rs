@@ -431,7 +431,7 @@ fn detail<'a>(label: &'static str, value: String) -> Element<'a, Message> {
 /// The surface the editor sits on: a rounded card of at most 460 px.
 fn card<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(body)
-        .padding(20)
+        .padding(24)
         .width(Length::Fill)
         .max_width(460.0)
         .style(|_theme| container::Style {

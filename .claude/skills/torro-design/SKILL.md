@@ -5,9 +5,18 @@ description: Design-Regeln für alle Oberflächen von TorroWorkplace (Iced-Views
 
 # Torro-Design
 
-Ziel: Jede Ansicht soll wirken wie aus einer Hand und auf dem Niveau von Linear, Things 3,
-Fantastical oder Amie – ruhig, klar, dicht genug für Arbeit, nie überladen. Torro-Apps leben
-gekachelt neben anderen Fenstern: Sie müssen auch schmal und klein gut aussehen.
+## Das Ziel – an jeder Ansicht zu messen
+
+1. **Professionell.** Jede Ansicht wirkt wie aus einer Hand und auf dem Niveau von Linear,
+   Things 3, Fantastical oder Amie: ruhig, klar, dicht genug für Arbeit, nie überladen, nichts
+   wirkt zufällig oder „Entwickler-Oberfläche“.
+2. **Schöne, gut lesbare Schrift.** Eine moderne UI-Schrift (Abschnitt 3), saubere Hierarchie,
+   genug Kontrast, nichts zu klein.
+3. **Abstände immer richtig.** Jeder Abstand stammt aus der Skala (Abschnitt 2), gleiche Dinge
+   haben überall gleiche Abstände, alles liegt auf einer Achse.
+
+Torro-Apps leben gekachelt neben anderen Fenstern: Das Ziel gilt auch schmal und klein.
+Ist eines der drei Ziele verfehlt, ist die Ansicht nicht fertig – auch wenn alle Tests grün sind.
 
 ## 1. Tokens statt Einzelwerte
 
@@ -30,6 +39,13 @@ gekachelt neben anderen Fenstern: Sie müssen auch schmal und klein gut aussehen
 
 ## 3. Typografie
 
+- **Schrift: Inter** (SIL Open Font License, frei mitzuliefern), die verbreitetste moderne UI-Schrift
+  und auf Bildschirmen sehr gut lesbar. Sie wird mit der App ausgeliefert (`include_bytes!` +
+  `iced::application(…).font(…)` und `default_font`), damit jede App auf jedem System gleich aussieht.
+  Nicht auf die Systemschrift verlassen – `Font::DEFAULT` ergibt je nach System z. B. Liberation
+  Sans oder Arial. (Stand heute: noch Systemschrift; das Einbinden ist eine eigene Aufgabe in `torro-gui`.)
+- Gewichte: Regular (400) für Text, Medium (500) für Hervorhebungen und Knöpfe, SemiBold (600)
+  für Titel. Kein Bold/Black, keine Kursiven für UI.
 - Größen: **12** (Abschnittstitel in Versalien, Metadaten), **14** (Fließtext, Listen, Knöpfe),
   **16** (hervorgehobene Zeile), **18** (Ansichts-/Dialogtitel), **24** (Kopfzahl, z. B. Datum).
 - Höchstens drei Stufen pro Ansicht sichtbar. Hierarchie über Größe *und* Farbe (`TEXT` → `MUTED`),
@@ -98,6 +114,7 @@ aufnehmen. Danach die App beenden
 
 ## 10. Prüfliste vor „fertig“
 
+- [ ] Ziel 1–3 erfüllt: professionell, gut lesbare Schrift (Inter, Skala, Gewichte), Abstände aus der Skala
 - [ ] Keine Farb-/Größenwerte außerhalb von Theme und den Skalen oben
 - [ ] Ein Akzent pro Fenster; Rot nicht als Status
 - [ ] Kontraste eingehalten, Status nicht nur über Farbe

@@ -3,12 +3,34 @@
 //! Task K.1 adds the colour dot, the empty state and the section title here. Toolbar buttons and
 //! sidebar rows come with the views that need them.
 
-use iced::widget::{column, container, space, text};
-use iced::{Alignment, Background, Color, Element, border};
+use iced::widget::{center, column, container, mouse_area, opaque, space, stack, text};
+use iced::{Alignment, Background, Color, Element, Length, Shadow, Vector, border};
 
 use crate::theme;
 
 /// `#RRGGBB` (or `#RRGGBBAA`, alpha ignored) as a colour; `None` for anything else.
+/// A dialog over `base`: the background is dimmed (Iced has no backdrop blur, so dimming
+/// does the job of focusing), the dialog gets a soft shadow, and a click next to it sends
+/// `on_dismiss`. The dialog draws its own card (radius 12) and is centred at most
+/// `max_width` wide; Escape is the dialog's job.
+pub fn modal<'a, M: Clone + 'a>(
+    base: impl Into<Element<'a, M>>,
+    dialog: impl Into<Element<'a, M>>,
+    max_width: f32,
+    on_dismiss: M,
+) -> Element<'a, M> {
+    let scrim = mouse_area(container(space::horizontal()).width(Length::Fill).height(Length::Fill).style(|_| {
+        container::Style { background: Some(Background::Color(theme::SCRIM)), ..container::Style::default() }
+    }))
+    .on_press(on_dismiss);
+    let card = container(dialog).max_width(max_width).style(|_| container::Style {
+        border: border::rounded(12),
+        shadow: Shadow { color: theme::SHADOW, offset: Vector::new(0.0, 8.0), blur_radius: 32.0 },
+        ..container::Style::default()
+    });
+    stack![base.into(), opaque(scrim), center(opaque(card)).padding(16)].into()
+}
+
 pub fn color_from_hex(hex: &str) -> Option<Color> {
     let hex = hex.trim().strip_prefix('#')?;
     if hex.len() != 6 && hex.len() != 8 {

@@ -30,6 +30,10 @@ pub const MUTED: Color = Color::from_rgb(0x8C as f32 / 255.0, 0x96 as f32 / 255.
 pub const FAINT: Color = Color::from_rgb(0x46 as f32 / 255.0, 0x50 as f32 / 255.0, 0x62 as f32 / 255.0);
 /// The "now" line in the day and week views (dark).
 pub const NOW: Color = Color::from_rgb(1.0, 1.0, 1.0);
+/// Dims everything behind a dialog, so the eye goes to the dialog.
+pub const SCRIM: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.62 };
+/// The soft shadow under dialogs.
+pub const SHADOW: Color = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.5 };
 
 /// Light background, from the light block of the calendar prototype.
 const LIGHT_BACKGROUND: Color = Color::from_rgb(0xF2 as f32 / 255.0, 0xF4 as f32 / 255.0, 0xF8 as f32 / 255.0);

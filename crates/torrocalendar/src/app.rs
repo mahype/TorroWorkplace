@@ -5,13 +5,13 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
-use iced::widget::{button, column, container, opaque, row, scrollable, stack, text};
+use iced::widget::{button, column, container, row, scrollable, text};
 use iced::{Element, Length, Subscription, Task};
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::source::Source;
-use torro_gui::widgets::collection_color;
+use torro_gui::widgets::{collection_color, modal};
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
 use crate::editor::{self, Editor};
@@ -82,9 +82,38 @@ pub enum Message {
     /// From the month view: switch to the day view of `date`.
     ShowDay(NaiveDate),
     Editor(editor::Message),
+    /// Keyboard: a new event on the shown day at 09:00.
+    NewEventHere,
     Saved(Result<Event, String>),
     Deleted(Result<(), String>),
     Tick,
+}
+
+/// Keyboard shortcuts while no dialog is open: N new event, T today, ←/→ back/forward,
+/// D/W/M/A the views. Keys a text input already used are ignored.
+fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    use iced::keyboard::{Event as Key, Key as Name, key::Named};
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    let iced::Event::Keyboard(Key::KeyPressed { key, modifiers, .. }) = event else { return None };
+    if modifiers.control() || modifiers.alt() || modifiers.logo() {
+        return None;
+    }
+    match key.as_ref() {
+        Name::Named(Named::ArrowLeft) => Some(Message::Prev),
+        Name::Named(Named::ArrowRight) => Some(Message::Next),
+        Name::Character(c) => match c {
+            "n" => Some(Message::NewEventHere),
+            "t" => Some(Message::Today),
+            "d" => Some(Message::SetView(CalView::Day)),
+            "w" => Some(Message::SetView(CalView::Week)),
+            "m" => Some(Message::SetView(CalView::Month)),
+            "a" => Some(Message::SetView(CalView::Agenda)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 impl App {
@@ -120,7 +149,7 @@ impl App {
         match self.editor {
             // Escape closes the editor.
             Some(_) => Subscription::batch([tick, editor::subscription().map(Message::Editor)]),
-            None => tick,
+            None => Subscription::batch([tick, iced::event::listen_with(shortcut)]),
         }
     }
 
@@ -195,6 +224,10 @@ impl App {
                 if !self.hidden.remove(&id) {
                     self.hidden.insert(id);
                 }
+            }
+            Message::NewEventHere => {
+                let time = Some(NaiveTime::MIN + Days::hours(9));
+                self.editor = Some(Editor::new_event(&self.writable_calendars(), self.anchor, time));
             }
             Message::NewEvent { date, time } => {
                 self.editor = Some(Editor::new_event(&self.writable_calendars(), date, time));
@@ -272,7 +305,7 @@ impl App {
         };
         match &self.editor {
             Some(editor) => {
-                stack![main, opaque(container(editor.view().map(Message::Editor)).center(Length::Fill))].into()
+                modal(main, editor.view().map(Message::Editor), 460.0, Message::Editor(editor::Message::Cancel))
             }
             None => main.into(),
         }
