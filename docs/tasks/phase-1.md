@@ -116,7 +116,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Unit-Tests für das Bauen der Ausdrücke inkl. Escaping und Prüfung der Fenster-Adresse.
 
 ### 1.7 Hyprland: Ereignisse
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.5
 - **Dateien:** `crates/torro-wm/src/hyprland/events.rs`
 - **Ziel:** `.socket2.sock` zeilenweise lesen (`openwindow>>…`, `closewindow>>…`, `movewindow>>…`,
