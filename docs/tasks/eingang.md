@@ -72,7 +72,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 ## E1 Kern
 
 ### E1.1a Modell-Crate `torro-inbox`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-inbox/` (neu: `Cargo.toml`,
   `src/{lib,item,rules,source,demo}.rs`), Wurzel-`Cargo.toml` (Mitglied und Eintrag in
   `[workspace.dependencies]`)
