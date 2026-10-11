@@ -48,6 +48,17 @@ pub enum Message {
     ConfirmDelete,
 }
 
+/// What Escape means on this page right now: close the delete dialog, else stop renaming.
+pub fn escape(state: &State) -> Option<Message> {
+    if state.confirm_delete.is_some() {
+        Some(Message::CancelDelete)
+    } else if state.renaming.is_some() {
+        Some(Message::CancelRename)
+    } else {
+        None
+    }
+}
+
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::StartRename(id) => {

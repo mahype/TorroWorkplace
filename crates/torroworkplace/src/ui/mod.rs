@@ -16,9 +16,6 @@
 //! Pages never talk to the daemon themselves: they return an [`Action`], the shell sends the
 //! request and reloads [`Data`].
 
-// The pages are scaffolds until tasks S.4–S.9 fill them in; task S.11 removes this.
-#![allow(dead_code, unreachable_patterns)]
-
 mod accounts;
 mod apps;
 mod general;
@@ -106,6 +103,8 @@ pub struct Ui {
     narrow_list: bool,
     width: f32,
     data: Data,
+    /// The last failed request, kept across reloads until the next success or section change.
+    notice: Option<String>,
     overview: overview::State,
     accounts: accounts::State,
     workspaces: workspaces::State,
@@ -122,6 +121,8 @@ pub enum Message {
     Sent(Result<Response, String>),
     Resized(f32),
     Tick,
+    /// Escape: close whatever dialog the current page has open.
+    Escape,
     Overview(overview::Message),
     Accounts(accounts::Message),
     Workspaces(workspaces::Message),
@@ -154,6 +155,7 @@ impl Ui {
             narrow_list: false,
             width: 1100.0,
             data: Data::default(),
+            notice: None,
             overview: overview::State::default(),
             accounts: accounts::State::default(),
             workspaces: workspaces::State::default(),
@@ -169,6 +171,7 @@ impl Ui {
         Subscription::batch([
             iced::time::every(every).map(|_| Message::Tick),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size.width)),
+            iced::event::listen_with(escape_key),
         ])
     }
 
@@ -177,6 +180,7 @@ impl Ui {
             Message::Select(section) => {
                 self.section = section;
                 self.narrow_list = false;
+                self.notice = None;
                 Action::None
             }
             Message::Back => {
@@ -185,12 +189,14 @@ impl Ui {
             }
             Message::Loaded(data) => {
                 self.data = *data;
+                // The add-account dialog follows the sign-in through the reloaded accounts.
+                if let Some(wizard) = self.accounts.wizard.as_mut() {
+                    wizard::observe(wizard, &self.data);
+                }
                 Action::None
             }
             Message::Sent(result) => {
-                if let Err(err) = result {
-                    self.data.error = Some(err);
-                }
+                self.notice = result.err();
                 return load();
             }
             Message::Resized(width) => {
@@ -198,6 +204,17 @@ impl Ui {
                 Action::None
             }
             Message::Tick => return load(),
+            Message::Escape => {
+                let page = match self.section {
+                    Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
+                    Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
+                    _ => None,
+                };
+                return match page {
+                    Some(message) => self.update(message),
+                    None => Task::none(),
+                };
+            }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
@@ -280,10 +297,21 @@ impl Ui {
         }
         header = header.push(text(self.section.label()).size(18));
         let mut page = column![header].spacing(16).padding(24).width(Length::Fill);
-        if let Some(error) = &self.data.error {
-            page = page.push(text(error.clone()).size(14).color(theme::attention()));
+        for problem in [&self.notice, &self.data.error].into_iter().flatten() {
+            page = page.push(text(problem.clone()).size(14).color(theme::attention()));
         }
         page.push(scrollable(content).height(Length::Fill)).into()
+    }
+}
+
+/// Escape, wherever the focus is (a text input keeps it to itself otherwise).
+fn escape_key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Escape),
+        _ => None,
     }
 }
 

@@ -58,6 +58,18 @@ pub enum Message {
     Remove,
 }
 
+/// What Escape means on this page right now: close the add-account dialog or the remove
+/// confirmation.
+pub fn escape(state: &State) -> Option<Message> {
+    if state.wizard.is_some() {
+        Some(Message::Wizard(wizard::Message::Close))
+    } else if state.confirm_remove {
+        Some(Message::CancelRemove)
+    } else {
+        None
+    }
+}
+
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::AddAccount => {

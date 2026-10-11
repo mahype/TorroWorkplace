@@ -23,7 +23,7 @@
 //! click next to the dialog send it.
 
 use iced::widget::{button, column, container, row, space, text, text_input};
-use iced::{Alignment, Background, Element, Event, Fill, Font, Subscription, border, event, keyboard};
+use iced::{Alignment, Background, Element, Fill, Font, border};
 use torro_core::i18n::tr;
 use torro_core::theme::STATUS_ERROR;
 use torro_gui::theme;
@@ -112,21 +112,6 @@ pub fn observe(state: &mut State, data: &Data) {
         state.connected_before.clear();
     } else {
         state.error = data.error.clone();
-    }
-}
-
-/// Escape closes the dialog. The subscription is only meaningful while the dialog is open.
-pub fn subscription() -> Subscription<Message> {
-    event::listen_with(escape_closes)
-}
-
-fn escape_closes(event: Event, _status: event::Status, _window: iced::window::Id) -> Option<Message> {
-    match event {
-        Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(keyboard::key::Named::Escape),
-            ..
-        }) => Some(Message::Close),
-        _ => None,
     }
 }
 

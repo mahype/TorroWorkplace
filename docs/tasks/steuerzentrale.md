@@ -25,31 +25,31 @@ Gemeinsam für alle Seiten-Aufgaben:
   Laden über IPC, Seiten-Gerüste.
 
 ### S.1 Einstellungen speichern und anwenden
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/settings_service.rs`
 - `load`/`save` (atomar, fehlende/kaputte Datei → Standard). `update`: speichern, „Start at login“
   als XDG-Autostart-Eintrag anlegen bzw. entfernen.
 
 ### S.2 Konten im Kern: Liste, Entfernen, ausgeblendete Sammlungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet (Nextcloud) · **Dateien:** `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/account.rs`
 - `accounts()` mit allen Sammlungen; `remove_account` mit Widerruf des App-Passworts auf dem
   Server (OCS); ausgeblendete Sammlungen aus `settings` in `Collections`, `Events`, `Todos` weglassen.
 
 ### S.4 Seite Overview
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/overview.rs`
 
 ### S.5 Seite Accounts
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
 
 ### S.6 Assistent „Add account“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/wizard.rs`
 
 ### S.7 Seite Workspaces
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/workspaces.rs`
 
 ### S.8 Seite Apps
