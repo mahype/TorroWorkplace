@@ -50,7 +50,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   `--demo` mit Konto.
 
 ### X.2 Windows: kein Konsolenfenster neben den Apps
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Weiche für den Kern) · **Braucht:** – · **Dateien:** `crates/torrocalendar/src/main.rs`,
   `crates/torrotasks/src/main.rs`, `crates/torroworkplace/src/main.rs`, `Cargo.toml` und
   `crates/torroworkplace/Cargo.toml` (falls `windows-sys` nötig)

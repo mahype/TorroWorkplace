@@ -4658,6 +4658,7 @@ dependencies = [
  "torro-tui",
  "torro-wm",
  "webbrowser",
+ "windows-sys 0.59.0",
  "winreg",
 ]
 
