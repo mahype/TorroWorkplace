@@ -283,6 +283,10 @@ pub struct App {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a message carries a whole task and is handled once; boxing would only add an allocation"
+)]
 pub enum Message {
     /// The window has this size (at start and after every resize).
     Resized(Size),
@@ -563,6 +567,10 @@ impl App {
                     completed: false,
                     parent: None,
                     description: None,
+                    url: None,
+                    categories: Vec::new(),
+                    sort_order: None,
+                    link: None,
                 };
                 return self.save(todo);
             }
@@ -1160,6 +1168,13 @@ impl App {
                 None => Task::none(),
             },
             detail::Action::Focus(id) => iced::widget::operation::focus(id),
+            detail::Action::OpenUrl(url) => {
+                // Like the control centre: a browser that cannot be started is only logged.
+                if let Err(err) = webbrowser::open(&url) {
+                    eprintln!("cannot open the link in a browser: {err}");
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1470,6 +1485,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 

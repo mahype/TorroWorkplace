@@ -659,7 +659,9 @@ static LIST_TODOS: Command = Command {
     area: Area::Tasks,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the tasks of all shown task lists.",
+    description: "Lists the tasks of all shown task lists, with their tags (`categories`), web address (`url`), \
+                  manual position (`sort_order`, smaller first) and `link` to a GitHub issue or pull request \
+                  (`github:<owner>/<repo>#<number>`; `link.github` holds what GitHub reports, once fetched).",
 };
 
 static SAVE_TODO: Command = Command {
@@ -670,7 +672,8 @@ static SAVE_TODO: Command = Command {
     description: "Creates a task (without `href`) or changes one (with `href` and `etag` from list_todos) on the \
                   server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
                   it to another calendar of the same account; moving to another account fails with \
-                  `unsupported`.",
+                  `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
+                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored.",
 };
 
 static DELETE_TODO: Command = Command {
@@ -876,6 +879,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 

@@ -10,6 +10,7 @@ use std::sync::{Mutex, MutexGuard};
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{account_of, local_id};
+use crate::model::Link;
 use crate::source::PimSource;
 use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
@@ -125,6 +126,10 @@ fn todo(collection: &str, uid: &str, summary: &str, due: Option<EventTime>) -> T
         completed: false,
         parent: None,
         description: None,
+        url: None,
+        categories: Vec::new(),
+        sort_order: None,
+        link: None,
     }
 }
 
@@ -232,7 +237,7 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
 }
 
 /// Tasks due before, on and after `today` and some without a date, two parents with three
-/// and two subtasks, and three completed tasks.
+/// and two subtasks, three completed tasks, one with tags and one linked to a GitHub issue.
 fn sample_todos(today: NaiveDate) -> Vec<Todo> {
     let before = |offset: u64| today - Days::new(offset);
     let after = |offset: u64| today + Days::new(offset);
@@ -244,7 +249,15 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
         Todo {
             priority: Some(1),
             description: Some("Sort receipts for 2025 by category, keep trade invoices separate.".into()),
+            categories: vec!["Finance".into(), "Paperwork".into()],
             ..todo(TASKS, "tax-documents@torro-demo", "Sort tax documents", Some(at(before(4), 18, 0)))
+        },
+        Todo {
+            priority: Some(5),
+            description: Some("The detail should show tags and a link.".into()),
+            url: Some("https://github.com/mahype/TorroWorkplace/issues/123".into()),
+            link: Some(Link::github("mahype/TorroWorkplace", 123)),
+            ..todo(TASKS, "github-issue@torro-demo", "Review task detail layout", Some(EventTime::Date(after(2))))
         },
         Todo {
             priority: Some(5),
@@ -486,10 +499,10 @@ mod tests {
         assert_eq!(events_in(FAMILY), 4);
         assert_eq!(events.len(), 27);
         let todos_in = |id: &str| todos.iter().filter(|t| t.collection == id).count();
-        assert_eq!(todos_in(TASKS), 8);
+        assert_eq!(todos_in(TASKS), 9);
         assert_eq!(todos_in(GROCERIES), 5);
         assert_eq!(todos_in(FAMILY), 5);
-        assert_eq!(todos.len(), 18);
+        assert_eq!(todos.len(), 19);
 
         for e in &events {
             assert!(collections.iter().any(|c| c.id == e.collection && c.kind.has_events()), "{}", e.summary);
@@ -620,6 +633,16 @@ mod tests {
         for priority in [Some(1), Some(5), Some(9), None] {
             assert!(todos.iter().any(|t| t.priority == priority), "priority {priority:?}");
         }
+    }
+
+    #[test]
+    fn one_task_has_tags_and_one_a_link() {
+        let (_, _, todos) = sample(sunday());
+        assert!(todos.iter().any(|t| t.categories.len() > 1), "a task with tags");
+        let linked: Vec<&Todo> = todos.iter().filter(|t| t.link.is_some()).collect();
+        assert_eq!(linked.len(), 1);
+        assert!(linked[0].link.as_ref().and_then(Link::github_ref).is_some(), "a GitHub link");
+        assert!(linked[0].url.as_deref().is_some_and(|url| url.starts_with("https://github.com/")));
     }
 
     #[tokio::test]

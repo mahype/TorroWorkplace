@@ -140,6 +140,10 @@ pub struct Data {
 
 /// What a page wants the shell to do.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a request can carry a whole task and is handled once; boxing would only add an allocation"
+)]
 pub enum Action {
     None,
     /// Send this request to the daemon, then reload.
@@ -229,6 +233,10 @@ pub struct Ui {
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "an answer can carry a whole task and is handled once; boxing would only add an allocation"
+)]
 pub enum Message {
     Select(Section),
     /// Open or close a menu.

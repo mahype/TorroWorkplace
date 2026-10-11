@@ -13,6 +13,10 @@
 //! as a floating menu or card ([`Detail::layer`]); the due card offers Today, Tomorrow, Next week
 //! and No date as chips and a field for any date (`11.10.2026`, `today`, `tomorrow`).
 //!
+//! Tags (`categories`) show as chips and a link (`url`, else the page of a GitHub `link`) as
+//! "Open link", which opens the browser (P.2 in `docs/tasks/github.md`). Both are read-only here
+//! and saved as loaded.
+//!
 //! Saving works like Linear: there is no Save button. A change of a property is saved at once;
 //! title and notes are saved a moment after typing stops ([`Detail::wants_autosave`]), on Enter
 //! in the title and when the detail is left ([`Detail::leave`]). Every save is the same
@@ -33,6 +37,7 @@ use torro_gui::panel::{self, Panel};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{datetime, style, typo};
+use torro_pim::model::Link;
 use torro_pim::{Collection, EventTime, Todo};
 
 use crate::list;
@@ -114,6 +119,8 @@ pub enum Message {
     ToggleSubtask(String),
     /// Open the subtask with this uid in the detail.
     OpenSubtask(String),
+    /// Open the task's link in the browser ([`Detail::link_target`]).
+    OpenLink,
     Delete,
     CancelDelete,
     ConfirmDelete,
@@ -139,6 +146,8 @@ pub enum Action {
     Show(String),
     /// Give the keyboard focus to the widget with this id.
     Focus(&'static str),
+    /// Open this `http`/`https` address in the browser.
+    OpenUrl(String),
 }
 
 /// The priorities the menu offers. iCalendar has nine levels; the app uses these four.
@@ -308,6 +317,7 @@ impl Detail {
             Message::DueRemove => return self.pick_due(None),
             Message::ToggleSubtask(uid) => return Action::ToggleDone(uid),
             Message::OpenSubtask(uid) => return Action::Show(uid),
+            Message::OpenLink => return self.link_target().map_or(Action::None, Action::OpenUrl),
             Message::Delete => {
                 self.open = None;
                 self.confirm_delete = true;
@@ -525,13 +535,63 @@ impl Detail {
                 Some(Message::Open(Editor::Parent)),
             ),
         );
-        column![
-            widgets::prop_section(tr("Properties"), vec![status, priority_row, due]),
-            widgets::prop_section(tr("List"), vec![list_row]),
-            widgets::prop_section(tr("Parent task"), vec![parent]),
+        let mut sections = column![widgets::prop_section(tr("Properties"), vec![status, priority_row, due])];
+        if let Some(tags) = self.tags_view() {
+            sections = sections.push(widgets::prop_section(tr("Tags"), vec![tags]));
+        }
+        if let Some(link) = self.link_row() {
+            sections = sections.push(widgets::prop_section(tr("Link"), vec![link]));
+        }
+        sections
+            .push(widgets::prop_section(tr("List"), vec![list_row]))
+            .push(widgets::prop_section(tr("Parent task"), vec![parent]))
+            .spacing(space::L)
+            .into()
+    }
+
+    /// The task's tags as chips that wrap, inset like the values of the property rows; `None`
+    /// without tags. Read-only: the detail does not edit tags yet.
+    fn tags_view(&self) -> Option<Element<'_, Message>> {
+        let tags: Vec<Element<'_, Message>> = self
+            .original
+            .categories
+            .iter()
+            .map(|tag| tag.trim())
+            .filter(|tag| !tag.is_empty())
+            .map(|tag| widgets::pill(None, tag.to_owned()))
+            .collect();
+        (!tags.is_empty()).then(|| container(widgets::chip_row(tags)).padding(style::ITEM_PADDING).into())
+    }
+
+    /// "Open link" with where it leads in `text_3` (`owner/repo#123`, or the address without its
+    /// scheme); `None` when the task has nothing to open.
+    fn link_row(&self) -> Option<Element<'_, Message>> {
+        let target = self.link_target()?;
+        let place = match self.original.link.as_ref().and_then(Link::github_ref) {
+            Some((repo, number)) => format!("{repo}#{number}"),
+            None => target.split_once("://").map_or(target.as_str(), |(_, rest)| rest).to_string(),
+        };
+        let value = row![
+            typo::text(typo::BODY, tr("Open link")).wrapping(Wrapping::None),
+            container(typo::text(typo::META, place).style(theme::text_3).wrapping(Wrapping::None))
+                .width(Fill)
+                .clip(true),
         ]
-        .spacing(space::L)
-        .into()
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+        Some(widgets::prop_row(Some(Mark::Icon(Icon::ArrowUpRight)), value, Some(Message::OpenLink)))
+    }
+
+    /// The address "Open link" opens: the task's `url`, else the page of its link (a GitHub
+    /// issue). Only `http` and `https` are opened; anything else (`file:`, an app's own scheme)
+    /// could start programs, so it is not offered.
+    fn link_target(&self) -> Option<String> {
+        let web = |url: &str| {
+            let lower = url.trim().to_ascii_lowercase();
+            (lower.starts_with("https://") || lower.starts_with("http://")).then(|| url.trim().to_string())
+        };
+        let own = self.original.url.as_deref().and_then(web);
+        own.or_else(|| self.original.link.as_ref().and_then(Link::web_url).as_deref().and_then(web))
     }
 
     /// The open editor as a floating layer next to `anchor`, or `None`. Hand it to the shell's
@@ -913,6 +973,8 @@ fn build_todo(original: &Todo, draft: &Draft) -> Todo {
         completed: draft.completed,
         parent: draft.parent.clone(),
         description: (!notes.is_empty()).then(|| notes.to_string()),
+        // Not edited here: saved as loaded, so the server keeps them.
+        ..original.clone()
     }
 }
 
@@ -981,6 +1043,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 
@@ -1373,6 +1439,61 @@ mod tests {
             let placed = panel::place(class, Space::new(), Some(panel), detail.layer(&anchor));
             assert!(placed.overlay.is_some(), "{class:?}: the open editor is always on top");
         }
+    }
+
+    #[test]
+    fn open_link_opens_the_url_else_the_link_page() {
+        let own = Todo {
+            url: Some(" https://example.org/a ".into()),
+            link: Some(Link::github("mahype/TorroWorkplace", 123)),
+            ..todo("t1", "a")
+        };
+        let mut detail = detail(&own, &[]);
+        assert_eq!(detail.update(Message::OpenLink), Action::OpenUrl("https://example.org/a".into()));
+        assert!(detail.link_row().is_some());
+
+        let linked = Todo { link: Some(Link::github("mahype/TorroWorkplace", 123)), ..todo("t2", "b") };
+        let mut detail = detail_of(&linked);
+        let page = "https://github.com/mahype/TorroWorkplace/issues/123";
+        assert_eq!(detail.update(Message::OpenLink), Action::OpenUrl(page.into()));
+    }
+
+    /// [`detail`] without other tasks, for tests that name their panel `detail`.
+    fn detail_of(task: &Todo) -> Detail {
+        detail(task, &[])
+    }
+
+    #[test]
+    fn only_web_addresses_are_offered() {
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "zoommtg://x", ""] {
+            let other = Link { id: "jira:ABC-1".into(), github: None };
+            let task = Todo { url: Some(url.into()), link: Some(other), ..todo("t1", "a") };
+            let mut detail = detail_of(&task);
+            assert_eq!(detail.link_target(), None, "{url}");
+            assert!(detail.link_row().is_none(), "{url}");
+            assert_eq!(detail.update(Message::OpenLink), Action::None, "{url}");
+        }
+        assert!(detail_of(&todo("t1", "a")).link_row().is_none(), "nothing to open");
+    }
+
+    #[test]
+    fn tags_show_and_survive_a_save() {
+        let task = Todo {
+            categories: vec!["Finance".into(), " ".into()],
+            url: Some("https://example.org".into()),
+            sort_order: Some(3),
+            link: Some(Link::github("mahype/TorroWorkplace", 1)),
+            ..todo("t1", "a")
+        };
+        let mut detail = detail_of(&task);
+        assert!(detail.tags_view().is_some());
+        assert!(detail_of(&todo("t2", "b")).tags_view().is_none());
+        let saved = saves(&mut detail, Message::ToggleDone);
+        assert_eq!(
+            (saved.categories, saved.url, saved.sort_order, saved.link),
+            (task.categories, task.url, task.sort_order, task.link),
+            "the detail does not edit them, so they are saved as loaded"
+        );
     }
 
     #[test]

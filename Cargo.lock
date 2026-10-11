@@ -4544,6 +4544,7 @@ dependencies = [
  "chrono",
  "schemars",
  "serde",
+ "serde_json",
  "tokio",
  "torro-core",
 ]
@@ -4610,6 +4611,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "webbrowser",
 ]
 
 [[package]]

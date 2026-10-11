@@ -6,6 +6,7 @@
 //! sync engine.
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use torro_pim::model::Link;
 use torro_pim::{Event, EventTime, Todo};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
@@ -106,7 +107,46 @@ pub(crate) fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> 
         completed,
         parent,
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
+        url: get("URL").map(|p| p.value.trim().to_string()).filter(|s| !s.is_empty()),
+        categories: categories(props),
+        sort_order: get("X-APPLE-SORT-ORDER").and_then(|p| p.value.trim().parse().ok()),
+        link: get("X-TORRO-LINK")
+            .map(|p| unescape(p.value).trim().to_string())
+            .filter(|id| !id.is_empty())
+            .map(|id| Link { id, github: None }),
     })
+}
+
+/// The tags of all `CATEGORIES` properties, in order: each holds a comma-separated list, and
+/// a comma escaped as `\,` belongs to the tag. Empty tags are dropped.
+fn categories(props: &[Property<'_>]) -> Vec<String> {
+    props
+        .iter()
+        .filter(|p| p.name.eq_ignore_ascii_case("CATEGORIES"))
+        .flat_map(|p| split_list(p.value))
+        .map(|tag| unescape(tag).trim().to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+/// A list value split at the commas that are not escaped; the parts stay escaped.
+fn split_list(value: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut escaped = false;
+    for (i, c) in value.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            ',' => {
+                parts.push(&value[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&value[start..]);
+    parts
 }
 
 /// The event one VEVENT's own properties describe; `None` for a cancelled one or one without
@@ -307,6 +347,26 @@ BEGIN:VEVENT\r\nUID:not-a-task\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:
         assert_eq!(plain.due, None);
         assert_eq!(plain.parent.as_deref(), Some("done-1"), "RELATED-TO without RELTYPE is a parent");
         assert!(!plain.completed);
+    }
+
+    #[test]
+    fn reads_url_categories_sort_order_and_link() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:x\r\nURL:https://github.com/mahype/TorroWorkplace/issues/123 \r\n\
+CATEGORIES:Work,Finanzen\\, Steuer, ,Privat\r\ncategories:Later\r\nX-APPLE-SORT-ORDER:-42\r\n\
+X-TORRO-LINK:github:mahype/TorroWorkplace#123\r\nBEGIN:VALARM\r\nCATEGORIES:Alarm\r\nEND:VALARM\r\n\
+END:VTODO\r\nEND:VCALENDAR\r\n";
+        let todo = parse_todos(ics, "/tasks/").remove(0);
+        assert_eq!(todo.url.as_deref(), Some("https://github.com/mahype/TorroWorkplace/issues/123"));
+        assert_eq!(todo.categories, ["Work", "Finanzen, Steuer", "Privat", "Later"], "the alarm's are not the task's");
+        assert_eq!(todo.sort_order, Some(-42));
+        assert_eq!(todo.link, Some(Link::github("mahype/TorroWorkplace", 123)));
+
+        let plain = parse_todos(TODOS, "/tasks/").remove(2);
+        assert_eq!((plain.url, plain.categories, plain.sort_order, plain.link), (None, Vec::new(), None, None));
+        let odd = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:y\r\nURL:\r\nX-APPLE-SORT-ORDER:soon\r\nX-TORRO-LINK: \r\n\
+END:VTODO\r\nEND:VCALENDAR\r\n";
+        let odd = parse_todos(odd, "/tasks/").remove(0);
+        assert_eq!((odd.url, odd.sort_order, odd.link), (None, None, None), "empty or unreadable values are none");
     }
 
     #[test]

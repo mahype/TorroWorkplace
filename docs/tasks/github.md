@@ -101,7 +101,7 @@ K.21 (frei)
   Eigenschaften und `VALARM` bleiben, geänderte Felder sind neu).
 
 ### P.2 Modell: Link, Kategorien, Reihenfolge
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** P.1, **Freigabe der Schnittstelle** (offener Punkt 1 in `github.md`)
 - **Dateien:** `crates/torro-pim/src/{model,demo}.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`,
   `crates/torro-ipc/src/api.rs` (Beschreibungen), API-Referenz

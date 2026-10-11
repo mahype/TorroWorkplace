@@ -248,6 +248,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 

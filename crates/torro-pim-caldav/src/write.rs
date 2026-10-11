@@ -64,8 +64,9 @@ pub fn merge_ics_event(stored: &str, event: &Event) -> String {
 /// The task written onto `stored`, the iCalendar object the server holds for it.
 ///
 /// Like [`merge_ics_event`] for the VTODO with the task's `uid` (else the first VTODO):
-/// `X-APPLE-SORT-ORDER`, `CATEGORIES`, `URL`, `VALARM`, `RELATED-TO` of other kinds and the like
-/// stay. Without a VTODO in `stored` the result is [`to_ics_todo`].
+/// `VALARM`, `ATTACH`, `RELATED-TO` of other kinds and the like stay; `URL`, `CATEGORIES`,
+/// `X-APPLE-SORT-ORDER` and `X-TORRO-LINK` (only the link's id) are model fields since P.2 and
+/// change only when they differ. Without a VTODO in `stored` the result is [`to_ics_todo`].
 pub fn merge_ics_todo(stored: &str, todo: &Todo) -> String {
     todo_onto(stored, todo, Utc::now())
 }
@@ -466,7 +467,54 @@ fn todo_fields(todo: &Todo, before: Option<&Todo>, now: DateTime<Utc>) -> Vec<Fi
             differs(|a, b| non_empty(&a.description) == non_empty(&b.description)),
             optional_text("DESCRIPTION", &todo.description),
         ),
+        Field::new(
+            &["URL"],
+            differs(|a, b| uri(&a.url) == uri(&b.url)),
+            uri(&todo.url).map(|url| format!("URL:{url}")).into_iter().collect(),
+        ),
+        // All CATEGORIES lines are one field: while the tags stay, so do the stored lines.
+        Field::new(
+            &["CATEGORIES"],
+            differs(|a, b| tags(a) == tags(b)),
+            categories_line(&tags(todo)).into_iter().collect(),
+        ),
+        Field::new(
+            &["X-APPLE-SORT-ORDER"],
+            differs(|a, b| a.sort_order == b.sort_order),
+            todo.sort_order.map(|n| format!("X-APPLE-SORT-ORDER:{n}")).into_iter().collect(),
+        ),
+        // Only the link's id is stored; what the core fetched for it is not the task's.
+        Field::new(
+            &["X-TORRO-LINK"],
+            differs(|a, b| link_id(a) == link_id(b)),
+            link_id(todo).map(|id| text_line("X-TORRO-LINK", id)).into_iter().collect(),
+        ),
     ]
+}
+
+/// A URI value as it is written: without control characters (a line break would start a new
+/// property, and URIs are not escaped like text) and surrounding spaces; empty counts as absent.
+fn uri(value: &Option<String>) -> Option<String> {
+    let clean: String = value.as_deref()?.chars().filter(|c| !c.is_control()).collect();
+    Some(clean.trim().to_string()).filter(|clean| !clean.is_empty())
+}
+
+/// The tags as they are stored: trimmed, empty ones dropped (as [`ical`] reads them).
+fn tags(todo: &Todo) -> Vec<&str> {
+    todo.categories.iter().map(|tag| tag.trim()).filter(|tag| !tag.is_empty()).collect()
+}
+
+/// `CATEGORIES:a,b\, c`: one line, tags escaped so a comma inside one stays part of it.
+fn categories_line(tags: &[&str]) -> Option<String> {
+    (!tags.is_empty()).then(|| {
+        let escaped: Vec<String> = tags.iter().map(|tag| escape(tag)).collect();
+        format!("CATEGORIES:{}", escaped.join(","))
+    })
+}
+
+/// The id of the task's link, trimmed; empty counts as no link.
+fn link_id(todo: &Todo) -> Option<&str> {
+    todo.link.as_ref().map(|link| link.id.trim()).filter(|id| !id.is_empty())
 }
 
 /// RFC 5545: 1 is the highest priority, 9 the lowest, 0 means undefined.
@@ -745,6 +793,7 @@ fn dav_child<'a, 'i>(node: Node<'a, 'i>, name: &str) -> Option<Node<'a, 'i>> {
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
+    use torro_pim::model::{GitHubDetails, GitHubKind, GitHubLabel, GitHubState, Link};
 
     use super::*;
 
@@ -785,6 +834,10 @@ mod tests {
             completed: true,
             parent: Some("todo-1@torro".to_string()),
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 
@@ -1037,6 +1090,131 @@ mod tests {
         assert_rewritten(NEXTCLOUD_TODO, &written, &replaced, &stamps());
         let back = read_todo(&written);
         assert_eq!((back.description, back.priority, back.due, back.parent), (None, None, None, None));
+    }
+
+    /// A link with details the core fetched, which never go into the stored task.
+    fn issue_link() -> Link {
+        let details = GitHubDetails {
+            kind: GitHubKind::Issue,
+            state: GitHubState::Open,
+            labels: vec![GitHubLabel { name: "bug".into(), color: Some("#D73A4A".into()) }],
+            assignees: vec!["mahype".into()],
+            milestone: Some("1.0".into()),
+            milestone_due: None,
+            draft: false,
+            review: None,
+            checks: None,
+            conflict: false,
+        };
+        Link { github: Some(details), ..Link::github("mahype/TorroWorkplace", 123) }
+    }
+
+    #[test]
+    fn a_new_task_writes_url_categories_sort_order_and_only_the_link_id() {
+        let todo = Todo {
+            completed: false,
+            url: Some("https://github.com/mahype/TorroWorkplace/issues/123".into()),
+            categories: vec!["Work".into(), " Steuer, 2025 ".into(), String::new()],
+            sort_order: Some(7),
+            link: Some(issue_link()),
+            ..todo()
+        };
+        let ics = todo_ics(&todo, now());
+        let lines = unfolded_lines(&ics);
+        for line in [
+            "URL:https://github.com/mahype/TorroWorkplace/issues/123",
+            "CATEGORIES:Work,Steuer\\, 2025",
+            "X-APPLE-SORT-ORDER:7",
+            "X-TORRO-LINK:github:mahype/TorroWorkplace#123",
+        ] {
+            assert!(lines.contains(&line.to_string()), "{line} missing in {lines:?}");
+        }
+        assert!(!ics.contains("bug") && !ics.contains("1.0"), "fetched details are not stored: {ics}");
+        let back = read_todo(&ics);
+        assert_eq!(back.categories, ["Work", "Steuer, 2025"]);
+        assert_eq!((back.url, back.sort_order), (todo.url.clone(), Some(7)));
+        assert_eq!(back.link, Some(Link::github("mahype/TorroWorkplace", 123)));
+
+        let bare = unfolded_lines(&todo_ics(&todo_without_extras(), now()));
+        let extras = ["URL", "CATEGORIES", "X-APPLE-SORT-ORDER", "X-TORRO-LINK"];
+        assert!(!bare.iter().any(|l| extras.iter().any(|e| l.starts_with(e))), "{bare:?}");
+    }
+
+    fn todo_without_extras() -> Todo {
+        Todo { url: Some(" ".into()), link: Some(Link { id: " ".into(), github: None }), ..todo() }
+    }
+
+    #[test]
+    fn changed_url_categories_and_sort_order_replace_only_their_lines() {
+        let mut todo = read_todo(NEXTCLOUD_TODO);
+        assert_eq!(todo.categories, ["Finanzen", "Privat"]);
+        assert_eq!(todo.sort_order, Some(2));
+        todo.url = Some("https://www.elster.de/eportal/formulare".into());
+        todo.categories = vec!["Finanzen".into(), "Dringend".into()];
+        todo.sort_order = Some(-1);
+        todo.link = Some(issue_link());
+        let written = todo_onto(NEXTCLOUD_TODO, &todo, later());
+        let replaced = [
+            TODO_STAMPS[0],
+            TODO_STAMPS[1],
+            "URL:https://www.elster.de/eportal/start",
+            "CATEGORIES:Finanzen,Privat",
+            "X-APPLE-SORT-ORDER:2",
+        ];
+        let new = with_stamps(&[
+            "URL:https://www.elster.de/eportal/formulare",
+            "CATEGORIES:Finanzen,Dringend",
+            "X-APPLE-SORT-ORDER:-1",
+            "X-TORRO-LINK:github:mahype/TorroWorkplace#123",
+        ]);
+        assert_rewritten(NEXTCLOUD_TODO, &written, &replaced, &new);
+        let back = read_todo(&written);
+        assert_eq!(back, Todo { link: Some(Link::github("mahype/TorroWorkplace", 123)), ..todo });
+    }
+
+    #[test]
+    fn cleared_url_categories_sort_order_and_link_are_gone() {
+        let stored = NEXTCLOUD_TODO.replace("CLASS:PRIVATE", "X-TORRO-LINK:github:mahype/TorroWorkplace#123");
+        let mut todo = read_todo(&stored);
+        assert!(todo.link.is_some());
+        todo.url = None;
+        todo.categories = Vec::new();
+        todo.sort_order = None;
+        todo.link = None;
+        let written = todo_onto(&stored, &todo, later());
+        let replaced = [
+            TODO_STAMPS[0],
+            TODO_STAMPS[1],
+            "URL:https://www.elster.de/eportal/start",
+            "CATEGORIES:Finanzen,Privat",
+            "X-APPLE-SORT-ORDER:2",
+            "X-TORRO-LINK:github:mahype/TorroWorkplace#123",
+        ];
+        assert_rewritten(&stored, &written, &replaced, &stamps());
+        assert_eq!(read_todo(&written), todo);
+    }
+
+    #[test]
+    fn unchanged_tags_keep_their_lines_and_fetched_details_change_nothing() {
+        // Two CATEGORIES lines, as some clients write them; the link as stored.
+        let stored = NEXTCLOUD_TODO
+            .replace("CATEGORIES:Finanzen,Privat", "CATEGORIES:Finanzen\nCATEGORIES:Privat")
+            .replace("CLASS:PRIVATE", "X-TORRO-LINK:github:mahype/TorroWorkplace#123");
+        let mut todo = read_todo(&stored);
+        assert_eq!(todo.categories, ["Finanzen", "Privat"]);
+        // What the core fetched rides along; the stored task does not change for it.
+        todo.link = Some(issue_link());
+        todo.categories = vec![" Finanzen".into(), "Privat".into()];
+        let written = todo_onto(&stored, &todo, later());
+        assert_rewritten(&stored, &written, &TODO_STAMPS, &stamps());
+    }
+
+    #[test]
+    fn a_url_cannot_add_properties() {
+        let todo = Todo { url: Some("https://example.org/a\r\nX-EVIL:1\nb".into()), ..todo() };
+        let lines = unfolded_lines(&todo_ics(&todo, now()));
+        assert!(lines.contains(&"URL:https://example.org/aX-EVIL:1b".to_string()), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.starts_with("X-EVIL")));
     }
 
     #[test]
