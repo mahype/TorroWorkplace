@@ -251,13 +251,13 @@ K.21 (frei)
 
 ### G.3 Aufgaben-App: Filterlisten zeigen
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** G.2 · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`, `crates/torro-gui/src/icon.rs`,
-  `crates/torro-pim/src/demo.rs` (Beispiel-Filterliste)
-- Seitenleiste: Filterlisten in der Gruppe des GitHub-Kontos mit eigenem Symbol. Zeile: Typ-Symbol (Issue
-  offen/geschlossen, PR Entwurf/offen/gemergt), Titel, `Repo#123`, Labels als dezente Chips, Fälligkeit; bei
-  PRs Review-Stand und CI. Gruppierung nach Repo. Detail im Paneel: Text als Markdown (nur lesen), Labels,
-  Zuständige, Meilenstein, Hauptknopf „Open on GitHub“.
-- **API/MCP:** liest über `tasks.list_lists`/`tasks.list_todos` (gibt es).
+- **Modell:** Opus · **Braucht:** G.2b, R.2, R.3 (`docs/tasks/design.md`) · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`,
+  `crates/torro-gui/src/shell.rs`, `crates/torro-pim/src/{account,demo}.rs` (Beispiel-Filterliste)
+- Zeilen und Detail für Issues und PRs baut schon das Redesign (R.2, R.3). G.3 bringt die **Filterlisten** in die App:
+  Seitenleiste mit Gruppe des GitHub-Kontos und eigenem Symbol je Filterliste; Gruppierung nach Repo als Standard in
+  Filterlisten; Hinweise der Liste aus `source` (Problem beim Abruf, „Showing the first 1,000“); angeheftete Einträge
+  mit „Unpin“ im „…“-Menü (`tasks.unpin_issue`).
+- **API/MCP:** liest über `tasks.list_lists`/`tasks.list_todos`; Lösen über `tasks.unpin_issue` (gibt es).
 - **Fund aus G.1:** `shell::account_groups` zählt ein GitHub-Konto ohne Listen mit (eine Nextcloud + GitHub zeigt
   dann eine überflüssige Konto-Überschrift), und `torro_pim::account::combined_state` hält eine reine
   GitHub-Einrichtung für „verbunden“ (die Kalender-App zeigt dann nicht „No calendar account yet“). Nur Konten

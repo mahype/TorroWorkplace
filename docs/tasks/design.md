@@ -496,3 +496,98 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
   oberste Ebene fängt solche Tastendrücke ab, bevor ein Feld sie sieht (Iced 0.14 hat ohne `advanced` keinen
   Haken am Feld selbst); gilt damit für `text_input` und `text_editor` und für jedes künftige Feld. Neue Apps
   rufen es wie `zoom.view` auf.
+
+## Neugestaltung der Aufgaben-App (2026-10-11)
+
+Rückmeldung des Nutzers: Übersicht und Detail wirken „hemdsärmelig, kaum strukturiert, alles steht nur
+untereinander“. Bestandsaufnahme und Vorbilder (Linear, Todoist, GitHub Issues, Things 3, Superlist/Sunsama)
+hat `torro-design-review` gesammelt; daraus ist der Entwurf
+[prototypes/tasks/redesign.html](../prototypes/tasks/redesign.html) entstanden (Bilder `redesign-*.png`
+daneben). **Am 2026-10-11 vom Nutzer freigegeben („setz das so um“).** Der Entwurf ist die Vorlage für
+Maße, Reihenfolge und Zustände; wo dieser Text und der Entwurf sich widersprechen, gilt der Entwurf.
+
+Entschieden: Mittel zeigt Liste (380) **neben** dem Detail, Eigenschaften dann als Chips unter dem Titel
+(die Tabelle in `torro-design` Abschnitt 6 gilt, die Regel „sonst darüber“ des Paneels nur noch für Schmal).
+Neben dem offenen Detail verkürzen sich die Zeilen nach der Breite der Liste (erst Labels, dann
+Hinweis-Symbole weg, Pille wird Punkt, `repo#123` wird `#123`). Löschen nur noch im „…“-Menü.
+Die GitHub-Teile (Typ-Symbol, `repo#123`, Labels, CI/Review, PR-Abschnitte) kommen gleich mit, weil das
+Modell sie seit P.2 kennt (`Todo::link`, `GitHubDetails`); die Beispieldaten bekommen dafür Einträge.
+
+```
+R.1 ─┬─ R.2 ─┐
+     └─ R.3 ─┴─ R.4   danach G.3, G.4, G.5, G.6, P.3b (docs/tasks/github.md)
+```
+
+### R.1 Bausteine: Symbole, Farben, kleine Widgets
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{icon,theme,widgets}.rs`,
+  `crates/torro-gui/assets/icons/` (neue Lucide-SVGs 0.469.0, Strich 1.75), `crates/torro-gui/examples/gallery.rs`,
+  Skill `torro-design` (Abschnitte Farben/Icons/Größenklassen, nennen)
+- Symbole, die der Entwurf braucht und `Icon` noch nicht hat (z. B. `circle-dot`, `circle-dashed`, `circle-x`,
+  `git-pull-request`, `git-pull-request-draft`, `git-pull-request-closed`, `git-merge`, `list-checks`,
+  `grip-vertical`, `eye`, `tag`, `milestone`, `git-branch`, `github`, `chevron-up`, `notebook-text`/`sticky-note`,
+  `link`, `copy`, `trash-2`) – genaue Liste aus `redesign.html` ablesen.
+- Farbe `merged` (Violett für gemergt/geschlossen bei GitHub) in `Palette`, hell und dunkel, mit Kontrastprüfung
+  wie die übrigen Statusfarben; Labelfarben kommen aus den Daten (`#RRGGBB`) und erscheinen nur als Punkt.
+- Kleine Widgets in `widgets.rs`: Eigenschaftszeile (Bezeichnung 88 links in `META`/`TEXT_3`, Wert mit Icon, ganze
+  Zeile als Knopf, leerer Wert in `TEXT_3`), Fortschrittsbalken 64×4, Label-Chip (Punkt + Name, `CAPTION`),
+  Status-Pille mit Wort, Tastenhinweis (`kbd`). Galerie zeigt alle neuen Teile hell und dunkel.
+- Abnahme: Icon-Test (alle Lucide, Strich 1.75) grün, Kontrasttest für `merged`, Galerie-Screenshot.
+
+### R.2 Aufgaben-App: Aufbau, Kopf, Schnelleingabe, Liste
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** R.1 · **Dateien:** `crates/torrotasks/src/{app,list,glance}.rs`, `crates/torro-pim/src/demo.rs`
+  (GitHub-Beispieleinträge mit `link`/`GitHubDetails`)
+- **Aufbau:** Breit (Inhalt ≥ 1320) drei Spalten: Liste `LIST` 460 **linksbündig** | Detail (Inhalt max. 640,
+  Innenrand 32) | Eigenschaften `PROPS` 300, je eine `LINE` dazwischen; ohne offenes Detail füllt die Liste
+  (Inhalt max. 720 wie heute). Darunter bis Mittel: Liste 380 + Detail. Schmal: Detail ersetzt die Liste, Kopf mit
+  „‹ <Liste>“ und ↑↓. Die Inhalte von Detail und Eigenschaften liefert R.3 (`detail.rs`); R.2 setzt sie zusammen.
+- **Kopf (44):** Icon + Titel `BODY_STRONG` + „{n} open“ `TEXT_3`; rechts „Display“ (ghost, Menü: Group by
+  due date/list/priority/none, Sync now, „Synced {when}“) und „New task“ (primary); Schmal nur Icons mit
+  Tooltip, „+“ kontraststark. Kein Dauer-„Refresh“-Knopf mehr. „Filter“ aus dem Entwurf erst, wenn es eine
+  Filterfunktion gibt (nicht als toter Knopf). „Order: Manual“ kommt mit P.3b.
+- **Schnelleingabe** als Listenzeile (ROW 40, volle Breite der Zeilen, keine Box, `LINE` unten, „+“ auf der Achse
+  des Leitsymbols, Platzhalter „Add a task or paste a GitHub link…“, rechts `kbd` „N“; Fokus `SELECTED` + Ring).
+- **Gruppenköpfe (32):** `RAISED` bündig ohne Spalt und ohne Doppelkante, Chevron zum Zuklappen, Icon auf der
+  Achse des Leitsymbols, Name `CAPTION`/`TEXT_2`, Zahl `META`/`TEXT_3`, rechts „+“ (legt in dieser Gruppe an).
+- **Zeile (40)** genau wie im Entwurf: Leitsymbol (Aufgabe Kreis; Issue/PR mit Typ-Symbol und Zustandsfarbe),
+  Prioritätsspalte nur wenn gesetzt (dringend: oranges Quadrat), `repo#123` bei GitHub, Titel mit Auslassung,
+  Hinweis-Symbole (Unteraufgaben „2/4“, Notiz, Wiederholung, Erinnerung), rechts Labels (max. 2 + „+n“), CI,
+  Review, Herkunfts-Pille, Fälligkeit tabellarisch rechtsbündig. Verkürzen nach der Breite der Liste wie im
+  Entwurf; nie zweizeilig. GitHub-PRs ohne Haken (nur Symbol). Erledigt: `TEXT_3` durchgestrichen.
+- **Mini/Leiste** (aus der Bestandsaufnahme): Mini hoch mit leisen Gruppentrennern, Leiste einzeilig mit „+n“;
+  GitHub-Einträge mit Typ-Symbol.
+- Tastatur: ↑/↓ bzw. j/k wechseln die Aufgabe auch bei offenem Detail; Esc schließt.
+- Neue Texte englisch mit `tr()`.
+- Abnahme: Tests für Verkürzen (Schwellen), Gruppierung, Tastatur; Sichtprüfung mit `--demo` gegen
+  `redesign-*.png` in Breit (1600 und 1280), Mittel, Schmal, Mini, Leiste, hell und dunkel.
+
+### R.3 Aufgaben-App: Detail und Eigenschaften
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** R.1 · **Dateien:** `crates/torrotasks/src/detail.rs` (nur kleine, gebündelte
+  Verdrahtung in `app.rs`, im Bericht nennen)
+- `detail.rs` liefert drei Ansichten, die R.2 einsetzt: **Hauptspalte**, **Eigenschaften-Spalte** (Breit) und
+  **Eigenschaften als Chips** unter dem Titel (Mittel/Schmal).
+- **Kopf (44):** Pfad mit Listen-Ring 12 (Liste › Elternaufgabe, nur echte Hierarchie), rechts ↑↓, „…“ (Copy link,
+  Open on GitHub, Delete task – bei GitHub-Einträgen kein Delete), Schließen. Kein roter Fuß mehr.
+- **Hauptspalte:** Titel `HEADLINE` mit Haken bzw. GitHub-Statussymbol 20; bei GitHub darunter `META`
+  „owner/repo#123 · opened by … · vor …“ (soweit die Daten es hergeben) + Status-Pille mit Wort. Notizen ohne Box
+  (Platzhalter „Add notes…“, Hover-Fläche). „Sub-tasks“ mit Chevron, Fortschrittsbalken, „2/4“, „Hide completed“,
+  Zeilen 32, „Add sub-task“ **immer** sichtbar. Bei PRs Abschnitt „Checks“ und „Reviews“ aus `GitHubDetails`
+  (heute nur Gesamtstand; Einzelchecks/Reviewer erst, wenn G.2 sie liefert). „Activity“ entfällt vorerst: Es
+  gibt noch keine Datenquelle (später GitHub-Kommentare/Ereignisse).
+- **Eigenschaften-Spalte:** Zeilen aus R.1 (Bezeichnung 88 | Wert), Blöcke durch `LINE` getrennt, Titel nur bei
+  mehr als einer Zeile: (ohne Titel) Status, Priority, Due, Reminder, Repeat · „Organisation“ List, Parent,
+  Labels/Tags · „Source“ Account, bei GitHub Repo, Assignees, Milestone, „Open on GitHub ↗“. Werte, die das Modell
+  noch nicht kennt (Reminder, Repeat), nur zeigen, wenn es sie gibt – keine toten Zeilen.
+- Bearbeiten wie heute (automatisch speichern, ETag-sicher); Menüs/Karten für Datum, Priorität, Liste bleiben.
+- Neue Texte englisch mit `tr()`.
+- Abnahme: Tests für Eigenschaften (leer/gesetzt, GitHub vs. Aufgabe), Menü „…“ ohne Delete bei GitHub; Sichtprüfung
+  gegen `redesign-wide-task.png`, `redesign-wide-pr.png`, `redesign-medium-task.png`, `redesign-narrow-detail.png`.
+
+### R.4 Abnahme und Feinschliff
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** R.2, R.3 · **Dateien:** nach Befund (nennen)
+- `torro-design-review` vergleicht die App mit `--demo` in allen Größenklassen, hell und dunkel, mit dem Entwurf;
+  Abweichungen beheben (Achsen, Abstände, Abschneiden, Kontraste). Skill `torro-design` an den Stellen anpassen,
+  die der Entwurf geändert hat (Abschnitt 6: Mittel nebeneinander; Detail ohne roten Fuß).
