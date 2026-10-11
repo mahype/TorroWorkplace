@@ -9,7 +9,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use tokio::sync::mpsc;
 
-use crate::{Events, Rect, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WmEvent, WorkspaceId};
+use crate::{
+    Events, Monitor, Rect, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WmEvent, WorkspaceId,
+};
 
 /// A command the fake received.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +26,7 @@ pub enum Call {
 #[derive(Debug, Default)]
 struct State {
     active: Option<WorkspaceId>,
+    monitors: Vec<Monitor>,
     windows: Vec<Window>,
     calls: Vec<Call>,
     subscribers: Vec<mpsc::Sender<WmEvent>>,
@@ -52,11 +55,26 @@ pub fn window(id: &str, class: &str, workspace: &str, rect: Rect) -> Window {
 }
 
 impl FakeWm {
-    /// An empty fake with `active` as the focused workspace.
+    /// An empty fake with `active` as the focused workspace, shown on one monitor `DP-1`
+    /// at 0,0 with 3840×1080.
     pub fn new(active: &str) -> FakeWm {
         let fake = FakeWm::default();
-        fake.lock().active = Some(WorkspaceId(active.to_string()));
+        {
+            let mut state = fake.lock();
+            state.active = Some(WorkspaceId(active.to_string()));
+            state.monitors = vec![Monitor {
+                name: "DP-1".into(),
+                rect: Rect { x: 0, y: 0, width: 3840, height: 1080 },
+                scale: 1.0,
+                active_workspace: state.active.clone(),
+            }];
+        }
         fake
+    }
+
+    /// Replaces the monitors.
+    pub fn set_monitors(&self, monitors: Vec<Monitor>) {
+        self.lock().monitors = monitors;
     }
 
     /// Adds a window that already exists; sends no event.
@@ -119,6 +137,10 @@ impl WindowManager for FakeWm {
     async fn windows(&self, workspace: Option<&WorkspaceId>) -> Result<Vec<Window>, WmError> {
         let state = self.lock();
         Ok(state.windows.iter().filter(|w| workspace.is_none_or(|ws| &w.workspace == ws)).cloned().collect())
+    }
+
+    async fn monitors(&self) -> Result<Vec<Monitor>, WmError> {
+        Ok(self.lock().monitors.clone())
     }
 
     async fn focus_window(&self, window: &WindowId) -> Result<(), WmError> {

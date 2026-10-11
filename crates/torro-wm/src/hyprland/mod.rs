@@ -14,7 +14,7 @@ pub mod socket;
 
 use std::path::PathBuf;
 
-use crate::{Events, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WorkspaceId};
+use crate::{Events, Monitor, Split, SplitDirection, Window, WindowId, WindowManager, WmError, WorkspaceId};
 
 /// A connection to the running Hyprland instance.
 #[derive(Debug, Clone)]
@@ -45,6 +45,11 @@ impl WindowManager for Hyprland {
     async fn windows(&self, workspace: Option<&WorkspaceId>) -> Result<Vec<Window>, WmError> {
         let _ = workspace;
         Err(WmError::NotImplemented("hyprland windows (task 1.5)"))
+    }
+
+    /// Task 1.5.
+    async fn monitors(&self) -> Result<Vec<Monitor>, WmError> {
+        Err(WmError::NotImplemented("hyprland monitors (task 1.5)"))
     }
 
     /// Task 1.6.

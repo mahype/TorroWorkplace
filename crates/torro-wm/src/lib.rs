@@ -33,6 +33,9 @@ pub trait WindowManager: Send + Sync {
     /// and special/scratchpad windows are left out.
     fn windows(&self, workspace: Option<&WorkspaceId>) -> impl Future<Output = Result<Vec<Window>, WmError>> + Send;
 
+    /// All monitors, with the workspace each one shows.
+    fn monitors(&self) -> impl Future<Output = Result<Vec<Monitor>, WmError>> + Send;
+
     fn focus_window(&self, window: &WindowId) -> impl Future<Output = Result<(), WmError>> + Send;
 
     /// Moves `window` to `workspace` without following it there.
@@ -97,6 +100,13 @@ impl WindowManager for Backend {
     async fn windows(&self, workspace: Option<&WorkspaceId>) -> Result<Vec<Window>, WmError> {
         match self {
             Backend::Hyprland(wm) => wm.windows(workspace).await,
+            Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
+        }
+    }
+
+    async fn monitors(&self) -> Result<Vec<Monitor>, WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.monitors().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
