@@ -1,9 +1,11 @@
-//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`): the accounts as rows of one settings
-//! group per provider (status dot, label on one line, status and last sync below, chevron), "Add
-//! account" in the header bar; a detail page per account with groups for the status ("Sync
-//! now"), the calendars and task lists (a switch each for showing them in the apps, read-only
-//! ones marked) and the connection, and "Remove account…" behind a confirmation. Empty: a
-//! sentence about what to add. The add flow is `wizard.rs` (task S.6); it and the confirmation
+//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`, several accounts since M1.2): the
+//! accounts as rows of one settings group per provider (status dot, label on one line, status and
+//! last sync below, chevron), "Add account" in the header bar – always, also with accounts; a
+//! detail page per account with groups for the status ("Sync now"), the calendars and task lists
+//! (a switch each for showing them in the apps, read-only ones marked) and the connection, and
+//! "Remove account…" behind a confirmation that names the account and acts on it alone. A
+//! sign-in in progress (an entry without an id) is a "Signing in…" row without a detail page.
+//! Empty: a sentence about what to add. The add flow is `wizard.rs` (task S.6); it and the confirmation
 //! are dialogs over the whole window ([`overlay`]).
 //!
 //! Requests: `Sync`, `RemoveAccount { id }`, and `SetCollectionShown { collection, shown }` for
@@ -100,8 +102,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::SyncNow => Action::Send(Request::Sync),
         Message::SetShown { collection, shown } => Action::Send(Request::SetCollectionShown { collection, shown }),
+        // Only an open detail page has an account to remove.
         Message::AskRemove => {
-            state.confirm_remove = true;
+            state.confirm_remove = selected(state, data).is_some();
             Action::None
         }
         Message::CancelRemove => {
@@ -133,15 +136,21 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         let content = wizard::view(wizard, data).map(Message::Wizard);
         return Some(dialog(content, size::FORM_MAX, Message::Wizard(wizard::Message::Close)));
     }
-    state.confirm_remove.then(|| {
-        confirm(
-            tr("Remove this account?"),
-            tr("This only removes the account from Torro Workplace. Your data stays on the server.").to_string(),
-            tr("Remove account"),
-            Message::Remove,
-            Message::CancelRemove,
-        )
-    })
+    if !state.confirm_remove {
+        return None;
+    }
+    // With several accounts the dialog says which one goes.
+    let account = selected(state, data)?;
+    Some(confirm(
+        tr("Remove this account?"),
+        trf(
+            "This removes {account} from Torro Workplace. Your data stays on the server.",
+            &[("account", &account.label)],
+        ),
+        tr("Remove account"),
+        Message::Remove,
+        Message::CancelRemove,
+    ))
 }
 
 /// The header bar of the page: "Add account" on the list; on an account's detail its label with
@@ -163,9 +172,21 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
 
-/// The accounts the list shows. An empty id is a sign-in in progress; the wizard shows that.
+/// The accounts with a detail page. An empty id is a sign-in in progress ([`pending`]).
 pub fn listed(accounts: &[AccountInfo]) -> impl Iterator<Item = &AccountInfo> {
     accounts.iter().filter(|account| !account.id.is_empty())
+}
+
+/// The sign-ins in progress: entries without an id. The list shows them as a "Signing in…" row;
+/// there is no account yet to open or remove.
+pub fn pending(accounts: &[AccountInfo]) -> impl Iterator<Item = &AccountInfo> {
+    accounts.iter().filter(|account| account.id.is_empty())
+}
+
+/// The name of a sign-in in progress: the server without scheme and trailing slash.
+fn pending_name(account: &AccountInfo) -> &str {
+    let label = account.label.as_str();
+    label.split_once("://").map_or(label, |(_, rest)| rest).trim_end_matches('/')
 }
 
 /// The provider's display name; unknown providers show their id.
@@ -295,15 +316,27 @@ fn selected<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
 // ----- Views --------------------------------------------------------------------------------
 
 fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    let accounts: Vec<&AccountInfo> = listed(&data.accounts).collect();
-    if accounts.is_empty() {
+    // The accounts first, then the sign-ins in progress, so a new row appears below the others.
+    let entries: Vec<&AccountInfo> = listed(&data.accounts).chain(pending(&data.accounts)).collect();
+    if entries.is_empty() {
         return empty_state(tr("No accounts yet."), tr("Add your Nextcloud to see calendars and tasks in the apps."));
     }
-    let groups = providers(&accounts).into_iter().map(|kind| {
-        let rows = accounts.iter().filter(|account| account.kind == kind).map(|account| account_row(account, now));
+    let groups = providers(&entries).into_iter().map(|kind| {
+        let rows = entries
+            .iter()
+            .filter(|account| account.kind == kind)
+            .map(|account| if account.id.is_empty() { pending_row(account) } else { account_row(account, now) });
         widgets::group(provider_name(kind), rows.collect(), None)
     });
     column(groups).spacing(space::XL).into()
+}
+
+/// A sign-in in progress: attention dot, the server and "Signing in…". Not pressable: there is
+/// no account yet.
+fn pending_row<'a>(account: &'a AccountInfo) -> Element<'a, Message> {
+    let line = status_line(&account.state);
+    let dot = widgets::status_dot(line.tone.status());
+    setting_row(Some(dot), pending_name(account), Some(line.text), Space::new())
 }
 
 /// One account in the list: status dot, label, status and last sync, and a chevron; the whole row
@@ -507,9 +540,12 @@ mod tests {
 
     #[test]
     fn dialogs_are_window_layers() {
-        let data = Data::default();
+        let data = Data { accounts: vec![account("nextcloud:anna", connected(None, None))], ..Data::default() };
         let mut state = State::default();
         assert!(overlay(&state, &data).is_none());
+        update(&mut state, Message::AskRemove, &data);
+        assert!(overlay(&state, &data).is_none(), "nothing to remove without an open detail page");
+        update(&mut state, Message::Open("nextcloud:anna".into()), &data);
         update(&mut state, Message::AskRemove, &data);
         assert!(overlay(&state, &data).is_some());
         update(&mut state, Message::CancelRemove, &data);
@@ -536,6 +572,61 @@ mod tests {
         update(&mut state, Message::Open("nextcloud:anna@cloud.example.org".into()), &data);
         drop(view(&state, &data));
         drop(view(&State::default(), &Data::default()));
+    }
+
+    fn two_accounts() -> Data {
+        Data {
+            accounts: vec![
+                account("nextcloud:anna@work.example.org", connected(None, None)),
+                account("nextcloud:anna@home.example.org", connected(None, None)),
+            ],
+            ..Data::default()
+        }
+    }
+
+    #[test]
+    fn removing_acts_on_the_open_account_only() {
+        let data = two_accounts();
+        let mut state = State::default();
+        update(&mut state, Message::Open("nextcloud:anna@home.example.org".into()), &data);
+        update(&mut state, Message::AskRemove, &data);
+        assert!(state.confirm_remove);
+        let action = update(&mut state, Message::Remove, &data);
+        assert!(
+            matches!(action, Action::Send(Request::RemoveAccount { ref id }) if id == "nextcloud:anna@home.example.org"),
+            "{action:?}"
+        );
+        assert!(state.selected.is_none() && !state.confirm_remove, "back on the list");
+        let again = update(&mut state, Message::Remove, &data);
+        assert!(matches!(again, Action::None), "no account open: nothing to remove");
+    }
+
+    #[test]
+    fn adding_is_possible_with_accounts() {
+        let data = two_accounts();
+        let state = State::default();
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini] {
+            assert_eq!(header(&state, &data, class).actions.len(), 1, "{class:?} offers Add account");
+        }
+    }
+
+    #[test]
+    fn a_sign_in_in_progress_is_a_row_not_an_account() {
+        let signing_in = AccountState::SigningIn {
+            server: "https://cloud.example.org/".into(),
+            login_url: "https://cloud.example.org/login".into(),
+        };
+        let mut waiting = account("", signing_in);
+        waiting.label = "https://cloud.example.org/".into();
+        let mut data = two_accounts();
+        data.accounts.push(waiting.clone());
+        assert_eq!(listed(&data.accounts).count(), 2);
+        assert_eq!(pending(&data.accounts).count(), 1);
+        assert_eq!(pending_name(&waiting), "cloud.example.org");
+        assert_eq!(status_line(&waiting.state).text, tr("Signing in…"));
+        drop(view(&State::default(), &data));
+        // Only a sign-in: a row instead of the empty state.
+        drop(view(&State::default(), &Data { accounts: vec![waiting], ..Data::default() }));
     }
 
     #[test]

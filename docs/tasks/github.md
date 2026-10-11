@@ -42,7 +42,7 @@ K.21 (frei)
   eines Kontos), Umschreiben alter Kennungen in Einstellungen und Rechten, Rechte-Filter mit neuen Kennungen.
 
 ### M1.2 Steuerzentrale: mehrere Konten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M1.1 · **Dateien:** `crates/torroworkplace/src/ui/{accounts,wizard,overview}.rs`
 - „Add account“ ist immer da, auch wenn schon ein Konto besteht. Der Assistent beginnt mit der Wahl des
   Anbieters (vorerst nur Nextcloud; der Schritt entfällt, solange es nur einen gibt). Liste aller Konten mit

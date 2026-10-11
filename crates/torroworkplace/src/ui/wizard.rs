@@ -4,7 +4,10 @@
 //! button bottom right (like TorroMail's setup wizard):
 //!
 //! 1. **Provider:** a catalog – Nextcloud (calendars, tasks) enabled; GitHub (issues,
-//!    projects), Slack and AI providers listed as "Coming soon", disabled.
+//!    projects), Slack and AI providers listed as "Coming soon", disabled. With a single
+//!    available provider (so far only Nextcloud) the step is skipped and the dialog starts at
+//!    the server; the catalog shows as soon as a second provider can be set up. The dialog is
+//!    the same with accounts already present: it adds one more.
 //! 2. **Server** (Nextcloud): the server address; Enter or "Continue" sends
 //!    `Request::ConnectNextcloud { server }`.
 //! 3. **Sign in:** "Nextcloud handles the sign-in. You sign in on its own page; Torro
@@ -65,7 +68,20 @@ impl Provider {
     }
 }
 
-#[derive(Debug, Default)]
+impl Provider {
+    const ALL: [Provider; 4] = [Provider::Nextcloud, Provider::GitHub, Provider::Slack, Provider::Ai];
+}
+
+/// Where a new dialog starts: at the provider catalog, unless there is only one provider to pick.
+fn first_step() -> Step {
+    let mut available = Provider::ALL.into_iter().filter(|provider| provider.is_enabled());
+    match (available.next(), available.next()) {
+        (Some(_), None) => Step::Server,
+        _ => Step::Provider,
+    }
+}
+
+#[derive(Debug)]
 pub struct State {
     step: Step,
     /// The server address as typed (Nextcloud).
@@ -78,6 +94,18 @@ pub struct State {
     pub signing_in: bool,
     /// Error text for the footer: the shell's last error while signing in.
     error: Option<String>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        State {
+            step: first_step(),
+            server: String::new(),
+            connected_before: Vec::new(),
+            signing_in: false,
+            error: None,
+        }
+    }
 }
 
 impl State {
@@ -344,16 +372,27 @@ mod tests {
     /// The state after the user typed `server` and pressed Continue.
     fn signing_in_state(server: &str, data: &Data) -> State {
         let mut state = State::default();
-        update(&mut state, Message::ChooseProvider(Provider::Nextcloud), data);
         update(&mut state, Message::ServerChanged(server.into()), data);
         update(&mut state, Message::Continue, data);
         state
     }
 
+    /// A dialog on the catalog, as it opens once a second provider can be set up.
+    fn at_catalog() -> State {
+        State { step: Step::Provider, ..State::default() }
+    }
+
+    #[test]
+    fn a_single_provider_skips_the_catalog() {
+        assert_eq!(Provider::ALL.iter().filter(|provider| provider.is_enabled()).count(), 1);
+        assert_eq!(State::default().step, Step::Server, "the dialog starts at the server address");
+        assert_eq!(first_step(), Step::Server);
+    }
+
     #[test]
     fn provider_then_server_then_signing_in_then_done() {
         let empty = Data::default();
-        let mut state = State::default();
+        let mut state = at_catalog();
         assert_eq!(state.step, Step::Provider);
 
         update(&mut state, Message::ChooseProvider(Provider::Nextcloud), &empty);
@@ -407,7 +446,7 @@ mod tests {
     #[test]
     fn disabled_providers_do_nothing() {
         for provider in [Provider::GitHub, Provider::Slack, Provider::Ai] {
-            let mut state = State::default();
+            let mut state = at_catalog();
             update(&mut state, Message::ChooseProvider(provider), &Data::default());
             assert_eq!(state.step, Step::Provider, "{provider:?} is disabled");
         }
@@ -417,7 +456,6 @@ mod tests {
     fn empty_server_keeps_continue_disabled() {
         let empty = Data::default();
         let mut state = State::default();
-        update(&mut state, Message::ChooseProvider(Provider::Nextcloud), &empty);
         for typed in ["", "   ", "\t"] {
             update(&mut state, Message::ServerChanged(typed.into()), &empty);
             assert!(!can_continue(&state), "{typed:?} must not enable Continue");
@@ -445,7 +483,7 @@ mod tests {
         let connected_data = data_with(vec![account("nextcloud:anna@cloud.example.org", connected())]);
         let mut state = State::default();
         observe(&mut state, &connected_data);
-        assert_eq!(state.step, Step::Provider);
+        assert_eq!(state.step, Step::Server);
     }
 
     #[test]
@@ -461,7 +499,7 @@ mod tests {
     #[test]
     fn views_build_for_each_step() {
         let empty = Data::default();
-        let mut state = State::default();
+        let mut state = at_catalog();
         drop(view(&state, &empty));
         update(&mut state, Message::ChooseProvider(Provider::Nextcloud), &empty);
         drop(view(&state, &empty));
