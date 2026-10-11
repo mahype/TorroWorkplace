@@ -306,6 +306,35 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   `LIST_MEDIUM` 260 und `NARROW_DIAL` 440 sind lokale Konstanten, gehören als Tokens nach
   `torro-gui`. In Schmal liegen Liste und Kopftitel nicht auf einer Achse.
 
+### K.23 Radar: Tage blättern, Uhrzeit am Zifferblatt drehen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.22 · **Dateien:** `crates/torrocalendar/src/app.rs`,
+  `crates/torrocalendar/src/views/radar.rs`, `crates/torrocalendar/src/views/radar/layout.rs`
+- Wunsch des Nutzers (2026-10-11): Mit ‹ › kam man nur stundenweise voran und höchstens bis morgen;
+  zu einem fernen Datum ging es gar nicht. Die Kopfleiste soll wie überall Tage blättern, die
+  Uhrzeit wird am Zifferblatt gesteuert.
+- **Oberfläche:**
+  - **Tage:** ‹ › und ← → blättern einen Tag, „Today“ führt zu jetzt. Ein Klick auf einen Tag im
+    kleinen Monat (bzw. in der Wochenleiste in Schmal) öffnet das Radar an diesem Tag und bleibt
+    in der Radar-Ansicht.
+  - **Fensterbeginn:** heute (ohne Drehen) bei „jetzt“, rote Kante. An jedem anderen Tag um
+    **08:00**, bei einem früheren Termin mit Uhrzeit an diesem Tag zur vollen Stunde davor, nie vor
+    06:00 (Ende der Nacht); ganztägige Termine und solche vom Vortag zählen nicht. Kante dann
+    `TEXT_2`, in der Mitte das Datum und „Back to now“.
+  - **Uhrzeit drehen** (Versatz zum Fensterbeginn, weiter −12 h … +24 h): Mausrad wie bisher in
+    15-min-Schritten; **↑ ↓** je eine Stunde; **Ziehen**: Drücken auf dem Zifferblatt (außerhalb
+    eines Termins) und Bewegen dreht wie ein Drehknopf – im Uhrzeigersinn später, 360° = 12 h, aus
+    dem Winkelunterschied zwischen zwei Mausbewegungen (über 0°/360° hinweg stetig), auf 5 min
+    gerastet. Erst ab ~4 px Bewegung ist es ein Ziehen; ein Klick bleibt ein Klick (Termin öffnen,
+    neuer Termin). Zeiger `Grab` über dem Zifferblatt, `Grabbing` beim Ziehen, `Pointer` über Terminen.
+  - Titel der Kopfleiste: der Tag des Fensterbeginns.
+- **API / MCP:** keiner – Ansicht und Versatz sind Fensterzustand (wie K.22).
+- **Abnahme:** Unit-Tests: Fensterbeginn (heute, anderer Tag ohne Termine, früher Termin 06:30 →
+  06:00, Termin 05:00 → 06:00, Termin 09:00 → 08:00, ganztägig ignoriert), ‹ › und ← → um einen Tag
+  mit Versatz 0, Klick im kleinen Monat bleibt im Radar, ↑ ↓, Ziehen (Winkel → Minuten, über 0°
+  hinweg, Raster, Schwelle Klick/Ziehen), Kantenfarbe; fmt, clippy, test (auch `TORRO_LANG=de`)
+  grün; Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag
