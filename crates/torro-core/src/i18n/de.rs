@@ -258,6 +258,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("November", "November"),
     ("December", "Dezember"),
     // Shared app texts (torro-gui, torrocalendar, torrotasks)
+    ("{percent}%", "{percent} %"),
+    ("Interface", "Oberfläche"),
+    ("Zoom", "Zoom"),
+    ("Zoom out", "Verkleinern"),
+    ("Zoom in", "Vergrößern"),
+    ("Reset", "Zurücksetzen"),
+    (
+        "Makes all Torro apps larger or smaller, like zooming in a browser: Ctrl + Plus and Ctrl + Minus, Ctrl + 0 resets.",
+        "Macht alle Torro-Apps größer oder kleiner, wie das Zoomen im Browser: Strg + Plus und Strg + Minus, Strg + 0 setzt zurück.",
+    ),
     ("Collapse sidebar", "Seitenleiste einklappen"),
     ("Expand sidebar", "Seitenleiste ausklappen"),
     ("Back", "Zurück"),

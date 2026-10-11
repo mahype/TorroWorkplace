@@ -485,3 +485,10 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
 - Abnahme: Tests für Stufen (nächste/vorige, Grenzen, Runden), Tastenerkennung, Settings-Lesen alter
   Dateien ohne `zoom`, `SetSetting` mit gültigem und ungültigem Wert; Sichtprüfung aller drei Apps bei
   80 %, 100 %, 150 % in Breit und Mittel.
+
+### Z.2 Strg-Kurzbefehle tippen nicht in Textfelder
+- [ ] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torro-gui/src/widgets.rs` (Hülle um `text_input`/`text_editor`), Aufrufer in den Apps
+- Gefunden bei Z.1: Iceds `text_input` fügt bei Strg + `+`/`-`/`=` das Zeichen zusätzlich ein, während
+  gezoomt wird („a+--“). Eine gemeinsame Hülle verwirft Tastendrücke mit Strg (bzw. Cmd) ohne Alt, die
+  ein Satzzeichen erzeugen würden; Kopieren/Einfügen/Markieren bleiben.
