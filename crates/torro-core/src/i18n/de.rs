@@ -3,6 +3,10 @@
 
 pub(super) static TABLE: &[(&str, &str)] = &[
     // Control centre (torroworkplace ui)
+    ("1 needs attention", "1 braucht Aufmerksamkeit"),
+    ("1 problem", "1 Problem"),
+    ("{n} need attention", "{n} brauchen Aufmerksamkeit"),
+    ("{n} problems", "{n} Probleme"),
     ("1 window", "1 Fenster"),
     ("Load", "Laden"),
     ("More", "Mehr"),
@@ -57,7 +61,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Last synced {when}", "Zuletzt synchronisiert {when}"),
     ("Light", "Hell"),
     (
-        "Light or dark colours for all Torro apps. “System” follows your desktop.",
+        "Light or dark colors for all Torro apps. “System” follows your desktop.",
         "Helle oder dunkle Farben für alle Torro-Apps. „System“ folgt deinem Desktop.",
     ),
     ("Mentions and messages", "Erwähnungen und Nachrichten"),
