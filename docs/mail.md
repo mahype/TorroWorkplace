@@ -239,16 +239,18 @@ jeder mit Rechten nach dem neuen Modell startet.
 | Schritt | Inhalt | Braucht |
 |---|---|---|
 | **M1 Mehrere Konten** | `AccountKind::Mail`, Konten-Liste statt erstes Konto, PIM nach Konto geschlüsselt, Sammlungs-Kennungen mit Konto, Konto-Gruppen in Kalender und Aufgaben | – |
+| **M7a Kalender und Aufgaben aus Mail-Konten** (vorgezogen 2026-10-11) | CalDAV-Konto mit Dienstsuche (RFC 6764, bekannte Anbieter), Assistent, Prüfung mit echten Anbietern, Übernahme aus TorroMail – ohne Mail-Kern. Aufgaben: [tasks/mail.md](tasks/mail.md) M7.1–M7.4 | M1 |
 | **M2 Mail-Kern** | `torro-mail`, `torro-mail-imap`, Discovery, Ordner-Rollen, SQLite/FTS5, Sync mit IDLE | M1 |
 | **M3 Befehle** | Requests, Katalog (Bereich Mail), MCP-Tools, `Rights` erweitert | M2 |
 | **M4 Freigaben** | A.3 (Dienst) und A.8 (Oberfläche), Senden über Freigabe | M3 |
 | **M5 Mail-App** | Breit/Mittel/Schmal/Mini, Schreibfenster, `--account` | M3 |
 | **M6 Agents & API** | A.6/A.7 mit Mail, TorroMail-Übernahme | M3, M4 |
-| **M7 Dienste derselben Domain** | CalDAV/CardDAV beim Mail-Konto finden, Einladungen beantworten | M2 |
+| **M7 Dienste derselben Domain** | CardDAV beim Mail-Konto finden, Einladungen beantworten (CalDAV ist mit M7a vorgezogen) | M2, M7a |
 | später | Sieve (Filter, Abwesenheit), Kontakte-App, OAuth Google/Microsoft (braucht registrierte Client-IDs, bei TorroMail auch noch offen), JMAP | |
 
-Aus jedem Schritt werden Aufgaben in einer neuen Datei `docs/tasks/mail.md` (Präfix `M.`), wenn
-das Konzept freigegeben ist.
+Aus jedem Schritt werden Aufgaben in `docs/tasks/mail.md` (Präfix `M`), wenn das Konzept
+freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
+[tasks/mail.md](tasks/mail.md).
 
 ## Offene Entscheidungen
 
