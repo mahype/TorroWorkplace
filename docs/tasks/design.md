@@ -304,3 +304,85 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 - Assistent: Anbieter als `group`-Zeilen, „Coming soon“ als `badge`, Dialog `R_XL`, Kopf `TITLE`.
 - Abschluss: veraltete Farbnamen aus F.2 entfernen, `design-check.sh` von Warnung auf Fehler,
   Übersetzungen eintragen, `torro-design-review` über alle drei Programme in allen sechs Größen.
+
+## Feinschliff nach der Abschlussprüfung
+
+Stand 2026-10-11. Ergebnis der abschließenden Prüfung durch `torro-design-review` (Bilder im
+Scratchpad der Sitzung, `final-review/`): Die Suite ist eine Familie im Linear-Stil, hell und
+dunkel gleichwertig; `scripts/design-check.sh --strict` meldet nichts. Offen sind Kanten. Die
+Aufgaben ändern nur Aussehen und Bedienung, keine Funktionen (API/MCP nicht betroffen).
+Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abschnitt 9).
+
+### D.1 Titel mit Auslassung im Kalender
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/week.rs`, `views/month.rs`
+- Termintitel und Monatszeilen mit `torro_gui::typo::ellipsize` kürzen statt mitten im Wort
+  abzuschneiden; einzeilige Blöcke ohne Platz für den Titel zeigen nur den Titel (nicht nur die Zeit).
+
+### D.2 Morgen-Scroll ohne angeschnittenes Label
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/week.rs`
+- Der Start bei 07:00 lässt das halbe Label „06:00“ oben stehen; Versatz so wählen, dass kein Label
+  angeschnitten ist, oder angeschnittene Labels nicht zeichnen.
+
+### D.3 Steuerzentrale als Mini und Leiste
+- [ ] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/glance.rs` (neu)
+- Ohne Chrom: Mini zeigt „Running“ bzw. „1 needs attention“ mit Punkt und höchstens die erste
+  Meldung; Leiste die vier Kacheln als eine ruhige Zeile. Muster: `torrocalendar`/`torrotasks` `glance.rs`.
+
+### D.4 Kontostatus einheitlich
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/overview.rs`, `ui/accounts.rs`
+- Übersicht und Kontoliste zeigen denselben Status: Kachelkopf aus dem schwersten Grund („1 problem“
+  vs. „Needs sign-in“), Problem überall `Tone::Error`, Anmeldung nötig überall Attention.
+
+### D.5 Editor: Aktionen immer sichtbar
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/editor.rs`
+- Felder scrollen, Aktionen (Delete · Cancel · Save) bleiben unten fest; Primärknopf im Dialog 36
+  hoch (`CONTROL_LG`); `pick_list` mit Lucide `chevron-down` statt Iced-Dreieck.
+
+### D.6 Fehler- und Leertexte mit Zusammenhang
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/launch.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/week.rs`
+- Aufgaben wie der Kalender: „Tasks could not be loaded: …“ plus was zu tun ist; Demo-Fehlertexte
+  mit großem Satzanfang. Leeres Wochen-/Tagesraster mit leiser Zeile „No events this week“ (Skill
+  Abschnitt 5, Leerzustand).
+
+### D.7 Eine Datumsform
+- [ ] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torro-gui/src/datetime.rs`, `crates/torrocalendar/src/views/agenda.rs`, `crates/torrotasks/src/list.rs`, `crates/torrotasks/src/glance.rs`
+- Statt „Wed, 07.10.“, „05.10.2026“ und „Wed, 7 Oct“ nebeneinander: eine zentrale kurze Form
+  („Sat, 3 Oct“, deutsch „Sa., 3. Okt.“) über `tr`, lange Form für Felder; Eingabe bleibt tolerant.
+
+### D.8 Aufgaben-Detail: Achsen und Karten
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrotasks/src/detail.rs`, `crates/torroworkplace/src/ui/accounts.rs`
+- Danger-Textknöpfe („Delete task“, „Remove account…“) auf die Inhaltsachse; Fälligkeits-Karte am
+  Datums-Chip verankern (eigener Anker je Chip); Chip „Parent task“ nur, wenn gesetzt, sonst
+  „+ Parent“ in `TEXT_3`.
+
+### D.9 Kleine Kacheln nachschärfen
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/glance.rs`, `crates/torrotasks/src/glance.rs`
+- Kalender-Mini: „Tomorrow“ über der Zeit statt darunter, Mini hoch füllt mit Folgetagen.
+  Aufgaben-Mini: Kopfzahl in `DISPLAY`, Orange nur im Punkt.
+
+### D.10 Tagesansicht in Breit
+- [ ] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torrocalendar/src/views/week.rs`, `crates/torrocalendar/src/app.rs`
+- Ein Tag wird nicht über 1600 px gestreckt: Spalte auf `CONTENT_MAX`, rechts „Up next“ bzw. die
+  Eigenschaften des gewählten Termins (wie die Eigenschaften-Spalte im Entwurf).
+
+### D.11 Kleinigkeiten
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** je nach Punkt (nennen)
+- Drawer in Mittel mit Scrim und Schatten; Steuerzentrale Mittel: Kopftitel und Inhalt auf einer
+  Achse; „Coming soon“-Zeilen auf 40 %; „colours“ → „colors“; Doppellinie unter Kopfleiste und
+  erstem Gruppenkopf; Rollbalken hell nur beim Scrollen; leerer Ganztagsstreifen ausblenden;
+  Nachbarmonate im Monat abblenden; Demo-Liste „Tasks“ nicht orange (verschmilzt mit Überfällig).
+
+Größere Lücken zum Entwurf sind **neue Funktionen** und werden eigens geplant (Oberfläche, API,
+MCP – siehe `docs/api.md`): Eigenschaften-Spalte im Kalender, Timeline-Ansicht, „This week“ mit
+Aufgaben im Kalender, Filter Inbox/Anytime, Unteraufgaben anlegen, Aktivität im Detail.
