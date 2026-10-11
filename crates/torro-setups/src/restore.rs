@@ -29,10 +29,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use torro_wm::{Events, Window, WindowId, WindowManager, WmEvent, WorkspaceId};
+use torro_wm::{Events, Split, Window, WindowId, WindowManager, WmEvent, WorkspaceId};
 
 use crate::launch::Launcher;
-use crate::{LoadMode, SetupsError, Strategy, Template, TemplateWindow};
+use crate::{LayoutTree, LoadMode, SetupsError, Strategy, Template, TemplateWindow};
 
 /// Knobs for a load.
 #[derive(Debug, Clone)]
@@ -123,22 +123,44 @@ async fn restore_with(
         ancestors,
     };
 
-    let mut report = RestoreReport::default();
-    // Live window per template window id. Task 1.16 arranges the layout from this map.
-    let mut live: HashMap<&str, WindowId> = HashMap::new();
+    let mut outcomes: Outcomes = HashMap::new();
+    if let Some(tree) = &template.tree {
+        loader.build_tree(template, tree, &mut outcomes).await;
+    }
+    // Floating windows and windows the tree does not mention: in template order, no layout.
     for window in &template.windows {
-        match loader.bring(window).await {
-            Ok(id) => {
-                report.restored.push(window.id.clone());
-                live.insert(&window.id, id);
-            }
-            Err(reason) => report.failed.push((window.id.clone(), reason)),
+        if !outcomes.contains_key(window.id.as_str()) {
+            loader.bring_into(window, &mut outcomes).await;
         }
     }
 
-    // Task 1.16 goes here: walk `template.tree` top-down with `live`, calling
-    // `prepare_insert` and `place`, then open the `Fallback` and floating windows.
+    // Every template window has an outcome by now; report them in template order.
+    let mut report = RestoreReport::default();
+    for window in &template.windows {
+        match outcomes.get(window.id.as_str()) {
+            Some(Ok(_)) => report.restored.push(window.id.clone()),
+            Some(Err(reason)) => report.failed.push((window.id.clone(), reason.clone())),
+            None => {}
+        }
+    }
     Ok(report)
+}
+
+/// What became of each template window, keyed by its id: the live window or the reason.
+type Outcomes<'t> = HashMap<&'t str, Result<WindowId, String>>;
+
+/// The leftmost window of `node`: the leftmost leaf of a split, or the first id of a fallback.
+fn first_leaf(node: &LayoutTree) -> Option<&str> {
+    match node {
+        LayoutTree::Window { id } => Some(id.as_str()),
+        LayoutTree::Split { first, .. } => first_leaf(first),
+        LayoutTree::Fallback { ids } => ids.first().map(String::as_str),
+    }
+}
+
+/// The template window with `id`, if the template has one.
+fn find_window<'t>(template: &'t Template, id: &str) -> Option<&'t TemplateWindow> {
+    template.windows.iter().find(|window| window.id == id)
 }
 
 /// The state of one load: where the windows go and which ones this load has already taken.
@@ -281,6 +303,81 @@ impl<W: WindowManager, L: Launcher> Loader<'_, W, L> {
         self.used.insert(window.id.clone());
         Ok(window.id)
     }
+
+    /// Brings `window` unless this load already did, and records the outcome. Returns its live id.
+    async fn bring_into<'t>(&mut self, window: &'t TemplateWindow, outcomes: &mut Outcomes<'t>) -> Option<WindowId> {
+        if let Some(outcome) = outcomes.get(window.id.as_str()) {
+            return outcome.clone().ok();
+        }
+        let outcome = self.bring(window).await;
+        let live = outcome.clone().ok();
+        outcomes.insert(window.id.as_str(), outcome);
+        live
+    }
+
+    /// Builds `tree` top-down, as described in the module docs. The stack holds the nodes still
+    /// to do; `first` is pushed last, so its whole subtree is done before `second` starts. That
+    /// is the order a recursive walk would give.
+    async fn build_tree<'t>(&mut self, template: &'t Template, tree: &'t LayoutTree, outcomes: &mut Outcomes<'t>) {
+        // The first window of the whole tree comes first, without layout. Each split then finds
+        // its first window in place, because it was brought either here or as the second half
+        // of the split above it.
+        if let Some(window) = first_leaf(tree).and_then(|id| find_window(template, id)) {
+            self.bring_into(window, outcomes).await;
+        }
+
+        let mut stack = vec![tree];
+        while let Some(node) = stack.pop() {
+            match node {
+                LayoutTree::Window { .. } => {}
+                LayoutTree::Fallback { ids } => {
+                    // The first id is in place already (see above or the split that holds this node).
+                    for window in ids.iter().skip(1).filter_map(|id| find_window(template, id)) {
+                        self.bring_into(window, outcomes).await;
+                    }
+                }
+                LayoutTree::Split { direction, ratio, first, second } => {
+                    let split = Split { direction: *direction, ratio: *ratio };
+                    self.insert_second(template, first, second, split, outcomes).await;
+                    stack.push(second);
+                    stack.push(first);
+                }
+            }
+        }
+    }
+
+    /// Brings the first window of `second` and puts it next to the first window of `first`, as
+    /// `split` says.
+    ///
+    /// Layout calls are best effort and their errors are ignored: a window that is there stays
+    /// even if its place or ratio could not be set, so it is not a failure. If the first half's
+    /// window is missing, there is nothing to place against and the second window is brought
+    /// plainly.
+    async fn insert_second<'t>(
+        &mut self,
+        template: &'t Template,
+        first: &LayoutTree,
+        second: &'t LayoutTree,
+        split: Split,
+        outcomes: &mut Outcomes<'t>,
+    ) {
+        let Some(window) = first_leaf(second).and_then(|id| find_window(template, id)) else {
+            return;
+        };
+        let sibling =
+            first_leaf(first).and_then(|id| outcomes.get(id)).and_then(|outcome| outcome.as_ref().ok()).cloned();
+        match sibling {
+            Some(sibling) => {
+                let _ = self.wm.prepare_insert(&sibling, split.direction).await;
+                if let Some(id) = self.bring_into(window, outcomes).await {
+                    let _ = self.wm.place(&id, &sibling, split).await;
+                }
+            }
+            None => {
+                self.bring_into(window, outcomes).await;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -288,11 +385,11 @@ mod tests {
     use std::sync::{Arc, Mutex, PoisonError};
 
     use chrono::Utc;
-    use torro_wm::Rect;
     use torro_wm::fake::{Call, FakeWm, window};
+    use torro_wm::{Rect, Split, SplitDirection};
 
     use super::*;
-    use crate::{SCHEMA_VERSION, Source};
+    use crate::{LayoutTree, SCHEMA_VERSION, Source};
 
     /// Task 1.14 never starts programs; a call here is a bug.
     struct NoLaunch;
@@ -690,5 +787,281 @@ mod tests {
 
         assert_eq!(report.restored, vec!["window-1".to_string(), "window-2".to_string()]);
         assert_eq!(wm.calls(), vec![Call::Move(WindowId("0xfake1".into()), ws("3"))]);
+    }
+
+    fn wid(id: &str) -> WindowId {
+        WindowId(id.into())
+    }
+
+    fn leaf(id: &str) -> LayoutTree {
+        LayoutTree::Window { id: id.into() }
+    }
+
+    fn split(direction: SplitDirection, ratio: f32, first: LayoutTree, second: LayoutTree) -> LayoutTree {
+        LayoutTree::Split { direction, ratio, first: Box::new(first), second: Box::new(second) }
+    }
+
+    fn with_tree(windows: Vec<TemplateWindow>, tree: LayoutTree) -> Template {
+        Template { tree: Some(tree), ..template(windows) }
+    }
+
+    /// Opens windows of `classes` on workspace 5 as `0xa`, `0xb`, … so `Strategy::Move` takes
+    /// them. Each class is given with the id it gets.
+    fn open_on_five(wm: &FakeWm, windows: &[(&str, &str)]) {
+        for (id, class) in windows {
+            wm.add_window(window(id, class, "5", Rect::default()));
+        }
+    }
+
+    #[tokio::test]
+    async fn two_windows_side_by_side_are_placed_next_to_each_other() {
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xa", "foot"), ("0xb", "chromium")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-b", "chromium", Strategy::Move),
+            ],
+            split(SplitDirection::LeftRight, 0.35, leaf("window-a"), leaf("window-b")),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(report, RestoreReport { restored: vec!["window-a".into(), "window-b".into()], failed: vec![] });
+        assert_eq!(
+            wm.calls(),
+            vec![
+                Call::Move(wid("0xa"), ws("3")),
+                Call::PrepareInsert(wid("0xa"), SplitDirection::LeftRight),
+                Call::Move(wid("0xb"), ws("3")),
+                Call::Place {
+                    window: wid("0xb"),
+                    sibling: wid("0xa"),
+                    split: Split { direction: SplitDirection::LeftRight, ratio: 0.35 },
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn doc_example_builds_the_tree_top_down() {
+        // TopBottom(LeftRight(A, B), C): A; C below A; B right of A.
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xa", "foot"), ("0xb", "chromium"), ("0xc", "spotify")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-b", "chromium", Strategy::Move),
+                template_window("window-c", "spotify", Strategy::Move),
+            ],
+            split(
+                SplitDirection::TopBottom,
+                0.5,
+                split(SplitDirection::LeftRight, 0.6, leaf("window-a"), leaf("window-b")),
+                leaf("window-c"),
+            ),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(report.failed, vec![]);
+        assert_eq!(
+            wm.calls(),
+            vec![
+                Call::Move(wid("0xa"), ws("3")),
+                Call::PrepareInsert(wid("0xa"), SplitDirection::TopBottom),
+                Call::Move(wid("0xc"), ws("3")),
+                Call::Place {
+                    window: wid("0xc"),
+                    sibling: wid("0xa"),
+                    split: Split { direction: SplitDirection::TopBottom, ratio: 0.5 },
+                },
+                Call::PrepareInsert(wid("0xa"), SplitDirection::LeftRight),
+                Call::Move(wid("0xb"), ws("3")),
+                Call::Place {
+                    window: wid("0xb"),
+                    sibling: wid("0xa"),
+                    split: Split { direction: SplitDirection::LeftRight, ratio: 0.6 },
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn right_nested_split_is_inserted_next_to_its_own_first_window() {
+        // LeftRight(A, TopBottom(B, C)): A; B right of A; C below B.
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xa", "foot"), ("0xb", "chromium"), ("0xc", "spotify")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-b", "chromium", Strategy::Move),
+                template_window("window-c", "spotify", Strategy::Move),
+            ],
+            split(
+                SplitDirection::LeftRight,
+                0.4,
+                leaf("window-a"),
+                split(SplitDirection::TopBottom, 0.5, leaf("window-b"), leaf("window-c")),
+            ),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(report.failed, vec![]);
+        assert_eq!(
+            wm.calls(),
+            vec![
+                Call::Move(wid("0xa"), ws("3")),
+                Call::PrepareInsert(wid("0xa"), SplitDirection::LeftRight),
+                Call::Move(wid("0xb"), ws("3")),
+                Call::Place {
+                    window: wid("0xb"),
+                    sibling: wid("0xa"),
+                    split: Split { direction: SplitDirection::LeftRight, ratio: 0.4 },
+                },
+                Call::PrepareInsert(wid("0xb"), SplitDirection::TopBottom),
+                Call::Move(wid("0xc"), ws("3")),
+                Call::Place {
+                    window: wid("0xc"),
+                    sibling: wid("0xb"),
+                    split: Split { direction: SplitDirection::TopBottom, ratio: 0.5 },
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_windows_are_brought_without_layout_calls() {
+        // A is placed next to the fallback's first window B; C is brought without layout.
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xa", "foot"), ("0xb", "chromium"), ("0xc", "spotify")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-b", "chromium", Strategy::Move),
+                template_window("window-c", "spotify", Strategy::Move),
+            ],
+            split(
+                SplitDirection::LeftRight,
+                0.5,
+                leaf("window-a"),
+                LayoutTree::Fallback { ids: vec!["window-b".into(), "window-c".into()] },
+            ),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(report.failed, vec![]);
+        assert_eq!(
+            wm.calls(),
+            vec![
+                Call::Move(wid("0xa"), ws("3")),
+                Call::PrepareInsert(wid("0xa"), SplitDirection::LeftRight),
+                Call::Move(wid("0xb"), ws("3")),
+                Call::Place {
+                    window: wid("0xb"),
+                    sibling: wid("0xa"),
+                    split: Split { direction: SplitDirection::LeftRight, ratio: 0.5 },
+                },
+                Call::Move(wid("0xc"), ws("3")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn fallback_as_the_whole_tree_gets_no_layout_calls() {
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xa", "foot"), ("0xb", "chromium")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-b", "chromium", Strategy::Move),
+            ],
+            LayoutTree::Fallback { ids: vec!["window-a".into(), "window-b".into()] },
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(report, RestoreReport { restored: vec!["window-a".into(), "window-b".into()], failed: vec![] });
+        assert_eq!(wm.calls(), vec![Call::Move(wid("0xa"), ws("3")), Call::Move(wid("0xb"), ws("3"))]);
+    }
+
+    #[tokio::test]
+    async fn floating_and_unreferenced_windows_come_after_the_tree_without_layout() {
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xs", "spotify"), ("0xa", "foot"), ("0xc", "chromium")]);
+        let floating = TemplateWindow { floating: true, ..template_window("window-f", "spotify", Strategy::Move) };
+        let template = with_tree(
+            vec![
+                floating,
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-c", "chromium", Strategy::Move),
+            ],
+            leaf("window-a"),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(
+            report,
+            RestoreReport { restored: vec!["window-f".into(), "window-a".into(), "window-c".into()], failed: vec![] }
+        );
+        assert_eq!(
+            wm.calls(),
+            vec![Call::Move(wid("0xa"), ws("3")), Call::Move(wid("0xs"), ws("3")), Call::Move(wid("0xc"), ws("3"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_first_half_skips_layout_but_the_second_half_is_brought() {
+        // A cannot start (no command), so there is nothing to place B next to.
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xb", "chromium")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::New),
+                template_window("window-b", "chromium", Strategy::Move),
+            ],
+            split(SplitDirection::LeftRight, 0.5, leaf("window-a"), leaf("window-b")),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(
+            report,
+            RestoreReport {
+                restored: vec!["window-b".into()],
+                failed: vec![("window-a".into(), "no start command".into())],
+            }
+        );
+        assert_eq!(wm.calls(), vec![Call::Move(wid("0xb"), ws("3"))]);
+    }
+
+    #[tokio::test]
+    async fn failing_second_half_is_reported_and_not_placed() {
+        let wm = FakeWm::new("3");
+        open_on_five(&wm, &[("0xa", "foot")]);
+        let template = with_tree(
+            vec![
+                template_window("window-a", "foot", Strategy::Move),
+                template_window("window-b", "chromium", Strategy::New),
+            ],
+            split(SplitDirection::LeftRight, 0.5, leaf("window-a"), leaf("window-b")),
+        );
+
+        let report = load(&wm, &template, LoadMode::Empty).await.unwrap();
+
+        assert_eq!(
+            report,
+            RestoreReport {
+                restored: vec!["window-a".into()],
+                failed: vec![("window-b".into(), "no start command".into())],
+            }
+        );
+        assert_eq!(
+            wm.calls(),
+            vec![Call::Move(wid("0xa"), ws("3")), Call::PrepareInsert(wid("0xa"), SplitDirection::LeftRight)]
+        );
     }
 }
