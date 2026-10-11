@@ -11,6 +11,9 @@
 //! a command here, and the access it needs can depend on the request's fields (loading a template
 //! with `mode: replace` closes windows and needs [`Access::Delete`]).
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
@@ -102,24 +105,47 @@ impl Command {
     /// The JSON Schema of the request's fields without its `method` tag: the input of the MCP
     /// tool and of `POST /v1/<area>/<command>` later. `None` when no request has
     /// [`Command::method`], which the catalogue tests rule out.
+    ///
+    /// The schemas of all commands are built once per process ([`input_schemas`]), not on every
+    /// call: generating the request schema walks every request type.
     pub fn input_schema(&self) -> Option<Schema> {
-        let schema = request_schema();
-        let variants = schema.get("oneOf")?.as_array()?;
-        let mut variant = variants.iter().find(|v| method_of(v) == Some(self.method))?.clone();
-        let object = variant.as_object_mut()?;
-        // The catalogue describes the command; the request's doc comment is for Rust readers.
-        object.remove("description");
-        if let Some(properties) = object.get_mut("properties").and_then(|p| p.as_object_mut()) {
-            properties.remove("method");
-        }
-        if let Some(required) = object.get_mut("required").and_then(|r| r.as_array_mut()) {
-            required.retain(|name| name != "method");
-            if required.is_empty() {
-                object.remove("required");
-            }
-        }
-        Schema::try_from(variant).ok()
+        input_schemas().get(self.method).cloned()
     }
+}
+
+/// The input schema of every request, by its `method`, built from [`request_schema`] on first
+/// use.
+fn input_schemas() -> &'static HashMap<&'static str, Schema> {
+    static SCHEMAS: OnceLock<HashMap<&'static str, Schema>> = OnceLock::new();
+    SCHEMAS.get_or_init(|| {
+        let schema = request_schema();
+        let variants = schema.get("oneOf").and_then(|v| v.as_array());
+        CATALOGUE
+            .iter()
+            .filter_map(|command| {
+                let variant = variants?.iter().find(|v| method_of(v) == Some(command.method))?;
+                Some((command.method, input_of(variant.clone())?))
+            })
+            .collect()
+    })
+}
+
+/// One `oneOf` branch of [`request_schema`] as a tool input: without the request's doc comment
+/// and without the `method` tag.
+fn input_of(mut variant: serde_json::Value) -> Option<Schema> {
+    let object = variant.as_object_mut()?;
+    // The catalogue describes the command; the request's doc comment is for Rust readers.
+    object.remove("description");
+    if let Some(properties) = object.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        properties.remove("method");
+    }
+    if let Some(required) = object.get_mut("required").and_then(|r| r.as_array_mut()) {
+        required.retain(|name| name != "method");
+        if required.is_empty() {
+            object.remove("required");
+        }
+    }
+    Schema::try_from(variant).ok()
 }
 
 /// What one request needs: its command and the access it asks for, which is the command's
@@ -357,7 +383,8 @@ static DELETE_EVENT: Command = Command {
     area: Area::Calendar,
     access: Access::Delete,
     mcp: Mcp::Tool,
-    description: "Deletes the event on the server; it cannot be restored. Recurring events cannot be deleted yet.",
+    description: "Deletes the event on the server; it cannot be restored. Pass the event as returned by \
+                  list_events (needs `href` and `etag`). Recurring events cannot be deleted yet.",
 };
 
 static LIST_LISTS: Command = Command {
@@ -395,7 +422,8 @@ static DELETE_TODO: Command = Command {
     area: Area::Tasks,
     access: Access::Delete,
     mcp: Mcp::Tool,
-    description: "Deletes the task on the server; it cannot be restored.",
+    description: "Deletes the task on the server; it cannot be restored. Pass the task as returned by list_todos \
+                  (needs `href` and `etag`).",
 };
 
 static LIST_ACCOUNTS: Command = Command {
@@ -405,8 +433,7 @@ static LIST_ACCOUNTS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the connected accounts with their state (connected, signing in, last sync, problem) and \
-                  all their calendars and task lists, hidden ones included. Passwords and tokens are never part \
-                  of the answer.",
+                  their calendars and task lists. Passwords and tokens are never part of the answer.",
 };
 
 static SYNC: Command = Command {
@@ -416,7 +443,8 @@ static SYNC: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Fetches calendars, events and tasks from the server now instead of at the next automatic sync, \
-                  which runs every five minutes.",
+                  which runs every five minutes. If the server refuses the sign-in and has marked this device for \
+                  a remote wipe, the account and its cached data are removed from this device.",
 };
 
 static CONNECT_NEXTCLOUD: Command = Command {
@@ -426,7 +454,8 @@ static CONNECT_NEXTCLOUD: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Starts signing in to a Nextcloud server and returns the login URL. A person finishes the sign-in \
-                  in the browser; the core then stores the account and syncs.",
+                  in the browser; the core then stores the account and syncs. Show the URL to the person; never \
+                  open it yourself.",
 };
 
 static REMOVE_ACCOUNT: Command = Command {
@@ -659,6 +688,17 @@ mod tests {
             assert_eq!(schema.get("type").and_then(|t| t.as_str()), Some("object"), "{}", command.name);
             assert!(schema.get("properties").and_then(|p| p.get("method")).is_none(), "{}", command.name);
             assert!(!schema.as_value().to_string().contains("$ref"), "{} refers outside itself", command.name);
+        }
+    }
+
+    #[test]
+    fn input_schemas_are_built_once_and_match_the_request_schema() {
+        assert!(std::ptr::eq(input_schemas(), input_schemas()), "one map per process");
+        let schema = request_schema();
+        let variants = schema.get("oneOf").and_then(|v| v.as_array()).expect("requests are a oneOf");
+        for command in CATALOGUE {
+            let variant = variants.iter().find(|v| method_of(v) == Some(command.method)).expect("a branch");
+            assert_eq!(command.input_schema(), input_of(variant.clone()), "{}", command.name);
         }
     }
 

@@ -61,7 +61,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   `load_template` haben keine leeren Objekte mehr.
 
 ### A.0d Nacharbeit aus dem API-Check von A.0
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** A.0 · **Dateien:** `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/settings_service.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`
 - Beschreibungen: `accounts.list_accounts` verspricht keine ausgeblendeten Sammlungen mehr;
   `delete_event`/`delete_todo`: „Pass the item as returned by list_… (needs `href` and `etag`).“;

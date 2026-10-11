@@ -29,6 +29,7 @@ use torro_core::i18n::tr;
 
 use crate::account::{self, Connected};
 use crate::notify;
+use crate::settings_service::SettingsStore;
 
 /// How often the cache is refreshed in the background.
 const SYNC_EVERY: Duration = Duration::from_secs(5 * 60);
@@ -62,11 +63,20 @@ pub struct PimService {
     state: RwLock<State>,
     /// Only one sync at a time.
     syncing: Mutex<()>,
+    /// Where the hidden collections are read from, and cleaned up when the account goes.
+    settings: SettingsStore,
 }
 
 impl PimService {
-    /// Loads the stored account, if any. Does not touch the network.
+    /// The service on the user's settings ([`SettingsStore::system`]), as the daemon runs it.
+    /// Does not touch the network; [`PimService::start`] loads the account.
     pub fn new() -> PimService {
+        PimService::with_settings(SettingsStore::system())
+    }
+
+    /// The service on `settings`; tests pass a store in a temp directory. Does not touch the
+    /// network.
+    pub fn with_settings(settings: SettingsStore) -> PimService {
         let http = match torro_pim_caldav::http_client() {
             Ok(http) => Some(http),
             Err(err) => {
@@ -74,7 +84,12 @@ impl PimService {
                 None
             }
         };
-        PimService { http, state: RwLock::new(State::default()), syncing: Mutex::new(()) }
+        PimService { http, state: RwLock::new(State::default()), syncing: Mutex::new(()), settings }
+    }
+
+    /// The settings this service reads; the core uses the same ones.
+    pub fn settings(&self) -> &SettingsStore {
+        &self.settings
     }
 
     /// Loads the stored account, then syncs now and every few minutes, for as long as the
@@ -114,13 +129,13 @@ impl PimService {
             Request::TaskCollections => self.shown_collections(|c| c.kind.has_todos()).await,
             Request::Events { start, end } => match self.events(start, end).await {
                 Ok(events) => {
-                    Response::Events { events: without_hidden(events, &hidden_collections(), |e| &e.collection) }
+                    Response::Events { events: without_hidden(events, &self.hidden_collections(), |e| &e.collection) }
                 }
                 Err(err) => self.failed(err).await,
             },
             Request::Todos => {
                 let todos = self.state.read().await.todos.clone();
-                Response::Todos { todos: without_hidden(todos, &hidden_collections(), |t| &t.collection) }
+                Response::Todos { todos: without_hidden(todos, &self.hidden_collections(), |t| &t.collection) }
             }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
@@ -145,12 +160,24 @@ impl PimService {
     /// The cached collections that `fit` (calendars or task lists) and are not hidden.
     async fn shown_collections(&self, fit: impl Fn(&Collection) -> bool) -> Response {
         let collections = self.state.read().await.collections.clone();
-        Response::Collections { collections: shown(collections, &hidden_collections(), fit) }
+        Response::Collections { collections: shown(collections, &self.hidden_collections(), fit) }
+    }
+
+    /// The collections the user hid in the control centre. Read on every request: the file is
+    /// tiny and the control centre may change it at any time.
+    fn hidden_collections(&self) -> Vec<String> {
+        self.settings.current().hidden_collections
     }
 
     /// `id` is a collection of the connected account, hidden or not.
     pub async fn knows_collection(&self, id: &str) -> bool {
         self.state.read().await.collections.iter().any(|c| c.id == id)
+    }
+
+    /// Fills the cache as a sync would, for the core's handler tests.
+    #[cfg(test)]
+    pub async fn cache_collections(&self, collections: Vec<Collection>) {
+        self.state.write().await.collections = collections;
     }
 
     /// All accounts with state and all collections, for the control centre (task S.2).
@@ -159,7 +186,8 @@ impl PimService {
     }
 
     /// Removes the account `id`: revokes its app password on the server (best effort),
-    /// forgets account and secret, empties the cache (task S.2).
+    /// forgets account and secret, empties the cache (task S.2) and takes its collections out of
+    /// the hidden ones (task A.0d).
     pub async fn remove_account(&self, id: &str) -> Result<(), String> {
         let Some(connected) = self.state.read().await.account.clone().filter(|c| c.account.id == id) else {
             return Err(format!("no account {id:?}"));
@@ -178,17 +206,26 @@ impl PimService {
     }
 
     /// Forgets the account locally: account list and secret (`forget_store`, in production
-    /// [`account::forget`] on the keychain thread) first, then the cache. Shared by removing the
-    /// account and by the remote wipe.
+    /// [`account::forget`] on the keychain thread) first, then the cache, then its collections in
+    /// the hidden ones of the settings. Shared by removing the account and by the remote wipe.
     async fn forget_locally<Forget, Fut>(&self, forget_store: Forget) -> Result<(), String>
     where
         Forget: FnOnce() -> Fut,
         Fut: Future<Output = Result<(), String>>,
     {
         forget_store().await?;
-        let mut state = self.state.write().await;
-        // A sign-in that runs meanwhile goes on; everything of the removed account goes.
-        *state = State { signing_in: state.signing_in.take(), ..State::default() };
+        let collections: Vec<String> = {
+            let mut state = self.state.write().await;
+            let collections = state.collections.iter().map(|c| c.id.clone()).collect();
+            // A sign-in that runs meanwhile goes on; everything of the removed account goes.
+            *state = State { signing_in: state.signing_in.take(), ..State::default() };
+            collections
+        };
+        // Only the cached collections are known. The account is gone either way, so a settings
+        // file that cannot be written costs a log line, not the removal.
+        if let Err(err) = self.settings.forget_collections(&collections) {
+            eprintln!("torroworkplace: hidden collections of the removed account stay in the settings: {err}");
+        }
         Ok(())
     }
 
@@ -503,12 +540,6 @@ fn host(server: &str) -> &str {
     server.split_once("://").map_or(server, |(_, rest)| rest).trim_end_matches('/')
 }
 
-/// The collections the user hid in the control centre. Read on every request: the file is
-/// tiny and the control centre writes it from another process.
-fn hidden_collections() -> Vec<String> {
-    torro_core::settings::load().hidden_collections
-}
-
 /// Leaves out the items whose collection (`collection_of`) is hidden.
 fn without_hidden<T>(items: Vec<T>, hidden: &[String], collection_of: impl Fn(&T) -> &String) -> Vec<T> {
     if hidden.is_empty() {
@@ -619,8 +650,14 @@ fn provider_error(err: &ProviderError) -> Response {
 mod tests {
     use super::*;
 
+    /// A service without HTTP client and without a settings file, so no test reaches the network
+    /// or the user's settings.
     fn service() -> Arc<PimService> {
-        Arc::new(PimService { http: None, state: RwLock::new(State::default()), syncing: Mutex::new(()) })
+        service_with(SettingsStore::without_file())
+    }
+
+    fn service_with(settings: SettingsStore) -> Arc<PimService> {
+        Arc::new(PimService { http: None, state: RwLock::new(State::default()), syncing: Mutex::new(()), settings })
     }
 
     fn event(start: DateTime<Utc>, hours: i64) -> Event {
@@ -884,6 +921,40 @@ mod tests {
         assert_eq!(service.state.read().await.collections, vec![collection("work")]);
         let (_, steps) = wipe(&service, Ok(false)).await;
         assert_eq!(steps, ["check"], "a failed check runs again on the next refusal");
+    }
+
+    #[tokio::test]
+    async fn a_removed_account_leaves_no_hidden_collections_behind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = SettingsStore::at(dir.path().join("settings.json"));
+        settings.set_collection_shown("work", false).expect("hide work");
+        settings.set_collection_shown("elsewhere", false).expect("hide a collection of no account");
+        let service = service_with(settings.clone());
+        {
+            let mut state = service.state.write().await;
+            state.account = Some(connected());
+            state.collections = vec![collection("work"), collection("home")];
+        }
+        service.forget_locally(|| async { Ok(()) }).await.expect("forgotten");
+        assert_eq!(settings.current().hidden_collections, ["elsewhere"]);
+        assert!(service.accounts().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_forget_keeps_account_and_hidden_collections() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = SettingsStore::at(dir.path().join("settings.json"));
+        settings.set_collection_shown("work", false).expect("hide work");
+        let service = service_with(settings.clone());
+        {
+            let mut state = service.state.write().await;
+            state.account = Some(connected());
+            state.collections = vec![collection("work")];
+        }
+        let result = service.forget_locally(|| async { Err("keychain locked".to_string()) }).await;
+        assert!(result.is_err());
+        assert_eq!(settings.current().hidden_collections, ["work"]);
+        assert_eq!(service.accounts().await.len(), 1);
     }
 
     #[tokio::test]

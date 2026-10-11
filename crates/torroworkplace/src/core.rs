@@ -17,6 +17,7 @@ use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::pim::PimService;
+use crate::settings_service::SettingsStore;
 
 /// `name` next to the daemon's binary, else from `PATH`.
 fn sibling(name: &str) -> std::path::PathBuf {
@@ -44,18 +45,22 @@ pub struct Snapshot {
     pub account: Option<AccountState>,
 }
 
-/// The core's state: window manager, template store, and a lock so only one save or load
-/// runs at a time.
+/// The core's state: window manager, template store, settings, and a lock so only one save or
+/// load runs at a time.
 pub struct Core {
     backend: Backend,
     store: Store,
     work: Mutex<()>,
     pim: Arc<PimService>,
+    settings: SettingsStore,
 }
 
 impl Core {
+    /// The core over `backend` and `store`. The settings are the ones `pim` reads
+    /// ([`PimService::settings`]), so hiding a collection and filtering it use the same file.
     pub fn new(backend: Backend, store: Store, pim: Arc<PimService>) -> Core {
-        Core { backend, store, work: Mutex::new(()), pim }
+        let settings = pim.settings().clone();
+        Core { backend, store, work: Mutex::new(()), pim, settings }
     }
 
     pub async fn handle(&self, request: Request) -> Response {
@@ -91,12 +96,12 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::SaveTodo { .. }
             | Request::DeleteTodo { .. }) => self.pim.handle(pim).await,
-            Request::Settings => Response::Settings { settings: crate::settings_service::current() },
-            Request::UpdateSettings { settings } => match crate::settings_service::update(settings) {
+            Request::Settings => Response::Settings { settings: self.settings.current() },
+            Request::UpdateSettings { settings } => match self.settings.update(settings) {
                 Ok(()) => Response::Ok,
                 Err(message) => Response::Error { code: "error".into(), message },
             },
-            Request::SetSetting { key, value } => match crate::settings_service::set(key, &value) {
+            Request::SetSetting { key, value } => match self.settings.set(key, &value) {
                 Ok(()) => Response::Ok,
                 Err(message) => Response::Error { code: "error".into(), message },
             },
@@ -127,7 +132,7 @@ impl Core {
         if !self.pim.knows_collection(collection).await {
             return Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") };
         }
-        match crate::settings_service::set_collection_shown(collection, shown) {
+        match self.settings.set_collection_shown(collection, shown) {
             Ok(()) => Response::Ok,
             Err(message) => Response::Error { code: "error".into(), message },
         }
@@ -254,12 +259,35 @@ fn error(err: &SetupsError) -> Response {
 mod tests {
     use super::*;
 
+    /// Templates in `dir`, settings in `dir/config/settings.json`: nothing of the user's.
     fn core(dir: &std::path::Path) -> Core {
+        let settings = SettingsStore::at(settings_file(dir));
         Core::new(
             Backend::Unsupported { name: "test".into() },
             Store::at(dir.to_path_buf()),
-            Arc::new(PimService::new()),
+            Arc::new(PimService::with_settings(settings)),
         )
+    }
+
+    fn settings_file(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join("config").join("settings.json")
+    }
+
+    async fn settings(core: &Core) -> torro_core::settings::Settings {
+        match core.handle(Request::Settings).await {
+            Response::Settings { settings } => settings,
+            other => panic!("Settings is answered with Settings, got {other:?}"),
+        }
+    }
+
+    fn calendar(id: &str) -> torro_pim::Collection {
+        torro_pim::Collection {
+            id: id.into(),
+            name: id.into(),
+            kind: torro_pim::CollectionKind::Events,
+            color: None,
+            writable: true,
+        }
     }
 
     #[tokio::test]
@@ -299,23 +327,57 @@ mod tests {
         assert_eq!(core.handle(Request::TaskCollections).await, Response::Collections { collections: vec![] });
     }
 
-    // The successful paths of SetSetting and SetCollectionShown write the user's settings file;
-    // `settings_service` tests the changes themselves. Here only the refusals, which write nothing.
+    #[tokio::test]
+    async fn a_setting_is_set_and_read_back() {
+        use torro_core::settings::Language;
+        use torro_core::theme::Appearance;
+        use torro_ipc::SettingKey;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let set = |key, value| Request::SetSetting { key, value };
+        assert_eq!(core.handle(set(SettingKey::Language, serde_json::json!("german"))).await, Response::Ok);
+        assert_eq!(core.handle(set(SettingKey::Appearance, serde_json::json!("dark"))).await, Response::Ok);
+        let stored = settings(&core).await;
+        assert_eq!((stored.language, stored.appearance), (Language::German, Appearance::Dark));
+        assert!(settings_file(dir.path()).exists(), "written to the given file");
+    }
+
+    #[tokio::test]
+    async fn a_setting_value_of_the_wrong_type_is_an_error_and_not_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let request = Request::SetSetting { key: torro_ipc::SettingKey::StartAtLogin, value: serde_json::json!("yes") };
+        let response = core(dir.path()).handle(request).await;
+        assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
+        assert!(!settings_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_hidden_collection_is_stored_and_left_out() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/home/")]).await;
+        let shown = |collection: &str, shown| Request::SetCollectionShown { collection: collection.into(), shown };
+
+        assert_eq!(core.handle(shown("/cal/home/", false)).await, Response::Ok);
+        assert_eq!(settings(&core).await.hidden_collections, ["/cal/home/"]);
+        assert_eq!(
+            core.handle(Request::CalendarCollections).await,
+            Response::Collections { collections: vec![calendar("/cal/work/")] }
+        );
+
+        assert_eq!(core.handle(shown("/cal/home/", true)).await, Response::Ok);
+        assert!(settings(&core).await.hidden_collections.is_empty());
+    }
+
     #[tokio::test]
     async fn unknown_collection_is_not_found_and_not_written() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("temp dir");
         let response = core(dir.path())
             .handle(Request::SetCollectionShown { collection: "/cal/nope/".into(), shown: false })
             .await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
-    }
-
-    #[tokio::test]
-    async fn a_setting_value_of_the_wrong_type_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let request = Request::SetSetting { key: torro_ipc::SettingKey::StartAtLogin, value: serde_json::json!("yes") };
-        let response = core(dir.path()).handle(request).await;
-        assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
+        assert!(!settings_file(dir.path()).exists());
     }
 
     #[tokio::test]
