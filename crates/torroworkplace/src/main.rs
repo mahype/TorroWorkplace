@@ -14,12 +14,15 @@ use std::process::ExitCode;
 
 use torro_core::AppId;
 
+mod tray;
+
 const APP: AppId = AppId::WORKPLACE;
 
 fn main() -> ExitCode {
     let command = std::env::args().nth(1);
     match command.as_deref() {
-        None | Some("tui") | Some("daemon") | Some("status") | Some("ctl") | Some("mcp") => {
+        Some("daemon") => daemon(),
+        None | Some("tui") | Some("status") | Some("ctl") | Some("mcp") => {
             eprintln!("{}: not implemented yet ({} scaffold)", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::from(2)
         }
@@ -32,4 +35,22 @@ fn main() -> ExitCode {
             ExitCode::from(64)
         }
     }
+}
+
+/// Runs the background service. For now that is the tray icon only.
+#[cfg(target_os = "linux")]
+fn daemon() -> ExitCode {
+    match tray::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{}: {err}", APP.binary);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn daemon() -> ExitCode {
+    eprintln!("{}: tray not supported yet", APP.binary);
+    ExitCode::FAILURE
 }
