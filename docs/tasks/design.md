@@ -188,7 +188,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 - Laden/Fehler über `loading()`/`error_state` mit „Retry“.
 
 ### C.2 Woche und Tag: Termine, Raster, Heute, Jetzt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** F.5
 - **Dateien:** `crates/torrocalendar/src/views/week.rs`, `crates/torrocalendar/src/views/week/layout.rs`
 - Terminblöcke: Kalenderfarbe 18 % als Fläche, 3-px-Balken links in voller Farbe, Titel
