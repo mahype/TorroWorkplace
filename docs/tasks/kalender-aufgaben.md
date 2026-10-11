@@ -57,7 +57,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   Prioritäten, Unteraufgaben, erledigte.
 
 ### K.9 Kalender: Tag und Woche
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku, bei Problemen Sonnet · **Braucht:** K.0
 - **Dateien:** `crates/torrocalendar/src/views/week.rs`
 - Zeitraster auf einem Iced-`Canvas`, siehe Doc-Kommentar.
