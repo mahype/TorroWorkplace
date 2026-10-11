@@ -109,6 +109,91 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   `--demo` über den Agenten `torro-design-review` zeigt Inter. Im Bericht nennen, welche Inter-Version
   eingebunden ist.
 
+### K.18 Größenklassen und kleinere Mindestgröße
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** K.1
+- **Dateien:** `crates/torro-gui/src/layout.rs` (neu), `crates/torro-gui/src/lib.rs`
+- Warum: Die Apps laufen dauerhaft als Kacheln im Tiling-Manager, von der Mini-Kachel bis zum
+  halben 32:9-Monitor. Jede Größe bekommt ein eigenes Layout (Design-Skill
+  `.claude/skills/torro-design`, Abschnitt 6). Damit nicht jede Ansicht eigene Schwellen erfindet,
+  bestimmt `torro-gui` die Größenklasse an einer Stelle. Die heutige Mindestgröße 360×320
+  verhindert Mini und Leiste.
+- `layout.rs` mit Doc-Kommentar oben und genau dieser Schnittstelle:
+  - `pub enum SizeClass { Mini, Strip, Narrow, Medium, Wide }` (`Debug, Clone, Copy, PartialEq, Eq`),
+    jede Variante mit Doc-Kommentar, wofür sie gedacht ist (Mini: auf einen Blick, ohne Bedienung;
+    Strip: flacher, breiter Streifen; Narrow: eine Spalte, volle Bedienung; Medium: Hauptansicht;
+    Wide: Hauptansicht mit Kontext daneben).
+  - `pub fn of(size: iced::Size) -> SizeClass`, Regeln in dieser Reihenfolge (logische Pixel):
+    1. Höhe < 280 und Breite ≥ 600 → `Strip`
+    2. Breite < 360 oder Höhe < 280 → `Mini`
+    3. Breite < 600 → `Narrow`
+    4. Breite < 1024 → `Medium`
+    5. sonst `Wide`
+  - Die Schwellen als `pub const` (`MINI_MAX_WIDTH`, `STRIP_MAX_HEIGHT`, `NARROW_MAX_WIDTH`,
+    `MEDIUM_MAX_WIDTH`), damit Ansichten und Tests dieselben Zahlen benutzen.
+- `lib.rs`: `pub mod layout;` mit einer Zeile in der Modulübersicht; `min_size` in `window()` auf
+  **200×120**. Die Standardgröße 1100×760 bleibt.
+- Die Ansichten selbst ändern sich hier nicht. Bis zu den Mini- und Leisten-Ansichten der Apps
+  (eigene Aufgaben) darf es in sehr kleinen Fenstern eng aussehen.
+- **Abnahme:** Tests für die Beispielgrößen aus dem Design-Skill (240×160 Mini, 320×480 Mini,
+  1200×200 Strip, 480×900 Narrow, 800×600 Medium, 1600×1000 Wide) und für jede Grenze
+  (359/360 und 599/600 Breite, 279/280 Höhe bei 599 und 600 Breite, 1023/1024 Breite); fmt,
+  clippy, test (auch `TORRO_LANG=de`) grün.
+
+### K.19 Kalender in jeder Größe: Mini, Leiste, Schmal
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.18 (K.17 hilfreich, nicht nötig)
+- **Dateien:** `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/{mod,glance}.rs`
+  (`glance.rs` neu)
+- Warum: Der Kalender läuft dauerhaft als Kachel, oft sehr klein. Regeln und Größenklassen:
+  Design-Skill `.claude/skills/torro-design`, Abschnitt 6. Opus, weil hier das Muster entsteht,
+  dem die Aufgaben-App (K.20) folgt.
+- `App::view` bestimmt die Klasse mit `iced::widget::responsive` und `torro_gui::layout::of` und
+  wählt das Layout. Anmelde- und Ladebildschirm bleiben in allen Klassen wie sie sind.
+- **Mini** (`glance::mini`): keine Werkzeugleiste, keine Seitenleiste. Oben das Datum
+  („Sun, 11 Oct“, übersetzt). Darunter der laufende Termin mit „ends in 19 min“ bzw. der nächste
+  mit Uhrzeit und „in 1 h 20 min“ (Farbpunkt, Titel, Ort falls Platz), dann so viele weitere
+  Termine von heute, wie in die Höhe passen. Ist heute nichts mehr: „Nothing else today“ und der
+  nächste Termin danach. Leer und ruhig, aus der Distanz lesbar.
+- **Leiste** (`glance::strip`): heute als waagerechter Zeitstrahl auf einem `Canvas` – Termine als
+  abgerundete Blöcke mit Titel (gekürzt mit „…“), ganztägige als Chips links, die Jetzt-Linie in
+  `theme::NOW`. Der gezeigte Zeitraum umfasst die Termine von heute, mindestens 08:00–18:00.
+- Mini und Leiste sind **Anzeigen**: keine Formulare, keine Dialoge; Vergrößern übernimmt der
+  Tiling-Manager. Neu gezeichnet wird nur im vorhandenen `Tick` und bei neuen Daten.
+- **Schmal:** Seitenleiste ausgeblendet, statt ihrer ein Knopf in der Werkzeugleiste, der sie als
+  Overlay zeigt; Woche und Monat werden als Tag bzw. Agenda dargestellt (die gewählte Ansicht
+  bleibt gespeichert und kommt zurück, wenn das Fenster wieder breiter ist). Der Editor öffnet
+  bildschirmfüllend statt als 460 breites Modal.
+- **Mittel / Breit:** wie heute.
+- Zustand (Ansicht, Datum, Auswahl, offener Editor) bleibt beim Größenwechsel erhalten.
+- Neue Texte englisch mit `tr`/`trf`, im Bericht mit deutscher Übersetzung.
+- **Abnahme:** Unit-Tests für die reine Logik von `glance` (welcher Termin läuft/kommt als
+  nächstes, „ends in“/„in“-Texte, Zeitraum der Leiste, Auswahl bei „nichts mehr heute“) mit
+  festen Zeiten; fmt, clippy, test (auch `TORRO_LANG=de`) grün; `torro-design-review` mit allen
+  sechs Größen – alle vier Ziele mindestens „erfüllt“ für Mini, Leiste und Schmal.
+
+### K.20 Aufgaben in jeder Größe: Mini, Leiste, Schmal
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** K.19 (als Muster)
+- **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torrotasks/src/glance.rs` (neu),
+  `crates/torrotasks/src/main.rs` (nur `mod glance;`)
+- Warum und Regeln wie K.19; Aufbau (Klassenwahl in `App::view`, `glance::mini`/`glance::strip`)
+  genau wie dort.
+- **Mini:** oben „3 overdue · 5 today“ (nur Teile, die nicht 0 sind; Überfällige in
+  Attention-Orange, nicht Rot). Darunter die nächsten offenen Aufgaben (überfällig, dann heute,
+  dann nach Fälligkeit), so viele wie passen: Abhak-Kreis, Titel, Fälligkeit. **Abhaken ist die
+  einzige Bedienung** in Mini – eine Aufgabe ohne Dialog erledigen ist der Hauptzweck der Kachel.
+  Nichts offen: ruhiger Leerzustand („All done for today“).
+- **Leiste:** dieselben Aufgaben als Chips nebeneinander (Abhak-Kreis + Titel, gekürzt mit „…“),
+  links die Zahlen wie in Mini; was nicht passt, als „+4“ am Ende.
+- **Schmal:** Seitenleiste ausgeblendet, Filter (Today, Planned, All, Listen) als Auswahlliste im
+  Kopf; die Detailansicht ersetzt die Liste (mit „Back“) statt 340 breit daneben zu stehen.
+- **Mittel / Breit:** wie heute.
+- Zustand (Filter, Auswahl, offenes Detail, Schnelleingabe) bleibt beim Größenwechsel erhalten.
+- **Abnahme:** Unit-Tests für die Logik von `glance` (Reihenfolge, Zählung, „+N“ bei Platzmangel)
+  mit festem Datum; fmt, clippy, test (auch `TORRO_LANG=de`) grün; `torro-design-review` mit allen
+  sechs Größen – alle vier Ziele mindestens „erfüllt“ für Mini, Leiste und Schmal.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag

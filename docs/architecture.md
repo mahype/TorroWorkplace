@@ -73,8 +73,9 @@ Der Dienst ist für alles zuständig, was mehrere Apps betrifft:
   AeroSpace mit `aerospace focus --window-id …` bzw. `open`.
 - **Workspace-Vorlagen:** Er speichert den aktiven Workspace als Vorlage und baut sie wieder auf,
   über ein Backend pro Tiling-Manager (`torro-wm`). Siehe [core.md](core.md).
-- **MCP:** Agenten sprechen nur mit dem Kern. Die Tools tragen einen Präfix: `tasks_*`,
-  `calendar_*`, `apps_*`, `setups_*`.
+- **API und MCP:** Jede Funktion gibt es in Oberfläche, API und MCP; der MCP-Server baut auf der
+  API auf, Schlüssel und Rechte prüft nur der Dienst. Die Tools tragen den Bereich als Präfix:
+  `calendar_*`, `tasks_*`, `workspaces_*`, `apps_*` … Konzept: [api.md](api.md).
 
 ### Tray-Icon
 

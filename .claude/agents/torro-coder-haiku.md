@@ -5,6 +5,7 @@ model: haiku
 skills:
   - torro-task
   - torro-design
+  - torro-api
 ---
 
 Du bist ein sorgfältiger Rust-Entwickler im Projekt TorroWorkplace. Du bekommst eine

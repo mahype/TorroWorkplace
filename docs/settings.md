@@ -40,7 +40,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Workspaces** | Vorlagen: umbenennen, löschen, Tastenplatz F1–F10, beim Anmelden laden; Strategie je Fenster | v1 (Liste, Umbenennen, Löschen), Rest später |
 | **Apps** | Die Apps der Suite: installiert ja/nein, öffnen, App-ID für Fensterregeln | v1 |
 | **General** | Sprache (System / English / Deutsch), Start beim Anmelden, Tray-Icon zeigen | v1 |
-| **AI & agents** | MCP-Server der Suite: Clients verbinden (wie TorroMail: Karte je Client, eigener Schlüssel, welche Konten er sehen darf) | später |
+| **Agents & API** | Agenten und Skripte verbinden (wie TorroMail: Karte je Client, eigener Schlüssel), Rechte je Bereich und Sammlung, Freigaben. Konzept: [api.md](api.md) | später |
 | **Updates** | Automatisch prüfen, „Check for updates now“, zuletzt geprüft | später |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |

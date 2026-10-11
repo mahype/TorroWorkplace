@@ -87,7 +87,7 @@ kleine Kacheln neben einer großen Musik- oder Arbeitsfläche. Jede Ansicht muss
 
 | Klasse | Größe | Zweck | Beispiel Kalender / Aufgaben |
 |---|---|---|---|
-| **Mini** | Breite < 360 *oder* Höhe < 280 | Auf einen Blick, ohne Bedienung | nächster Termin + „frei bis 14:00“ / Zahl offener Aufgaben + die nächsten 3 |
+| **Mini** | Breite < 360 *oder* Höhe < 280 | Auf einen Blick, kaum Bedienung | nächster Termin + „frei bis 14:00“ / Zahl offener Aufgaben + die nächsten 3 |
 | **Leiste** | Höhe < 280 *und* Breite ≥ 600 | Waagerechter Streifen | Termine von heute als Zeitstrahl / Aufgaben als Chips nebeneinander |
 | **Schmal** | Breite 360–599 | Eine Spalte, volle Bedienung | Agenda oder Tag / Liste, Detail ersetzt die Liste |
 | **Mittel** | Breite 600–1023 | Hauptansicht | Woche / Liste + Detail als Overlay |
@@ -102,15 +102,16 @@ Regeln:
 - Reihenfolge beim Platzsparen: erst Ränder auf 8–12, dann Seitenleiste einklappen, dann
   Werkzeugleiste auf Icons (mit Tooltip), dann Nebeninfos weglassen. Nie abschneiden, nie
   überlappen, nie horizontal scrollen.
-- **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare; ein
-  Klick öffnet die volle Ansicht. Ruhig, ohne Deko, aus der Distanz lesbar.
+- **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare, keine
+  Dialoge. Höchstens eine Ein-Klick-Aktion, die den Zweck der Kachel ist (z. B. Aufgabe abhaken).
+  Vergrößern übernimmt der Tiling-Manager. Ruhig, ohne Deko, aus der Distanz lesbar.
 - **Groß heißt nicht gestreckt:** Textspalten max. ~70 Zeichen; Formulare und Detailansichten
   max. ~640 breit; zusätzlicher Platz geht an Inhalt (mehr Tage, Seitenleiste), nicht an
   Leerraum zwischen Elementen.
 - Zustand bleibt beim Größenwechsel erhalten (Auswahl, Scrollposition, gewähltes Datum).
 - In Iced liefert `iced::widget::responsive(|size| …)` die verfügbare Größe. Die Klasse daraus an
-  **einer** Stelle bestimmen (gemeinsamer Helfer in `torro-gui`; fehlt er, als Aufgabe anlegen),
-  nicht in jeder View eigene Schwellen.
+  **einer** Stelle bestimmen: `torro_gui::layout::of(size)` → `SizeClass` (Aufgabe K.18), nicht
+  in jeder View eigene Schwellen.
 - **Dauerbetrieb:** nichts blinkt oder bewegt sich ohne Anlass; neu zeichnen nur bei Änderung bzw.
   im Minutentakt (Uhrzeit); keine Spinner im Ruhezustand; geringe CPU- und GPU-Last.
 - **HiDPI:** alle Maße in logischen Pixeln; Icons als Vektor (SVG/Canvas), keine Rastergrafik;

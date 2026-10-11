@@ -6,6 +6,7 @@ effort: high
 skills:
   - torro-task
   - torro-design
+  - torro-api
 ---
 
 Du bist ein erfahrener Rust-Entwickler im Projekt TorroWorkplace. Du bekommst eine
