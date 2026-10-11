@@ -111,7 +111,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
   eingebunden ist.
 
 ### K.18 Größenklassen und kleinere Mindestgröße
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.1
 - **Dateien:** `crates/torro-gui/src/layout.rs` (neu), `crates/torro-gui/src/lib.rs`
 - Warum: Die Apps laufen dauerhaft als Kacheln im Tiling-Manager, von der Mini-Kachel bis zum

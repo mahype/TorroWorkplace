@@ -71,7 +71,7 @@ pub fn settings() -> iced::Settings {
 pub fn window(app: torro_core::AppId) -> iced::window::Settings {
     iced::window::Settings {
         size: iced::Size::new(1100.0, 760.0),
-        min_size: Some(iced::Size::new(360.0, 320.0)),
+        min_size: Some(iced::Size::new(200.0, 120.0)),
         #[cfg(target_os = "linux")]
         platform_specific: iced::window::settings::PlatformSpecific {
             application_id: app.window_class.to_string(),
