@@ -417,6 +417,7 @@ pub enum Switcher {
 /// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace").
 fn app_name(app: AppId) -> &'static str {
     match app.binary {
+        "torroinbox" => tr("Inbox"),
         "torrotasks" => tr("Tasks"),
         "torrocalendar" => tr("Calendar"),
         _ => tr("Workplace"),
@@ -425,6 +426,7 @@ fn app_name(app: AppId) -> &'static str {
 
 fn app_icon(app: AppId) -> Icon {
     match app.binary {
+        "torroinbox" => Icon::Inbox,
         "torrotasks" => Icon::ListTodo,
         "torrocalendar" => Icon::Calendar,
         _ => Icon::LayoutGrid,

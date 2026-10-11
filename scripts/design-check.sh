@@ -26,7 +26,7 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-TARGETS=(crates/torrocalendar/src crates/torrotasks/src crates/torroworkplace/src/ui)
+TARGETS=(crates/torrocalendar/src crates/torroinbox/src crates/torrotasks/src crates/torroworkplace/src/ui)
 
 # The scanner. POSIX awk only (no gawk extensions), because CI also runs it on macOS.
 awk_program() {

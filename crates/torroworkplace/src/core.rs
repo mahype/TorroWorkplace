@@ -1024,7 +1024,7 @@ mod tests {
             panic!("ListApps is answered with Apps");
         };
         let binaries: Vec<_> = apps.iter().map(|app| app.binary.as_str()).collect();
-        assert_eq!(binaries, ["torrotasks", "torrocalendar"]);
+        assert_eq!(binaries, ["torroinbox", "torrotasks", "torrocalendar"]);
     }
 
     #[test]

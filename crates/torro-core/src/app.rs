@@ -35,6 +35,9 @@ impl AppId {
         display_name: "Torro Calendar",
     };
 
+    pub const INBOX: AppId =
+        AppId { window_class: "torro-inbox", binary: "torroinbox", dir: "torroinbox", display_name: "Torro Inbox" };
+
     /// Every app of the suite, in launcher order.
-    pub const ALL: &'static [AppId] = &[AppId::WORKPLACE, AppId::TASKS, AppId::CALENDAR];
+    pub const ALL: &'static [AppId] = &[AppId::WORKPLACE, AppId::INBOX, AppId::TASKS, AppId::CALENDAR];
 }

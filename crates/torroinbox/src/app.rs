@@ -41,11 +41,7 @@ use torro_inbox::{InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceR
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
-///
-/// Kept here until `torro_core::AppId` has an `INBOX` (and lists it in `AppId::ALL`, so the app
-/// switcher of every app offers it and names it); then this becomes `AppId::INBOX`.
-pub const INBOX: AppId =
-    AppId { window_class: "torro-inbox", binary: "torroinbox", dir: "torroinbox", display_name: "Torro Inbox" };
+pub const INBOX: AppId = AppId::INBOX;
 
 /// How often the window asks the source again. Short, because a waiting agent should show up
 /// within seconds; the source is local and cheap to ask, and nothing moves on screen unless an
