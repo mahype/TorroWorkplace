@@ -206,7 +206,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Farbpunkt 6, „+3 more“ in `TEXT_2`.
 
 ### C.4 Agenda
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.5
 - **Dateien:** `crates/torrocalendar/src/views/agenda.rs`
 - Zwei Spalten: Zeit 56 breit tabellarisch in `TEXT_2` | Titel `BODY_STRONG`, Ort `META` darunter.

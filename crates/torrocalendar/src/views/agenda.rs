@@ -12,16 +12,29 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime};
-use iced::widget::{column, container, mouse_area, row, scrollable, text};
-use iced::{Alignment, Color, Element, Length, mouse};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, column, container, row, rule, scrollable};
+use iced::{Alignment, Background, Color, Element, Length, Padding};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
-use torro_gui::theme;
-use torro_gui::widgets::{color_dot, empty_state, section_title};
+use torro_gui::theme::{self, palette, size, space};
+use torro_gui::widgets::{self, color_dot, empty_state};
+use torro_gui::{style, typo};
 use torro_pim::{Event, EventTime};
 
 use super::{Item, ViewData};
 use crate::app::Message;
+
+/// Width of the time column (`docs/tasks/design.md`, C.4): `09:30` over `10:15` in `META`.
+const TIME_WIDTH: f32 = 56.0;
+/// One logical pixel: the lines of a day head, as in `widgets::group_head`.
+const LINE: f32 = 1.0;
+/// Opacity of the colour dot of an event that has already ended (`torro-design`, 55 %).
+const PAST_ALPHA: f32 = 0.55;
+/// Separates the parts of a time label that the view shows apart: the range `09:30–10:15` and
+/// `all day · day 2 of 3`.
+const RANGE_DASH: char = '–';
+const LABEL_SEPARATOR: &str = " · ";
 
 /// The days of the agenda: its headings and rows, in display order.
 #[derive(Debug, Clone)]
@@ -52,47 +65,118 @@ pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
         return empty_state(tr("No events"), tr("Nothing planned in the next 30 days"));
     }
     let today = data.now.date();
-    let mut list = column![].spacing(18).width(Length::Fill);
+    let mut list = column![].width(Length::Fill);
     for day in &days {
-        let mut block = column![section_title(&day_heading(day.date, today))].spacing(6).width(Length::Fill);
+        let (label, date) = day_heading(day.date, today);
+        list = list.push(day_head(label, date));
         for entry in &day.entries {
-            block = block.push(row_view(entry));
+            list = list.push(row_view(entry));
         }
-        list = list.push(block);
     }
-    scrollable(container(list).padding([8, 12]).width(Length::Fill)).width(Length::Fill).height(Length::Fill).into()
-}
-
-/// One event row: time, title (muted when past) and location below it, the colour dot beside
-/// them. The whole row opens the event.
-fn row_view<'a>(entry: &Entry<'a>) -> Element<'a, Message> {
-    let event = entry.event;
-    let title_color = if entry.past { theme::MUTED } else { theme::TEXT };
-    let mut body = column![
-        text(entry.time.clone()).size(13).color(theme::MUTED).width(Length::Fill),
-        text(event.summary.as_str()).size(15).color(title_color).width(Length::Fill),
-    ]
-    .spacing(2)
-    .width(Length::Fill);
-    if let Some(location) = event.location.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
-        body = body.push(text(location).size(13).color(theme::MUTED).width(Length::Fill));
-    }
-    let line = row![container(color_dot(entry.color, 10.0)).padding([4, 0]), body]
-        .spacing(10)
-        .align_y(Alignment::Start)
-        .width(Length::Fill);
-    mouse_area(container(line).padding([6, 8]).width(Length::Fill))
-        .on_press(Message::OpenEvent(entry.index))
-        .interaction(mouse::Interaction::Pointer)
+    // Room under the last row so it does not touch the edge of the panel.
+    let list = container(list).padding(Padding::new(0.0).bottom(space::L));
+    scrollable(widgets::content(size::CONTENT_MAX, list))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
 }
 
-/// `Today`, `Tomorrow`, otherwise `Mo, 12.10.` (short weekday name from `weekday_name`).
-fn day_heading(day: NaiveDate, today: NaiveDate) -> String {
+/// The head of a day, after `widgets::group_head` (which has no slot for a date at the right):
+/// 32 high on `raised` with lines above and below, the day in `CAPTION` / `text_2`, its date in
+/// `META` tabular / `text_3`.
+fn day_head<'a>(label: String, date: String) -> Element<'a, Message> {
+    let content = row![
+        typo::text(typo::CAPTION, label).style(theme::text_2),
+        Space::new().width(Length::Fill),
+        typo::text(typo::META.tabular(), date).style(theme::text_3),
+    ]
+    .align_y(Alignment::Center);
+    let head = container(content)
+        .width(Length::Fill)
+        .center_y(size::ROW_GROUP - 2.0 * LINE)
+        .padding(Padding::new(0.0).left(space::L).right(space::L))
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).raised)),
+            ..container::Style::default()
+        });
+    column![
+        Space::new().height(space::XS),
+        rule::horizontal(LINE).style(style::rule),
+        head,
+        rule::horizontal(LINE).style(style::rule)
+    ]
+    .into()
+}
+
+/// One event row (`widgets::list_row`, so hover and focus come from the shared style): the time
+/// in a column of its own, then the colour dot, the title and under it the location. A click
+/// opens the event. An event that has ended today is muted.
+fn row_view<'a>(entry: &Entry<'a>) -> Element<'a, Message> {
+    let event = entry.event;
+    let (first, second) = split_label(&entry.time, entry.all_day);
+    let text_colour: fn(&iced::Theme) -> iced::widget::text::Style =
+        if entry.past { theme::text_3 } else { theme::text };
+    let time_colour: fn(&iced::Theme) -> iced::widget::text::Style =
+        if entry.past { theme::text_3 } else { theme::text_2 };
+
+    // The first line of every column sits in a box as high as a `BODY` line, so time, dot and
+    // title share one centre line whatever their font size.
+    let line = typo::BODY.line_height.to_absolute(typo::BODY.size);
+    let mut time = column![
+        container(typo::text(typo::META.tabular(), first).style(time_colour).wrapping(Wrapping::None))
+            .height(line)
+            .align_y(Alignment::Center)
+    ];
+    // The end of a range under its start. Multi-day all-day entries show their position under
+    // the title instead; it is too wide for this column.
+    let mut note = None;
+    match second {
+        Some(second) if !entry.all_day => {
+            time = time.push(typo::text(typo::META.tabular(), second).style(theme::text_3).wrapping(Wrapping::None));
+        }
+        other => note = other,
+    }
+    let time = container(time).width(TIME_WIDTH).clip(true);
+
+    let dot_colour = if entry.past { Color { a: PAST_ALPHA, ..entry.color } } else { entry.color };
+    let dot = container(color_dot(dot_colour, space::S)).height(line).align_y(Alignment::Center);
+
+    let title = typo::text(typo::BODY_STRONG, event.summary.as_str()).style(text_colour).wrapping(Wrapping::None);
+    let mut body = column![title].width(Length::Fill);
+    let location = event.location.as_deref().map(str::trim).filter(|l| !l.is_empty());
+    let detail = [note.as_deref(), location].into_iter().flatten().collect::<Vec<_>>().join(LABEL_SEPARATOR);
+    if !detail.is_empty() {
+        body = body.push(typo::text(typo::META, detail).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    let main = row![dot, body].spacing(space::S).align_y(Alignment::Start).width(Length::Fill);
+
+    widgets::list_row(
+        vec![time.into(), container(main).width(Length::Fill).clip(true).into()],
+        false,
+        Some(Message::OpenEvent(entry.index)),
+    )
+}
+
+/// Splits a time label for the two lines of the time column: `09:30–10:15` → `09:30`, `10:15`;
+/// `all day · day 2 of 3` → `all day`, `day 2 of 3`; anything without a separator stays whole.
+fn split_label(label: &str, all_day: bool) -> (String, Option<String>) {
+    let split = if all_day { label.split_once(LABEL_SEPARATOR) } else { label.split_once(RANGE_DASH) };
+    match split {
+        Some((first, second)) => (first.to_string(), Some(second.to_string())),
+        None => (label.to_string(), None),
+    }
+}
+
+/// The head of a day as `(label, date)`: `Today` / `Tomorrow` with `Mon, 12.10.`, otherwise the
+/// weekday with `12.10.` (weekday names from `weekday_name`).
+fn day_heading(day: NaiveDate, today: NaiveDate) -> (String, String) {
+    let date = day.format("%d.%m.");
     match (day - today).num_days() {
-        0 => tr("Today").to_string(),
-        1 => tr("Tomorrow").to_string(),
-        _ => format!("{}, {}", weekday_name(day, true), day.format("%d.%m.")),
+        0 => (tr("Today").to_string(), format!("{}, {date}", weekday_name(day, true))),
+        1 => (tr("Tomorrow").to_string(), format!("{}, {date}", weekday_name(day, true))),
+        _ => (weekday_name(day, false).to_string(), date.to_string()),
     }
 }
 
@@ -392,11 +476,23 @@ mod tests {
     #[test]
     fn day_headings() {
         let today = day(11);
-        assert_eq!(day_heading(day(11), today), tr("Today"));
-        assert_eq!(day_heading(day(12), today), tr("Tomorrow"));
-        assert_eq!(day_heading(day(14), today), format!("{}, 14.10.", tr("Wed")));
-        assert_eq!(day_heading(day(12), day(11)), tr("Tomorrow"));
-        assert_eq!(day_heading(day(20), day(11)), format!("{}, 20.10.", tr("Tue")));
+        let heading = |d: u32| day_heading(day(d), today);
+        assert_eq!(heading(11), (tr("Today").to_string(), format!("{}, 11.10.", tr("Sun"))));
+        assert_eq!(heading(12), (tr("Tomorrow").to_string(), format!("{}, 12.10.", tr("Mon"))));
+        assert_eq!(heading(14), (tr("Wednesday").to_string(), "14.10.".to_string()));
+        assert_eq!(day_heading(day(20), day(11)), (tr("Tuesday").to_string(), "20.10.".to_string()));
+    }
+
+    #[test]
+    fn time_labels_split_for_the_two_columns() {
+        assert_eq!(split_label("09:30–10:15", false), ("09:30".to_string(), Some("10:15".to_string())));
+        assert_eq!(split_label("09:30", false), ("09:30".to_string(), None));
+        assert_eq!(split_label("all day", true), ("all day".to_string(), None));
+        let multi = trf("all day · day {n} of {total}", &[("n", &2), ("total", &3)]);
+        let (first, second) = split_label(&multi, true);
+        assert_eq!(first, tr("all day"));
+        // Whatever the language, the position is the part after the separator.
+        assert!(second.is_some_and(|rest| !rest.is_empty() && !rest.contains(LABEL_SEPARATOR)));
     }
 
     #[test]
