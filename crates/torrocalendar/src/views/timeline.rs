@@ -7,15 +7,18 @@
 //! the events as full-height columns with their title and time turned to read upwards, and
 //! "3 h free" under gaps of two hours or more. Overlapping events share the height in lanes.
 //!
-//! Nights (22:00–06:00) are folded into a narrow band with zigzag edges, a moon and "Night · 8 h";
-//! events in it are dots in their calendar colour. A click on the band unfolds that night (hours at
-//! the day's pace on a darker ground, "Collapse night" at its top); "Nights" in the header unfolds
-//! or folds them all. A strong line parts the days at midnight; a red line marks now.
+//! Nights (the suite's setting, 22:00–06:00 by default, task K.27) are folded into a narrow band
+//! with zigzag edges, a moon and "Night · 8 h"; events in it are dots in their calendar colour. A
+//! click on the band unfolds that night (hours at the day's pace on a darker ground, "Collapse
+//! night" at its top); "Nights" in the header unfolds or folds them all. Without a night the days
+//! follow each other whole. A strong line parts the days at midnight; a red line marks now.
 //!
 //! Clicks: an event or chip → `OpenEvent`; free time → `NewEvent` at that time (rounded down to a
-//! quarter hour); the all-day row → an all-day `NewEvent`; a folded night only unfolds. The wheel
-//! scrolls sideways. Every colour comes from the theme's [`Palette`] at draw time. The geometry
-//! (time ↔ x, nights, lanes, chips, free gaps, hits) is in `timeline/layout.rs`.
+//! quarter hour); the all-day row → an all-day `NewEvent`; a folded night only unfolds. A
+//! double-click on the moon folds the night back and opens its card (`EditNight`); hovering the
+//! moon says so after a moment ([`moon_tooltip`]). The wheel scrolls sideways. Every colour comes
+//! from the theme's [`Palette`] at draw time. The geometry (time ↔ x, nights, lanes, chips, free
+//! gaps, hits) is in `timeline/layout.rs`.
 //!
 //! Which nights are open and where the scrollable stands is window state ([`State`]), kept by the
 //! app like a scroll position; nothing goes to the core.
@@ -28,21 +31,26 @@ use std::f32::consts::FRAC_PI_2;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 use iced::alignment::Vertical;
 use iced::border::Radius;
+use iced::time::Instant;
 use iced::widget::canvas::{self, Action, Frame, Path, Stroke};
 use iced::widget::scrollable::{AbsoluteOffset, Direction};
 use iced::widget::text::Alignment;
 use iced::widget::{Id, operation, scrollable};
 use iced::{Color, Element, Event, Length, Point, Rectangle, Size, Task, Theme, Vector, mouse};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::Night;
 use torro_gui::datetime::{format_time, weekday_name};
 use torro_gui::icon::{self, Icon};
 use torro_gui::style;
 use torro_gui::theme::{Palette, mix, palette, radius, space};
 use torro_gui::typo::{self, ellipsize, text_width};
+use torro_gui::widgets::{self, Anchor};
 
 use layout::{Block, Hit, Rows, Segment, Span, Timed, Track};
+pub use layout::{MOON_TARGET, is_double_click};
 
 use super::ViewData;
+use super::glance::span;
 use super::week::{self, BAR, DAY_CIRCLE, DAY_NUMBER, FREE_MINUTES, NOW_DOT, NOW_LABEL, NOW_LABEL_WIDTH, Tone};
 use crate::app::Message;
 
@@ -73,6 +81,8 @@ const WHEEL_LINE: f32 = 60.0;
 /// Beyond the visible stretch, this many viewport widths on either side are drawn as well, so a
 /// fast scroll never shows an empty edge before the next frame.
 const DRAW_MARGIN: f32 = 1.0;
+/// The moon's tooltip shows after the pointer rested on it this long, like every tooltip.
+pub const TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// The timeline's window state, kept by the app across reloads, navigation and changes of size:
 /// which nights are unfolded and where the scrollable stands. Nothing of it is stored.
@@ -108,21 +118,27 @@ pub enum Change {
     Wheel(f32),
     /// A click on a folded night or on "Collapse night": unfold or fold the night after this evening.
     ToggleNight(NaiveDate),
+    /// Fold the night after this evening, if it is open: a double-click on its moon unfolded it
+    /// with the first click.
+    FoldNight(NaiveDate),
     /// "Nights" in the header: unfold every night of the shown days, or fold them all when one of
     /// them is open.
     ToggleNights,
 }
 
 impl State {
-    /// Applies `change` for the timeline of the days `[first, after)` (the app's range). Returns
-    /// the scroll a `Scrolled` may still owe ([`State::show`]) or the one a `Wheel` asks for.
-    pub fn update<T>(&mut self, change: Change, first: NaiveDate, after: NaiveDate) -> Task<T> {
+    /// Applies `change` for the timeline of the days `[first, after)` (the app's range) with
+    /// `night`. Returns the scroll a `Scrolled` may still owe ([`State::show`]) or the one a `Wheel`
+    /// asks for.
+    pub fn update<T>(&mut self, change: Change, first: NaiveDate, after: NaiveDate, night: Night) -> Task<T> {
         match change {
             Change::Scrolled { offset, width } => {
                 let before = self.viewport.replace(Viewport { offset, width });
                 match (self.focus, before) {
-                    (Some(focus), None) => self.scroll_to(focus, width, first, after),
-                    (Some(focus), Some(before)) if before.width != width => self.scroll_to(focus, width, first, after),
+                    (Some(focus), None) => self.scroll_to(focus, width, first, after, night),
+                    (Some(focus), Some(before)) if before.width != width => {
+                        self.scroll_to(focus, width, first, after, night)
+                    }
                     (Some(_), Some(_)) => {
                         self.focus = None;
                         Task::none()
@@ -138,6 +154,10 @@ impl State {
                 if !self.open.remove(&evening) {
                     self.open.insert(evening);
                 }
+                Task::none()
+            }
+            Change::FoldNight(evening) => {
+                self.open.remove(&evening);
                 Task::none()
             }
             Change::ToggleNights => {
@@ -159,10 +179,10 @@ impl State {
     /// width, and again should its next report bring another width (the window was resized and the
     /// report of the new size comes after this call); otherwise on its first report
     /// (`Change::Scrolled`), so the app may call this before the timeline is on screen.
-    pub fn show<T>(&mut self, focus: NaiveDateTime, first: NaiveDate, after: NaiveDate) -> Task<T> {
+    pub fn show<T>(&mut self, focus: NaiveDateTime, first: NaiveDate, after: NaiveDate, night: Night) -> Task<T> {
         self.focus = Some(focus);
         match self.viewport {
-            Some(viewport) => self.scroll_to(focus, viewport.width, first, after),
+            Some(viewport) => self.scroll_to(focus, viewport.width, first, after, night),
             None => Task::none(),
         }
     }
@@ -174,19 +194,27 @@ impl State {
         self.viewport = None;
     }
 
-    fn scroll_to<T>(&self, focus: NaiveDateTime, width: f32, first: NaiveDate, after: NaiveDate) -> Task<T> {
-        let x = Track::new(first, after, &self.open).focus_offset(focus, width);
+    fn scroll_to<T>(
+        &self,
+        focus: NaiveDateTime,
+        width: f32,
+        first: NaiveDate,
+        after: NaiveDate,
+        night: Night,
+    ) -> Task<T> {
+        let x = Track::new(first, after, &self.open, night).focus_offset(focus, width);
         operation::scroll_to(SCROLL_ID, AbsoluteOffset { x: Some(x), y: None })
     }
 }
 
-/// The timeline of the days `[data.start, data.end)` in a sideways scrollable, filling the space
-/// it gets.
-pub fn view<'a>(data: ViewData<'a>, state: &State) -> Element<'a, Message> {
-    let plan = Plan::new(&data, state);
+/// The timeline of the days `[data.start, data.end)` with `night` in a sideways scrollable, filling
+/// the space it gets. The canvas is anchored at `anchor`, so the night's card can float beside a
+/// moon (`EditNight` carries the moon's place on the canvas).
+pub fn view<'a>(data: ViewData<'a>, state: &State, night: Night, anchor: &Anchor) -> Element<'a, Message> {
+    let plan = Plan::new(&data, state, night);
     let width = plan.track.width;
     let canvas = iced::widget::canvas(Timeline { plan }).width(Length::Fixed(width)).height(Length::Fill);
-    scrollable(canvas)
+    scrollable(widgets::anchored(anchor, canvas))
         .id(SCROLL_ID)
         .direction(Direction::Horizontal(style::scrollbar()))
         .style(style::scrollable)
@@ -223,9 +251,9 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(data: &ViewData<'_>, state: &State) -> Plan {
+    fn new(data: &ViewData<'_>, state: &State, night: Night) -> Plan {
         let mut plan = Plan {
-            track: Track::new(data.start, data.end, &state.open),
+            track: Track::new(data.start, data.end, &state.open, night),
             entries: Vec::new(),
             timed: Vec::new(),
             spans: Vec::new(),
@@ -271,19 +299,52 @@ impl Plan {
             .collect()
     }
 
+    /// The label of a folded night: "Night · 8 h", and how many events start in it.
+    fn night_label(&self, night: &Segment, rows: &Rows) -> String {
+        let evening = night.evening();
+        let dots = layout::dots(&self.track, rows, &self.timed).into_iter().filter(|dot| Some(dot.evening) == evening);
+        let mut text = format!("{} · {}", tr("Night"), span(night.minutes()));
+        match dots.count() {
+            0 => {}
+            1 => text = format!("{text} · {}", tr("1 event")),
+            n => text = format!("{text} · {}", trf("{n} events", &[("n", &n)])),
+        }
+        text
+    }
+
+    /// The moons of the folded nights, as click targets ([`layout::moon`]).
+    fn moons(&self, rows: &Rows) -> Vec<(NaiveDate, Rectangle)> {
+        self.track
+            .segments
+            .iter()
+            .filter(|segment| segment.folded())
+            .filter_map(|night| {
+                let length = icon::SIZE_SM + LABEL_GAP + text_width(&self.night_label(night, rows), typo::META);
+                night.evening().map(|evening| (evening, layout::moon(night, rows, length)))
+            })
+            .collect()
+    }
+
     /// What a click at `point` on a canvas of `size` hits.
     fn hit(&self, size: Size, point: Point) -> Option<Hit> {
         let rows = self.rows(size.height);
         let blocks = layout::blocks(&self.track, &rows, &self.timed);
         let chips = layout::chips(&self.track, &rows, &self.spans);
-        layout::hit(&self.track, &rows, &blocks, &chips, &self.folds(&rows), point)
+        layout::hit(&self.track, &rows, &blocks, &chips, &self.folds(&rows), &self.moons(&rows), point)
+    }
+
+    /// The moon under `point` on a canvas of `size`: its evening and target.
+    fn moon_at(&self, size: Size, point: Point) -> Option<(NaiveDate, Rectangle)> {
+        self.moons(&self.rows(size.height)).into_iter().find(|(_, rect)| rect.contains(point))
     }
 
     /// The message of a click on `hit`.
     fn message(&self, hit: Hit) -> Option<Message> {
         Some(match hit {
             Hit::Event(id) | Hit::Chip(id) => Message::OpenEvent(self.entries.get(id)?.index),
-            Hit::Unfold(evening) | Hit::Fold(evening) => Message::Timeline(Change::ToggleNight(evening)),
+            Hit::Unfold(evening) | Hit::Fold(evening) | Hit::Moon(evening) => {
+                Message::Timeline(Change::ToggleNight(evening))
+            }
             Hit::Slot(at) => Message::NewEvent { date: at.date(), time: Some(at.time()) },
             Hit::AllDay(date) => Message::NewEvent { date, time: None },
         })
@@ -319,35 +380,68 @@ struct Timeline {
     plan: Plan,
 }
 
+/// What the canvas keeps between events: the last click on a moon, for a double-click, and the
+/// moon the pointer rests on, for its tooltip.
+#[derive(Debug, Default)]
+struct Pointer {
+    /// When and where the last press on a moon was, its evening and its target.
+    moon_press: Option<(Instant, Point, NaiveDate, Rectangle)>,
+    /// Since when the pointer rests on the moon with this target.
+    hover: Option<(Instant, Rectangle)>,
+}
+
 impl canvas::Program<Message> for Timeline {
-    type State = ();
+    type State = Pointer;
 
     fn update(
         &self,
-        _state: &mut (),
+        state: &mut Pointer,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
-        if let Event::Mouse(mouse::Event::WheelScrolled { delta }) = event {
-            cursor.position_in(bounds)?;
-            let dx = sideways(*delta)?;
-            return Some(Action::publish(Message::Timeline(Change::Wheel(dx))).and_capture());
+        match event {
+            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+                cursor.position_in(bounds)?;
+                let dx = sideways(*delta)?;
+                return Some(Action::publish(Message::Timeline(Change::Wheel(dx))).and_capture());
+            }
+            Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft) => {
+                let over = cursor.position_in(bounds).and_then(|point| self.plan.moon_at(bounds.size(), point));
+                return hover(&mut state.hover, over.map(|(_, rect)| rect));
+            }
+            _ => {}
         }
         let point = week::left_press(event, bounds, cursor)?;
-        let message = self.plan.message(self.plan.hit(bounds.size(), point)?)?;
+        let now = Instant::now();
+        // The second press of a double-click lands on the night the first one unfolded.
+        if let Some((at, origin, evening, rect)) = state.moon_press.take()
+            && is_double_click((at, origin), (now, point))
+        {
+            state.hover = None;
+            return Some(Action::publish(Message::EditNight { fold: Some(evening), at: Some(rect) }).and_capture());
+        }
+        let hit = self.plan.hit(bounds.size(), point)?;
+        if let Hit::Moon(evening) = hit {
+            let rect = self.plan.moon_at(bounds.size(), point).map_or(Rectangle::default(), |(_, rect)| rect);
+            state.moon_press = Some((now, point, evening, rect));
+        }
+        let message = self.plan.message(hit)?;
         Some(Action::publish(message).and_capture())
     }
 
-    fn mouse_interaction(&self, _state: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+    fn mouse_interaction(&self, _state: &Pointer, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
         let over = cursor.position_in(bounds).and_then(|point| self.plan.hit(bounds.size(), point));
         // Free time stays calm although a click there starts an event, as in the week.
-        week::pointer_if(matches!(over, Some(Hit::Event(_) | Hit::Chip(_) | Hit::Unfold(_) | Hit::Fold(_))))
+        week::pointer_if(matches!(
+            over,
+            Some(Hit::Event(_) | Hit::Chip(_) | Hit::Unfold(_) | Hit::Fold(_) | Hit::Moon(_))
+        ))
     }
 
     fn draw(
         &self,
-        _state: &(),
+        state: &Pointer,
         renderer: &iced::Renderer,
         theme: &Theme,
         bounds: Rectangle,
@@ -405,8 +499,50 @@ impl canvas::Program<Message> for Timeline {
         if let Some(x) = now_x {
             now_line(&mut frame, p, &rows, x, height, plan.now);
         }
+        if let Some((_, target)) = state.hover.filter(|(since, _)| since.elapsed() >= TOOLTIP_DELAY) {
+            let area = match plan.viewport {
+                Some(Viewport { offset, width }) => Rectangle::new(Point::new(offset, 0.0), Size::new(width, height)),
+                None => Rectangle::new(Point::ORIGIN, bounds.size()),
+            };
+            moon_tooltip(&mut frame, p, target, area);
+        }
         vec![frame.into_geometry()]
     }
+}
+
+/// Keeps `hover` up to date with the moon target the pointer is `over` and asks for the redraws
+/// the tooltip needs: once the delay is over, and at once when the pointer leaves.
+pub(crate) fn hover<M>(hover: &mut Option<(Instant, Rectangle)>, over: Option<Rectangle>) -> Option<Action<M>> {
+    match (*hover, over) {
+        (Some((_, was)), Some(rect)) if was == rect => None,
+        (_, Some(rect)) => {
+            let now = Instant::now();
+            *hover = Some((now, rect));
+            Some(Action::request_redraw_at(now + TOOLTIP_DELAY))
+        }
+        (Some(_), None) => {
+            *hover = None;
+            Some(Action::request_redraw())
+        }
+        (None, None) => None,
+    }
+}
+
+/// "Double-click to set the night" beside the moon `target`, drawn like the suite's tooltips
+/// (menu surface, `CAPTION` in `text_2`): to its right, or to its left where `area` (what is on
+/// screen of the canvas) ends.
+pub(crate) fn moon_tooltip(frame: &mut Frame, p: &Palette, target: Rectangle, area: Rectangle) {
+    let text = tr("Double-click to set the night");
+    let pad = Vector::new(space::S, style::KBD_PADDING.top + style::KBD_PADDING.bottom);
+    let size = Size::new(text_width(text, typo::CAPTION) + 2.0 * pad.x, week::line_height(typo::CAPTION) + 2.0 * pad.y);
+    let right = target.x + target.width + space::XS;
+    let x = if right + size.width <= area.x + area.width { right } else { target.x - space::XS - size.width };
+    let y = (target.center_y() - size.height / 2.0).clamp(area.y, (area.y + area.height - size.height).max(area.y));
+    let card = Path::rounded_rectangle(Point::new(x, y), size, Radius::from(radius::SM));
+    frame.fill(&card, p.menu);
+    frame.stroke(&card, Stroke::default().with_color(p.line_strong).with_width(1.0));
+    let at = Point::new(x + pad.x, y + size.height / 2.0);
+    week::label(frame, text, at, typo::CAPTION, p.text_2, Alignment::Left, Vertical::Center);
 }
 
 /// Hour lines from the axis down, and their labels "09:00" in the axis, in the days and the
@@ -462,12 +598,8 @@ fn folded_night(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, night:
         frame.fill(&Path::circle(dot.center, DOT), entry.color);
     }
 
-    let mut text = trf("Night · {n} h", &[("n", &night.hours())]);
-    match dots.len() {
-        0 => {}
-        1 => text = format!("{text} · {}", tr("1 event")),
-        n => text = format!("{text} · {}", trf("{n} events", &[("n", &n)])),
-    }
+    // Where the moon goes is `layout::moon`'s rule too, so its click target sits on it.
+    let text = plan.night_label(night, rows);
     let length = icon::SIZE_SM + LABEL_GAP + text_width(&text, typo::META);
     let center = band.center();
     let bottom = (center.y + length / 2.0).round();
@@ -704,7 +836,7 @@ mod tests {
     #[test]
     fn timed_events_become_columns_and_all_day_ones_chips() {
         let events = events();
-        let plan = Plan::new(&data(&events), &State::default());
+        let plan = Plan::new(&data(&events), &State::default(), Night::DEFAULT);
         assert_eq!(plan.timed.iter().map(|t| t.id).collect::<Vec<_>>(), [0, 1]);
         assert_eq!(plan.spans, [Span { id: 2, first: d(14), after: d(15) }]);
         assert_eq!(plan.entries[2].index, 12, "the app's index for OpenEvent");
@@ -713,7 +845,7 @@ mod tests {
     #[test]
     fn clicks_open_events_unfold_nights_and_start_new_events() {
         let events = events();
-        let plan = Plan::new(&data(&events), &State::default());
+        let plan = Plan::new(&data(&events), &State::default(), Night::DEFAULT);
         let rows = plan.rows(SIZE.height);
         let workshop = layout::blocks(&plan.track, &rows, &plan.timed)[0].rect;
         let message = |point: Point| plan.hit(SIZE, point).and_then(|hit| plan.message(hit));
@@ -735,13 +867,13 @@ mod tests {
     fn interaction(timeline: &Timeline, point: Point) -> mouse::Interaction {
         let bounds = Rectangle::new(Point::new(30.0, 40.0), SIZE);
         let cursor = mouse::Cursor::Available(Point::new(bounds.x + point.x, bounds.y + point.y));
-        timeline.mouse_interaction(&(), bounds, cursor)
+        timeline.mouse_interaction(&Pointer::default(), bounds, cursor)
     }
 
     #[test]
     fn the_hand_shows_over_what_a_click_opens_or_unfolds() {
         let events = events();
-        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default()) };
+        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT) };
         let rows = timeline.plan.rows(SIZE.height);
         let workshop = layout::blocks(&timeline.plan.track, &rows, &timeline.plan.timed)[0].rect;
         assert_eq!(interaction(&timeline, workshop.center()), mouse::Interaction::Pointer);
@@ -757,13 +889,13 @@ mod tests {
         assert_eq!(sideways(mouse::ScrollDelta::Pixels { x: 0.0, y: 30.0 }), Some(-30.0));
         assert_eq!(sideways(mouse::ScrollDelta::Pixels { x: 40.0, y: 5.0 }), None);
         let events = events();
-        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default()) };
+        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT) };
         let bounds = Rectangle::new(Point::ORIGIN, SIZE);
         let wheel = Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 } });
         let over = mouse::Cursor::Available(Point::new(100.0, 100.0));
-        assert!(timeline.update(&mut (), &wheel, bounds, over).is_some(), "taken over the timeline");
+        assert!(timeline.update(&mut Pointer::default(), &wheel, bounds, over).is_some(), "taken over the timeline");
         let outside = mouse::Cursor::Available(Point::new(100.0, 900.0));
-        assert!(timeline.update(&mut (), &wheel, bounds, outside).is_none());
+        assert!(timeline.update(&mut Pointer::default(), &wheel, bounds, outside).is_none());
     }
 
     #[test]
@@ -771,38 +903,52 @@ mod tests {
         let mut state = State::default();
         let (first, after) = (d(12), d(20));
         let report = |offset: f32, width: f32| Change::Scrolled { offset, width };
-        assert_eq!(state.show::<()>(at(13, 14, 20), first, after).units(), 0, "nothing to scroll yet");
-        assert!(state.update::<()>(report(0.0, 900.0), first, after).units() > 0, "the first report scrolls");
+        assert_eq!(state.show::<()>(at(13, 14, 20), first, after, Night::DEFAULT).units(), 0, "nothing to scroll yet");
+        assert!(
+            state.update::<()>(report(0.0, 900.0), first, after, Night::DEFAULT).units() > 0,
+            "the first report scrolls"
+        );
         assert_eq!(state.focus, Some(at(13, 14, 20)), "until the scrollable got there");
-        assert_eq!(state.update::<()>(report(1140.0, 900.0), first, after).units(), 0, "there: settled");
+        assert_eq!(
+            state.update::<()>(report(1140.0, 900.0), first, after, Night::DEFAULT).units(),
+            0,
+            "there: settled"
+        );
         assert_eq!(state.focus, None);
         assert_eq!(
-            state.update::<()>(report(1140.0, 600.0), first, after).units(),
+            state.update::<()>(report(1140.0, 600.0), first, after, Night::DEFAULT).units(),
             0,
             "a resize alone keeps the offset"
         );
-        assert!(state.show::<()>(at(14, 9, 0), first, after).units() > 0, "with a known width at once");
-        assert!(state.update::<()>(report(1500.0, 800.0), first, after).units() > 0, "a later new width scrolls again");
-        assert!(state.update::<()>(Change::Wheel(60.0), first, after).units() > 0);
+        assert!(state.show::<()>(at(14, 9, 0), first, after, Night::DEFAULT).units() > 0, "with a known width at once");
+        assert!(
+            state.update::<()>(report(1500.0, 800.0), first, after, Night::DEFAULT).units() > 0,
+            "a later new width scrolls again"
+        );
+        assert!(state.update::<()>(Change::Wheel(60.0), first, after, Night::DEFAULT).units() > 0);
         assert_eq!(state.focus, None, "the wheel takes over");
         state.forget_viewport();
-        assert_eq!(state.show::<()>(at(14, 9, 0), first, after).units(), 0, "a new scrollable is waited for");
+        assert_eq!(
+            state.show::<()>(at(14, 9, 0), first, after, Night::DEFAULT).units(),
+            0,
+            "a new scrollable is waited for"
+        );
     }
 
     #[test]
     fn nights_unfold_one_by_one_or_all_together() {
         let mut state = State::default();
         let (first, after) = (d(12), d(15));
-        let _ = state.update::<()>(Change::ToggleNight(d(13)), first, after);
+        let _ = state.update::<()>(Change::ToggleNight(d(13)), first, after, Night::DEFAULT);
         assert_eq!(state.open, BTreeSet::from([d(13)]));
-        let _ = state.update::<()>(Change::ToggleNights, first, after);
+        let _ = state.update::<()>(Change::ToggleNights, first, after, Night::DEFAULT);
         assert_eq!(state.open, BTreeSet::new(), "one open: all fold");
-        let _ = state.update::<()>(Change::ToggleNights, first, after);
+        let _ = state.update::<()>(Change::ToggleNights, first, after, Night::DEFAULT);
         assert_eq!(state.open, BTreeSet::from([d(12), d(13), d(14)]), "none open: all unfold");
-        let _ = state.update::<()>(Change::ToggleNight(d(13)), first, after);
+        let _ = state.update::<()>(Change::ToggleNight(d(13)), first, after, Night::DEFAULT);
         assert!(!state.open.contains(&d(13)));
-        let plan = Plan::new(&data(&events()), &state);
-        assert!(plan.track.width > Plan::new(&data(&events()), &State::default()).track.width);
+        let plan = Plan::new(&data(&events()), &state, Night::DEFAULT);
+        assert!(plan.track.width > Plan::new(&data(&events()), &State::default(), Night::DEFAULT).track.width);
         assert_eq!(plan.folds(&plan.rows(SIZE.height)).len(), 2, "a collapse button per open night");
     }
 
@@ -814,10 +960,66 @@ mod tests {
         assert_eq!(time_text(&entry, 40.0), "10:00");
     }
 
+    fn press(timeline: &Timeline, state: &mut Pointer, point: Point) -> Option<Message> {
+        let bounds = Rectangle::new(Point::ORIGIN, SIZE);
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let (message, _, _) = timeline.update(state, &press, bounds, mouse::Cursor::Available(point))?.into_inner();
+        message
+    }
+
+    #[test]
+    fn a_click_on_the_moon_unfolds_and_a_double_click_opens_the_night() {
+        let events = events();
+        let timeline = Timeline { plan: Plan::new(&data(&events), &State::default(), Night::DEFAULT) };
+        let rows = timeline.plan.rows(SIZE.height);
+        let (evening, moon) = timeline.plan.moons(&rows)[1];
+        assert_eq!(evening, d(13));
+        let mut state = Pointer::default();
+        let first = press(&timeline, &mut state, moon.center());
+        assert!(matches!(first, Some(Message::Timeline(Change::ToggleNight(e))) if e == d(13)), "{first:?}");
+        let second = press(&timeline, &mut state, moon.center());
+        assert!(
+            matches!(second, Some(Message::EditNight { fold: Some(e), at: Some(at) }) if e == d(13) && at == moon),
+            "{second:?}"
+        );
+        assert!(state.moon_press.is_none(), "a third click starts over");
+        assert_eq!(interaction(&timeline, moon.center()), mouse::Interaction::Pointer);
+        // A press on the band beside the moon is no double-click with the one on the moon.
+        let _ = press(&timeline, &mut state, moon.center());
+        let band = timeline.plan.track.segments[3];
+        let beside = press(&timeline, &mut state, Point::new(band.x + 2.0, layout::DAY_HEAD + 10.0));
+        assert!(matches!(beside, Some(Message::Timeline(Change::ToggleNight(_)))), "{beside:?}");
+    }
+
+    #[test]
+    fn the_track_follows_the_night_it_is_given() {
+        let events = events();
+        let quarter = |hour, minute| torro_core::settings::Quarter::new(hour, minute).expect("quarter");
+        let late = Night { from: quarter(23, 30), to: quarter(7, 0) };
+        let plan = Plan::new(&data(&events), &State::default(), late);
+        let night = plan.track.segments[1];
+        assert_eq!((night.start, night.end), (at(12, 23, 30), at(13, 7, 0)));
+        assert_eq!(plan.night_label(&night, &plan.rows(SIZE.height)), format!("{} · {}", tr("Night"), span(450)));
+        let none = Night::none_at(late.from);
+        let plan = Plan::new(&data(&events), &State::default(), none);
+        assert!(plan.track.segments.iter().all(|segment| segment.evening().is_none()), "no night, no band");
+        assert!(plan.moons(&plan.rows(SIZE.height)).is_empty());
+    }
+
+    #[test]
+    fn the_tooltip_waits_and_goes_when_the_pointer_leaves() {
+        let mut hover = None;
+        let moon = Rectangle::new(Point::new(10.0, 10.0), Size::new(24.0, 24.0));
+        assert!(super::hover::<()>(&mut hover, Some(moon)).is_some(), "a redraw once the delay is over");
+        assert!(super::hover::<()>(&mut hover, Some(moon)).is_none(), "resting: nothing new");
+        assert!(super::hover::<()>(&mut hover, None).is_some(), "leaving redraws at once");
+        assert!(hover.is_none());
+    }
+
     #[test]
     fn the_view_builds_with_and_without_events() {
         let events = events();
-        let _ = view(data(&events), &State::default());
-        let _ = view(data(&[]), &State::default());
+        let _ = view(data(&events), &State::default(), Night::DEFAULT, &Anchor::new());
+        let _ = view(data(&[]), &State::default(), Night::DEFAULT, &Anchor::new());
     }
 }

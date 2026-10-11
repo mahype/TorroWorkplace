@@ -48,6 +48,154 @@ pub struct Settings {
     /// value for all apps, so tiled windows stay alike; stored as the factor (`1.1`).
     #[serde(default)]
     pub zoom: Zoom,
+    /// When the night is (task K.27): the calendar's timeline folds it, the radar shades it, and
+    /// neither counts it as free time. Stored as `{"from": "22:00", "to": "06:00"}`.
+    #[serde(default)]
+    pub night: Night,
+}
+
+/// A time of day on the quarter hour, `00:00` to `23:45`, the grid of [`Night`]. Kept as minutes
+/// since midnight; written and read as `"HH:MM"` (its `Display`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Quarter(u16);
+
+impl Quarter {
+    /// Minutes in a day.
+    const DAY: u16 = 24 * 60;
+
+    /// `hour:minute`, or `None` when the hour is 24 or more or the minute is not 0, 15, 30 or 45.
+    pub fn new(hour: u32, minute: u32) -> Option<Quarter> {
+        (hour < 24 && minute < 60 && minute.is_multiple_of(15)).then(|| Quarter((hour * 60 + minute) as u16))
+    }
+
+    /// Every quarter of a day in order, `00:00` to `23:45` (96), for the time fields.
+    pub fn all() -> impl Iterator<Item = Quarter> {
+        (0..Quarter::DAY).step_by(15).map(Quarter)
+    }
+
+    /// `"22:00"` as a quarter; `None` for anything else, also `"22:10"` or `"7:00"`.
+    pub fn parse(text: &str) -> Option<Quarter> {
+        let (hour, minute) = text.split_once(':')?;
+        let digits = |part: &str| part.len() == 2 && part.bytes().all(|b| b.is_ascii_digit());
+        if !digits(hour) || !digits(minute) {
+            return None;
+        }
+        Quarter::new(hour.parse().ok()?, minute.parse().ok()?)
+    }
+
+    pub fn hour(self) -> u32 {
+        u32::from(self.0 / 60)
+    }
+
+    pub fn minute(self) -> u32 {
+        u32::from(self.0 % 60)
+    }
+
+    /// Minutes since midnight.
+    pub fn minutes(self) -> u32 {
+        u32::from(self.0)
+    }
+}
+
+impl std::fmt::Display for Quarter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:02}:{:02}", self.hour(), self.minute())
+    }
+}
+
+/// The night of the suite (task K.27): from `from` to `to`, mostly over midnight (22:00–06:00).
+/// `from == to` means no night at all: nothing is folded or shaded.
+///
+/// Reading a settings file is lenient, like [`Zoom`]: a night that is not two quarter hours gives
+/// [`Night::DEFAULT`], so a hand-edited file never keeps the suite from starting. A value sent to
+/// the core is checked with [`Night::from_value`], which refuses it with a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Night {
+    pub from: Quarter,
+    pub to: Quarter,
+}
+
+impl Night {
+    /// 22:00 to 06:00.
+    pub const DEFAULT: Night = Night { from: Quarter(22 * 60), to: Quarter(6 * 60) };
+
+    /// No night (both ends at `at`).
+    pub fn none_at(at: Quarter) -> Night {
+        Night { from: at, to: at }
+    }
+
+    /// There is no night: `from == to`.
+    pub fn is_none(self) -> bool {
+        self.from == self.to
+    }
+
+    /// How long the night lasts, in minutes (480 for 22:00–06:00, 0 for none).
+    pub fn minutes(self) -> u32 {
+        (self.to.minutes() + u32::from(Quarter::DAY) - self.from.minutes()) % u32::from(Quarter::DAY)
+    }
+
+    /// The night in `value`, which must be `{"from": "HH:MM", "to": "HH:MM"}` on the quarter hour;
+    /// otherwise why not. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<Night, String> {
+        let shape = || format!("{value} is not a night: send {{\"from\": \"22:00\", \"to\": \"06:00\"}}");
+        let object = value.as_object().ok_or_else(shape)?;
+        if object.keys().any(|key| key != "from" && key != "to") {
+            return Err(shape());
+        }
+        let end = |name: &str| {
+            let text = object.get(name).and_then(|v| v.as_str()).ok_or_else(shape)?;
+            Quarter::parse(text).ok_or_else(|| {
+                format!("{text:?} is not a time for {name}: use HH:MM on the quarter hour (00, 15, 30, 45)")
+            })
+        };
+        Ok(Night { from: end("from")?, to: end("to")? })
+    }
+
+    /// The night as `settings.set_setting` takes it: `{"from": "22:00", "to": "06:00"}`.
+    pub fn to_value(self) -> serde_json::Value {
+        serde_json::json!({ "from": self.from.to_string(), "to": self.to.to_string() })
+    }
+}
+
+impl Default for Night {
+    fn default() -> Night {
+        Night::DEFAULT
+    }
+}
+
+impl Serialize for Night {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Night {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Night, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Night::from_value(&value).unwrap_or_default())
+    }
+}
+
+impl JsonSchema for Night {
+    fn schema_name() -> Cow<'static, str> {
+        "Night".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        let time = json_schema!({ "type": "string", "pattern": "^([01][0-9]|2[0-3]):(00|15|30|45)$" });
+        json_schema!({
+            "type": "object",
+            "properties": { "from": time, "to": time },
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "description": "The night as two times of day on the quarter hour, usually over midnight \
+                            ({\"from\": \"22:00\", \"to\": \"06:00\"}). The same time twice means no night."
+        })
+    }
 }
 
 /// The zoom of the suite's windows: one of the steps of a browser ([`Zoom::STEPS`], 67 % to
@@ -274,6 +422,7 @@ mod tests {
             start_at_login: true,
             hidden_collections: vec!["work".into()],
             zoom: Zoom::DEFAULT,
+            night: Night::DEFAULT,
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -318,6 +467,7 @@ mod tests {
             start_at_login: true,
             hidden_collections: vec!["a".into(), "b".into()],
             zoom: Zoom::nearest(1.25),
+            night: Night { from: q(23, 30), to: q(7, 0) },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -424,5 +574,87 @@ mod tests {
         assert_eq!(load_from(&path).zoom.percent(), 125);
         fs::write(&path, r#"{"zoom":7}"#).expect("write");
         assert_eq!(load_from(&path).zoom, Zoom::MAX, "out of range is clamped, not a broken file");
+    }
+
+    fn q(hour: u32, minute: u32) -> Quarter {
+        Quarter::new(hour, minute).expect("a quarter hour")
+    }
+
+    #[test]
+    fn the_night_is_ten_to_six_by_default_and_from_before_k27() {
+        assert_eq!(Night::default(), Night { from: q(22, 0), to: q(6, 0) });
+        assert_eq!(Night::DEFAULT.minutes(), 8 * 60, "over midnight is the normal case");
+        let dir = TempDir::new("no-night");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","zoom":1.1}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.night, Night::DEFAULT);
+        assert_eq!(loaded.zoom.percent(), 110, "the other fields still load");
+    }
+
+    #[test]
+    fn the_night_is_stored_as_two_times() {
+        let night = Night { from: q(23, 30), to: q(7, 0) };
+        assert_eq!(
+            serde_json::to_value(night).expect("serialize"),
+            serde_json::json!({"from": "23:30", "to": "07:00"})
+        );
+        assert_eq!(serde_json::from_str::<Night>(r#"{"from":"23:30","to":"07:00"}"#).expect("parse"), night);
+        assert_eq!(night.minutes(), 7 * 60 + 30);
+        let day_sleeper = Night { from: q(1, 0), to: q(9, 15) };
+        assert_eq!(day_sleeper.minutes(), 8 * 60 + 15, "a night after midnight only");
+    }
+
+    #[test]
+    fn the_same_time_twice_is_no_night() {
+        let none = Night::none_at(q(22, 0));
+        assert!(none.is_none());
+        assert_eq!(none.minutes(), 0);
+        assert!(!Night::DEFAULT.is_none());
+        assert_eq!(
+            Night::from_value(&serde_json::json!({"from": "06:00", "to": "06:00"})).map(Night::is_none),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn a_night_from_outside_must_be_two_quarter_hours() {
+        let night = |value: serde_json::Value| Night::from_value(&value);
+        assert_eq!(night(serde_json::json!({"from": "22:00", "to": "06:00"})), Ok(Night::DEFAULT));
+        for bad in [
+            serde_json::json!({"from": "22:10", "to": "06:00"}),
+            serde_json::json!({"from": "24:00", "to": "06:00"}),
+            serde_json::json!({"from": "7:00", "to": "06:00"}),
+            serde_json::json!({"from": "22:00"}),
+            serde_json::json!({"from": "22:00", "to": "06:00", "extra": 1}),
+            serde_json::json!({"from": 22, "to": 6}),
+            serde_json::json!("22:00-06:00"),
+            serde_json::json!(null),
+        ] {
+            let refused = night(bad.clone());
+            assert!(refused.as_ref().is_err_and(|reason| !reason.is_empty()), "{bad}: {refused:?}");
+        }
+        let reason = night(serde_json::json!({"from": "22:10", "to": "06:00"})).expect_err("refused");
+        assert!(reason.contains("quarter hour"), "the reason says what is wrong: {reason}");
+    }
+
+    #[test]
+    fn a_broken_night_in_a_file_is_the_default() {
+        let dir = TempDir::new("night-broken");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"night":{"from":"25:00","to":"x"},"startAtLogin":true}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.night, Night::DEFAULT);
+        assert!(loaded.start_at_login, "not a broken file");
+    }
+
+    #[test]
+    fn quarters_cover_the_day_and_print_as_hh_mm() {
+        let all: Vec<Quarter> = Quarter::all().collect();
+        assert_eq!(all.len(), 96);
+        assert_eq!(all[0].to_string(), "00:00");
+        assert_eq!(all[95].to_string(), "23:45");
+        assert_eq!(Quarter::parse("06:45"), Some(q(6, 45)));
+        assert_eq!(Quarter::new(6, 50), None);
     }
 }

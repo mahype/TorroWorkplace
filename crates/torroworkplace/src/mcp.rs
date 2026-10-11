@@ -259,14 +259,15 @@ pub fn tools() -> &'static [Tool] {
 
 /// Where the catalogue's schema says less than the request takes, the tool says more: the
 /// `value` of `settings.set_setting` is any JSON in the request, but every setting takes a
-/// string, a boolean or (`zoom`) a number.
+/// string, a boolean, a number (`zoom`) or an object (`night`).
 fn narrow_schema(command: &str, schema: &mut JsonObject) {
     if command != "settings.set_setting" {
         return;
     }
     let Some(Value::Object(properties)) = schema.get_mut("properties") else { return };
     let description = properties.get("value").and_then(|value| value.get("description")).cloned();
-    let mut value = json!({ "anyOf": [{ "type": "string" }, { "type": "boolean" }, { "type": "number" }] });
+    let mut value =
+        json!({ "anyOf": [{ "type": "string" }, { "type": "boolean" }, { "type": "number" }, { "type": "object" }] });
     if let (Some(description), Some(object)) = (description, value.as_object_mut()) {
         object.insert("description".into(), description);
     }
@@ -712,7 +713,10 @@ mod tests {
         assert!(schema("calendar_list_events")["properties"]["start"].get("description").is_some());
         assert!(schema("workspaces_load_template")["properties"].get("mode").is_some());
         let value = &schema("settings_set_setting")["properties"]["value"];
-        assert_eq!(value["anyOf"], json!([{"type": "string"}, {"type": "boolean"}, {"type": "number"}]));
+        assert_eq!(
+            value["anyOf"],
+            json!([{"type": "string"}, {"type": "boolean"}, {"type": "number"}, {"type": "object"}])
+        );
         for name in ["calendar_save_event", "tasks_save_todo", "workspaces_load_template"] {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }
@@ -723,6 +727,13 @@ mod tests {
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);
         assert_eq!(zoom, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: json!(1.25) }));
+    }
+
+    #[test]
+    fn the_night_is_set_with_an_object() {
+        let night = json!({"from": "23:30", "to": "07:00"});
+        let request = request_for("settings_set_setting", args(json!({"key": "night", "value": night})), &Utc);
+        assert_eq!(request, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Night, value: night }));
     }
 
     #[test]

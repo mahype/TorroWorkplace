@@ -10,10 +10,12 @@
 //! hours, one turn of the 12-hour dial.
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
-use iced::{Point, Size};
+use iced::{Point, Rectangle, Size};
+use torro_core::settings::Night;
 use torro_gui::typo::{self, text_width};
 
 use crate::views::glance;
+use crate::views::timeline::MOON_TARGET;
 
 /// The window: twelve hours, one turn of the dial (minutes).
 pub const WINDOW: f32 = 720.0;
@@ -39,10 +41,6 @@ pub const LOOK_BACK: i64 = -12 * 60;
 pub const LOOK_AHEAD: i64 = 24 * 60;
 /// A day other than today opens at this hour…
 const DAY_OPENS: u32 = 8;
-/// …or at the hour of an earlier event, but never before the night ends.
-const NIGHT_ENDS: u32 = 6;
-/// The night starts at this hour, the same as in the timeline (22:00–06:00).
-const NIGHT_STARTS: u32 = 22;
 /// A press on the dial turns it only once the pointer has moved this far (pixels); less is a click.
 pub const DRAG_THRESHOLD: f32 = 4.0;
 /// Dragging turns the dial in steps of this many minutes.
@@ -82,15 +80,26 @@ pub fn clamp_offset(minutes: i64) -> i64 {
 
 /// Where the window of `day` starts before the dial is turned. Today: at `now`. Any other day: at
 /// [`DAY_OPENS`] (08:00), or at the full hour of an earlier event that day, but never before
-/// [`NIGHT_ENDS`] (06:00). `starts` are the starts of the timed events the caller knows (all-day
-/// ones left out); only those starting on `day` count, not one begun the evening before.
-pub fn day_start(day: NaiveDate, now: NaiveDateTime, starts: impl IntoIterator<Item = NaiveDateTime>) -> NaiveDateTime {
+/// `night` ends that morning (06:00; without a night any hour will do). `starts` are the starts of
+/// the timed events the caller knows (all-day ones left out); only those starting on `day` count,
+/// not one begun the evening before.
+pub fn day_start(
+    day: NaiveDate,
+    now: NaiveDateTime,
+    starts: impl IntoIterator<Item = NaiveDateTime>,
+    night: Night,
+) -> NaiveDateTime {
     if day == now.date() {
         return now;
     }
     let first = starts.into_iter().filter(|start| start.date() == day).map(|start| start.hour()).min();
-    let hour = first.map_or(DAY_OPENS, |hour| hour.min(DAY_OPENS)).max(NIGHT_ENDS);
-    day.and_time(NaiveTime::MIN) + Duration::hours(i64::from(hour))
+    let hour = first.map_or(DAY_OPENS, |hour| hour.min(DAY_OPENS));
+    let midnight = day.and_time(NaiveTime::MIN);
+    let opens = midnight + Duration::hours(i64::from(hour));
+    if night.is_none() {
+        return opens;
+    }
+    opens.max(midnight + Duration::minutes(i64::from(night.to.minutes())))
 }
 
 /// The signed turn from direction `from` to direction `to` (degrees, −180 … 180): the short way
@@ -444,15 +453,18 @@ pub fn glyphs(text: &str, level: typo::Level, radius: f32, start: f32, flipped: 
         .collect()
 }
 
-/// The nights (22:00–06:00, as in the timeline) in the window: minutes after its start, cut to
-/// `[0, END]`, in order. A window is shorter than a day and a night, so there is at most one, but
-/// one that started the evening before the window counts.
-pub fn nights(window: &Window) -> Vec<(f32, f32)> {
+/// The nights of `night` (22:00–06:00 by default, as in the timeline) in the window: minutes after
+/// its start, cut to `[0, END]`, in order; none without a night. A window is shorter than a day,
+/// so there are at most two, and one that started the evening before the window counts.
+pub fn nights(window: &Window, night: Night) -> Vec<(f32, f32)> {
+    if night.is_none() {
+        return Vec::new();
+    }
     let evening = |days: i64| {
         let day = window.start.date() + Duration::days(days);
-        day.and_time(NaiveTime::MIN) + Duration::hours(i64::from(NIGHT_STARTS))
+        day.and_time(NaiveTime::MIN) + Duration::minutes(i64::from(night.from.minutes()))
     };
-    let length = Duration::hours(i64::from(24 + NIGHT_ENDS - NIGHT_STARTS));
+    let length = Duration::minutes(i64::from(night.minutes()));
     (-1..=1)
         .map(evening)
         .map(|start| (window.rel(start).max(0.0), window.rel(start + length).min(END)))
@@ -514,6 +526,15 @@ pub fn moon(window: &Window, nights: &[(f32, f32)]) -> Option<f32> {
     window.ticks().into_iter().find(|(rel, full)| !full && clear.contains(rel) && in_night(*rel)).map(|(rel, _)| rel)
 }
 
+/// The moon ([`moon`]) as a click target, [`MOON_TARGET`] square around its icon on the numerals'
+/// circle of `dial`; `None` without a moon.
+pub fn moon_target(dial: &Dial, window: &Window, nights: &[(f32, f32)]) -> Option<Rectangle> {
+    let rel = moon(window, nights)?;
+    let at = dial.point(dial.numerals, window.angle(rel));
+    let half = MOON_TARGET / 2.0;
+    Some(Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(MOON_TARGET, MOON_TARGET)))
+}
+
 /// Whole minutes from `from` to `to`, rounded up ("40 min left" while 39½ are), never below 0.
 pub fn minutes_until(from: NaiveDateTime, to: NaiveDateTime) -> i64 {
     let seconds = (to - from).num_seconds().max(0);
@@ -563,14 +584,26 @@ mod tests {
     fn today_opens_at_now_and_other_days_in_the_morning() {
         let day = at(14, 0, 0).date();
         let now = at(13, 14, 20);
-        assert_eq!(day_start(now.date(), now, [at(13, 7, 0)]), now, "today: now, whatever came earlier");
-        assert_eq!(day_start(day, now, []), at(14, 8, 0), "no events: 08:00");
-        assert_eq!(day_start(day, now, [at(14, 10, 0), at(14, 6, 30)]), at(14, 6, 0), "the full hour before");
-        assert_eq!(day_start(day, now, [at(14, 5, 0)]), at(14, 6, 0), "never before the night ends");
-        assert_eq!(day_start(day, now, [at(14, 9, 0)]), at(14, 8, 0), "a later event changes nothing");
-        assert_eq!(day_start(day, now, [at(13, 23, 0), at(15, 6, 0)]), at(14, 8, 0), "only that day's events");
+        assert_eq!(
+            day_start(now.date(), now, [at(13, 7, 0)], Night::DEFAULT),
+            now,
+            "today: now, whatever came earlier"
+        );
+        assert_eq!(day_start(day, now, [], Night::DEFAULT), at(14, 8, 0), "no events: 08:00");
+        assert_eq!(
+            day_start(day, now, [at(14, 10, 0), at(14, 6, 30)], Night::DEFAULT),
+            at(14, 6, 0),
+            "the full hour before"
+        );
+        assert_eq!(day_start(day, now, [at(14, 5, 0)], Night::DEFAULT), at(14, 6, 0), "never before the night ends");
+        assert_eq!(day_start(day, now, [at(14, 9, 0)], Night::DEFAULT), at(14, 8, 0), "a later event changes nothing");
+        assert_eq!(
+            day_start(day, now, [at(13, 23, 0), at(15, 6, 0)], Night::DEFAULT),
+            at(14, 8, 0),
+            "only that day's events"
+        );
         // A day in the past opens the same way.
-        assert_eq!(day_start(at(12, 0, 0).date(), now, [at(12, 7, 15)]), at(12, 7, 0));
+        assert_eq!(day_start(at(12, 0, 0).date(), now, [at(12, 7, 15)], Night::DEFAULT), at(12, 7, 0));
     }
 
     #[test]
@@ -753,15 +786,15 @@ mod tests {
     #[test]
     fn the_night_lies_in_the_window_also_over_midnight() {
         // 14:20: the night starts 7 h 40 min in and runs past the end of the window.
-        assert_eq!(nights(&Window::new(at(13, 14, 20))), [(460.0, END)]);
+        assert_eq!(nights(&Window::new(at(13, 14, 20)), Night::DEFAULT), [(460.0, END)]);
         // 08:00: no night at all before 19:54.
-        assert!(nights(&Window::new(at(18, 8, 0))).is_empty());
+        assert!(nights(&Window::new(at(18, 8, 0)), Night::DEFAULT).is_empty());
         // 23:10, past midnight: the night begun the evening before runs until 06:00.
-        assert_eq!(nights(&Window::new(at(13, 23, 10))), [(0.0, 410.0)]);
+        assert_eq!(nights(&Window::new(at(13, 23, 10)), Night::DEFAULT), [(0.0, 410.0)]);
         // 01:00: still the night of the evening before.
-        assert_eq!(nights(&Window::new(at(14, 1, 0))), [(0.0, 300.0)]);
+        assert_eq!(nights(&Window::new(at(14, 1, 0)), Night::DEFAULT), [(0.0, 300.0)]);
         // 20:00: the whole night of eight hours fits, from 22:00 to 06:00.
-        assert_eq!(nights(&Window::new(at(13, 20, 0))), [(120.0, 600.0)]);
+        assert_eq!(nights(&Window::new(at(13, 20, 0)), Night::DEFAULT), [(120.0, 600.0)]);
     }
 
     #[test]
@@ -796,16 +829,61 @@ mod tests {
     #[test]
     fn the_moon_stands_at_the_first_half_hour_of_the_night() {
         let window = Window::new(at(13, 14, 20));
-        assert_eq!(moon(&window, &nights(&window)), Some(490.0), "22:30");
+        assert_eq!(moon(&window, &nights(&window, Night::DEFAULT)), Some(490.0), "22:30");
         assert_eq!(window.at(490.0), at(13, 22, 30));
         // Starting at 23:10 inside the night: 23:30, just clear of the chip.
         let late = Window::new(at(13, 23, 10));
-        assert_eq!(moon(&late, &nights(&late)), Some(20.0));
+        assert_eq!(moon(&late, &nights(&late, Night::DEFAULT)), Some(20.0));
         // At 23:20 the 23:30 would touch the chip: 00:30.
         let later = Window::new(at(13, 23, 20));
-        assert_eq!(later.at(moon(&later, &nights(&later)).expect("a moon")), at(14, 0, 30));
+        assert_eq!(later.at(moon(&later, &nights(&later, Night::DEFAULT)).expect("a moon")), at(14, 0, 30));
         let morning = Window::new(at(18, 8, 0));
-        assert_eq!(moon(&morning, &nights(&morning)), None, "no night, no moon");
+        assert_eq!(moon(&morning, &nights(&morning, Night::DEFAULT)), None, "no night, no moon");
+    }
+
+    fn night(from: (u32, u32), to: (u32, u32)) -> Night {
+        let quarter = |(hour, minute)| torro_core::settings::Quarter::new(hour, minute).expect("quarter");
+        Night { from: quarter(from), to: quarter(to) }
+    }
+
+    #[test]
+    fn the_night_sector_follows_the_night_it_is_given() {
+        let late = night((23, 30), (7, 0));
+        // 14:20: the night starts 9 h 10 min in and runs past the end of the window.
+        assert_eq!(nights(&Window::new(at(13, 14, 20)), late), [(550.0, END)]);
+        // 02:00: the night begun at 23:30 runs until 07:00.
+        assert_eq!(nights(&Window::new(at(14, 2, 0)), late), [(0.0, 300.0)]);
+        // A night after midnight only.
+        assert_eq!(nights(&Window::new(at(13, 20, 0)), night((1, 0), (9, 0))), [(300.0, END)]);
+        let none = Night::none_at(late.from);
+        assert!(nights(&Window::new(at(13, 20, 0)), none).is_empty(), "no night, no sector");
+        let window = Window::new(at(13, 20, 0));
+        assert_eq!(moon(&window, &nights(&window, none)), None, "and no moon");
+        let free_all = free(&[], &nights(&window, late), 0.0, 120.0);
+        assert_eq!(free_all, [(0.0, 210.0)], "free until 23:30, then the night");
+        assert_eq!(free(&[], &nights(&window, none), 0.0, 120.0), [(0.0, END)], "without a night all is free");
+    }
+
+    #[test]
+    fn another_day_opens_when_its_night_ends() {
+        let (day, now) = (at(14, 0, 0).date(), at(13, 14, 20));
+        assert_eq!(day_start(day, now, [at(14, 6, 15)], night((23, 30), (7, 0))), at(14, 7, 0));
+        assert_eq!(day_start(day, now, [at(14, 5, 0)], night((22, 0), (6, 30))), at(14, 6, 30));
+        let none = Night::none_at(night((22, 0), (6, 0)).from);
+        assert_eq!(day_start(day, now, [at(14, 5, 10)], none), at(14, 5, 0), "without a night any hour");
+        assert_eq!(day_start(day, now, [], none), at(14, 8, 0));
+    }
+
+    #[test]
+    fn the_moon_is_a_target_of_its_own() {
+        let window = Window::new(at(13, 14, 20));
+        let dial = Dial::fit(Size::new(600.0, 600.0), 16.0, 2);
+        let target = moon_target(&dial, &window, &nights(&window, Night::DEFAULT)).expect("a moon");
+        assert_eq!(target.width, MOON_TARGET);
+        let center = dial.point(dial.numerals, window.angle(490.0));
+        assert!(target.contains(center));
+        let morning = Window::new(at(18, 8, 0));
+        assert_eq!(moon_target(&dial, &morning, &nights(&morning, Night::DEFAULT)), None);
     }
 
     #[test]

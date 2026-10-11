@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use torro_core::settings::{self, Language, Settings, Zoom};
+use torro_core::settings::{self, Language, Night, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -143,6 +143,7 @@ enum Change {
     Appearance(Appearance),
     StartAtLogin(bool),
     Zoom(Zoom),
+    Night(Night),
 }
 
 impl Change {
@@ -161,6 +162,8 @@ impl Change {
                     .and_then(Zoom::from_factor)
                     .ok_or_else(|| format!("{value} is not a zoom: send a number from 0.67 to 2.0"))?,
             ),
+            // Strict as well: the file's reading falls back to 22:00–06:00 instead.
+            SettingKey::Night => Change::Night(Night::from_value(value)?),
         })
     }
 
@@ -171,6 +174,7 @@ impl Change {
             Change::Appearance(appearance) => settings.appearance = appearance,
             Change::StartAtLogin(enabled) => settings.start_at_login = enabled,
             Change::Zoom(zoom) => settings.zoom = zoom,
+            Change::Night(night) => settings.night = night,
         }
     }
 }
@@ -420,6 +424,8 @@ mod tests {
         Change::parse(SettingKey::Appearance, &json!("dark")).expect("valid appearance").apply(&mut settings);
         Change::parse(SettingKey::StartAtLogin, &json!(true)).expect("valid flag").apply(&mut settings);
         Change::parse(SettingKey::Zoom, &json!(1.25)).expect("valid zoom").apply(&mut settings);
+        let night = json!({"from": "23:30", "to": "07:00"});
+        Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -428,6 +434,7 @@ mod tests {
                 start_at_login: true,
                 hidden_collections: vec!["work".into()],
                 zoom: Zoom::nearest(1.25),
+                night: Night::from_value(&night).expect("valid night"),
             }
         );
     }
@@ -461,6 +468,22 @@ mod tests {
         assert_eq!(store.current().zoom, Zoom::MAX);
         assert!(store.set(SettingKey::Zoom, &json!(3.0)).is_err());
         assert_eq!(store.current().zoom, Zoom::MAX, "a refused value changes nothing");
+    }
+
+    #[test]
+    fn a_night_is_stored_and_a_bad_one_refused_with_its_reason() {
+        let (_dir, store) = store();
+        store.set(SettingKey::Night, &json!({"from": "23:30", "to": "07:00"})).expect("valid night");
+        let stored = store.current().night;
+        assert_eq!((stored.from.to_string(), stored.to.to_string()), ("23:30".into(), "07:00".into()));
+        store.set(SettingKey::Night, &json!({"from": "06:00", "to": "06:00"})).expect("no night");
+        assert!(store.current().night.is_none());
+        let refused = store.set(SettingKey::Night, &json!({"from": "22:10", "to": "06:00"}));
+        assert!(refused.as_ref().is_err_and(|reason| reason.contains("quarter hour")), "{refused:?}");
+        for bad in [json!("22:00-06:00"), json!(22), json!({"from": "22:00"})] {
+            assert!(store.set(SettingKey::Night, &bad).is_err(), "{bad}");
+        }
+        assert!(store.current().night.is_none(), "a refused value changes nothing");
     }
 
     #[test]

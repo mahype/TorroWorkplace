@@ -17,6 +17,12 @@
 //! In the wide layout the sidebar collapses to a rail of icons (U.2: panel button at its top or
 //! `[`, remembered in `ui.json`); the rail leaves out the small month. The medium layout always
 //! shows the rail, whose panel button opens the full sidebar as a drawer.
+//!
+//! The night of the timeline and the radar is the suite's setting (`Settings::night`, task K.27):
+//! fetched at start and on every tick like the appearance, so a change elsewhere arrives. A
+//! double-click on a moon (or "Nights" in the header while there is no night) opens the floating
+//! card "Night" with "From" and "To" on the quarter hour, "Save" and "No night"; saving sends
+//! `Request::SetSetting` with the key `night` (the demo keeps it in the process).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -25,22 +31,24 @@ use std::time::Duration;
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
-use iced::widget::{column, container, responsive, row};
-use iced::{Alignment, Color, Element, Size, Subscription, Task, Theme};
+use iced::widget::space as blank;
+use iced::widget::{column, container, pick_list, responsive, row, svg};
+use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::{Night, Quarter};
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
-use torro_gui::icon::Icon;
+use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
 use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
-use torro_gui::style;
-use torro_gui::theme::{self, Appearance, size, space};
+use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::zoom::{self, Zoom};
+use torro_gui::{style, typo};
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 
@@ -143,6 +151,8 @@ pub enum Open {
     EditorNew,
     /// The side panel with an event that cannot be edited (the first occurrence of a series).
     EditorReadOnly,
+    /// The timeline with the night's card open under "Nights" in the header.
+    Night,
     /// The view menu ("Week ▾"); only the medium and narrow header have it.
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
@@ -158,7 +168,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 15] = [
+    const ALL: [(&'static str, Open); 16] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
@@ -168,6 +178,7 @@ impl Open {
         ("editor", Open::Editor),
         ("editor-new", Open::EditorNew),
         ("editor-read-only", Open::EditorReadOnly),
+        ("night", Open::Night),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
@@ -183,7 +194,7 @@ impl Open {
             Open::Week => Some(CalView::Week),
             Open::Month => Some(CalView::Month),
             Open::Agenda => Some(CalView::Agenda),
-            Open::Timeline => Some(CalView::Timeline),
+            Open::Timeline | Open::Night => Some(CalView::Timeline),
             Open::Radar => Some(CalView::Radar),
             _ => None,
         }
@@ -305,6 +316,16 @@ const TIMELINE_DAYS: i64 = 7;
 /// How long typing rests before the editor saves it (as in the task detail).
 const AUTOSAVE: Duration = Duration::from_secs(1);
 
+/// The open card "Night": where it floats and the times picked so far.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NightCard {
+    /// The moon it came from, on the canvas of the timeline or the radar; `None`: under "Nights"
+    /// in the header.
+    at: Option<Rectangle>,
+    from: Quarter,
+    to: Quarter,
+}
+
 pub struct App {
     source: Source,
     /// The start parameters; `open` also keeps the forced states (error, empty, loading) alive.
@@ -360,6 +381,12 @@ pub struct App {
     zoom: Zoom,
     /// The timeline's unfolded nights and scroll position (window state, nothing is stored).
     timeline: timeline::State,
+    /// The suite's night, for the timeline and the radar (`Settings::night`).
+    night: Night,
+    /// A save of the night is on its way; fetched values from before it are not applied.
+    night_saving: bool,
+    /// The card "Night", while it is open.
+    night_card: Option<NightCard>,
 }
 
 #[derive(Debug, Clone)]
@@ -431,6 +458,26 @@ pub enum Message {
     Zoom(zoom::Message),
     /// The timeline's scroll position, wheel and nights.
     Timeline(timeline::Change),
+    /// A double-click on a moon (`at`: its place on the canvas) or "Nights" in the header without
+    /// a night (`at: None`): open the card "Night". `fold`: the night the first click unfolded.
+    EditNight {
+        fold: Option<NaiveDate>,
+        at: Option<Rectangle>,
+    },
+    /// "From" in the card.
+    NightFrom(Quarter),
+    /// "To" in the card.
+    NightTo(Quarter),
+    /// "Save" in the card: the picked times become the night.
+    SaveNight,
+    /// "No night" in the card.
+    NoNight,
+    /// ✕, Escape or a click beside the card.
+    CloseNight,
+    /// The night stored in the suite settings; an error keeps the one we have.
+    Night(Result<Night, String>),
+    /// The core answered a save of the night.
+    NightSaved(Result<(), String>),
 }
 
 /// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
@@ -525,12 +572,16 @@ impl App {
             launch,
             opened: false,
             timeline: timeline::State::default(),
+            night: Night::DEFAULT,
+            night_saving: false,
+            night_card: None,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
+            app.fetch_night(),
             app.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             size,
@@ -560,7 +611,7 @@ impl App {
                     all.push(iced::event::listen_with(radar_shortcut));
                 }
             }
-            if self.menu.is_some() || self.drawer || self.editor.is_some() {
+            if self.menu.is_some() || self.drawer || self.editor.is_some() || self.night_card.is_some() {
                 all.push(widgets::escape().map(|()| Message::Escape));
             }
         }
@@ -587,6 +638,44 @@ impl App {
     fn fetch_appearance(&self) -> Task<Message> {
         let source = self.source.clone();
         Task::perform(async move { theme::stored_appearance(&source).await }, Message::Appearance)
+    }
+
+    /// Asks the core for the stored night, like [`App::fetch_appearance`]. The demo has no core and
+    /// keeps the night it has.
+    fn fetch_night(&self) -> Task<Message> {
+        let Source::Core(client) = &self.source else { return Task::none() };
+        let socket = client.socket.clone();
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &torro_ipc::Request::Settings).await {
+                    Ok(torro_ipc::Response::Settings { settings }) => Ok(settings.night),
+                    Ok(other) => Err(format!("unexpected answer: {other:?}")),
+                    Err(err) => Err(err.to_string()),
+                }
+            },
+            Message::Night,
+        )
+    }
+
+    /// Makes `night` the night of this window and sends it to the core (`settings.set_setting`,
+    /// key `night`); the demo keeps it in the process.
+    fn set_night(&mut self, night: Night) -> Task<Message> {
+        self.night = night;
+        let Source::Core(client) = &self.source else { return Task::none() };
+        self.night_saving = true;
+        let socket = client.socket.clone();
+        let request = torro_ipc::Request::SetSetting { key: torro_ipc::SettingKey::Night, value: night.to_value() };
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &request).await {
+                    Ok(torro_ipc::Response::Ok) => Ok(()),
+                    Ok(torro_ipc::Response::Error { message, .. }) => Err(message),
+                    Ok(other) => Err(format!("unexpected answer: {other:?}")),
+                    Err(err) => Err(err.to_string()),
+                }
+            },
+            Message::NightSaved,
+        )
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -667,7 +756,7 @@ impl App {
             }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
-                if self.menu.is_some() || self.drawer {
+                if self.menu.is_some() || self.drawer || self.night_card.is_some() {
                     self.close_menus();
                 } else if self.editor.is_some() {
                     return self.update(Message::Editor(editor::Message::Escape));
@@ -776,7 +865,8 @@ impl App {
             },
             Message::Tick => {
                 self.now = self.launch.now.unwrap_or_else(|| Local::now().naive_local());
-                let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
+                let appearance =
+                    Task::batch([self.fetch_appearance(), self.fetch_night(), self.zoom.fetch().map(Message::Zoom)]);
                 // The accounts come with every tick: one may have been added or removed.
                 let accounts = self.fetch_account();
                 if !self.connected() {
@@ -805,7 +895,46 @@ impl App {
             }
             Message::Timeline(change) => {
                 let (first, after) = self.range();
-                return self.timeline.update(change, first, after);
+                return self.timeline.update(change, first, after, self.night);
+            }
+            Message::EditNight { fold, at } => {
+                if let Some(evening) = fold {
+                    let (first, after) = self.range();
+                    let _ =
+                        self.timeline.update::<Message>(timeline::Change::FoldNight(evening), first, after, self.night);
+                }
+                self.close_menus();
+                self.night_card = Some(NightCard { at, from: self.night.from, to: self.night.to });
+            }
+            Message::NightFrom(from) => {
+                if let Some(card) = self.night_card.as_mut() {
+                    card.from = from;
+                }
+            }
+            Message::NightTo(to) => {
+                if let Some(card) = self.night_card.as_mut() {
+                    card.to = to;
+                }
+            }
+            Message::SaveNight => {
+                let Some(card) = self.night_card.take() else { return Task::none() };
+                return self.set_night(Night { from: card.from, to: card.to });
+            }
+            Message::NoNight => {
+                let Some(card) = self.night_card.take() else { return Task::none() };
+                return self.set_night(Night::none_at(card.from));
+            }
+            Message::CloseNight => self.night_card = None,
+            // While this window's own change is on its way, the stored night is the old one.
+            Message::Night(Ok(night)) if !self.night_saving => self.night = night,
+            // Stale, or the core is starting up: keep the night we have.
+            Message::Night(_) => {}
+            Message::NightSaved(result) => {
+                self.night_saving = false;
+                if let Err(err) = result {
+                    self.error = Some(trf("Save failed: {error}", &[("error", &err)]));
+                    return self.fetch_night();
+                }
             }
         }
         Task::none()
@@ -858,6 +987,8 @@ impl App {
     /// shell, the side panel beside or over the view, the drawer and the open menu above it.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, views, field) = (Anchor::new(), Anchor::new(), Anchor::new());
+        // The night's card floats beside a moon on the view's canvas, or under "Nights".
+        let (night_view, night_button) = (Anchor::new(), Anchor::new());
         let menu = self.menu.and_then(|menu| match menu {
             Menu::Switcher => Some(widgets::floating(
                 &switcher,
@@ -869,16 +1000,25 @@ impl App {
             Menu::View => (!shell::has_sidebar(class))
                 .then(|| widgets::floating(&views, Placement::Below(Align::End), self.view_menu(), Message::CloseMenu)),
         });
-        // One layer at a time: the window's menus, else the calendar menu inside the panel.
-        let layer = menu.or_else(|| self.editor.as_ref().and_then(|editor| editor.layer(&field, Message::Editor)));
+        let night = self.night_card.map(|card| {
+            let (anchor, placement) = match card.at {
+                Some(moon) => (night_view.area(moon), Placement::Beside),
+                None => (night_button.clone(), Placement::Below(Align::End)),
+            };
+            widgets::floating(&anchor, placement, night_card(card), Message::CloseNight)
+        });
+        // One layer at a time: the window's menus, the night's card, else the calendar menu inside
+        // the panel.
+        let layer =
+            menu.or(night).or_else(|| self.editor.as_ref().and_then(|editor| editor.layer(&field, Message::Editor)));
         let detail = self.editor.as_ref().map(|editor| editor.panel(&field, Message::Editor));
         // Beside the view the panel takes the place of the properties column ("Up next").
         let props = if self.panel_beside(class) { None } else { self.props(class) };
-        let placed = panel::place(class, self.body(), detail, layer);
+        let placed = panel::place(class, self.body(&night_view), detail, layer);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, class, &switcher));
         let sidebar = self.sidebar(SidebarMode::Expanded, class, &switcher);
-        shell::shell(class, sidebar, self.header(class, &views), placed.body, props)
+        shell::shell(class, sidebar, self.header(class, &views, &night_button), placed.body, props)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
@@ -893,13 +1033,14 @@ impl App {
     /// The header bar (`calendar.html`, `.header`):
     ///
     /// - **Wide:** "October 2026 Week 41", "Today", ‹ ›; at the right the views as a segmented
-    ///   control, refresh and "New event". The timeline adds "Nights" before the views.
+    ///   control, refresh and "New event". The timeline adds "Nights" before the views; without a
+    ///   night it opens the card "Night" (anchored at `night_button`) instead.
     /// - **Medium:** the views (and calendars) in "Week ▾"; the rail beside it has the panel button.
     ///   The timeline's "Nights" is the moon alone.
     /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
     ///   to today), the day as "Wed, 7 Oct", and "New event" reduced to "+". "Day ▾" names the
     ///   view shown ([`App::shown`]).
-    fn header<'a>(&'a self, class: SizeClass, views: &Anchor) -> Element<'a, Message> {
+    fn header<'a>(&'a self, class: SizeClass, views: &Anchor, night_button: &Anchor) -> Element<'a, Message> {
         let (title, note) = self.title_parts();
         let prev = widgets::icon_button(Icon::ChevronLeft, tr("Previous"), Some(Message::Prev));
         let next = widgets::icon_button(Icon::ChevronRight, tr("Next"), Some(Message::Next));
@@ -918,12 +1059,18 @@ impl App {
                 widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
             let mut trailing = Vec::new();
             if self.shown() == CalView::Timeline {
-                let nights = Some(Message::Timeline(timeline::Change::ToggleNights));
-                trailing.push(if class == SizeClass::Wide {
+                // Without a night there is nothing to unfold, and no moon to double-click.
+                let nights = Some(if self.night.is_none() {
+                    Message::EditNight { fold: None, at: None }
+                } else {
+                    Message::Timeline(timeline::Change::ToggleNights)
+                });
+                let button = if class == SizeClass::Wide {
                     widgets::text_button(Some(Icon::Moon), tr("Nights"), style::button::ghost, nights)
                 } else {
                     widgets::icon_button(Icon::Moon, tr("Nights"), nights)
-                });
+                };
+                trailing.push(widgets::anchored(night_button, button));
             }
             if class == SizeClass::Wide {
                 let segments = CalView::ALL.map(|view| (view.label(), Message::SetView(view)));
@@ -1081,15 +1228,16 @@ impl App {
     }
 
     /// The content under the header: the error with "Retry", the calm loading state before the
-    /// first events arrive, then the current view.
-    fn body(&self) -> Element<'_, Message> {
+    /// first events arrive, then the current view; the timeline and the radar anchor their canvas
+    /// at `night` for the night's card.
+    fn body(&self, night: &Anchor) -> Element<'_, Message> {
         if let Some(err) = &self.error {
             return widgets::error_state(err.as_str(), Message::Retry);
         }
         if !self.loaded {
             return widgets::loading();
         }
-        self.current_view()
+        self.current_view(night)
     }
 
     /// The properties column of the wide layout: what is left of the day beside the day view
@@ -1101,7 +1249,9 @@ impl App {
         }
         match self.shown() {
             CalView::Day => Some(views::week::day_props(&self.view_data())),
-            CalView::Radar => Some(views::radar::list(&self.view_data(), &self.calendar_order(), self.turn)),
+            CalView::Radar => {
+                Some(views::radar::list(&self.view_data(), &self.calendar_order(), self.turn, self.night))
+            }
             _ => None,
         }
     }
@@ -1163,7 +1313,7 @@ impl App {
         })
     }
 
-    fn current_view(&self) -> Element<'_, Message> {
+    fn current_view(&self, night: &Anchor) -> Element<'_, Message> {
         let data = self.view_data();
         match self.shown() {
             CalView::Day if self.class() == SizeClass::Narrow => {
@@ -1177,13 +1327,14 @@ impl App {
             CalView::Day | CalView::Week => views::week::view(data),
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data, self.class()),
-            CalView::Timeline => views::timeline::view(data, &self.timeline),
+            CalView::Timeline => views::timeline::view(data, &self.timeline, self.night, night),
             // Narrow: under the week strip, whose days page the radar like the small month does –
             // unless the tile is so low that the strip would cut into the dial.
             CalView::Radar if self.class() == SizeClass::Narrow => {
-                let (order, turn) = (self.calendar_order(), self.turn);
+                let (order, turn, anchor) = (self.calendar_order(), self.turn, night.clone());
                 responsive(move |bounds| {
-                    let radar = views::radar::view(data.clone(), &order, turn, views::radar::ListAt::Below);
+                    let below = views::radar::ListAt::Below;
+                    let radar = views::radar::view(data.clone(), &order, turn, below, self.night, &anchor);
                     if views::radar::strip_fits(bounds) {
                         column![week_strip::view(&data), radar].into()
                     } else {
@@ -1197,7 +1348,7 @@ impl App {
                     SizeClass::Wide => views::radar::ListAt::Props,
                     _ => views::radar::ListAt::Beside,
                 };
-                views::radar::view(data, &self.calendar_order(), self.turn, list)
+                views::radar::view(data, &self.calendar_order(), self.turn, list, self.night, night)
             }
         }
     }
@@ -1210,7 +1361,7 @@ impl App {
 
     /// Where the radar's window starts: the start of the anchor's day turned by [`App::turn`].
     fn radar_start(&self) -> NaiveDateTime {
-        views::radar::start(&self.view_data(), self.turn)
+        views::radar::start(&self.view_data(), self.turn, self.night)
     }
 
     /// The loaded events of the shown calendars, with their calendar's colour.
@@ -1360,6 +1511,7 @@ impl App {
     fn close_menus(&mut self) {
         self.menu = None;
         self.drawer = false;
+        self.night_card = None;
     }
 
     /// Day and week open at 07:00 instead of midnight; the timeline with now (or the time of now
@@ -1370,7 +1522,7 @@ impl App {
             CalView::Month | CalView::Agenda | CalView::Radar => Task::none(),
             CalView::Timeline => {
                 let (first, after) = self.range();
-                self.timeline.show(self.anchor.and_time(self.now.time()), first, after)
+                self.timeline.show(self.anchor.and_time(self.now.time()), first, after, self.night)
             }
         }
     }
@@ -1402,6 +1554,10 @@ impl App {
                 let _ = self.update(Message::NewEventHere);
                 None
             }
+            Some(Open::Night) => {
+                let _ = self.update(Message::EditNight { fold: None, at: None });
+                None
+            }
             _ => None,
         };
         if let Some(editor) = event.map(|event| Editor::edit(event, &self.writable_calendars())) {
@@ -1431,6 +1587,39 @@ impl App {
             Message::Loaded,
         )
     }
+}
+
+/// The floating card "Night" (`widgets::popover`): the moon and "Calendar" with ✕ at the top, the
+/// title, "From" and "To" as lists of the quarter hours, "Save" and "No night" at the bottom. The
+/// same fields as the row "Night" in the control centre.
+fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
+    let moon = icon::icon(Icon::Moon, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let head = row![
+        moon,
+        typo::text(typo::META, tr("Calendar")).style(theme::text_3),
+        blank::horizontal(),
+        widgets::icon_button(Icon::X, tr("Close"), Some(Message::CloseNight)),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    let time = |label: &'a str, value: Quarter, on_pick: fn(Quarter) -> Message| {
+        let field = pick_list(Quarter::all().collect::<Vec<_>>(), Some(value), on_pick)
+            .padding(style::PICK_LIST_PADDING)
+            .text_size(typo::CAPTION.size)
+            .text_line_height(typo::CAPTION.line_height)
+            .font(typo::CAPTION.font)
+            .style(style::pick_list)
+            .menu_style(style::pick_list_menu);
+        let row = row![typo::text(typo::BODY, label).style(theme::text_2), blank::horizontal(), field]
+            .align_y(Alignment::Center);
+        widgets::prop_row(None, row, None)
+    };
+    let rows = vec![time(tr("From"), card.from, Message::NightFrom), time(tr("To"), card.to, Message::NightTo)];
+    let actions = vec![
+        widgets::text_button(None, tr("Save"), style::button::secondary, Some(Message::SaveNight)),
+        widgets::text_button(None, tr("No night"), style::button::ghost, Some(Message::NoNight)),
+    ];
+    widgets::popover(head, tr("Night"), rows, actions)
 }
 
 /// Whether `a` and `b` are the same event: the same uid in the same calendar, and for the
@@ -2143,5 +2332,79 @@ mod tests {
         assert_eq!(app.class(), SizeClass::Medium);
         let _ = app.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
         assert_eq!((app.scale_factor(), app.class()), (1.0, SizeClass::Wide));
+    }
+
+    fn quarter(hour: u32, minute: u32) -> Quarter {
+        Quarter::new(hour, minute).expect("quarter")
+    }
+
+    #[test]
+    fn the_stored_night_is_taken_over_unless_a_save_is_on_its_way() {
+        let mut app = launched(&["--demo"]);
+        assert_eq!(app.night, Night::DEFAULT);
+        let late = Night { from: quarter(23, 30), to: quarter(7, 0) };
+        let _ = app.update(Message::Night(Ok(late)));
+        assert_eq!(app.night, late, "a change made elsewhere arrives");
+        let _ = app.update(Message::Night(Err("starting".into())));
+        assert_eq!(app.night, late, "a core that does not answer keeps the night");
+        app.night_saving = true;
+        let _ = app.update(Message::Night(Ok(Night::DEFAULT)));
+        assert_eq!(app.night, late, "the stored night is the old one while ours is on its way");
+        let _ = app.update(Message::NightSaved(Ok(())));
+        assert!(!app.night_saving);
+    }
+
+    #[test]
+    fn the_card_sets_the_night_or_none() {
+        let mut app = launched(&["--demo", "--open", "timeline"]);
+        let moon = Rectangle::new(iced::Point::new(900.0, 300.0), Size::new(24.0, 24.0));
+        let _ = app.update(Message::EditNight { fold: None, at: Some(moon) });
+        assert_eq!(
+            app.night_card.map(|card| (card.at, card.from, card.to)),
+            Some((Some(moon), quarter(22, 0), quarter(6, 0)))
+        );
+        let _ = app.update(Message::NightFrom(quarter(23, 30)));
+        let _ = app.update(Message::NightTo(quarter(7, 0)));
+        assert_eq!(app.night, Night::DEFAULT, "nothing changes before Save");
+        let _ = app.update(Message::SaveNight);
+        assert_eq!((app.night, app.night_card), (Night { from: quarter(23, 30), to: quarter(7, 0) }, None));
+        let _ = app.update(Message::EditNight { fold: None, at: None });
+        let _ = app.update(Message::NoNight);
+        assert!(app.night.is_none() && app.night_card.is_none(), "{:?}", app.night);
+        let _ = app.view();
+    }
+
+    #[test]
+    fn escape_and_a_click_beside_close_the_card_without_saving() {
+        let mut app = launched(&["--demo", "--open", "night"]);
+        assert!(app.night_card.is_some(), "--open night opens it");
+        let _ = app.update(Message::NightFrom(quarter(20, 0)));
+        let _ = app.update(Message::Escape);
+        assert_eq!((app.night_card, app.night), (None, Night::DEFAULT));
+        let _ = app.update(Message::EditNight { fold: None, at: None });
+        let _ = app.update(Message::CloseNight);
+        assert_eq!(app.night_card, None);
+    }
+
+    #[test]
+    fn a_double_click_folds_back_the_night_its_first_click_opened() {
+        let mut app = launched(&["--demo", "--open", "timeline"]);
+        let evening = app.anchor;
+        let _ = app.update(Message::Timeline(timeline::Change::ToggleNight(evening)));
+        assert!(format!("{:?}", app.timeline).contains(&format!("open: {{{evening:?}}}")), "the first click");
+        let _ = app.update(Message::EditNight { fold: Some(evening), at: None });
+        assert!(app.night_card.is_some());
+        assert!(format!("{:?}", app.timeline).contains("open: {}"), "folded again: {:?}", app.timeline);
+    }
+
+    #[test]
+    fn without_a_night_the_header_button_opens_the_card() {
+        let mut app = launched(&["--demo", "--open", "timeline"]);
+        let _ = app.update(Message::Resized(Size::new(1440.0, 900.0)));
+        app.night = Night::none_at(quarter(22, 0));
+        let _ = app.view();
+        let _ = app.update(Message::EditNight { fold: None, at: None });
+        assert!(app.night_card.is_some_and(|card| card.at.is_none()));
+        let _ = app.view();
     }
 }

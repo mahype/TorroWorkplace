@@ -419,12 +419,14 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
 - **API / MCP:** kein neuer Request; `Event` wird reicher (Skill `torro-api`, Review danach).
 
 ### K.27 Nachtzeiten einstellen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.21, K.25 · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs` (bzw. wo
   `SetSetting` behandelt wird), `crates/torroworkplace/src/ui/{general,apps}.rs` (eins davon, nennen),
   `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/{timeline,radar}.rs` und ihre
-  `layout.rs`, `docs/api-reference.md`
+  `layout.rs`, `docs/api-reference.md`; nachgetragen (Rückfrage): `crates/torrocalendar/Cargo.toml`
+  (+ `Cargo.lock`, Abhängigkeit `torro-ipc`), `crates/torroworkplace/src/mcp.rs` (`object` im
+  Eingabeschema von `settings_set_setting.value`)
 - Wunsch des Nutzers (2026-10-11): die Nacht selbst festlegen, per Doppelklick auf den Mond und in den
   Einstellungen. Heute stehen 22–06 als Konstanten in Zeitstrahl und Radar.
 - **Einstellung:** `Settings::night { from, to }` (Uhrzeiten auf 15 min, Standard 22:00–06:00,

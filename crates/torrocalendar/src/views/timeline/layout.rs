@@ -3,17 +3,25 @@
 //! event columns with their lanes, the dots of events in a folded night, the all-day chips, free
 //! gaps and hit-testing. `timeline.rs` draws the result.
 //!
-//! x runs along the track from 06:00 of its first day to 06:00 after its last day, relative to
-//! the left edge of the canvas; y from the top of the canvas. Each day is a part from 06:00 to
-//! 22:00 at [`HOUR_WIDTH`] an hour; each night (22:00–06:00) a part [`NIGHT_WIDTH`] wide while
-//! folded, and as wide as eight hours of the day while unfolded.
+//! The night is the suite's setting (`Settings::night`, task K.27), 22:00–06:00 by default. x runs
+//! along the track from the end of the night on its first day (06:00) to the end of the night
+//! after its last day, relative to the left edge of the canvas; y from the top of the canvas. Each
+//! day is a part from the end of one night to the start of the next at [`HOUR_WIDTH`] an hour;
+//! each night a part [`NIGHT_WIDTH`] wide while folded, and as wide as its hours of the day while
+//! unfolded. Without a night (`from == to`) the days follow each other, 24 hours each.
+//!
+//! [`is_double_click`] is here too: a double-click on the moon opens the night's card, here and in
+//! the radar.
 //!
 //! Lanes, all-day days and free gaps come from the week's geometry (`week/layout.rs`).
 
 use std::collections::BTreeSet;
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use iced::time::Instant;
 use iced::{Point, Rectangle, Size};
+use torro_core::settings::Night;
+use torro_gui::icon;
 use torro_gui::theme::{size, space};
 
 use crate::views::week::layout::{TimedSegment, all_day_days, assign_lanes, free_gaps as gaps_in_day};
@@ -22,10 +30,6 @@ use crate::views::week::layout::{TimedSegment, all_day_days, assign_lanes, free_
 pub const HOUR_WIDTH: f32 = 56.0;
 /// Width of a folded night.
 pub const NIGHT_WIDTH: f32 = 48.0;
-/// The night starts at this hour …
-pub const NIGHT_FROM: u32 = 22;
-/// … and ends at this hour of the next day.
-pub const NIGHT_TO: u32 = 6;
 /// Height of the row with the day labels ("Tue 13").
 pub const DAY_HEAD: f32 = size::CONTROL_SM;
 /// Height of the row with the hour labels.
@@ -68,16 +72,37 @@ fn minutes_between(from: NaiveDateTime, to: NaiveDateTime) -> f32 {
     (to - from).num_seconds() as f32 / 60.0
 }
 
-fn at_hour(day: NaiveDate, hour: u32) -> NaiveDateTime {
-    day.and_time(NaiveTime::from_hms_opt(hour, 0, 0).unwrap_or(NaiveTime::MIN))
+/// The moon is a click target this large (24, the smallest target), around its icon.
+pub const MOON_TARGET: f32 = space::XL;
+/// Two presses at most this far apart in time …
+pub const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+/// … and this close (pixels) are a double-click.
+const DOUBLE_CLICK_SLOP: f32 = 6.0;
+
+/// Whether a press at `second` after one at `first` makes a double-click: soon enough and in
+/// almost the same place.
+pub fn is_double_click(first: (Instant, Point), second: (Instant, Point)) -> bool {
+    let soon = second.0.checked_duration_since(first.0).is_some_and(|gap| gap <= DOUBLE_CLICK);
+    soon && first.1.distance(second.1) <= DOUBLE_CLICK_SLOP
+}
+
+/// `day` at `minutes` after its midnight.
+fn at_minutes(day: NaiveDate, minutes: u32) -> NaiveDateTime {
+    day.and_time(NaiveTime::MIN) + Duration::minutes(i64::from(minutes))
+}
+
+/// The end of the night on the morning of `day`: where the day's part of the track starts.
+fn morning(day: NaiveDate, night: Night) -> NaiveDateTime {
+    at_minutes(day, night.to.minutes())
 }
 
 /// What a stretch of the track is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
-    /// 06:00–22:00 of this day.
+    /// This day from the end of the night to the start of the next (06:00–22:00).
     Day(NaiveDate),
-    /// 22:00 of `evening` to 06:00 of the next day; folded into a narrow band unless `open`.
+    /// The night after `evening` (22:00 to 06:00 of the next day); folded into a narrow band
+    /// unless `open`.
     Night { evening: NaiveDate, open: bool },
 }
 
@@ -110,9 +135,9 @@ impl Segment {
         self.x + self.width
     }
 
-    /// Hours from start to end (8 for a night).
-    pub fn hours(&self) -> i64 {
-        (self.end - self.start).num_hours()
+    /// Minutes from start to end (480 for a night of 22:00–06:00).
+    pub fn minutes(&self) -> i64 {
+        (self.end - self.start).num_minutes()
     }
 
     fn contains(&self, at: NaiveDateTime) -> bool {
@@ -138,35 +163,41 @@ impl Segment {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Track {
     pub segments: Vec<Segment>,
-    /// 06:00 of the first day.
+    /// The end of the night on the first day (06:00).
     pub start: NaiveDateTime,
-    /// 06:00 after the last day.
+    /// The end of the night after the last day (06:00).
     pub end: NaiveDateTime,
     /// The width of the whole track, the width of the canvas.
     pub width: f32,
 }
 
 impl Track {
-    /// The track for the days `[first, after)`; the nights whose evening is in `open` are unfolded.
-    /// An empty range gives a track without segments, zero wide.
-    pub fn new(first: NaiveDate, after: NaiveDate, open: &BTreeSet<NaiveDate>) -> Track {
+    /// The track for the days `[first, after)` with `night` after each day; the nights whose
+    /// evening is in `open` are unfolded. Without a night ([`Night::is_none`]) there are only days,
+    /// each 24 hours from the time the night would end. An empty range gives a track without
+    /// segments, zero wide.
+    pub fn new(first: NaiveDate, after: NaiveDate, open: &BTreeSet<NaiveDate>, night: Night) -> Track {
         let mut segments = Vec::new();
         let mut x = 0.0;
         let mut day = first;
-        let day_width = (NIGHT_FROM - NIGHT_TO) as f32 * HOUR_WIDTH;
-        let night_width = (24 + NIGHT_TO - NIGHT_FROM) as f32 * HOUR_WIDTH;
+        let night_minutes = night.minutes();
+        let day_width = (24 * 60 - night_minutes) as f32 / 60.0 * HOUR_WIDTH;
+        let night_width = night_minutes as f32 / 60.0 * HOUR_WIDTH;
         while day < after {
-            let (morning, evening) = (at_hour(day, NIGHT_TO), at_hour(day, NIGHT_FROM));
-            segments.push(Segment { part: Part::Day(day), start: morning, end: evening, x, width: day_width });
+            let start = morning(day, night);
+            let evening = start + Duration::minutes(i64::from(24 * 60 - night_minutes));
+            segments.push(Segment { part: Part::Day(day), start, end: evening, x, width: day_width });
             x += day_width;
-            let is_open = open.contains(&day);
-            let width = if is_open { night_width } else { NIGHT_WIDTH };
-            let part = Part::Night { evening: day, open: is_open };
-            segments.push(Segment { part, start: evening, end: morning + Duration::days(1), x, width });
-            x += width;
+            if night_minutes > 0 {
+                let is_open = open.contains(&day);
+                let width = if is_open { night_width } else { NIGHT_WIDTH };
+                let part = Part::Night { evening: day, open: is_open };
+                segments.push(Segment { part, start: evening, end: start + Duration::days(1), x, width });
+                x += width;
+            }
             day += Duration::days(1);
         }
-        Track { segments, start: at_hour(first, NIGHT_TO), end: at_hour(after.max(first), NIGHT_TO), width: x }
+        Track { segments, start: morning(first, night), end: morning(after.max(first), night), width: x }
     }
 
     /// The x of `at`: 0 before the track, its width after it.
@@ -222,13 +253,31 @@ impl Track {
             .collect()
     }
 
-    /// The midnights inside the track with their x, where a strong line parts the days.
+    /// The midnights inside the track with their x, where a strong line parts the days: the one
+    /// after each day, in its night or (without one, or with a night after midnight) in the day.
     pub fn midnights(&self) -> Vec<f32> {
         self.segments
             .iter()
-            .filter_map(Segment::evening)
-            .map(|evening| self.x_of((evening + Duration::days(1)).and_time(NaiveTime::MIN)))
+            .filter_map(|segment| match segment.part {
+                Part::Day(day) => Some((day + Duration::days(1)).and_time(NaiveTime::MIN)),
+                Part::Night { .. } => None,
+            })
+            .filter(|midnight| self.start < *midnight && *midnight < self.end)
+            .map(|midnight| self.x_of(midnight))
             .collect()
+    }
+
+    /// Where the part of `day` starts: the end of the night before it (06:00). Days beside the
+    /// track are counted on from its start.
+    fn day_start(&self, day: NaiveDate) -> NaiveDateTime {
+        self.start + Duration::days((day - self.start.date()).num_days())
+    }
+
+    /// Where the part of `day` ends: the start of the night after it (22:00), or the start of the
+    /// next day without a night.
+    fn day_end(&self, day: NaiveDate) -> NaiveDateTime {
+        let length = self.segments.iter().find(|s| matches!(s.part, Part::Day(_))).map(Segment::minutes);
+        self.day_start(day) + Duration::minutes(length.unwrap_or(24 * 60))
     }
 
     /// The scroll offset that puts `focus` at [`FOCUS_AT`] of a viewport `viewport` wide, kept to
@@ -386,17 +435,17 @@ pub fn chip_rows(spans: &[Span]) -> usize {
     assign_lanes(&span_intervals(spans, origin)).iter().map(|lane| lane.lanes).max().unwrap_or(0)
 }
 
-/// Places the all-day chips: from 06:00 of their first day to 22:00 of their last, so a chip
-/// over several days runs on through the nights between them and ends where its last night
-/// begins. Chips beside the track are left out.
+/// Places the all-day chips: from the start of their first day's part to the end of their last
+/// day's part (06:00 to 22:00), so a chip over several days runs on through the nights between
+/// them and ends where its last night begins. Chips beside the track are left out.
 pub fn chips(track: &Track, rows: &Rows, spans: &[Span]) -> Vec<Block> {
     let origin = spans.iter().map(|s| s.first).min().unwrap_or_default();
     spans
         .iter()
         .zip(assign_lanes(&span_intervals(spans, origin)))
         .filter_map(|(span, lane)| {
-            let x = track.x_of(at_hour(span.first, NIGHT_TO)) + GAP;
-            let right = track.x_of(at_hour(span.after - Duration::days(1), NIGHT_FROM)) - 2.0 * GAP;
+            let x = track.x_of(track.day_start(span.first)) + GAP;
+            let right = track.x_of(track.day_end(span.after - Duration::days(1))) - 2.0 * GAP;
             let rect = Rectangle::new(Point::new(x, rows.chip_top(lane.lane)), Size::new(right - x, CHIP_HEIGHT));
             (rect.width >= 1.0).then_some(Block { id: span.id, rect })
         })
@@ -435,6 +484,19 @@ pub fn free_gaps(
     found
 }
 
+/// The moon of a folded night's band, as a click target [`MOON_TARGET`] square around its icon:
+/// the icon stands at the bottom of the band's label, which is `label` long (moon, gap and text,
+/// turned to read upwards) and centred in the band below the day labels.
+pub fn moon(night: &Segment, rows: &Rows, label: f32) -> Rectangle {
+    let center = Point::new(night.x + night.width / 2.0, DAY_HEAD + (rows.height - DAY_HEAD) / 2.0);
+    let bottom = (center.y + label / 2.0).round();
+    let icon = Point::new(center.x, bottom - icon::SIZE_SM / 2.0);
+    Rectangle::new(
+        Point::new(icon.x - MOON_TARGET / 2.0, icon.y - MOON_TARGET / 2.0),
+        Size::new(MOON_TARGET, MOON_TARGET),
+    )
+}
+
 /// The "Collapse night" button of an unfolded night, `width` wide (its label decides), at the
 /// top left of the night in the all-day row.
 pub fn fold_button(night: &Segment, rows: &Rows, width: f32) -> Rectangle {
@@ -468,6 +530,9 @@ pub enum Hit {
     Chip(usize),
     /// The band of the folded night after this evening: unfold it.
     Unfold(NaiveDate),
+    /// The moon in the band of the folded night after this evening: a click unfolds it like the
+    /// band, a double-click opens the night's card.
+    Moon(NaiveDate),
     /// "Collapse night" of the unfolded night after this evening.
     Fold(NaiveDate),
     /// Free time at this moment (rounded down to [`SLOT_MINUTES`]): a new event.
@@ -476,19 +541,24 @@ pub enum Hit {
     AllDay(NaiveDate),
 }
 
-/// Hit-tests `point` on the canvas. "Collapse night" buttons come first, then the columns and the
-/// chips (the later drawn win), then the folded nights, then empty space: the all-day row and the
-/// columns below it. The day labels and the hour labels do nothing.
+/// Hit-tests `point` on the canvas. "Collapse night" buttons come first, then the moons
+/// ([`moon`]), then the columns and the chips (the later drawn win), then the folded nights, then
+/// empty space: the all-day row and the columns below it. The day labels and the hour labels do
+/// nothing.
 pub fn hit(
     track: &Track,
     rows: &Rows,
     blocks: &[Block],
     chips: &[Block],
     folds: &[(NaiveDate, Rectangle)],
+    moons: &[(NaiveDate, Rectangle)],
     point: Point,
 ) -> Option<Hit> {
     if let Some(&(evening, _)) = folds.iter().find(|(_, rect)| rect.contains(point)) {
         return Some(Hit::Fold(evening));
+    }
+    if let Some(&(evening, _)) = moons.iter().find(|(_, rect)| rect.contains(point)) {
+        return Some(Hit::Moon(evening));
     }
     if let Some(block) = blocks.iter().rev().find(|b| b.rect.contains(point)) {
         return Some(Hit::Event(block.id));
@@ -522,6 +592,8 @@ fn slot_of(at: NaiveDateTime) -> NaiveDateTime {
 
 #[cfg(test)]
 mod tests {
+    use torro_core::settings::Quarter;
+
     use super::*;
 
     fn d(day: u32) -> NaiveDate {
@@ -540,8 +612,17 @@ mod tests {
 
     /// Mon 12 to Tue 13 October, both nights folded, or the night after `open`.
     fn track(open: &[u32]) -> Track {
+        track_with(open, Night::DEFAULT)
+    }
+
+    fn track_with(open: &[u32], night: Night) -> Track {
         let open: BTreeSet<NaiveDate> = open.iter().map(|&day| d(day)).collect();
-        Track::new(d(12), d(14), &open)
+        Track::new(d(12), d(14), &open, night)
+    }
+
+    fn night(from: (u32, u32), to: (u32, u32)) -> Night {
+        let quarter = |(hour, minute)| Quarter::new(hour, minute).expect("quarter");
+        Night { from: quarter(from), to: quarter(to) }
     }
 
     fn rows() -> Rows {
@@ -556,7 +637,7 @@ mod tests {
         assert_eq!(track.segments[1].part, Part::Night { evening: d(12), open: false });
         assert_eq!((track.start, track.end), (at(12, 6, 0), at(14, 6, 0)));
         assert!(close(track.width, 2.0 * (DAY + NIGHT_WIDTH)));
-        assert_eq!(track.segments[1].hours(), 8);
+        assert_eq!(track.segments[1].minutes(), 8 * 60);
     }
 
     #[test]
@@ -590,7 +671,7 @@ mod tests {
         let track = track(&[12]);
         let rows = rows();
         let y = rows.lanes().0 + 10.0;
-        let slot = |x: f32| hit(&track, &rows, &[], &[], &[], Point::new(x, y));
+        let slot = |x: f32| hit(&track, &rows, &[], &[], &[], &[], Point::new(x, y));
         assert_eq!(slot(4.5 * HOUR_WIDTH + 10.0), Some(Hit::Slot(at(12, 10, 30))), "10:40 → 10:30");
         assert_eq!(slot(4.5 * HOUR_WIDTH + 14.5), Some(Hit::Slot(at(12, 10, 45))));
         assert_eq!(slot(DAY + 3.0 * HOUR_WIDTH), Some(Hit::Slot(at(13, 1, 0))), "after midnight, next day");
@@ -728,13 +809,17 @@ mod tests {
         let chips = chips(&track, &rows, &[Span { id: 9, first: d(13), after: d(14) }]);
         let night = track.segments[3];
         let folds = [(d(13), fold_button(&night, &rows, 100.0))];
-        let find = |x: f32, y: f32| hit(&track, &rows, &blocks, &chips, &folds, Point::new(x, y));
+        let moons = [(d(12), moon(&track.segments[1], &rows, 100.0))];
+        let find = |x: f32, y: f32| hit(&track, &rows, &blocks, &chips, &folds, &moons, Point::new(x, y));
         let block = blocks[0].rect;
         assert_eq!(find(block.center_x(), block.center_y()), Some(Hit::Event(7)));
         assert_eq!(find(chips[0].rect.center_x(), chips[0].rect.center_y()), Some(Hit::Chip(9)));
         assert_eq!(find(folds[0].1.center_x(), folds[0].1.center_y()), Some(Hit::Fold(d(13))));
         let band = track.segments[1];
-        assert_eq!(find(band.x + 10.0, 300.0), Some(Hit::Unfold(d(12))), "anywhere in the band");
+        assert_eq!(find(band.x + 10.0, 200.0), Some(Hit::Unfold(d(12))), "anywhere in the band");
+        let moon = moons[0].1;
+        assert_eq!(find(moon.center_x(), moon.center_y()), Some(Hit::Moon(d(12))), "the moon in it");
+        assert!(moon.width >= MOON_TARGET && moon.x >= band.x - MOON_TARGET, "a target of 24");
         assert_eq!(find(band.x + 10.0, DAY_HEAD + 2.0), Some(Hit::Unfold(d(12))), "up to the axis row");
         assert_eq!(find(band.x + 10.0, 10.0), None, "not in the day labels");
         assert_eq!(find(2.0 * HOUR_WIDTH + 1.0, 300.0), Some(Hit::Slot(at(12, 8, 0))));
@@ -760,5 +845,70 @@ mod tests {
         assert_eq!(sticky_x(0.0, 1000.0, 400.0, 80.0), 400.0, "at the viewport's edge");
         assert_eq!(sticky_x(0.0, 1000.0, 990.0, 80.0), 920.0, "pushed out by the next day");
         assert_eq!(sticky_x(0.0, 50.0, 20.0, 80.0), 0.0, "a day narrower than its label");
+    }
+
+    #[test]
+    fn another_night_moves_the_segments() {
+        let track = track_with(&[], night((23, 30), (7, 0)));
+        assert_eq!((track.start, track.end), (at(12, 7, 0), at(14, 7, 0)));
+        let (day, band) = (track.segments[0], track.segments[1]);
+        assert_eq!((day.start, day.end), (at(12, 7, 0), at(12, 23, 30)));
+        assert!(close(day.width, 16.5 * HOUR_WIDTH));
+        assert_eq!((band.start, band.end), (at(12, 23, 30), at(13, 7, 0)));
+        assert_eq!(band.minutes(), 7 * 60 + 30);
+        assert!(close(track.x_of(at(12, 23, 0)), 16.0 * HOUR_WIDTH), "23:00 is still day");
+        assert!(track.folded_night_of(at(13, 6, 30)).is_some(), "06:30 is still night");
+        let open = track_with(&[12], night((23, 30), (7, 0)));
+        assert!(close(open.segments[1].width, 7.5 * HOUR_WIDTH), "unfolded at the day's pace");
+        let midnights = track.midnights();
+        assert!(close(midnights[0], 16.5 * HOUR_WIDTH + NIGHT_WIDTH / 15.0), "half an hour into the band");
+        let chip = chips(&track, &rows(), &[Span { id: 0, first: d(12), after: d(13) }]);
+        assert!(close(chip[0].rect.x + chip[0].rect.width, track.x_of(at(12, 23, 30)) - 2.0 * GAP));
+    }
+
+    #[test]
+    fn a_night_after_midnight_leaves_the_midnight_in_the_day() {
+        let track = track_with(&[], night((1, 0), (9, 0)));
+        assert_eq!((track.segments[0].start, track.segments[0].end), (at(12, 9, 0), at(13, 1, 0)));
+        assert_eq!((track.segments[1].start, track.segments[1].end), (at(13, 1, 0), at(13, 9, 0)));
+        assert!(close(track.midnights()[0], 15.0 * HOUR_WIDTH), "midnight inside the day");
+    }
+
+    #[test]
+    fn without_a_night_the_days_are_whole_and_nothing_folds() {
+        let track = track_with(&[12], Night::none_at(Quarter::new(6, 0).expect("quarter")));
+        assert_eq!(track.segments.len(), 2, "two days, no nights");
+        assert!(track.segments.iter().all(|s| matches!(s.part, Part::Day(_))));
+        assert!(close(track.width, 2.0 * 24.0 * HOUR_WIDTH));
+        assert_eq!(track.folded_night_of(at(13, 2, 0)), None);
+        assert_eq!(track.midnights().len(), 2);
+        let late = timed(0, at(12, 23, 0), at(13, 1, 0));
+        assert_eq!(visible_span(&track, &late), Some((at(12, 23, 0), at(13, 1, 0))), "a column, no dot");
+        assert!(dots(&track, &rows(), &[late]).is_empty());
+        let chip = chips(&track, &rows(), &[Span { id: 0, first: d(12), after: d(13) }]);
+        assert!(close(chip[0].rect.x + chip[0].rect.width, 24.0 * HOUR_WIDTH - 2.0 * GAP));
+    }
+
+    #[test]
+    fn free_time_leaves_out_the_night_it_is_given() {
+        let events = [timed(0, at(13, 9, 0), at(13, 10, 0)), timed(1, at(13, 18, 0), at(13, 19, 0))];
+        let now = at(13, 8, 0);
+        let late = track_with(&[], night((23, 30), (7, 0)));
+        assert_eq!(free_gaps(&late, &events, now, 120.0), [(at(13, 10, 0), at(13, 18, 0))]);
+        // Without a night the evening is still not "free": nothing comes after it in the day.
+        let none = track_with(&[], Night::none_at(Quarter::new(6, 0).expect("quarter")));
+        assert_eq!(free_gaps(&none, &events, now, 120.0), [(at(13, 10, 0), at(13, 18, 0))]);
+    }
+
+    #[test]
+    fn two_quick_presses_in_one_place_are_a_double_click() {
+        let start = Instant::now();
+        let point = Point::new(100.0, 200.0);
+        let later = |millis: u64| start + std::time::Duration::from_millis(millis);
+        assert!(is_double_click((start, point), (later(250), Point::new(103.0, 198.0))));
+        assert!(is_double_click((start, point), (later(400), point)), "up to the limit");
+        assert!(!is_double_click((start, point), (later(450), point)), "too slow");
+        assert!(!is_double_click((start, point), (later(100), Point::new(120.0, 200.0))), "elsewhere");
+        assert!(!is_double_click((later(100), point), (start, point)), "not backwards in time");
     }
 }

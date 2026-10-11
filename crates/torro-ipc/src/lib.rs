@@ -265,6 +265,10 @@ pub enum SettingKey {
     /// (1.0 = 100 %), rounded to the nearest step (`torro_core::settings::Zoom::STEPS`). Open
     /// windows follow.
     Zoom,
+    /// When the night is, for the calendar's timeline and radar: `{"from": "22:00", "to":
+    /// "06:00"}`, two times on the quarter hour (`torro_core::settings::Night`), usually over
+    /// midnight; the same time twice means no night. Open calendar windows follow.
+    Night,
 }
 
 /// The core's answer to one [`Request`].
