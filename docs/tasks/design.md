@@ -145,7 +145,8 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 ### F.8 Erscheinungsbild hell/dunkel einstellen
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** F.2
-- **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/ui/general.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-core/src/theme.rs`, `crates/torro-gui/src/theme.rs`, `crates/torroworkplace/src/ui/general.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- `Appearance` (mit serde) zieht nach `torro_core::theme`, `torro_gui::theme` exportiert es weiter (`pub use`); `for_appearance` bleibt. „System“ über `iced::system::theme()` und `iced::system::theme_changes()`.
 - **Oberfläche:** Steuerzentrale › General › „Appearance: System / Light / Dark“.
   **API:** Feld `appearance` in `Settings` (über `UpdateSettings`/`settings.set`).
   **MCP:** `settings_set` (Admin-Bereich, siehe `docs/api.md`).
