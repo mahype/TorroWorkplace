@@ -5,9 +5,9 @@
 //! behind a confirmation. Empty: a sentence about what to add. The add flow is `wizard.rs`
 //! (task S.6), shown as a dialog over the page.
 //!
-//! Requests: `Sync`, `RemoveAccount { id }`, and `UpdateSettings` with the whole `Settings`
-//! and only `hidden_collections` changed. The pure parts (relative time, status text,
-//! toggling a collection, which accounts are listed) are plain functions with unit tests.
+//! Requests: `Sync`, `RemoveAccount { id }`, and `SetCollectionShown { collection, shown }` for
+//! the switches. The pure parts (relative time, status text, whether a collection is shown,
+//! which accounts are listed) are plain functions with unit tests.
 
 use chrono::{DateTime, Utc};
 use iced::widget::{button, column, container, row, space, text, toggler};
@@ -95,9 +95,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::SyncNow => Action::Send(Request::Sync),
-        Message::SetShown { collection, shown } => Action::Send(Request::UpdateSettings {
-            settings: with_collection_shown(&data.settings, &collection, shown),
-        }),
+        Message::SetShown { collection, shown } => Action::Send(Request::SetCollectionShown { collection, shown }),
         Message::AskRemove => {
             state.confirm_remove = true;
             Action::None
@@ -210,16 +208,6 @@ pub fn last_synced_text(last_sync: Option<DateTime<Utc>>, now: DateTime<Utc>) ->
 /// Whether the apps show a collection: everything is shown unless it is hidden.
 pub fn is_shown(settings: &Settings, collection: &str) -> bool {
     !settings.hidden_collections.iter().any(|hidden| hidden == collection)
-}
-
-/// The settings with one collection shown or hidden; everything else stays as it is.
-pub fn with_collection_shown(settings: &Settings, collection: &str, shown: bool) -> Settings {
-    let mut next = settings.clone();
-    next.hidden_collections.retain(|id| id != collection);
-    if !shown {
-        next.hidden_collections.push(collection.to_string());
-    }
-    next
 }
 
 fn kind_name(kind: CollectionKind) -> &'static str {
@@ -526,20 +514,23 @@ mod tests {
     }
 
     #[test]
-    fn toggling_a_collection_edits_only_hidden_collections() {
-        let base = Settings { hidden_collections: vec!["a".into()], start_at_login: true, ..Settings::default() };
-
+    fn a_collection_is_shown_unless_hidden() {
+        let base = Settings { hidden_collections: vec!["a".into()], ..Settings::default() };
         assert!(!is_shown(&base, "a"));
         assert!(is_shown(&base, "b"));
+    }
 
-        let shown = with_collection_shown(&base, "a", true);
-        assert!(shown.hidden_collections.is_empty());
-        assert!(shown.start_at_login);
-
-        let hidden = with_collection_shown(&base, "b", false);
-        assert_eq!(hidden.hidden_collections, ["a".to_string(), "b".to_string()]);
-
-        let hidden_twice = with_collection_shown(&hidden, "b", false);
-        assert_eq!(hidden_twice.hidden_collections, ["a".to_string(), "b".to_string()]);
+    #[test]
+    fn the_switch_sends_only_its_collection() {
+        let data = Data::default();
+        for shown in [true, false] {
+            let message = Message::SetShown { collection: "a".into(), shown };
+            let action = update(&mut State::default(), message, &data);
+            assert!(
+                matches!(action, Action::Send(Request::SetCollectionShown { ref collection, shown: s })
+                    if collection == "a" && s == shown),
+                "{action:?}"
+            );
+        }
     }
 }

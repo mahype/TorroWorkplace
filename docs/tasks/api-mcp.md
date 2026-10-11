@@ -42,7 +42,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Handler-Tests für die neuen Requests.
 
 ### A.0b Oberfläche auf die neuen Requests umstellen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.0 · **Dateien:** `crates/torroworkplace/src/ui/apps.rs`, `crates/torroworkplace/src/ui/accounts.rs`, `crates/torroworkplace/src/ui/general.rs`, `crates/torroworkplace/src/ui/mod.rs`
 - Apps-Seite zeigt die Antwort von `ListApps` statt selbst zu suchen. „Kalender ein/aus“ in
   Accounts schickt `SetCollectionShown`, die Schalter in General schicken `SetSetting`.

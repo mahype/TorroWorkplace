@@ -2,8 +2,8 @@
 //! a radio list or a switch and a footer sentence that explains the consequence. "Language"
 //! offers System / English / Deutsch (Deutsch is shown in its own name, like the language
 //! picker of any app); "Startup" has "Start at login". There is no Save button: every change
-//! sends `Request::UpdateSettings` with the whole `Settings`, the changed field only, and the
-//! shell reloads `Data` afterwards. The page shows `data.settings`, so it follows the daemon.
+//! sends `Request::SetSetting` with the one key that changed, and the shell reloads `Data`
+//! afterwards. The page shows `data.settings`, so it follows the daemon.
 
 use iced::widget::{column, container, radio, row, space, text, toggler};
 use iced::{Alignment, Background, Element, Length, border};
@@ -11,7 +11,7 @@ use torro_core::i18n::tr;
 use torro_core::settings::Language;
 use torro_core::theme::Appearance;
 use torro_gui::{theme, widgets};
-use torro_ipc::Request;
+use torro_ipc::{Request, SettingKey};
 
 use super::{Action, Data};
 
@@ -25,15 +25,18 @@ pub enum Message {
     StartAtLogin(bool),
 }
 
-pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
-    // Autosave: copy the stored settings, change the one field, send the whole thing back.
-    let mut settings = data.settings.clone();
-    match message {
-        Message::Language(language) => settings.language = language,
-        Message::Appearance(appearance) => settings.appearance = appearance,
-        Message::StartAtLogin(start) => settings.start_at_login = start,
-    }
-    Action::Send(Request::UpdateSettings { settings })
+pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
+    // The core takes the same names the settings file uses (`"german"`, `"dark"`, `true`), so the
+    // values come from the enums' own serialisation. A value that cannot serialise (none here)
+    // would become `null`, which the core refuses.
+    let (key, value) = match message {
+        Message::Language(language) => (SettingKey::Language, serde_json::to_value(language).unwrap_or_default()),
+        Message::Appearance(appearance) => {
+            (SettingKey::Appearance, serde_json::to_value(appearance).unwrap_or_default())
+        }
+        Message::StartAtLogin(start) => (SettingKey::StartAtLogin, serde_json::Value::Bool(start)),
+    };
+    Action::Send(Request::SetSetting { key, value })
 }
 
 pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -98,10 +101,43 @@ mod tests {
     use super::*;
     use torro_core::settings::Settings;
 
-    /// Settings that differ from the defaults in every field, so a change to any other field
-    /// would show up in the comparison.
-    fn data() -> Data {
-        Data {
+    /// The key and value the page asked the shell to set.
+    fn sent(action: Action) -> (SettingKey, serde_json::Value) {
+        let Action::Send(Request::SetSetting { key, value }) = action else {
+            panic!("expected SetSetting, got {action:?}");
+        };
+        (key, value)
+    }
+
+    #[test]
+    fn each_language_choice_sets_only_the_language() {
+        let cases = [(Language::System, "system"), (Language::English, "english"), (Language::German, "german")];
+        for (language, name) in cases {
+            let action = update(&mut State::default(), Message::Language(language), &Data::default());
+            assert_eq!(sent(action), (SettingKey::Language, serde_json::json!(name)), "choice {language:?}");
+        }
+    }
+
+    #[test]
+    fn each_appearance_choice_sets_only_the_appearance() {
+        let cases = [(Appearance::System, "system"), (Appearance::Light, "light"), (Appearance::Dark, "dark")];
+        for (appearance, name) in cases {
+            let action = update(&mut State::default(), Message::Appearance(appearance), &Data::default());
+            assert_eq!(sent(action), (SettingKey::Appearance, serde_json::json!(name)), "choice {appearance:?}");
+        }
+    }
+
+    #[test]
+    fn start_at_login_sets_only_the_switch() {
+        let on = update(&mut State::default(), Message::StartAtLogin(true), &Data::default());
+        assert_eq!(sent(on), (SettingKey::StartAtLogin, serde_json::json!(true)));
+        let off = update(&mut State::default(), Message::StartAtLogin(false), &Data::default());
+        assert_eq!(sent(off), (SettingKey::StartAtLogin, serde_json::json!(false)));
+    }
+
+    #[test]
+    fn page_builds_with_default_and_stored_settings() {
+        let stored = Data {
             settings: Settings {
                 language: Language::German,
                 appearance: Appearance::Dark,
@@ -109,59 +145,8 @@ mod tests {
                 hidden_collections: vec!["work".into()],
             },
             ..Data::default()
-        }
-    }
-
-    /// The settings the page asked the shell to save.
-    fn sent(action: Action) -> Settings {
-        let Action::Send(Request::UpdateSettings { settings }) = action else {
-            panic!("expected UpdateSettings, got {action:?}");
         };
-        settings
-    }
-
-    #[test]
-    fn each_language_choice_sends_only_the_language() {
-        let data = data();
-        for language in [Language::System, Language::English, Language::German] {
-            let action = update(&mut State::default(), Message::Language(language), &data);
-            let mut expected = data.settings.clone();
-            expected.language = language;
-            assert_eq!(sent(action), expected, "choice {language:?}");
-        }
-    }
-
-    #[test]
-    fn each_appearance_choice_sends_only_the_appearance() {
-        let data = data();
-        for appearance in [Appearance::System, Appearance::Light, Appearance::Dark] {
-            let action = update(&mut State::default(), Message::Appearance(appearance), &data);
-            let mut expected = data.settings.clone();
-            expected.appearance = appearance;
-            assert_eq!(sent(action), expected, "choice {appearance:?}");
-        }
-    }
-
-    #[test]
-    fn start_at_login_sends_only_the_switch() {
-        let data = data();
-        let action = update(&mut State::default(), Message::StartAtLogin(true), &data);
-        let mut expected = data.settings.clone();
-        expected.start_at_login = true;
-        assert_eq!(sent(action), expected);
-    }
-
-    #[test]
-    fn start_at_login_off_sends_false() {
-        let mut data = data();
-        data.settings.start_at_login = true;
-        let action = update(&mut State::default(), Message::StartAtLogin(false), &data);
-        assert!(!sent(action).start_at_login);
-    }
-
-    #[test]
-    fn page_builds_with_default_and_stored_settings() {
-        let (state, default, stored) = (State::default(), Data::default(), data());
+        let (state, default) = (State::default(), Data::default());
         let _default: Element<'_, Message> = view(&state, &default);
         let _stored: Element<'_, Message> = view(&state, &stored);
     }

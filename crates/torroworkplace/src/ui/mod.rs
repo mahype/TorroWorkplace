@@ -32,7 +32,7 @@ use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::Settings;
 use torro_gui::theme::{self, Appearance};
-use torro_ipc::{AccountInfo, Request, Response, Status, client};
+use torro_ipc::{AccountInfo, AppInfo, Request, Response, Status, client};
 use torro_setups::TemplateSummary;
 
 /// Below this width the sidebar turns into a list and a section opens as its own page.
@@ -82,6 +82,8 @@ pub struct Data {
     pub accounts: Vec<AccountInfo>,
     pub templates: Vec<TemplateSummary>,
     pub settings: Settings,
+    /// The suite's apps as the core reports them; `None` until the first answer.
+    pub apps: Option<Vec<AppInfo>>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -381,6 +383,9 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Settings { settings }) = client::call(&socket, &Request::Settings).await {
                 data.settings = settings;
+            }
+            if let Ok(Response::Apps { apps }) = client::call(&socket, &Request::ListApps).await {
+                data.apps = Some(apps);
             }
             data
         },
