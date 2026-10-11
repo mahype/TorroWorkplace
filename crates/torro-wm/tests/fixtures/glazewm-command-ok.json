@@ -1,0 +1,9 @@
+{
+  "messageType": "client_response",
+  "clientMessage": "command focus --container-id 0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e03",
+  "data": {
+    "subjectContainerId": "0f9e8d7c-6b5a-4938-8271-6a5b4c3d2e03"
+  },
+  "error": null,
+  "success": true
+}

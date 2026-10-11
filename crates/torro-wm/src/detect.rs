@@ -17,10 +17,15 @@ const EXPECTED_WM: &str = "no supported window manager (Hyprland not found)";
 /// environment variable (pass `|k| std::env::var(k).ok()`), so tests can fake it.
 pub fn detect(env: impl Fn(&str) -> Option<String>) -> Backend {
     // `&F` implements `Fn` as well, so the same closure can be handed to every probe.
-    match Hyprland::from_env(&env) {
-        Ok(hyprland) => Backend::Hyprland(hyprland),
-        Err(_) => Backend::Unsupported { name: EXPECTED_WM.into() },
+    if let Ok(hyprland) = Hyprland::from_env(&env) {
+        return Backend::Hyprland(hyprland);
     }
+    // GlazeWM: its IPC port on 127.0.0.1 accepts connections (task X.7).
+    #[cfg(target_os = "windows")]
+    if let Some(glazewm) = crate::glazewm::GlazeWm::probe(&env) {
+        return Backend::GlazeWm(glazewm);
+    }
+    Backend::Unsupported { name: EXPECTED_WM.into() }
 }
 
 #[cfg(test)]
@@ -74,6 +79,29 @@ mod tests {
     #[test]
     fn unsupported_when_no_variables_are_set() {
         let env: [(&str, &str); 0] = [];
+        assert_unsupported(detect(fake_env(&env)));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn detects_glazewm_when_its_port_accepts_connections() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let port = listener.local_addr().expect("local address").port().to_string();
+        let env = [(crate::glazewm::PORT_VARIABLE, port.as_str())];
+        match detect(fake_env(&env)) {
+            Backend::GlazeWm(glazewm) => assert_eq!(glazewm.port.to_string(), port),
+            other => panic!("expected GlazeWM, got {other:?}"),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unsupported_when_glazewm_port_is_closed() {
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+            listener.local_addr().expect("local address").port().to_string()
+        };
+        let env = [(crate::glazewm::PORT_VARIABLE, port.as_str())];
         assert_unsupported(detect(fake_env(&env)));
     }
 }

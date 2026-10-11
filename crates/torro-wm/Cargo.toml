@@ -14,3 +14,7 @@ workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# WebSocket client for GlazeWM. On every system, not only Windows: the backend compiles everywhere
+# so its tests against a fake server run in every CI job. Pure Rust, no TLS.
+tokio-tungstenite.workspace = true
+futures-util.workspace = true

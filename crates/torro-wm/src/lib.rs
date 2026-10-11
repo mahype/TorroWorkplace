@@ -7,6 +7,7 @@
 
 pub mod detect;
 pub mod fake;
+pub mod glazewm;
 pub mod hyprland;
 mod types;
 
@@ -75,6 +76,7 @@ pub trait WindowManager: Send + Sync {
 #[derive(Debug)]
 pub enum Backend {
     Hyprland(hyprland::Hyprland),
+    GlazeWm(glazewm::GlazeWm),
     /// No supported tiling window manager found; `name` says what we looked for, for the
     /// tray menu ("AeroSpace (macOS)", …).
     Unsupported {
@@ -86,6 +88,7 @@ impl WindowManager for Backend {
     fn name(&self) -> &'static str {
         match self {
             Backend::Hyprland(wm) => wm.name(),
+            Backend::GlazeWm(wm) => wm.name(),
             Backend::Unsupported { .. } => "unsupported",
         }
     }
@@ -93,6 +96,7 @@ impl WindowManager for Backend {
     async fn active_workspace(&self) -> Result<WorkspaceId, WmError> {
         match self {
             Backend::Hyprland(wm) => wm.active_workspace().await,
+            Backend::GlazeWm(wm) => wm.active_workspace().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -100,6 +104,7 @@ impl WindowManager for Backend {
     async fn windows(&self, workspace: Option<&WorkspaceId>) -> Result<Vec<Window>, WmError> {
         match self {
             Backend::Hyprland(wm) => wm.windows(workspace).await,
+            Backend::GlazeWm(wm) => wm.windows(workspace).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -107,6 +112,7 @@ impl WindowManager for Backend {
     async fn monitors(&self) -> Result<Vec<Monitor>, WmError> {
         match self {
             Backend::Hyprland(wm) => wm.monitors().await,
+            Backend::GlazeWm(wm) => wm.monitors().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -114,6 +120,7 @@ impl WindowManager for Backend {
     async fn focus_window(&self, window: &WindowId) -> Result<(), WmError> {
         match self {
             Backend::Hyprland(wm) => wm.focus_window(window).await,
+            Backend::GlazeWm(wm) => wm.focus_window(window).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -121,6 +128,7 @@ impl WindowManager for Backend {
     async fn move_to_workspace(&self, window: &WindowId, workspace: &WorkspaceId) -> Result<(), WmError> {
         match self {
             Backend::Hyprland(wm) => wm.move_to_workspace(window, workspace).await,
+            Backend::GlazeWm(wm) => wm.move_to_workspace(window, workspace).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -128,6 +136,7 @@ impl WindowManager for Backend {
     async fn close_window(&self, window: &WindowId) -> Result<(), WmError> {
         match self {
             Backend::Hyprland(wm) => wm.close_window(window).await,
+            Backend::GlazeWm(wm) => wm.close_window(window).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -135,6 +144,7 @@ impl WindowManager for Backend {
     async fn prepare_insert(&self, sibling: &WindowId, direction: SplitDirection) -> Result<(), WmError> {
         match self {
             Backend::Hyprland(wm) => wm.prepare_insert(sibling, direction).await,
+            Backend::GlazeWm(wm) => wm.prepare_insert(sibling, direction).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -142,6 +152,7 @@ impl WindowManager for Backend {
     async fn place(&self, window: &WindowId, sibling: &WindowId, split: Split) -> Result<(), WmError> {
         match self {
             Backend::Hyprland(wm) => wm.place(window, sibling, split).await,
+            Backend::GlazeWm(wm) => wm.place(window, sibling, split).await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
@@ -149,6 +160,7 @@ impl WindowManager for Backend {
     async fn events(&self) -> Result<Events, WmError> {
         match self {
             Backend::Hyprland(wm) => wm.events().await,
+            Backend::GlazeWm(wm) => wm.events().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
         }
     }
