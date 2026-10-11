@@ -382,10 +382,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nothing planned", "Nichts geplant"),
     ("Radar", "Radar"),
     ("Timeline", "Zeitstrahl"),
+    // Calendar: agenda and radar content (K.24, K.25)
+    ("{h} h {m}", "{h} h {m}"),
+    ("{n} d", "{n} Tg."),
+    ("{weekday} {day}", "{weekday} {day}."),
+    ("Free until {date} at {time}", "Frei bis {date} um {time}"),
+    ("Free until tomorrow {time}", "Frei bis morgen {time}"),
+    ("This week", "Diese Woche"),
+    ("day {n} of {total}", "Tag {n} von {total}"),
     ("No events", "Keine Termine"),
     ("Nothing planned in the next 30 days", "In den nächsten 30 Tagen ist nichts geplant"),
-    ("all day", "ganztägig"),
-    ("all day · day {n} of {total}", "ganztägig · Tag {n} von {total}"),
     ("{n} more", "{n} weitere"),
     // Tasks
     ("Parent", "Übergeordnet"),
