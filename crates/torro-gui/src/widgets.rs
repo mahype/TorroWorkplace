@@ -1269,14 +1269,13 @@ mod tests {
     #[test]
     fn ctrl_with_a_character_is_not_typed() {
         use keyboard::key::Code;
-        let ctrl = keyboard::Modifiers::CTRL;
+        // The platform's command key: Ctrl, on macOS Cmd (what `Modifiers::command` asks for).
+        let ctrl = keyboard::Modifiers::COMMAND;
         // The zoom keys that left "a+--" in a field.
         assert!(captured(&press("+", Code::Equal, ctrl | keyboard::Modifiers::SHIFT, Some("+"))));
         assert!(captured(&press("=", Code::Equal, ctrl, Some("="))));
         assert!(captured(&press("-", Code::Minus, ctrl, Some("-"))));
         assert!(captured(&press("0", Code::Digit0, ctrl, Some("0"))));
-        // Cmd on macOS (Modifiers::COMMAND) is what Ctrl is elsewhere.
-        assert!(captured(&press("-", Code::Minus, keyboard::Modifiers::COMMAND, Some("-"))));
     }
 
     #[test]

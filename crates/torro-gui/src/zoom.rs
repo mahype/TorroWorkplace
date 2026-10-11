@@ -306,7 +306,8 @@ mod tests {
 
     #[test]
     fn ctrl_with_plus_minus_and_zero_are_the_zoom_keys() {
-        let ctrl = Modifiers::CTRL;
+        // The platform's command key: Ctrl, on macOS Cmd (what `Modifiers::command` asks for).
+        let ctrl = Modifiers::COMMAND;
         assert_eq!(step_for(&ch("+"), ctrl), Some(Step::In));
         assert_eq!(step_for(&ch("="), ctrl), Some(Step::In));
         assert_eq!(step_for(&ch("="), ctrl | Modifiers::SHIFT), Some(Step::In), "Ctrl + Shift + = on US keyboards");
