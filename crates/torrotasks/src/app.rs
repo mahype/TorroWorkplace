@@ -13,19 +13,27 @@
 //! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
 //! is no filter function yet, so no "Filter" button.
 //!
+//! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
+//! glances without any frame (`glance.rs`: the numbers "3 overdue · 5 today" and the next open
+//! tasks, to be ticked off and nothing else); narrow is the list with "Today ▾" in the header and
+//! the detail instead of the list; medium and wide are as described above. The size is kept in the
+//! state ([`Message::Resized`]), so the keys can be switched off in a glance; filter, selection,
+//! open detail and quick add text survive every change of size.
+//!
 //! The keyboard (T.3): ↑/↓ move a cursor through the rows as the list shows them (groups and
 //! subtasks included), Enter opens the task under it, Space ticks it, N focuses the quick add
 //! row, Escape closes menu, drawer or detail (see [`Message::Escape`]). The cursor is the
 //! highlighted row; the list scrolls to keep it in view. Plain keys are ignored while a text
 //! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, responsive, row, rule, stack, svg, text, text_input};
-use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
+use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
+use iced::{Alignment, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
@@ -40,6 +48,7 @@ use torro_ipc::{Request, Response};
 use torro_pim::{AccountState, Collection, EventTime, PimSource, Todo};
 
 use crate::detail::{self, Detail};
+use crate::glance::{self, GlanceData};
 use crate::list::{self, ListData};
 
 /// Which tasks the list shows.
@@ -80,6 +89,9 @@ const AUTOSAVE: Duration = Duration::from_secs(1);
 pub struct App {
     source: Source,
     today: NaiveDate,
+    /// The window size, for the size class ([`layout::of`]). Kept from the window events rather
+    /// than asked of the view, so that subscriptions and tests know the class too.
+    size: Size,
     account: Option<AccountState>,
     connect: Connect,
     collections: Vec<Collection>,
@@ -108,6 +120,8 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The window has this size (at start and after every resize).
+    Resized(Size),
     AccountLoaded(Result<AccountState, String>),
     Connect(connect::Message),
     Loaded(Result<(Vec<Collection>, Vec<Todo>), String>),
@@ -207,6 +221,7 @@ impl App {
         let app = App {
             source,
             today: Local::now().date_naive(),
+            size: torro_gui::window(AppId::TASKS).size,
             account: None,
             connect: Connect,
             collections: Vec::new(),
@@ -225,8 +240,13 @@ impl App {
             menu: None,
             drawer: false,
         };
-        let task =
-            Task::batch([app.fetch_account(), app.fetch_appearance(), iced::system::theme().map(Message::SystemMode)]);
+        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        let task = Task::batch([
+            app.fetch_account(),
+            app.fetch_appearance(),
+            iced::system::theme().map(Message::SystemMode),
+            size,
+        ]);
         (app, task)
     }
 
@@ -239,13 +259,18 @@ impl App {
         let mut subscriptions = vec![
             iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
+            iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
         ];
-        // Escape closes an open menu, drawer or the detail; nothing listens while none is open.
-        if self.menu.is_some() || self.drawer || self.detail.is_some() {
-            subscriptions.push(widgets::escape().map(|()| Message::Escape));
-        }
-        if self.connected() {
-            subscriptions.push(iced::event::listen_with(shortcut));
+        // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
+        // like Space must not tick off a task nobody sees.)
+        if !self.is_glance() {
+            // Escape closes an open menu, drawer or the detail; nothing listens while none is open.
+            if self.menu.is_some() || self.drawer || self.detail.is_some() {
+                subscriptions.push(widgets::escape().map(|()| Message::Escape));
+            }
+            if self.connected() {
+                subscriptions.push(iced::event::listen_with(shortcut));
+            }
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
@@ -267,6 +292,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::Resized(size) => self.size = size,
             Message::AccountLoaded(Ok(account)) => {
                 let was_connected = self.connected();
                 self.account = Some(account);
@@ -332,9 +358,7 @@ impl App {
                 return self.save(todo);
             }
             Message::ToggleDone(index) => {
-                if let Some(todo) = self.todos.get(index) {
-                    let mut todo = todo.clone();
-                    todo.completed = !todo.completed;
+                if let Some(todo) = self.toggled(index) {
                     return self.save(todo);
                 }
             }
@@ -377,7 +401,9 @@ impl App {
                 if !self.connected() {
                     return Task::batch([appearance, self.fetch_account()]);
                 }
-                if self.detail.is_none() {
+                // An open detail keeps what it holds until it is closed or saved; but a glance
+                // shows no detail and must not go stale, and the detail follows a reload anyway.
+                if self.detail.is_none() || self.is_glance() {
                     return Task::batch([appearance, self.load()]);
                 }
                 return appearance;
@@ -454,11 +480,34 @@ impl App {
         }
     }
 
+    /// The layout class of the window.
+    fn class(&self) -> SizeClass {
+        layout::of(self.size)
+    }
+
+    /// Mini or strip: a display without header, sidebar, menus or dialogs.
+    fn is_glance(&self) -> bool {
+        matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
+    }
+
+    /// `todos[index]` with its done state flipped, ready to be saved; none if there is no such
+    /// task. The one thing a glance lets you do.
+    fn toggled(&self, index: usize) -> Option<Todo> {
+        let mut todo = self.todos.get(index)?.clone();
+        todo.completed = !todo.completed;
+        Some(todo)
+    }
+
+    /// Collection id → its colour.
+    fn colors(&self) -> HashMap<String, Color> {
+        self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect()
+    }
+
     /// What the list shows, without the colours and names only drawing needs.
     fn list_data(&self, show_list: bool) -> ListData<'_> {
         ListData {
             todos: &self.todos,
-            colors: self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect(),
+            colors: self.colors(),
             names: self.collections.iter().map(|c| (c.id.clone(), c.name.clone())).collect(),
             filter: &self.filter,
             show_completed: self.show_completed,
@@ -533,7 +582,37 @@ impl App {
             }
             Some(AccountState::Connected { .. }) => {}
         }
-        responsive(move |size| self.window(layout::of(size))).into()
+        let class = self.class();
+        if matches!(class, SizeClass::Mini | SizeClass::Strip) {
+            // The open detail, menu and drawer stay in the state and come back with a larger window.
+            return self.glance(class);
+        }
+        self.window(class)
+    }
+
+    /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
+    /// what is due (`glance.rs`).
+    fn glance(&self, class: SizeClass) -> Element<'_, Message> {
+        if let Some(unloaded) = self.unloaded() {
+            return unloaded;
+        }
+        let data =
+            GlanceData { todos: &self.todos, colors: self.colors(), today: self.today, error: self.error.as_deref() };
+        match class {
+            SizeClass::Strip => glance::strip(&data, self.size),
+            _ => glance::mini(&data, self.size),
+        }
+    }
+
+    /// Loading, or the error of the first load, while there are no tasks yet; none afterwards.
+    fn unloaded(&self) -> Option<Element<'_, Message>> {
+        if self.loaded {
+            return None;
+        }
+        Some(match &self.error {
+            Some(err) => widgets::error_state(err.as_str(), Message::Refresh),
+            None => widgets::loading(),
+        })
     }
 
     /// The whole window in the layout of `class`.
@@ -656,11 +735,8 @@ impl App {
     /// The quick add row, an error line if there is one, and the grouped list; loading and the
     /// error of a first load stand in for all three.
     fn list(&self, class: SizeClass) -> Element<'_, Message> {
-        if !self.loaded {
-            return match &self.error {
-                Some(err) => widgets::error_state(err.as_str(), Message::Refresh),
-                None => widgets::loading(),
-            };
+        if let Some(unloaded) = self.unloaded() {
+            return unloaded;
         }
         let mut top = column![self.quick_add_row()].spacing(space::S);
         if let Some(err) = &self.error {
@@ -1252,5 +1328,103 @@ mod tests {
         assert!(app.loaded && app.error.is_none());
         let _ = app.update(Message::Loaded(Err("offline".into())));
         assert!(app.loaded, "a later error does not throw the list away");
+    }
+
+    const MINI: Size = Size::new(240.0, 160.0);
+    const STRIP: Size = Size::new(1200.0, 200.0);
+    const NARROW: Size = Size::new(420.0, 780.0);
+    const WIDE: Size = Size::new(1600.0, 1000.0);
+
+    fn connected(app: &mut App) {
+        app.account = Some(AccountState::Connected {
+            server: "https://cloud.example".into(),
+            login_name: "sven".into(),
+            last_sync: None,
+            problem: None,
+        });
+    }
+
+    #[test]
+    fn the_class_follows_the_window_size() {
+        let mut app = demo_app();
+        assert_eq!(app.class(), SizeClass::Wide, "the default window is 1100 wide");
+        for (size, class, glance) in [
+            (MINI, SizeClass::Mini, true),
+            (Size::new(320.0, 480.0), SizeClass::Mini, true),
+            (STRIP, SizeClass::Strip, true),
+            (NARROW, SizeClass::Narrow, false),
+            (Size::new(800.0, 600.0), SizeClass::Medium, false),
+            (WIDE, SizeClass::Wide, false),
+        ] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!((app.class(), app.is_glance()), (class, glance), "{size:?}");
+        }
+    }
+
+    #[test]
+    fn filter_detail_cursor_and_quick_add_survive_a_trip_through_mini_and_strip() {
+        let mut app = app_with_rows();
+        let _ = app.update(Message::SetFilter(Filter::Planned));
+        let _ = app.update(Message::QuickAddChanged("Buy oat milk".into()));
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let open = app.detail.as_ref().map(|d| d.original.uid.clone());
+        assert!(open.is_some());
+        for size in [MINI, STRIP, NARROW, WIDE] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(app.filter, Filter::Planned, "{size:?}");
+            assert_eq!(app.quick_add, "Buy oat milk");
+            assert_eq!(app.detail.as_ref().map(|d| d.original.uid.clone()), open);
+            assert_eq!(app.cursor, open);
+            // Every size builds its view from this state.
+            let _ = app.view();
+        }
+    }
+
+    #[test]
+    fn a_glance_has_no_keys_and_no_escape() {
+        let mut app = app_with_rows();
+        connected(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let wide = app.subscription().units();
+        for size in [MINI, STRIP] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(app.subscription().units(), wide - 2, "no shortcuts and no Escape at {size:?}");
+        }
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!(app.subscription().units(), wide);
+    }
+
+    #[test]
+    fn ticking_a_task_off_in_mini_saves_it_done() {
+        let mut app = app_with_rows();
+        let _ = app.update(Message::Resized(MINI));
+        let picks = glance::queue(&app.todos, app.today);
+        let first = picks.first().expect("an open task with a due date");
+        assert_eq!(app.todos[first.index].uid, "overdue", "the check on the first row ticks the overdue task");
+        let todo = app.toggled(first.index).expect("the task");
+        assert!(todo.completed && todo.uid == "overdue");
+        assert!(!app.todos[first.index].completed, "the shown task changes only when the save comes back");
+        assert!(app.update(Message::ToggleDone(first.index)).units() > 0, "the save is started");
+        assert_eq!(app.update(Message::ToggleDone(99)).units(), 0, "a task that is gone does nothing");
+        // And back: ticking a done task opens it again.
+        app.todos[first.index].completed = true;
+        assert!(app.toggled(first.index).is_some_and(|todo| !todo.completed));
+    }
+
+    #[test]
+    fn a_glance_reloads_on_the_tick_even_with_an_open_detail() {
+        let mut app = app_with_rows();
+        connected(&mut app);
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        assert!(app.detail.is_some());
+        let _ = app.update(Message::Resized(WIDE));
+        let wide = app.update(Message::Tick).units();
+        let _ = app.update(Message::Resized(MINI));
+        let mini = app.update(Message::Tick).units();
+        assert!(mini > wide, "the glance has no detail to protect, so it loads as well");
     }
 }

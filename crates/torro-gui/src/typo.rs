@@ -85,6 +85,60 @@ pub fn text<'a>(level: Level, content: impl IntoFragment<'a>) -> Text<'a> {
     iced::widget::text(content).size(level.size).line_height(level.line_height).font(level.font)
 }
 
+/// What [`ellipsize`] puts where it cut.
+pub const ELLIPSIS: &str = "…";
+
+/// `text` cut to fit `max_width` in `level`, with "…" where it was cut; empty when not even the
+/// first letter fits.
+///
+/// Iced cannot measure text in a canvas, nor cut it with an ellipsis, so this estimates Inter's
+/// letter widths a little generously: a cut comes a letter early rather than running over (the
+/// views clip as well).
+pub fn ellipsize(text: &str, level: Level, max_width: f32) -> String {
+    let size = level.size.0;
+    if text_width(text, level) <= max_width {
+        return text.to_string();
+    }
+    let room = max_width - text_width(ELLIPSIS, level);
+    let mut kept = String::new();
+    let mut width = 0.0;
+    for c in text.chars() {
+        width += char_em(c) * size;
+        if width > room {
+            break;
+        }
+        kept.push(c);
+    }
+    let kept = kept.trim_end();
+    if kept.is_empty() { String::new() } else { format!("{kept}{ELLIPSIS}") }
+}
+
+/// The estimated width of `text` in `level` (see [`ellipsize`]).
+pub fn text_width(text: &str, level: Level) -> f32 {
+    text.chars().map(char_em).sum::<f32>() * level.size.0
+}
+
+/// Estimated advance of `c` in Inter, in em, rounded up a little (Medium is wider than Regular).
+fn char_em(c: char) -> f32 {
+    match c {
+        ' ' => 0.28,
+        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '\'' | '!' | '|' => 0.30,
+        'f' | 't' | 'r' | '(' | ')' | '-' | '/' => 0.40,
+        'm' | 'w' => 0.88,
+        'M' | 'W' => 0.95,
+        '0'..='9' => 0.64,
+        c if c.len_utf8() >= 3 => 1.0,
+        c if c.is_uppercase() => 0.72,
+        c if c.is_lowercase() => 0.58,
+        _ => 0.75,
+    }
+}
+
+/// The absolute line height of `level` in logical pixels.
+pub fn line_height(level: Level) -> f32 {
+    level.line_height.to_absolute(level.size).0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +203,21 @@ mod tests {
         for level in ALL {
             let _: Text<'_> = text(level, "Today");
         }
+    }
+
+    #[test]
+    fn ellipsize_cuts_long_text_only() {
+        assert_eq!(ellipsize("Standup", CAPTION, 200.0), "Standup");
+        let cut = ellipsize("Quarterly planning with the whole team", CAPTION, 100.0);
+        assert!(cut.ends_with(ELLIPSIS), "{cut}");
+        assert!(text_width(&cut, CAPTION) <= 100.0);
+        assert!(!cut.contains(" …"), "no space before the ellipsis");
+        assert_eq!(ellipsize("Standup", CAPTION, 5.0), "");
+    }
+
+    #[test]
+    fn line_height_is_the_absolute_one() {
+        assert_eq!(line_height(BODY), 20.0);
+        assert_eq!(line_height(DISPLAY), 32.0);
     }
 }

@@ -176,7 +176,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 
 ### K.20 Aufgaben in jeder Größe: Mini, Leiste, Schmal
 - **Nach T.1** aus [design.md](design.md): Bausteine und Tokens von dort verwenden (Skill `torro-design`).
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.19 (als Muster)
 - **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torrotasks/src/glance.rs` (neu),
   `crates/torrotasks/src/main.rs` (nur `mod glance;`)

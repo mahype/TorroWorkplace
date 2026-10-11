@@ -28,15 +28,14 @@ use iced::{Alignment, Background, Color, Element, Length, Padding, Point, Rectan
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local};
 use torro_gui::theme::{self, Palette, palette, radius, size, space};
-use torro_gui::{style, typo, widgets};
+use torro_gui::typo::{self, ellipsize, line_height, text_width};
+use torro_gui::{style, widgets};
 use torro_pim::{Event as CalendarEvent, EventTime};
 
 use super::{Item, ViewData, short_date};
 use crate::app::Message;
 
 const UNTITLED: &str = "(untitled)";
-/// What [`ellipsize`] puts where it cut.
-const ELLIPSIS: &str = "…";
 /// Between the parts of a line: "in 20 min · Room 3".
 const SEPARATOR: &str = " · ";
 /// The strip shows at least this working day (hours), whatever the events.
@@ -290,56 +289,6 @@ pub fn lanes(spans: &[(f32, f32)]) -> Vec<(usize, usize)> {
 /// Every how many hours the strip labels its axis, so labels `px_per_hour` apart do not crowd.
 pub fn label_step(px_per_hour: f32) -> u32 {
     [1, 2, 3, 4, 6].into_iter().find(|step| *step as f32 * px_per_hour >= LABEL_ROOM).unwrap_or(12)
-}
-
-/// `text` cut to fit `max_width` in `level`, with "…" where it was cut; empty when not even the
-/// first letter fits.
-///
-/// Iced cannot measure text in a canvas, nor cut it with an ellipsis, so this estimates Inter's
-/// letter widths a little generously: a cut comes a letter early rather than running over (the
-/// views clip as well).
-pub fn ellipsize(text: &str, level: typo::Level, max_width: f32) -> String {
-    let size = level.size.0;
-    if text_width(text, level) <= max_width {
-        return text.to_string();
-    }
-    let room = max_width - text_width(ELLIPSIS, level);
-    let mut kept = String::new();
-    let mut width = 0.0;
-    for c in text.chars() {
-        width += char_em(c) * size;
-        if width > room {
-            break;
-        }
-        kept.push(c);
-    }
-    let kept = kept.trim_end();
-    if kept.is_empty() { String::new() } else { format!("{kept}{ELLIPSIS}") }
-}
-
-/// The estimated width of `text` in `level` (see [`ellipsize`]).
-pub fn text_width(text: &str, level: typo::Level) -> f32 {
-    text.chars().map(char_em).sum::<f32>() * level.size.0
-}
-
-/// Estimated advance of `c` in Inter, in em, rounded up a little (Medium is wider than Regular).
-fn char_em(c: char) -> f32 {
-    match c {
-        ' ' => 0.28,
-        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '\'' | '!' | '|' => 0.30,
-        'f' | 't' | 'r' | '(' | ')' | '-' | '/' => 0.40,
-        'm' | 'w' => 0.88,
-        'M' | 'W' => 0.95,
-        '0'..='9' => 0.64,
-        c if c.len_utf8() >= 3 => 1.0,
-        c if c.is_uppercase() => 0.72,
-        c if c.is_lowercase() => 0.58,
-        _ => 0.75,
-    }
-}
-
-fn line_height(level: typo::Level) -> f32 {
-    level.line_height.to_absolute(level.size).0
 }
 
 /// Height of the date line and the lead of the mini tile: the date, then the big figure, the
@@ -923,16 +872,6 @@ mod tests {
         assert_eq!(label_step(94.0), 1);
         assert_eq!(label_step(34.0), 2);
         assert_eq!(label_step(12.0), 4);
-    }
-
-    #[test]
-    fn ellipsize_cuts_long_titles_only() {
-        assert_eq!(ellipsize("Standup", typo::CAPTION, 200.0), "Standup");
-        let cut = ellipsize("Quarterly planning with the whole team", typo::CAPTION, 100.0);
-        assert!(cut.ends_with(ELLIPSIS), "{cut}");
-        assert!(text_width(&cut, typo::CAPTION) <= 100.0);
-        assert!(!cut.contains(" …"), "no space before the ellipsis");
-        assert_eq!(ellipsize("Standup", typo::CAPTION, 5.0), "");
     }
 
     #[test]

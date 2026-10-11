@@ -6,6 +6,7 @@
 
 mod app;
 mod detail;
+mod glance;
 mod list;
 
 use torro_core::AppId;
