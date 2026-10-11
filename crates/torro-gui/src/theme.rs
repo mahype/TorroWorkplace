@@ -209,14 +209,14 @@ const LIGHT: Palette = Palette {
     text_3: hex(0x62666D),
     line: black(0.07),
     line_strong: black(0.11),
-    focus_ring: black(0.35),
+    focus_ring: black(0.5),
     accent: color(TORRO_RED),
     on_accent: Color::WHITE,
     ok: color(STATUS_OK),
     attention: color(STATUS_ATTENTION),
     error: color(STATUS_ERROR),
     inactive: color(STATUS_INACTIVE),
-    calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xC9811A), hex(0xC2508F), hex(0x7C5CE6)],
+    calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xB06F12), hex(0xC2508F), hex(0x7C5CE6)],
     tint: 0.14,
     shadow: shadow(0.12),
     scrim: black(0.3),
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(dark.accent.into_rgba8(), [0xD5, 0x0C, 0x0C, 0xFF]);
         assert_eq!((dark.tint, light.tint), (0.18, 0.14));
         assert_eq!((dark.line.a, dark.line_strong.a, dark.focus_ring.a), (0.06, 0.10, 0.35));
-        assert_eq!((light.line.a, light.line_strong.a, light.focus_ring.a), (0.07, 0.11, 0.35));
+        assert_eq!((light.line.a, light.line_strong.a, light.focus_ring.a), (0.07, 0.11, 0.5));
     }
 
     #[test]

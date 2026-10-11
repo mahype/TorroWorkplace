@@ -15,7 +15,10 @@
 #[allow(deprecated)]
 pub mod connect;
 pub mod datetime;
+pub mod icon;
+pub mod layout;
 pub mod source;
+pub mod style;
 pub mod theme;
 pub mod typo;
 #[allow(deprecated)]

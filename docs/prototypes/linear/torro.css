@@ -18,9 +18,9 @@
 :root[data-theme="light"]{
   --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
   --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
-  --text:#18191B; --text2:#4F535A; --text3:#6B6F76;
-  --focus:rgba(0,0,0,.35);
-  --c-work:#3B6EF0; --c-personal:#1F9D68; --c-family:#C9811A; --c-birthday:#C2508F; --c-groceries:#7C5CE6;
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --focus:rgba(0,0,0,.5);
+  --c-work:#3B6EF0; --c-personal:#1F9D68; --c-family:#B06F12; --c-birthday:#C2508F; --c-groceries:#7C5CE6;
   --tint:14%; --shadow:0 12px 32px rgba(0,0,0,.12); --menu:#FFFFFF;
   color-scheme:light;
 }

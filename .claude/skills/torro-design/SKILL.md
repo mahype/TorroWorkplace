@@ -76,14 +76,15 @@ aus einem Guss wirkt:
 | `HOVER` | `#16171A` | `#F0F1F3` | Hover |
 | `SELECTED` | `#1C1E22` | `#E9EAED` | Auswahl, gedrückt, aktives Segment |
 | `MENU` | `#17181B` | `#FFFFFF` | Menüs, schwebende Karten, Dialoge (mit Schatten) |
+| `SCRIM` | Schwarz 62 % | Schwarz 30 % | Abdunkeln hinter Dialogen |
 | `TEXT` | `#EDEEF0` | `#18191B` | Text |
 | `TEXT_2` | `#B4B8BF` | `#4F535A` | Sekundärtext, Beschreibungen |
 | `TEXT_3` | `#8A8F98` | `#62666D` | Metadaten, Zähler, Gruppentitel, Platzhalter (≥ 4.5:1 auf allen Flächen) |
 | `LINE` | Weiß 6 % | Schwarz 7 % | Trennlinien, Raster, Rand der Inhaltsfläche |
 | `LINE_STRONG` | Weiß 10 % | Schwarz 11 % | Rahmen von Knöpfen, Eingaben, Chips, Menüs |
-| `FOCUS_RING` | Weiß 35 % | Schwarz 35 % | Fokus, 2 px, 1 px Abstand |
+| `FOCUS_RING` | Weiß 35 % | Schwarz 50 % | Fokus, 2 px, 1 px Abstand (≥ 3:1) |
 | `ACCENT` | Torro-Rot `#D50C0C` | dto. | **nur** Primärknopf, Heute, Jetzt-Linie, App-Logo |
-| Kalender/Listen | `#5B8CFF` `#3FB984` `#E8A33D` `#D96CA8` `#A78BFA` | `#3B6EF0` `#1F9D68` `#C9811A` `#C2508F` `#7C5CE6` | Standardfarben, Tönung 18 % (hell 14 %) |
+| Kalender/Listen | `#5B8CFF` `#3FB984` `#E8A33D` `#D96CA8` `#A78BFA` | `#3B6EF0` `#1F9D68` `#B06F12` `#C2508F` `#7C5CE6` | Standardfarben, Tönung 18 % (hell 14 %) |
 
 ### Akzent und Status
 
