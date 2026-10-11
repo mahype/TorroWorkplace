@@ -373,6 +373,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 
 ### D.9 Kleine Kacheln nachschärfen
 - [ ] erledigt
+- Kalender-Teil erledigt (Commit `fix(torrocalendar): mini tile names a later day first and fills with the days after (D.9)`)
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/glance.rs`, `crates/torrotasks/src/glance.rs`
 - Kalender-Mini: „Tomorrow“ über der Zeit statt darunter, Mini hoch füllt mit Folgetagen.
   Aufgaben-Mini: Kopfzahl in `DISPLAY`, Orange nur im Punkt.

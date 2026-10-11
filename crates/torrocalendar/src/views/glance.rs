@@ -5,7 +5,8 @@
 //!   "ends in 19 min", or the next one with its start time in `DISPLAY` and "in 1 h 20 min" – and
 //!   as many of today's other events as fit. While nothing runs the top line says "Free until
 //!   14:00"; when the day is done it says "Nothing else today" and the next event after today
-//!   leads instead.
+//!   leads instead, its day ("Tomorrow") above its time. A tall tile fills the room left below
+//!   with the days after, each under its name ([`later_days`]).
 //! - **Strip** ([`strip`]): today as a horizontal timeline on a canvas – timed events as tinted
 //!   blocks with their colour bar, all-day ones as chips on the left, the now line in red. It
 //!   spans today's events and now, at least 08:00–18:00.
@@ -202,6 +203,63 @@ pub fn when(focus: Focus<'_>, now: NaiveDateTime) -> Option<String> {
     }
 }
 
+/// The line above the big figure: the day of a [`Focus::Later`] ("Tomorrow", "Tue, 13 Oct"),
+/// which reads before its time; the other foci happen today and have none.
+pub fn day_above(focus: Focus<'_>, now: NaiveDateTime) -> Option<String> {
+    match focus {
+        Focus::Later(_) => when(focus, now),
+        _ => None,
+    }
+}
+
+/// The detail under the title of the lead: when ("ends in 19 min", "in 1 h 20 min") for an
+/// event today, then the place; for a later day only the place, its day stands above the time.
+fn detail_below(focus: Focus<'_>, entry: &Entry, now: NaiveDateTime) -> String {
+    let when = if day_above(focus, now).is_some() { None } else { when(focus, now) };
+    [when, entry.location.clone()].into_iter().flatten().collect::<Vec<_>>().join(SEPARATOR)
+}
+
+/// Days after the lead's for a tall mini tile: per day its label and events (all-day first, then
+/// by start), as many as `rows` rows hold, a day's label counting as a row. A day is only begun
+/// when its label and one event fit; the last one may be cut short. Days come from `entries` as
+/// loaded (today and the weeks after), after `after`.
+pub fn later_days(entries: &[Entry], after: NaiveDate, rows: usize) -> Vec<(NaiveDate, Vec<&Entry>)> {
+    let mut days: Vec<NaiveDate> = entries.iter().map(|e| e.start.date()).filter(|d| *d > after).collect();
+    days.sort();
+    days.dedup();
+    let mut left = rows;
+    let mut out = Vec::new();
+    for day in days {
+        if left < 2 {
+            break;
+        }
+        let mut on_day: Vec<&Entry> = entries.iter().filter(|e| e.on(day)).collect();
+        on_day.sort_by_key(|e| (!e.all_day, e.start));
+        let take = on_day.len().min(left - 1);
+        on_day.truncate(take);
+        left -= take + 1;
+        out.push((day, on_day));
+    }
+    out
+}
+
+/// The time at the right of a row on a later `day`: its start, "until 00:30" for an event that
+/// began the day before, none for an all-day event.
+fn later_time(entry: &Entry, day: NaiveDate) -> Option<String> {
+    if entry.all_day {
+        None
+    } else if entry.start.date() < day {
+        Some(trf("until {time}", &[("time", &format_time(entry.end.time()))]))
+    } else {
+        Some(format_time(entry.start.time()))
+    }
+}
+
+/// The name of a later day: "Tomorrow" seen from `today`, else its short date.
+fn day_name(day: NaiveDate, today: NaiveDate) -> String {
+    if day == today + Duration::days(1) { tr("Tomorrow").to_string() } else { short_date(day) }
+}
+
 /// The big figure of the mini tile: "Now" for a running event, otherwise the start time of the
 /// focus ("All day" for an all-day one).
 pub fn display(focus: Focus<'_>) -> Option<String> {
@@ -313,8 +371,9 @@ pub fn rows_that_fit(height: f32, blocks: usize) -> usize {
 }
 
 /// The mini tile for a window of `size`: the date (with "Free until 14:00" when it fits), the
-/// lead – big time, title with its colour dot, when and where – and as many further events of
-/// today as fit. A calm "Nothing else today" when nothing comes.
+/// lead – a later day's name, big time, title with its colour dot, when and where – and as many
+/// further events of today as fit, then the days after ([`later_days`]) in a tall tile. A calm
+/// "Nothing else today" when nothing comes.
 pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     let entries = entries(&data.items);
     let now = data.now;
@@ -326,14 +385,20 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     let mut top = row![typo::text(typo::BODY_STRONG, date).style(theme::text_2).wrapping(Wrapping::None)]
         .align_y(Alignment::Center);
     let mut body = column![].width(Length::Fill);
+    // `rows_that_fit` counts with one line of detail in the lead; the day above a later lead is a
+    // line more when the detail line is there as well (a place).
+    let mut height = size.height;
     match (focus, display(focus)) {
         (Focus::Now(entry) | Focus::Next(entry) | Focus::Later(entry), Some(big)) => {
             if let Some(line) = headline(focus) {
                 let line = ellipsize(&line, typo::META, width - date_width - space::S);
                 top = top.push(Space::new().width(Length::Fill)).push(quiet(line));
             }
-            let where_ = [when(focus, now), entry.location.clone()].into_iter().flatten().collect::<Vec<_>>();
-            body = body.push(lead(entry, big, &where_.join(SEPARATOR), width));
+            let (day, detail) = (day_above(focus, now), detail_below(focus, entry, now));
+            if day.is_some() && !detail.is_empty() {
+                height -= line_height(typo::META);
+            }
+            body = body.push(lead(entry, day, big, &detail, width));
         }
         _ => {
             let calm = headline(focus).unwrap_or_default();
@@ -342,11 +407,21 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     }
 
     // Today's all-day events belong to the date, so they come first and stand above the lead;
-    // the rows under the lead continue its day. What does not fit is counted in "+3 more".
+    // the rows under the lead continue its day. What does not fit is counted in "+3 more"; when
+    // all of it fits, the days after fill the rest of a tall tile.
     let all_day = all_day_on(&entries, now.date());
     let rest = rest(&entries, now, focus);
     let blocks = usize::from(!all_day.is_empty()) + usize::from(!rest.is_empty());
-    let (shown, more) = shown_rows(all_day.len() + rest.len(), rows_that_fit(size.height, blocks));
+    let count = all_day.len() + rest.len();
+    let fit = rows_that_fit(height, blocks);
+    let (shown, more) = shown_rows(count, fit);
+    let later = match lead_day(focus, now) {
+        // Each later day is a block of its own, set off like the others.
+        Some(day) if more.is_none() => {
+            fill_later(&entries, day, count, |groups| rows_that_fit(height, blocks + groups))
+        }
+        _ => Vec::new(),
+    };
     let shown_all_day = shown.min(all_day.len());
     let mut above = column![].spacing(space::XS);
     for entry in all_day.iter().take(shown_all_day) {
@@ -368,6 +443,13 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     if shown > shown_all_day || more.is_some() {
         tile = tile.push(Space::new().height(space::S)).push(below);
     }
+    for (day, day_entries) in later {
+        let mut group = column![quiet_caption(day_name(day, now.date()))].spacing(space::XS);
+        for entry in day_entries {
+            group = group.push(row_view(entry, later_time(entry, day), width));
+        }
+        tile = tile.push(Space::new().height(space::S)).push(group);
+    }
     container(tile)
         .padding(space::M)
         .width(Length::Fill)
@@ -377,23 +459,65 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
         .into()
 }
 
+/// The day the lead belongs to, after which [`later_days`] begin: today for a running or next
+/// event, the later day for [`Focus::Later`]; none when nothing comes.
+fn lead_day(focus: Focus<'_>, now: NaiveDateTime) -> Option<NaiveDate> {
+    match focus {
+        Focus::Now(_) | Focus::Next(_) => Some(now.date()),
+        Focus::Later(entry) => Some(entry.start.date()),
+        Focus::Nothing => None,
+    }
+}
+
+/// The [`later_days`] after `day` that fit besides the `used` rows above, where `fit(groups)` is
+/// how many rows the tile holds with that many later days as blocks of their own.
+fn fill_later(
+    entries: &[Entry],
+    day: NaiveDate,
+    used: usize,
+    fit: impl Fn(usize) -> usize,
+) -> Vec<(NaiveDate, Vec<&Entry>)> {
+    // More days take more gaps between them: reserve the gaps of `n` days, and if more come out,
+    // try again with as many. Fewer days than reserved always fit.
+    let mut n = 1;
+    loop {
+        let later = later_days(entries, day, fit(n).saturating_sub(used));
+        if later.len() <= n {
+            return later;
+        }
+        n = later.len();
+    }
+}
+
+/// A day's name over its events in a tall mini tile: `CAPTION` in `text_3`, never wrapped.
+fn quiet_caption(line: String) -> iced::widget::Text<'static> {
+    typo::text(typo::CAPTION, line).style(theme::text_3).wrapping(Wrapping::None)
+}
+
 /// A line in `META` and `text_3`, never wrapped.
 fn quiet(line: String) -> iced::widget::Text<'static> {
     typo::text(typo::META, line).style(theme::text_3).wrapping(Wrapping::None)
 }
 
-/// The lead of the mini tile: `big` in `DISPLAY` (tabular when it is a time), the title after
-/// the colour dot, and `detail` (when, where) below.
-fn lead(entry: &Entry, big: String, detail: &str, width: f32) -> Element<'static, Message> {
+/// The lead of the mini tile: the `day` of a later event ("Tomorrow"), `big` in `DISPLAY`
+/// (tabular when it is a time), the title after the colour dot, and `detail` (when, where) below.
+fn lead(entry: &Entry, day: Option<String>, big: String, detail: &str, width: f32) -> Element<'static, Message> {
     let level = if big.starts_with(|c: char| c.is_ascii_digit()) { typo::DISPLAY.tabular() } else { typo::DISPLAY };
     let title = ellipsize(&entry.title, typo::BODY_STRONG, width - DOT - space::S);
     let title =
         row![widgets::color_dot(entry.color, DOT), typo::text(typo::BODY_STRONG, title).wrapping(Wrapping::None)]
             .spacing(space::S)
             .align_y(Alignment::Center);
-    let detail =
-        typo::text(typo::META, ellipsize(detail, typo::META, width)).style(theme::text_2).wrapping(Wrapping::None);
-    column![typo::text(level, big).wrapping(Wrapping::None), Space::new().height(space::XS), title, detail].into()
+    let mut lead = column![];
+    if let Some(day) = day {
+        lead = lead.push(typo::text(typo::META, ellipsize(&day, typo::META, width)).style(theme::text_2));
+    }
+    lead = lead.push(typo::text(level, big).wrapping(Wrapping::None)).push(Space::new().height(space::XS)).push(title);
+    if !detail.is_empty() {
+        let detail = ellipsize(detail, typo::META, width);
+        lead = lead.push(typo::text(typo::META, detail).style(theme::text_2).wrapping(Wrapping::None));
+    }
+    lead.into()
 }
 
 /// The time at the right of a row: the start, or "until 15:00" for an event already running.
@@ -775,6 +899,52 @@ mod tests {
         assert_eq!(headline(focus), Some(tr("Nothing else today").to_string()));
         let rest: Vec<&str> = rest(&entries, now, focus).iter().map(|e| e.title.as_str()).collect();
         assert_eq!(rest, ["Planning"], "the rows under the lead continue its day");
+    }
+
+    #[test]
+    fn a_later_lead_names_its_day_above_the_time() {
+        let mut call = timed("Early call", on(12, 7, 30), on(12, 8, 0));
+        call.location = Some("Room 3".into());
+        let entries = sorted(vec![call]);
+        let now = at(20, 0);
+        let focus = focus(&entries, now);
+        assert_eq!(day_above(focus, now), Some(tr("Tomorrow").to_string()));
+        assert_eq!(detail_below(focus, &entries[0], now), "Room 3", "the day is not repeated below");
+        let today = sorted(vec![timed("Review", at(21, 0), at(22, 0))]);
+        let next = super::focus(&today, now);
+        assert_eq!(day_above(next, now), None);
+        assert_eq!(detail_below(next, &today[0], now), trf("in {span}", &[("span", &span(60))]));
+    }
+
+    #[test]
+    fn a_tall_tile_fills_with_the_days_after() {
+        let entries = sorted(vec![
+            timed("Review", at(14, 0), at(15, 0)),
+            timed("Planning", on(12, 9, 0), on(12, 10, 0)),
+            all_day("Home office", 12),
+            timed("Dentist", on(12, 17, 0), on(12, 18, 0)),
+            timed("Gym", on(14, 7, 0), on(14, 8, 0)),
+        ]);
+        let titles = |days: Vec<(NaiveDate, Vec<&Entry>)>| {
+            days.into_iter()
+                .map(|(day, list)| (day, list.iter().map(|e| e.title.clone()).collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        };
+        let today = at(0, 0).date();
+        let (mon, wed) = (on(12, 0, 0).date(), on(14, 0, 0).date());
+        assert_eq!(
+            titles(later_days(&entries, today, 10)),
+            [(mon, vec!["Home office".to_string(), "Planning".into(), "Dentist".into()]), (wed, vec!["Gym".into()])],
+            "all-day first, each day under its name"
+        );
+        assert_eq!(titles(later_days(&entries, today, 3)), [(mon, vec!["Home office".into(), "Planning".into()])]);
+        assert!(later_days(&entries, today, 1).is_empty(), "a name alone is not worth a row");
+        assert_eq!(later_time(&timed("Planning", on(12, 9, 0), on(12, 10, 0)), mon), Some("09:00".to_string()));
+        assert_eq!(later_time(&all_day("Home office", 12), mon), None);
+        let party = timed("Party", on(12, 22, 0), on(13, 1, 30));
+        assert_eq!(later_time(&party, on(13, 0, 0).date()), Some(trf("until {time}", &[("time", &"01:30")])));
+        assert_eq!(day_name(mon, today), tr("Tomorrow"));
+        assert_eq!(day_name(wed, today), short_date(wed));
     }
 
     #[test]
