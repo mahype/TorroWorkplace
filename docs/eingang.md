@@ -1,6 +1,6 @@
 # Eingang: eine Stelle für alles, was reinkommt
 
-Stand: 2026-10-11. **Diskussionsgrundlage, noch kein Konzept zur Freigabe.** Baut auf
+Stand: 2026-10-11. **Grundsätze entschieden** (siehe „Entscheidungen“), Einzelheiten ab E4 noch offen. Baut auf
 [mail.md](mail.md) auf und fasst die Ideen „Benachrichtigungen“, „Freigaben-Eingang“ und
 „Chat“ aus dem [App-Katalog](app-catalog.md) zusammen. Die Fragen zum Entscheiden stehen am Ende.
 
@@ -16,7 +16,7 @@ Der Vorschlag: **Die Suite bekommt drei Säulen.**
 
 | Säule | Frage | App |
 |---|---|---|
-| **Eingang** | Was ist reingekommen, und braucht es mich? | neu (Arbeitsname `torroinbox`) |
+| **Eingang** | Was ist reingekommen, und braucht es mich? | neu: **Inbox** (`torroinbox`) |
 | **Termine** | Wann ist was? | `torrocalendar` |
 | **Aufgaben** | Was muss ich tun? | `torrotasks` |
 
@@ -56,7 +56,7 @@ die Tiefe braucht (Ordner, Archiv durchsuchen, lange Texte, Anhänge, Schreiben)
 
 | Weg | Wie | Für | Gegen |
 |---|---|---|---|
-| **A: Ein Eingang, Mail als Quelle (Empfehlung)** | Neue Mail ist ein Eintrag wie jeder andere. Öffnen zeigt die ganze Mail im Paneel. In der Seitenleiste hat jede Quelle eine Gruppe; unter „Mail ▸ mailbox.org“ liegen die Ordner, ein Klick zeigt den Ordner in derselben Liste. Schreiben in eigenem Fenster | Eine Stelle, eine Bedienung, ein Zähler. Passt zur Kontoentscheidung (Gruppen statt Leiste). Weniger Code: eine Liste, ein Paneel | Die App wird größer als Kalender und Aufgaben. Wer „nur Mail“ will, muss filtern (Fenster mit `--source mail` geht) |
+| **A: Ein Eingang, Mail als Quelle (entschieden)** | Neue Mail ist ein Eintrag wie jeder andere. Öffnen zeigt die ganze Mail im Paneel. In der Seitenleiste hat jede Quelle eine Gruppe; unter „Mail ▸ mailbox.org“ liegen die Ordner, ein Klick zeigt den Ordner in derselben Liste. Schreiben in eigenem Fenster | Eine Stelle, eine Bedienung, ein Zähler. Passt zur Kontoentscheidung (Gruppen statt Leiste). Weniger Code: eine Liste, ein Paneel | Die App wird größer als Kalender und Aufgaben. Wer „nur Mail“ will, muss filtern (Fenster mit `--source mail` geht) |
 | B: Eingang + eigene Mail-App | Eingang zeigt neue Mails, die Mail-App macht Ordner, Suche, Schreiben | Klare Rollen, die Mail-App kann Mailbird-artig voll werden | Zwei Orte für dieselbe Mail, gelesen/erledigt muss synchron sein, zwei Apps bauen |
 | C: Nur Mail-App, Benachrichtigungen getrennt | Wie bisher in [mail.md](mail.md), dazu eine Benachrichtigungs-App | Bekannt | Löst das Grundproblem nicht: wieder zwei Glocken |
 
@@ -122,15 +122,16 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
    x@y.de: For me / Info / Block“. Die Antwort gilt dauerhaft für diesen Absender.
 3. **Umsortieren lernt:** Schiebe ich etwas von Info nach Für mich (oder umgekehrt), fragt der
    Eingang „Always for this sender/channel?“.
-4. **Später, abschaltbar:** ein Modell schlägt eine Spur vor und schreibt eine Zeile Zusammenfassung.
-   Nur als Vorschlag, mit Kennzeichnung.
+4. **Optional, nur mit KI-Konto** ([ki.md](ki.md)): ein Modell schlägt eine Spur vor und schreibt
+   eine Zeile Zusammenfassung. Nur als Vorschlag, mit Kennzeichnung; ohne KI-Konto fehlt die Funktion
+   einfach, nichts anderes ändert sich.
 
 **Dringend** ist eine kleine, feste Menge (Freigabe, Agent wartet, Server down, CI rot auf dem
 eigenen PR) und ein Absender, den ich selbst als „VIP“ markiere. Mehr nicht.
 
 **Fokus:** Läuft ein Kalendertermin mit „busy“ oder eine Fokus-Sitzung (App-Idee „Fokus“ im
-Katalog), zeigt der Kern nur Dringendes. Danach kommt eine Sammelmeldung „While you were focused:
-4 for you“. Das ist eine Brücke zwischen Eingang und Kalender, die sonst niemand hat.
+Katalog), zeigt der Kern nur Dringendes, wenn der Schalter dafür an ist (siehe „Ruhe“ unten). Danach
+kommt eine Sammelmeldung. Das ist eine Brücke zwischen Eingang und Kalender, die sonst niemand hat.
 
 ## Quellen
 
@@ -214,14 +215,14 @@ weder Mail noch Slack).
 | Einträge auflisten (Spur, Quelle, Zeitraum, Zustand) | Liste | `inbox.list_items` · Read | `inbox_list_items` |
 | Eintrag lesen (mit Inhalt der Quelle) | Paneel | `inbox.get_item` · Read | `inbox_get_item` |
 | Eintrag melden | – (Skripte, Hooks, Agenten) | `inbox.post_item` · Write | `inbox_post_item` |
-| Erledigt / wieder offen | Taste `e`, Wischen | `inbox.mark_done` · Write | `inbox_mark_done` |
+| Erledigt / wieder offen | Taste `e`, Wischen | `inbox.set_item_done` · Write | `inbox_set_item_done` |
 | Später | Taste `s` | `inbox.snooze_item` · Write | `inbox_snooze_item` |
-| Spur ändern, Absender einordnen | Menü, Screener | `inbox.set_lane` · Write | `inbox_set_lane` |
-| Zu Aufgabe machen | Taste `t` | `inbox.create_task` · Write (braucht auch Tasks-Rechte) | `inbox_create_task` |
+| Spur ändern, Absender einordnen | Menü, Screener | `inbox.set_item_lane` · Write (mit „merken“ Admin) | `inbox_set_item_lane` |
+| Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
-| Quelle stummschalten | Menü | `inbox.mute_source` · Write | `inbox_mute_source` |
+| Quelle stummschalten | Menü | `inbox.mute_source` · Admin | `inbox_mute_source` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
-| Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide` · Admin | **Never** |
+| Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
 **Sicherheit, neu durch den Eingang:**
 
@@ -321,22 +322,45 @@ E1 bis E3 brauchen weder Mail noch eine fremde Anmeldung und machen schon den Ag
 übersichtlicher. Das wäre ein guter erster Schritt, auch um das Gefühl zu prüfen, bevor Mail
 dazukommt.
 
-## Zum Besprechen
+## Entscheidungen (2026-10-11)
 
-1. **Drei Säulen** (Eingang, Termine, Aufgaben) als Leitbild der Suite?
-2. **Mail:** A (Quelle im Eingang), B (Eingang + eigene Mail-App) oder C (getrennt)?
-3. **Name:** „Inbox“ (`torroinbox`)? Andere Ideen: „Desk“, „Radar“, „Pulse“.
-4. **Zwei Spuren** Für mich / Zur Info, oder mehr (HEY hat drei: Imbox, Feed, Paper Trail für
-   Belege)?
-5. **Screener** für neue Absender: ja, oder zu viel Reibung am Anfang?
-6. **Erledigt wirkt zurück:** Soll „erledigt“ eine Mail nur als gelesen markieren oder auch
-   archivieren?
-7. **Fokus** aus dem Kalender ableiten (Termin „busy“ = Ruhe)?
-8. **Agenten:** Rückfragen von Claude Code/Codex im Eingang beantworten (`PermissionRequest`)?
-9. **KI-Sortierung und Zusammenfassung:** gar nicht, nur auf Anfrage über MCP, oder eingebaut mit
-   einem einstellbaren Modell?
-10. **Messenger:** wichtig genug für Stufe 3, und wenn ja, Beeper, Matrix oder Mitlesen?
-11. **Erster Schritt E1–E3** (Suite + Agenten, ohne Mail), bevor der Mail-Kern gebaut wird?
+| # | Frage | Entscheidung |
+|---|---|---|
+| 1 | Drei Säulen | **Ja:** Eingang, Termine, Aufgaben sind das Leitbild der Suite |
+| 2 | Mail | **Weg A:** Mail ist eine Quelle im Eingang, mit voller Tiefe im Paneel und eigenem Schreibfenster |
+| 3 | Name | **Inbox**, Crate und Programm `torroinbox`, Fensterklasse `torro-inbox` |
+| 4 | Spuren | Erst **zwei** (Für mich, Zur Info). Eine dritte Spur **Belege** (siehe unten) ist interessant, entschieden wird mit Mail (E4) |
+| 5 | Screener | **Ja, zum Ausprobieren:** nur für Mail, nur für Absender, die keine feste Regel einordnet |
+| 6 | Erledigt bei Mail | **Vorerst nur gelesen.** Archivieren bleibt ausdrücklich offen: eine abgehakte Mail gehört eigentlich ins Archiv. Entschieden wird mit E4 |
+| 7 | Ruhe im Fokus | **Einstellbar** (Schalter „Quiet during busy events“), Bedeutung siehe unten |
+| 8 | Rückfragen von Agenten beantworten | **Ja, kommt in den Plan** (E2.5), nach den ersten Schritten |
+| 9 | KI-Sortierung und Zusammenfassung | **Ja, aber immer optional.** Braucht KI-Konten in der Steuerzentrale, auch lokale Modelle, Zuordnung je Funktion mit Modell und Aufwand. Eigenes Konzept: [ki.md](ki.md) |
+| 10 | Messenger | **Im zweiten Schritt.** Gute Idee, aber eher privat als geschäftlich |
+| 11 | Erster Schritt | **E1–E3 zuerst**, ohne Mail. Aufgaben: [tasks/eingang.md](tasks/eingang.md). Start erst, wenn die Konten-Aufgaben M7.1/M7.2 fertig sind (gleiche Dateien) |
+
+### Belege: was die dritte Spur wäre
+
+„Belege“ ist **weder „Für mich“ noch „Zur Info“**: Rechnungen, Bestell- und Versandbestätigungen,
+Kontoauszüge, Buchungen, Passwort-Links, Terminbestätigungen. Sie brauchen jetzt nichts von mir (also
+nicht „Für mich“), sind aber auch kein Lesestoff wie ein Newsletter (also nicht „Zur Info“). Man braucht
+sie **später wieder**: für die Steuer, eine Reklamation, die Buchhaltung. HEY nennt das „Paper Trail“.
+
+Eine Belege-Spur würde nie zählen, nie melden, nichts zum Abarbeiten anbieten, sondern nur sammeln und
+gut durchsuchbar halten, später vielleicht mit „an die Buchhaltung weiterleiten“ oder „als PDF ablegen“.
+Erkennen ließe sich vieles an festen Merkmalen (Anhang „Rechnung“/„Invoice“, bekannte Shop-Absender,
+`Auto-Submitted`), der Rest über den Screener.
+
+### Ruhe: was das genau heißt
+
+Ruhe heißt **keine Popups und keine Töne**, sonst ändert sich nichts:
+
+- Einträge kommen weiter in den Eingang, die Zahl am Tray und in der App zählt still mit.
+- **Dringendes kommt trotzdem durch** (Freigabe, Agent wartet, Server down, CI rot am eigenen PR,
+  VIP-Absender). Diese Liste ist fest, damit „Ruhe“ verlässlich bleibt.
+- Nach dem Termin kommt **eine** Sammelmeldung: „While you were in "Kundentermin": 4 for you“.
+- Einstellung in der Steuerzentrale (Seite „Inbox“ bzw. „General“): „Quiet during busy events“ (an/aus,
+  Standard an) und später „Quiet during focus sessions“. Termine mit Frei/Belegt „frei“ oder ganztägige
+  Termine lösen keine Ruhe aus.
 
 ## Quellen der Recherche
 
