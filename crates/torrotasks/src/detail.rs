@@ -476,7 +476,7 @@ mod tests {
     }
 
     fn list(id: &str, name: &str) -> Collection {
-        Collection { id: id.into(), name: name.into(), kind: CollectionKind::Todos, color: None }
+        Collection { id: id.into(), name: name.into(), kind: CollectionKind::Todos, color: None, writable: true }
     }
 
     fn lists() -> Vec<Collection> {

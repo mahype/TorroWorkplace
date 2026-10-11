@@ -235,6 +235,7 @@ impl PimService {
         if event.recurring {
             return Err(recurring());
         }
+        self.check_writable(&event.collection).await?;
         let client = self.client().await?;
         let saved = match moved(event.href.as_deref(), &event.collection) {
             // Moving to another calendar: create there, then remove the old one.
@@ -257,12 +258,14 @@ impl PimService {
         if event.recurring {
             return Err(recurring());
         }
+        self.check_writable(&event.collection).await?;
         self.client().await?.delete_event(&event).await?;
         self.state.write().await.events.retain(|e| e.href != event.href);
         Ok(())
     }
 
     async fn save_todo(&self, todo: Todo) -> Result<Todo, ProviderError> {
+        self.check_writable(&todo.collection).await?;
         let client = self.client().await?;
         let saved = match moved(todo.href.as_deref(), &todo.collection) {
             Some(old_href) => {
@@ -281,9 +284,20 @@ impl PimService {
     }
 
     async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
+        self.check_writable(&todo.collection).await?;
         self.client().await?.delete_todo(&todo).await?;
         self.state.write().await.todos.retain(|t| t.href != todo.href);
         Ok(())
+    }
+
+    /// Refuses writes to collections the server marks read-only (contact birthdays, shared
+    /// calendars without write access).
+    async fn check_writable(&self, collection: &str) -> Result<(), ProviderError> {
+        let state = self.state.read().await;
+        match state.collections.iter().find(|c| c.id == collection) {
+            Some(c) if !c.writable => Err(ProviderError::Other(format!("{} is read-only", c.name))),
+            _ => Ok(()),
+        }
     }
 
     async fn client(&self) -> Result<CalDavClient, ProviderError> {

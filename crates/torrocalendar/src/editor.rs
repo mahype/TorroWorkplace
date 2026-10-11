@@ -31,6 +31,8 @@ pub struct Editor {
     original: Option<Event>,
     /// The calendars to pick from.
     choices: Vec<CalendarChoice>,
+    /// Why the event can only be looked at (recurring, read-only calendar); `None` = editable.
+    read_only: Option<&'static str>,
     form: Form,
     /// The notes as an editor widget; `form.notes` mirrors its text.
     notes: text_editor::Content,
@@ -237,18 +239,19 @@ fn non_empty(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// The calendars to offer. The event's own calendar is kept even when the list does not
-/// have it, so that the event can still be saved.
+/// The writable calendars to offer. The event's own calendar is kept even when it is not
+/// among them, so that it can still be shown.
 fn calendar_choices(calendars: &[Collection], current: Option<&str>) -> Vec<CalendarChoice> {
     let mut choices: Vec<CalendarChoice> = calendars
         .iter()
-        .filter(|c| c.kind.has_events())
+        .filter(|c| c.kind.has_events() && c.writable)
         .map(|c| CalendarChoice { id: c.id.clone(), name: c.name.clone() })
         .collect();
     if let Some(id) = current
         && !choices.iter().any(|c| c.id == id)
     {
-        choices.insert(0, CalendarChoice { id: id.to_string(), name: id.to_string() });
+        let name = calendars.iter().find(|c| c.id == id).map_or_else(|| id.to_string(), |c| c.name.clone());
+        choices.insert(0, CalendarChoice { id: id.to_string(), name });
     }
     choices
 }
@@ -259,14 +262,27 @@ impl Editor {
     pub fn new_event(calendars: &[Collection], date: NaiveDate, time: Option<NaiveTime>) -> Editor {
         let choices = calendar_choices(calendars, None);
         let form = Form::for_new(date, time, choices.first().cloned());
-        Editor { original: None, choices, notes: text_editor::Content::new(), form }
+        Editor { original: None, choices, read_only: None, notes: text_editor::Content::new(), form }
     }
 
     pub fn edit(event: &Event, calendars: &[Collection]) -> Editor {
         let choices = calendar_choices(calendars, Some(&event.collection));
         let calendar = choices.iter().find(|c| c.id == event.collection).cloned();
         let form = Form::from_event(event, calendar);
-        Editor { original: Some(event.clone()), choices, notes: text_editor::Content::with_text(&form.notes), form }
+        let read_only = if event.recurring {
+            Some("Recurring events cannot be edited yet")
+        } else if calendars.iter().any(|c| c.id == event.collection && !c.writable) {
+            Some("This calendar is read-only")
+        } else {
+            None
+        };
+        Editor {
+            original: Some(event.clone()),
+            choices,
+            read_only,
+            notes: text_editor::Content::with_text(&form.notes),
+            form,
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Action {
@@ -292,7 +308,7 @@ impl Editor {
                 }
             }
             Message::Delete => {
-                if let Some(event) = self.original.as_ref().filter(|event| !event.recurring) {
+                if let Some(event) = self.original.as_ref().filter(|_| self.read_only.is_none()) {
                     return Action::Delete(event.clone());
                 }
             }
@@ -306,7 +322,7 @@ impl Editor {
     }
 
     fn is_recurring(&self) -> bool {
-        self.original.as_ref().is_some_and(|event| event.recurring)
+        self.read_only.is_some()
     }
 
     /// The event the form describes today, or why it cannot be saved yet.
@@ -366,7 +382,8 @@ impl Editor {
         card(body.push(actions))
     }
 
-    /// A recurring occurrence: the details as text, a note, and Close.
+    /// A recurring occurrence or an event in a read-only calendar: the details as text, a
+    /// note, and Close.
     fn read_only_view(&self) -> Element<'_, Message> {
         let form = &self.form;
         let when = if form.all_day {
@@ -386,7 +403,9 @@ impl Editor {
         if !form.notes.is_empty() {
             body = body.push(detail(tr("Notes"), form.notes.clone()));
         }
-        body = body.push(text(tr("Recurring events cannot be edited yet")).size(13).color(theme::MUTED));
+        if let Some(reason) = self.read_only {
+            body = body.push(text(tr(reason)).size(13).color(theme::MUTED));
+        }
         let close = row![
             space().width(Length::Fill),
             button(text(tr("Close"))).style(button::secondary).on_press(Message::Cancel)
@@ -458,7 +477,7 @@ mod tests {
     }
 
     fn calendar(id: &str, name: &str) -> Collection {
-        Collection { id: id.into(), name: name.into(), kind: CollectionKind::Events, color: None }
+        Collection { id: id.into(), name: name.into(), kind: CollectionKind::Events, color: None, writable: true }
     }
 
     fn calendars() -> Vec<Collection> {
@@ -701,5 +720,20 @@ mod tests {
         let event = stored("Review", EventTime::Date(day(2026, 10, 11)), None);
         let editor = Editor::edit(&event, &calendars());
         let _view: Element<'_, Message> = editor.view();
+    }
+
+    #[test]
+    fn read_only_calendars_are_not_offered_and_their_events_open_read_only() {
+        let birthdays = Collection { writable: false, ..calendar("birthdays", "Birthdays") };
+        let calendars = vec![calendar("work", "Work"), birthdays];
+        let new = Editor::new_event(&calendars, day(2026, 10, 12), None);
+        assert_eq!(new.choices.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["work"]);
+        let start = EventTime::Date(day(2026, 10, 12));
+        let mut event = stored("Anna", start, Some(EventTime::Date(day(2026, 10, 13))));
+        event.collection = "birthdays".into();
+        let mut editor = Editor::edit(&event, &calendars);
+        assert_eq!(editor.read_only, Some("This calendar is read-only"));
+        assert!(matches!(editor.update(Message::Delete), Action::None));
+        assert!(matches!(editor.update(Message::Save), Action::None));
     }
 }

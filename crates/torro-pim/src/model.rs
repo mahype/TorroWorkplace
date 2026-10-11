@@ -13,6 +13,14 @@ pub struct Collection {
     pub kind: CollectionKind,
     /// `#RRGGBB` as the server reports it, if any.
     pub color: Option<String>,
+    /// The user may add, change and delete items. Shared read-only calendars and
+    /// Nextcloud's contact birthdays are not writable.
+    #[serde(default = "writable_by_default")]
+    pub writable: bool,
+}
+
+fn writable_by_default() -> bool {
+    true
 }
 
 /// What a collection holds. A CalDAV calendar may hold both.

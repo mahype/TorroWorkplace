@@ -31,7 +31,7 @@ impl CalDavClient {
             self.find_href(&self.base, "<d:current-user-principal/>", NS_DAV, "current-user-principal").await?;
         let home = self.find_href(&principal, "<c:calendar-home-set/>", NS_CALDAV, "calendar-home-set").await?;
         let body = r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">
-  <d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><c:supported-calendar-component-set/></d:prop>
+  <d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><c:supported-calendar-component-set/><d:current-user-privilege-set/></d:prop>
 </d:propfind>"#;
         let xml = self.request("PROPFIND", &home, "1", body).await?;
         let doc = parse_xml(&xml)?;
@@ -58,14 +58,15 @@ impl CalDavClient {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| {
-                    url.path_segments().and_then(|mut s| s.rfind(|p| !p.is_empty())).unwrap_or("Kalender")
+                    url.path_segments().and_then(|mut s| s.rfind(|p| !p.is_empty())).unwrap_or("Calendar")
                 })
                 .to_string();
             let color = child(prop, NS_APPLE, "calendar-color")
                 .and_then(|n| n.text())
                 .map(|c| c.trim().chars().take(7).collect::<String>())
                 .filter(|c| c.len() == 7 && c.starts_with('#'));
-            collections.push(Collection { id: url.to_string(), name, kind, color });
+            let writable = writable(prop);
+            collections.push(Collection { id: url.to_string(), name, kind, color, writable });
         }
         Ok(collections)
     }
@@ -140,6 +141,17 @@ impl CalDavClient {
             status => Err(ProviderError::Other(format!("{url}: HTTP {}", status.as_u16()))),
         }
     }
+}
+
+/// Whether `current-user-privilege-set` allows changing items. A server that does not report
+/// the set is trusted to allow it; a write attempt would still fail cleanly.
+fn writable(prop: roxmltree::Node<'_, '_>) -> bool {
+    let Some(set) = child(prop, NS_DAV, "current-user-privilege-set") else { return true };
+    set.children().filter(|n| is(*n, NS_DAV, "privilege")).flat_map(|privilege| privilege.children()).any(|p| {
+        p.is_element()
+            && p.tag_name().namespace() == Some(NS_DAV)
+            && matches!(p.tag_name().name(), "all" | "write" | "write-content" | "bind")
+    })
 }
 
 fn parse_xml(xml: &str) -> Result<roxmltree::Document<'_>, ProviderError> {
@@ -325,5 +337,25 @@ END:VCALENDAR
             .and_then(|p| child(p, NS_DAV, "displayname"))
             .and_then(|n| n.text());
         assert_eq!(name, Some("Persönlich"));
+    }
+
+    #[test]
+    fn privilege_set_decides_writability() {
+        let prop = |privileges: &str| {
+            format!(
+                r#"<d:prop xmlns:d="DAV:"><d:current-user-privilege-set>{privileges}</d:current-user-privilege-set></d:prop>"#
+            )
+        };
+        let check = |xml: String| {
+            let doc = roxmltree::Document::parse(&xml).expect("xml");
+            writable(doc.root_element())
+        };
+        assert!(check(prop("<d:privilege><d:read/></d:privilege><d:privilege><d:write/></d:privilege>")));
+        assert!(check(prop("<d:privilege><d:all/></d:privilege>")));
+        assert!(!check(prop(
+            "<d:privilege><d:read/></d:privilege><d:privilege><d:read-current-user-privilege-set/></d:privilege>"
+        )));
+        let none = roxmltree::Document::parse(r#"<d:prop xmlns:d="DAV:"/>"#).expect("xml");
+        assert!(writable(none.root_element()));
     }
 }

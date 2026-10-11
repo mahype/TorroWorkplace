@@ -440,6 +440,8 @@ impl App {
         matches!(self.account, Some(AccountState::Connected { .. }))
     }
 
+    /// All event calendars; the editor offers the writable ones and opens events of the
+    /// others read-only.
     fn writable_calendars(&self) -> Vec<Collection> {
         self.collections.iter().filter(|c| c.kind.has_events()).cloned().collect()
     }

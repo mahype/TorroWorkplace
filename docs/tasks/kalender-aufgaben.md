@@ -87,6 +87,28 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Modell:** Haiku · **Braucht:** K.0 (für die Eingaben K.1)
 - **Dateien:** `crates/torrotasks/src/detail.rs`
 
+### K.17 Schrift Inter in allen Apps
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** K.1
+- **Dateien:** `crates/torro-gui/assets/fonts/` (neu), `crates/torro-gui/src/{lib,theme,connect}.rs`,
+  `crates/torrocalendar/src/main.rs`, `crates/torrotasks/src/main.rs`
+- Warum: Die Apps nutzen heute die Systemschrift (`Font::DEFAULT`), unter Linux z. B. Liberation
+  Sans. Ziel des Design-Skills (`.claude/skills/torro-design`): eine schöne, gut lesbare UI-Schrift,
+  auf jedem System gleich.
+- Inter (SIL Open Font License 1.1) aus dem offiziellen Release (github.com/rsms/inter, aktuelle
+  4.x) holen: die statischen TTF-Schnitte **Regular, Medium, SemiBold** nach
+  `crates/torro-gui/assets/fonts/`, dazu die Lizenz als `OFL.txt`. Keine weiteren Schnitte.
+- `torro-gui` stellt bereit: `theme::FONT` (Familie „Inter“, Regular), `theme::FONT_MEDIUM`,
+  `theme::FONT_SEMIBOLD` sowie `torro_gui::fonts()` mit den eingebetteten Dateien
+  (`include_bytes!`). Doc-Kommentare sagen, wofür welches Gewicht da ist (Text / Hervorhebung und
+  Knöpfe / Titel).
+- Beide Apps laden die Schriften (`.font(…)` je Datei) und setzen `.default_font(theme::FONT)`.
+- Anmeldebildschirm (`connect.rs`): Überschrift von 26/Bold auf 24/`FONT_SEMIBOLD`.
+- **Abnahme:** Test, dass jede eingebettete Datei eine gültige TTF ist (beginnt mit `00 01 00 00`)
+  und nicht leer; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Sichtprüfung beider Apps mit
+  `--demo` über den Agenten `torro-design-review` zeigt Inter. Im Bericht nennen, welche Inter-Version
+  eingebunden ist.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag

@@ -164,6 +164,7 @@ mod tests {
             name: "Work".into(),
             kind: CollectionKind::Both,
             color: Some("#3366ff".into()),
+            writable: true,
         }
     }
 

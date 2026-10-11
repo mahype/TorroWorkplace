@@ -105,6 +105,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Start time is not valid, e.g. 14:30", "Startzeit ungültig, z. B. 14:30"),
     ("The end date must not be before the start date", "Das Enddatum darf nicht vor dem Startdatum liegen"),
     ("The end must be after the start", "Das Ende muss nach dem Beginn liegen"),
+    ("This calendar is read-only", "Dieser Kalender ist schreibgeschützt"),
     ("Time", "Uhrzeit"),
     ("When", "Wann"),
     ("(untitled)", "(ohne Titel)"),

@@ -177,7 +177,7 @@ impl App {
             Message::Select(index) => {
                 if let Some(todo) = self.todos.get(index) {
                     self.selected = Some(index);
-                    self.detail = Some(Detail::new(todo, &self.todo_lists(), &self.todos));
+                    self.detail = Some(Detail::new(todo, &self.writable_lists(), &self.todos));
                 }
             }
             Message::Detail(message) => {
@@ -204,7 +204,7 @@ impl App {
                 Ok(saved) => {
                     // The panel keeps editing the stored version, with its new etag.
                     if self.detail.as_ref().is_some_and(|d| d.original.uid == saved.uid) {
-                        self.detail = Some(Detail::new(&saved, &self.todo_lists(), &self.todos));
+                        self.detail = Some(Detail::new(&saved, &self.writable_lists(), &self.todos));
                     }
                     return self.load();
                 }
@@ -309,12 +309,18 @@ impl App {
         self.collections.iter().filter(|c| c.kind.has_todos()).cloned().collect()
     }
 
-    /// Where quick add puts a new task: the open list, else the first task list.
+    /// Where quick add puts a new task: the open list when it is writable, else the first
+    /// writable task list.
     fn target_list(&self) -> Option<String> {
+        let writable = self.writable_lists();
         match &self.filter {
-            Filter::List(id) => Some(id.clone()),
-            _ => self.todo_lists().first().map(|c| c.id.clone()),
+            Filter::List(id) if writable.iter().any(|c| &c.id == id) => Some(id.clone()),
+            _ => writable.first().map(|c| c.id.clone()),
         }
+    }
+
+    fn writable_lists(&self) -> Vec<Collection> {
+        self.todo_lists().into_iter().filter(|c| c.writable).collect()
     }
 
     fn connected(&self) -> bool {
