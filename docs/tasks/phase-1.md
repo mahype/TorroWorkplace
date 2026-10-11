@@ -97,7 +97,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests lesen die Fixtures und prüfen Felder und Filter.
 
 ### 1.5 Hyprland: Fenster und Workspace abfragen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.3, 1.4
 - **Dateien:** `crates/torro-wm/src/hyprland/mod.rs`
 - **Ziel:** `active_workspace()`, `windows(workspace)` und `monitors()` des Traits für Hyprland. `windows`
