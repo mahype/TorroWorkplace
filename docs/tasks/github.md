@@ -210,6 +210,10 @@ K.21 (frei)
   PRs Review-Stand und CI. Gruppierung nach Repo. Detail im Paneel: Text als Markdown (nur lesen), Labels,
   Zuständige, Meilenstein, Hauptknopf „Open on GitHub“.
 - **API/MCP:** liest über `tasks.list_lists`/`tasks.list_todos` (gibt es).
+- **Fund aus G.1:** `shell::account_groups` zählt ein GitHub-Konto ohne Listen mit (eine Nextcloud + GitHub zeigt
+  dann eine überflüssige Konto-Überschrift), und `torro_pim::account::combined_state` hält eine reine
+  GitHub-Einrichtung für „verbunden“ (die Kalender-App zeigt dann nicht „No calendar account yet“). Nur Konten
+  mit Sammlungen der jeweiligen Art zählen.
 - Abnahme: Sichtprüfung `--demo` in allen Größenklassen (`torro-design-review`).
 
 ### G.4 Dialog: Filterliste anlegen und bearbeiten
