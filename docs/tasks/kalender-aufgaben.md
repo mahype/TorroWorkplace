@@ -250,7 +250,7 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   Screenshots Breit und Mittel (hell und dunkel) ansehen und im Bericht bewerten.
 
 ### K.22 Kalender: Radar
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torrocalendar/src/views/radar.rs` (neu, bei Bedarf
   `views/radar/layout.rs`), `crates/torrocalendar/src/views/mod.rs` (nur `pub mod radar;`),
   `crates/torrocalendar/src/app.rs` (`CalView::Radar`, Taste `R`, `Open::Radar`/`--open radar`,

@@ -55,10 +55,13 @@ pub enum CalView {
     Month,
     Agenda,
     Timeline,
+    /// The next twelve hours on a clock face (`views::radar`).
+    Radar,
 }
 
 impl CalView {
-    const ALL: [CalView; 5] = [CalView::Day, CalView::Week, CalView::Month, CalView::Agenda, CalView::Timeline];
+    const ALL: [CalView; 6] =
+        [CalView::Day, CalView::Week, CalView::Month, CalView::Agenda, CalView::Timeline, CalView::Radar];
 
     fn label(self) -> &'static str {
         match self {
@@ -67,6 +70,7 @@ impl CalView {
             CalView::Month => tr("Month"),
             CalView::Agenda => tr("Agenda"),
             CalView::Timeline => tr("Timeline"),
+            CalView::Radar => tr("Radar"),
         }
     }
 
@@ -78,6 +82,7 @@ impl CalView {
             CalView::Month => Icon::Calendar,
             CalView::Agenda => Icon::List,
             CalView::Timeline => Icon::ChartGantt,
+            CalView::Radar => Icon::Radar,
         }
     }
 
@@ -90,6 +95,7 @@ impl CalView {
             CalView::Agenda => "A",
             // T alone goes to today.
             CalView::Timeline => "⇧T",
+            CalView::Radar => "R",
         }
     }
 }
@@ -130,6 +136,7 @@ pub enum Open {
     Month,
     Agenda,
     Timeline,
+    Radar,
     /// The side panel with the first event that is not part of a series.
     Editor,
     /// The side panel with a new event.
@@ -151,12 +158,13 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 14] = [
+    const ALL: [(&'static str, Open); 15] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
         ("agenda", Open::Agenda),
         ("timeline", Open::Timeline),
+        ("radar", Open::Radar),
         ("editor", Open::Editor),
         ("editor-new", Open::EditorNew),
         ("editor-read-only", Open::EditorReadOnly),
@@ -176,6 +184,7 @@ impl Open {
             Open::Month => Some(CalView::Month),
             Open::Agenda => Some(CalView::Agenda),
             Open::Timeline => Some(CalView::Timeline),
+            Open::Radar => Some(CalView::Radar),
             _ => None,
         }
     }
@@ -308,6 +317,9 @@ pub struct App {
     view: CalView,
     /// The date the view is built around.
     anchor: NaiveDate,
+    /// How far the radar looks ahead of now, in minutes (negative: back); 0 is now. Window
+    /// state like a scroll position: kept while other views are shown, reset by "Today".
+    look_ahead: i64,
     account: Option<AccountState>,
     connect: Connect,
     collections: Vec<Collection>,
@@ -351,9 +363,14 @@ pub enum Message {
     Connect(connect::Message),
     Loaded(Result<(Vec<Collection>, Vec<Event>), String>),
     SetView(CalView),
+    /// ‹ or ←: one view-length back (the radar: an hour).
     Prev,
+    /// › or →: one view-length ahead (the radar: an hour).
     Next,
+    /// "Today", T, the radar's "Back to now": today, and the radar back at now.
     Today,
+    /// The wheel over the radar: look this many minutes further ahead (negative: back).
+    LookAhead(i64),
     Refresh,
     /// The error state's "Retry": ask for the account again, or reload the events.
     Retry,
@@ -410,7 +427,7 @@ pub enum Message {
 }
 
 /// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
-/// not count): N new event, T today, ←/→ back/forward, D/W/M/A and Shift + T the views, `[` the
+/// not count): N new event, T today, ←/→ back/forward, D/W/M/A/R and Shift + T the views, `[` the
 /// sidebar. Keys a text input already used are ignored.
 fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     use iced::keyboard::{Event as Key, Key as Name, key::Named};
@@ -436,6 +453,7 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
             "w" => Some(Message::SetView(CalView::Week)),
             "m" => Some(Message::SetView(CalView::Month)),
             "a" => Some(Message::SetView(CalView::Agenda)),
+            "r" => Some(Message::SetView(CalView::Radar)),
             _ => None,
         },
         _ => None,
@@ -452,6 +470,7 @@ impl App {
             now,
             view: open.and_then(Open::view).unwrap_or(CalView::Week),
             anchor: now.date(),
+            look_ahead: 0,
             account: None,
             connect: Connect,
             collections: Vec::new(),
@@ -583,9 +602,15 @@ impl App {
                 self.close_menus();
                 return self.load().chain(self.scroll_to_morning());
             }
+            Message::Prev if self.shown() == CalView::Radar => return self.look(-views::radar::HOUR_STEP),
+            Message::Next if self.shown() == CalView::Radar => return self.look(views::radar::HOUR_STEP),
             Message::Prev => return self.go_to(self.step(-1)),
             Message::Next => return self.go_to(self.step(1)),
-            Message::Today => return self.go_to(self.now.date()),
+            Message::Today => {
+                self.look_ahead = 0;
+                return self.go_to(self.now.date());
+            }
+            Message::LookAhead(minutes) => return self.look(minutes),
             Message::GoTo(date) => {
                 self.close_menus();
                 return self.go_to(date);
@@ -878,7 +903,11 @@ impl App {
             shell::header_bar([], title, trailing)
         } else {
             // The short date: the long one ("Monday, 12 October 2026") squeezes the buttons.
-            let title = if self.shown() == CalView::Day { short_date(self.anchor) } else { title };
+            let title = match self.shown() {
+                CalView::Day => short_date(self.anchor),
+                CalView::Radar => short_date(self.radar_start().date()),
+                _ => title,
+            };
             let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::XS)]
                 .spacing(space::S)
                 .align_y(Alignment::Center);
@@ -996,10 +1025,17 @@ impl App {
     }
 
     /// The properties column of the wide layout: what is left of the day beside the day view
-    /// (`views::week::day_props`). The other views fill the width and have none.
+    /// (`views::week::day_props`), the radar's list beside the radar. The other views fill the
+    /// width and have none.
     fn props(&self, class: SizeClass) -> Option<Element<'_, Message>> {
-        let shows_day = shell::has_props(class) && self.shown() == CalView::Day;
-        (shows_day && self.loaded && self.error.is_none()).then(|| views::week::day_props(&self.view_data()))
+        if !shell::has_props(class) || !self.loaded || self.error.is_some() {
+            return None;
+        }
+        match self.shown() {
+            CalView::Day => Some(views::week::day_props(&self.view_data())),
+            CalView::Radar => Some(views::radar::list(&self.view_data(), &self.calendar_order(), self.look_ahead)),
+            _ => None,
+        }
     }
 
     /// What the current view gets to draw.
@@ -1074,7 +1110,34 @@ impl App {
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data),
             CalView::Timeline => views::timeline::view(data, &self.timeline),
+            CalView::Radar => {
+                let list = match self.class() {
+                    SizeClass::Wide => views::radar::ListAt::Props,
+                    SizeClass::Narrow => views::radar::ListAt::Below,
+                    _ => views::radar::ListAt::Beside,
+                };
+                views::radar::view(data, &self.calendar_order(), self.look_ahead, list)
+            }
         }
+    }
+
+    /// The ids of the event calendars in the order of the sidebar: the radar's rings.
+    fn calendar_order(&self) -> Vec<String> {
+        self.calendars().into_iter().map(|(calendar, _, _)| calendar.id.clone()).collect()
+    }
+
+    /// Where the radar's window starts: now plus the look-ahead.
+    fn radar_start(&self) -> NaiveDateTime {
+        self.now + Days::minutes(self.look_ahead)
+    }
+
+    /// Looks `minutes` further ahead with the radar (kept to `views::radar::clamp_offset`); the
+    /// anchor (and with it the small month) follows the day of the window, and the events are
+    /// loaded again when that day changes.
+    fn look(&mut self, minutes: i64) -> Task<Message> {
+        self.look_ahead = views::radar::clamp_offset(self.look_ahead + minutes);
+        let day = self.radar_start().date();
+        if day == self.anchor { Task::none() } else { self.go_to(day) }
     }
 
     /// The loaded events of the shown calendars, with their calendar's colour.
@@ -1140,6 +1203,11 @@ impl App {
             }
             CalView::Agenda => (self.anchor, self.anchor + Days::days(AGENDA_DAYS)),
             CalView::Timeline => (self.anchor - Days::days(1), self.anchor + Days::days(TIMELINE_DAYS)),
+            // The window (twelve hours, so at most into the next day) and what comes after it.
+            CalView::Radar => {
+                let day = self.radar_start().date();
+                (day, day + Days::days(2))
+            }
         }
     }
 
@@ -1151,12 +1219,15 @@ impl App {
             CalView::Month => mini_month::shift(self.anchor, direction as i32),
             CalView::Agenda => self.anchor + Days::days(AGENDA_DAYS * direction),
             CalView::Timeline => self.anchor + Days::days(TIMELINE_DAYS * direction),
+            // The radar moves by the hour ([`App::look`]), not by days.
+            CalView::Radar => self.anchor,
         }
     }
 
     fn heading(&self) -> String {
         match self.shown() {
             CalView::Day => format_long_date(self.anchor),
+            CalView::Radar => format_long_date(self.radar_start().date()),
             CalView::Week => {
                 let start = week_start(self.anchor);
                 trf(
@@ -1188,6 +1259,7 @@ impl App {
         let month_year = |date: NaiveDate| format!("{} {}", month_name(date.month()), date.year());
         match self.shown() {
             CalView::Day => (format_long_date(self.anchor), None),
+            CalView::Radar => (format_long_date(self.radar_start().date()), None),
             CalView::Week => {
                 let thursday = week_start(self.anchor) + Days::days(3);
                 (month_year(thursday), Some(trf("Week {week}", &[("week", &thursday.iso_week().week())])))
@@ -1216,7 +1288,7 @@ impl App {
     fn scroll_to_morning(&mut self) -> Task<Message> {
         match self.shown() {
             CalView::Day | CalView::Week => views::week::scroll_to_morning(),
-            CalView::Month | CalView::Agenda => Task::none(),
+            CalView::Month | CalView::Agenda | CalView::Radar => Task::none(),
             CalView::Timeline => {
                 let (first, after) = self.range();
                 self.timeline.show(self.anchor.and_time(self.now.time()), first, after)
@@ -1725,9 +1797,53 @@ mod tests {
             ("month", CalView::Month),
             ("agenda", CalView::Agenda),
             ("timeline", CalView::Timeline),
+            ("radar", CalView::Radar),
         ] {
             assert_eq!(launched(&["--demo", "--open", word]).view, view);
         }
+    }
+
+    #[test]
+    fn the_radar_looks_ahead_by_the_hour_and_comes_back_to_now() {
+        let mut app = launched(&["--demo", "--open", "radar", "--now", "2026-10-13T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!((app.shown(), app.range()), (CalView::Radar, (date(2026, 10, 13), date(2026, 10, 15))));
+        let _ = app.update(Message::Next);
+        let _ = app.update(Message::LookAhead(-views::radar::WHEEL_STEP));
+        assert_eq!(app.look_ahead, 45, "an hour ahead, a quarter back");
+        for _ in 0..30 {
+            let _ = app.update(Message::Next);
+        }
+        assert_eq!(app.look_ahead, 24 * 60, "a day ahead at most");
+        assert_eq!(app.anchor, date(2026, 10, 14), "the day follows the window");
+        assert_eq!(app.range(), (date(2026, 10, 14), date(2026, 10, 16)));
+        let _ = app.update(Message::SetView(CalView::Week));
+        let _ = app.update(Message::SetView(CalView::Radar));
+        assert_eq!(app.look_ahead, 24 * 60, "kept while another view is shown");
+        let _ = app.update(Message::Today);
+        assert_eq!((app.look_ahead, app.anchor), (0, date(2026, 10, 13)));
+        let _ = app.update(Message::Prev);
+        assert_eq!(app.look_ahead, -60);
+        let _ = app.update(Message::SetView(CalView::Day));
+        let _ = app.update(Message::Next);
+        assert_eq!((app.look_ahead, app.anchor), (-60, date(2026, 10, 14)), "other views step by days");
+    }
+
+    #[test]
+    fn the_radar_key_is_r() {
+        use iced::keyboard::{Event, Key, Location, Modifiers, key::Physical};
+        let press = iced::Event::Keyboard(Event::KeyPressed {
+            key: Key::Character("r".into()),
+            modified_key: Key::Character("r".into()),
+            physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: Some("r".into()),
+            repeat: false,
+        });
+        let message = shortcut(press, iced::event::Status::Ignored, iced::window::Id::unique());
+        assert!(matches!(message, Some(Message::SetView(CalView::Radar))));
+        assert_eq!(CalView::Radar.key(), "R");
     }
 
     #[test]
