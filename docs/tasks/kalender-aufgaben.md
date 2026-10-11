@@ -418,6 +418,36 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   Woche, Zeitstrahl, Radar), abgesagte durchgestrichen.
 - **API / MCP:** kein neuer Request; `Event` wird reicher (Skill `torro-api`, Review danach).
 
+### K.27 Nachtzeiten einstellen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.21, K.25 · **Dateien:** `crates/torro-core/src/settings.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs` (bzw. wo
+  `SetSetting` behandelt wird), `crates/torroworkplace/src/ui/{general,apps}.rs` (eins davon, nennen),
+  `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/{timeline,radar}.rs` und ihre
+  `layout.rs`, `docs/api-reference.md`
+- Wunsch des Nutzers (2026-10-11): die Nacht selbst festlegen, per Doppelklick auf den Mond und in den
+  Einstellungen. Heute stehen 22–06 als Konstanten in Zeitstrahl und Radar.
+- **Einstellung:** `Settings::night { from, to }` (Uhrzeiten auf 15 min, Standard 22:00–06:00,
+  `#[serde(default)]`); über Mitternacht ist der Normalfall, `from == to` heißt „keine Nacht“ (nichts
+  eingeklappt, kein Nachtsektor). Gilt suite-weit; offene Kalenderfenster übernehmen eine Änderung live
+  (wie `appearance`/`zoom`).
+- **Oberfläche:**
+  - Kalender: **Doppelklick auf den Mond** – im Radar auf das Mond-Icon, im Zeitstrahl auf den Mond im
+    eingeklappten Band (ein einfacher Klick klappt weiter auf) – öffnet eine schwebende Karte „Night“
+    mit zwei Zeitfeldern „From“/„To“ (15-min-Raster), „Save“ und „No night“. Tooltip am Mond:
+    „Double-click to set the night“. Zeitstrahl, Radar und die freie Zeit (die die Nacht auslässt)
+    rechnen mit den eingestellten Zeiten.
+  - Steuerzentrale: Zeile „Night“ mit denselben Feldern (Abschnitt General oder Apps › Calendar, je
+    nachdem, wo es App-Einstellungen gibt; im Bericht nennen).
+- **API:** `SettingKey::Night` mit Wert `{ "from": "22:00", "to": "06:00" }` über den vorhandenen
+  `Request::SetSetting` · `settings.set_setting` · Admin; Katalogbeschreibung ergänzen; gelesen über
+  `settings.get_settings`.
+- **MCP:** vorhandenes Tool `settings_set_setting` (Beschreibung nennt `night`).
+- **Abnahme:** Tests: Standard, über Mitternacht, `from == to`, ungültige Werte abgelehnt (`error` mit
+  Grund), Zeitstrahl-Segmente und Radar-Nachtsektor mit anderen Zeiten (z. B. 23:30–07:00), freie Zeit
+  ohne Nacht, Doppelklick-Erkennung; API-Referenz neu erzeugt; fmt/clippy/test (auch `TORRO_LANG=de`)
+  grün; Sichtprüfung der Karte und der Einstellungszeile, hell/dunkel.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag
