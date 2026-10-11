@@ -10,6 +10,7 @@
 //! one with `.style(…)` for a quieter colour, e.g. `text_3` for a secondary icon. Use [`SIZE`]
 //! for icons on their own and [`SIZE_SM`] inside buttons.
 
+use iced::Color;
 use iced::widget::{Svg, svg};
 
 use crate::theme::palette;
@@ -40,6 +41,7 @@ pub enum Icon {
     ListTodo,
     Inbox,
     Sun,
+    Moon,
     Settings,
     User,
     Users,
@@ -89,6 +91,7 @@ impl Icon {
         Icon::ListTodo,
         Icon::Inbox,
         Icon::Sun,
+        Icon::Moon,
         Icon::Settings,
         Icon::User,
         Icon::Users,
@@ -118,6 +121,16 @@ impl Icon {
         Icon::Sparkles,
     ];
 
+    /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
+    /// where the colour filter of the [`icon`] widget does not reach:
+    /// `frame.draw_svg(bounds, &Icon::Moon.tinted(palette(theme).text_3))`. Take the colour from the
+    /// current [`palette`] at draw time, so it follows light and dark.
+    pub fn tinted(self, color: Color) -> svg::Handle {
+        let [r, g, b, _] = color.into_rgba8();
+        let svg = String::from_utf8_lossy(self.svg()).replace("currentColor", &format!("#{r:02X}{g:02X}{b:02X}"));
+        svg::Handle::from_memory(svg.into_bytes())
+    }
+
     /// The SVG file bytes, compiled into the binary.
     fn svg(self) -> &'static [u8] {
         match self {
@@ -138,6 +151,7 @@ impl Icon {
             Icon::ListTodo => include_bytes!("../assets/icons/list-todo.svg"),
             Icon::Inbox => include_bytes!("../assets/icons/inbox.svg"),
             Icon::Sun => include_bytes!("../assets/icons/sun.svg"),
+            Icon::Moon => include_bytes!("../assets/icons/moon.svg"),
             Icon::Settings => include_bytes!("../assets/icons/settings.svg"),
             Icon::User => include_bytes!("../assets/icons/user.svg"),
             Icon::Users => include_bytes!("../assets/icons/users.svg"),
@@ -204,5 +218,13 @@ mod tests {
             let _ = icon(which, SIZE_SM);
         }
         assert_eq!((SIZE, SIZE_SM), (16.0, 14.0));
+    }
+
+    #[test]
+    fn a_tinted_icon_strokes_in_the_given_colour() {
+        let svg = std::str::from_utf8(Icon::Moon.svg()).expect("UTF-8");
+        assert!(svg.contains("currentColor"), "the files leave the colour to the user");
+        let tinted = format!("{:?}", Icon::Moon.tinted(Color::from_rgb8(0x8A, 0x8F, 0x98)));
+        assert_ne!(tinted, format!("{:?}", Icon::Moon.tinted(Color::BLACK)), "another colour, another image");
     }
 }

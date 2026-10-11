@@ -45,19 +45,20 @@ use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimSource};
 
 use crate::editor::{self, Editor};
-use crate::views::{self, Item, ViewData, glance, mini_month, short_date, week_strip};
+use crate::views::{self, Item, ViewData, glance, mini_month, short_date, timeline, week_strip};
 
-/// The four views.
+/// The views.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalView {
     Day,
     Week,
     Month,
     Agenda,
+    Timeline,
 }
 
 impl CalView {
-    const ALL: [CalView; 4] = [CalView::Day, CalView::Week, CalView::Month, CalView::Agenda];
+    const ALL: [CalView; 5] = [CalView::Day, CalView::Week, CalView::Month, CalView::Agenda, CalView::Timeline];
 
     fn label(self) -> &'static str {
         match self {
@@ -65,6 +66,7 @@ impl CalView {
             CalView::Week => tr("Week"),
             CalView::Month => tr("Month"),
             CalView::Agenda => tr("Agenda"),
+            CalView::Timeline => tr("Timeline"),
         }
     }
 
@@ -75,6 +77,7 @@ impl CalView {
             CalView::Week => Icon::CalendarRange,
             CalView::Month => Icon::Calendar,
             CalView::Agenda => Icon::List,
+            CalView::Timeline => Icon::ChartGantt,
         }
     }
 
@@ -85,16 +88,19 @@ impl CalView {
             CalView::Week => "W",
             CalView::Month => "M",
             CalView::Agenda => "A",
+            // T alone goes to today.
+            CalView::Timeline => "⇧T",
         }
     }
 }
 
-/// The view the narrow layout shows for the chosen `view`: a week as one day (under the week
-/// strip), a month as the agenda; seven columns or a month grid do not fit 360–600 px. Every other
-/// layout shows the chosen view.
+/// The view the narrow layout shows for the chosen `view`: a week or the timeline as one day (under
+/// the week strip), a month as the agenda; seven columns, a film strip of days or a month grid do
+/// not fit 360–600 px. Every other layout shows the chosen view.
 fn shown_in(view: CalView, class: SizeClass) -> CalView {
     match (class, view) {
         (SizeClass::Narrow, CalView::Week) => CalView::Day,
+        (SizeClass::Narrow, CalView::Timeline) => CalView::Day,
         (SizeClass::Narrow, CalView::Month) => CalView::Agenda,
         _ => view,
     }
@@ -123,6 +129,7 @@ pub enum Open {
     Week,
     Month,
     Agenda,
+    Timeline,
     /// The side panel with the first event that is not part of a series.
     Editor,
     /// The side panel with a new event.
@@ -144,11 +151,12 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 13] = [
+    const ALL: [(&'static str, Open); 14] = [
         ("day", Open::Day),
         ("week", Open::Week),
         ("month", Open::Month),
         ("agenda", Open::Agenda),
+        ("timeline", Open::Timeline),
         ("editor", Open::Editor),
         ("editor-new", Open::EditorNew),
         ("editor-read-only", Open::EditorReadOnly),
@@ -160,13 +168,14 @@ impl Open {
         ("loading", Open::Loading),
     ];
 
-    /// The view this state shows, for the four view states.
+    /// The view this state shows, for the view states.
     fn view(self) -> Option<CalView> {
         match self {
             Open::Day => Some(CalView::Day),
             Open::Week => Some(CalView::Week),
             Open::Month => Some(CalView::Month),
             Open::Agenda => Some(CalView::Agenda),
+            Open::Timeline => Some(CalView::Timeline),
             _ => None,
         }
     }
@@ -281,6 +290,9 @@ const DEMO_ERROR: &str = "the server did not answer (demo)";
 /// Days the agenda shows from its anchor on.
 const AGENDA_DAYS: i64 = 30;
 
+/// Days the timeline shows from its anchor on (after the day before it), and its step for ‹ ›.
+const TIMELINE_DAYS: i64 = 7;
+
 /// How long typing rests before the editor saves it (as in the task detail).
 const AUTOSAVE: Duration = Duration::from_secs(1);
 
@@ -329,6 +341,8 @@ pub struct App {
     system_mode: Mode,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
+    /// The timeline's unfolded nights and scroll position (window state, nothing is stored).
+    timeline: timeline::State,
 }
 
 #[derive(Debug, Clone)]
@@ -391,11 +405,13 @@ pub enum Message {
     Appearance(Result<Appearance, String>),
     /// The zoom keys, the stored zoom and its badge.
     Zoom(zoom::Message),
+    /// The timeline's scroll position, wheel and nights.
+    Timeline(timeline::Change),
 }
 
 /// Keyboard shortcuts while nothing lies over the window (the side panel beside the view does
-/// not count): N new event, T today, ←/→ back/forward, D/W/M/A the views, `[` the sidebar. Keys a
-/// text input already used are ignored.
+/// not count): N new event, T today, ←/→ back/forward, D/W/M/A and Shift + T the views, `[` the
+/// sidebar. Keys a text input already used are ignored.
 fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     use iced::keyboard::{Event as Key, Key as Name, key::Named};
     if status == iced::event::Status::Captured {
@@ -413,6 +429,8 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         Name::Named(Named::ArrowRight) => Some(Message::Next),
         Name::Character(c) => match c {
             "n" => Some(Message::NewEventHere),
+            // Iced reports the key without Shift, so Shift + T arrives as "t".
+            "t" if modifiers.shift() => Some(Message::SetView(CalView::Timeline)),
             "t" => Some(Message::Today),
             "d" => Some(Message::SetView(CalView::Day)),
             "w" => Some(Message::SetView(CalView::Week)),
@@ -460,6 +478,7 @@ impl App {
             zoom,
             launch,
             opened: false,
+            timeline: timeline::State::default(),
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
@@ -556,6 +575,10 @@ impl App {
                 }
             }
             Message::SetView(view) => {
+                if view != self.view {
+                    // Another view goes away: a timeline coming up is a new scrollable.
+                    self.timeline.forget_viewport();
+                }
                 self.view = view;
                 self.close_menus();
                 return self.load().chain(self.scroll_to_morning());
@@ -722,6 +745,10 @@ impl App {
                 let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
                 return Task::batch([task, size]);
             }
+            Message::Timeline(change) => {
+                let (first, after) = self.range();
+                return self.timeline.update(change, first, after);
+            }
         }
         Task::none()
     }
@@ -808,8 +835,9 @@ impl App {
     /// The header bar (`calendar.html`, `.header`):
     ///
     /// - **Wide:** "October 2026 Week 41", "Today", ‹ ›; at the right the views as a segmented
-    ///   control, refresh and "New event".
+    ///   control, refresh and "New event". The timeline adds "Nights" before the views.
     /// - **Medium:** the views (and calendars) in "Week ▾"; the rail beside it has the panel button.
+    ///   The timeline's "Nights" is the moon alone.
     /// - **Narrow:** without the note and "Today" (the small month in the drawer and the T key go
     ///   to today), the day as "Wed, 7 Oct", and "New event" reduced to "+". "Day ▾" names the
     ///   view shown ([`App::shown`]).
@@ -830,13 +858,24 @@ impl App {
             .align_y(Alignment::Center);
             let primary =
                 widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
+            let mut trailing = Vec::new();
+            if self.shown() == CalView::Timeline {
+                let nights = Some(Message::Timeline(timeline::Change::ToggleNights));
+                trailing.push(if class == SizeClass::Wide {
+                    widgets::text_button(Some(Icon::Moon), tr("Nights"), style::button::ghost, nights)
+                } else {
+                    widgets::icon_button(Icon::Moon, tr("Nights"), nights)
+                });
+            }
             if class == SizeClass::Wide {
                 let segments = CalView::ALL.map(|view| (view.label(), Message::SetView(view)));
                 let active = CalView::ALL.iter().position(|view| *view == self.view).unwrap_or_default();
-                shell::header_bar([], title, [widgets::segmented(segments, active), refresh, primary])
+                trailing.push(widgets::segmented(segments, active));
             } else {
-                shell::header_bar([], title, [select(), refresh, primary])
+                trailing.push(select());
             }
+            trailing.extend([refresh, primary]);
+            shell::header_bar([], title, trailing)
         } else {
             // The short date: the long one ("Monday, 12 October 2026") squeezes the buttons.
             let title = if self.shown() == CalView::Day { short_date(self.anchor) } else { title };
@@ -1034,6 +1073,7 @@ impl App {
             CalView::Day | CalView::Week => views::week::view(data),
             CalView::Month => views::month::view(data),
             CalView::Agenda => views::agenda::view(data),
+            CalView::Timeline => views::timeline::view(data, &self.timeline),
         }
     }
 
@@ -1076,6 +1116,11 @@ impl App {
                 let start = week_start(self.anchor);
                 (start, start + Days::days(7))
             }
+            // The last night of the timeline runs into the morning after its last day.
+            _ if self.shown() == CalView::Timeline => {
+                let (start, end) = self.range();
+                (start, end + Days::days(1))
+            }
             _ => self.range(),
         }
     }
@@ -1094,6 +1139,7 @@ impl App {
                 (start, start + Days::days(42))
             }
             CalView::Agenda => (self.anchor, self.anchor + Days::days(AGENDA_DAYS)),
+            CalView::Timeline => (self.anchor - Days::days(1), self.anchor + Days::days(TIMELINE_DAYS)),
         }
     }
 
@@ -1104,6 +1150,7 @@ impl App {
             CalView::Week => self.anchor + Days::days(7 * direction),
             CalView::Month => mini_month::shift(self.anchor, direction as i32),
             CalView::Agenda => self.anchor + Days::days(AGENDA_DAYS * direction),
+            CalView::Timeline => self.anchor + Days::days(TIMELINE_DAYS * direction),
         }
     }
 
@@ -1123,11 +1170,20 @@ impl App {
             }
             CalView::Month => format!("{} {}", month_name(self.anchor.month()), self.anchor.year()),
             CalView::Agenda => trf("From {date}", &[("date", &format_long_date(self.anchor))]),
+            CalView::Timeline => trf(
+                "Week {week} · {month} {year}",
+                &[
+                    ("week", &self.anchor.iso_week().week()),
+                    ("month", &month_name(self.anchor.month())),
+                    ("year", &self.anchor.year()),
+                ],
+            ),
         }
     }
 
     /// The header title and its quiet note: "October 2026" and "Week 41" for the week (the month
-    /// of its Thursday, as ISO weeks count), the long date for a day, the month otherwise.
+    /// of its Thursday, as ISO weeks count) and for the timeline (the anchor's), the long date for
+    /// a day, the month otherwise.
     fn title_parts(&self) -> (String, Option<String>) {
         let month_year = |date: NaiveDate| format!("{} {}", month_name(date.month()), date.year());
         match self.shown() {
@@ -1137,6 +1193,9 @@ impl App {
                 (month_year(thursday), Some(trf("Week {week}", &[("week", &thursday.iso_week().week())])))
             }
             CalView::Month | CalView::Agenda => (month_year(self.anchor), None),
+            CalView::Timeline => {
+                (month_year(self.anchor), Some(trf("Week {week}", &[("week", &self.anchor.iso_week().week())])))
+            }
         }
     }
 
@@ -1152,11 +1211,16 @@ impl App {
         self.drawer = false;
     }
 
-    /// Day and week open at 07:00 instead of midnight.
-    fn scroll_to_morning(&self) -> Task<Message> {
+    /// Day and week open at 07:00 instead of midnight; the timeline with now (or the time of now
+    /// on the anchor's day) at 30 % of its width.
+    fn scroll_to_morning(&mut self) -> Task<Message> {
         match self.shown() {
             CalView::Day | CalView::Week => views::week::scroll_to_morning(),
             CalView::Month | CalView::Agenda => Task::none(),
+            CalView::Timeline => {
+                let (first, after) = self.range();
+                self.timeline.show(self.anchor.and_time(self.now.time()), first, after)
+            }
         }
     }
 
@@ -1255,20 +1319,59 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_bracket_toggles_the_sidebar() {
-        use iced::keyboard::{Event, Key, Location, Modifiers, key::Physical};
+    /// The message of pressing `key` with `modifiers` while nothing has taken it.
+    fn press(key: &str, modifiers: iced::keyboard::Modifiers) -> Option<Message> {
+        use iced::keyboard::{Event, Key, Location, key::Physical};
         let press = iced::Event::Keyboard(Event::KeyPressed {
-            key: Key::Character("[".into()),
-            modified_key: Key::Character("[".into()),
+            key: Key::Character(key.into()),
+            modified_key: Key::Character(key.into()),
             physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
             location: Location::Standard,
-            modifiers: Modifiers::empty(),
-            text: Some("[".into()),
+            modifiers,
+            text: Some(key.into()),
             repeat: false,
         });
-        let message = shortcut(press, iced::event::Status::Ignored, iced::window::Id::unique());
+        shortcut(press, iced::event::Status::Ignored, iced::window::Id::unique())
+    }
+
+    #[test]
+    fn the_bracket_toggles_the_sidebar() {
+        let message = press("[", iced::keyboard::Modifiers::empty());
         assert!(matches!(message, Some(Message::ToggleSidebar)));
+    }
+
+    #[test]
+    fn t_goes_to_today_and_shift_t_to_the_timeline() {
+        use iced::keyboard::Modifiers;
+        assert!(matches!(press("t", Modifiers::empty()), Some(Message::Today)));
+        assert!(matches!(press("t", Modifiers::SHIFT), Some(Message::SetView(CalView::Timeline))));
+    }
+
+    #[test]
+    fn the_timeline_shows_the_day_before_and_seven_after_and_steps_a_week() {
+        let mut app = launched(&["--demo", "--now", "2026-10-13T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::SetView(CalView::Timeline));
+        assert_eq!(app.range(), (date(2026, 10, 12), date(2026, 10, 20)));
+        assert_eq!(app.load_range(), (date(2026, 10, 12), date(2026, 10, 21)), "the last night until 06:00");
+        let _ = app.update(Message::Next);
+        assert_eq!(app.anchor, date(2026, 10, 20));
+        assert_eq!(app.title_parts(), (format!("{} 2026", month_name(10)), Some(trf("Week {week}", &[("week", &43)]))));
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!((app.view, app.shown()), (CalView::Timeline, CalView::Day), "narrow shows the day");
+    }
+
+    #[test]
+    fn the_timeline_scrolls_to_now_once_its_scrollable_reports_its_width() {
+        let mut app = launched(&["--demo", "--now", "2026-10-13T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::SetView(CalView::Timeline));
+        let report = Message::Timeline(timeline::Change::Scrolled { offset: 0.0, width: 1100.0 });
+        assert!(app.update(report.clone()).units() > 0, "the scroll waited for the width");
+        assert_eq!(app.update(report).units(), 0);
+        assert!(app.update(Message::Today).units() > 0);
+        let _ = app.update(Message::Timeline(timeline::Change::ToggleNights));
+        let _ = app.view();
     }
 
     #[test]
@@ -1616,9 +1719,13 @@ mod tests {
 
     #[test]
     fn the_view_states_choose_the_view() {
-        for (word, view) in
-            [("day", CalView::Day), ("week", CalView::Week), ("month", CalView::Month), ("agenda", CalView::Agenda)]
-        {
+        for (word, view) in [
+            ("day", CalView::Day),
+            ("week", CalView::Week),
+            ("month", CalView::Month),
+            ("agenda", CalView::Agenda),
+            ("timeline", CalView::Timeline),
+        ] {
             assert_eq!(launched(&["--demo", "--open", word]).view, view);
         }
     }

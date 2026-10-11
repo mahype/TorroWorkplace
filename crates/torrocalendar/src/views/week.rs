@@ -19,7 +19,7 @@
 //! The geometry (time ↔ y, splitting at midnight, lanes, free gaps, hit-testing) is in
 //! `week/layout.rs`.
 
-mod layout;
+pub(super) mod layout;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use iced::alignment::{Horizontal, Vertical};
@@ -48,11 +48,11 @@ pub const SCROLL_ID: Id = Id::new("torrocalendar.week.grid");
 const UNTITLED: &str = "(untitled)";
 
 /// The day number in the header: 13/500 with tabular figures (`.dayhead b`).
-const DAY_NUMBER: typo::Level = typo::BODY_STRONG.tabular();
+pub(super) const DAY_NUMBER: typo::Level = typo::BODY_STRONG.tabular();
 /// Edge of the box around a day number, and of today's red circle (`.dayhead b`, 24).
-const DAY_CIRCLE: f32 = space::XL;
+pub(super) const DAY_CIRCLE: f32 = space::XL;
 /// Width of the colour bar on the left of events and all-day chips (`inset 3px 0 0`).
-const BAR: f32 = 3.0;
+pub(super) const BAR: f32 = 3.0;
 /// Text inside events and chips starts this far from their left edge: the bar plus 6
 /// (`.ev{padding:3px 6px 3px 9px}`).
 const TEXT_LEFT: f32 = 9.0;
@@ -71,15 +71,15 @@ const PAST_OPACITY: f32 = 0.55;
 /// Weekend columns get this much of the window background over the panel (`.daycols > .weekend`).
 const WEEKEND_SHADE: f32 = 0.35;
 /// Gaps between events this long or longer show "2 h free" (minutes).
-const FREE_MINUTES: f32 = 120.0;
+pub(super) const FREE_MINUTES: f32 = 120.0;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, white on red
 /// (`.nowlabel{font:500 11px/16px}`).
-const NOW_LABEL: typo::Level =
+pub(super) const NOW_LABEL: typo::Level =
     typo::Level { font: theme::FONT_TABULAR_MEDIUM, line_height: typo::CAPTION.line_height, ..typo::MICRO };
 /// Width of the now label: fits "23:59" with 3 on each side, and the narrow axis.
-const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
+pub(super) const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// Radius of the dot at the start of the now line (7 across, `.now::before`).
-const NOW_DOT: f32 = 3.5;
+pub(super) const NOW_DOT: f32 = 3.5;
 /// The ring around the event open in the side panel stands this far off its edge
 /// (`.ev.sel{outline:2px solid var(--focus);outline-offset:1px}`).
 const RING_OFFSET: f32 = size::HAIRLINE;
@@ -295,7 +295,7 @@ impl Plan {
 
 /// Start and end in local time, and whether the entry goes into the all-day strip: a
 /// date-only entry, or one lasting a day or more.
-fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
+pub(super) fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
     let start = match event.start {
         EventTime::Date(day) => day.and_time(NaiveTime::MIN),
         EventTime::DateTime(at) => to_local(at),
@@ -310,7 +310,7 @@ fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
     (start, end, all_day)
 }
 
-fn title(event: &CalendarEvent) -> String {
+pub(super) fn title(event: &CalendarEvent) -> String {
     let summary = event.summary.trim();
     if summary.is_empty() { tr(UNTITLED).to_string() } else { summary.to_string() }
 }
@@ -322,12 +322,12 @@ fn is_weekend(day: NaiveDate) -> bool {
 /// The hand over everything a click does something on (an event, a bar, an empty slot or day
 /// cell), the plain arrow elsewhere (the time axis). The same hit-test as the click, so the
 /// cursor never promises more than a press does.
-fn pointer_if(clickable: bool) -> mouse::Interaction {
+pub(super) fn pointer_if(clickable: bool) -> mouse::Interaction {
     if clickable { mouse::Interaction::Pointer } else { mouse::Interaction::Idle }
 }
 
 /// The left-button press in `bounds`, relative to its top left corner.
-fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Point> {
+pub(super) fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Point> {
     match event {
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => cursor.position_in(bounds),
         _ => None,
@@ -649,16 +649,16 @@ impl canvas::Program<Message> for Grid {
 /// full-colour bar, title in `text`, time in `text_2`, place in `text_3`. A past entry is faded
 /// towards its background as a whole (55 %), like CSS `opacity` – composed by hand, because a
 /// canvas cannot fade a group of shapes.
-struct Tone {
-    fill: Color,
-    bar: Color,
-    title: Color,
-    time: Color,
+pub(super) struct Tone {
+    pub(super) fill: Color,
+    pub(super) bar: Color,
+    pub(super) title: Color,
+    pub(super) time: Color,
     place: Color,
 }
 
 impl Tone {
-    fn of(p: &Palette, color: Color, under: Color, past: bool) -> Tone {
+    pub(super) fn of(p: &Palette, color: Color, under: Color, past: bool) -> Tone {
         // The tint is laid over the panel, not the weekend shade, so an event looks the same on
         // every day (`color-mix(var(--c) var(--tint), var(--panel))`).
         let fill = over(p.tinted(color), p.panel);
@@ -670,7 +670,7 @@ impl Tone {
 /// The surface of an event or chip: rounded `radius::XS`, no border, the bar on the left. The
 /// bar is the whole shape in the calendar colour with the tinted body laid over all but its
 /// first 3 px, which clips the bar to the rounded corners as CSS's inset shadow does.
-fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
+pub(super) fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
     frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::XS)), tone.bar);
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     let body_radius = Radius::new(0.0).right(radius::XS);
@@ -680,7 +680,7 @@ fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
 /// The outline of the event open in the side panel: a ring in `focus_ring`, as wide as the focus
 /// ring of the controls, [`RING_OFFSET`] off the block's edge and rounded along with it. Neutral
 /// like every selection; the calendar colour stays the block's own.
-fn selection_ring(frame: &mut Frame, rect: Rectangle, p: &Palette) {
+pub(super) fn selection_ring(frame: &mut Frame, rect: Rectangle, p: &Palette) {
     let grow = RING_OFFSET + style::FOCUS_RING_WIDTH / 2.0;
     let ring = Rectangle {
         x: rect.x - grow,
@@ -783,21 +783,21 @@ fn now_line(frame: &mut Frame, p: &Palette, x0: f32, width: f32, y: f32, now: Na
     label(frame, &format_time(now), at, NOW_LABEL, p.on_accent, Alignment::Center, Vertical::Center);
 }
 
-fn line_height(level: typo::Level) -> f32 {
+pub(super) fn line_height(level: typo::Level) -> f32 {
     level.line_height.to_absolute(level.size).0
 }
 
-fn fill(frame: &mut Frame, rect: Rectangle, color: Color) {
+pub(super) fn fill(frame: &mut Frame, rect: Rectangle, color: Color) {
     frame.fill_rectangle(rect.position(), rect.size(), color);
 }
 
 /// A 1-px line.
-fn line(frame: &mut Frame, from: Point, to: Point, color: Color) {
+pub(super) fn line(frame: &mut Frame, from: Point, to: Point, color: Color) {
     frame.stroke(&Path::line(from, to), Stroke::default().with_color(color).with_width(1.0));
 }
 
 /// One line of text in `level` (size, line height and Inter cut), never wrapped.
-fn label(
+pub(super) fn label(
     frame: &mut Frame,
     content: &str,
     position: Point,

@@ -9,6 +9,7 @@ pub mod agenda;
 pub mod glance;
 pub mod mini_month;
 pub mod month;
+pub mod timeline;
 pub mod week;
 pub mod week_strip;
 

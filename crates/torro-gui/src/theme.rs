@@ -143,6 +143,10 @@ pub struct Palette {
     pub shadow: Shadow,
     /// Dims the window behind a modal dialog.
     pub scrim: Color,
+    /// The night in the calendar's timeline (22:00–06:00): the band of a folded night, and – at
+    /// 60 % over [`Palette::panel`] – the ground of an unfolded one. A cool, quiet blue-grey;
+    /// `text_3` on it stays readable (≥ 4.5:1).
+    pub night: Color,
 }
 
 impl Palette {
@@ -225,6 +229,7 @@ const DARK: Palette = Palette {
     tint: 0.18,
     shadow: shadow(0.5),
     scrim: black(0.62),
+    night: hex(0x121626),
 };
 
 const LIGHT: Palette = Palette {
@@ -252,6 +257,7 @@ const LIGHT: Palette = Palette {
     tint: 0.14,
     shadow: shadow(0.12),
     scrim: black(0.3),
+    night: hex(0xE3E7F1),
 };
 
 /// The tokens of the mode `theme` is in: [`Palette::light`] for a light theme, otherwise
@@ -484,6 +490,16 @@ mod tests {
             assert!(ratio >= 4.5, "{mode}: attention_text on {surface} is {ratio:.2}:1");
         }
         assert_eq!(Palette::dark().attention_text, Palette::dark().attention, "dark mode keeps the status colour");
+    }
+
+    #[test]
+    fn quiet_text_is_readable_on_the_night() {
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            let ratio = p.text_3.relative_contrast(p.night);
+            assert!(ratio >= 4.5, "{mode}: text_3 on night is {ratio:.2}:1");
+        }
+        assert_eq!(Palette::dark().night.into_rgba8(), [0x12, 0x16, 0x26, 0xFF]);
+        assert_eq!(Palette::light().night.into_rgba8(), [0xE3, 0xE7, 0xF1, 0xFF]);
     }
 
     #[test]

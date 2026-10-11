@@ -209,7 +209,7 @@ K.21 und K.22 laufen parallel: in `app.rs`, `views/mod.rs` und `icon.rs` nur die
 Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordination trägt sie ein).
 
 ### K.21 Kalender: Zeitstrahl (Timeline)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torrocalendar/src/views/timeline.rs` (neu, bei Bedarf
   `views/timeline/layout.rs` wie bei der Woche), `crates/torrocalendar/src/views/mod.rs` (nur
   `pub mod timeline;`), `crates/torrocalendar/src/app.rs` (`CalView::Timeline`, Taste `T`,
