@@ -149,6 +149,8 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Drosseln:** Gezählt werden nur **neue** Vorgänge (Zusammenführen in einen offenen `thread_key`
   zählt nicht): normale Clients 30 je Stunde, Hook-Clients 120 je Stunde, darüber `busy`.
   `resolve_items` wird nie gedrosselt.
+- **Längen begrenzen:** `title` auf 200 und `body` auf 4000 Zeichen kürzen (an einer Zeichengrenze, mit
+  „…“). Agenten schicken sonst ihre ganze letzte Antwort mit (Hinweis aus E2.2a).
 - Im Dienst: Vertagtes zur Zeit aufwecken, einmal täglich aufräumen.
 - Die App fragt wie Kalender und Aufgaben im Takt nach (`iced::time::every`); ein `subscribe` gibt es
   noch nicht und gehört nicht in diese Aufgabe.
