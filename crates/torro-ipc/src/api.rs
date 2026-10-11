@@ -631,7 +631,9 @@ static SAVE_EVENT: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Creates an event (without `href`) or changes one (with `href` and `etag` from list_events) on \
-                  the server and returns it as stored. Recurring events cannot be changed yet.",
+                  the server and returns it as stored. Recurring events cannot be changed yet. Changing \
+                  `collection` moves it to another calendar of the same account; moving to another account fails \
+                  with `unsupported`.",
 };
 
 static DELETE_EVENT: Command = Command {
@@ -666,7 +668,9 @@ static SAVE_TODO: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Creates a task (without `href`) or changes one (with `href` and `etag` from list_todos) on the \
-                  server and returns it as stored. Marking a task done is a change.",
+                  server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
+                  it to another calendar of the same account; moving to another account fails with \
+                  `unsupported`.",
 };
 
 static DELETE_TODO: Command = Command {
@@ -716,7 +720,7 @@ static REMOVE_ACCOUNT: Command = Command {
     mcp: Mcp::Tool,
     description: "Removes one account (id from list_accounts) from this device: revokes its app password on the \
                   server where possible and deletes its stored secret and its cached calendars and tasks. Other \
-                  accounts stay.",
+                  accounts stay. An unknown id fails with `not-found`.",
 };
 
 static GET_SETTINGS: Command = Command {

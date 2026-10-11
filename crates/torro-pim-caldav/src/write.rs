@@ -8,6 +8,10 @@
 //! `ProviderError::Conflict`. The new ETag comes from the PUT answer's `ETag` header; when
 //! the server sends none, it is fetched with a PROPFIND `getetag` on the href.
 //!
+//! Every PUT, DELETE and GET carries the account's password, so its URL must lie on the
+//! client's own server (`CalDavClient::on_server`, task M1.4); a collection or href on another
+//! host is refused before anything is sent.
+//!
 //! An existing item (with `href`) is never written or deleted without its ETag (task A.2b): a
 //! PUT or DELETE without `If-Match` would blindly replace whatever the server holds now, a
 //! whole series included. [`CalDavClient::stored_item`] reads what is there, so the core can
@@ -181,6 +185,8 @@ impl CalDavClient {
                 (url.clone(), url.to_string())
             }
         };
+        // The password goes with the PUT: never to another server than the account's.
+        let url = self.on_server(url)?;
         let request = self
             .http
             .put(url.clone())
@@ -212,7 +218,7 @@ impl CalDavClient {
     ) -> Result<(), ProviderError> {
         let Some(href) = href else { return Ok(()) };
         let (header, value) = precondition(Some(href), etag)?;
-        let url = resolve(collection, href)?;
+        let url = self.on_server(resolve(collection, href)?)?;
         let request =
             self.http.delete(url.clone()).basic_auth(&self.username, Some(&self.password)).header(header, value);
         let response = request.send().await.map_err(transport_error)?;
@@ -250,7 +256,7 @@ impl CalDavClient {
 
     /// GETs one item directly in `collection` ([`item_url`]); `Ok(None)` on 404.
     async fn fetch_item(&self, collection: &str, href: &str) -> Result<Option<Fetched>, ProviderError> {
-        let url = resolve(collection, href)?;
+        let url = self.on_server(resolve(collection, href)?)?;
         let response = self
             .http
             .get(url.clone())

@@ -60,7 +60,14 @@ impl SettingsStore {
     }
 
     /// Saves `new` and applies what changed compared to the stored settings.
+    ///
+    /// A hidden collection named by a bare URL, as before several accounts existed, is refused
+    /// and nothing is written (task M1.4): the old ids were rewritten once when the core started,
+    /// and one coming back later would otherwise belong to no account, or by chance to the first.
     pub fn update(&self, new: Settings) -> Result<(), String> {
+        if let Some(bare) = new.hidden_collections.iter().find(|id| torro_pim::account::is_legacy_id(id)) {
+            return Err(format!("{bare:?} is not a collection id; use the ids from accounts.list_accounts"));
+        }
         self.change(|settings| *settings = new)
     }
 

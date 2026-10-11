@@ -222,8 +222,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Workspace ist nicht leer. Wähle „Hinzufügen“ oder „Ersetzen“.",
     ),
     (
-        "Your Nextcloud account was removed from this device at the server's request.",
-        "Dein Nextcloud-Konto wurde auf Wunsch des Servers von diesem Gerät entfernt.",
+        "Your Nextcloud account {account} was removed from this device at the server's request.",
+        "Dein Nextcloud-Konto {account} wurde auf Wunsch des Servers von diesem Gerät entfernt.",
     ),
     ("{name} · {n} windows", "{name} · {n} Fenster"),
     ("{n} windows", "{n} Fenster"),

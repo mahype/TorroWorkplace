@@ -162,11 +162,16 @@ pub enum Request {
     Events { start: DateTime<Utc>, end: DateTime<Utc> },
     #[serde(rename = "tasks.list_todos")]
     Todos,
-    /// Creates (`href: None`) or updates; answered with [`Response::Event`].
+    /// Creates (`href: None`) or updates; answered with [`Response::Event`]. `collection` must be
+    /// the exact id of a listed calendar, else `not-found`. Changing `collection` moves it to
+    /// another calendar of the same account; moving to another account fails with `unsupported`.
     #[serde(rename = "calendar.save_event")]
     SaveEvent { event: Event },
     #[serde(rename = "calendar.delete_event")]
     DeleteEvent { event: Event },
+    /// Creates (`href: None`) or updates; answered with [`Response::Todo`]. `collection` must be
+    /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
+    /// another calendar of the same account; moving to another account fails with `unsupported`.
     #[serde(rename = "tasks.save_todo")]
     SaveTodo { todo: Todo },
     #[serde(rename = "tasks.delete_todo")]
@@ -176,7 +181,8 @@ pub enum Request {
     #[serde(rename = "settings.get_settings")]
     Settings,
     /// Replaces the settings; the core applies what changed (start at login, hidden
-    /// collections; the language applies to processes started afterwards).
+    /// collections; the language applies to processes started afterwards). A hidden collection
+    /// named by a bare URL instead of its id is answered with `error` and nothing changes.
     #[serde(rename = "settings.update_settings")]
     UpdateSettings { settings: Settings },
     /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
@@ -199,6 +205,8 @@ pub enum Request {
     Accounts,
     /// Removes the account `id` (from [`Request::Accounts`]), its secret, its cached data and,
     /// where the server allows, its app password there. Other accounts stay as they are.
+    /// Answered with [`Response::Ok`]; an unknown id is `not-found`, a keychain or file that
+    /// cannot be changed `error`.
     #[serde(rename = "accounts.remove_account")]
     RemoveAccount { id: String },
     /// Renames a template; its id stays.
@@ -228,7 +236,8 @@ pub enum Request {
         template: RightsTemplate,
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
-    /// [`Response::Ok`]; an unknown id is `not-found`.
+    /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
+    /// bare URL instead of its id is `error` and changes nothing.
     #[serde(rename = "clients.update_client")]
     UpdateClient { id: String, rights: Rights },
     /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops

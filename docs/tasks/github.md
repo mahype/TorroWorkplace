@@ -60,7 +60,7 @@ K.21 (frei)
 - Abnahme: Sichtprüfung mit `--demo` (zwei Konten), mit einem Konto unverändert.
 
 ### M1.4 Konten absichern (aus der API-Prüfung von M1.1)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M1.1 · **Dateien:** `crates/torroworkplace/src/{pim,account,core,clients,settings_service}.rs`,
   `crates/torro-pim-caldav/src/{client,write,nextcloud}.rs`, `crates/torro-pim/src/account.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torro-core/src/i18n/de.rs` (nur die Meldung zur Fernlöschung)

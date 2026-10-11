@@ -7,6 +7,11 @@
 //! `torro_core::account` (accounts.json + keychain), `torro_pim_caldav::nextcloud`
 //! (`normalize_server`, `start_login`, `LoginFlow::poll`, `dav_url`), `torro_pim_caldav::
 //! http_client`, `torro_pim_caldav::CalDavClient`. `pim.rs` (task K.5) uses this module.
+//!
+//! Task M1.4: a sign-in names the account after the server it was started at, and only when the
+//! server's answer names the same origin ([`signed_in_account`]), so no server can pose as an
+//! account the user has elsewhere and take over its app password. An account whose secret is
+//! missing is still loaded ([`Stored::Unusable`]), so it shows up and can be removed.
 
 use std::future::Future;
 use std::path::Path;
@@ -33,21 +38,52 @@ pub struct Connected {
     pub app_password: String,
 }
 
-/// Every stored Nextcloud account with its secret from the keychain, in the order of
-/// `accounts.json` (task M1.1). An account whose secret is gone is left out with a log line: it
-/// cannot sign in, and signing in to it again brings it back.
-pub fn stored() -> Result<Vec<Connected>, String> {
-    let mut connected = Vec::new();
-    for account in account::load().map_err(|err| err.to_string())? {
-        if account.kind != AccountKind::Nextcloud {
-            continue;
-        }
-        match account.secret().map_err(|err| err.to_string())? {
-            Some(app_password) => connected.push(Connected { account, app_password }),
-            None => eprintln!("torroworkplace: {} has no secret in the keychain; sign in again", account.id),
+/// One stored Nextcloud account as the core loads it ([`stored`]).
+#[derive(Debug, Clone)]
+pub enum Stored {
+    /// With its app password from the keychain: ready to sync.
+    Ready(Connected),
+    /// Its app password is missing, or the keychain failed to read it. The core lists it with
+    /// `problem` (it starts with "Sign in again"), sends nothing to its server and lets the user
+    /// sign in to it again or remove it.
+    Unusable { account: Account, problem: String },
+}
+
+impl Stored {
+    pub fn account(&self) -> &Account {
+        match self {
+            Stored::Ready(connected) => &connected.account,
+            Stored::Unusable { account, .. } => account,
         }
     }
-    Ok(connected)
+}
+
+/// Every stored Nextcloud account, in the order of `accounts.json` (task M1.1), each with its
+/// secret from the keychain. A secret that is missing or cannot be read costs only that account
+/// ([`Stored::Unusable`]), never the others (task M1.4). An unreadable `accounts.json` is an error.
+pub fn stored() -> Result<Vec<Stored>, String> {
+    let accounts = account::load().map_err(|err| err.to_string())?;
+    Ok(with_secrets(accounts, |account| account.secret().map_err(|err| err.to_string())))
+}
+
+/// The Nextcloud accounts of `accounts` with what `secret` finds for each; the keychain is a
+/// parameter so the sorting can be tested without one.
+fn with_secrets(accounts: Vec<Account>, secret: impl Fn(&Account) -> Result<Option<String>, String>) -> Vec<Stored> {
+    accounts
+        .into_iter()
+        .filter(|account| account.kind == AccountKind::Nextcloud)
+        .map(|account| match secret(&account) {
+            Ok(Some(app_password)) => Stored::Ready(Connected { account, app_password }),
+            Ok(None) => {
+                eprintln!("torroworkplace: {} has no secret in the keychain; sign in again", account.id);
+                Stored::Unusable { account, problem: "Sign in again: no app password is stored on this device".into() }
+            }
+            Err(err) => {
+                eprintln!("torroworkplace: cannot read the secret of {}: {err}", account.id);
+                Stored::Unusable { account, problem: format!("Sign in again: the keychain could not be read ({err})") }
+            }
+        })
+        .collect()
 }
 
 /// The account that owned every collection before the core held several (task M1.1): the
@@ -77,16 +113,52 @@ pub async fn start(http: &reqwest::Client, server_input: &str) -> Result<LoginFl
 
 /// Polls every 2 s until the user granted access (at most 20 minutes), then stores the
 /// account next to the others ([`with_account`]) and its app password.
+///
+/// The account is the one [`signed_in_account`] accepts; a server that names another origin is
+/// refused and nothing is stored. Signing in to an account that exists replaces its app
+/// password; the old one is then revoked on the server in the background (best effort), so it
+/// does not stay valid under "Devices & sessions".
 pub async fn finish(http: &reqwest::Client, flow: &LoginFlow) -> Result<Connected, String> {
     let credentials = poll_until_granted(|| flow.poll(http), POLL_INTERVAL, SIGN_IN_TIMEOUT).await?;
-    keychain(move || {
-        let account = Account::nextcloud(&credentials.server, &credentials.login_name);
-        account.set_secret(&credentials.app_password).map_err(|err| err.to_string())?;
+    let account = signed_in_account(&flow.server, &credentials)?;
+    let connected = Connected { account, app_password: credentials.app_password };
+    let storing = connected.clone();
+    let replaced = keychain(move || {
+        let account = &storing.account;
+        // Only to revoke it afterwards: a secret that cannot be read stays valid on the server.
+        let replaced = account.secret().ok().flatten();
+        account.set_secret(&storing.app_password).map_err(|err| err.to_string())?;
         let accounts = with_account(account::load().map_err(|err| err.to_string())?, account.clone());
         account::save(&accounts).map_err(|err| err.to_string())?;
-        Ok(Connected { account, app_password: credentials.app_password })
+        Ok(replaced)
     })
-    .await
+    .await?;
+    if let Some(old) = replaced.filter(|old| *old != connected.app_password) {
+        let (http, old) = (http.clone(), Connected { account: connected.account.clone(), app_password: old });
+        tokio::spawn(async move {
+            if let Err(err) = revoke(&http, &old).await {
+                eprintln!("torroworkplace: the replaced app password was not revoked on the server: {err}");
+            }
+        });
+    }
+    Ok(connected)
+}
+
+/// The account a finished sign-in adds: named after `server`, where the sign-in started
+/// ([`LoginFlow::server`], normalized), with the login name the server reports.
+///
+/// Refused when the server names another origin in its answer (`credentials.server`), and when
+/// the login name is empty or holds a `/`: account ids are the front part of collection ids, and
+/// a `/` in one could make it look like the start of another account's.
+fn signed_in_account(server: &str, credentials: &Credentials) -> Result<Account, String> {
+    if !nextcloud::same_origin(server, &credentials.server) {
+        return Err(format!("sign-in refused: started at {server}, but the server named {}", credentials.server));
+    }
+    let login_name = credentials.login_name.as_str();
+    if login_name.is_empty() || login_name.contains('/') {
+        return Err(format!("sign-in refused: the server sent an unusable login name {login_name:?}"));
+    }
+    Ok(Account::nextcloud(server, login_name))
 }
 
 /// `accounts` with `account` added at the end, or in place of the one with the same id (signing
@@ -261,6 +333,71 @@ mod tests {
         assert_eq!(accounts, [anna.clone(), bob.clone()]);
         let moved = Account { server: "https://cloud.example.org/".into(), ..anna.clone() };
         assert_eq!(with_account(accounts, moved.clone()), [moved, bob], "same id: replaced in place");
+    }
+
+    #[test]
+    fn a_sign_in_is_named_after_the_server_it_started_at() {
+        let account = signed_in_account("https://cloud.example.org", &granted()).expect("same server");
+        assert_eq!(account.id, "nextcloud:anna@cloud.example.org");
+        assert_eq!(account.server, "https://cloud.example.org");
+        // Nextcloud may spell its address differently; the id follows what the user signed in at.
+        let reported = Credentials { server: "https://cloud.example.org:443/".into(), ..granted() };
+        let account = signed_in_account("https://cloud.example.org", &reported).expect("same origin");
+        assert_eq!(account.id, "nextcloud:anna@cloud.example.org");
+        let sub = Credentials { server: "https://example.org/nc".into(), ..granted() };
+        assert_eq!(
+            signed_in_account("https://example.org/nc", &sub).map(|a| a.id),
+            Ok("nextcloud:anna@example.org/nc".into())
+        );
+    }
+
+    #[test]
+    fn a_sign_in_that_names_another_server_or_a_strange_login_is_refused() {
+        // A server that poses as the user's account elsewhere, or names a path that would make
+        // its id look like the start of another one.
+        for server in [
+            "https://other.example.org",
+            "http://cloud.example.org",
+            "https://cloud.example.org:8443",
+            "https://cloud.example.org.evil.example/https:",
+            "",
+        ] {
+            let credentials = Credentials { server: server.into(), ..granted() };
+            assert!(signed_in_account("https://cloud.example.org", &credentials).is_err(), "{server}");
+        }
+        let posing = Credentials { server: "https://cloud.example.org".into(), ..granted() };
+        assert!(signed_in_account("https://evil.example.org", &posing).is_err(), "named after where it started");
+        for login_name in ["", "anna@cloud.example.org/https:", "a/b"] {
+            let credentials = Credentials { login_name: login_name.into(), ..granted() };
+            assert!(signed_in_account("https://cloud.example.org", &credentials).is_err(), "{login_name:?}");
+        }
+    }
+
+    #[test]
+    fn an_account_without_secret_is_loaded_with_a_problem_and_does_not_stop_the_others() {
+        let accounts = vec![
+            Account::nextcloud("https://cloud.example.org", "anna"),
+            Account::nextcloud("https://other.example.org", "bob"),
+            Account::nextcloud("https://third.example.org", "carl"),
+        ];
+        let loaded = with_secrets(accounts, |account| match account.login_name.as_str() {
+            "anna" => Ok(Some("secret".into())),
+            "bob" => Ok(None),
+            _ => Err("locked".into()),
+        });
+        let ids: Vec<&str> = loaded.iter().map(|stored| stored.account().id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["nextcloud:anna@cloud.example.org", "nextcloud:bob@other.example.org", "nextcloud:carl@third.example.org"],
+            "all of them, in their order"
+        );
+        assert!(matches!(&loaded[0], Stored::Ready(connected) if connected.app_password == "secret"));
+        for stored in &loaded[1..] {
+            assert!(
+                matches!(stored, Stored::Unusable { problem, .. } if problem.starts_with("Sign in again")),
+                "{stored:?}"
+            );
+        }
     }
 
     #[test]

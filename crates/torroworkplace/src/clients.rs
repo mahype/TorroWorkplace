@@ -240,7 +240,8 @@ pub enum ClientsError {
     Damaged(PathBuf),
     /// No client with this id.
     NotFound(String),
-    /// A client needs a name and a kind; the message says which is missing.
+    /// A client needs a name and a kind, and its rights must name collections by their ids;
+    /// the message says what is wrong.
     Invalid(&'static str),
 }
 
@@ -464,7 +465,16 @@ impl Clients {
     /// Replaces the rights of client `id`; its next request is checked against them. When the
     /// file cannot be written, the error is returned and the client keeps only what the old and
     /// the new rights both allow ([`Rights::common`]).
+    ///
+    /// A selection that names a collection by a bare URL, as before several accounts existed, is
+    /// refused ([`ClientsError::Invalid`]) and nothing changes (task M1.4): old selections were
+    /// rewritten once when the core started, and a bare URL now would reach no collection.
     pub async fn update(&self, id: &str, rights: Rights) -> Result<(), ClientsError> {
+        if has_legacy_selection(&rights) {
+            return Err(ClientsError::Invalid(
+                "a selection names a collection by its URL; use the collection ids from accounts.list_accounts",
+            ));
+        }
         let _changing = self.shared.changing.lock().await;
         let new = rights.clone();
         let old = self.with_client(id, |record| std::mem::replace(&mut record.rights, rights))?;
@@ -1160,6 +1170,24 @@ pub(crate) mod tests {
         assert!(matches!(clients.add("Script", "", read_only()).await, Err(ClientsError::Invalid(_))));
         assert!(clients.list().is_empty());
         assert!(!clients_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn rights_with_a_bare_collection_url_are_refused_and_change_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (client, _) = clients.add("Script", "script", read_only()).await.expect("added");
+        let mut rights = read_only();
+        rights.task_lists =
+            Selection::Only(vec!["https://cloud.example.org/remote.php/dav/calendars/anna/work/".into()]);
+        let refused = clients.update(&client.id, rights.clone()).await;
+        assert!(matches!(refused, Err(ClientsError::Invalid(_))), "{refused:?}");
+        assert_eq!(refused.map_err(|err| err.code()).err(), Some("error"));
+        assert_eq!(clients.list(), vec![client.clone()], "the rights stay as they were");
+        rights.task_lists = Selection::Only(vec![
+            "nextcloud:anna@cloud.example.org/https://cloud.example.org/remote.php/dav/calendars/anna/work/".into(),
+        ]);
+        clients.update(&client.id, rights).await.expect("ids are fine");
     }
 
     #[tokio::test]

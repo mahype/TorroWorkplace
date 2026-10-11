@@ -7,8 +7,11 @@
 //!   account; removing one, a failed sync or a remote wipe touches only that one.
 //! - **Collection ids name their account:** `<account-id>/<collection URL>`
 //!   (`torro_pim::account`). The cache, the answers and the rights use these ids; the CalDAV
-//!   client gets the bare URL. Writes find their account through the id. Item hrefs stay the
-//!   server's URLs.
+//!   client gets the bare URL. Writes find their account through the id, and only through the
+//!   exact id of a collection that account has listed (task M1.4): an id that merely starts with
+//!   an account's id is no one's, so no request can make the core send an account's app password
+//!   to a URL its server did not name. The CalDAV client also refuses every URL off its server.
+//!   Item hrefs stay the server's URLs.
 //! - The cache holds all collections, all todos and the events from 3 months back to 12
 //!   months ahead, fetched on start, every 5 minutes, after a `Sync` request and after
 //!   sign-in. Reads are answered from the cache, so the apps never wait for the network;
@@ -22,6 +25,8 @@
 //! - When a server refuses an app password (401/403), the core asks once whether this device
 //!   was marked for a remote wipe and, if so, removes that account, its secret and its cache
 //!   (task S.12, `account::remote_wipe`).
+//! - An account whose app password is missing from the keychain is still loaded, without a
+//!   connection and with a problem ("Sign in again"), so it is listed and can be removed.
 //! - An SQLite cache that survives restarts comes later.
 //! - Who asks decides what is seen ([`Reach`]): collections hidden in the suite and, for a
 //!   client key, collections outside its selection are left out before anything is read, so
@@ -36,15 +41,15 @@ use tokio::sync::{Mutex, RwLock};
 use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::Rights;
 use torro_ipc::{AccountInfo, Request, Response};
-use torro_pim::account::{account_of, collection_id, local_id};
+use torro_pim::account::{collection_id, local_id};
 use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, ProviderError, Todo, combined_state};
 use torro_pim_caldav::CalDavClient;
 use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
 
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 
-use crate::account::{self, Connected};
+use crate::account::{self, Connected, Stored};
 use crate::notify;
 use crate::settings_service::SettingsStore;
 
@@ -57,8 +62,11 @@ const WINDOW_AHEAD_DAYS: i64 = 365;
 /// One account in the core: who it is, its connection and what is cached of it.
 #[derive(Debug)]
 struct Slot {
+    /// For an account loaded without its app password ([`Stored::Unusable`]) the password is
+    /// empty and `client` is `None`.
     connected: Connected,
-    /// `None` when no client could be built for the server address.
+    /// `None` when no client could be built for the server address or the app password is
+    /// missing. Then nothing is sent to its server, not even the revoke when it is removed.
     client: Option<CalDavClient>,
     last_sync: Option<DateTime<Utc>>,
     problem: Option<String>,
@@ -89,8 +97,28 @@ impl Slot {
         }
     }
 
+    /// The slot of an account as the core loads it: with a connection when its app password is
+    /// there, else without one and with the problem that says to sign in again (task M1.4).
+    fn loaded(stored: Stored, http: Option<&reqwest::Client>) -> Slot {
+        match stored {
+            Stored::Ready(connected) => {
+                let client = http.and_then(|http| account::caldav(http, &connected).ok());
+                Slot::new(connected, client)
+            }
+            Stored::Unusable { account, problem } => {
+                Slot { problem: Some(problem), ..Slot::new(Connected { account, app_password: String::new() }, None) }
+            }
+        }
+    }
+
     fn id(&self) -> &str {
         &self.connected.account.id
+    }
+
+    /// `anna@cloud.example.org`: the name the user knows the account by.
+    fn label(&self) -> String {
+        let account = &self.connected.account;
+        format!("{}@{}", account.login_name, host(&account.server))
     }
 
     /// The collection URL in `collection`, an id of this account.
@@ -113,7 +141,7 @@ impl Slot {
         AccountInfo {
             id: account.id.clone(),
             kind: "nextcloud".into(),
-            label: format!("{}@{}", account.login_name, host(&account.server)),
+            label: self.label(),
             state: self.state(),
             collections: self.collections.clone(),
         }
@@ -137,9 +165,11 @@ impl State {
         self.accounts.iter_mut().find(|slot| slot.id() == id)
     }
 
-    /// The account `collection` (an id) belongs to.
+    /// The account that has listed `collection` (an id) and holds it in its cache. Exact, not by
+    /// the front part of the id (task M1.4): an id like `<anna>/<URL on another server>` belongs
+    /// to no one, so a write to it never carries anna's app password there.
     fn owner(&self, collection: &str) -> Option<&Slot> {
-        account_of(collection, &self.accounts, Slot::id)
+        self.accounts.iter().find(|slot| slot.collections.iter().any(|c| c.id == collection))
     }
 
     /// The collection URL in `collection`, when an account owns it.
@@ -242,14 +272,13 @@ impl PimService {
             match account::keychain(account::stored).await {
                 Ok(stored) => {
                     let mut state = service.state.write().await;
-                    for connected in stored {
+                    for stored in stored {
                         // Its secret would be a client's key, which must never go to a server.
-                        if crate::clients::is_client_keychain_account(&connected.account.id) {
+                        if crate::clients::is_client_keychain_account(&stored.account().id) {
                             eprintln!("torroworkplace: ignoring a stored account: its id is reserved for agent keys");
                             continue;
                         }
-                        let client = service.http.as_ref().and_then(|http| account::caldav(http, &connected).ok());
-                        state.accounts.push(Slot::new(connected, client));
+                        state.accounts.push(Slot::loaded(stored, service.http.as_ref()));
                     }
                 }
                 Err(err) => eprintln!("torroworkplace: cannot read the accounts: {err}"),
@@ -408,14 +437,18 @@ impl PimService {
 
     /// Removes the account `id` and nothing else: revokes its app password on the server (best
     /// effort), forgets the account and its secret, drops its cache (task S.2) and takes its
-    /// collections out of the hidden ones (task A.0d).
-    pub async fn remove_account(&self, id: &str) -> Result<(), String> {
-        let Some(connected) = self.state.read().await.slot(id).map(|slot| slot.connected.clone()) else {
-            return Err(format!("no account {id:?}"));
+    /// collections out of the hidden ones (task A.0d). Answered with [`Response::Ok`]; an
+    /// unknown id is `not-found` (task M1.4), a keychain or file that cannot be changed `error`.
+    /// An account without its app password is removed without asking its server.
+    pub async fn remove_account(&self, id: &str) -> Response {
+        let found = self.state.read().await.slot(id).map(|slot| (slot.connected.clone(), slot.client.is_some()));
+        let Some((connected, reachable)) = found else {
+            return error("not-found", format!("no account {id:?}"));
         };
         // Revoke first: afterwards the secret is gone and the device would stay valid in
         // the user's "Devices & sessions" for good. Offline or refused only costs a log line.
         match &self.http {
+            _ if !reachable => {}
             Some(http) => {
                 if let Err(err) = account::revoke(http, &connected).await {
                     eprintln!("torroworkplace: app password not revoked on the server: {err}");
@@ -424,7 +457,10 @@ impl PimService {
             None => eprintln!("torroworkplace: app password not revoked on the server: no HTTP client"),
         }
         let forget = id.to_string();
-        self.forget_locally(id, || account::keychain(move || account::forget(&forget))).await
+        match self.forget_locally(id, || account::keychain(move || account::forget(&forget))).await {
+            Ok(()) => Response::Ok,
+            Err(message) => error("error", message),
+        }
     }
 
     /// Forgets the account `id` locally: its entry in the account list and its secret
@@ -480,7 +516,9 @@ impl PimService {
         let Some(http) = self.http.clone() else {
             return;
         };
-        let Some(connected) = self.state.read().await.slot(id).map(|slot| slot.connected.clone()) else {
+        let Some((connected, label)) =
+            self.state.read().await.slot(id).map(|slot| (slot.connected.clone(), slot.label()))
+        else {
             return;
         };
         let (server, token) = (connected.account.server.as_str(), connected.app_password.as_str());
@@ -498,7 +536,10 @@ impl PimService {
                 eprintln!("torroworkplace: the server asked to remove {id} from this device; done");
                 notify::show(
                     tr("Account removed").into(),
-                    tr("Your Nextcloud account was removed from this device at the server's request.").into(),
+                    trf(
+                        "Your Nextcloud account {account} was removed from this device at the server's request.",
+                        &[("account", &label)],
+                    ),
                 );
             }
             Ok(_) => {}
@@ -807,16 +848,17 @@ impl PimService {
     }
 
     /// Where a write to `collection` (an id) goes. Refused before anything is sent when no
-    /// account is connected (`not-connected`), when no account owns the id (`not-found`) and
-    /// when the server marks the collection read-only (contact birthdays, shared calendars
-    /// without write access).
+    /// account is connected (`not-connected`), when no account has listed exactly this id
+    /// ([`State::owner`], `not-found`) and when the server marks the collection read-only
+    /// (contact birthdays, shared calendars without write access).
     async fn place(&self, collection: &str) -> Result<Place, WriteError> {
         let state = self.state.read().await;
         if state.accounts.is_empty() {
             return Err(not_connected().into());
         }
+        let not_found = || refused("not-found", format!("no collection {collection:?}"));
         let Some(slot) = state.owner(collection) else {
-            return Err(refused("not-found", format!("no collection {collection:?}")));
+            return Err(not_found());
         };
         if let Some(c) = slot.collections.iter().find(|c| c.id == collection)
             && !c.writable
@@ -824,7 +866,7 @@ impl PimService {
             return Err(ProviderError::Other(format!("{} is read-only", c.name)).into());
         }
         let client = slot.client.clone().ok_or_else(not_connected)?;
-        let url = slot.url(collection).unwrap_or_default().to_string();
+        let url = slot.url(collection).ok_or_else(not_found)?.to_string();
         Ok(Place { account: slot.id().to_string(), id: collection.to_string(), url, client })
     }
 
@@ -1503,7 +1545,13 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_write_to_a_collection_of_no_account_is_not_found() {
         let service = filled_service(SettingsStore::without_file()).await;
-        for collection in [url("work"), "nextcloud:bob@cloud.example.org/https://cloud.example.org/x/".into()] {
+        for collection in [
+            url("work"),
+            "nextcloud:bob@cloud.example.org/https://cloud.example.org/x/".into(),
+            // Anna's id in front, but a collection she never listed.
+            format!("{ANNA}/{CALENDARS}elsewhere/"),
+            format!("{ANNA}/https://evil.example.org/remote.php/dav/calendars/anna/work/"),
+        ] {
             let event = Event { collection, href: None, etag: None, ..event(Utc::now(), 1) };
             let response = service.handle_within(Request::SaveEvent { event }, Reach::Suite).await;
             assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
@@ -1528,13 +1576,39 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn removing_an_unknown_account_fails_and_keeps_the_state() {
+    async fn removing_an_unknown_account_is_not_found_and_keeps_the_state() {
         let service = service();
-        assert!(service.remove_account(ANNA).await.is_err());
+        assert_eq!(code_of(&service.remove_account(ANNA).await), "not-found");
         service.state.write().await.accounts.push(slot_with(vec![]));
-        assert!(service.remove_account("nextcloud:bob@cloud.example.org").await.is_err());
-        assert!(service.remove_account("").await.is_err());
+        assert_eq!(code_of(&service.remove_account("nextcloud:bob@cloud.example.org").await), "not-found");
+        assert_eq!(code_of(&service.remove_account("").await), "not-found");
         assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_account_without_its_app_password_is_listed_with_a_problem_and_can_be_removed() {
+        let service = service();
+        let bob = torro_core::Account::nextcloud("https://other.example.org", "bob");
+        let problem = "Sign in again: no app password is stored on this device".to_string();
+        {
+            let http = reqwest::Client::new();
+            let mut state = service.state.write().await;
+            state.accounts.push(Slot::loaded(Stored::Ready(connected()), Some(&http)));
+            state.accounts.push(Slot::loaded(Stored::Unusable { account: bob, problem: problem.clone() }, Some(&http)));
+            assert!(state.accounts[0].client.is_some() && state.accounts[1].client.is_none(), "nothing to send with");
+        }
+        let infos = service.accounts_within(Reach::Suite).await;
+        assert_eq!(infos.len(), 2, "the account without secret is listed next to the others");
+        assert!(matches!(&infos[0].state, AccountState::Connected { problem: None, .. }));
+        assert!(
+            matches!(&infos[1].state, AccountState::Connected { problem: Some(p), .. } if *p == problem),
+            "{:?}",
+            infos[1].state
+        );
+        // Removing it forgets it like any other (keychain stand-in: the secret is gone already).
+        service.forget_locally("nextcloud:bob@other.example.org", || async { Ok(()) }).await.expect("removed");
+        let left: Vec<String> = service.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
+        assert_eq!(left, [ANNA]);
     }
 
     /// A service whose server just refused anna's app password, with a filled cache.
@@ -1971,6 +2045,78 @@ pub(crate) mod tests {
             Some(first_work),
             "the same calendar of the other account"
         );
+    }
+
+    // Secrets stay with their server (task M1.4).
+
+    #[tokio::test]
+    async fn a_write_to_anna_with_the_url_of_bobs_server_reaches_no_server() {
+        let (anna, anna_record) = fake_server(server_holding(SINGLE)).await;
+        let (bob, bob_record) = fake_server(server_holding(SINGLE)).await;
+        let service = service();
+        {
+            let mut state = service.state.write().await;
+            state.accounts.push(slot_on(&anna));
+            state.accounts.push(slot_on(&bob));
+        }
+        let anna_id = service.state.read().await.accounts[0].id().to_string();
+        let (_, bob_href) = on_server(&bob, WORK, "e.ics");
+        let bob_url = bob_href.trim_end_matches("e.ics").to_string();
+        // `<anna>/<URL of bob's server>`: the front part names anna, the URL is bob's.
+        let posing = collection_id(&anna_id, &bob_url);
+        let new = Event { collection: posing.clone(), href: None, etag: None, ..event(Utc::now(), 1) };
+        let changed = Event { collection: posing.clone(), href: Some(bob_href.clone()), ..event(Utc::now(), 1) };
+        let task = Todo { etag: Some("\"1\"".into()), ..todo_in(&posing, Some(bob_href.clone())) };
+        let (anna_work, _) = on_server(&anna, WORK, "");
+        // Moving "within anna" from bob's server: the href is in no collection of hers.
+        let moved = Event { collection: anna_work, href: Some(bob_href), ..event(Utc::now(), 1) };
+        for request in [
+            Request::SaveEvent { event: new },
+            Request::SaveEvent { event: changed.clone() },
+            Request::DeleteEvent { event: changed },
+            Request::SaveTodo { todo: task.clone() },
+            Request::DeleteTodo { todo: task },
+        ] {
+            let response = service.handle_within(request.clone(), Reach::Suite).await;
+            assert_eq!(code_of(&response), "not-found", "{request:?}: {response:?}");
+        }
+        let response = service.handle_within(Request::SaveEvent { event: moved }, Reach::Suite).await;
+        assert_ne!(code_of(&response), "ok", "{response:?}");
+        assert!(lines(&anna_record).is_empty(), "nothing reached anna's server: {:?}", lines(&anna_record));
+        assert!(lines(&bob_record).is_empty(), "nothing reached bob's server: {:?}", lines(&bob_record));
+    }
+
+    #[tokio::test]
+    async fn the_caldav_client_sends_nothing_off_its_server() {
+        let (anna, anna_record) = fake_server(server_holding(SINGLE)).await;
+        let (bob, bob_record) = fake_server(server_holding(SINGLE)).await;
+        let client = slot_on(&anna).client.expect("anna's client");
+        let (_, bob_href) = on_server(&bob, WORK, "e.ics");
+        let bob_url = bob_href.trim_end_matches("e.ics").to_string();
+        let new = Event { collection: bob_url.clone(), href: None, etag: None, ..event(Utc::now(), 1) };
+        let stored = Event { collection: bob_url.clone(), href: Some(bob_href.clone()), ..event(Utc::now(), 1) };
+        assert!(client.save_event(new.clone()).await.is_err(), "PUT");
+        assert!(client.save_event(stored.clone()).await.is_err(), "GET, then PUT");
+        assert!(client.copy_event(&stored, new).await.is_err(), "GET of the old one");
+        assert!(client.delete_event(&stored).await.is_err(), "DELETE");
+        assert!(client.stored_item(&bob_url, &bob_href).await.is_err(), "GET");
+        assert!(client.events(&bob_url, Utc::now(), Utc::now() + Span::days(1)).await.is_err(), "REPORT");
+        assert!(client.todos(&bob_url).await.is_err(), "REPORT");
+        assert!(lines(&bob_record).is_empty(), "nothing reached bob's server: {:?}", lines(&bob_record));
+        assert!(lines(&anna_record).is_empty(), "nor anna's: {:?}", lines(&anna_record));
+    }
+
+    #[tokio::test]
+    async fn a_calendar_listed_on_another_server_is_left_out() {
+        const FOREIGN: &str = r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>https://evil.example.org/remote.php/dav/calendars/anna/work/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>Elsewhere</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+        let (base, record) = fake_server(|seen| match (seen.method.as_str(), seen.path.as_str()) {
+            ("PROPFIND", "/remote.php/dav/calendars/anna/") => (207, None, FOREIGN),
+            _ => healthy_server(seen),
+        })
+        .await;
+        let client = slot_on(&base).client.expect("client");
+        assert_eq!(client.collections().await, Ok(vec![]));
+        assert_eq!(lines(&record).len(), 3, "discovery only: {:?}", lines(&record));
     }
 
     // Series and overwriting (task A.2b).

@@ -8,6 +8,11 @@
 //! Account ids may contain `/` themselves (a Nextcloud in a sub-path:
 //! `nextcloud:anna@example.org/nextcloud`), so an id is never split at a `/`; it is matched
 //! against the known accounts instead ([`account_of`], longest id wins).
+//!
+//! The front part of an id says which account an id *claims*, not that the account has such a
+//! collection. Whatever sends an account's password (the core's writes) looks the id up exactly
+//! among the collections the account listed (task M1.4); [`account_of`] is for showing and
+//! sorting only.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -68,9 +73,10 @@ pub fn local_id<'a>(collection_id: &'a str, account_id: &str) -> Option<&'a str>
     collection_id.strip_prefix(account_id)?.strip_prefix('/').filter(|local| !local.is_empty())
 }
 
-/// The account `collection_id` belongs to: the one with the longest id it starts with
-/// (`<id>/`), so `nextcloud:anna@example.org/nc` wins over `nextcloud:anna@example.org`.
-/// Accounts with an empty id (a running sign-in) own nothing.
+/// The account `collection_id` names: the one with the longest id it starts with (`<id>/`), so
+/// `nextcloud:anna@example.org/nc` wins over `nextcloud:anna@example.org`. Accounts with an
+/// empty id (a running sign-in) own nothing. Only for showing and sorting: the rest of the id is
+/// not checked, so never pick the account to send a password with this way (task M1.4).
 pub fn account_of<'a, A>(collection_id: &str, accounts: &'a [A], id: impl Fn(&A) -> &str) -> Option<&'a A> {
     accounts
         .iter()

@@ -196,10 +196,7 @@ impl Core {
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::Accounts => Response::Accounts { accounts: self.pim.accounts_within(reach).await },
-            Request::RemoveAccount { id } => match self.pim.remove_account(&id).await {
-                Ok(()) => Response::Ok,
-                Err(message) => Response::Error { code: "error".into(), message },
-            },
+            Request::RemoveAccount { id } => self.pim.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
                 Ok(template) => Response::Saved { template },
                 Err(err) => error(&err),
@@ -815,6 +812,26 @@ mod tests {
             core(dir.path()).handle(Request::SetCollectionShown { collection: id("/cal/nope/"), shown: false }).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
         assert!(!settings_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_account_is_not_found() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let response = core(dir.path()).handle(Request::RemoveAccount { id: "nextcloud:nobody@nowhere".into() }).await;
+        assert_eq!(code(&response), "not-found");
+    }
+
+    #[tokio::test]
+    async fn settings_with_a_bare_collection_url_are_refused_and_not_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut settings = settings(&core).await;
+        settings.hidden_collections = vec!["https://cloud.example.org/remote.php/dav/calendars/anna/work/".into()];
+        let response = core.handle(Request::UpdateSettings { settings: settings.clone() }).await;
+        assert_eq!(code(&response), "error");
+        assert!(!settings_file(dir.path()).exists());
+        settings.hidden_collections = vec![id("/cal/work/")];
+        assert_eq!(core.handle(Request::UpdateSettings { settings }).await, Response::Ok);
     }
 
     #[tokio::test]
