@@ -12,11 +12,18 @@
 //! The header (T.2) has one primary button, "New task", that focuses the quick add row (the same
 //! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
 //! is no filter function yet, so no "Filter" button.
+//!
+//! The keyboard (T.3): ↑/↓ move a cursor through the rows as the list shows them (groups and
+//! subtasks included), Enter opens the task under it, Space ticks it, N focuses the quick add
+//! row, Escape closes menu, drawer or detail (see [`Message::Escape`]). The cursor is the
+//! highlighted row; the list scrolls to keep it in view. Plain keys are ignored while a text
+//! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
 
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use iced::theme::Mode;
+use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::{Space, column, container, responsive, row, rule, stack, svg, text, text_input};
 use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
 use torro_core::AppId;
@@ -84,6 +91,11 @@ pub struct App {
     quick_add: String,
     /// Index into `todos` of the task open in the detail panel.
     selected: Option<usize>,
+    /// The uid of the task under the keyboard cursor: the highlighted row. A uid, not an index,
+    /// so it survives reloads; clicking a row or opening a task moves it there.
+    cursor: Option<String>,
+    /// The list's scroll offset and visible height, as last reported; none until it scrolls.
+    scroll: Option<(f32, f32)>,
     detail: Option<Detail>,
     error: Option<String>,
     appearance: Appearance,
@@ -134,6 +146,60 @@ pub enum Message {
     AppOpened(Result<(), String>),
     /// Open the control centre.
     OpenSettings,
+    /// The list scrolled (or was laid out): its offset and visible height.
+    Scrolled(f32, f32),
+    /// A key from [`shortcut`]; whether a text field is being typed in is checked first.
+    Shortcut(Shortcut),
+    /// The answer of that check: `true` if a text field has the focus, which swallows the key.
+    ShortcutChecked(Shortcut, bool),
+}
+
+/// What a plain key does in the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shortcut {
+    /// ↑: the previous row.
+    Up,
+    /// ↓: the next row.
+    Down,
+    /// Enter: open the task under the cursor.
+    Open,
+    /// Space: tick or untick the task under the cursor.
+    Toggle,
+    /// N: a new task, in the quick add row.
+    New,
+}
+
+/// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
+/// text field, Enter in quick add) are ignored, and so is anything with Ctrl, Alt or the logo key.
+fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    use iced::keyboard::{Event as Key, Key as Name, key::Named};
+    if status == iced::event::Status::Captured {
+        return None;
+    }
+    let iced::Event::Keyboard(Key::KeyPressed { key, modifiers, .. }) = event else { return None };
+    if modifiers.control() || modifiers.alt() || modifiers.logo() {
+        return None;
+    }
+    let shortcut = match key.as_ref() {
+        Name::Named(Named::ArrowUp) => Shortcut::Up,
+        Name::Named(Named::ArrowDown) => Shortcut::Down,
+        Name::Named(Named::Enter) => Shortcut::Open,
+        Name::Named(Named::Space) => Shortcut::Toggle,
+        Name::Character("n") => Shortcut::New,
+        _ => return None,
+    };
+    Some(Message::Shortcut(shortcut))
+}
+
+/// The ids of the text fields that can have the focus next to the list. Some keys (↑/↓, Enter in a
+/// field without a submit action) are not taken by a field, so the status of the event alone does
+/// not tell that someone is typing; the fields are asked instead. A new text field in this window
+/// belongs here. (The title and notes editors take every key they get, so they need no entry.)
+const TEXT_FIELDS: [&str; 2] = [QUICK_ADD, detail::DUE_INPUT];
+
+/// Whether one of [`TEXT_FIELDS`] has the focus. A field that is not on screen does not answer.
+fn typing() -> Task<bool> {
+    Task::batch(TEXT_FIELDS.map(operation::is_focused)).collect().map(|answers| answers.contains(&true))
 }
 
 impl App {
@@ -150,6 +216,8 @@ impl App {
             loaded: false,
             quick_add: String::new(),
             selected: None,
+            cursor: None,
+            scroll: None,
             detail: None,
             error: None,
             appearance: Appearance::System,
@@ -175,6 +243,9 @@ impl App {
         // Escape closes an open menu, drawer or the detail; nothing listens while none is open.
         if self.menu.is_some() || self.drawer || self.detail.is_some() {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
+        }
+        if self.connected() {
+            subscriptions.push(iced::event::listen_with(shortcut));
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
@@ -210,10 +281,12 @@ impl App {
             },
             Message::Loaded(result) => match result {
                 Ok((collections, todos)) => {
+                    let place = self.cursor_place();
                     self.collections = collections;
                     self.todos = todos;
                     self.loaded = true;
                     self.error = None;
+                    self.keep_cursor(place);
                     // Keep the detail panel on the same task after a reload.
                     let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
                     self.selected = selected_uid.and_then(|uid| self.todos.iter().position(|t| t.uid == uid));
@@ -227,6 +300,8 @@ impl App {
             },
             Message::SetFilter(filter) => {
                 self.filter = filter;
+                self.cursor = None;
+                self.scroll = None;
                 self.close_menus();
                 return self.close_detail();
             }
@@ -316,7 +391,7 @@ impl App {
             Message::Switcher(Switcher::New) => {
                 // "New" is a new task: the quick add field takes it.
                 self.close_menus();
-                return iced::widget::operation::focus(QUICK_ADD);
+                return operation::focus(QUICK_ADD);
             }
             // The app has no search yet; the button only closes what is open.
             Message::Switcher(Switcher::Search) => self.close_menus(),
@@ -347,8 +422,102 @@ impl App {
                 self.close_menus();
                 connect::open_settings();
             }
+            Message::Scrolled(offset, height) => self.scroll = Some((offset, height)),
+            Message::Shortcut(key) => {
+                return typing().map(move |typing| Message::ShortcutChecked(key, typing));
+            }
+            Message::ShortcutChecked(key, typing) => {
+                // Menus and the drawer are in front of the list; the keys are not for the list then.
+                if !typing && self.menu.is_none() && !self.drawer {
+                    return self.run_shortcut(key);
+                }
+            }
         }
         Task::none()
+    }
+
+    /// Carries out a plain key of the list.
+    fn run_shortcut(&mut self, key: Shortcut) -> Task<Message> {
+        match key {
+            Shortcut::Up => self.step(false),
+            Shortcut::Down => self.step(true),
+            Shortcut::Open => match self.cursor_index() {
+                Some(index) => self.select(index),
+                None => Task::none(),
+            },
+            Shortcut::Toggle => match self.cursor_index() {
+                Some(index) => self.update(Message::ToggleDone(index)),
+                None => Task::none(),
+            },
+            // The same as "New task" in the header.
+            Shortcut::New => self.update(Message::Switcher(Switcher::New)),
+        }
+    }
+
+    /// What the list shows, without the colours and names only drawing needs.
+    fn list_data(&self, show_list: bool) -> ListData<'_> {
+        ListData {
+            todos: &self.todos,
+            colors: self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect(),
+            names: self.collections.iter().map(|c| (c.id.clone(), c.name.clone())).collect(),
+            filter: &self.filter,
+            show_completed: self.show_completed,
+            today: self.today,
+            selected: self.cursor_index(),
+            show_list,
+            attention: palette(&self.theme()).attention_text,
+        }
+    }
+
+    /// Index into `todos` of the task under the cursor, if it is in the list.
+    fn cursor_index(&self) -> Option<usize> {
+        let uid = self.cursor.as_deref()?;
+        self.todos.iter().position(|t| t.uid == uid)
+    }
+
+    /// Where the cursor row is among the shown rows.
+    fn cursor_place(&self) -> Option<usize> {
+        let index = self.cursor_index()?;
+        list::order(&self.list_data(false)).iter().position(|&i| i == index)
+    }
+
+    /// After a reload: a cursor whose task is gone (ticked off, deleted elsewhere) moves to the row
+    /// that took its place, so ticking tasks one after the other with Space just works.
+    fn keep_cursor(&mut self, place: Option<usize>) {
+        let (Some(place), true) = (place, self.cursor_index().is_none()) else { return };
+        let order = list::order(&self.list_data(false));
+        self.cursor = order.get(place.min(order.len().saturating_sub(1))).map(|&i| self.todos[i].uid.clone());
+    }
+
+    /// Moves the cursor one row down or up, and stops at the first and last row. With no cursor
+    /// yet, ↓ chooses the first row and ↑ the last.
+    fn step(&mut self, forward: bool) -> Task<Message> {
+        let order = list::order(&self.list_data(false));
+        let Some(last) = order.len().checked_sub(1) else { return Task::none() };
+        let next = match (self.cursor_place(), forward) {
+            (None, true) => 0,
+            (None, false) => last,
+            (Some(place), true) => (place + 1).min(last),
+            (Some(place), false) => place.saturating_sub(1),
+        };
+        self.cursor = Some(self.todos[order[next]].uid.clone());
+        self.reveal(order[next])
+    }
+
+    /// Scrolls the list the least that shows `todos[index]` completely.
+    fn reveal(&mut self, index: usize) -> Task<Message> {
+        let Some((offset, height)) = self.scroll else { return Task::none() };
+        let Some((top, bottom)) = list::row_span(&self.list_data(false), index) else { return Task::none() };
+        let target = if top < offset {
+            top
+        } else if bottom > offset + height {
+            bottom - height
+        } else {
+            return Task::none();
+        };
+        // The viewport is only reported on the next frame; keys can repeat faster than that.
+        self.scroll = Some((target, height));
+        operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -500,18 +669,8 @@ impl App {
                     .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
             );
         }
-        let p = theme::palette(&self.theme());
-        let data = ListData {
-            todos: &self.todos,
-            colors: self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect(),
-            names: self.collections.iter().map(|c| (c.id.clone(), c.name.clone())).collect(),
-            filter: &self.filter,
-            show_completed: self.show_completed,
-            today: self.today,
-            selected: self.selected,
-            show_list: matches!(class, SizeClass::Wide | SizeClass::Medium) && !matches!(self.filter, Filter::List(_)),
-            attention: p.attention_text,
-        };
+        let show_list = matches!(class, SizeClass::Wide | SizeClass::Medium) && !matches!(self.filter, Filter::List(_));
+        let data = self.list_data(show_list);
         column![container(top).padding(Padding::new(space::S).bottom(space::XS)), list::view(data)]
             .width(Fill)
             .height(Fill)
@@ -622,6 +781,7 @@ impl App {
         let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
         let flush = self.close_detail();
         self.selected = Some(index);
+        self.cursor = Some(todo.uid.clone());
         self.detail = Some(Detail::new(&todo, &self.writable_lists(), &self.todos));
         flush
     }
@@ -847,6 +1007,196 @@ mod tests {
             parent: None,
             description: None,
         }
+    }
+
+    fn day(d: u32) -> Option<EventTime> {
+        Some(EventTime::Date(NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")))
+    }
+
+    /// An app on the "All" list with, in the order the list shows them: overdue (with its subtask
+    /// child), today, later, undated. Today is 11 October 2026.
+    fn app_with_rows() -> App {
+        let mut app = demo_app();
+        app.today = NaiveDate::from_ymd_opt(2026, 10, 11).expect("valid date");
+        app.filter = Filter::All;
+        app.loaded = true;
+        app.todos = vec![
+            Todo { due: day(12), ..task("later") },
+            Todo { parent: Some("overdue".into()), ..task("child") },
+            task("undated"),
+            Todo { due: day(11), ..task("today") },
+            Todo { due: day(9), ..task("overdue") },
+        ];
+        app
+    }
+
+    fn press(app: &mut App, key: Shortcut) -> Task<Message> {
+        app.update(Message::ShortcutChecked(key, false))
+    }
+
+    fn cursor(app: &App) -> Option<&str> {
+        app.cursor.as_deref()
+    }
+
+    #[test]
+    fn arrows_walk_the_rows_in_the_order_shown_and_stop_at_the_ends() {
+        let mut app = app_with_rows();
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            let _ = press(&mut app, Shortcut::Down);
+            seen.push(cursor(&app).map(str::to_string));
+        }
+        let expected = ["overdue", "child", "today", "later", "undated"].map(|uid| Some(uid.to_string()));
+        assert_eq!(seen, expected, "groups and subtasks in display order");
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(cursor(&app), Some("undated"), "down stops at the last row");
+        for uid in ["later", "today", "child", "overdue", "overdue"] {
+            let _ = press(&mut app, Shortcut::Up);
+            assert_eq!(cursor(&app), Some(uid));
+        }
+    }
+
+    #[test]
+    fn without_a_cursor_down_takes_the_first_row_and_up_the_last() {
+        let mut app = app_with_rows();
+        let _ = press(&mut app, Shortcut::Up);
+        assert_eq!(cursor(&app), Some("undated"));
+        app.cursor = None;
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(cursor(&app), Some("overdue"));
+        let mut empty = demo_app();
+        let _ = press(&mut empty, Shortcut::Down);
+        assert_eq!(cursor(&empty), None, "an empty list has no cursor");
+    }
+
+    #[test]
+    fn the_cursor_row_is_the_highlighted_row() {
+        let mut app = app_with_rows();
+        assert_eq!(app.list_data(false).selected, None);
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(app.list_data(false).selected.map(|i| app.todos[i].uid.as_str()), Some("overdue"));
+        let _ = app.update(Message::Select(0));
+        assert_eq!(cursor(&app), Some("later"), "clicking a row moves the cursor there");
+    }
+
+    #[test]
+    fn enter_opens_the_task_under_the_cursor() {
+        let mut app = app_with_rows();
+        let _ = press(&mut app, Shortcut::Open);
+        assert!(app.detail.is_none(), "nothing to open without a cursor");
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("child"));
+        let _ = app.update(Message::Escape);
+        assert!(app.detail.is_none());
+        assert_eq!(cursor(&app), Some("child"), "the cursor stays when the detail closes");
+    }
+
+    #[test]
+    fn space_ticks_the_task_under_the_cursor() {
+        let mut app = app_with_rows();
+        assert_eq!(press(&mut app, Shortcut::Toggle).units(), 0, "nothing to tick without a cursor");
+        let _ = press(&mut app, Shortcut::Down);
+        assert!(press(&mut app, Shortcut::Toggle).units() > 0, "the save of the ticked task is started");
+    }
+
+    #[test]
+    fn n_focuses_quick_add_and_closes_menus() {
+        let mut app = app_with_rows();
+        let _ = app.update(Message::ToggleDisplay);
+        assert!(app.menu.is_some());
+        app.menu = None;
+        assert!(press(&mut app, Shortcut::New).units() > 0);
+    }
+
+    #[test]
+    fn keys_do_nothing_while_typing_or_behind_a_menu() {
+        let mut app = app_with_rows();
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Down, true));
+        assert_eq!(cursor(&app), None, "a text field has the focus");
+        assert_eq!(app.update(Message::ShortcutChecked(Shortcut::New, true)).units(), 0);
+        let _ = app.update(Message::ToggleNav);
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(cursor(&app), None, "a menu is in front of the list");
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::ShowDrawer);
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(cursor(&app), None, "so is the drawer");
+    }
+
+    #[test]
+    fn only_plain_unused_keys_become_shortcuts() {
+        use iced::event::Status;
+        use iced::keyboard::{Event, Key, Location, Modifiers, key::Named, key::Physical};
+        let press = |key: Key, modifiers: Modifiers| {
+            iced::Event::Keyboard(Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+                location: Location::Standard,
+                modifiers,
+                text: None,
+                repeat: false,
+            })
+        };
+        let id = iced::window::Id::unique();
+        let keys = [
+            (Key::Named(Named::ArrowDown), Shortcut::Down),
+            (Key::Named(Named::ArrowUp), Shortcut::Up),
+            (Key::Named(Named::Enter), Shortcut::Open),
+            (Key::Named(Named::Space), Shortcut::Toggle),
+            (Key::Character("n".into()), Shortcut::New),
+        ];
+        for (key, expected) in keys {
+            let got = shortcut(press(key.clone(), Modifiers::empty()), Status::Ignored, id);
+            assert!(matches!(got, Some(Message::Shortcut(s)) if s == expected), "{key:?}");
+            assert!(shortcut(press(key.clone(), Modifiers::empty()), Status::Captured, id).is_none(), "{key:?} taken");
+            assert!(shortcut(press(key, Modifiers::CTRL), Status::Ignored, id).is_none(), "ctrl");
+        }
+        assert!(shortcut(press(Key::Character("x".into()), Modifiers::empty()), Status::Ignored, id).is_none());
+    }
+
+    #[test]
+    fn after_a_reload_the_cursor_moves_to_the_row_that_took_the_place() {
+        let mut app = app_with_rows();
+        for _ in 0..3 {
+            let _ = press(&mut app, Shortcut::Down);
+        }
+        assert_eq!(cursor(&app), Some("today"));
+        // "today" is ticked off elsewhere: the next row ("later") is now third.
+        let todos: Vec<Todo> = app.todos.iter().filter(|t| t.uid != "today").cloned().collect();
+        let _ = app.update(Message::Loaded(Ok((Vec::new(), todos.clone()))));
+        assert_eq!(cursor(&app), Some("later"));
+        // Same task still there: the cursor stays.
+        let _ = app.update(Message::Loaded(Ok((Vec::new(), todos))));
+        assert_eq!(cursor(&app), Some("later"));
+        let _ = app.update(Message::Loaded(Ok((Vec::new(), Vec::new()))));
+        assert_eq!(cursor(&app), None);
+        // A new filter starts without a cursor.
+        let mut app = app_with_rows();
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = app.update(Message::SetFilter(Filter::Planned));
+        assert_eq!(cursor(&app), None);
+    }
+
+    #[test]
+    fn the_list_scrolls_the_least_that_shows_the_cursor_row() {
+        let mut app = app_with_rows();
+        // Heads are 36 high, rows 40: overdue 36–76, child 76–116, then the "Today" head.
+        let _ = app.update(Message::Scrolled(0.0, 100.0));
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(app.scroll, Some((16.0, 100.0)), "child ends at 116, so 16 scrolls it in");
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(app.scroll, Some((92.0, 100.0)), "today ends at 192");
+        let _ = press(&mut app, Shortcut::Up);
+        assert_eq!(app.scroll, Some((76.0, 100.0)), "child starts at 76, above the view");
+        let _ = press(&mut app, Shortcut::Up);
+        assert_eq!(app.scroll, Some((0.0, 100.0)), "the first row brings its group head along");
+        let _ = app.update(Message::Scrolled(0.0, 400.0));
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(app.scroll, Some((0.0, 400.0)), "a row that is in view needs no scrolling");
     }
 
     #[test]

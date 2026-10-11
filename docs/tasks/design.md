@@ -246,7 +246,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   statt einer vollen Eingabebox. Laden/Fehler über `loading()`/`error_state`, Leer über `empty_state`.
 
 ### T.3 Tastatur
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** T.1
 - **Dateien:** `crates/torrotasks/src/app.rs`
 - ↑/↓ Auswahl, Enter öffnet das Detail, Leertaste hakt ab, N fokussiert die Schnelleingabe,

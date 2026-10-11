@@ -10,6 +10,10 @@
 //! attention colour – never Torro red). A click on the row → `Select(index)`. Subtasks
 //! (`parent` = another task's uid) sit indented under their parent. Empty → an empty state
 //! ("Nothing to do").
+//!
+//! For the keyboard (T.3) [`order`] gives the visible order of the rows and [`row_span`] where a
+//! row lies in the scrolled content, so `app.rs` can step through the rows and keep the chosen
+//! one in view; the scrollable reports its viewport as `Message::Scrolled`.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -18,7 +22,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::{Space, checkbox, column, container, rich_text, row, scrollable, span, text};
 use iced::{Alignment, Background, Color, Element, Fill, Theme, border};
 use torro_core::i18n::tr;
-use torro_gui::theme::{palette, space};
+use torro_gui::theme::{palette, size, space};
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{datetime, icon, style, typo};
 use torro_pim::{EventTime, Todo};
@@ -272,6 +276,34 @@ pub fn open_count(todos: &[Todo], filter: &Filter, today: NaiveDate) -> usize {
     todos.iter().filter(|todo| is_shown(todo, &data)).count()
 }
 
+/// The id of the list's scrollable, so the keyboard can scroll the chosen row into view.
+pub const SCROLL: &str = "task-list";
+
+/// Height of a group head: the 4 above it plus the head itself (`widgets::group_head`).
+const GROUP_HEAD: f32 = space::XS + size::ROW_GROUP;
+
+/// Indices into `todos` of the rows as the list shows them, top to bottom.
+pub fn order(data: &ListData<'_>) -> Vec<usize> {
+    arrange(data).into_iter().map(|(index, _)| index).collect()
+}
+
+/// Where `todos[index]` lies in the list's content as `(top, bottom)`. The first row of a group
+/// starts at its head, so scrolling up to it shows the head too. `None` if the row is not shown.
+pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
+    let mut y = 0.0;
+    for (_, items) in grouped(data) {
+        let head = y;
+        y += GROUP_HEAD;
+        for (n, (row, _)) in items.into_iter().enumerate() {
+            if row == index {
+                return Some((if n == 0 { head } else { y }, y + size::ROW));
+            }
+            y += size::ROW;
+        }
+    }
+    None
+}
+
 /// The list: group heads with their rows, scrolling; the empty state when nothing is shown.
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     let groups = grouped(&data);
@@ -286,6 +318,8 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         }
     }
     scrollable(list)
+        .id(SCROLL)
+        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Fill)
@@ -606,6 +640,27 @@ mod tests {
                 (Group::Completed, vec!["done"]),
             ]
         );
+    }
+
+    #[test]
+    fn order_is_the_row_order_and_spans_stack_up() {
+        let todos = vec![
+            Todo { due: due(12), ..todo("u", "later") },
+            Todo { due: due(9), ..todo("o", "overdue") },
+            Todo { parent: Some("o".into()), ..todo("c", "child") },
+            Todo { due: due(11), ..todo("t", "today") },
+        ];
+        let d = data(&todos, &Filter::All, false);
+        let names: Vec<&str> = order(&d).into_iter().map(|i| todos[i].summary.as_str()).collect();
+        assert_eq!(names, ["overdue", "child", "today", "later"]);
+
+        let span = |uid: &str| row_span(&d, todos.iter().position(|t| t.uid == uid).expect("task"));
+        let (head, row) = (GROUP_HEAD, size::ROW);
+        assert_eq!(span("o"), Some((0.0, head + row)), "the first row of a group starts at its head");
+        assert_eq!(span("c"), Some((head + row, head + 2.0 * row)));
+        assert_eq!(span("t"), Some((head + 2.0 * row, 2.0 * head + 3.0 * row)));
+        assert_eq!(span("u").map(|(_, bottom)| bottom), Some(3.0 * head + 4.0 * row));
+        assert_eq!(row_span(&d, 99), None);
     }
 
     #[test]
