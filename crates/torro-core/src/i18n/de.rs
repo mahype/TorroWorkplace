@@ -560,7 +560,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Snoozed", "Vertagt"),
     ("Seen", "Gesehen"),
     ("Sources", "Quellen"),
-    ("{n} for you", "{n} für dich"),
     ("{n} reports", "{n} Meldungen"),
     ("{source} (muted)", "{source} (stumm)"),
     ("Agent", "Agent"),
@@ -573,8 +572,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Snoozed until {time}", "Vertagt bis {time}"),
     ("Waiting for you", "Wartet auf dich"),
     ("Allow and Deny are not available here yet.", "Erlauben und Ablehnen gehen hier noch nicht."),
-    ("Could not change the entry: {error}", "Der Eintrag ließ sich nicht ändern: {error}"),
-    ("The inbox could not be loaded: {error}", "Der Eingang ließ sich nicht laden: {error}"),
     ("Nothing for you right now.", "Gerade nichts für dich."),
     (
         "Waiting agents, approvals and account problems show up here.",
@@ -624,5 +621,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Unmuted {source}", "{source} wieder zugelassen"),
     ("Entries from the suite can't be muted.", "Einträge der Suite lassen sich nicht stummschalten."),
     ("An approval closes once it is decided.", "Eine Freigabe schließt sich, sobald sie entschieden ist."),
-    ("Could not change the source: {error}", "Die Quelle ließ sich nicht ändern: {error}"),
+    // Inbox app: polish (torroinbox, E3.2b)
+    ("Other", "Weitere"),
+    ("Couldn't load the inbox.", "Der Eingang ließ sich nicht laden."),
+    ("Couldn't change the entry.", "Der Eintrag ließ sich nicht ändern."),
+    ("Couldn't change the source.", "Die Quelle ließ sich nicht ändern."),
+    ("Couldn't open the app.", "Die App ließ sich nicht öffnen."),
 ];
