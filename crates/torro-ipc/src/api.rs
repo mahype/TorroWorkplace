@@ -734,8 +734,8 @@ static CONNECT_GITHUB: Command = Command {
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Asks for a GitHub account to be connected. For agents and scripts the core only opens the Torro \
-                  Workplace control centre on its accounts page, where a person picks the GitHub CLI's sign-in or \
+    description: "Asks for a GitHub account to be connected. For agents and scripts the core only shows the Torro \
+                  Workplace control centre (an open one comes to the front, else it opens on its accounts page), where a person picks the GitHub CLI's sign-in or \
                   pastes a token, and answers `opened`; the token never reaches the caller. The control centre \
                   itself takes over the GitHub CLI's sign-in (`gh auth token`) and gets `not-connected` without \
                   one.",

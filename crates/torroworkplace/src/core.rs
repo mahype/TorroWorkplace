@@ -45,16 +45,16 @@ fn start_accounts_page() -> Result<(), String> {
     SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
 }
 
-/// Shows the control centre's accounts page. An open control centre cannot be told to change its
-/// page, so it is closed and a new one starts on the page: it holds no unsaved work but an open
-/// dialog, and the person who asked for the connection wants to see exactly this page.
+/// Shows the person the control centre: an open one comes to the front, else one starts on its
+/// accounts page. An open one is never closed and restarted on a client's request, because that
+/// would throw away whatever the person is typing there (a half-pasted token, say).
 async fn show_accounts_page(wm: &impl WindowManager, start: fn() -> Result<(), String>) -> Result<(), String> {
-    // A window manager that cannot list windows has none we could close; start the page anyway.
+    // A window manager that cannot list windows has none we could bring forward; start the page.
     let open = wm.windows(None).await.unwrap_or_default();
-    if let Some(window) = open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
-        wm.close_window(&window.id).await.map_err(|err| err.to_string())?;
+    match open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
+        Some(window) => wm.focus_window(&window.id).await.map_err(|err| err.to_string()),
+        None => start(),
     }
-    start()
 }
 
 /// What the tray menu is built from.
@@ -1041,7 +1041,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_open_control_centre_is_replaced_by_one_on_the_accounts_page() {
+    async fn an_open_control_centre_comes_to_the_front_and_is_never_closed() {
         use torro_wm::fake::{Call, FakeWm};
         let wm = FakeWm::new("1");
         let other = wm.open_window("foot", None);
@@ -1049,14 +1049,16 @@ mod tests {
         let before = FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst);
 
         assert_eq!(show_accounts_page(&wm, count_fake_page).await, Ok(()));
-        assert_eq!(wm.calls(), vec![Call::Close(open)], "only the control centre is closed");
+        assert_eq!(wm.calls(), vec![Call::Focus(open.clone())], "only focused, nothing closed");
+        assert!(wm.all_windows().iter().any(|w| w.id == open));
         assert!(wm.all_windows().iter().any(|w| w.id == other));
-        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before, "no second control centre");
 
-        // None open: nothing to close, the page just starts.
-        assert_eq!(show_accounts_page(&wm, count_fake_page).await, Ok(()));
-        assert_eq!(wm.calls().len(), 1);
-        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 2);
+        // None open: the page starts.
+        let empty = FakeWm::new("1");
+        assert_eq!(show_accounts_page(&empty, count_fake_page).await, Ok(()));
+        assert!(empty.calls().is_empty());
+        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
     }
 
     #[tokio::test]
