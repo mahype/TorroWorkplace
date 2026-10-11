@@ -102,7 +102,7 @@ torrocalendar / torrotasks (Iced)        torro-gui: Theme, Datenquelle, Anmeldeb
 - **Dateien:** `crates/torro-pim-caldav/src/write.rs`
 
 ### K.6 Konto im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.0
 - **Dateien:** `crates/torroworkplace/src/account.rs`
 
