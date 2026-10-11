@@ -585,9 +585,12 @@ pub fn scrollbar() -> widget::scrollable::Scrollbar {
 }
 
 /// A scrollable (`scrollable(…).style(style::scrollable)`, with [`scrollbar`]): no rail, a round
-/// scroller in `line_strong` that turns `focus_ring` while the pointer is on it or drags it.
+/// scroller in `line_strong` that turns `focus_ring` while the pointer is on it or drags it. In the
+/// light theme the scroller shows only while the pointer is over the scrollable (that is, while
+/// one scrolls): a grey bar at rest is noise on a white page; the dark theme keeps it visible.
 pub fn scrollable(theme: &Theme, status: widget::scrollable::Status) -> widget::scrollable::Style {
     let p = palette(theme);
+    let resting = matches!(status, widget::scrollable::Status::Active { .. }) && !theme.extended_palette().is_dark;
     let (on_vertical, on_horizontal) = match status {
         widget::scrollable::Status::Active { .. } => (false, false),
         widget::scrollable::Status::Hovered {
@@ -601,7 +604,11 @@ pub fn scrollable(theme: &Theme, status: widget::scrollable::Status) -> widget::
         background: None,
         border: Border::default(),
         scroller: widget::scrollable::Scroller {
-            background: Background::Color(if engaged { p.focus_ring } else { p.line_strong }),
+            background: Background::Color(match (resting, engaged) {
+                (true, _) => Color::TRANSPARENT,
+                (false, true) => p.focus_ring,
+                (false, false) => p.line_strong,
+            }),
             border: border::rounded(ROUND),
         },
     };
@@ -635,6 +642,30 @@ mod tests {
     use super::*;
     use crate::theme::{self, Palette};
     use iced::widget::button::{Status, Style};
+
+    fn scroller_alpha(theme: &Theme, status: widget::scrollable::Status) -> f32 {
+        match scrollable(theme, status).vertical_rail.scroller.background {
+            Background::Color(color) => color.a,
+            _ => 1.0,
+        }
+    }
+
+    #[test]
+    fn the_light_scrollbar_shows_only_while_the_pointer_is_over_the_scrollable() {
+        let resting = widget::scrollable::Status::Active {
+            is_horizontal_scrollbar_disabled: false,
+            is_vertical_scrollbar_disabled: false,
+        };
+        let over = widget::scrollable::Status::Hovered {
+            is_horizontal_scrollbar_hovered: false,
+            is_vertical_scrollbar_hovered: false,
+            is_horizontal_scrollbar_disabled: false,
+            is_vertical_scrollbar_disabled: false,
+        };
+        assert_eq!(scroller_alpha(&theme::light(), resting), 0.0);
+        assert!(scroller_alpha(&theme::light(), over) > 0.0);
+        assert!(scroller_alpha(&theme::theme(), resting) > 0.0, "the dark theme keeps it visible");
+    }
 
     type ButtonStyle = Box<dyn Fn(&Theme, Status) -> Style>;
     type CheckStyle = Box<dyn Fn(&Theme, widget::checkbox::Status) -> widget::checkbox::Style>;

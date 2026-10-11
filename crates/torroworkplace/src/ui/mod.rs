@@ -617,7 +617,15 @@ impl Ui {
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
         let page = column(notices).push(page).spacing(space::L);
-        scrollable(container(widgets::content(size::CONTENT_MAX, page)).padding(page_margin(class)))
+        let page = if class == SizeClass::Medium {
+            // Flush with the window: the page starts at the margin (24), where the ink of the header's
+            // first symbol starts (16 padding, 6 around the symbol, 2 inside the icon), instead of
+            // floating in the middle between header and window edge.
+            container(container(page).width(Fill).max_width(size::CONTENT_MAX)).padding(page_margin(class))
+        } else {
+            container(widgets::content(size::CONTENT_MAX, page)).padding(page_margin(class))
+        };
+        scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .height(Fill)

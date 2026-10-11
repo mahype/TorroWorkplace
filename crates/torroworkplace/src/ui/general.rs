@@ -70,7 +70,7 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
             appearance(tr("Light"), Appearance::Light),
             appearance(tr("Dark"), Appearance::Dark),
         ],
-        Some(tr("Light or dark colours for all Torro apps. “System” follows your desktop.").to_string()),
+        Some(tr("Light or dark colors for all Torro apps. “System” follows your desktop.").to_string()),
     );
 
     let switch =

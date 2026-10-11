@@ -49,11 +49,13 @@
 //!
 //! Mini and strip windows have no chrome (skill, section 6): apps show their glance view there
 //! instead of a shell. A shell built for them anyway looks like the narrow one.
+//!
+//! The drawer of the medium and narrow layouts dims the window behind it (scrim) and has a shadow.
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Element, Fill, Padding};
+use iced::{Alignment, Background, Element, Fill, Padding, Shadow, Vector};
 
 use torro_core::AppId;
 use torro_core::i18n::tr;
@@ -209,15 +211,23 @@ fn wide_window<'a, M: 'a>(
         .into()
 }
 
-/// The sidebar as a drawer over the left edge, with the menu shadow; a click beside it dismisses.
+/// The sidebar as a drawer over the left edge: the rest of the window is dimmed with the scrim (as
+/// behind a dialog) and the drawer casts the menu shadow to the right; a click on the scrim
+/// dismisses.
 fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<'a, M> {
-    let catcher = opaque(mouse_area(blank().width(Fill).height(Fill)).on_press(on_dismiss));
+    let scrim = container(blank().width(Fill).height(Fill)).style(|t| container::Style {
+        background: Some(Background::Color(palette(t).scrim)),
+        ..container::Style::default()
+    });
+    let catcher = opaque(mouse_area(scrim).on_press(on_dismiss));
     // The edge is a rule on the drawer's own surface: Iced leaves a translucent border see-through,
     // and the content below would shine through it.
     let side = container(sidebar).width(size::SIDEBAR - LINE).height(Fill).padding(space::S);
     let panel = container(row![side, rule::vertical(LINE).style(style::rule)]).height(Fill).style(|t| {
         let p = palette(t);
-        container::Style { background: Some(Background::Color(p.bg)), shadow: p.shadow, ..container::Style::default() }
+        // The menu shadow falls sideways here: the drawer's edge is vertical.
+        let shadow = Shadow { offset: Vector::new(space::M, 0.0), ..p.shadow };
+        container::Style { background: Some(Background::Color(p.bg)), shadow, ..container::Style::default() }
     });
     stack![catcher, opaque(panel)].into()
 }

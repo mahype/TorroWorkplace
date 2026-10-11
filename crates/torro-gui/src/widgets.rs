@@ -802,19 +802,30 @@ pub fn chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
 /// A list label in a row ("● Work"): 20 high, round, `line_strong` frame, dot 6 in `colour`,
 /// label `META` in `text_2`. Without a colour it is a plain tag ("review").
 pub fn pill<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> Element<'a, M> {
+    pill_at(colour, label, 1.0)
+}
+
+/// [`pill`] for a disabled row ("Coming soon" next to a service that is not available yet): the
+/// whole pill at the disabled opacity of 40 %, like the row's text.
+pub fn pill_disabled<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> Element<'a, M> {
+    pill_at(colour, label, style::DISABLED_ALPHA)
+}
+
+/// The pill with its colours at `alpha` of their strength.
+fn pill_at<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>, alpha: f32) -> Element<'a, M> {
     let mut content = row![].spacing(space::XS).align_y(Alignment::Center);
     if let Some(colour) = colour {
-        content = content.push(color_dot(colour, Scale::Small.dot()));
+        content = content.push(color_dot(colour.scale_alpha(alpha), Scale::Small.dot()));
     }
     content = content.push(typo::text(typo::META, label).wrapping(Wrapping::None));
     container(content)
         .center_y(PILL_HEIGHT)
         .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
-        .style(|t| {
+        .style(move |t| {
             let p = palette(t);
             container::Style {
-                text_color: Some(p.text_2),
-                border: border::rounded(PILL_HEIGHT / 2.0).color(p.line_strong).width(LINE),
+                text_color: Some(p.text_2.scale_alpha(alpha)),
+                border: border::rounded(PILL_HEIGHT / 2.0).color(p.line_strong.scale_alpha(alpha)).width(LINE),
                 ..container::Style::default()
             }
         })

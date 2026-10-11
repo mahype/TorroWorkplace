@@ -28,15 +28,15 @@
 
 use iced::widget::space as blank;
 use iced::widget::{column, row, text, text_input};
-use iced::{Alignment, Element, Fill, Theme};
+use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::i18n::tr;
 use torro_gui::icon::Icon;
-use torro_gui::theme::{self, palette, space};
+use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{style, typo, widgets};
 use torro_ipc::{AccountInfo, Request};
 use torro_pim::AccountState;
 
-use super::{Action, Data, chevron, pressable, setting_row};
+use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
 
 /// The step the dialog is on. Each step has its own subtitle and footer button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -219,8 +219,26 @@ fn provider_row(provider: Provider, name: &'static str, summary: &'static str) -
         let row = setting_row(None, name, Some(summary.to_string()), chevron());
         pressable(row, Some(Message::ChooseProvider(provider)))
     } else {
-        setting_row(None, name, Some(summary.to_string()), widgets::pill(None, tr("Coming soon")))
+        coming_soon_row(name, summary)
     }
+}
+
+/// A provider that is not available yet: the whole row – name, summary and tag – at the disabled
+/// opacity of 40 %, with the metrics of [`setting_row`].
+fn coming_soon_row(name: &'static str, summary: &'static str) -> Element<'static, Message> {
+    let faded = |colour: fn(&Palette) -> Color| {
+        move |t: &Theme| text::Style { color: Some(colour(palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
+    };
+    let lines = column![
+        one_line(typo::text(typo::BODY, name).style(faded(|p| p.text))),
+        one_line(typo::text(typo::META, summary).style(faded(|p| p.text_2))),
+    ];
+    row_frame(
+        row![lines.width(Fill), widgets::pill_disabled(None, tr("Coming soon"))]
+            .spacing(space::L)
+            .align_y(Alignment::Center),
+        true,
+    )
 }
 
 /// A text field in the look of the suite: `BODY`, 32 high.
