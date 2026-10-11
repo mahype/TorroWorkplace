@@ -188,7 +188,7 @@ pub fn demo_data() -> Data {
                 server: "https://work.example.net".into(),
                 login_name: "anna".into(),
                 last_sync: Some(now - Duration::days(2)),
-                problem: Some("the server did not answer".into()),
+                problem: Some("The server did not answer".into()),
             },
             collections: vec![
                 team("demo:/work/calendars/team/", "Team", CollectionKind::Events, "#5B8CFF"),
