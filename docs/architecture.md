@@ -6,7 +6,9 @@ Ein Monorepo, ein Rust-Workspace. Alles gehört hier hinein: der Kern, die Apps,
 gemeinsamen Crates, workspace-setups, Integrationen für die Window Manager und die Pakete.
 
 **Der Kern ist `torroworkplace`:** ein Hintergrunddienst mit Icon in der Taskleiste, von dem
-aus sich die ganze Suite steuern lässt. Die Apps (Aufgaben, Kalender, …) bauen auf ihm auf.
+aus sich die ganze Suite steuern lässt. Zuerst hält er die Workspaces des Tiling-Managers als
+Vorlagen fest (Hyprland, AeroSpace, GlazeWM); das ausführliche Konzept steht in [core.md](core.md).
+Die Apps (Aufgaben, Kalender, …) bauen auf ihm auf.
 
 ```
 TorroWorkplace/
@@ -14,6 +16,8 @@ TorroWorkplace/
 ├── crates/
 │   ├── torro-core/             # App-IDs, Pfade pro OS, Theme-Tokens; später Config, Logging, Keychain
 │   ├── torro-ipc/              # Protokoll zwischen Kern und Apps (lokaler Socket)
+│   ├── torro-wm/               # Trait WindowManager; Backends Hyprland, AeroSpace, GlazeWM
+│   ├── torro-setups/           # Workspace-Vorlagen: erfassen, speichern, laden
 │   ├── torro-pim/              # Modell Event/Todo, Provider-Trait, Offline-Cache, Sync-Engine
 │   ├── torro-pim-caldav/       # Provider: CalDAV + iCalendar (VEVENT/VTODO)
 │   ├── torro-tui/              # gemeinsame ratatui-Widgets, Keymap, Theme
@@ -22,7 +26,7 @@ TorroWorkplace/
 │   └── torrocalendar/          # App Kalender  → bin `torrocalendar`
 ├── gui/                        # Phase 3: GUIs (Technik nach Vergleich), gleicher Kern
 ├── apps/
-│   └── workspace-setups/       # Fenster-Sets speichern und laden (Python + QML), Historie übernommen
+│   └── workspace-setups/       # Referenz: das bisherige Omarchy-Plugin (Python + QML), wird in Rust neu gebaut
 ├── integrations/
 │   ├── hyprland/               # Fensterregeln, .desktop-Launcher, Autostart
 │   ├── aerospace/              # on-window-detected-Regeln, LaunchAgent
@@ -41,8 +45,8 @@ TorroWorkplace/
                                           |
                           torroworkplace daemon  ──  mcp (eine Suite für alle Agenten)
                  /            |                 |                 \
-          Konten +      torro-pim          App-Verwaltung       workspace-setups
-          Schlüsselbund (Cache + Sync)     (starten/fokussieren) (Sets laden/speichern)
+          Konten +      torro-pim          App-Verwaltung       torro-setups
+          Schlüsselbund (Cache + Sync)     (starten/fokussieren) (Vorlagen) → torro-wm
                               |
                        Provider-Trait
                 /             |              \
@@ -54,7 +58,7 @@ TorroWorkplace/
 | Befehl | Zweck |
 |---|---|
 | `torroworkplace daemon` | Hintergrunddienst mit Tray-Icon; `--headless` ohne Icon. Startet automatisch beim Anmelden |
-| `torroworkplace` / `tui` | Steuerzentrale: Apps, Konten, Sync-Status, Fenster-Sets |
+| `torroworkplace ui` | Steuerzentrale (Iced): Vorlagen, später Apps, Konten, Sync-Status |
 | `torroworkplace status --json` | Kurzstatus für Leisten-Widgets und Skripte |
 | `torroworkplace ctl …` | Steuerung von außen (App starten, Sync anstoßen, Set laden) |
 | `torroworkplace mcp` | **ein** MCP-Server (stdio) für die ganze Suite; leitet an den Dienst weiter |
@@ -67,14 +71,14 @@ Der Dienst ist für alles zuständig, was mehrere Apps betrifft:
 - **App-Verwaltung:** welche Suite-Apps installiert sind und laufen. Er startet eine App oder
   holt ihr Fenster nach vorn, unter Hyprland mit `hyprctl dispatch focuswindow class:…`, unter
   AeroSpace mit `aerospace focus --window-id …` bzw. `open`.
-- **Fenster-Sets:** Er listet, lädt und speichert Sets über die JSON-CLI von workspace-setups.
-  Unter Linux geht das sofort, auf dem Mac nach dem AeroSpace-Backend (Phase 4).
+- **Workspace-Vorlagen:** Er speichert den aktiven Workspace als Vorlage und baut sie wieder auf,
+  über ein Backend pro Tiling-Manager (`torro-wm`). Siehe [core.md](core.md).
 - **MCP:** Agenten sprechen nur mit dem Kern. Die Tools tragen einen Präfix: `tasks_*`,
   `calendar_*`, `apps_*`, `setups_*`.
 
 ### Tray-Icon
 
-Das Menü enthält: Apps starten/fokussieren, Fenster-Sets laden, Sync-Status, Steuerzentrale
+Das Menü enthält zuerst die Workspace-Vorlagen (laden, speichern, aktualisieren, löschen), später Apps starten/fokussieren, Sync-Status und die Steuerzentrale
 öffnen, Beenden.
 
 | Plattform | Umsetzung |
@@ -148,34 +152,15 @@ Die Regeln stehen in `torro-design/app-design.md`.
 
 ## GUI
 
-Die TUI ist die Grundlage auf allen Systemen. Die GUI kommt danach (Phase 3). Zur Wahl stehen:
-- **eine plattformübergreifende Rust-GUI für alle Systeme:** Iced ist Favorit, Slint und egui
-  sind Alternativen
-- **native Oberflächen pro System:** z. B. SwiftUI auf dem Mac über eine Rust-Brücke wie bei TorroMail
+Die GUI baut auf Iced (entschieden). Die Steuerzentrale läuft als eigener Prozess
+(`torroworkplace ui`) und spricht über IPC mit dem Dienst, damit der Dienst leicht bleibt und auf
+dem Mac Tray-Icon und GUI nicht um den Haupt-Thread streiten. Die Kalender-Ideen in
+[calendar-views.md](calendar-views.md) (Tagesspirale) sind ein Prüfstein für Zeichnen und Zoom.
 
-Entschieden wird nach einem kleinen Prototyp-Vergleich. Die Kalender-Ideen in
-[calendar-views.md](calendar-views.md) (Tagesspirale) sind dabei ein Prüfstein für Zeichnen und Zoom.
+## workspace-setups
 
-## workspace-setups im Monorepo
-
-Heute: Python (nur Standardbibliothek) und QML, nur Omarchy/Hyprland. Übernommen mit Historie
-(`git subtree`) nach `apps/workspace-setups`. Der Kern steuert es über seine JSON-CLI.
-
-Für AeroSpace müssen vier Stellen austauschbar werden:
-
-| Bereich | Hyprland (heute) | AeroSpace (neu) |
-|---|---|---|
-| Fenster abfragen und steuern | `hyprctl -j clients`, `dispatch` | `aerospace list-windows --json`, `move-node-to-workspace`, `focus` |
-| Layout | dwindle-Baum mit Teilungsverhältnissen | i3-ähnlicher Baum aus Kacheln und Akkordeon (`layout`, `join-with`, `resize`); Teilungsverhältnisse nur näherungsweise |
-| Startbefehl ermitteln | `/proc/<pid>/cmdline`, `.desktop` | Bundle-ID + `open -b`/`open -a`, `ps` für Terminal-Apps |
-| Browser-Tabs | `~/.config/chromium/…/Sessions` | `~/Library/Application Support/Google/Chrome/…/Sessions` (gleiches SNSS-Format) |
-| Oberfläche | Quickshell-Panel, Lua-Tastenkürzel | Tray-Menü des Kerns, Tastenkürzel in `~/.aerospace.toml` |
-
-Vorgehen:
-1. Übernehmen ohne Funktionsänderung (erledigt). Unter Omarchy richtet `install.sh` das Plugin aus
-   dem Monorepo ein. Ob `omarchy plugin add` ein Unterverzeichnis kann, ist offen.
-2. Ein Interface `WindowManagerBackend` einziehen: `hyprland.py` ist die erste Umsetzung, `aerospace.py`
-   die zweite. Das Template-Schema 3 bekommt ein Feld `wm` und speichert das Layout neutral.
-3. Später den Kern nach Rust verlegen (`crates/torro-setups`). Er läuft dann direkt im Dienst
-   `torroworkplace`, mit Windows-Backend (komorebi).
-4. `mahype/workspace-setups` archivieren und auf das Monorepo verweisen.
+`apps/workspace-setups` ist das bisherige Omarchy-Plugin (Python und QML, nur Hyprland), mit
+Historie übernommen. Es dient als **Referenz** für Funktionen und Erfahrungen, etwa das Erfassen
+des Kachelbaums aus Fensterrechtecken, die Strategien je Fenster, Browser-Tabs und Terminalprogramme.
+Der Kern baut diese Funktionen in Rust neu (`torro-wm`, `torro-setups`), mit einem Backend pro
+Tiling-Manager. Plan und Funktionsliste: [core.md](core.md).

@@ -9,11 +9,12 @@ mehr. Der Window Manager *ist* das Dashboard. TorroWorkplace liefert dafür die 
 Desktop verteilen lassen.
 
 - **Im Zentrum steht der Kern `torroworkplace`:** ein Hintergrunddienst mit Icon in der Taskleiste.
-  Von dort aus startet man die Apps, richtet Konten ein, lädt Fenster-Sets und sieht den Sync-Status.
+  Er hält die Workspaces des Tiling-Managers als Vorlagen fest und baut sie auf Knopfdruck wieder auf.
+  Von dort aus startet man später auch die Apps, richtet Konten ein und sieht den Sync-Status.
   Er synchronisiert für alle Apps und ist die eine Anlaufstelle für KI-Agenten.
-- **Zuerst Hyprland (Omarchy)**, dann **AeroSpace auf dem Mac**, später Windows (komorebi/GlazeWM).
-- **workspace-setups** merkt sich, welche Apps wo lagen und was in ihnen offen war, und stellt
-  ganze Fenster-Sets per Tastendruck oder beim Start wieder her.
+- **Zuerst Hyprland (Omarchy)**, dann **AeroSpace auf dem Mac** und **GlazeWM unter Windows**.
+- **Workspace-Vorlagen** im Kern merken sich, welche Apps wo lagen und was in ihnen offen war, und
+  stellen ganze Workspaces per Tastendruck oder beim Start wieder her (nach dem Vorbild von workspace-setups).
 - **Ein Befehl installiert alles.**
 
 ## Warum gerade jetzt: Arbeiten mit KI
@@ -36,7 +37,7 @@ soll das **übersichtlicher** machen, auf zwei Wegen:
 3. **Offline zuerst.** Lokaler Cache, Sync im Hintergrund. Die Oberfläche wartet nie auf das Netz.
 4. **Ein Kern, viele Apps.** Konten, Sync und MCP liegen einmal im Kern; die Apps sind schlanke
    Clients. Jede hat TUI, später GUI, `status --json` und `ctl`.
-5. **TUI als Grundlage.** Die TUI läuft auf allen Systemen und kommt zuerst; die GUI baut darauf auf.
+5. **Kern zuerst.** Erst der Kern mit Tray-Icon und Workspace-Vorlagen, dann die Apps. Die Apps bekommen eine GUI (Iced); TUIs bleiben möglich.
 6. **Feste App-ID.** Jedes Fenster hat eine stabile Klasse (`torro-<app>`), damit Window-Manager-Regeln
    und workspace-setups es zuverlässig wiederfinden.
 7. **Leicht.** Zehn Apps gleichzeitig dürfen den Rechner nicht spürbar belasten, deshalb kein Electron.

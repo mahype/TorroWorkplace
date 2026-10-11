@@ -1,7 +1,7 @@
 # App-Katalog
 
 Ideensammlung. Jede App beantwortet **eine Frage** und läuft in ihrem eigenen Fenster.
-Status: **Kern** = Phase 1 · **v0.1** = erste Version (Phase 2) · **nächste** = direkt danach · **Idee** = gesammelt.
+Status: **Kern** = Phase 1–3 · **v0.1** = erste Apps (Phase 4) · **nächste** = direkt danach · **Idee** = gesammelt.
 
 Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerzentrale, Konten, Sync, MCP).
 
@@ -47,8 +47,8 @@ macOS-Menüleisten-Apps oder tmux-TUIs (siehe [research.md](research.md)).
 
 | Baustein | Status |
 |---|---|
-| workspace-setups (Fenster-Sets speichern und laden) | übernommen; aus dem Tray-Menü bedienbar (Kern), AeroSpace-Backend in Phase 4 |
-| **Kern `torroworkplace`**: Dienst, Tray-Icon, Steuerzentrale, Konten, Sync, MCP | **Kern** |
+| Workspace-Vorlagen (Workspaces speichern und laden), neu in Rust nach dem Vorbild von workspace-setups | **Kern**, zuerst; Hyprland, dann AeroSpace und GlazeWM ([core.md](core.md)) |
+| **Kern `torroworkplace`**: Dienst, Tray-Icon, Steuerzentrale; später Konten, Sync, MCP | **Kern** |
 | Installer (`install.sh`, AUR-Metapaket, Homebrew-Tap) | v0.1 |
 | Omarchy-Leistenwidgets pro App (`status --json` + QML) | Phase 5 |
 
