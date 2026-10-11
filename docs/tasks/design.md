@@ -345,6 +345,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 
 ### D.6 Fehler- und Leertexte mit Zusammenhang
 - [ ] erledigt
+- Steuerzentralen-Teil erledigt (Commit e379459): Demo-Fehlertext in `ui/launch.rs` mit großem Satzanfang.
 - **Modell:** Haiku · **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/launch.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/week.rs`
 - Aufgaben wie der Kalender: „Tasks could not be loaded: …“ plus was zu tun ist; Demo-Fehlertexte
   mit großem Satzanfang. Leeres Wochen-/Tagesraster mit leiser Zeile „No events this week“ (Skill
@@ -377,6 +378,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 
 ### D.11 Kleinigkeiten
 - [ ] erledigt
+- Steuerzentralen-Teil erledigt (Commit e4c5f6b): Drawer mit Scrim und Schatten, Kopftitel und Inhalt in Mittel auf einer Achse, „Coming soon“-Zeilen auf 40 %, „colours“ → „colors“, Rollbalken hell nur bei Zeigerkontakt (`shell.rs`, `style.rs`, `widgets.rs`, `ui/`).
 - **Modell:** Haiku · **Dateien:** je nach Punkt (nennen)
 - Drawer in Mittel mit Scrim und Schatten; Steuerzentrale Mittel: Kopftitel und Inhalt auf einer
   Achse; „Coming soon“-Zeilen auf 40 %; „colours“ → „colors“; Doppellinie unter Kopfleiste und
