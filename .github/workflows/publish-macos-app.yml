@@ -1,8 +1,8 @@
-# Builds signed and notarised macOS `.app` bundles for the two GUIs from the binaries that dist already
+# Builds signed and notarised macOS `.app` bundles for the core and the two GUIs from the binaries that dist already
 # put into the GitHub Release, and attaches them to the same release as `<bin>-<arch>-apple-darwin.app.zip`.
 # dist itself only ships bare binaries and no `.app` bundles. Background: docs/release.md.
 #
-# Two ways to run it:
+# Two ways to run it, both only when the repository variable MACOS_APP_ENABLED is 'true':
 #   * automatically after a release: dist calls it as a custom publish job
 #     (`publish-jobs = ["./publish-macos-app"]` in dist-workspace.toml);
 #   * by hand: Actions -> "Publish macOS app" -> Run workflow, with the tag (e.g. v0.1.0).
@@ -36,12 +36,15 @@ permissions:
 jobs:
   macos-app:
     name: ${{ matrix.bin }} (${{ matrix.arch }})
+    if: ${{ vars.MACOS_APP_ENABLED == 'true' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         include:
+          - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, arch: aarch64, runner: macos-14 }
+          - { bin: torroworkplace, appid: torro-workplace, title: Torro Workplace, arch: x86_64, runner: macos-15-intel }
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: aarch64, runner: macos-14 }
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }

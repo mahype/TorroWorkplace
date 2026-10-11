@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Calendar – Agenda</title>
+<!-- Entwurf: Agenda neu (2026-10-11). Statt grauer Tagesbalken eine Datumsspalte links, die beim
+     Scrollen oben klebt (heute: roter Kreis). Termine mit Farbbalken wie im Raster, Beginn groß,
+     Dauer klein darunter; laufender Termin getönt mit "40 min left", rote Jetzt-Linie, freie Zeit
+     ab 2 h, leere Tage zusammengefasst, Kalenderwoche als leiser Trenner. Breit: Details rechts.
+     ?size=s schmal, ?theme=light hell. Alle Termine sind Beispieldaten. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+.body{flex:1;display:flex;min-height:0}
+.list{flex:1;min-width:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--line-strong) transparent}
+.inner{max-width:720px;margin:0 auto;padding:8px 24px 48px}
+html[data-size="s"] .inner{padding:4px 12px 48px}
+.week{display:flex;align-items:center;gap:12px;margin:24px 0 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.week::after{content:"";flex:1;height:1px;background:var(--line)}
+.week:first-child{margin-top:8px}
+.day{display:grid;grid-template-columns:56px 1fr;gap:0 8px;padding:12px 0;border-bottom:1px solid var(--line)}
+html[data-size="s"] .day{grid-template-columns:44px 1fr}
+.day:last-child{border-bottom:0}
+.date{position:sticky;top:8px;align-self:start;display:flex;flex-direction:column;align-items:center;gap:2px;padding-top:2px}
+.date small{font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.date b{font:600 22px/32px "Inter Tabular",Inter,sans-serif;min-width:32px;height:32px;border-radius:16px;text-align:center;color:var(--text)}
+.day.today .date b{background:var(--accent);color:#fff}
+.day.today .date small{color:var(--text)}
+.day.weekend .date b{color:var(--text2)}
+.events{display:flex;flex-direction:column;min-width:0}
+.dayhead{display:flex;align-items:center;gap:8px;height:24px;margin-bottom:4px;font-size:12px;color:var(--text3)}
+.dayhead b{font-weight:500;color:var(--text2)}
+.dayhead .grow{flex:1}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px}
+.chip{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:500;
+  background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c);white-space:nowrap}
+.chip .faint{font-weight:400}
+.ev{position:relative;display:grid;grid-template-columns:52px 3px 1fr auto;gap:0 12px;align-items:stretch;min-height:44px;padding:6px 8px;margin:0 -8px;border-radius:6px;cursor:pointer}
+html[data-size="s"] .ev{grid-template-columns:44px 3px 1fr;gap:0 10px}
+.ev:hover{background:var(--hover)}
+.ev.sel{background:var(--selected)}
+.ev.past{opacity:.55}
+.ev.now{background:color-mix(in srgb,var(--c) var(--tint),var(--panel))}
+.ev .tm{display:flex;flex-direction:column;justify-content:center;font-family:"Inter Tabular",Inter,sans-serif}
+.ev .tm b{font-weight:500;font-size:13px;line-height:20px}
+.ev .tm small{font-size:12px;line-height:16px;color:var(--text3)}
+.ev .bar{border-radius:2px;background:var(--c)}
+.ev.tent .bar{background:repeating-linear-gradient(to bottom,var(--c) 0 4px,transparent 4px 7px)}
+.ev .what{display:flex;flex-direction:column;justify-content:center;min-width:0}
+.ev .what b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev .what span{display:flex;align-items:center;gap:4px;font-size:12px;line-height:16px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ev .what span svg{width:12px;height:12px;color:var(--text3)}
+.ev .side{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:12px}
+html[data-size="s"] .ev .side{display:none}
+.left{height:20px;padding:0 8px;border-radius:10px;display:inline-flex;align-items:center;font-size:12px;font-weight:500;background:var(--panel);color:var(--text);box-shadow:0 0 0 1px var(--line-strong)}
+.av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff;margin-left:-6px;border:2px solid var(--panel)}
+.nowline{position:relative;height:16px;display:flex;align-items:center;margin:0 -8px}
+.nowline span{font:500 11px/16px "Inter Tabular",Inter,sans-serif;color:#fff;background:var(--accent);border-radius:4px;padding:0 4px;margin-left:8px}
+.nowline::after{content:"";flex:1;height:1px;background:var(--accent);margin-left:4px}
+.free{display:grid;grid-template-columns:52px 1fr;gap:0 12px;align-items:center;height:28px;font-size:12px;color:var(--text3)}
+html[data-size="s"] .free{grid-template-columns:44px 1fr;gap:0 10px}
+.free i{height:1px;background:repeating-linear-gradient(to right,var(--line-strong) 0 3px,transparent 3px 6px)}
+.free span{display:flex;align-items:center;gap:8px}
+.free span::after{content:"";flex:1;height:1px;background:repeating-linear-gradient(to right,var(--line-strong) 0 3px,transparent 3px 6px)}
+.gap{display:grid;grid-template-columns:56px 1fr;gap:0 8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line);font-size:12px;color:var(--text3)}
+html[data-size="s"] .gap{grid-template-columns:44px 1fr}
+.gap b{font:500 12px/16px "Inter Tabular",Inter,sans-serif;text-align:center;color:var(--text3)}
+.props .title{font-size:22px;line-height:28px;font-weight:600;margin:8px 0 16px}
+.proto{position:fixed;right:16px;bottom:16px;display:flex;gap:4px;align-items:center;padding:4px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);font-size:12px;color:var(--text3);z-index:40}
+.proto span{padding:0 6px}
+.proto a{color:var(--text2);text-decoration:none;padding:4px 8px;border-radius:6px}
+.proto a:hover{background:var(--hover);color:var(--text)}
+html[data-size="s"] body{max-width:440px;margin:0 auto;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+</style></head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="switcher"><span class="logo">T</span><b>Calendar</b><i data-lucide="chevron-down" class="s14 faint"></i><span class="grow"></span>
+      <button class="iconbtn"><i data-lucide="search"></i></button><button class="iconbtn boxed"><i data-lucide="square-pen"></i></button></div>
+    <a class="nav"><i data-lucide="sun"></i><span class="grow">Today</span><span class="count">4</span></a>
+    <div class="group">Views <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><i data-lucide="calendar-days"></i><span class="grow">Day</span><kbd>D</kbd></a>
+    <a class="nav"><i data-lucide="calendar-range"></i><span class="grow">Week</span><kbd>W</kbd></a>
+    <a class="nav"><i data-lucide="calendar"></i><span class="grow">Month</span><kbd>M</kbd></a>
+    <a class="nav active"><i data-lucide="list"></i><span class="grow">Agenda</span><kbd>A</kbd></a>
+    <a class="nav"><i data-lucide="gantt-chart"></i><span class="grow">Timeline</span><kbd>⇧T</kbd></a>
+    <a class="nav"><i data-lucide="radar"></i><span class="grow">Radar</span><kbd>R</kbd></a>
+    <div class="group">Calendars <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><span class="dot" style="--c:var(--c-work)"></span><span class="grow">Work</span><span class="count">14</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-personal)"></span><span class="grow">Personal</span><span class="count">4</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-birthday)"></span><span class="grow">Family</span><span class="count">2</span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="settings"></i><span class="grow">Settings</span></a>
+  </aside>
+  <main class="panel">
+    <div class="header">
+      <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+      <div class="crumbs"><b>October 2026</b><span class="faint not-s">From today</span></div>
+      <button class="btn ghost not-s" style="margin-left:8px">Today</button>
+      <button class="iconbtn"><i data-lucide="chevron-left"></i></button><button class="iconbtn"><i data-lucide="chevron-right"></i></button>
+      <span class="grow"></span>
+      <div class="seg only-l"><span>Day</span><span>Week</span><span>Month</span><span class="on">Agenda</span><span>Timeline</span><span>Radar</span></div>
+      <button class="btn not-l">Agenda<i data-lucide="chevron-down" class="s14 chev"></i></button>
+      <button class="btn primary not-s"><i data-lucide="plus" class="s14"></i>New event</button>
+    </div>
+    <div class="body">
+      <div class="list"><div class="inner" id="list"></div></div>
+      <aside class="props only-l" id="props"></aside>
+    </div>
+  </main>
+</div>
+<div class="proto"><span>Entwurf</span><a href="?">Breit</a><a href="?size=s">Schmal</a><a href="?theme=light">Hell</a></div>
+<script>
+// Tage ab Di, 13. Okt. 2026; jetzt 14:20.
+const C = {work: "var(--c-work)", personal: "var(--c-personal)", family: "var(--c-birthday)"};
+const NAME = {work: "Work", personal: "Personal", family: "Family"};
+const NOW = [0, 14 * 60 + 20];
+const m = (h, mi = 0) => h * 60 + mi;
+const DAYS = [
+  {d: 0, wd: "Tue", n: 13, label: "Today", ev: [
+    [m(9, 30), m(9, 45), "Daily Standup", "work", "meet.example.org/daily", "video"],
+    [m(13), m(15), "API design workshop", "work", "Room Rhine", "pin", ["AW", "JK", "LM"]],
+    [m(14, 30), m(15), "1:1 with Lena", "work", "Office 2.14", "pin", ["LM"]],
+    [m(18, 30), m(19, 30), "Run", "personal", "City park", "pin"]]},
+  {d: 1, wd: "Wed", n: 14, label: "Tomorrow", ev: [
+    [m(9, 30), m(9, 45), "Daily Standup", "work", "meet.example.org/daily", "video"],
+    [m(12, 30), m(13, 30), "Lunch with Jana", "personal", "Canteen North", "pin"]]},
+  {d: 2, wd: "Thu", n: 15, ev: [
+    [m(9, 30), m(9, 45), "Daily Standup", "work", "meet.example.org/daily", "video"],
+    [m(15), m(16), "Client presentation", "work", "Video call", "video", ["AW", "+3"]],
+    [m(17, 30), m(18, 30), "Dentist?", "personal", "Dr. Weber", "pin", null, true],
+    [m(19), m(20), "Swimming", "personal", "Indoor pool North", "pin"]]},
+  {d: 3, wd: "Fri", n: 16, ev: [
+    [m(9, 30), m(9, 45), "Daily Standup", "work", "meet.example.org/daily", "video"],
+    [m(15), m(16), "Retrospective", "work", "Room Elbe", "pin"],
+    [m(22, 30), m(24), "Release call", "work", "Video call", "video"]]},
+  {d: 4, wd: "Sat", n: 17, weekend: true, ev: [
+    [m(0), m(0, 30), "Release call", "work", "Video call", "video", null, false, "continued"],
+    [m(9, 30), m(11), "Football", "personal", "Forest sports field", "pin"]]},
+  {d: 5, wd: "Sun", n: 18, weekend: true, allday: [["Mum's birthday", "family"]], ev: []},
+  {d: 6, wd: "Mon", n: 19, week: 43, ev: [[m(9, 30), m(9, 45), "Daily Standup", "work", "meet.example.org/daily", "video"]]},
+  {gap: "Tue 20 – Thu 22", n: 3},
+  {d: 10, wd: "Fri", n: 23, allday: [["Vacation", "family", "day 1 of 10"]], ev: [[m(10), m(11), "Handover", "work", "Room Elbe", "pin"]]},
+];
+const pad = n => String(n).padStart(2, "0");
+const clk = x => `${pad(Math.floor(x / 60) % 24 === 0 && x >= 1440 ? 24 : Math.floor(x / 60) % 24)}:${pad(x % 60)}`;
+const dur = x => x >= 60 ? (x % 60 ? `${Math.floor(x / 60)} h ${x % 60}` : `${x / 60} h`) : `${x} min`;
+let sel = "0-1";
+const AVC = ["#5B8CFF", "#3FB984", "#E8A33D", "#A78BFA"];
+
+function render() {
+  const out = [`<div class="week">This week · Week 42</div>`];
+  for (const day of DAYS) {
+    if (day.gap) { out.push(`<div class="gap"><b>${day.n} d</b><span>Nothing planned · ${day.gap}</span></div>`); continue; }
+    if (day.week) out.push(`<div class="week">Week ${day.week}</div>`);
+    const today = day.d === 0;
+    const rows = [];
+    let nowDone = !today, last = null;
+    day.ev.forEach((e, k) => {
+      const [s, en, title, cal, where, icon, people, tent, note] = e;
+      if (!nowDone && s > NOW[1]) { rows.push(`<div class="nowline"><span>${clk(NOW[1])}</span></div>`); nowDone = true; }
+      if (last !== null && s - last >= 120) rows.push(`<div class="free"><span></span><span>${dur(Math.floor((s - last) / 30) * 30)} free</span></div>`);
+      const id = `${day.d}-${k}`, past = today && en <= NOW[1], running = today && s <= NOW[1] && en > NOW[1];
+      const side = running ? `<span class="left">${dur(en - NOW[1])} left</span>` : "";
+      const av = people ? `<span style="display:flex;padding-left:6px">${people.map((p, i) => `<span class="av" style="background:${AVC[i % 4]}">${p}</span>`).join("")}</span>` : "";
+      rows.push(`<div class="ev${past ? " past" : ""}${running ? " now" : ""}${tent ? " tent" : ""}${sel === id ? " sel" : ""}" data-id="${id}" style="--c:${C[cal]}">
+        <div class="tm"><b>${clk(s)}</b><small>${dur(en - s)}</small></div><div class="bar"></div>
+        <div class="what"><b>${title}${tent ? ' <em class="faint" style="font-weight:400;font-style:normal">· tentative</em>' : ""}</b><span><i data-lucide="${icon === "video" ? "video" : "map-pin"}"></i>${where}${note ? ` · ${note}` : ""}</span></div>
+        <div class="side">${av}${side}</div></div>`);
+      last = Math.max(last ?? 0, en);
+    });
+    if (!nowDone) rows.push(`<div class="nowline"><span>${clk(NOW[1])}</span></div>`);
+    const chips = (day.allday || []).map(([t, c, x]) => `<span class="chip" style="--c:${C[c]}">${t}${x ? ` <span class="faint">${x}</span>` : ""}</span>`).join("");
+    const count = day.ev.length;
+    out.push(`<div class="day${today ? " today" : ""}${day.weekend ? " weekend" : ""}">
+      <div class="date"><small>${day.wd}</small><b>${day.n}</b></div>
+      <div class="events"><div class="dayhead">${day.label ? `<b>${day.label}</b>` : ""}<span class="grow"></span>${count ? `${count} ${count > 1 ? "events" : "event"}` : ""}</div>
+      ${chips ? `<div class="chips">${chips}</div>` : ""}${rows.join("") || (chips ? "" : `<div class="faint" style="font-size:12px">Nothing planned</div>`)}</div></div>`);
+  }
+  document.getElementById("list").innerHTML = out.join("");
+  renderProps(); lucide.createIcons();
+}
+function renderProps() {
+  const [d, k] = sel.split("-").map(Number); const day = DAYS.find(x => x.d === d); const e = day && day.ev[k];
+  const p = document.getElementById("props"); if (!e) { p.innerHTML = ""; return; }
+  const [s, en, title, cal, where] = e;
+  p.innerHTML = `<div class="prop" style="margin-top:-6px"><span class="dot" style="--c:${C[cal]}"></span>${NAME[cal]}</div><div class="title">${title}</div>
+    <h4>When</h4><div class="prop"><i data-lucide="clock"></i>${day.wd}, ${day.n} Oct · ${clk(s)} – ${clk(en)}</div>
+    <h4>Where</h4><div class="prop"><i data-lucide="map-pin"></i>${where}</div>`;
+}
+document.getElementById("list").addEventListener("click", ev => { const r = ev.target.closest("[data-id]"); if (r) { sel = r.dataset.id; render(); } });
+render();
+</script>
+</body></html>

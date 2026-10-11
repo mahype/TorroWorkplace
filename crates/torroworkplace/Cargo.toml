@@ -15,6 +15,7 @@ workspace = true
 torro-core.workspace = true
 torro-pim.workspace = true
 torro-pim-caldav.workspace = true
+torro-pim-github.workspace = true
 torro-ipc.workspace = true
 torro-tui.workspace = true
 torro-wm.workspace = true

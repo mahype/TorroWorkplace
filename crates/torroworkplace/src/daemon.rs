@@ -27,7 +27,7 @@ use crate::core::{Core, Snapshot};
 use crate::tray;
 
 /// The way back into the daemon for front ends like the tray menu.
-// Only the Linux tray uses it so far; macOS and Windows run without a tray until `tray-icon` follows.
+// Only the Linux tray uses it so far; macOS and Windows run headless until they get a tray.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct Daemon {
     core: Arc<Core>,
@@ -119,6 +119,7 @@ async fn serve(headless: bool) -> Result<(), String> {
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();
     let core = Arc::new(Core::new(backend, store, pim, clients));
+    core.start();
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -266,6 +267,9 @@ fn describe(request: &Request) -> String {
         Request::DeleteTemplate { id } => format!("delete {id}"),
         Request::LoadTemplate { id, .. } => format!("load {id}"),
         Request::ConnectNextcloud { server } => format!("connect {server}"),
+        Request::ConnectGithub => "connect github".into(),
+        // Never the token.
+        Request::SetGithubToken { .. } => "set github token".into(),
         Request::Sync => "sync".into(),
         Request::CalendarCollections => "calendars".into(),
         Request::TaskCollections => "task lists".into(),
@@ -275,6 +279,13 @@ fn describe(request: &Request) -> String {
         Request::DeleteEvent { .. } => "delete event".into(),
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
+        Request::MoveTodo { .. } => "move todo".into(),
+        // Ids only, never a search or a name (task G.2).
+        Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
+        Request::UpdateFilterList { collection, .. } => format!("update filter list {collection}"),
+        Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),
+        Request::PreviewFilter { account, .. } => format!("preview filter of {account}"),
+        Request::UnpinIssue { collection, .. } => format!("unpin from {collection}"),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
         Request::SetSetting { key, .. } => format!("set {key:?}"),

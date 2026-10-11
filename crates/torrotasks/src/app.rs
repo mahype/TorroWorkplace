@@ -1,13 +1,16 @@
 //! The tasks window: state, loading, quick add, saving, and the Linear window around it (task
 //! T.1): `torro_gui::shell` with the sidebar (filters, lists, "Open Calendar", "Settings") in the
-//! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. The
+//! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. In the
+//! wide layout the sidebar collapses to a rail of icons (U.2: panel button or `[`, remembered in
+//! `ui.json`); the medium layout always shows that rail. The
 //! list (`list.rs`) and the detail panel (`detail.rs`) only render and report clicks as
 //! [`Message`]s.
 //!
-//! The detail (T.4) stands beside the list (wide, medium) or replaces it with "‹ Today" in the
-//! header (narrow); in the wide layout its properties fill the shell's properties column. It has
-//! no Save button: it hands out saves as it changes, and while title or notes wait to be saved a
-//! one-second timer sends `Flush` ([`AUTOSAVE`]).
+//! The detail (T.4, U.5) is the side panel of `torro_gui::panel`: beside the list in the wide
+//! layout (where it takes the place of the properties column), over the list in the medium and
+//! narrow ones (full width in narrow); the list keeps its width. It has no Save button: it hands
+//! out saves as it changes, and while title or notes wait to be saved a one-second timer sends
+//! `Flush` ([`AUTOSAVE`]).
 //!
 //! The header (T.2) has one primary button, "New task", that focuses the quick add row (the same
 //! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
@@ -16,7 +19,7 @@
 //! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
 //! glances without any frame (`glance.rs`: the numbers "3 overdue · 5 today" and the next open
 //! tasks, to be ticked off and nothing else); narrow is the list with "Today ▾" in the header and
-//! the detail instead of the list; medium and wide are as described above. The size is kept in the
+//! the detail over the list; medium and wide are as described above. The size is kept in the
 //! state ([`Message::Resized`]), so the keys can be switched off in a glance; filter, selection,
 //! open detail and quick add text survive every change of size.
 //!
@@ -26,7 +29,7 @@
 //! highlighted row; the list scrolls to keep it in view. Plain keys are ignored while a text
 //! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,21 +37,24 @@ use std::time::Duration;
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
+use iced::widget::{Space, column, container, row, stack, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Switcher};
+use torro_gui::panel;
+use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
+use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
+use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
 use torro_pim::demo::DemoSource;
-use torro_pim::{AccountState, Collection, EventTime, PimSource, Todo};
+use torro_pim::{AccountState, Collection, EventTime, PimAccount, PimSource, Todo};
 
 use crate::detail::{self, Detail};
 use crate::glance::{self, GlanceData};
@@ -229,8 +235,6 @@ const QUICK_ADD: &str = "quick-add";
 const QUICK_ADD_START: f32 = space::M + icon::SIZE_SM + space::S;
 /// Where the quick add text ends: before the key hint.
 const QUICK_ADD_END: f32 = space::XXL + space::S;
-/// The one-pixel line between the list and the detail.
-const LINE: f32 = 1.0;
 /// How long after the last keystroke typed title or notes are saved.
 const AUTOSAVE: Duration = Duration::from_secs(1);
 
@@ -245,6 +249,10 @@ pub struct App {
     /// than asked of the view, so that subscriptions and tests know the class too.
     size: Size,
     account: Option<AccountState>,
+    /// Every account behind the data, for grouping the lists in the sidebar (task M1.3).
+    accounts: Vec<PimAccount>,
+    /// Accounts whose lists the sidebar has folded away. Window state, nothing is stored.
+    folded: HashSet<String>,
     connect: Connect,
     collections: Vec<Collection>,
     todos: Vec<Todo>,
@@ -268,13 +276,23 @@ pub struct App {
     menu: Option<Menu>,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     drawer: bool,
+    /// The sidebar the user chose for the wide layout, kept in `ui.json`.
+    sidebar: SidebarMode,
+    /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
+    zoom: Zoom,
 }
 
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a message carries a whole task and is handled once; boxing would only add an allocation"
+)]
 pub enum Message {
     /// The window has this size (at start and after every resize).
     Resized(Size),
-    AccountLoaded(Result<AccountState, String>),
+    AccountLoaded(Result<Vec<PimAccount>, String>),
+    /// An account's title in the sidebar: fold or unfold its lists.
+    ToggleAccount(String),
     Connect(connect::Message),
     Loaded(Result<(Vec<Collection>, Vec<Todo>), String>),
     SetFilter(Filter),
@@ -294,6 +312,8 @@ pub enum Message {
     SystemMode(Mode),
     /// The appearance stored in the suite settings; an error keeps the one we have.
     Appearance(Result<Appearance, String>),
+    /// The zoom keys, the stored zoom and its badge.
+    Zoom(zoom::Message),
     /// From the app switcher at the top of the sidebar.
     Switcher(Switcher),
     /// Open or close the navigation menu ("Today ▾").
@@ -302,6 +322,11 @@ pub enum Message {
     ToggleDisplay,
     /// Open the sidebar drawer (medium and narrow layouts).
     ShowDrawer,
+    /// The panel button at the top of the sidebar, or `[`: collapses or expands the sidebar (wide),
+    /// opens or closes the drawer (medium, narrow).
+    ToggleSidebar,
+    /// The view state stored in `ui.json`, loaded at start.
+    UiState(UiState),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, the detail's editor, the detail.
@@ -333,6 +358,8 @@ pub enum Shortcut {
     Toggle,
     /// N: a new task, in the quick add row.
     New,
+    /// `[`: collapse or expand the sidebar ([`Message::ToggleSidebar`]).
+    Sidebar,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
@@ -343,6 +370,9 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         return None;
     }
     let iced::Event::Keyboard(Key::KeyPressed { key, modifiers, .. }) = event else { return None };
+    if shell::is_sidebar_key(&key, modifiers) {
+        return Some(Message::Shortcut(Shortcut::Sidebar));
+    }
     if modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
     }
@@ -371,11 +401,14 @@ fn typing() -> Task<bool> {
 impl App {
     pub fn new(source: Source, launch: Launch) -> (App, Task<Message>) {
         let open = launch.open;
+        let zoom = Zoom::for_source(&source);
         let app = App {
             source,
             today: launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date()),
             size: torro_gui::window(AppId::TASKS).size,
             account: None,
+            accounts: Vec::new(),
+            folded: HashSet::new(),
             connect: Connect,
             collections: Vec::new(),
             todos: Vec::new(),
@@ -398,13 +431,17 @@ impl App {
             },
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            sidebar: SidebarMode::default(),
+            zoom,
             launch,
             opened: false,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
+            ui_state::load_task(AppId::TASKS).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
+            app.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
@@ -421,6 +458,8 @@ impl App {
             iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            // Zoom keys work everywhere, glance views and the open detail included.
+            self.zoom.subscription().map(Message::Zoom),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
@@ -445,6 +484,11 @@ impl App {
         theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
     }
 
+    /// The factor the whole window draws at (`.scale_factor` in `main`): the suite-wide zoom.
+    pub fn scale_factor(&self) -> f32 {
+        self.zoom.factor()
+    }
+
     /// Asks the core for the stored appearance. Done on every tick, so a change in the control
     /// centre reaches the open window within a minute (two seconds while no account is set up).
     fn fetch_appearance(&self) -> Task<Message> {
@@ -455,9 +499,10 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Resized(size) => self.size = size,
-            Message::AccountLoaded(Ok(account)) => {
+            Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(account);
+                self.account = Some(torro_pim::combined_state(&accounts));
+                self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();
                 }
@@ -487,6 +532,11 @@ impl App {
                 }
                 Err(err) => self.error = Some(load_failed(&err)),
             },
+            Message::ToggleAccount(id) => {
+                if !self.folded.remove(&id) {
+                    self.folded.insert(id);
+                }
+            }
             Message::SetFilter(filter) => {
                 self.filter = filter;
                 self.cursor = None;
@@ -517,6 +567,10 @@ impl App {
                     completed: false,
                     parent: None,
                     description: None,
+                    url: None,
+                    categories: Vec::new(),
+                    sort_order: None,
+                    link: None,
                 };
                 return self.save(todo);
             }
@@ -560,21 +614,35 @@ impl App {
             }
             Message::Tick => {
                 self.today = self.launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date());
-                let appearance = self.fetch_appearance();
+                let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
+                // The accounts come with every tick: one may have been added or removed.
+                let accounts = self.fetch_account();
                 if !self.connected() {
-                    return Task::batch([appearance, self.fetch_account()]);
+                    return Task::batch([appearance, accounts]);
                 }
                 // An open detail keeps what it holds until it is closed or saved; but a glance
                 // shows no detail and must not go stale, and the detail follows a reload anyway.
                 if self.detail.is_none() || self.is_glance() {
-                    return Task::batch([appearance, self.load()]);
+                    return Task::batch([appearance, accounts, self.load()]);
                 }
-                return appearance;
+                return Task::batch([appearance, accounts]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            Message::Zoom(message) => {
+                let before = self.zoom.factor();
+                let task = self.zoom.update(message).map(Message::Zoom);
+                if self.zoom.factor() == before {
+                    return task;
+                }
+                // The window keeps its pixels, so its logical size changes with the zoom: at once
+                // by arithmetic, then exactly from the window.
+                self.size = zoom::rescale(self.size, before, self.zoom.factor());
+                let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+                return Task::batch([task, size]);
+            }
             Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
             Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app)),
             Message::Switcher(Switcher::New) => {
@@ -590,6 +658,8 @@ impl App {
                 self.menu = None;
                 self.drawer = true;
             }
+            Message::ToggleSidebar => return self.toggle_sidebar(),
+            Message::UiState(state) => self.sidebar = state.sidebar,
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
@@ -616,6 +686,10 @@ impl App {
                 return typing().map(move |typing| Message::ShortcutChecked(key, typing));
             }
             Message::ShortcutChecked(key, typing) => {
+                // `[` works wherever the sidebar is (it also closes the drawer it opened).
+                if !typing && key == Shortcut::Sidebar {
+                    return self.toggle_sidebar();
+                }
                 // Menus and the drawer are in front of the list; the keys are not for the list then.
                 if !typing && self.menu.is_none() && !self.drawer {
                     return self.run_shortcut(key);
@@ -640,7 +714,24 @@ impl App {
             },
             // The same as "New task" in the header.
             Shortcut::New => self.update(Message::Switcher(Switcher::New)),
+            Shortcut::Sidebar => self.toggle_sidebar(),
         }
+    }
+
+    /// The panel button and `[`: in the wide layout the other sidebar mode, remembered for the
+    /// next start (not in the demo, which stores nothing); else the drawer opens or closes.
+    fn toggle_sidebar(&mut self) -> Task<Message> {
+        if !shell::has_sidebar(self.class()) {
+            self.menu = None;
+            self.drawer = !self.drawer;
+            return Task::none();
+        }
+        self.close_menus();
+        self.sidebar = self.sidebar.toggled();
+        if self.source.is_demo() {
+            return Task::none();
+        }
+        ui_state::save_task(AppId::TASKS, UiState { sidebar: self.sidebar })
     }
 
     /// The layout class of the window.
@@ -732,7 +823,12 @@ impl App {
         operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
     }
 
+    /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
+        widgets::ctrl_guard(self.zoom.view(self.content()))
+    }
+
+    fn content(&self) -> Element<'_, Message> {
         match &self.account {
             None => {
                 return match &self.error {
@@ -781,7 +877,9 @@ impl App {
     /// The whole window in the layout of `class`.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
-        let sidebar = self.sidebar(&switcher);
+        let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
+        let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+            .then(|| self.sidebar(SidebarMode::Rail, &switcher));
         let header = self.header(class, &nav, &display);
         let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
@@ -797,14 +895,14 @@ impl App {
         });
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         let layer = menu.or_else(editor);
-        let props = self
-            .detail
-            .as_ref()
-            .filter(|_| shell::has_props(class))
-            .map(|detail| detail.properties(&property).map(Message::Detail));
-        shell::shell(class, sidebar, header, self.body(class, &property), props)
+        let detail =
+            self.detail.as_ref().map(|detail| detail.panel(self.crumb_filter(detail), &property, Message::Detail));
+        // The panel takes the place of the properties column while it is beside the list.
+        let placed = panel::place(class, self.body(class), detail, layer);
+        shell::shell(class, sidebar, header, placed.body, None)
+            .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(layer)
+            .overlay(placed.overlay)
             .into()
     }
 
@@ -814,17 +912,6 @@ impl App {
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
         let icon = filter_icon(&self.filter);
-        let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
-        if narrow && self.detail.is_some() {
-            // The detail replaces the list: back to it, named after the filter.
-            let back = widgets::text_button(
-                Some(Icon::ChevronLeft),
-                name,
-                style::button::ghost,
-                Some(Message::Detail(detail::Message::Close)),
-            );
-            return shell::header_bar([], back, []);
-        }
         let new_task = Message::Switcher(Switcher::New);
         let (show_display, new_button) = match class {
             SizeClass::Wide => (
@@ -858,7 +945,8 @@ impl App {
                     row![menu, typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None)]
                         .spacing(space::S)
                         .align_y(Alignment::Center);
-                shell::header_bar([shell::sidebar_toggle(Message::ShowDrawer)], title, trailing)
+                // The rail at the left has the panel button.
+                shell::header_bar([], title, trailing)
             }
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
                 [shell::sidebar_toggle(Message::ShowDrawer)],
@@ -878,21 +966,10 @@ impl App {
         )])])
     }
 
-    /// The content below the header: the list, and the detail beside it (wide, medium) or
-    /// instead of it (narrow).
-    fn body<'a>(&'a self, class: SizeClass, property: &Anchor) -> Element<'a, Message> {
-        let Some(detail) = &self.detail else {
-            return widgets::content(size::CONTENT_MAX, self.list(class));
-        };
-        let palette = theme::palette(&self.theme());
-        let detail = detail.view(class, self.crumb_filter(detail), property, palette).map(Message::Detail);
-        let width = match class {
-            SizeClass::Wide => size::LIST,
-            SizeClass::Medium => size::LIST_MEDIUM,
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => return detail,
-        };
-        row![container(self.list(class)).width(width).height(Fill), rule::vertical(LINE).style(style::rule), detail]
-            .into()
+    /// The content below the header: the list at its own width, whatever the detail does; the
+    /// detail is the side panel `window` places beside or over it.
+    fn body(&self, class: SizeClass) -> Element<'_, Message> {
+        widgets::content(size::CONTENT_MAX, self.list(class))
     }
 
     /// The quick add row, an error line if there is one, and the grouped list; loading and the
@@ -963,28 +1040,52 @@ impl App {
         (views, lists)
     }
 
-    fn sidebar<'a>(&'a self, switcher: &Anchor) -> Element<'a, Message> {
+    /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons (U.2).
+    fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
         let (views, lists) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
-            widgets::sidebar_item(e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
+            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
         };
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
-        if !lists.is_empty() {
-            items.push(widgets::sidebar_group(tr("Lists"), None));
-            items.extend(lists.into_iter().map(row));
+        match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
+            // One account: as it always was, a flat list under "Lists".
+            Err(lists) => {
+                if !lists.is_empty() {
+                    items.push(widgets::sidebar_group_in(mode, tr("Lists"), None));
+                    items.extend(lists.into_iter().map(row));
+                }
+            }
+            Ok(groups) => {
+                for group in groups {
+                    let Some(account) = group.account else {
+                        items.push(widgets::sidebar_group_in(mode, tr("Lists"), None));
+                        items.extend(group.items.into_iter().map(row));
+                        continue;
+                    };
+                    let unfolded = !self.folded.contains(&account.id);
+                    let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
+                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    // The rail has no title to unfold with, so it shows every list.
+                    if unfolded || mode == SidebarMode::Rail {
+                        items.extend(group.items.into_iter().map(row));
+                    }
+                }
+            }
         }
         let footer = vec![
-            widgets::sidebar_item(
+            widgets::sidebar_item_in(
+                mode,
                 Icon::Calendar,
                 tr("Open Calendar"),
                 Trail::Icon(Icon::ArrowUpRight),
                 false,
                 Message::OpenApp(AppId::CALENDAR.binary),
             ),
-            widgets::sidebar_item(Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
+            widgets::sidebar_item_in(mode, Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
         ];
-        shell::sidebar(shell::app_switcher(AppId::TASKS, switcher, Message::Switcher), items, footer)
+        let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, Message::ToggleSidebar);
+        shell::sidebar(head, items, footer)
     }
 
     /// The navigation menu of the medium and narrow layouts: the sidebar's rows as a menu.
@@ -995,8 +1096,17 @@ impl App {
             MenuItem::new(e.mark, e.label, Message::SetFilter(e.filter)).trail(trail).current(e.active)
         };
         let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
-        if !lists.is_empty() {
-            sections.push(MenuSection::titled(tr("Lists"), lists.into_iter().map(item).collect()));
+        match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
+            Err(lists) => {
+                if !lists.is_empty() {
+                    sections.push(MenuSection::titled(tr("Lists"), lists.into_iter().map(item).collect()));
+                }
+            }
+            // A menu has no folding: every account is a section named after it.
+            Ok(groups) => sections.extend(groups.into_iter().map(|group| {
+                let title = group.account.map_or_else(|| tr("Lists"), |account| account.label.as_str());
+                MenuSection::titled(title, group.items.into_iter().map(item).collect())
+            })),
         }
         sections.push(MenuSection::new(vec![
             MenuItem::new(Icon::Calendar, tr("Open Calendar"), Message::OpenApp(AppId::CALENDAR.binary))
@@ -1058,6 +1168,13 @@ impl App {
                 None => Task::none(),
             },
             detail::Action::Focus(id) => iced::widget::operation::focus(id),
+            detail::Action::OpenUrl(url) => {
+                // Like the control centre: a browser that cannot be started is only logged.
+                if let Err(err) = webbrowser::open(&url) {
+                    eprintln!("cannot open the link in a browser: {err}");
+                }
+                Task::none()
+            }
         }
     }
 
@@ -1105,7 +1222,7 @@ impl App {
 
     fn fetch_account(&self) -> Task<Message> {
         let source = self.source.clone();
-        Task::perform(async move { source.account().await.map_err(|e| e.to_string()) }, Message::AccountLoaded)
+        Task::perform(async move { source.accounts().await.map_err(|e| e.to_string()) }, Message::AccountLoaded)
     }
 
     fn save(&self, todo: Todo) -> Task<Message> {
@@ -1162,6 +1279,14 @@ impl NavEntry {
     fn trail(&self) -> Trail {
         self.count.map_or(Trail::None, Trail::Count)
     }
+
+    /// The collection id of a list entry (what names its account); empty for the smart lists.
+    fn list_id(&self) -> &str {
+        match &self.filter {
+            Filter::List(id) => id,
+            _ => "",
+        }
+    }
 }
 
 /// The icon of a filter; lists have none (they show their colour as a ring).
@@ -1199,6 +1324,93 @@ mod tests {
 
     fn demo_app() -> App {
         App::new(Source::from_args(["--demo".to_string()]), Launch::default()).0
+    }
+
+    #[test]
+    fn the_sidebar_collapses_in_wide_and_opens_the_drawer_elsewhere() {
+        let mut app = demo_app();
+        assert_eq!(app.sidebar, SidebarMode::Expanded, "expanded until ui.json says otherwise");
+        let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+        assert_eq!(app.sidebar, SidebarMode::Rail, "the stored choice comes back");
+        let _ = app.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        let _ = app.update(Message::ToggleSidebar);
+        assert_eq!((app.sidebar, app.drawer), (SidebarMode::Expanded, false), "wide: the choice flips");
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Sidebar, false));
+        assert_eq!(app.sidebar, SidebarMode::Rail, "[ does the same");
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Sidebar, true));
+        assert_eq!(app.sidebar, SidebarMode::Rail, "not while typing");
+        for size in [Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ToggleSidebar);
+            assert!(app.drawer, "{size:?}: the panel button opens the drawer");
+            let _ = app.update(Message::ShortcutChecked(Shortcut::Sidebar, false));
+            assert!(!app.drawer, "{size:?}: [ closes it again");
+            assert_eq!(app.sidebar, SidebarMode::Rail, "{size:?}: the wide choice stays");
+        }
+    }
+
+    #[test]
+    fn the_window_builds_with_rail_and_drawer_in_every_layout() {
+        let mut app = demo_app();
+        let _ = app.update(Message::AccountLoaded(Ok(vec![account("work")])));
+        for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+            let _ = app.update(Message::UiState(UiState { sidebar }));
+            for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    #[test]
+    fn two_accounts_group_the_lists_but_not_the_smart_lists() {
+        let mut app = launched(&["--demo"]);
+        let grouped = |app: &App| {
+            let (views, lists) = app.nav_entries();
+            let groups = shell::account_groups(&app.accounts, lists, NavEntry::list_id);
+            let names = groups.ok().map(|groups| {
+                groups.iter().map(|g| g.items.iter().map(|e| e.label.clone()).collect::<Vec<_>>()).collect::<Vec<_>>()
+            });
+            (views.len(), names)
+        };
+        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        assert_eq!(
+            grouped(&app),
+            (3, Some(vec![vec!["Tasks".to_string()], vec!["Groceries".to_string(), "Family".to_string()]])),
+            "Today, Planned and All stay above the groups, each account has its lists"
+        );
+        let _ = app.update(Message::AccountLoaded(Ok(vec![account(torro_pim::demo::WORK_ACCOUNT)])));
+        assert_eq!(grouped(&app).1, None, "a single account is not grouped");
+    }
+
+    #[test]
+    fn an_account_title_folds_and_unfolds_its_lists() {
+        let mut app = launched(&["--demo"]);
+        let work = torro_pim::demo::WORK_ACCOUNT.to_string();
+        let _ = app.update(Message::ToggleAccount(work.clone()));
+        assert!(app.folded.contains(&work));
+        // Folding hides rows in the sidebar only; the smart lists still count every task.
+        assert_eq!(app.filter, Filter::Today);
+        let _ = app.update(Message::ToggleAccount(work));
+        assert!(app.folded.is_empty());
+    }
+
+    #[test]
+    fn the_grouped_sidebar_and_menu_build_in_every_layout() {
+        for accounts in [vec![account("work")], two_accounts()] {
+            let mut app = launched(&["--demo"]);
+            let _ = app.update(Message::AccountLoaded(Ok(accounts)));
+            let _ = app.update(Message::ToggleAccount(torro_pim::demo::HOME_ACCOUNT.into()));
+            for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+                let _ = app.update(Message::UiState(UiState { sidebar }));
+                for size in [WIDE, MEDIUM, NARROW] {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.update(Message::ShowDrawer);
+                    let _ = app.view();
+                    let _ = app.nav_menu();
+                }
+            }
+        }
     }
 
     #[test]
@@ -1273,6 +1485,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 
@@ -1526,7 +1742,24 @@ mod tests {
     const MINI: Size = Size::new(240.0, 160.0);
     const STRIP: Size = Size::new(1200.0, 200.0);
     const NARROW: Size = Size::new(420.0, 780.0);
+    const MEDIUM: Size = Size::new(900.0, 700.0);
     const WIDE: Size = Size::new(1600.0, 1000.0);
+
+    /// A connected account with this id, named like it.
+    fn account(id: &str) -> PimAccount {
+        let state = AccountState::Connected {
+            server: "demo".into(),
+            login_name: "demo".into(),
+            last_sync: None,
+            problem: None,
+        };
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+    }
+
+    /// The accounts of `--demo`: the sample spreads over two.
+    fn two_accounts() -> Vec<PimAccount> {
+        vec![account(torro_pim::demo::WORK_ACCOUNT), account(torro_pim::demo::HOME_ACCOUNT)]
+    }
 
     fn connected(app: &mut App) {
         app.account = Some(AccountState::Connected {
@@ -1572,6 +1805,22 @@ mod tests {
             // Every size builds its view from this state.
             let _ = app.view();
         }
+    }
+
+    #[test]
+    fn the_detail_leaves_the_list_its_width_in_every_layout() {
+        let mut app = app_with_rows();
+        connected(&mut app);
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let _ = app.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(panel::mode_for(app.class()) == panel::PanelMode::Beside, size == WIDE, "{size:?}");
+            // The panel, the list and the open card are built from the one state.
+            let _ = app.view();
+        }
+        assert!(app.detail.is_some(), "a resize does not close the panel");
     }
 
     #[test]
@@ -1745,5 +1994,23 @@ mod tests {
         let _ = system.update(Message::Appearance(Ok(Appearance::Dark)));
         let _ = system.update(Message::SystemMode(Mode::Light));
         assert_eq!(system.theme(), theme::light(), "system follows the desktop whatever is stored");
+    }
+
+    /// Zooming in shrinks the window in logical pixels, so the layout changes like a browser's:
+    /// 1440 wide at 150 % is 960, the medium layout. The demo keeps the zoom in the process.
+    #[test]
+    fn zooming_in_switches_the_size_class_like_a_browser() {
+        use torro_gui::zoom::Step;
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(1440.0, 900.0)));
+        assert_eq!(app.class(), SizeClass::Wide);
+        for _ in 0..3 {
+            let _ = app.update(Message::Zoom(zoom::Message::Step(Step::In)));
+        }
+        assert_eq!(app.scale_factor(), 1.5);
+        assert!((app.size.width - 960.0).abs() < 0.01, "{:?}", app.size);
+        assert_eq!(app.class(), SizeClass::Medium);
+        let _ = app.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
+        assert_eq!((app.scale_factor(), app.class()), (1.0, SizeClass::Wide));
     }
 }

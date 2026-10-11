@@ -13,7 +13,8 @@
 //! `+n more` line included); with more entries, the last row sums the rest up. A timed event that
 //! continues from an earlier day shows as `… Title` on the following days. Multi-day and all-day
 //! events appear on every day they cover. Click on a day number → `ShowDay(date)`, on an event →
-//! `OpenEvent(index)`, on empty space in a cell → `NewEvent { date, time: None }`.
+//! `OpenEvent(index)`, on empty space in a cell → `NewEvent { date, time: None }`. The event open
+//! in the side panel (`ViewData::selected`) is outlined with the focus ring on every day it shows.
 //!
 //! Every colour comes from the theme's [`Palette`] when the view is drawn, so light and dark
 //! both work.
@@ -83,7 +84,7 @@ fn month<'a>(data: &ViewData<'a>, width: f32, height: f32) -> Element<'a, Messag
                 cells = cells.push(rule::vertical(1).style(style::rule));
             }
             let date = data.start + Duration::days(week * 7 + day);
-            cells = cells.push(cell(date, data.anchor, today, &data.items, lines, cell_width));
+            cells = cells.push(cell(date, data.anchor, today, &data.items, data.selected, lines, cell_width));
         }
         if week > 0 {
             weeks = weeks.push(horizontal());
@@ -120,6 +121,7 @@ fn cell<'a>(
     anchor: NaiveDate,
     today: NaiveDateTime,
     items: &[Item<'a>],
+    selected: Option<usize>,
     lines: usize,
     width: f32,
 ) -> Element<'a, Message> {
@@ -129,7 +131,8 @@ fn cell<'a>(
     let mut rows = column![].spacing(LINE_GAP);
     for item in &day[..shown] {
         let faded = !in_month || ends_before(item.event, today);
-        rows = rows.push(event_row(*item, date, faded, width - 2.0 * space::XS));
+        let chosen = selected == Some(item.index);
+        rows = rows.push(event_row(*item, date, faded, chosen, width - 2.0 * space::XS));
     }
     if more > 0 {
         let summary = trf("{n} more", &[("n", &more)]);
@@ -150,7 +153,7 @@ fn cell<'a>(
             background: shade.map(|shade| Background::Color(mix(palette(theme).panel, palette(theme).bg, shade))),
             ..container::Style::default()
         });
-    mouse_area(cell).on_press(Message::NewEvent { date, time: None }).into()
+    mouse_area(cell).on_press(Message::NewEvent { date, time: None }).interaction(mouse::Interaction::Pointer).into()
 }
 
 /// The day number: `text_2` (weekends and neighbouring months `text_3`); today white in a red
@@ -192,8 +195,10 @@ fn day_number<'a>(date: NaiveDate, today: NaiveDate, in_month: bool) -> Element<
 
 /// One event row `width` wide in a cell: all-day entries as a tinted chip with a bar, timed ones
 /// with a dot. The title is cut with "…" to what is left of the row ([`title_room`]). `faded`
-/// rows (over, or in a neighbouring month) are drawn at [`FADE_OPACITY`].
-fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, width: f32) -> Element<'a, Message> {
+/// rows (over, or in a neighbouring month) are drawn at [`FADE_OPACITY`]. The `selected` row (open
+/// in the side panel) is outlined in `focus_ring`; a row has no room around it, so the ring lies
+/// on its edge.
+fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, width: f32) -> Element<'a, Message> {
     let (prefix, title) = entry_parts(item.event, date);
     let title = ellipsize(&title, typo::CAPTION, title_room(item.event.all_day(), prefix.as_deref(), width));
     let color = item.color;
@@ -238,10 +243,16 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, width: f32) -> El
         }
         line.push(title).into()
     };
-    mouse_area(container(body).width(Length::Fill).height(EVENT_HEIGHT).clip(true))
-        .on_press(Message::OpenEvent(item.index))
-        .interaction(mouse::Interaction::Pointer)
-        .into()
+    let row =
+        container(body).width(Length::Fill).height(EVENT_HEIGHT).clip(true).style(move |theme| container::Style {
+            border: if selected {
+                border::rounded(radius::XS).color(palette(theme).focus_ring).width(style::FOCUS_RING_WIDTH)
+            } else {
+                Border::default()
+            },
+            ..container::Style::default()
+        });
+    mouse_area(row).on_press(Message::OpenEvent(item.index)).interaction(mouse::Interaction::Pointer).into()
 }
 
 /// The width left for the title in an event row `width` wide: an all-day chip less its bar and
@@ -543,7 +554,8 @@ mod tests {
         let list = items(&busy);
         let now = NaiveDateTime::new(d(11), NaiveTime::from_hms_opt(10, 0, 0).unwrap());
         for items in [Vec::new(), list] {
-            let data = ViewData { items, start: d(5), end: d(5) + Duration::days(42), anchor: d(11), now };
+            let data =
+                ViewData { items, start: d(5), end: d(5) + Duration::days(42), anchor: d(11), now, selected: None };
             let _: Element<'_, Message> = view(data);
         }
     }

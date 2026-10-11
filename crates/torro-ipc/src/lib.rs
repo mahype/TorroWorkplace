@@ -32,6 +32,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
+pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_pim::{AccountState, Collection, Event, Todo};
@@ -139,18 +140,48 @@ pub enum Request {
     },
 
     /// Starts Login Flow v2 for a Nextcloud; the core opens the browser and polls in the
-    /// background ([`Response::LoginStarted`]).
+    /// background ([`Response::LoginStarted`]). The account is added to the others; signing in
+    /// to an account that exists already replaces its app password, the others stay.
     #[serde(rename = "accounts.connect_nextcloud")]
     ConnectNextcloud { server: String },
-    /// Fetch calendars and tasks from the server now.
+    /// Connects the GitHub account the GitHub CLI (`gh`) is signed in to (task G.1). The core runs
+    /// `gh auth token` itself, checks the token with GitHub (GraphQL `viewer { login }`, scopes
+    /// from `X-OAuth-Scopes`) and keeps it in the system keychain only; the account is
+    /// `github:<login>`, added to the others or, for the same login, replacing its token.
+    /// Answered with [`Response::Account`]. Error codes: `not-connected` when `gh` is missing or
+    /// not signed in (the message says what to do), `auth` when GitHub refuses the token,
+    /// `offline`, `error`.
+    ///
+    /// A client key never takes over the CLI's sign-in: for it the core opens the control
+    /// centre's accounts page (`torroworkplace ui --section accounts`), where a person finishes,
+    /// and answers [`Response::Opened`].
+    #[serde(rename = "accounts.connect_github")]
+    ConnectGithub,
+    /// Connects a GitHub account with a token a person pasted: checked and stored like
+    /// [`Request::ConnectGithub`], answered with [`Response::Account`]; error codes `auth`,
+    /// `offline`, `error`. Only the app key may send it: every client key gets `forbidden`,
+    /// whatever its rights, because the token is a secret (`docs/api.md`, "Was nie nach außen
+    /// geht").
+    #[serde(rename = "accounts.set_github_token")]
+    SetGithubToken {
+        /// A personal access token from github.com, classic (`ghp_…`) or fine-grained
+        /// (`github_pat_…`). It goes into the system keychain only and is never part of an answer.
+        token: Secret,
+    },
+    /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
+    /// its own: one that fails keeps its cache and its problem, the others are updated. The
+    /// answer is the first failure, else [`Response::Ok`].
     #[serde(rename = "accounts.sync")]
     Sync,
     /// The calendars the suite shows, i.e. the collections with events that are not hidden
-    /// ([`Response::Collections`]).
+    /// ([`Response::Collections`]). Collection ids are `<account-id>/<collection URL>`; events
+    /// and tasks name their collection by this id, writes find their account through it.
     #[serde(rename = "calendar.list_calendars")]
     CalendarCollections,
     /// The task lists the suite shows, i.e. the collections with todos that are not hidden
-    /// ([`Response::Collections`]). A collection with both appears in both lists.
+    /// ([`Response::Collections`]). A collection with both appears in both lists. The GitHub
+    /// filter lists are task lists too (`writable: false`, their definition in `source`); a
+    /// client sees them only with read access to `github`.
     #[serde(rename = "tasks.list_lists")]
     TaskCollections,
     /// Events overlapping `[start, end)`.
@@ -158,21 +189,131 @@ pub enum Request {
     Events { start: DateTime<Utc>, end: DateTime<Utc> },
     #[serde(rename = "tasks.list_todos")]
     Todos,
-    /// Creates (`href: None`) or updates; answered with [`Response::Event`].
+    /// Creates (`href: None`) or updates; answered with [`Response::Event`]. `collection` must be
+    /// the exact id of a listed calendar, else `not-found`. Changing `collection` moves it to
+    /// another calendar of the same account; moving to another account fails with `unsupported`.
     #[serde(rename = "calendar.save_event")]
     SaveEvent { event: Event },
     #[serde(rename = "calendar.delete_event")]
     DeleteEvent { event: Event },
+    /// Creates (`href: None`) or updates; answered with [`Response::Todo`]. `collection` must be
+    /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
+    /// another calendar of the same account; moving to another account fails with `unsupported`.
     #[serde(rename = "tasks.save_todo")]
     SaveTodo { todo: Todo },
     #[serde(rename = "tasks.delete_todo")]
     DeleteTodo { todo: Todo },
+    /// Puts the task `href` right before the task `before` in its list, or at the end without
+    /// `before` (task P.3a): the order of a list in "Manual order" ([`SettingKey::ListOrder`]).
+    /// Writes `X-APPLE-SORT-ORDER` as Nextcloud Tasks does, but only to the tasks whose stored
+    /// number has to change (`torro_pim::source::move_plan`), each like [`Request::SaveTodo`]
+    /// with its etag. Answered with [`Response::Todos`]: the changed tasks as stored, empty when
+    /// the task is there already.
+    ///
+    /// Tasks are ordered among the tasks of the same list with the same parent that are open or
+    /// done like it. Codes: `not-found` when `href` or `before` is no listed task or `before` is
+    /// in another list; `conflict` when `etag` is not the task's current version; `error` when
+    /// `before` has another parent or is done while the task is open (or the other way round).
+    /// When one of several writes fails, the ones before it stay done (on the server and in the
+    /// answers of `tasks.list_todos`) and the moved task, written last, has not moved yet:
+    /// reload the list and move it again.
+    #[serde(rename = "tasks.move_todo")]
+    MoveTodo {
+        /// `href` of the task to move, as `tasks.list_todos` returned it.
+        href: String,
+        /// `etag` of the task to move, as `tasks.list_todos` returned it.
+        etag: String,
+        /// `href` of the task in the same list it goes right before; leave out to move it to
+        /// the end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+    },
+
+    // GitHub filter lists (task G.2, `docs/github.md`). Granted in the area `github`: for a client
+    // key the core also filters every issue and pull request by its repository
+    // (`api::Rights::github_repos`) before it reads it further, and the list itself must be in
+    // its `task_lists`.
+    /// Creates a filter list of the GitHub account `account`: saved GitHub searches whose matches
+    /// the core keeps as a task list (`github:<login>/<list-id>`, not writable), fetched whole now,
+    /// every five minutes and on `accounts.sync`. Answered with [`Response::Collection`]: the
+    /// list with its definition in `source`; a failed first fetch is in `source.problem`, the list
+    /// is kept. A new list is never added to a client's selection of task lists, and list ids
+    /// are never handed out twice. Codes: `not-found` for an account that is no connected GitHub
+    /// account, `error` for an empty name, a colour that is not `#RRGGBB`, no search, more than
+    /// ten, or an address that is no issue list.
+    #[serde(rename = "tasks.create_filter_list")]
+    CreateFilterList {
+        /// The GitHub account, `github:<login>` as `accounts.list_accounts` lists it.
+        account: String,
+        /// The name of the list.
+        name: String,
+        /// The colour of the list as `#RRGGBB`; leave out for the app's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+        /// One to ten GitHub searches (`is:open is:issue repo:owner/name label:bug`) or addresses
+        /// of issue lists on github.com (`https://github.com/owner/name/issues?q=…`, `…/pulls`,
+        /// `github.com/search?q=…&type=issues`); the core makes addresses searches and adds
+        /// `repo:` and the type from the address unless the search names them. The list holds
+        /// the matches of any of them.
+        queries: Vec<String>,
+    },
+    /// Replaces name, colour and searches of the filter list `collection` and fetches it again;
+    /// pinned items stay. `revision` must be the list's `source.revision` as last read, else
+    /// `conflict` and nothing changes (someone else changed it meanwhile: read it again). Answered
+    /// with [`Response::Collection`]. Codes as [`Request::CreateFilterList`]; `not-found` for a
+    /// collection that is no filter list (or one the client may not see).
+    #[serde(rename = "tasks.update_filter_list")]
+    UpdateFilterList {
+        /// Id of the filter list, `github:<login>/<list-id>` from `tasks.list_lists`.
+        collection: String,
+        /// `source.revision` of the list as last read.
+        revision: u64,
+        /// The new name.
+        name: String,
+        /// The new colour as `#RRGGBB`; leave out for the app's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+        /// The new searches, as for `tasks.create_filter_list`.
+        queries: Vec<String>,
+    },
+    /// Deletes the filter list `collection` from this device: its definition and its cached
+    /// items. Nothing changes on GitHub. Answered with [`Response::Ok`]; `not-found` for a
+    /// collection that is no filter list (or one the client may not see).
+    #[serde(rename = "tasks.delete_filter_list")]
+    DeleteFilterList {
+        /// Id of the filter list, `github:<login>/<list-id>`.
+        collection: String,
+    },
+    /// Runs searches of the GitHub account `account` without saving anything, to try them before
+    /// creating or changing a list. Answered with [`Response::FilterPreview`]. Codes as
+    /// [`Request::CreateFilterList`], plus `auth` and `offline` when GitHub refuses the token or
+    /// cannot be reached.
+    #[serde(rename = "tasks.preview_filter")]
+    PreviewFilter {
+        /// The GitHub account, `github:<login>`.
+        account: String,
+        /// The searches or addresses, as for `tasks.create_filter_list`.
+        queries: Vec<String>,
+    },
+    /// Takes the pinned issue or pull request `url` out of the filter list `collection`; it stays
+    /// in the list while a search finds it. Nothing changes on GitHub, and the list's revision
+    /// stays. Answered with [`Response::Ok`]; `not-found` when the list does not pin it (or the
+    /// client may not see the list or the repository).
+    #[serde(rename = "tasks.unpin_issue")]
+    UnpinIssue {
+        /// Id of the filter list, `github:<login>/<list-id>`.
+        collection: String,
+        /// The item: its address on github.com, `owner/repo#12` or its link id
+        /// (`github:owner/repo#12`) as `source.pinned` lists it.
+        url: String,
+    },
 
     /// The suite-wide settings ([`Response::Settings`]).
     #[serde(rename = "settings.get_settings")]
     Settings,
     /// Replaces the settings; the core applies what changed (start at login, hidden
-    /// collections; the language applies to processes started afterwards).
+    /// collections; the language applies to processes started afterwards). A hidden collection
+    /// named by a bare URL instead of its id is answered with `error` and nothing changes.
     #[serde(rename = "settings.update_settings")]
     UpdateSettings { settings: Settings },
     /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
@@ -189,10 +330,14 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
-    /// All accounts with their state and collections ([`Response::Accounts`]).
+    /// All accounts with their state and collections ([`Response::Accounts`]), in the order they
+    /// were added; a sign-in that runs is listed last with an empty id.
     #[serde(rename = "accounts.list_accounts")]
     Accounts,
-    /// Removes an account, its secret and, where the server allows, its app password there.
+    /// Removes the account `id` (from [`Request::Accounts`]), its secret, its cached data and,
+    /// where the server allows, its app password there. Other accounts stay as they are.
+    /// Answered with [`Response::Ok`]; an unknown id is `not-found`, a keychain or file that
+    /// cannot be changed `error`.
     #[serde(rename = "accounts.remove_account")]
     RemoveAccount { id: String },
     /// Renames a template; its id stays.
@@ -222,7 +367,8 @@ pub enum Request {
         template: RightsTemplate,
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
-    /// [`Response::Ok`]; an unknown id is `not-found`.
+    /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
+    /// bare URL instead of its id is `error` and changes nothing.
     #[serde(rename = "clients.update_client")]
     UpdateClient { id: String, rights: Rights },
     /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops
@@ -246,6 +392,19 @@ pub enum SettingKey {
     Appearance,
     /// Start the core when the user logs in: `true` or `false`.
     StartAtLogin,
+    /// How large every window draws, like a browser's zoom: a number from `0.67` to `2.0`
+    /// (1.0 = 100 %), rounded to the nearest step (`torro_core::settings::Zoom::STEPS`). Open
+    /// windows follow.
+    Zoom,
+    /// When the night is, for the calendar's timeline and radar: `{"from": "22:00", "to":
+    /// "06:00"}`, two times on the quarter hour (`torro_core::settings::Night`), usually over
+    /// midnight; the same time twice means no night. Open calendar windows follow.
+    Night,
+    /// How one task list is ordered: `{"list": "<list id>", "order": "manual"}` (by hand, see
+    /// `tasks.move_todo`) or `"order": "due_date"` (grouped by due date, the default). The list id
+    /// comes from `tasks.list_lists`; one the core does not know is `not-found`
+    /// (`torro_core::settings::ListOrderEntry`).
+    ListOrder,
 }
 
 /// The core's answer to one [`Request`].
@@ -308,6 +467,30 @@ pub enum Response {
         client: ClientInfo,
         key: IssuedKey,
     },
+    /// The account a sign-in just connected ([`Request::ConnectGithub`],
+    /// [`Request::SetGithubToken`]), as [`Request::Accounts`] lists it; never with its secret.
+    Account {
+        account: AccountInfo,
+    },
+    /// The control centre was opened so a person can finish the request there (a client's
+    /// [`Request::ConnectGithub`]); nothing has changed yet.
+    Opened,
+    /// One collection as `tasks.list_lists` lists it: a filter list just created or changed
+    /// ([`Request::CreateFilterList`], [`Request::UpdateFilterList`]).
+    Collection {
+        collection: Collection,
+    },
+    /// What searches find without being saved ([`Request::PreviewFilter`]).
+    FilterPreview {
+        /// How many issues and pull requests match. For the suite GitHub's count, added up over
+        /// the searches (an item two searches find counts twice). For a client limited to some
+        /// repositories, the matches in those among the first 1,000 of each search.
+        matches: u64,
+        /// A search found more than 1,000 matches; a list of it would hold only the first 1,000.
+        truncated: bool,
+        /// The first matches (at most 20) as tasks of no list (`collection` empty).
+        todos: Vec<Todo>,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -316,13 +499,14 @@ pub enum Response {
     /// - `busy`: another save or load is running,
     /// - `unsupported`: no supported window manager, or an API version ([`Envelope::v`]) the
     ///   core does not speak,
-    /// - `not-connected`: no account to read from or write to,
+    /// - `not-connected`: no account to read from or write to, or no GitHub CLI sign-in to take
+    ///   over,
     /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
     ///   or the item changed there meanwhile,
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
-    /// - `forbidden`: the client's rights do not cover the command, it is a `clients` command
-    ///   (app key only), or it would need a person's approval, which the core cannot ask for
-    ///   yet,
+    /// - `forbidden`: the client's rights do not cover the command, it is for the app key only
+    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`), or it would need a
+    ///   person's approval, which the core cannot ask for yet,
     /// - `pending`: the command waits for a person to approve it,
     /// - `error`: anything else.
     Error {
@@ -341,15 +525,23 @@ impl Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountInfo {
-    /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`.
+    /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`; the front part of
+    /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
-    /// Provider: `nextcloud` (later `github`, `slack`, …).
+    /// Provider: `nextcloud` or `github` (later `slack`, …).
     pub kind: String,
-    /// `anna@cloud.example.org`
+    /// `anna@cloud.example.org`; for GitHub the login.
     pub label: String,
     pub state: AccountState,
-    /// All collections of the account, hidden ones included.
+    /// All collections of the account, hidden ones included; for GitHub its filter lists.
     pub collections: Vec<Collection>,
+    /// What the account's token may do, as the provider reported it when the core last checked
+    /// it: for GitHub the OAuth scopes of a classic token or of the GitHub CLI's sign-in
+    /// (`X-OAuth-Scopes`: `repo`, `read:org`, …; empty for a token without scopes). `None` when
+    /// the provider does not tell: Nextcloud, and fine-grained GitHub tokens, whose permissions
+    /// are set per repository on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// One of the suite's apps, as [`Request::ListApps`] reports it.
@@ -500,6 +692,27 @@ mod tests {
     fn keys_do_not_show_in_debug_output() {
         let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), request: Request::Ping };
         assert!(!format!("{envelope:?}").contains("secret"));
+    }
+
+    #[test]
+    fn a_github_token_does_not_show_in_debug_output() {
+        let request = Request::SetGithubToken { token: Secret::new("ghp_secret") };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        assert!(!format!("{envelope:?}").contains("secret"), "{envelope:?}");
+        let json = serde_json::to_string(&request).expect("serializes");
+        assert_eq!(json, r#"{"method":"accounts.set_github_token","token":"ghp_secret"}"#);
+        assert_eq!(serde_json::from_str::<Request>(&json).expect("parses"), request);
+    }
+
+    #[test]
+    fn accounts_without_scopes_read_and_write_as_before() {
+        let json = r#"{"id":"nextcloud:anna@cloud","kind":"nextcloud","label":"anna@cloud",
+            "state":{"state":"not-connected"},"collections":[]}"#;
+        let account: AccountInfo = serde_json::from_str(json).expect("an answer of an older core");
+        assert_eq!(account.scopes, None);
+        assert!(!serde_json::to_string(&account).expect("json").contains("scopes"));
+        let github = AccountInfo { scopes: Some(vec!["repo".into()]), kind: "github".into(), ..account };
+        assert_eq!(serde_json::to_value(&github).expect("json")["scopes"], serde_json::json!(["repo"]));
     }
 
     #[test]

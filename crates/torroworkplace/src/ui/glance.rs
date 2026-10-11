@@ -177,6 +177,7 @@ mod tests {
             label: label.into(),
             state,
             collections: Vec::new(),
+            scopes: None,
         }
     }
 

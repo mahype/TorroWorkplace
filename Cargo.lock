@@ -4501,7 +4501,7 @@ dependencies = [
 
 [[package]]
 name = "torro-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "keyring",
  "schemars",
@@ -4511,10 +4511,12 @@ dependencies = [
 
 [[package]]
 name = "torro-gui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
+ "serde",
+ "serde_json",
  "torro-core",
  "torro-ipc",
  "torro-pim",
@@ -4522,7 +4524,7 @@ dependencies = [
 
 [[package]]
 name = "torro-ipc"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -4537,18 +4539,19 @@ dependencies = [
 
 [[package]]
 name = "torro-pim"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "schemars",
  "serde",
+ "serde_json",
  "tokio",
  "torro-core",
 ]
 
 [[package]]
 name = "torro-pim-caldav"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "reqwest",
@@ -4558,8 +4561,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-pim-github"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "getrandom 0.4.3",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "torro-core",
+ "torro-pim",
+]
+
+[[package]]
 name = "torro-setups"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -4573,14 +4591,14 @@ dependencies = [
 
 [[package]]
 name = "torro-tui"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "torro-core",
 ]
 
 [[package]]
 name = "torro-wm"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4589,18 +4607,7 @@ dependencies = [
 
 [[package]]
 name = "torrocalendar"
-version = "0.0.1"
-dependencies = [
- "chrono",
- "iced",
- "torro-core",
- "torro-gui",
- "torro-pim",
-]
-
-[[package]]
-name = "torrotasks"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "iced",
@@ -4611,8 +4618,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "torrotasks"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "torro-core",
+ "torro-gui",
+ "torro-ipc",
+ "torro-pim",
+ "webbrowser",
+]
+
+[[package]]
 name = "torroworkplace"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
@@ -4633,6 +4653,7 @@ dependencies = [
  "torro-ipc",
  "torro-pim",
  "torro-pim-caldav",
+ "torro-pim-github",
  "torro-setups",
  "torro-tui",
  "torro-wm",

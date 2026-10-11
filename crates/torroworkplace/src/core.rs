@@ -8,7 +8,8 @@ use std::sync::Arc;
 use chrono::Local;
 use tokio::sync::Mutex;
 use torro_core::AppId;
-use torro_ipc::{API_VERSION, IssuedKey, Key, Request, Response, Status};
+use torro_core::settings::ListOrderEntry;
+use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_pim::AccountState;
 use torro_setups::capture::{auto_name, capture};
 use torro_setups::launch::{Launcher, SystemLauncher, command_for};
@@ -17,6 +18,7 @@ use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
+use crate::account::github::{GithubAccounts, GithubError};
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::pim::{PimService, Reach};
 use crate::settings_service::SettingsStore;
@@ -36,6 +38,26 @@ fn launch_command(app: AppId, program: String) -> Vec<String> {
     if app == AppId::WORKPLACE { vec![program, "ui".into()] } else { vec![program] }
 }
 
+/// Starts the control centre on its accounts page, where a person finishes what a client asked
+/// for (`accounts.connect_github`).
+fn start_accounts_page() -> Result<(), String> {
+    let mut command = launch_command(AppId::WORKPLACE, sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned());
+    command.extend(["--section".to_string(), "accounts".to_string()]);
+    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
+}
+
+/// Shows the person the control centre: an open one comes to the front, else one starts on its
+/// accounts page. An open one is never closed and restarted on a client's request, because that
+/// would throw away whatever the person is typing there (a half-pasted token, say).
+async fn show_accounts_page(wm: &impl WindowManager, start: fn() -> Result<(), String>) -> Result<(), String> {
+    // A window manager that cannot list windows has none we could bring forward; start the page.
+    let open = wm.windows(None).await.unwrap_or_default();
+    match open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
+        Some(window) => wm.focus_window(&window.id).await.map_err(|err| err.to_string()),
+        None => start(),
+    }
+}
+
 /// What the tray menu is built from.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Snapshot {
@@ -49,12 +71,12 @@ pub struct Snapshot {
     pub busy: bool,
     /// Why the last refresh could not read something, for the info line.
     pub problem: Option<String>,
-    /// The Nextcloud account, for the status line.
+    /// The accounts as one state (`torro_pim::combined_state`), for the status line.
     pub account: Option<AccountState>,
 }
 
 /// The core's state: window manager, template store, settings, the keys that may talk to it,
-/// and a lock so only one save or load runs at a time.
+/// the GitHub accounts, and a lock so only one save or load runs at a time.
 pub struct Core {
     backend: Backend,
     store: Store,
@@ -62,15 +84,58 @@ pub struct Core {
     pim: Arc<PimService>,
     settings: SettingsStore,
     clients: Clients,
+    /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
+    /// calendars or task lists, and the core lists both kinds together.
+    github: Arc<GithubAccounts>,
+    /// Starts the control centre on its accounts page ([`start_accounts_page`]); tests count
+    /// the calls instead.
+    start_accounts: fn() -> Result<(), String>,
 }
 
 impl Core {
     /// The core over `backend` and `store`. The settings are the ones `pim` reads
     /// ([`PimService::settings`]), so hiding a collection and filtering it use the same file.
-    /// `clients` decides which keys get in ([`Core::handle_from`]).
+    /// `clients` decides which keys get in ([`Core::handle_from`]). The GitHub accounts are the
+    /// user's ([`GithubAccounts::system`]), loaded only by [`Core::start`].
     pub fn new(backend: Backend, store: Store, pim: Arc<PimService>, clients: Clients) -> Core {
         let settings = pim.settings().clone();
-        Core { backend, store, work: Mutex::new(()), pim, settings, clients }
+        Core {
+            backend,
+            store,
+            work: Mutex::new(()),
+            pim,
+            settings,
+            clients,
+            github: Arc::new(GithubAccounts::system()),
+            start_accounts: start_accounts_page,
+        }
+    }
+
+    /// Starts the background work [`Core::new`] leaves out: loads the GitHub accounts and checks
+    /// their tokens, then refreshes their filter lists now and every five minutes (task G.2).
+    /// The daemon calls it once, next to `PimService::start`.
+    pub fn start(&self) {
+        self.github.start();
+        let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
+        tokio::spawn(async move {
+            // The tokens come from the keychain in the background; the first refresh waits for
+            // the accounts that have lists, a little while at most, instead of a whole period.
+            let owners = pim.filter_list_owners();
+            for _ in 0..TOKEN_WAIT_ROUNDS {
+                let mut ready = true;
+                for owner in &owners {
+                    ready &= github.api(owner).await.is_some();
+                }
+                if ready {
+                    break;
+                }
+                tokio::time::sleep(TOKEN_WAIT_STEP).await;
+            }
+            loop {
+                refresh_filter_lists(&pim, &github).await;
+                tokio::time::sleep(FILTER_LISTS_EVERY).await;
+            }
+        });
     }
 
     /// A request from the socket with the key the client sent. Every request from outside the
@@ -124,6 +189,11 @@ impl Core {
                 let selected = rights.calendars.contains(collection) || rights.task_lists.contains(collection);
                 (!selected).then(|| collection.clone())
             }
+            // Only shown task lists in the selection: hidden lists and calendars look unknown.
+            (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
+                let list = list_of(value)?;
+                (!self.pim.sees_task_list(reach, &list).await).then_some(list)
+            }
             (reach, request) => self.pim.out_of_reach(reach, request).await,
         }
     }
@@ -160,8 +230,42 @@ impl Core {
                 })
                 .await
             }
+            Request::Sync => self.sync(reach).await,
+            Request::ConnectGithub => self.connect_github(client).await,
+            Request::SetGithubToken { token } => {
+                let answer = account_answer(self.github.connect_token(token).await);
+                self.refresh_connected(answer)
+            }
+            Request::CreateFilterList { account, name, color, queries } => {
+                if !self.github.knows(&account).await {
+                    return no_github_account(&account);
+                }
+                let api = self.github.api(&account).await;
+                self.pim.create_filter_list(&account, &name, color.as_deref(), &queries, api.as_ref()).await
+            }
+            Request::UpdateFilterList { collection, revision, name, color, queries } => {
+                let api = self.filter_list_api(&collection).await;
+                let (color, api) = (color.as_deref(), api.as_ref());
+                self.pim.update_filter_list(&collection, revision, &name, color, &queries, api).await
+            }
+            Request::DeleteFilterList { collection } => self.pim.delete_filter_list(&collection).await,
+            Request::PreviewFilter { account, queries } => {
+                if !self.github.knows(&account).await {
+                    return no_github_account(&account);
+                }
+                match self.github.api(&account).await {
+                    Some(api) => self.pim.preview_filter(&queries, &api, reach).await,
+                    None => Response::Error {
+                        code: "not-connected".into(),
+                        message: format!("{account} has no token on this device: sign in to GitHub again"),
+                    },
+                }
+            }
+            Request::UnpinIssue { collection, url } => {
+                let api = self.filter_list_api(&collection).await;
+                self.pim.unpin_issue(&collection, &url, api.as_ref()).await
+            }
             pim @ (Request::ConnectNextcloud { .. }
-            | Request::Sync
             | Request::CalendarCollections
             | Request::TaskCollections
             | Request::Events { .. }
@@ -169,14 +273,18 @@ impl Core {
             | Request::SaveEvent { .. }
             | Request::DeleteEvent { .. }
             | Request::SaveTodo { .. }
-            | Request::DeleteTodo { .. }) => self.pim.handle_within(pim, reach).await,
+            | Request::DeleteTodo { .. }
+            | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
             Request::Settings => {
                 let mut settings = self.settings.current();
-                if client {
-                    settings.hidden_collections.clear();
+                if let Reach::Client(rights) = reach {
+                    // Not even the ids of lists it may not see (task P.3a).
+                    let hidden = std::mem::take(&mut settings.hidden_collections);
+                    settings.list_orders.retain(|list, _| rights.task_lists.contains(list) && !hidden.contains(list));
                 }
                 Response::Settings { settings }
             }
+            Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
             Request::UpdateSettings { settings } => {
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
@@ -195,11 +303,15 @@ impl Core {
                 Err(message) => Response::Error { code: "error".into(), message },
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
-            Request::Accounts => Response::Accounts { accounts: self.pim.accounts_within(reach).await },
-            Request::RemoveAccount { id } => match self.pim.remove_account(&id).await {
-                Ok(()) => Response::Ok,
+            Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
+            Request::RemoveAccount { id } if self.github.knows(&id).await => match self.github.remove(&id).await {
+                Ok(()) => {
+                    self.pim.forget_filter_lists(&id).await;
+                    Response::Ok
+                }
                 Err(message) => Response::Error { code: "error".into(), message },
             },
+            Request::RemoveAccount { id } => self.pim.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
                 Ok(template) => Response::Saved { template },
                 Err(err) => error(&err),
@@ -219,6 +331,84 @@ impl Core {
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => done(self.clients.remove(&id).await),
+        }
+    }
+
+    /// Every account as `reach` may see it: the calendar service's accounts, then the GitHub
+    /// accounts with their filter lists as collections (never with their secrets), and a sign-in
+    /// that runs last, as `accounts.list_accounts` promises.
+    async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
+        let mut accounts = self.pim.accounts_within(reach).await;
+        let mut github = self.github.infos().await;
+        for account in &mut github {
+            account.collections = self.pim.filter_lists_within(&account.id, reach).await;
+        }
+        let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
+        accounts.splice(at..at, github);
+        accounts
+    }
+
+    /// The GitHub access of the account that owns the filter list `collection`, if any.
+    async fn filter_list_api(&self, collection: &str) -> Option<torro_pim_github::Api> {
+        let account = self.pim.filter_list_account(collection).await?;
+        self.github.api(&account).await
+    }
+
+    /// After a GitHub account was connected: its filter lists (from an earlier sign-in) are
+    /// fetched in the background, so the answer does not wait for GitHub.
+    fn refresh_connected(&self, answer: Response) -> Response {
+        if let Response::Account { account } = &answer {
+            let (pim, github, id) = (Arc::clone(&self.pim), Arc::clone(&self.github), account.id.clone());
+            tokio::spawn(async move {
+                let api = github.api(&id).await;
+                pim.refresh_filter_lists(&id, api.as_ref()).await;
+            });
+        }
+        answer
+    }
+
+    /// Syncs the calendar accounts, then checks the GitHub tokens again. Neither stops the
+    /// other; the answer is the first failure. Without a Nextcloud account but with a GitHub
+    /// one there is something to sync, so the calendar service's `not-connected` does not count.
+    async fn sync(&self, reach: Reach<'_>) -> Response {
+        let pim = self.pim.handle_within(Request::Sync, reach).await;
+        let github = self.github.check_all().await;
+        // A list that fails keeps its items and shows its problem; it does not fail the sync.
+        refresh_filter_lists(&self.pim, &self.github).await;
+        let only_github = matches!(&pim, Response::Error { code, .. } if code == "not-connected")
+            && !self.github.infos().await.is_empty();
+        match (pim, github) {
+            (_, Err(err)) if only_github => github_error(&err),
+            (_, Ok(())) if only_github => Response::Ok,
+            (Response::Ok, Err(err)) => github_error(&err),
+            (pim, _) => pim,
+        }
+    }
+
+    /// `accounts.connect_github`. The control centre (app key, tray) takes over the GitHub CLI's
+    /// sign-in. A client never does: the core shows the person the accounts page
+    /// ([`show_accounts_page`]) and answers `opened`.
+    async fn connect_github(&self, client: bool) -> Response {
+        if !client {
+            return self.refresh_connected(account_answer(self.github.connect_cli().await));
+        }
+        match show_accounts_page(&self.backend, self.start_accounts).await {
+            Ok(()) => Response::Opened,
+            Err(message) => Response::Error { code: "error".into(), message },
+        }
+    }
+
+    /// `settings.set_setting` with `list_order` (task P.3a): like every setting, but the list must
+    /// be a task list (not a calendar) of a connected account, else `not-found` and nothing is written.
+    async fn set_list_order(&self, value: &serde_json::Value) -> Response {
+        if let Some(list) = list_of(value)
+            && !self.pim.knows_task_list(&list).await
+        {
+            return no_collection(&list);
+        }
+        match self.settings.set(SettingKey::ListOrder, value) {
+            Ok(()) => Response::Ok,
+            Err(message) => Response::Error { code: "error".into(), message },
         }
     }
 
@@ -342,6 +532,25 @@ impl Core {
     }
 }
 
+/// How often the filter lists are fetched anew (`docs/github.md`, "Technik").
+const FILTER_LISTS_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// At start, how long to wait for the tokens of the accounts with filter lists: 30 × 1 s.
+const TOKEN_WAIT_ROUNDS: u32 = 30;
+const TOKEN_WAIT_STEP: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Fetches the filter lists of every GitHub account the core knows, one account after the other.
+async fn refresh_filter_lists(pim: &PimService, github: &GithubAccounts) {
+    for account in github.infos().await {
+        let api = github.api(&account.id).await;
+        pim.refresh_filter_lists(&account.id, api.as_ref()).await;
+    }
+}
+
+/// The answer for an account id that is no GitHub account of this core.
+fn no_github_account(account: &str) -> Response {
+    Response::Error { code: "not-found".into(), message: format!("no GitHub account {account:?}") }
+}
+
 fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
@@ -350,6 +559,12 @@ fn version() -> String {
 /// does not exist.
 fn no_collection(collection: &str) -> Response {
     Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") }
+}
+
+/// The task list a `list_order` value names; `None` for a value that does not fit, which the
+/// settings refuse with `error`.
+fn list_of(value: &serde_json::Value) -> Option<String> {
+    serde_json::from_value::<ListOrderEntry>(value.clone()).ok().map(|entry| entry.list)
 }
 
 /// The answer to a new client or key: the key, this once.
@@ -362,6 +577,18 @@ fn issued(result: Result<(torro_ipc::ClientInfo, Key), ClientsError>) -> Respons
 
 fn done(result: Result<(), ClientsError>) -> Response {
     result.map_or_else(|err| clients_error(&err), |()| Response::Ok)
+}
+
+/// The answer to a GitHub sign-in: the account, or the error with its code. Never the token.
+fn account_answer(result: Result<AccountInfo, GithubError>) -> Response {
+    match result {
+        Ok(account) => Response::Account { account },
+        Err(err) => github_error(&err),
+    }
+}
+
+fn github_error(err: &GithubError) -> Response {
+    Response::Error { code: err.code().into(), message: err.to_string() }
 }
 
 fn clients_error(err: &ClientsError) -> Response {
@@ -386,13 +613,14 @@ mod tests {
     use super::*;
 
     /// Templates in `dir`, settings in `dir/config/settings.json`, keys in `dir/state/app.key`
-    /// and `dir/config/clients.json` with a keychain in memory: nothing of the user's.
+    /// and `dir/config/clients.json` with a keychain in memory, filter lists in
+    /// `dir/config/filter-lists.json`: nothing of the user's.
     fn core(dir: &std::path::Path) -> Core {
         let settings = SettingsStore::at(settings_file(dir));
         Core::new(
             Backend::Unsupported { name: "test".into() },
             Store::at(dir.to_path_buf()),
-            Arc::new(PimService::with_settings(settings)),
+            Arc::new(PimService::with_filter_file(settings, filters_file(dir))),
             crate::clients::tests::open_in(dir),
         )
     }
@@ -568,8 +796,8 @@ mod tests {
         for area in Area::ALL {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
         }
-        rights.calendars = Selection::Only(vec!["/cal/work/".into()]);
-        rights.task_lists = Selection::Only(vec!["/tasks/work/".into()]);
+        rights.calendars = Selection::Only(vec![id("/cal/work/")]);
+        rights.task_lists = Selection::Only(vec![id("/tasks/work/")]);
         client(core, rights).await.1
     }
 
@@ -592,19 +820,19 @@ mod tests {
     async fn a_collection_outside_the_selection_is_not_found() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
-        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/home/")]).await;
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/"))]).await;
         let key = limited_client(&core).await;
 
         for request in [
-            Request::SaveEvent { event: event_in("/cal/home/", None) },
-            Request::DeleteEvent { event: event_in("/cal/home/", Some("/cal/home/u.ics")) },
-            Request::SaveEvent { event: event_in("/cal/work/", Some("/cal/home/u.ics")) },
-            Request::SetCollectionShown { collection: "/cal/home/".into(), shown: true },
+            Request::SaveEvent { event: event_in(&id("/cal/home/"), None) },
+            Request::DeleteEvent { event: event_in(&id("/cal/home/"), Some("/cal/home/u.ics")) },
+            Request::SaveEvent { event: event_in(&id("/cal/work/"), Some("/cal/home/u.ics")) },
+            Request::SetCollectionShown { collection: id("/cal/home/"), shown: true },
         ] {
             assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "not-found", "{request:?}");
         }
         // Inside the selection the request gets as far as the approval admin commands need.
-        let shown = Request::SetCollectionShown { collection: "/cal/work/".into(), shown: false };
+        let shown = Request::SetCollectionShown { collection: id("/cal/work/"), shown: false };
         assert_eq!(code(&ask(&core, Some(&key), shown).await), "forbidden");
         assert!(!settings_file(dir.path()).exists());
     }
@@ -616,8 +844,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
         core.pim.pretend_signed_in().await;
-        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/secret/")]).await;
-        let hide = Request::SetCollectionShown { collection: "/cal/secret/".into(), shown: false };
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/secret/"))]).await;
+        let hide = Request::SetCollectionShown { collection: id("/cal/secret/"), shown: false };
         assert_eq!(core.handle(hide).await, Response::Ok);
         let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let now = chrono::Utc::now();
@@ -635,15 +863,15 @@ mod tests {
             let answer = ask(&core, Some(&key), request.clone()).await;
             assert!(!matches!(answer, Response::Error { .. }), "{request:?}: {answer:?}");
             let json = serde_json::to_string(&answer).expect("serializes");
-            assert!(!json.contains("/cal/secret/"), "{request:?}: {json}");
+            assert!(!json.contains(&id("/cal/secret/")), "{request:?}: {json}");
         }
         let accounts = serde_json::to_string(&ask(&core, Some(&key), Request::Accounts).await).expect("json");
-        assert!(accounts.contains("/cal/work/"), "shown collections are listed: {accounts}");
+        assert!(accounts.contains(&id("/cal/work/")), "shown collections are listed: {accounts}");
 
         let app_key = crate::clients::tests::app_key(dir.path());
         for request in [Request::Settings, Request::Accounts] {
             let answer = serde_json::to_string(&ask(&core, Some(&app_key), request).await).expect("json");
-            assert!(answer.contains("/cal/secret/"), "the control centre sees what is hidden: {answer}");
+            assert!(answer.contains(&id("/cal/secret/")), "the control centre sees what is hidden: {answer}");
         }
     }
 
@@ -651,8 +879,8 @@ mod tests {
     async fn settings_from_a_client_keep_the_hidden_collections() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
-        core.pim.cache_collections(vec![calendar("/cal/secret/")]).await;
-        core.handle(Request::SetCollectionShown { collection: "/cal/secret/".into(), shown: false }).await;
+        core.pim.cache_collections(vec![calendar(&id("/cal/secret/"))]).await;
+        core.handle(Request::SetCollectionShown { collection: id("/cal/secret/"), shown: false }).await;
         let reach_rights = RightsTemplate::FullAccess.rights();
         let mut changed = settings(&core).await;
         changed.hidden_collections.clear();
@@ -660,7 +888,64 @@ mod tests {
         let answer =
             core.handle_within(Request::UpdateSettings { settings: changed }, Reach::Client(&reach_rights)).await;
         assert_eq!(answer, Response::Ok);
-        assert_eq!(settings(&core).await.hidden_collections, ["/cal/secret/"]);
+        assert_eq!(settings(&core).await.hidden_collections, [id("/cal/secret/")]);
+    }
+
+    #[tokio::test]
+    async fn a_list_is_ordered_by_hand_only_when_known_and_clients_see_only_their_lists() {
+        use torro_core::settings::ListOrder;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let list = |path: &str| torro_pim::Collection { kind: torro_pim::CollectionKind::Todos, ..calendar(&id(path)) };
+        core.pim.cache_collections(vec![list("/tasks/work/"), list("/tasks/home/")]).await;
+        let manual = |path: &str| Request::SetSetting {
+            key: SettingKey::ListOrder,
+            value: serde_json::json!({"list": id(path), "order": "manual"}),
+        };
+        assert_eq!(core.handle(manual("/tasks/work/")).await, Response::Ok);
+        assert_eq!(core.handle(manual("/tasks/home/")).await, Response::Ok);
+        assert_eq!(settings(&core).await.list_order(&id("/tasks/work/")), ListOrder::Manual);
+        assert_eq!(code(&core.handle(manual("/tasks/nope/")).await), "not-found");
+        core.pim.cache_collections(vec![list("/tasks/work/"), list("/tasks/home/"), calendar(&id("/cal/work/"))]).await;
+        assert_eq!(code(&core.handle(manual("/cal/work/")).await), "not-found", "a calendar has no list order");
+        let wrong = Request::SetSetting { key: SettingKey::ListOrder, value: serde_json::json!({"order": "manual"}) };
+        assert_eq!(code(&core.handle(wrong).await), "error");
+
+        // limited to /tasks/work/: the order of home is neither shown nor reachable.
+        let key = limited_client(&core).await;
+        let Response::Settings { settings } = ask(&core, Some(&key), Request::Settings).await else {
+            panic!("settings")
+        };
+        assert_eq!(settings.list_orders.keys().cloned().collect::<Vec<_>>(), [id("/tasks/work/")]);
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/home/")).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden", "admin: approval");
+        let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
+        assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
+    }
+
+    #[tokio::test]
+    async fn a_client_with_all_lists_cannot_probe_hidden_lists_or_calendars() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let list = |path: &str| torro_pim::Collection { kind: torro_pim::CollectionKind::Todos, ..calendar(&id(path)) };
+        core.pim
+            .cache_collections(vec![list("/tasks/work/"), list("/tasks/secret/"), calendar(&id("/cal/work/"))])
+            .await;
+        core.handle(Request::SetCollectionShown { collection: id("/tasks/secret/"), shown: false }).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights.task_lists = Selection::All;
+        let key = client(&core, rights).await.1;
+        let manual = |path: &str| Request::SetSetting {
+            key: SettingKey::ListOrder,
+            value: serde_json::json!({"list": id(path), "order": "manual"}),
+        };
+        // Admin needs an approval ("forbidden") for a list it sees; the others never get that far.
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/secret/")).await), "not-found", "hidden list");
+        assert_eq!(code(&ask(&core, Some(&key), manual("/cal/work/")).await), "not-found", "a calendar");
     }
 
     #[tokio::test]
@@ -696,6 +981,11 @@ mod tests {
         }
     }
 
+    /// The collection id of `path` on the test account's server: `<account-id>/<url>` (M1.1).
+    fn id(path: &str) -> String {
+        torro_pim::account::collection_id(crate::pim::tests::ANNA, &format!("https://cloud.example.org{path}"))
+    }
+
     fn calendar(id: &str) -> torro_pim::Collection {
         torro_pim::Collection {
             id: id.into(),
@@ -703,6 +993,7 @@ mod tests {
             kind: torro_pim::CollectionKind::Events,
             color: None,
             writable: true,
+            source: None,
         }
     }
 
@@ -789,28 +1080,198 @@ mod tests {
     async fn a_hidden_collection_is_stored_and_left_out() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
-        core.pim.cache_collections(vec![calendar("/cal/work/"), calendar("/cal/home/")]).await;
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/"))]).await;
         let shown = |collection: &str, shown| Request::SetCollectionShown { collection: collection.into(), shown };
 
-        assert_eq!(core.handle(shown("/cal/home/", false)).await, Response::Ok);
-        assert_eq!(settings(&core).await.hidden_collections, ["/cal/home/"]);
+        assert_eq!(core.handle(shown(&id("/cal/home/"), false)).await, Response::Ok);
+        assert_eq!(settings(&core).await.hidden_collections, [id("/cal/home/")]);
         assert_eq!(
             core.handle(Request::CalendarCollections).await,
-            Response::Collections { collections: vec![calendar("/cal/work/")] }
+            Response::Collections { collections: vec![calendar(&id("/cal/work/"))] }
         );
 
-        assert_eq!(core.handle(shown("/cal/home/", true)).await, Response::Ok);
+        assert_eq!(core.handle(shown(&id("/cal/home/"), true)).await, Response::Ok);
         assert!(settings(&core).await.hidden_collections.is_empty());
     }
 
     #[tokio::test]
     async fn unknown_collection_is_not_found_and_not_written() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let response = core(dir.path())
-            .handle(Request::SetCollectionShown { collection: "/cal/nope/".into(), shown: false })
-            .await;
+        let response =
+            core(dir.path()).handle(Request::SetCollectionShown { collection: id("/cal/nope/"), shown: false }).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
         assert!(!settings_file(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_account_is_not_found() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let response = core(dir.path()).handle(Request::RemoveAccount { id: "nextcloud:nobody@nowhere".into() }).await;
+        assert_eq!(code(&response), "not-found");
+    }
+
+    #[tokio::test]
+    async fn settings_with_a_bare_collection_url_are_refused_and_not_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut settings = settings(&core).await;
+        settings.hidden_collections = vec!["https://cloud.example.org/remote.php/dav/calendars/anna/work/".into()];
+        let response = core.handle(Request::UpdateSettings { settings: settings.clone() }).await;
+        assert_eq!(code(&response), "error");
+        assert!(!settings_file(dir.path()).exists());
+        settings.hidden_collections = vec![id("/cal/work/")];
+        assert_eq!(core.handle(Request::UpdateSettings { settings }).await, Response::Ok);
+    }
+
+    use crate::account::github::tests::{MemoryTokens, NO_CLI, accounts_file, fake_github, service, viewer};
+
+    /// How often a test core started the control centre's accounts page.
+    static ACCOUNT_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_account_page() -> Result<(), String> {
+        ACCOUNT_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// [`core`] with GitHub accounts on the fake GitHub at `graphql`, without a GitHub CLI, the
+    /// keychain `tokens`, and a counter instead of starting the control centre.
+    fn core_with_github(dir: &std::path::Path, tokens: &MemoryTokens, graphql: &str) -> Core {
+        Core {
+            github: Arc::new(service(dir, tokens, graphql, NO_CLI)),
+            start_accounts: count_account_page,
+            ..core(dir)
+        }
+    }
+
+    const TOKEN: &str = "ghp_coreSECRET";
+
+    #[tokio::test]
+    async fn the_control_centre_connects_github_lists_it_and_removes_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let (url, _) = fake_github(|_| (200, Some("repo"), viewer("mahype"))).await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        let Response::Account { account } = ask(&core, Some(&app_key), set).await else {
+            panic!("a token is answered with the account");
+        };
+        assert_eq!(
+            (account.id.as_str(), account.scopes.as_deref()),
+            ("github:mahype", Some(&["repo".to_string()][..]))
+        );
+        let listed = ask(&core, Some(&app_key), Request::Accounts).await;
+        assert_eq!(listed, Response::Accounts { accounts: vec![account.clone()] });
+        for answer in [serde_json::to_string(&listed).expect("json"), format!("{listed:?}")] {
+            assert!(!answer.contains("SECRET"), "{answer}");
+        }
+        assert_eq!(tokens.get_plain("github:mahype").as_deref(), Some(TOKEN));
+        assert!(!std::fs::read_to_string(accounts_file(dir.path())).expect("stored").contains("SECRET"));
+
+        let remove = Request::RemoveAccount { id: "github:mahype".into() };
+        assert_eq!(ask(&core, Some(&app_key), remove.clone()).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), Request::Accounts).await, Response::Accounts { accounts: vec![] });
+        assert_eq!(code(&ask(&core, Some(&app_key), remove).await), "not-found", "gone, like any unknown id");
+    }
+
+    #[tokio::test]
+    async fn no_client_key_hands_in_a_github_token() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let (url, record) = fake_github(|_| (200, Some("repo"), viewer("mahype"))).await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        let Err(refused) = core.handle_from(Some(&key), set).await else { panic!("refused") };
+        assert_eq!(refused, Refused::Forbidden { command: "accounts.set_github_token" });
+        assert!(record.lock().expect("record").is_empty(), "nothing went to GitHub");
+        assert_eq!(tokens.get_plain("github:mahype"), None);
+        assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn without_a_cli_sign_in_connecting_github_is_not_connected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_github(dir.path(), &MemoryTokens::default(), "http://127.0.0.1:9/graphql");
+        let answer = core.handle(Request::ConnectGithub).await;
+        assert_eq!(code(&answer), "not-connected");
+        let Response::Error { message, .. } = answer else { unreachable!() };
+        assert!(message.contains("gh auth login"), "says what to do: {message}");
+    }
+
+    #[tokio::test]
+    async fn a_client_asking_to_connect_github_only_opens_the_accounts_page() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_github(dir.path(), &MemoryTokens::default(), "http://127.0.0.1:9/graphql");
+        let rights = RightsTemplate::FullAccess.rights();
+        let before = ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst);
+        // Without a GitHub CLI the control centre's way would be `not-connected`: the CLI is not
+        // asked for a client.
+        assert_eq!(core.handle_within(Request::ConnectGithub, Reach::Client(&rights)).await, Response::Opened);
+        assert_eq!(ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+        // From the socket it is an admin command: it waits for approval like any other.
+        let mut admin = RightsTemplate::FullAccess.rights();
+        admin.areas.insert(Area::Accounts, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, admin).await;
+        let refused = core.handle_from(Some(&key), Request::ConnectGithub).await;
+        assert_eq!(refused, Err(Refused::NeedsApproval { command: "accounts.connect_github" }));
+    }
+
+    static FAKE_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_fake_page() -> Result<(), String> {
+        FAKE_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_open_control_centre_comes_to_the_front_and_is_never_closed() {
+        use torro_wm::fake::{Call, FakeWm};
+        let wm = FakeWm::new("1");
+        let other = wm.open_window("foot", None);
+        let open = wm.open_window(AppId::WORKPLACE.window_class, None);
+        let before = FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(show_accounts_page(&wm, count_fake_page).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Focus(open.clone())], "only focused, nothing closed");
+        assert!(wm.all_windows().iter().any(|w| w.id == open));
+        assert!(wm.all_windows().iter().any(|w| w.id == other));
+        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before, "no second control centre");
+
+        // None open: the page starts.
+        let empty = FakeWm::new("1");
+        assert_eq!(show_accounts_page(&empty, count_fake_page).await, Ok(()));
+        assert!(empty.calls().is_empty());
+        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+    }
+
+    #[tokio::test]
+    async fn sync_checks_the_github_tokens_and_reports_a_refused_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let accepted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let gate = Arc::clone(&accepted);
+        let (url, _) = fake_github(move |_| match gate.load(std::sync::atomic::Ordering::SeqCst) {
+            true => (200, Some("repo"), viewer("mahype")),
+            false => (401, None, String::new()),
+        })
+        .await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+
+        accepted.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(code(&core.handle(Request::Sync).await), "auth");
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        assert!(
+            matches!(&accounts[0].state, AccountState::Connected { problem: Some(p), .. } if p.starts_with("Sign in again"))
+        );
     }
 
     #[tokio::test]
@@ -818,5 +1279,301 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let response = core(dir.path()).handle(Request::DeleteTemplate { id: "nope".into() }).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
+    }
+
+    // --- GitHub filter lists (task G.2) ------------------------------------------------------
+
+    fn filters_file(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join("config").join(torro_pim_github::lists::FILE)
+    }
+
+    /// One issue as GitHub's GraphQL API sends it: `(repository, number, title, parent)`.
+    type Issue = (&'static str, u64, &'static str, Option<(&'static str, u64)>);
+
+    fn node((repo, number, title, parent): Issue) -> serde_json::Value {
+        serde_json::json!({
+            "__typename": "Issue", "number": number, "title": title, "body": "", "state": "OPEN",
+            "url": format!("https://github.com/{repo}/issues/{number}"), "updatedAt": "2026-10-10T08:00:00Z",
+            "repository": {"nameWithOwner": repo}, "labels": {"nodes": []}, "assignees": {"nodes": []},
+            "milestone": null,
+            "parent": parent.map(|(repo, number)| serde_json::json!({"number": number, "repository": {"nameWithOwner": repo}})),
+        })
+    }
+
+    /// The issues GitHub "has" in a test, by search: every search finds `found`, the pinned
+    /// lookup finds `pinned`.
+    #[derive(Default)]
+    struct World {
+        found: Vec<Issue>,
+        pinned: Vec<Issue>,
+    }
+
+    /// A fake GitHub that knows `mahype` and answers searches and pinned lookups from `world`.
+    async fn fake_world(world: Arc<std::sync::Mutex<World>>) -> String {
+        let (url, _) = fake_github(move |seen| {
+            let world = world.lock().expect("world");
+            let body = if seen.body.contains("viewer") {
+                viewer("mahype")
+            } else if seen.body.contains("search(") {
+                let nodes: Vec<_> = world.found.iter().copied().map(node).collect();
+                serde_json::json!({"data": {"search": {"issueCount": nodes.len(),
+                    "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}})
+                .to_string()
+            } else {
+                let data: serde_json::Map<_, _> = world
+                    .pinned
+                    .iter()
+                    .enumerate()
+                    .map(|(k, issue)| (format!("i{k}"), serde_json::json!({"issueOrPullRequest": node(*issue)})))
+                    .collect();
+                serde_json::json!({ "data": data }).to_string()
+            };
+            (200, Some("repo"), body)
+        })
+        .await;
+        url
+    }
+
+    /// A core with the GitHub account `github:mahype` connected on a fake GitHub with `world`.
+    async fn core_with_world(dir: &std::path::Path, world: &Arc<std::sync::Mutex<World>>) -> Core {
+        let url = fake_world(Arc::clone(world)).await;
+        let core = core_with_github(dir, &MemoryTokens::default(), &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        core
+    }
+
+    fn create(name: &str, queries: &[&str]) -> Request {
+        Request::CreateFilterList {
+            account: "github:mahype".into(),
+            name: name.into(),
+            color: None,
+            queries: queries.iter().map(|q| q.to_string()).collect(),
+        }
+    }
+
+    fn created(answer: Response) -> torro_pim::Collection {
+        match answer {
+            Response::Collection { collection } => collection,
+            other => panic!("a list is answered with the collection, got {other:?}"),
+        }
+    }
+
+    async fn todo_ids(core: &Core, key: Option<&Key>) -> Vec<String> {
+        let answer = match key {
+            Some(key) => ask(core, Some(key), Request::Todos).await,
+            None => core.handle(Request::Todos).await,
+        };
+        match answer {
+            Response::Todos { todos } => todos.into_iter().map(|todo| todo.uid).collect(),
+            other => panic!("todos, got {other:?}"),
+        }
+    }
+
+    async fn list_ids(core: &Core, key: Option<&Key>, request: Request) -> Vec<String> {
+        let answer = match key {
+            Some(key) => ask(core, Some(key), request).await,
+            None => core.handle(request).await,
+        };
+        match answer {
+            Response::Collections { collections } => collections.into_iter().map(|c| c.id).collect(),
+            other => panic!("collections, got {other:?}"),
+        }
+    }
+
+    const ISSUE_1: Issue = ("mahype/TorroWorkplace", 1, "Fix the week view", None);
+    const ISSUE_2: Issue = ("mahype/TorroWorkplace", 2, "Write the docs", None);
+    const PINNED_7: Issue = ("mahype/TorroWorkplace", 7, "Release notes", None);
+
+    #[tokio::test]
+    async fn a_filter_list_holds_what_its_searches_find_now_and_its_pinned_items() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, ISSUE_2], pinned: vec![PINNED_7] }));
+        let core = core_with_world(dir.path(), &world).await;
+
+        let address = "https://github.com/mahype/TorroWorkplace/issues?q=is%3Aopen+label%3Abug";
+        let list = created(core.handle(create("Bugs", &[address])).await);
+        assert!(list.id.starts_with("github:mahype/"), "{}", list.id);
+        assert!(!list.writable);
+        let source = list.source.clone().expect("a definition");
+        assert_eq!(source.queries, ["repo:mahype/TorroWorkplace is:issue is:open label:bug"]);
+        assert_eq!((source.revision, source.problem), (1, None));
+        assert_eq!(list_ids(&core, None, Request::TaskCollections).await, std::slice::from_ref(&list.id));
+        assert!(list_ids(&core, None, Request::CalendarCollections).await.is_empty(), "no calendar");
+        assert_eq!(todo_ids(&core, None).await, ["github:mahype/TorroWorkplace#1", "github:mahype/TorroWorkplace#2"]);
+        let accounts = serde_json::to_string(&core.handle(Request::Accounts).await).expect("json");
+        assert!(accounts.contains(&list.id), "the account lists its filter lists: {accounts}");
+
+        // Issue 2 no longer matches: the next refresh drops it.
+        world.lock().expect("world").found = vec![ISSUE_1];
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+        assert_eq!(todo_ids(&core, None).await, ["github:mahype/TorroWorkplace#1"]);
+
+        // A pinned issue is in the list whatever the searches find.
+        let path = filters_file(dir.path());
+        let mut file = torro_pim_github::lists::load(&path).expect("stored");
+        let stored = file.accounts.get_mut("github:mahype").and_then(|lists| lists.first_mut()).expect("the list");
+        stored.pinned.push("github:mahype/TorroWorkplace#7".into());
+        torro_pim_github::lists::save(&path, &file).expect("pinned");
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+        assert_eq!(todo_ids(&core, None).await, ["github:mahype/TorroWorkplace#1", "github:mahype/TorroWorkplace#7"]);
+
+        let unpin = || Request::UnpinIssue {
+            collection: list.id.clone(),
+            url: "https://github.com/mahype/TorroWorkplace/issues/7".into(),
+        };
+        assert_eq!(core.handle(unpin()).await, Response::Ok);
+        assert_eq!(todo_ids(&core, None).await, ["github:mahype/TorroWorkplace#1"]);
+        assert_eq!(code(&core.handle(unpin()).await), "not-found");
+
+        // Items of a filter list are not changed through save_todo yet (G.5).
+        let Response::Todos { todos } = core.handle(Request::Todos).await else { panic!("todos") };
+        let done = torro_pim::Todo { completed: true, ..todos[0].clone() };
+        assert_eq!(code(&core.handle(Request::SaveTodo { todo: done.clone() }).await), "unsupported");
+        assert_eq!(code(&core.handle(Request::DeleteTodo { todo: done }).await), "unsupported");
+
+        let update = |revision| Request::UpdateFilterList {
+            collection: list.id.clone(),
+            revision,
+            name: "Open bugs".into(),
+            color: Some("#D73A4A".into()),
+            queries: vec!["is:open label:bug".into()],
+        };
+        let changed = created(core.handle(update(1)).await);
+        assert_eq!((changed.name.as_str(), changed.source.map(|s| s.revision)), ("Open bugs", Some(2)));
+        assert_eq!(code(&core.handle(update(1)).await), "conflict", "a stale revision changes nothing");
+
+        let delete = || Request::DeleteFilterList { collection: list.id.clone() };
+        assert_eq!(core.handle(delete()).await, Response::Ok);
+        assert!(list_ids(&core, None, Request::TaskCollections).await.is_empty());
+        assert!(todo_ids(&core, None).await.is_empty());
+        assert_eq!(code(&core.handle(delete()).await), "not-found");
+    }
+
+    #[tokio::test]
+    async fn a_filter_list_is_checked_before_it_is_stored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World::default()));
+        let core = core_with_world(dir.path(), &world).await;
+        assert_eq!(code(&core.handle(create(" ", &["is:open"])).await), "error");
+        assert_eq!(code(&core.handle(create("Bugs", &[])).await), "error");
+        assert_eq!(code(&core.handle(create("Bugs", &["https://github.com/mahype"])).await), "error");
+        let other = Request::CreateFilterList {
+            account: "github:someone".into(),
+            name: "Bugs".into(),
+            color: None,
+            queries: vec!["is:open".into()],
+        };
+        assert_eq!(code(&core.handle(other).await), "not-found");
+        assert!(!filters_file(dir.path()).exists(), "nothing stored");
+    }
+
+    /// A client with full access everywhere but only the repository `mahype/TorroWorkplace`.
+    fn repo_limited() -> Rights {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.github_repos = Selection::Only(vec!["mahype/TorroWorkplace".into()]);
+        rights
+    }
+
+    #[tokio::test]
+    async fn a_client_sees_only_matches_in_its_repositories_whatever_the_search() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secret: Issue = ("mahype/secret", 3, "Private plans", None);
+        let child: Issue = ("mahype/TorroWorkplace", 4, "Sub-issue", Some(("mahype/secret", 3)));
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, secret, child], pinned: vec![] }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("All", &["is:open"])).await);
+        let (_, key) = client(&core, repo_limited()).await;
+
+        let Response::Todos { todos } = ask(&core, Some(&key), Request::Todos).await else { panic!("todos") };
+        let ids: Vec<&str> = todos.iter().map(|todo| todo.uid.as_str()).collect();
+        assert_eq!(ids, ["github:mahype/TorroWorkplace#1", "github:mahype/TorroWorkplace#4"]);
+        assert_eq!(todos[1].parent, None, "the parent would name the other repository");
+
+        let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
+        let Response::FilterPreview { matches, todos, .. } = ask(&core, Some(&key), preview.clone()).await else {
+            panic!("a preview")
+        };
+        assert_eq!((matches, todos.len()), (2, 2));
+        let Response::FilterPreview { matches, .. } = core.handle(preview).await else { panic!("a preview") };
+        assert_eq!(matches, 3, "the suite sees everything");
+
+        // Rewriting the search to the other repository shows nothing more.
+        let rewrite = Request::UpdateFilterList {
+            collection: list.id.clone(),
+            revision: 1,
+            name: "All".into(),
+            color: None,
+            queries: vec!["repo:mahype/secret".into()],
+        };
+        assert!(matches!(ask(&core, Some(&key), rewrite).await, Response::Collection { .. }));
+        world.lock().expect("world").found = vec![secret];
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+        for request in [Request::Todos, Request::TaskCollections, Request::Accounts] {
+            let answer = serde_json::to_string(&ask(&core, Some(&key), request.clone()).await).expect("json");
+            assert!(!answer.contains("Private plans") && !answer.contains("secret#3"), "{request:?}: {answer}");
+        }
+        assert_eq!(todo_ids(&core, None).await, ["github:mahype/secret#3"], "the suite still sees it");
+
+        // Unpinning an item of another repository is as unknown as a list it may not see.
+        let unpin = Request::UnpinIssue { collection: list.id.clone(), url: "mahype/secret#3".into() };
+        assert_eq!(code(&ask(&core, Some(&key), unpin).await), "not-found");
+    }
+
+    #[tokio::test]
+    async fn a_list_outside_a_clients_selection_or_without_github_rights_does_not_exist_for_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pinned: vec![] }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("Bugs", &["is:open"])).await);
+
+        let mut other = RightsTemplate::FullAccess.rights();
+        other.task_lists = Selection::Only(vec![id("/tasks/work/")]);
+        let (other_id, key) = client(&core, other.clone()).await;
+        assert!(list_ids(&core, Some(&key), Request::TaskCollections).await.is_empty());
+        assert!(todo_ids(&core, Some(&key)).await.is_empty());
+        for request in [
+            Request::UpdateFilterList {
+                collection: list.id.clone(),
+                revision: 1,
+                name: "Mine".into(),
+                color: None,
+                queries: vec!["is:open".into()],
+            },
+            Request::DeleteFilterList { collection: list.id.clone() },
+            Request::UnpinIssue { collection: list.id.clone(), url: "mahype/TorroWorkplace#1".into() },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&key), request.clone()).await), "not-found", "{request:?}");
+        }
+
+        // A list the client creates itself does not enter its selection.
+        let mine = created(ask(&core, Some(&key), create("Mine", &["is:open"])).await);
+        assert!(!list_ids(&core, Some(&key), Request::TaskCollections).await.contains(&mine.id));
+        let stored = core.clients.list().into_iter().find(|c| c.id == other_id).expect("the client");
+        assert_eq!(stored.rights, other, "its rights are as the person set them");
+
+        // Without read access to `github` no filter list and none of its items.
+        let mut tasks_only = RightsTemplate::FullAccess.rights();
+        tasks_only.areas.remove(&Area::Github);
+        let (_, key) = client(&core, tasks_only).await;
+        assert!(list_ids(&core, Some(&key), Request::TaskCollections).await.is_empty());
+        assert!(todo_ids(&core, Some(&key)).await.is_empty());
+        let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
+        assert_eq!(code(&ask(&core, Some(&key), preview).await), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn filter_lists_come_back_when_the_account_is_signed_in_again() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pinned: vec![] }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("Bugs", &["is:open"])).await);
+        let remove = Request::RemoveAccount { id: "github:mahype".into() };
+        assert_eq!(core.handle(remove).await, Response::Ok);
+        assert!(list_ids(&core, None, Request::TaskCollections).await.is_empty());
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+        assert_eq!(list_ids(&core, None, Request::TaskCollections).await, [list.id]);
     }
 }

@@ -9,6 +9,8 @@ pub mod agenda;
 pub mod glance;
 pub mod mini_month;
 pub mod month;
+pub mod radar;
+pub mod timeline;
 pub mod week;
 pub mod week_strip;
 
@@ -51,6 +53,10 @@ pub struct ViewData<'a> {
     pub anchor: NaiveDate,
     /// Local now, for the "now" line and highlighting today.
     pub now: NaiveDateTime,
+    /// Index into the app's event list of the event open in the side panel (U.4), `None` when
+    /// none is. The grids outline it with the focus ring (`.ev.sel` in the mock-up), the agenda
+    /// selects its row; views without room for that (the glance) ignore it.
+    pub selected: Option<usize>,
 }
 
 #[cfg(test)]

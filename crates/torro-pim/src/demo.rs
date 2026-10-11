@@ -2,14 +2,17 @@
 //!
 //! `torrocalendar --demo` and `torrotasks --demo` use it. Changes live until the app
 //! closes. The sample content (task K.2 in `docs/tasks/kalender-aufgaben.md`) is built
-//! around "today", so the week view is never empty.
+//! around "today", so the week view is never empty. It spreads over two accounts (task M1.1),
+//! a work and a home Nextcloud, so the apps can show calendars and lists grouped by account.
 
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
-use crate::source::PimSource;
-use crate::{AccountState, Collection, CollectionKind, Event, EventTime, ProviderError, Todo};
+use crate::account::{account_of, local_id};
+use crate::model::Link;
+use crate::source::{PimSource, move_plan};
+use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
 #[derive(Debug, Default)]
 struct Data {
@@ -37,14 +40,30 @@ impl DemoSource {
     }
 }
 
-const WORK: &str = "demo:/calendars/work/";
-const PERSONAL: &str = "demo:/calendars/personal/";
-const TASKS: &str = "demo:/calendars/tasks/";
-const GROCERIES: &str = "demo:/calendars/groceries/";
-const FAMILY: &str = "demo:/calendars/family/";
+/// The work account: the calendar "Work" and the list "Tasks".
+pub const WORK_ACCOUNT: &str = "nextcloud:anna@work.example.org";
+/// The home account: "Personal", "Groceries" and "Family".
+pub const HOME_ACCOUNT: &str = "nextcloud:anna@home.example.org";
+/// Both, in the order [`DemoSource::accounts`] lists them.
+const ACCOUNTS: [&str; 2] = [WORK_ACCOUNT, HOME_ACCOUNT];
 
-/// The sample content: five collections, 27 events for this week and the two after it,
-/// and 18 tasks. Dates are relative to `today`; a week runs Monday to Sunday.
+// Collection ids as the core writes them: `<account-id>/<collection URL>` (`crate::account`).
+const WORK: &str = "nextcloud:anna@work.example.org/https://work.example.org/remote.php/dav/calendars/anna/work/";
+const TASKS: &str = "nextcloud:anna@work.example.org/https://work.example.org/remote.php/dav/calendars/anna/tasks/";
+const PERSONAL: &str =
+    "nextcloud:anna@home.example.org/https://home.example.org/remote.php/dav/calendars/anna/personal/";
+const GROCERIES: &str =
+    "nextcloud:anna@home.example.org/https://home.example.org/remote.php/dav/calendars/anna/groceries/";
+const FAMILY: &str = "nextcloud:anna@home.example.org/https://home.example.org/remote.php/dav/calendars/anna/family/";
+
+/// The collection URL in a demo collection id, which item hrefs start with; an id of no demo
+/// account (tests add their own) is its own URL.
+fn url_of(collection: &str) -> &str {
+    account_of(collection, &ACCOUNTS, |id| id).and_then(|account| local_id(collection, account)).unwrap_or(collection)
+}
+
+/// The sample content: five collections in two accounts, 27 events for this week and the two
+/// after it, and 18 tasks. Dates are relative to `today`; a week runs Monday to Sunday.
 pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     let monday = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
     let collections = vec![
@@ -56,19 +75,19 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     ];
     let mut events = sample_events(monday);
     for (n, item) in events.iter_mut().enumerate() {
-        item.href = Some(format!("{}evt-{}.ics", item.collection, n + 1));
+        item.href = Some(format!("{}evt-{}.ics", url_of(&item.collection), n + 1));
         item.etag = Some(format!("\"sample-evt-{}\"", n + 1));
     }
     let mut todos = sample_todos(today);
     for (n, item) in todos.iter_mut().enumerate() {
-        item.href = Some(format!("{}todo-{}.ics", item.collection, n + 1));
+        item.href = Some(format!("{}todo-{}.ics", url_of(&item.collection), n + 1));
         item.etag = Some(format!("\"sample-todo-{}\"", n + 1));
     }
     (collections, events, todos)
 }
 
 fn collection(id: &str, name: &str, kind: CollectionKind, color: &str) -> Collection {
-    Collection { id: id.into(), name: name.into(), kind, color: Some(color.into()), writable: true }
+    Collection { id: id.into(), name: name.into(), kind, color: Some(color.into()), writable: true, source: None }
 }
 
 /// Local wall-clock time on `day` as an instant. The sample avoids the hour that a DST
@@ -107,6 +126,10 @@ fn todo(collection: &str, uid: &str, summary: &str, due: Option<EventTime>) -> T
         completed: false,
         parent: None,
         description: None,
+        url: None,
+        categories: Vec::new(),
+        sort_order: None,
+        link: None,
     }
 }
 
@@ -214,7 +237,7 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
 }
 
 /// Tasks due before, on and after `today` and some without a date, two parents with three
-/// and two subtasks, and three completed tasks.
+/// and two subtasks, three completed tasks, one with tags and one linked to a GitHub issue.
 fn sample_todos(today: NaiveDate) -> Vec<Todo> {
     let before = |offset: u64| today - Days::new(offset);
     let after = |offset: u64| today + Days::new(offset);
@@ -226,7 +249,15 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
         Todo {
             priority: Some(1),
             description: Some("Sort receipts for 2025 by category, keep trade invoices separate.".into()),
+            categories: vec!["Finance".into(), "Paperwork".into()],
             ..todo(TASKS, "tax-documents@torro-demo", "Sort tax documents", Some(at(before(4), 18, 0)))
+        },
+        Todo {
+            priority: Some(5),
+            description: Some("The detail should show tags and a link.".into()),
+            url: Some("https://github.com/mahype/TorroWorkplace/issues/123".into()),
+            link: Some(Link::github("mahype/TorroWorkplace", 123)),
+            ..todo(TASKS, "github-issue@torro-demo", "Review task detail layout", Some(EventTime::Date(after(2))))
         },
         Todo {
             priority: Some(5),
@@ -301,13 +332,25 @@ fn span(event: &Event) -> (DateTime<Utc>, DateTime<Utc>) {
 }
 
 impl PimSource for DemoSource {
-    async fn account(&self) -> Result<AccountState, ProviderError> {
-        Ok(AccountState::Connected {
-            server: "demo".into(),
-            login_name: "demo".into(),
-            last_sync: Some(Utc::now()),
-            problem: None,
-        })
+    /// The work and the home account, both connected and just synced.
+    async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
+        Ok(ACCOUNTS
+            .iter()
+            .map(|id| {
+                let host = id.split_once('@').map_or(*id, |(_, host)| host);
+                PimAccount {
+                    id: (*id).into(),
+                    label: format!("anna@{host}"),
+                    kind: "nextcloud".into(),
+                    state: AccountState::Connected {
+                        server: format!("https://{host}"),
+                        login_name: "anna".into(),
+                        last_sync: Some(Utc::now()),
+                        problem: None,
+                    },
+                }
+            })
+            .collect())
     }
 
     async fn connect_nextcloud(&self, server: String) -> Result<String, ProviderError> {
@@ -348,7 +391,7 @@ impl PimSource for DemoSource {
                 if event.uid.is_empty() {
                     event.uid = format!("demo-event-{}", data.next_id);
                 }
-                event.href = Some(format!("{}{}.ics", event.collection, event.uid));
+                event.href = Some(format!("{}{}.ics", url_of(&event.collection), event.uid));
                 event.etag = Some(version);
                 data.events.push(event.clone());
             }
@@ -382,7 +425,7 @@ impl PimSource for DemoSource {
                 if todo.uid.is_empty() {
                     todo.uid = format!("demo-todo-{}", data.next_id);
                 }
-                todo.href = Some(format!("{}{}.ics", todo.collection, todo.uid));
+                todo.href = Some(format!("{}{}.ics", url_of(&todo.collection), todo.uid));
                 todo.etag = Some(version);
                 data.todos.push(todo.clone());
             }
@@ -405,6 +448,38 @@ impl PimSource for DemoSource {
         let before = data.todos.len();
         data.todos.retain(|t| t.href != todo.href || t.uid != todo.uid);
         if data.todos.len() == before { Err(ProviderError::Other("No such task".into())) } else { Ok(()) }
+    }
+
+    /// Renumbers like the core ([`move_plan`]) and stores every changed task with a new etag. In
+    /// memory nothing fails halfway, so the move happens whole or not at all.
+    async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        let mut data = self.lock();
+        let stored = |href: &Option<String>| data.todos.iter().find(|t| href.is_some() && t.href == *href).cloned();
+        let Some(current) = stored(&todo.href) else {
+            return Err(ProviderError::Other("No such task".into()));
+        };
+        if current.etag != todo.etag {
+            return Err(ProviderError::Conflict { uid: todo.uid });
+        }
+        let before = match before {
+            Some(before) => match stored(&before.href) {
+                Some(found) if found.collection == current.collection => Some(found),
+                _ => return Err(ProviderError::Other("No such task in this list".into())),
+            },
+            None => None,
+        };
+        let plan = move_plan(&data.todos, &current, before.as_ref())
+            .ok_or_else(|| ProviderError::Other("The tasks are not on the same level".into()))?;
+        let mut written = Vec::with_capacity(plan.len());
+        for mut task in plan {
+            data.next_id += 1;
+            task.etag = Some(format!("\"demo-{}\"", data.next_id));
+            if let Some(slot) = data.todos.iter_mut().find(|t| t.href == task.href) {
+                *slot = task.clone();
+            }
+            written.push(task);
+        }
+        Ok(written)
     }
 }
 
@@ -456,10 +531,10 @@ mod tests {
         assert_eq!(events_in(FAMILY), 4);
         assert_eq!(events.len(), 27);
         let todos_in = |id: &str| todos.iter().filter(|t| t.collection == id).count();
-        assert_eq!(todos_in(TASKS), 8);
+        assert_eq!(todos_in(TASKS), 9);
         assert_eq!(todos_in(GROCERIES), 5);
         assert_eq!(todos_in(FAMILY), 5);
-        assert_eq!(todos.len(), 18);
+        assert_eq!(todos.len(), 19);
 
         for e in &events {
             assert!(collections.iter().any(|c| c.id == e.collection && c.kind.has_events()), "{}", e.summary);
@@ -469,19 +544,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn the_sample_spreads_over_two_connected_accounts() {
+        let accounts = DemoSource::new(sunday()).accounts().await.expect("accounts");
+        let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, [WORK_ACCOUNT, HOME_ACCOUNT]);
+        assert!(accounts.iter().all(|a| matches!(a.state, AccountState::Connected { .. })));
+        assert_eq!(accounts[0].label, "anna@work.example.org");
+
+        let (collections, _, _) = sample(sunday());
+        let owner = |c: &Collection| account_of(&c.id, &accounts, |a| a.id.as_str()).map(|a| a.id.clone());
+        let per_account = |id: &str| collections.iter().filter(|c| owner(c).as_deref() == Some(id)).count();
+        assert_eq!((per_account(WORK_ACCOUNT), per_account(HOME_ACCOUNT)), (2, 3));
+    }
+
     #[test]
     fn every_item_has_unique_href_and_etag() {
         let (_, events, todos) = sample(sunday());
         let mut hrefs = HashSet::new();
         for e in &events {
             let href = e.href.as_deref().expect("sample event has an href");
-            assert!(href.starts_with(e.collection.as_str()) && href.ends_with(".ics"), "{href}");
+            assert!(href.starts_with(url_of(&e.collection)) && href.ends_with(".ics"), "{href}");
             assert!(e.etag.is_some(), "{href}");
             assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
         }
         for t in &todos {
             let href = t.href.as_deref().expect("sample task has an href");
-            assert!(href.starts_with(t.collection.as_str()) && href.ends_with(".ics"), "{href}");
+            assert!(href.starts_with(url_of(&t.collection)) && href.ends_with(".ics"), "{href}");
             assert!(t.etag.is_some(), "{href}");
             assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
         }
@@ -578,6 +667,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn one_task_has_tags_and_one_a_link() {
+        let (_, _, todos) = sample(sunday());
+        assert!(todos.iter().any(|t| t.categories.len() > 1), "a task with tags");
+        let linked: Vec<&Todo> = todos.iter().filter(|t| t.link.is_some()).collect();
+        assert_eq!(linked.len(), 1);
+        assert!(linked[0].link.as_ref().and_then(Link::github_ref).is_some(), "a GitHub link");
+        assert!(linked[0].url.as_deref().is_some_and(|url| url.starts_with("https://github.com/")));
+    }
+
     #[tokio::test]
     async fn week_query_returns_the_weeks_events() {
         // A Sunday and the Monday after it, so both edges of the week are covered.
@@ -594,6 +693,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_task_is_moved_by_hand_and_a_stale_one_is_refused() {
+        use crate::source::manual_order;
+        let source = DemoSource::new(sunday());
+        let open_groceries = |todos: Vec<Todo>| -> Vec<Todo> {
+            let mut list: Vec<Todo> =
+                todos.into_iter().filter(|t| t.collection == GROCERIES && !t.completed && t.parent.is_none()).collect();
+            list.sort_by(manual_order);
+            list
+        };
+        let before = open_groceries(source.todos().await.expect("todos"));
+        assert!(before.len() >= 2, "the sample has a list to order");
+        let (first, last) = (before[0].clone(), before[before.len() - 1].clone());
+
+        let written = source.move_todo(last.clone(), Some(first.clone())).await.expect("moved");
+        assert!(written.iter().all(|t| t.etag != last.etag && t.etag != first.etag), "new versions");
+        let after = open_groceries(source.todos().await.expect("todos"));
+        assert_eq!(after[0].uid, last.uid, "now on top");
+        assert_eq!(after.len(), before.len());
+
+        // The version read before the move is out of date now.
+        assert!(matches!(source.move_todo(last, None).await, Err(ProviderError::Conflict { .. })));
+        let elsewhere = source.todos().await.expect("todos").into_iter().find(|t| t.collection != GROCERIES);
+        let moved = after[0].clone();
+        assert!(matches!(source.move_todo(moved, elsewhere).await, Err(ProviderError::Other(_))));
+    }
+
     fn source_with_calendar() -> DemoSource {
         let source = DemoSource::default();
         source.lock().collections.push(Collection {
@@ -602,6 +728,7 @@ mod tests {
             kind: CollectionKind::Events,
             color: Some("#3474E6".into()),
             writable: true,
+            source: None,
         });
         source
     }

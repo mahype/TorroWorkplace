@@ -21,8 +21,14 @@ use super::{Appearance, Data, Section};
 pub enum Open {
     /// The add-account dialog.
     Wizard,
+    /// The add-account dialog at GitHub's two ways to sign in.
+    WizardGithub,
+    /// The add-account dialog at the field for a GitHub token.
+    WizardToken,
     /// The detail page of the first demo account.
     AccountDetail,
+    /// The detail page of the demo's GitHub account.
+    GithubDetail,
     /// The section menu ("Accounts ▾"); only the medium and narrow header have it.
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
@@ -38,9 +44,12 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 8] = [
+    pub const ALL: [(&'static str, Open); 11] = [
         ("wizard", Open::Wizard),
+        ("wizard-ways", Open::WizardGithub),
+        ("wizard-token", Open::WizardToken),
         ("account-detail", Open::AccountDetail),
+        ("scopes-detail", Open::GithubDetail),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
@@ -146,8 +155,8 @@ impl Launch {
 }
 
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
-/// a second one that cannot reach its server (so the problem rows show), three templates, the
-/// suite's apps, and settings with one list hidden. Times are relative to now.
+/// a second one that cannot reach its server (so the problem rows show), a GitHub account, three
+/// templates, the suite's apps, and settings with one list hidden. Times are relative to now.
 pub fn demo_data() -> Data {
     let now = Utc::now();
     let (mut sample, _, _) = torro_pim::demo::sample(Local::now().date_naive());
@@ -166,6 +175,7 @@ pub fn demo_data() -> Data {
         kind,
         color: Some(color.into()),
         writable: true,
+        source: None,
     };
     let accounts = vec![
         AccountInfo {
@@ -179,6 +189,7 @@ pub fn demo_data() -> Data {
                 problem: None,
             },
             collections: sample,
+            scopes: None,
         },
         AccountInfo {
             id: "nextcloud:anna@work.example.net".into(),
@@ -194,6 +205,22 @@ pub fn demo_data() -> Data {
                 team("demo:/work/calendars/team/", "Team", CollectionKind::Events, "#5B8CFF"),
                 team("demo:/work/calendars/ops/", "Ops", CollectionKind::Todos, "#E8A33D"),
             ],
+            scopes: None,
+        },
+        // A GitHub account whose token reads private repositories but has no projects scope, so
+        // the detail page shows what is allowed and what is missing.
+        AccountInfo {
+            id: "github:anna-dev".into(),
+            kind: "github".into(),
+            label: "anna-dev".into(),
+            state: AccountState::Connected {
+                server: torro_core::account::GITHUB_SERVER.into(),
+                login_name: "anna-dev".into(),
+                last_sync: Some(now - Duration::minutes(12)),
+                problem: None,
+            },
+            collections: Vec::new(),
+            scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
         },
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {

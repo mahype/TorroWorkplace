@@ -43,8 +43,18 @@ aus einem Guss wirkt:
 - **Oben links der App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü): öffnet die
   anderen Apps der Suite (Kern-Befehl `OpenApp`), daneben Suche und „Neu“ (Kasten-Knopf).
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt** als eingesetzte Fläche `PANEL` mit 8 Rand
-  oben/rechts/unten, Radius 8, 1-px-Linie. Ohne Seitenleiste (Mittel, Schmal) ist der Inhalt bündig
-  ohne Rand und Radius.
+  oben/rechts/unten, Radius 8, 1-px-Linie. Ohne Seitenleiste (Schmal) ist der Inhalt bündig
+  ohne Rand und Radius; neben der Leiste (Mittel) ist er eingesetzt wie in Breit.
+- **Seitenleiste in drei Zuständen** (U.2, `shell::SidebarMode`): **ausgeklappt** (232), **Leiste**
+  (`shell::RAIL` = 52: nur Icons, Name und Zahl als Tooltip rechts, Gruppentitel als Linie,
+  App-Umschalter nur als Logo, Mini-Monat und Versionszeile entfallen) und **Schublade** (Overlay).
+  Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` oben in der Seitenleiste
+  („Collapse sidebar“/„Expand sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in
+  `ui.json` im State-Verzeichnis (`torro_gui::ui_state`). Mittel zeigt immer die Leiste, ihr Knopf
+  öffnet die ausgeklappte Seitenleiste als Schublade; Schmal nur Schublade (Knopf in der
+  Kopfleiste). Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal bauen, mit
+  dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_head`,
+  `Shell::rail`.
 - **Kopfleiste** 44 hoch im Inhalt: links Pfad bzw. Titel (`BODY_STRONG`) mit leiser Ergänzung in
   `TEXT_3`, dann Navigation; rechts Ansicht, Filter, genau ein Primärknopf.
 - **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `CAPTION`-Titel in
@@ -115,6 +125,8 @@ aus einem Guss wirkt:
 | `HEADER` | 44 | Kopfleiste |
 | `SIDEBAR` | 232 | Seitenleiste |
 | `PROPS` | 300 | Eigenschaften-Spalte |
+| `PANEL` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, sonst darüber in voller Höhe |
+| `shell::RAIL` | 52 | Eingeklappte Seitenleiste (Leiste, nur Icons) |
 | `LIST` | 460 / 380 | Liste neben dem Detail (Breit / Mittel) |
 | `HOUR` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
 | `INSET` | 8 | Rand der eingesetzten Inhaltsfläche |
@@ -132,8 +144,12 @@ aus einem Guss wirkt:
 
 - **Schrift: Inter 4** (SIL OFL), mit der App ausgeliefert (`torro_gui::fonts()`,
   `torro_gui::settings()`), **Grundgröße 13** wie Linear. Nie `Font::DEFAULT`.
-  Größere Darstellung später über die Einstellung „Interface size“ (Iced `scale_factor`), nicht über
-  andere Schriftgrößen.
+  Größer oder kleiner nur über den **Zoom** der Suite (Z.1, `torro_gui::zoom`): Strg + Plus /
+  Minus / 0 in jeder App, Stufen wie im Browser (67–200 %), eine Einstellung für alle (`Settings::zoom`,
+  Steuerzentrale › General › Interface). Umgesetzt mit Iceds `scale_factor`, nie über andere
+  Schriftgrößen. Die Größenklassen rechnen in logischen Pixeln *nach* dem Zoom (1440 breit bei
+  150 % = 960 = Mittel), wie Breakpoints im Browser. Jede App: `.scale_factor(…)` im Builder,
+  `zoom.subscription()`, `zoom.view(…)` um die ganze Ansicht (kurze Anzeige „110%“ unten mittig).
 - **Stufen** (`torro_gui::typo`), Zeilenhöhe immer absolut:
 
 | Stufe | Größe / Zeile | Gewicht | Wofür |
@@ -219,14 +235,14 @@ funktionieren.
 | 1 | **Leiste** | Höhe < 280 und Breite ≥ 600 | 8 senkrecht, 12 waagerecht | keins | Zeitstrahl von heute / Chips |
 | 2 | **Mini** | Breite < 360 oder Höhe < 280 | 12 | keins | nächster Termin + „free until 14:00“ / Zahl offener + nächste 3 |
 | 3 | **Schmal** | Breite < 600 | bündig | Kopf 44, Navigation im Menü | ein Tag mit Wochenleiste / Liste, Detail ersetzt die Liste |
-| 4 | **Mittel** | Breite < 1024 | bündig | Kopf 44, Navigation im Menü | Woche + schwebende Karte / Liste + Detail mit Chips |
-| 5 | **Breit** | sonst | eingesetzt 8 | Seitenleiste 232 + Kopf 44 + Eigenschaften 300 | Woche + Eigenschaften / Liste + Detail + Eigenschaften |
+| 4 | **Mittel** | Breite < 1024 | eingesetzt 8 | Leiste 52 + Kopf 44, Navigation im Menü | Woche + schwebende Karte / Liste + Detail mit Chips |
+| 5 | **Breit** | sonst | eingesetzt 8 | Seitenleiste 232 (oder Leiste 52) + Kopf 44 + Eigenschaften 300 | Woche + Eigenschaften / Liste + Detail + Eigenschaften |
 
 Regeln:
 
 - **Das Layout wechselt, es schrumpft nicht.** Pro Klasse bewusst entscheiden, was gezeigt wird.
   Schrift nie kleiner als 12, Klickziele nie kleiner als 24.
-- Reihenfolge beim Platzsparen: Seitenleiste einklappen (Overlay), Werkzeugleiste auf Icons mit
+- Reihenfolge beim Platzsparen: Seitenleiste einklappen (Mittel: Leiste mit Icons, Schmal: Overlay), Werkzeugleiste auf Icons mit
   Tooltip, Nebeninfos in eine zweite Zeile oder weglassen. Nie abschneiden, nie überlappen, nie
   waagerecht scrollen.
 - **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare, keine
@@ -278,7 +294,8 @@ das Skript nutzt diese Form. Eine Ansicht wechseln geht per Tastenkürzel an das
 
 **Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
 Zustand direkt (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
-editor editor-new menu drawer switcher error empty loading`; Aufgaben: `detail menu display drawer
+timeline radar night editor editor-new menu drawer switcher error empty loading` (`night`: Zeitstrahl
+mit der Karte „Night“); Aufgaben: `detail menu display drawer
 switcher due error empty loading`; Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
 remove delete-template rename-template` und `--section overview|accounts|workspaces|apps|general`.

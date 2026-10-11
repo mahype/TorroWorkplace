@@ -36,6 +36,11 @@ pub enum Area {
     Workspaces,
     Calendar,
     Tasks,
+    /// GitHub issues and pull requests: the filter lists (task G.2). Their commands are task
+    /// commands (`tasks.create_filter_list`), but the GitHub token reaches far more than a task
+    /// list, so they are granted here, together with the repositories a client may see
+    /// ([`Rights::github_repos`]).
+    Github,
     /// Connected accounts (Nextcloud, later GitHub, Slack …) and sync.
     Accounts,
     /// Suite-wide settings.
@@ -49,11 +54,12 @@ pub enum Area {
 
 impl Area {
     /// Every area, in the order of the enum.
-    pub const ALL: [Area; 8] = [
+    pub const ALL: [Area; 9] = [
         Area::System,
         Area::Workspaces,
         Area::Calendar,
         Area::Tasks,
+        Area::Github,
         Area::Accounts,
         Area::Settings,
         Area::Apps,
@@ -67,17 +73,30 @@ impl Area {
         !matches!(self, Area::System | Area::Clients)
     }
 
-    /// The name in commands and rights: `calendar`. Every command name starts with it.
+    /// The name in rights: `calendar`. Every command name starts with it, except those of
+    /// `github`: they are task commands (`tasks.preview_filter`), see [`Area::prefix`].
     pub fn name(self) -> &'static str {
         match self {
             Area::System => "system",
             Area::Workspaces => "workspaces",
             Area::Calendar => "calendar",
             Area::Tasks => "tasks",
+            Area::Github => "github",
             Area::Accounts => "accounts",
             Area::Settings => "settings",
             Area::Apps => "apps",
             Area::Clients => "clients",
+        }
+    }
+}
+
+impl Area {
+    /// What the names of the area's commands start with: its [`Area::name`], for `github`
+    /// `tasks`, since filter lists are task lists to the apps and agents.
+    pub fn prefix(self) -> &'static str {
+        match self {
+            Area::Github => "tasks",
+            area => area.name(),
         }
     }
 }
@@ -170,16 +189,20 @@ impl AreaRights {
     }
 }
 
-/// Which calendars or task lists a client may see: all, or the ones with these ids.
+/// Which calendars, task lists or GitHub repositories a client may see: all, or the ones with
+/// these ids.
 ///
 /// A collection outside the selection behaves for the client as if it did not exist
-/// (`not-found`). Collections hidden in the suite are left out for every client anyway.
+/// (`not-found`). Collections hidden in the suite are left out for every client anyway. For
+/// repositories see [`Rights::reaches_repo`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Selection {
     /// Every collection of this kind, also ones added later.
     All,
-    /// Only the collections with these ids (from `accounts.list_accounts`).
+    /// Only the collections with these ids (from `accounts.list_accounts`, each
+    /// `<account-id>/<collection URL>`), or the GitHub repositories (`owner/name`) and owners
+    /// (`owner`: every repository of a user or organisation).
     Only(Vec<String>),
 }
 
@@ -222,8 +245,8 @@ pub enum Confirm {
 /// What a client may do. Kept per client in `clients.json`; only the app key may change it.
 ///
 /// The core checks in this order: [`Rights::allows`] (level and admin switch of the area), then
-/// the collections ([`Rights::calendars`], [`Rights::task_lists`]), then
-/// [`Rights::needs_approval`].
+/// the collections ([`Rights::calendars`], [`Rights::task_lists`]) and repositories
+/// ([`Rights::github_repos`]), then [`Rights::needs_approval`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Rights {
@@ -234,8 +257,19 @@ pub struct Rights {
     pub calendars: Selection,
     /// The task lists the client sees and may write to.
     pub task_lists: Selection,
+    /// The GitHub repositories and owners whose issues and pull requests the client sees: every
+    /// match of a search, a preview or a filter list outside them is dropped before the core
+    /// reads it further ([`Rights::reaches_repo`]). Missing in rights from before GitHub: none,
+    /// like an area added later.
+    #[serde(default = "no_repos")]
+    pub github_repos: Selection,
     /// When a command waits for a person's approval.
     pub confirm: Confirm,
+}
+
+/// The repositories of rights stored before `github_repos` existed: none.
+fn no_repos() -> Selection {
+    Selection::Only(Vec::new())
 }
 
 impl Rights {
@@ -248,8 +282,15 @@ impl Rights {
     /// the admin ones (`system.quit`), and no `clients` command: those are for the app key only,
     /// so no client can switch the service off or give itself rights.
     ///
+    /// No command kept from agents ([`Mcp::Never`]) is allowed either, whatever the rights say:
+    /// they are for the app key only, so a script key with admin rights cannot hand the core a
+    /// secret (`accounts.set_github_token`) any more than an agent can.
+    ///
     /// Collections and approval are checked after this, by the core.
     pub fn allows(&self, operation: Operation) -> bool {
+        if operation.command.mcp == Mcp::Never {
+            return false;
+        }
         match operation.area() {
             Area::System => operation.access != Access::Admin,
             Area::Clients => false,
@@ -287,7 +328,20 @@ impl Rights {
             areas,
             calendars: self.calendars.common(&other.calendars),
             task_lists: self.task_lists.common(&other.task_lists),
+            github_repos: common_repos(&self.github_repos, &other.github_repos),
             confirm: self.confirm.max(other.confirm),
+        }
+    }
+
+    /// Whether the client sees issues and pull requests of `repo` (`owner/name`): the selection
+    /// names the repository or its owner, in any case (GitHub's names ignore it).
+    pub fn reaches_repo(&self, repo: &str) -> bool {
+        let owner = repo.split_once('/').map_or(repo, |(owner, _)| owner);
+        match &self.github_repos {
+            Selection::All => true,
+            Selection::Only(names) => {
+                names.iter().any(|name| name.eq_ignore_ascii_case(repo) || name.eq_ignore_ascii_case(owner))
+            }
         }
     }
 
@@ -295,6 +349,26 @@ impl Rights {
     pub fn template(&self) -> Option<RightsTemplate> {
         RightsTemplate::ALL.into_iter().find(|template| template.rights() == *self)
     }
+}
+
+/// The repositories both selections reach: each name of one that the other reaches whole (a
+/// repository it reaches, an owner it names or `All`), each name once.
+fn common_repos(mine: &Selection, theirs: &Selection) -> Selection {
+    let (a, b) = match (mine, theirs) {
+        (Selection::All, selection) | (selection, Selection::All) => return selection.clone(),
+        (Selection::Only(a), Selection::Only(b)) => (a, b),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for (name, other) in a.iter().map(|name| (name, b)).chain(b.iter().map(|name| (name, a))) {
+        let whole = match name.split_once('/') {
+            Some((owner, _)) => other.iter().any(|o| o.eq_ignore_ascii_case(name) || o.eq_ignore_ascii_case(owner)),
+            None => other.iter().any(|o| o.eq_ignore_ascii_case(name)),
+        };
+        if whole && !names.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+            names.push(name.clone());
+        }
+    }
+    Selection::Only(names)
 }
 
 /// The rights a new client starts with; afterwards every row can be changed.
@@ -327,7 +401,7 @@ impl RightsTemplate {
             .filter(|area| area.grantable())
             .map(|area| (area, AreaRights { level, admin: false }))
             .collect();
-        Rights { areas, calendars: Selection::All, task_lists: Selection::All, confirm }
+        Rights { areas, calendars: Selection::All, task_lists: Selection::All, github_repos: Selection::All, confirm }
     }
 }
 
@@ -443,6 +517,8 @@ impl Request {
             Request::LoadTemplate { .. } => &LOAD_TEMPLATE,
             Request::RenameTemplate { .. } => &RENAME_TEMPLATE,
             Request::ConnectNextcloud { .. } => &CONNECT_NEXTCLOUD,
+            Request::ConnectGithub => &CONNECT_GITHUB,
+            Request::SetGithubToken { .. } => &SET_GITHUB_TOKEN,
             Request::Sync => &SYNC,
             Request::Accounts => &LIST_ACCOUNTS,
             Request::RemoveAccount { .. } => &REMOVE_ACCOUNT,
@@ -454,6 +530,12 @@ impl Request {
             Request::Todos => &LIST_TODOS,
             Request::SaveTodo { .. } => &SAVE_TODO,
             Request::DeleteTodo { .. } => &DELETE_TODO,
+            Request::MoveTodo { .. } => &MOVE_TODO,
+            Request::CreateFilterList { .. } => &CREATE_FILTER_LIST,
+            Request::UpdateFilterList { .. } => &UPDATE_FILTER_LIST,
+            Request::DeleteFilterList { .. } => &DELETE_FILTER_LIST,
+            Request::PreviewFilter { .. } => &PREVIEW_FILTER,
+            Request::UnpinIssue { .. } => &UNPIN_ISSUE,
             Request::Settings => &GET_SETTINGS,
             Request::UpdateSettings { .. } => &UPDATE_SETTINGS,
             Request::SetSetting { .. } => &SET_SETTING,
@@ -508,9 +590,17 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_TODOS,
     &SAVE_TODO,
     &DELETE_TODO,
+    &MOVE_TODO,
+    &CREATE_FILTER_LIST,
+    &UPDATE_FILTER_LIST,
+    &DELETE_FILTER_LIST,
+    &PREVIEW_FILTER,
+    &UNPIN_ISSUE,
     &LIST_ACCOUNTS,
     &SYNC,
     &CONNECT_NEXTCLOUD,
+    &CONNECT_GITHUB,
+    &SET_GITHUB_TOKEN,
     &REMOVE_ACCOUNT,
     &GET_SETTINGS,
     &SET_SETTING,
@@ -611,8 +701,8 @@ static LIST_CALENDARS: Command = Command {
     area: Area::Calendar,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the calendars shown in the suite with id, name, colour and whether they can be written \
-                  to. Events refer to their calendar by this id.",
+    description: "Lists the calendars of all accounts shown in the suite with id, name, colour and whether they \
+                  can be written to. The id is `<account-id>/<calendar URL>`; events refer to their calendar by it.",
 };
 
 static LIST_EVENTS: Command = Command {
@@ -630,7 +720,9 @@ static SAVE_EVENT: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Creates an event (without `href`) or changes one (with `href` and `etag` from list_events) on \
-                  the server and returns it as stored. Recurring events cannot be changed yet.",
+                  the server and returns it as stored. Recurring events cannot be changed yet. Changing \
+                  `collection` moves it to another calendar of the same account; moving to another account fails \
+                  with `unsupported`.",
 };
 
 static DELETE_EVENT: Command = Command {
@@ -647,8 +739,11 @@ static LIST_LISTS: Command = Command {
     area: Area::Tasks,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the task lists shown in the suite with id, name, colour and whether they can be written \
-                  to. Tasks refer to their list by this id.",
+    description: "Lists the task lists of all accounts shown in the suite with id, name, colour and whether they \
+                  can be written to. The id is `<account-id>/<list URL>`; tasks refer to their list by it. GitHub \
+                  filter lists (`github:<login>/<list-id>`) are listed too, with their searches in `source`; they \
+                  are not writable (no new or deleted tasks); marking their tasks done is meant to close the issue on \
+                  GitHub, which save_todo does not do yet (it answers `unsupported`).",
 };
 
 static LIST_TODOS: Command = Command {
@@ -656,7 +751,9 @@ static LIST_TODOS: Command = Command {
     area: Area::Tasks,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the tasks of all shown task lists.",
+    description: "Lists the tasks of all shown task lists, with their tags (`categories`), web address (`url`), \
+                  manual position (`sort_order`, smaller first) and `link` to a GitHub issue or pull request \
+                  (`github:<owner>/<repo>#<number>`; `link.github` holds what GitHub reports, once fetched).",
 };
 
 static SAVE_TODO: Command = Command {
@@ -665,7 +762,10 @@ static SAVE_TODO: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Creates a task (without `href`) or changes one (with `href` and `etag` from list_todos) on the \
-                  server and returns it as stored. Marking a task done is a change.",
+                  server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
+                  it to another calendar of the same account; moving to another account fails with \
+                  `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
+                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored.",
 };
 
 static DELETE_TODO: Command = Command {
@@ -677,13 +777,82 @@ static DELETE_TODO: Command = Command {
                   (needs `href` and `etag`).",
 };
 
+static MOVE_TODO: Command = Command {
+    name: "tasks.move_todo",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Puts a task (`href` and `etag` from list_todos) right before another task of the same list \
+                  (`before`, its `href`) or, without `before`, at the end. Works in any list; the order is shown \
+                  in lists set to \"manual order\" (settings.set_setting `list_order`). Tasks are \
+                  ordered among those with the same parent that are open or done like it, smaller `sort_order` \
+                  first, tasks without one last; only tasks whose number must change are written and returned. \
+                  If a write fails, the task has not moved yet: reload with list_todos and try again.",
+};
+
+// The GitHub filter lists (task G.2): task commands, granted in the area `github` together with
+// the repositories a client may see (`Rights::github_repos`).
+
+static CREATE_FILTER_LIST: Command = Command {
+    name: "tasks.create_filter_list",
+    area: Area::Github,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Creates a GitHub filter list: a task list of a GitHub account (`github:<login>` from \
+                  accounts.list_accounts) that holds the issues and pull requests one or more GitHub searches find \
+                  (`is:open is:issue repo:owner/name label:bug`, or the address of an issue list on github.com). \
+                  The core refreshes it every five minutes; it cannot be written to. Returns the list with its \
+                  definition in `source`. Try searches with preview_filter first.",
+};
+
+static UPDATE_FILTER_LIST: Command = Command {
+    name: "tasks.update_filter_list",
+    area: Area::Github,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Replaces name, colour and searches of a GitHub filter list and fetches it again; pinned items \
+                  stay. Pass `revision` from the list's `source` as list_lists returned it: if the list changed \
+                  meanwhile the call fails with `conflict` and nothing changes.",
+};
+
+static DELETE_FILTER_LIST: Command = Command {
+    name: "tasks.delete_filter_list",
+    area: Area::Github,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Deletes a GitHub filter list from this device: its searches and pinned items cannot be restored. \
+                  The issues and pull requests on GitHub stay as they are.",
+};
+
+static PREVIEW_FILTER: Command = Command {
+    name: "tasks.preview_filter",
+    area: Area::Github,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Runs GitHub searches (or addresses of issue lists on github.com) of a GitHub account without \
+                  saving anything and returns how many issues and pull requests match and the first 20 of them as \
+                  tasks. Agents see only matches in the repositories they were granted.",
+};
+
+static UNPIN_ISSUE: Command = Command {
+    name: "tasks.unpin_issue",
+    area: Area::Github,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Takes a pinned issue or pull request (its address, `owner/repo#12` or the id from \
+                  `source.pinned`) out of a GitHub filter list. It stays in the list while one of the list's \
+                  searches finds it; nothing changes on GitHub.",
+};
+
 static LIST_ACCOUNTS: Command = Command {
     name: "accounts.list_accounts",
     area: Area::Accounts,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists the connected accounts with their state (connected, signing in, last sync, problem) and \
-                  their calendars and task lists. Passwords and tokens are never part of the answer.",
+    description: "Lists every connected account (Nextcloud, GitHub) with its id, state (connected, signing in, \
+                  last sync, problem) and its calendars and task lists, whose ids start with the account id; for \
+                  GitHub accounts also the scopes of their token. Passwords and tokens are never part of the \
+                  answer.",
 };
 
 static SYNC: Command = Command {
@@ -691,9 +860,11 @@ static SYNC: Command = Command {
     area: Area::Accounts,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Fetches calendars, events and tasks from the server now instead of at the next automatic sync, \
-                  which runs every five minutes. If the server refuses the sign-in and has marked this device for \
-                  a remote wipe, the account and its cached data are removed from this device.",
+    description: "Fetches calendars, events and tasks from the servers of all accounts now instead of at the next \
+                  automatic sync, which runs every five minutes, checks the tokens of the GitHub accounts again and \
+                  fetches their filter lists anew. An account that fails keeps its cached data; the others are synced anyway. If a Nextcloud \
+                  refuses the sign-in and has marked this device for a remote wipe, that account and its cached \
+                  data are removed from this device.",
 };
 
 static CONNECT_NEXTCLOUD: Command = Command {
@@ -702,8 +873,32 @@ static CONNECT_NEXTCLOUD: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Starts signing in to a Nextcloud server and returns the login URL. A person finishes the sign-in \
-                  in the browser; the core then stores the account and syncs. Show the URL to the person; never \
-                  open it yourself.",
+                  in the browser; the core then adds the account to the others (or renews the sign-in of the same \
+                  account) and syncs it. Show the URL to the person; never open it yourself.",
+};
+
+static CONNECT_GITHUB: Command = Command {
+    name: "accounts.connect_github",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Asks for a GitHub account to be connected. For agents and scripts the core only shows the Torro \
+                  Workplace control centre (an open one comes to the front, else it opens on its accounts page), where a person picks the GitHub CLI's sign-in or \
+                  pastes a token, and answers `opened`; the token never reaches the caller. The control centre \
+                  itself takes over the GitHub CLI's sign-in (`gh auth token`) and gets `not-connected` without \
+                  one.",
+};
+
+// Never an MCP tool, and for the app key only: the token is a secret (`docs/api.md`, "Was nie nach
+// außen geht", 1), so no agent or script may hand one to the core.
+static SET_GITHUB_TOKEN: Command = Command {
+    name: "accounts.set_github_token",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Connects a GitHub account with a personal access token a person pasted in the control centre: \
+                  checks it with GitHub, keeps it in the system keychain and returns the account without the \
+                  token. Only the app key may use it.",
 };
 
 static REMOVE_ACCOUNT: Command = Command {
@@ -711,8 +906,9 @@ static REMOVE_ACCOUNT: Command = Command {
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Removes the account from this device: revokes its app password on the server where possible \
-                  and deletes the stored secret and the cached calendars and tasks.",
+    description: "Removes one account (id from list_accounts) from this device: revokes its app password on the \
+                  server where possible (Nextcloud) and deletes its stored secret and its cached calendars and \
+                  tasks. Other accounts stay. An unknown id fails with `not-found`.",
 };
 
 static GET_SETTINGS: Command = Command {
@@ -720,8 +916,9 @@ static GET_SETTINGS: Command = Command {
     area: Area::Settings,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Returns the suite-wide settings: language, appearance, start at login and the hidden calendars \
-                  and task lists.",
+    description: "Returns the suite-wide settings: language, appearance, start at login, zoom, the night of the \
+                  calendar, the hidden calendars and task lists, and the task lists ordered by hand \
+                  (`listOrders`).",
 };
 
 static SET_SETTING: Command = Command {
@@ -730,7 +927,12 @@ static SET_SETTING: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Changes one suite-wide setting: `language` (\"system\", \"english\", \"german\"), `appearance` \
-                  (\"system\", \"light\", \"dark\") or `start_at_login` (true, false).",
+                  (\"system\", \"light\", \"dark\"), `start_at_login` (true, false), `zoom` (a number from 0.67 to \
+                  2.0, 1.0 = 100 %, rounded to the nearest browser zoom step; every open window follows), `night` \
+                  ({\"from\": \"22:00\", \"to\": \"06:00\"}, times on the quarter hour; the calendar's timeline and \
+                  radar fold or shade it and do not count it as free time; the same time twice means no night) or \
+                  `list_order` ({\"list\": \"<the id from tasks.list_lists>\", \"order\": \"manual\"} to order a \
+                  task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -867,6 +1069,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 
@@ -884,6 +1090,8 @@ mod tests {
             Request::LoadTemplate { id: "dev".into(), mode: LoadMode::Add },
             Request::RenameTemplate { id: "dev".into(), name: "Dev".into() },
             Request::ConnectNextcloud { server: "cloud.example.test".into() },
+            Request::ConnectGithub,
+            Request::SetGithubToken { token: crate::Secret::new("ghp_example") },
             Request::Sync,
             Request::Accounts,
             Request::RemoveAccount { id: "nextcloud:anna@cloud.example.test".into() },
@@ -895,6 +1103,23 @@ mod tests {
             Request::Todos,
             Request::SaveTodo { todo: todo() },
             Request::DeleteTodo { todo: todo() },
+            Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None },
+            Request::CreateFilterList {
+                account: "github:mahype".into(),
+                name: "Bugs".into(),
+                color: None,
+                queries: vec!["is:open label:bug".into()],
+            },
+            Request::UpdateFilterList {
+                collection: "github:mahype/00ff".into(),
+                revision: 1,
+                name: "Bugs".into(),
+                color: Some("#D73A4A".into()),
+                queries: vec!["is:open label:bug".into()],
+            },
+            Request::DeleteFilterList { collection: "github:mahype/00ff".into() },
+            Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] },
+            Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::Settings,
             Request::UpdateSettings { settings: Settings::default() },
             Request::SetSetting { key: SettingKey::StartAtLogin, value: serde_json::Value::Bool(true) },
@@ -971,14 +1196,15 @@ mod tests {
     fn names_follow_the_rules() {
         for command in CATALOGUE {
             let (area, verb) = command.name.split_once('.').expect("area.verb_object");
-            assert_eq!(area, command.area.name(), "{}", command.name);
+            assert_eq!(area, command.area.prefix(), "{}", command.name);
             assert!(!verb.is_empty() && verb.chars().all(|c| c.is_ascii_lowercase() || c == '_'), "{}", command.name);
             // MCP clients accept tool names up to 64 characters.
             assert!(command.tool_name().len() <= 64, "{}", command.name);
             assert!(!command.description.is_empty() && command.description.ends_with('.'), "{}", command.name);
-            // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals and quitting the
-            // service are kept from agents.
-            let kept_back = command.area == Area::Clients || command.name == "system.quit";
+            // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals, quitting the
+            // service and taking secrets in are kept from agents.
+            let kept_back =
+                command.area == Area::Clients || matches!(command.name, "system.quit" | "accounts.set_github_token");
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
             if command.area == Area::Clients {
@@ -1043,6 +1269,7 @@ mod tests {
                 assert!(!rights.area(area).admin, "{template:?} {area:?}");
             }
             assert_eq!((&rights.calendars, &rights.task_lists), (&Selection::All, &Selection::All));
+            assert_eq!(rights.github_repos, Selection::All);
         }
         let level = |template: RightsTemplate| template.rights().area(Area::Calendar).level;
         assert_eq!(level(RightsTemplate::ReadOnly), Level::Read);
@@ -1070,6 +1297,8 @@ mod tests {
                     }
                     let operation = Operation { command, access: command.access };
                     let expected = match (command.area, command.access) {
+                        // Kept from agents means for the app key only.
+                        _ if command.mcp == Mcp::Never => false,
                         (Area::System, Access::Admin) => false,
                         (Area::System, _) => true,
                         (Area::Clients, _) => false,
@@ -1100,6 +1329,29 @@ mod tests {
             assert!(!template.rights().allows(Request::Quit.operation()), "{template:?}");
         }
         assert!(RightsTemplate::ReadOnly.rights().allows(Request::Status.operation()));
+    }
+
+    #[test]
+    fn only_the_app_key_may_hand_in_a_github_token() {
+        // Not even full access with the admin switch of every area opens it: the token is a secret.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let token = Request::SetGithubToken { token: crate::Secret::new("ghp_example") };
+        assert!(!rights.allows(token.operation()));
+        assert!(rights.allows(Request::ConnectGithub.operation()), "asking a person to connect is an admin command");
+        assert_eq!(Request::ConnectGithub.operation().access, Access::Admin);
+    }
+
+    #[test]
+    fn the_github_token_is_a_write_only_string_in_the_schema() {
+        let schema = SET_GITHUB_TOKEN.input_schema().expect("schema");
+        let token = schema.as_value().pointer("/properties/token").expect("token is a field");
+        assert_eq!(token.get("type"), Some(&serde_json::json!("string")));
+        assert_eq!(token.get("writeOnly"), Some(&serde_json::json!(true)));
+        assert!(token.get("description").is_some(), "{token}");
+        assert!(CONNECT_GITHUB.input_schema().expect("schema").get("required").is_none());
     }
 
     #[test]
@@ -1134,6 +1386,72 @@ mod tests {
             assert_eq!(common.confirm, Confirm::OnDelete);
         }
         assert_eq!(wide.common(&wide), wide);
+    }
+
+    #[test]
+    fn the_filter_list_commands_are_task_commands_granted_in_github() {
+        let requests = samples();
+        let github: Vec<&str> = requests
+            .iter()
+            .map(Request::operation)
+            .filter(|operation| operation.area() == Area::Github)
+            .map(|operation| operation.name())
+            .collect();
+        assert_eq!(
+            github,
+            [
+                "tasks.create_filter_list",
+                "tasks.update_filter_list",
+                "tasks.delete_filter_list",
+                "tasks.preview_filter",
+                "tasks.unpin_issue"
+            ]
+        );
+        assert!(Area::Github.grantable());
+        assert_eq!(DELETE_FILTER_LIST.access, Access::Delete);
+        assert_eq!(PREVIEW_FILTER.access, Access::Read);
+        // Rights in `tasks` alone open none of them.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.remove(&Area::Github);
+        let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
+        assert!(!rights.allows(preview.operation()));
+    }
+
+    #[test]
+    fn repositories_are_reached_by_name_or_owner_in_any_case() {
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert!(rights.reaches_repo("anyone/anything"), "templates reach every repository");
+        rights.github_repos = Selection::Only(vec!["mahype/TorroWorkplace".into(), "awesomemotive".into()]);
+        assert!(rights.reaches_repo("mahype/TorroWorkplace") && rights.reaches_repo("MAHYPE/torroworkplace"));
+        assert!(rights.reaches_repo("AwesomeMotive/wpforms"));
+        assert!(!rights.reaches_repo("mahype/secret") && !rights.reaches_repo("mahype"));
+        assert!(!rights.reaches_repo("mahype/TorroWorkplace2"));
+    }
+
+    #[test]
+    fn rights_from_before_github_reach_no_repository() {
+        let mut json = serde_json::to_value(RightsTemplate::FullAccess.rights()).expect("json");
+        let object = json.as_object_mut().expect("an object");
+        object.remove("githubRepos");
+        object["areas"].as_object_mut().expect("areas").remove("github");
+        let rights: Rights = serde_json::from_value(json).expect("older rights read");
+        assert_eq!(rights.github_repos, Selection::Only(vec![]));
+        assert_eq!(rights.area(Area::Github), AreaRights::NONE);
+        assert!(!rights.reaches_repo("mahype/TorroWorkplace"));
+    }
+
+    #[test]
+    fn common_repositories_are_what_both_reach() {
+        let only = |names: &[&str]| Selection::Only(names.iter().map(|n| n.to_string()).collect());
+        let with = |names: &[&str]| Rights { github_repos: only(names), ..RightsTemplate::ReadOnly.rights() };
+        let wide = with(&["mahype", "awesomemotive/wpforms", "gone/away"]);
+        let narrow = with(&["mahype/TorroWorkplace", "AwesomeMotive", "other/x"]);
+        for common in [wide.common(&narrow), narrow.common(&wide)] {
+            let Selection::Only(mut names) = common.github_repos else { panic!("a selection") };
+            names.sort_by_key(|name| name.to_ascii_lowercase());
+            assert_eq!(names, ["awesomemotive/wpforms", "mahype/TorroWorkplace"]);
+        }
+        assert_eq!(wide.common(&RightsTemplate::ReadOnly.rights()).github_repos, wide.github_repos);
     }
 
     #[test]
@@ -1200,7 +1518,14 @@ mod tests {
         let keys =
             schema.as_value().pointer("/properties/key/oneOf").and_then(|k| k.as_array()).expect("key is an enum");
         let keys: Vec<_> = keys.iter().filter_map(|k| k.get("const")).collect();
-        assert_eq!(keys, ["language", "appearance", "start_at_login"]);
+        assert_eq!(keys, ["language", "appearance", "start_at_login", "zoom", "night", "list_order"]);
+
+        let schema = MOVE_TODO.input_schema().expect("schema");
+        assert_eq!(schema.get("required"), Some(&serde_json::json!(["href", "etag"])));
+        for field in ["href", "etag", "before"] {
+            let described = schema.as_value().pointer(&format!("/properties/{field}/description"));
+            assert!(described.and_then(|d| d.as_str()).is_some_and(|d| !d.is_empty()), "{field}");
+        }
 
         let schema = SAVE_EVENT.input_schema().expect("schema");
         assert_eq!(schema.as_value().pointer("/properties/event/type"), Some(&serde_json::json!("object")));
@@ -1244,7 +1569,7 @@ mod tests {
             }
         }
         let settings = fields(&UPDATE_SETTINGS, "/properties/settings/properties");
-        for field in ["language", "appearance", "startAtLogin", "hiddenCollections"] {
+        for field in ["language", "appearance", "startAtLogin", "hiddenCollections", "zoom", "night", "listOrders"] {
             assert!(settings.get(field).is_some(), "update_settings lacks {field}");
         }
     }

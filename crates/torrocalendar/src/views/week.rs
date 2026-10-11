@@ -9,7 +9,8 @@
 //! with its time in the axis marks now. Weekends are set off a little.
 //!
 //! Click on an empty slot → `NewEvent { date, time }` (time rounded down to the half hour), on
-//! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`.
+//! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`. The
+//! event open in the side panel (`ViewData::selected`) is outlined with the focus ring.
 //!
 //! In the wide layout the day view's properties column lists what is left of the day
 //! ([`day_props`], "Up next"); a click on an entry opens it like a click on its block.
@@ -18,7 +19,7 @@
 //! The geometry (time ↔ y, splitting at midnight, lanes, free gaps, hit-testing) is in
 //! `week/layout.rs`.
 
-mod layout;
+pub(super) mod layout;
 
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use iced::alignment::{Horizontal, Vertical};
@@ -47,11 +48,11 @@ pub const SCROLL_ID: Id = Id::new("torrocalendar.week.grid");
 const UNTITLED: &str = "(untitled)";
 
 /// The day number in the header: 13/500 with tabular figures (`.dayhead b`).
-const DAY_NUMBER: typo::Level = typo::BODY_STRONG.tabular();
+pub(super) const DAY_NUMBER: typo::Level = typo::BODY_STRONG.tabular();
 /// Edge of the box around a day number, and of today's red circle (`.dayhead b`, 24).
-const DAY_CIRCLE: f32 = space::XL;
+pub(super) const DAY_CIRCLE: f32 = space::XL;
 /// Width of the colour bar on the left of events and all-day chips (`inset 3px 0 0`).
-const BAR: f32 = 3.0;
+pub(super) const BAR: f32 = 3.0;
 /// Text inside events and chips starts this far from their left edge: the bar plus 6
 /// (`.ev{padding:3px 6px 3px 9px}`).
 const TEXT_LEFT: f32 = 9.0;
@@ -70,15 +71,18 @@ const PAST_OPACITY: f32 = 0.55;
 /// Weekend columns get this much of the window background over the panel (`.daycols > .weekend`).
 const WEEKEND_SHADE: f32 = 0.35;
 /// Gaps between events this long or longer show "2 h free" (minutes).
-const FREE_MINUTES: f32 = 120.0;
+pub(super) const FREE_MINUTES: f32 = 120.0;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, white on red
 /// (`.nowlabel{font:500 11px/16px}`).
-const NOW_LABEL: typo::Level =
+pub(super) const NOW_LABEL: typo::Level =
     typo::Level { font: theme::FONT_TABULAR_MEDIUM, line_height: typo::CAPTION.line_height, ..typo::MICRO };
 /// Width of the now label: fits "23:59" with 3 on each side, and the narrow axis.
-const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
+pub(super) const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// Radius of the dot at the start of the now line (7 across, `.now::before`).
-const NOW_DOT: f32 = 3.5;
+pub(super) const NOW_DOT: f32 = 3.5;
+/// The ring around the event open in the side panel stands this far off its edge
+/// (`.ev.sel{outline:2px solid var(--focus);outline-offset:1px}`).
+const RING_OFFSET: f32 = size::HAIRLINE;
 
 /// Where the grid opens: 07:00 at the top, with room above the line for its label (which is
 /// centred on the line).
@@ -182,6 +186,8 @@ struct Plan {
     /// The all-day bars.
     bars: Vec<layout::DaySpan>,
     now: NaiveDateTime,
+    /// The app's index of the event open in the side panel.
+    selected: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +223,14 @@ impl Plan {
         let count = (data.end - data.start).num_days().max(1);
         let days: Vec<NaiveDate> = (0..count).map(|i| data.start + Duration::days(i)).collect();
         let columns = days.len();
-        let mut plan = Plan { days, entries: Vec::new(), timed: Vec::new(), bars: Vec::new(), now: data.now };
+        let mut plan = Plan {
+            days,
+            entries: Vec::new(),
+            timed: Vec::new(),
+            bars: Vec::new(),
+            now: data.now,
+            selected: data.selected,
+        };
         for item in &data.items {
             let (start, end, all_day) = local_span(item.event);
             let id = plan.entries.len();
@@ -253,6 +266,11 @@ impl Plan {
         }
     }
 
+    /// Whether the entry `id` is the event open in the side panel.
+    fn is_selected(&self, id: usize) -> bool {
+        self.selected.is_some_and(|index| self.entries.get(id).is_some_and(|entry| entry.index == index))
+    }
+
     fn today_column(&self) -> Option<usize> {
         self.days.iter().position(|day| *day == self.now.date())
     }
@@ -277,7 +295,7 @@ impl Plan {
 
 /// Start and end in local time, and whether the entry goes into the all-day strip: a
 /// date-only entry, or one lasting a day or more.
-fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
+pub(super) fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
     let start = match event.start {
         EventTime::Date(day) => day.and_time(NaiveTime::MIN),
         EventTime::DateTime(at) => to_local(at),
@@ -292,7 +310,7 @@ fn local_span(event: &CalendarEvent) -> (NaiveDateTime, NaiveDateTime, bool) {
     (start, end, all_day)
 }
 
-fn title(event: &CalendarEvent) -> String {
+pub(super) fn title(event: &CalendarEvent) -> String {
     let summary = event.summary.trim();
     if summary.is_empty() { tr(UNTITLED).to_string() } else { summary.to_string() }
 }
@@ -301,8 +319,15 @@ fn is_weekend(day: NaiveDate) -> bool {
     matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
 }
 
+/// The hand over everything a click does something on (an event, a bar, an empty slot or day
+/// cell), the plain arrow elsewhere (the time axis). The same hit-test as the click, so the
+/// cursor never promises more than a press does.
+pub(super) fn pointer_if(clickable: bool) -> mouse::Interaction {
+    if clickable { mouse::Interaction::Pointer } else { mouse::Interaction::Idle }
+}
+
 /// The left-button press in `bounds`, relative to its top left corner.
-fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Point> {
+pub(super) fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor) -> Option<Point> {
     match event {
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => cursor.position_in(bounds),
         _ => None,
@@ -447,6 +472,13 @@ impl canvas::Program<Message> for Strip {
         Some(Action::publish(message).and_capture())
     }
 
+    fn mouse_interaction(&self, _state: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        let count = self.plan.days.len();
+        let (bars, _) = layout::bar_blocks(&self.plan.bars, count, bounds.width);
+        let over = cursor.position_in(bounds).and_then(|point| layout::strip_hit(&bars, count, bounds.width, point));
+        pointer_if(matches!(over, Some(layout::StripHit::Bar(_))))
+    }
+
     fn draw(
         &self,
         _state: &(),
@@ -483,6 +515,9 @@ impl canvas::Program<Message> for Strip {
                 });
             }
         }
+        for bar in bars.iter().filter(|bar| plan.is_selected(bar.id)) {
+            selection_ring(&mut frame, bar.rect, p);
+        }
         vec![frame.into_geometry()]
     }
 }
@@ -512,6 +547,14 @@ impl canvas::Program<Message> for Grid {
             }
         };
         Some(Action::publish(message).and_capture())
+    }
+
+    fn mouse_interaction(&self, _state: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        let count = self.plan.days.len();
+        let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width);
+        let over = cursor.position_in(bounds).and_then(|point| layout::grid_hit(&blocks, count, bounds.width, point));
+        // The hand only over events; empty slots stay calm although a click there starts a new one.
+        pointer_if(matches!(over, Some(layout::GridHit::Event(_))))
     }
 
     fn draw(
@@ -590,6 +633,10 @@ impl canvas::Program<Message> for Grid {
             // The day view has the width for the place; seven columns do not.
             event_text(&mut frame, block.rect, entry, &tone, count == 1);
         }
+        // Over the blocks, so a neighbour in the next lane does not cover it.
+        for block in blocks.iter().filter(|block| plan.is_selected(block.id)) {
+            selection_ring(&mut frame, block.rect, p);
+        }
 
         if let Some(y) = now_y {
             now_line(&mut frame, p, x0, width, y, plan.now.time());
@@ -602,16 +649,16 @@ impl canvas::Program<Message> for Grid {
 /// full-colour bar, title in `text`, time in `text_2`, place in `text_3`. A past entry is faded
 /// towards its background as a whole (55 %), like CSS `opacity` – composed by hand, because a
 /// canvas cannot fade a group of shapes.
-struct Tone {
-    fill: Color,
-    bar: Color,
-    title: Color,
-    time: Color,
+pub(super) struct Tone {
+    pub(super) fill: Color,
+    pub(super) bar: Color,
+    pub(super) title: Color,
+    pub(super) time: Color,
     place: Color,
 }
 
 impl Tone {
-    fn of(p: &Palette, color: Color, under: Color, past: bool) -> Tone {
+    pub(super) fn of(p: &Palette, color: Color, under: Color, past: bool) -> Tone {
         // The tint is laid over the panel, not the weekend shade, so an event looks the same on
         // every day (`color-mix(var(--c) var(--tint), var(--panel))`).
         let fill = over(p.tinted(color), p.panel);
@@ -623,11 +670,26 @@ impl Tone {
 /// The surface of an event or chip: rounded `radius::XS`, no border, the bar on the left. The
 /// bar is the whole shape in the calendar colour with the tinted body laid over all but its
 /// first 3 px, which clips the bar to the rounded corners as CSS's inset shadow does.
-fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
+pub(super) fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
     frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::XS)), tone.bar);
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     let body_radius = Radius::new(0.0).right(radius::XS);
     frame.fill(&Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, body_radius), tone.fill);
+}
+
+/// The outline of the event open in the side panel: a ring in `focus_ring`, as wide as the focus
+/// ring of the controls, [`RING_OFFSET`] off the block's edge and rounded along with it. Neutral
+/// like every selection; the calendar colour stays the block's own.
+pub(super) fn selection_ring(frame: &mut Frame, rect: Rectangle, p: &Palette) {
+    let grow = RING_OFFSET + style::FOCUS_RING_WIDTH / 2.0;
+    let ring = Rectangle {
+        x: rect.x - grow,
+        y: rect.y - grow,
+        width: rect.width + 2.0 * grow,
+        height: rect.height + 2.0 * grow,
+    };
+    let path = Path::rounded_rectangle(ring.position(), ring.size(), Radius::from(radius::XS + grow));
+    frame.stroke(&path, Stroke::default().with_color(p.focus_ring).with_width(style::FOCUS_RING_WIDTH));
 }
 
 /// Where the text of an event or chip may go: inside it, short of its right edge.
@@ -721,21 +783,21 @@ fn now_line(frame: &mut Frame, p: &Palette, x0: f32, width: f32, y: f32, now: Na
     label(frame, &format_time(now), at, NOW_LABEL, p.on_accent, Alignment::Center, Vertical::Center);
 }
 
-fn line_height(level: typo::Level) -> f32 {
+pub(super) fn line_height(level: typo::Level) -> f32 {
     level.line_height.to_absolute(level.size).0
 }
 
-fn fill(frame: &mut Frame, rect: Rectangle, color: Color) {
+pub(super) fn fill(frame: &mut Frame, rect: Rectangle, color: Color) {
     frame.fill_rectangle(rect.position(), rect.size(), color);
 }
 
 /// A 1-px line.
-fn line(frame: &mut Frame, from: Point, to: Point, color: Color) {
+pub(super) fn line(frame: &mut Frame, from: Point, to: Point, color: Color) {
     frame.stroke(&Path::line(from, to), Stroke::default().with_color(color).with_width(1.0));
 }
 
 /// One line of text in `level` (size, line height and Inter cut), never wrapped.
-fn label(
+pub(super) fn label(
     frame: &mut Frame,
     content: &str,
     position: Point,
@@ -760,6 +822,8 @@ fn label(
 
 #[cfg(test)]
 mod tests {
+    use iced::widget::canvas::Program;
+
     use super::*;
 
     fn at(day: u32, hour: u32, minute: u32) -> NaiveDateTime {
@@ -836,6 +900,7 @@ mod tests {
             end: day + Duration::days(1),
             anchor: day,
             now: at(7, 14, 20),
+            selected: None,
         };
         let listed =
             |data: &ViewData<'_>| up_next(data).into_iter().map(|next| (next.title, next.when)).collect::<Vec<_>>();
@@ -865,6 +930,7 @@ mod tests {
                 end: start + Duration::days(days),
                 anchor: start,
                 now: at(7, 14, 20),
+                selected: None,
             };
             Plan::new(&data).empty_note()
         };
@@ -873,8 +939,14 @@ mod tests {
         assert_eq!(empty(at(8, 0, 0).date(), 1), Some(tr("No events")));
         let event = calendar_event("Standup", local(7, 9, 30), Some(local(7, 9, 45)));
         let items = vec![super::super::Item { index: 0, event: &event, color: Color::BLACK }];
-        let data =
-            ViewData { items, start: monday, end: monday + Duration::days(7), anchor: monday, now: at(7, 14, 20) };
+        let data = ViewData {
+            items,
+            start: monday,
+            end: monday + Duration::days(7),
+            anchor: monday,
+            now: at(7, 14, 20),
+            selected: None,
+        };
         assert_eq!(Plan::new(&data).empty_note(), None);
     }
 
@@ -962,9 +1034,90 @@ mod tests {
         let items =
             events.iter().enumerate().map(|(index, event)| super::super::Item { index, event, color: blue }).collect();
         let start = at(5, 0, 0).date();
-        let data = ViewData { items, start, end: start + Duration::days(7), anchor: start, now: at(7, 14, 20) };
+        let data = ViewData {
+            items,
+            start,
+            end: start + Duration::days(7),
+            anchor: start,
+            now: at(7, 14, 20),
+            selected: None,
+        };
         let plan = Plan::new(&data);
         assert_eq!(plan.free_gaps(0), vec![], "Monday is over");
         assert_eq!(plan.free_gaps(3), vec![(660.0, 960.0)], "Thursday 11:00–16:00");
+    }
+
+    /// A week (Mon 5 – Sun 11 Oct 2026) with a timed event on Wednesday and an all-day one.
+    fn week_plan() -> Plan {
+        let events = [
+            calendar_event("Workshop", local(7, 10, 0), Some(local(7, 11, 0))),
+            calendar_event("Holiday", EventTime::Date(at(7, 0, 0).date()), None),
+        ];
+        let items =
+            events.iter().enumerate().map(|(index, event)| super::super::Item { index, event, color: Color::BLACK });
+        let monday = at(5, 0, 0).date();
+        let data = ViewData {
+            items: items.collect(),
+            start: monday,
+            end: monday + Duration::days(7),
+            anchor: monday,
+            now: at(7, 14, 20),
+            selected: None,
+        };
+        Plan::new(&data)
+    }
+
+    /// What the canvas shows with the cursor at `point` inside bounds that start at (30, 40).
+    fn interaction(program: &impl canvas::Program<Message, State = ()>, point: Point) -> mouse::Interaction {
+        let bounds = Rectangle::new(Point::new(30.0, 40.0), Size::new(700.0, GRID_HEIGHT + 100.0));
+        let cursor = mouse::Cursor::Available(Point::new(bounds.x + point.x, bounds.y + point.y));
+        program.mouse_interaction(&(), bounds, cursor)
+    }
+
+    #[test]
+    fn the_grid_shows_the_hand_only_over_events() {
+        let plan = week_plan();
+        let grid = Grid { plan: plan.clone() };
+        let blocks = layout::timed_blocks(&plan.timed, plan.days.len(), 700.0);
+        let block = blocks.first().expect("the workshop is drawn").rect;
+        assert_eq!(interaction(&grid, block.center()), mouse::Interaction::Pointer, "an event");
+        let slot = Point::new(block.x + 1.0, 3.0 * HOUR_HEIGHT);
+        assert_eq!(interaction(&grid, slot), mouse::Interaction::Idle, "an empty slot stays calm");
+        let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, block.center().y);
+        assert_eq!(interaction(&grid, axis), mouse::Interaction::Idle, "the time axis does nothing");
+        let below = Point::new(block.x, GRID_HEIGHT + 1.0);
+        assert_eq!(interaction(&grid, below), mouse::Interaction::Idle, "beyond 24:00");
+    }
+
+    #[test]
+    fn the_grid_shows_no_hand_with_the_cursor_elsewhere() {
+        let grid = Grid { plan: week_plan() };
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(700.0, 400.0));
+        let outside = mouse::Cursor::Available(Point::new(900.0, 100.0));
+        assert_eq!(grid.mouse_interaction(&(), bounds, outside), mouse::Interaction::Idle);
+        assert_eq!(grid.mouse_interaction(&(), bounds, mouse::Cursor::Unavailable), mouse::Interaction::Idle);
+    }
+
+    #[test]
+    fn only_the_event_open_in_the_panel_is_selected() {
+        let mut plan = week_plan();
+        assert!(!plan.is_selected(0) && !plan.is_selected(1), "nothing open");
+        plan.selected = Some(1);
+        assert!(!plan.is_selected(0));
+        assert!(plan.is_selected(1), "the holiday, in the all-day strip");
+        assert!(!plan.is_selected(7), "no such entry");
+    }
+
+    #[test]
+    fn the_all_day_strip_shows_the_hand_only_over_bars() {
+        let plan = week_plan();
+        let strip = Strip { plan: plan.clone() };
+        let (bars, _) = layout::bar_blocks(&plan.bars, plan.days.len(), 700.0);
+        let bar = bars.first().expect("the holiday is drawn").rect;
+        assert_eq!(interaction(&strip, bar.center()), mouse::Interaction::Pointer, "a bar");
+        let day = Point::new(bar.x - 2.0 * layout::columns(700.0, 7).1, bar.y);
+        assert_eq!(interaction(&strip, day), mouse::Interaction::Idle, "an empty day cell stays calm");
+        let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, bar.y);
+        assert_eq!(interaction(&strip, axis), mouse::Interaction::Idle, "the axis cell does nothing");
     }
 }

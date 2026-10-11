@@ -7,14 +7,14 @@
 //! not running → `ProviderError::Other` with the `IpcError` message, an unexpected
 //! variant → `Other("unexpected answer …")`.
 //!
-//! Two methods combine requests, so the apps keep one call each: [`PimSource::account`] reads
-//! the state of the first account from `Accounts`, [`PimSource::collections`] joins
-//! `CalendarCollections` and `TaskCollections`.
+//! [`PimSource::accounts`] reads `Accounts` and leaves out the collections, which come with
+//! [`PimSource::collections`]; that one joins `CalendarCollections` and `TaskCollections`, so
+//! the apps keep one call each.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use torro_pim::{AccountState, Collection, Event, PimSource, ProviderError, Todo};
+use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 use crate::Request;
 use crate::Response;
@@ -79,13 +79,18 @@ fn with_uid(err: ProviderError, uid: &str) -> ProviderError {
 }
 
 impl PimSource for PimClient {
-    /// The state of the first account (today there is at most one Nextcloud); without one,
-    /// `NotConnected`. A sign-in that runs is listed as an account too, so it shows here.
-    async fn account(&self) -> Result<AccountState, ProviderError> {
+    /// Every account the core lists, in its order; a sign-in that runs is listed too (empty id).
+    async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
         match self.ask(Request::Accounts).await? {
-            Response::Accounts { accounts } => {
-                Ok(accounts.into_iter().next().map_or(AccountState::NotConnected, |account| account.state))
-            }
+            Response::Accounts { accounts } => Ok(accounts
+                .into_iter()
+                .map(|account| PimAccount {
+                    id: account.id,
+                    label: account.label,
+                    kind: account.kind,
+                    state: account.state,
+                })
+                .collect()),
             other => Err(unexpected(other)),
         }
     }
@@ -156,6 +161,20 @@ impl PimSource for PimClient {
         let uid = todo.uid.clone();
         expect_ok(self.ask(Request::DeleteTodo { todo }).await.map_err(|err| with_uid(err, &uid))?)
     }
+
+    /// `Request::MoveTodo` with the `href` and `etag` of `todo` and the `href` of `before`. A
+    /// task that was never saved has no place in a list yet: `Other` without asking the core.
+    async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
+        let Some(href) = todo.href else {
+            return Err(ProviderError::Other("the task is not saved yet".into()));
+        };
+        let request =
+            Request::MoveTodo { href, etag: todo.etag.unwrap_or_default(), before: before.and_then(|b| b.href) };
+        match self.ask(request).await.map_err(|err| with_uid(err, &todo.uid))? {
+            Response::Todos { todos } => Ok(todos),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -165,7 +184,7 @@ mod tests {
     use std::time::Duration;
 
     use chrono::{NaiveDate, TimeZone};
-    use torro_pim::{CollectionKind, EventTime};
+    use torro_pim::{AccountState, CollectionKind, EventTime};
 
     use super::*;
     use crate::{AccountInfo, IpcError, client, server};
@@ -190,6 +209,7 @@ mod tests {
             kind: CollectionKind::Both,
             color: Some("#3366ff".into()),
             writable: true,
+            source: None,
         }
     }
 
@@ -213,6 +233,7 @@ mod tests {
             label: "anna@cloud.example.test".into(),
             state: account(),
             collections: vec![collection(), calendar(), list()],
+            scopes: None,
         }
     }
 
@@ -243,6 +264,10 @@ mod tests {
             completed: false,
             parent: None,
             description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
         }
     }
 
@@ -274,6 +299,16 @@ mod tests {
             Request::Todos => Response::Todos { todos: vec![todo()] },
             Request::SaveEvent { event } => Response::Event { event: stored_event(event) },
             Request::SaveTodo { todo } => Response::Todo { todo: stored_todo(todo) },
+            // The answer names what arrived: the moved task's href as uid, `before` as summary.
+            Request::MoveTodo { href, etag, before } => Response::Todos {
+                todos: vec![Todo {
+                    uid: href,
+                    etag: Some(etag),
+                    summary: before.unwrap_or_default(),
+                    sort_order: Some(0),
+                    ..todo()
+                }],
+            },
             other => Response::Error { code: "error".into(), message: format!("test core does not know {other:?}") },
         }
     }
@@ -327,9 +362,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_is_read() {
-        let core = start(|request| async move { answer(request) }).await;
-        assert_eq!(core.client().account().await.unwrap(), account());
+    async fn accounts_are_read_without_their_collections() {
+        let core = start(|request| async move {
+            match request {
+                Request::Accounts => {
+                    let second = AccountInfo {
+                        id: "nextcloud:bob@other.example.test".into(),
+                        label: "bob@other.example.test".into(),
+                        collections: vec![],
+                        ..account_info()
+                    };
+                    Response::Accounts { accounts: vec![account_info(), second] }
+                }
+                other => answer(other),
+            }
+        })
+        .await;
+        let accounts = core.client().accounts().await.unwrap();
+        assert_eq!(
+            accounts,
+            vec![
+                PimAccount {
+                    id: "nextcloud:anna@cloud.example.test".into(),
+                    label: "anna@cloud.example.test".into(),
+                    kind: "nextcloud".into(),
+                    state: account(),
+                },
+                PimAccount {
+                    id: "nextcloud:bob@other.example.test".into(),
+                    label: "bob@other.example.test".into(),
+                    kind: "nextcloud".into(),
+                    state: account(),
+                },
+            ]
+        );
     }
 
     #[tokio::test]
@@ -346,7 +412,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_without_accounts_is_not_connected() {
+    async fn without_accounts_the_list_is_empty_and_not_connected() {
         let core = start(|request| async move {
             match request {
                 Request::Accounts => Response::Accounts { accounts: vec![] },
@@ -354,7 +420,9 @@ mod tests {
             }
         })
         .await;
-        assert_eq!(core.client().account().await.unwrap(), AccountState::NotConnected);
+        let accounts = core.client().accounts().await.unwrap();
+        assert!(accounts.is_empty());
+        assert_eq!(torro_pim::combined_state(&accounts), AccountState::NotConnected);
     }
 
     #[tokio::test]
@@ -416,6 +484,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_todo_sends_href_etag_and_before() {
+        let core = start(|request| async move { answer(request) }).await;
+        let moved = stored_todo(todo());
+        let before = Todo { uid: "todo-2".into(), ..stored_todo(todo()) };
+        let before = Todo { href: Some("/tasks/home/todo-2.ics".into()), ..before };
+        let written = core.client().move_todo(moved.clone(), Some(before)).await.unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(Some(written[0].uid.clone()), moved.href, "the href went out");
+        assert_eq!(written[0].etag, moved.etag, "the etag went out");
+        assert_eq!(written[0].summary, "/tasks/home/todo-2.ics", "before went out");
+        let to_the_end = core.client().move_todo(moved, None).await.unwrap();
+        assert_eq!(to_the_end[0].summary, "", "no before");
+        assert!(matches!(core.client().move_todo(todo(), None).await, Err(ProviderError::Other(_))), "not saved");
+    }
+
+    #[tokio::test]
     async fn error_codes_map_to_provider_errors() {
         assert_eq!(error_from("auth", "login refused").await, ProviderError::Auth);
         assert_eq!(error_from("offline", "no route to host").await, ProviderError::Offline);
@@ -429,6 +513,8 @@ mod tests {
         let core = start(|_| async { Response::Error { code: "conflict".into(), message: "changed".into() } }).await;
         assert_eq!(core.client().save_event(event()).await, Err(ProviderError::Conflict { uid: "meeting-1".into() }));
         assert_eq!(core.client().save_todo(todo()).await, Err(ProviderError::Conflict { uid: "todo-1".into() }));
+        let stored = stored_todo(todo());
+        assert_eq!(core.client().move_todo(stored, None).await, Err(ProviderError::Conflict { uid: "todo-1".into() }));
     }
 
     #[tokio::test]
@@ -442,6 +528,6 @@ mod tests {
     async fn missing_core_is_other_with_ipc_message() {
         let dir = tempfile::tempdir().unwrap();
         let client = PimClient { socket: dir.path().join("core.sock") };
-        assert_eq!(client.account().await, Err(ProviderError::Other(IpcError::NotRunning.to_string())));
+        assert_eq!(client.accounts().await, Err(ProviderError::Other(IpcError::NotRunning.to_string())));
     }
 }

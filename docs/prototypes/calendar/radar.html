@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Calendar – Radar</title>
+<!-- Entwurf: Radar statt Tagesspirale. Ein normales 12-Stunden-Zifferblatt (12 oben, 8 dort, wo die 8 steht).
+     Gezeigt wird das Fenster ab jetzt (klare Kante) über 12 Stunden: drei Viertel (9 h) voll sichtbar,
+     das letzte Viertel blendet aus, bis es am Anfang des Kreises verschwunden ist – wahlweise zusätzlich unscharf.
+     Jeder Kalender ist ein eigener Ring (Baumrinde), Überschneidungen teilen den Ring in Bahnen.
+     Mausrad über dem Zifferblatt schaut vor und zurück (15 min je Raste). ?size=s schmal, ?theme=light hell.
+     Alle Termine sind Beispieldaten. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+.body{flex:1;display:flex;min-height:0}
+.stage{flex:1;min-width:0;position:relative;display:grid;place-items:center;overflow:hidden}
+html[data-size="s"] .stage{flex:none;display:block;overflow:visible;padding:8px}
+#dial{display:block}
+#dial text{font-family:"Inter Tabular",Inter,sans-serif}
+.center{position:absolute;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:4px;pointer-events:none}
+.center .date{font-size:12px;line-height:16px;color:var(--text3)}
+.center .time{font:600 28px/32px "Inter Tabular",Inter,sans-serif}
+.center .cur{display:flex;align-items:center;gap:6px;font-weight:500;margin-top:8px}
+.center .meta{font-size:12px;line-height:16px;color:var(--text2)}
+.center .next{font-size:12px;line-height:16px;color:var(--text3);margin-top:4px}
+.center .chips{justify-content:center;margin-top:8px;pointer-events:auto}
+.center .look{pointer-events:auto;margin-top:8px}
+.chip{height:22px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:500;
+  background:color-mix(in srgb,var(--c) var(--tint),var(--panel));box-shadow:inset 3px 0 0 var(--c);white-space:nowrap}
+.side{width:300px;flex:none;border-left:1px solid var(--line);padding:16px;overflow:auto}
+html[data-size="s"] .side{width:auto;border:0;border-top:1px solid var(--line)}
+html[data-size="s"] .body{flex-direction:column;overflow:auto}
+.side h4{margin:16px 0 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.side h4:first-child{margin-top:0}
+.row{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 8px;margin:0 -8px;border-radius:6px;cursor:pointer}
+.row:hover{background:var(--hover)}
+.row.sel{background:var(--selected)}
+.row .tm{font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3);width:76px;flex:none}
+.row .ti{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.dim{color:var(--text2)} .row.dim .dot{opacity:.55}
+.legend{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text2)}
+.legend span{display:flex;align-items:center;gap:8px}
+.hint{font-size:12px;line-height:16px;color:var(--text3);margin-top:8px}
+.proto{position:fixed;right:16px;bottom:16px;display:flex;gap:4px;align-items:center;padding:4px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);font-size:12px;color:var(--text3);z-index:40}
+.proto span{padding:0 6px}
+.proto a,.proto button{color:var(--text2);text-decoration:none;padding:4px 8px;border-radius:6px;border:0;background:none;font:inherit;cursor:pointer}
+.proto a:hover,.proto button:hover{background:var(--hover);color:var(--text)}
+.proto button.on{background:var(--selected);color:var(--text)}
+.proto input{width:140px}
+html[data-size="s"] body{max-width:440px;margin:0 auto;border-left:1px solid var(--line);border-right:1px solid var(--line)}
+html[data-size="s"] .proto{left:16px;right:16px;flex-wrap:wrap}
+</style></head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="switcher"><span class="logo">T</span><b>Calendar</b><i data-lucide="chevron-down" class="s14 faint"></i><span class="grow"></span>
+      <button class="iconbtn"><i data-lucide="search"></i></button><button class="iconbtn boxed"><i data-lucide="square-pen"></i></button></div>
+    <a class="nav"><i data-lucide="sun"></i><span class="grow">Today</span><span class="count">9</span></a>
+    <a class="nav"><i data-lucide="list"></i><span class="grow">Upcoming</span></a>
+    <div class="group">Views <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><i data-lucide="calendar-days"></i><span class="grow">Day</span><kbd>D</kbd></a>
+    <a class="nav"><i data-lucide="calendar-range"></i><span class="grow">Week</span><kbd>W</kbd></a>
+    <a class="nav"><i data-lucide="calendar"></i><span class="grow">Month</span><kbd>M</kbd></a>
+    <a class="nav"><i data-lucide="list"></i><span class="grow">Agenda</span><kbd>A</kbd></a>
+    <a class="nav"><i data-lucide="gantt-chart"></i><span class="grow">Timeline</span><kbd>T</kbd></a>
+    <a class="nav active"><i data-lucide="radar"></i><span class="grow">Radar</span><kbd>R</kbd></a>
+    <div class="group">Calendars <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><span class="dot" style="--c:var(--c-work)"></span><span class="grow">Work</span><span class="count">12</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-personal)"></span><span class="grow">Personal</span><span class="count">7</span></a>
+    <a class="nav"><span class="dot" style="--c:var(--c-family)"></span><span class="grow">Family</span><span class="count">3</span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="settings"></i><span class="grow">Settings</span></a>
+  </aside>
+  <main class="panel">
+    <div class="header">
+      <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+      <div class="crumbs"><b>Today</b><span class="faint not-s">Wed, 7 Oct</span></div>
+      <span class="grow"></span>
+      <div class="seg only-l"><span>Day</span><span>Week</span><span>Month</span><span>Agenda</span><span>Timeline</span><span class="on">Radar</span></div>
+      <button class="btn not-l">Radar<i data-lucide="chevron-down" class="s14 chev"></i></button>
+      <button class="btn primary not-s"><i data-lucide="plus" class="s14"></i>New event</button>
+    </div>
+    <div class="body">
+      <div class="stage" id="stage"><svg id="dial"></svg><div class="center" id="center"></div></div>
+      <aside class="side" id="side"></aside>
+    </div>
+  </main>
+</div>
+<div class="proto"><span>Entwurf</span>
+  <span>Uhrzeit</span><input type="range" id="clock" min="360" max="1380" step="5"><span id="clockv" class="tab"></span>
+  <span>Ende</span><button data-mode="fade" class="on">Ausblenden</button><button data-mode="blur">Unscharf</button><span>Sichtbar</span><button data-vis="8">2/3</button><button data-vis="9" class="on">3/4</button>
+  <a href="?">Breit</a><a href="?size=s">Schmal</a><a href="?theme=light">Hell</a><a href="zeitstrahl.html">← Zeitstrahl</a></div>
+
+<script>
+// Zeit in Minuten ab Mi, 7. Okt. 2026, 00:00 (heute); Werte über 1440 sind Donnerstag.
+const H = 60, DAY = 1440, SEAM = 6;
+const CALS = [["work", "Work", "var(--c-work)"], ["personal", "Personal", "var(--c-personal)"], ["family", "Family", "var(--c-family)"]];
+const COL = Object.fromEntries(CALS.map(([k, , c]) => [k, c]));
+const t = (h, m = 0) => h * H + m;
+const EVENTS = [
+  [t(6, 30), t(7, 15), "Run", "personal"],
+  [t(9, 30), t(9, 45), "Daily standup", "work"],
+  [t(10), t(11, 30), "Sprint review", "work"],
+  [t(12, 30), t(13, 30), "Lunch with Jana", "personal"],
+  [t(14), t(15), "Design review", "work"],
+  [t(14, 30), t(15), "1:1 with Lena", "work"],
+  [t(15, 30), t(16, 15), "Client call", "work"],
+  [t(16, 30), t(17), "Pick up kids", "family"],
+  [t(17, 30), t(18, 30), "Dentist?", "personal", true],
+  [t(19), t(20, 30), "Family dinner", "family"],
+  [t(21), t(22, 15), "Series night", "personal"],
+  [t(23), t(23, 45), "Server maintenance", "work"],
+  [t(24, 15), t(25, 15), "Call with Sydney", "work"],
+  [t(23, 30), t(24, 30), "Reading", "personal"],
+  [t(30, 30), t(31, 15), "Run", "personal"],
+  [t(33, 30), t(33, 45), "Daily standup", "work"],
+  [t(34), t(35), "Hiring sync", "work"],
+].map(([s, e, title, cal, tent], i) => ({i, s, e, title, cal, tent: !!tent}));
+const ALLDAY = [["Home office", "personal"]];
+
+let now = t(14, 20), view = now, visH = 9, mode = "fade", selected = null;
+const pad = n => String(n).padStart(2, "0");
+const clock = m => `${pad(Math.floor(((m % DAY) + DAY) % DAY / H))}:${pad(((m % H) + H) % H)}`;
+const dur = m => m >= 60 ? (m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`) : `${m} min`;
+const narrow = document.documentElement.dataset.size === "s";
+const ns = "http://www.w3.org/2000/svg";
+
+// 12-Stunden-Zifferblatt: 12 oben, im Uhrzeigersinn. Winkel in Grad, 0 = oben.
+const ang = m => ((m / H) % 12) / 12 * 360;
+const pt = (cx, cy, r, a) => [cx + r * Math.sin(a * Math.PI / 180), cy - r * Math.cos(a * Math.PI / 180)];
+function arcPath(cx, cy, r0, r1, a0, a1) {
+  const large = (a1 - a0) % 360 > 180 ? 1 : 0;
+  const [x0, y0] = pt(cx, cy, r1, a0), [x1, y1] = pt(cx, cy, r1, a1), [x2, y2] = pt(cx, cy, r0, a1), [x3, y3] = pt(cx, cy, r0, a0);
+  return `M${x0},${y0} A${r1},${r1} 0 ${large} 1 ${x1},${y1} L${x2},${y2} A${r0},${r0} 0 ${large} 0 ${x3},${y3} Z`;
+}
+function pie(cx, cy, r, a0, a1) {
+  const large = (a1 - a0) % 360 > 180 ? 1 : 0, [x0, y0] = pt(cx, cy, r, a0), [x1, y1] = pt(cx, cy, r, a1);
+  return `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1} Z`;
+}
+function linePath(cx, cy, r, a0, a1, rev) {
+  const large = (a1 - a0) % 360 > 180 ? 1 : 0, [x0, y0] = pt(cx, cy, r, a0), [x1, y1] = pt(cx, cy, r, a1);
+  return rev ? `M${x1},${y1} A${r},${r} 0 ${large} 0 ${x0},${y0}` : `M${x0},${y0} A${r},${r} 0 ${large} 1 ${x1},${y1}`;
+}
+function lanes(evs) {
+  const sorted = [...evs].sort((a, b) => a.s - b.s || b.e - a.e); let cluster = [], end = -1;
+  const flush = () => { const le = []; cluster.forEach(ev => { let l = le.findIndex(e => e <= ev.s); if (l < 0) { l = le.length; le.push(0); } le[l] = ev.e; ev.lane = l; }); cluster.forEach(ev => ev.lanes = le.length); cluster = []; };
+  sorted.forEach(ev => { if (ev.s >= end) flush(); cluster.push(ev); end = Math.max(end, ev.e); }); flush();
+}
+const ss = (a, b, x) => { const u = Math.min(1, Math.max(0, (x - a) / (b - a))); return u * u * (3 - 2 * u); };
+
+// Gewichte über das ausblendende Viertel (f = 0 am Beginn, 1 am Anfang des Kreises).
+// "fade": nur Deckkraft. "blur": scharf → leicht unscharf → stark unscharf, dabei ausblendend.
+function weights(f) {
+  if (mode === "fade") return [1 - ss(0, 1, f) ** 0.8, 0, 0];
+  const sharp = 1 - ss(0, .4, f);
+  const soft = ss(0, .4, f) * (1 - ss(.4, .75, f));
+  const blurry = ss(.4, .75, f) * (1 - ss(.7, 1, f));
+  return [sharp, soft, blurry];
+}
+
+function render() {
+  const stage = document.getElementById("stage"), svg = document.getElementById("dial");
+  const S = narrow ? Math.min(document.querySelector(".panel").clientWidth - 16, 440) : Math.max(320, Math.min(stage.clientWidth - 48, stage.clientHeight - 48));
+  const cx = S / 2, cy = S / 2, R = S / 2;
+  const rNum = R - 14, rTick = R - 30, rOut = R - 40, rIn = Math.max(R * 0.5, rOut - CALS.length * 64);
+  const gap = 4, band = (rOut - rIn - gap * (CALS.length - 1)) / CALS.length;
+  const w0 = view, w1 = view + 12 * H - SEAM, v1 = view + visH * H;
+  const a0 = ang(w0), A = m => a0 + (m - w0) / (12 * H) * 360;
+  const out = [];
+  svg.setAttribute("width", S); svg.setAttribute("height", S); svg.setAttribute("viewBox", `0 0 ${S} ${S}`);
+
+  // Masken: der sichtbare Teil voll, das letzte Stück in feinen Keilen mit fallendem Gewicht.
+  const STEPS = 64, masks = [[], [], []];
+  masks[0].push(`<path d="${pie(cx, cy, R + 4, A(w0) - .5, A(v1) + .3)}" fill="#fff"/>`);
+  for (let k = 0; k < STEPS; k++) {
+    const m0 = v1 + (w1 - v1) * k / STEPS, m1 = v1 + (w1 - v1) * (k + 1) / STEPS, w = weights((k + .5) / STEPS);
+    w.forEach((wt, j) => { if (wt > .002) masks[j].push(`<path d="${pie(cx, cy, R + 4, A(m0), A(m1) + .25)}" fill="#fff" fill-opacity="${wt.toFixed(3)}"/>`); });
+  }
+  out.push(`<defs>${masks.map((m, j) => `<mask id="m${j}" maskUnits="userSpaceOnUse" x="0" y="0" width="${S}" height="${S}">${m.join("")}</mask>`).join("")}
+    <filter id="b1" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="2.5"/></filter>
+    <filter id="b2" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="6"/></filter></defs>`);
+
+  // Inhalt des Zifferblatts (wird für die unscharfen Ebenen kopiert).
+  const g = [];
+  CALS.forEach(([k], idx) => {
+    const r1 = rOut - idx * (band + gap), r0 = r1 - band;
+    g.push(`<path d="${arcPath(cx, cy, r0, r1, A(w0), A(w1))}" fill="var(--text)" fill-opacity=".07"/>`);
+  });
+  for (let m = Math.ceil(w0 / 30) * 30; m <= w1; m += 30) {
+    const full = m % 60 === 0, a = A(m);
+    const [x0, y0] = pt(cx, cy, rTick, a), [x1, y1] = pt(cx, cy, rTick - (full ? 8 : 4), a);
+    g.push(`<line x1="${x0}" y1="${y0}" x2="${x1}" y2="${y1}" stroke="var(--text)" stroke-opacity=".35" stroke-width="1"/>`);
+    if (full && Math.abs(m - now) > 20) { const [x, y] = pt(cx, cy, rNum, a); const h = ((m / 60) % 24 + 24) % 24;
+      g.push(`<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-size="${h % 3 ? 11 : 13}" font-weight="${h % 3 ? 400 : 500}" fill="${h % 3 ? "var(--text2)" : "var(--text)"}">${pad(h)}</text>`); }
+  }
+  const marks = [];
+  CALS.forEach(([k], idx) => {
+    const r1 = rOut - idx * (band + gap);
+    const evs = EVENTS.filter(e => e.cal === k && e.e > w0 && e.s < w1).map(e => ({...e, cs: Math.max(e.s, w0), ce: Math.min(e.e, w1)}));
+    lanes(evs);
+    evs.forEach(e => {
+      const lb = band / e.lanes, er1 = r1 - e.lane * lb, er0 = er1 - lb + (e.lanes > 1 ? 2 : 0);
+      const ea0 = A(e.cs) + .4, ea1 = Math.max(A(e.ce) - .4, ea0 + 1.2);
+      const c = COL[k], sel = selected === e.i, past = e.e <= now;
+      const fill = e.tent ? "none" : `color-mix(in srgb,${c} 24%,var(--panel))`;
+      g.push(`<g data-ev="${e.i}" style="cursor:pointer"><title>${clock(e.s)}–${clock(e.e)} ${e.title}</title>
+        <path d="${arcPath(cx, cy, er0, er1, ea0, ea1)}" fill="${fill}" stroke="${e.tent ? c : fill}" stroke-width="${e.tent ? 1 : 3}" stroke-dasharray="${e.tent ? "3 3" : ""}" stroke-linejoin="round"/>
+        ${e.s >= w0 ? `<path d="${arcPath(cx, cy, er0 - 1, er1 + 1, ea0, ea0 + 3 / ((er0 + er1) / 2) * 180 / Math.PI)}" fill="${c}"/>` : ""}
+        ${sel ? `<path d="${arcPath(cx, cy, er0 - 3, er1 + 3, ea0 - .8, ea1 + .8)}" fill="none" stroke="var(--focus)" stroke-width="2"/>` : ""}</g>`);
+      if (lb >= 22) {
+        const rm = (er0 + er1) / 2, mid = ((ea0 + ea1) / 2) % 360, flip = mid > 90 && mid < 270;
+        const id = `p${e.i}`, len = (ea1 - ea0) * Math.PI / 180 * rm - 14;
+        g.push(`<path id="${id}" d="${linePath(cx, cy, rm, ea0 + 1.5, ea1, flip)}" fill="none"/>`);
+        marks.push({id, len, title: e.title, time: `${clock(e.s)}–${clock(e.e)}`, two: lb >= 40});
+      }
+    });
+  });
+
+  // Ebenen: scharf, leicht unscharf, stark unscharf – jede mit ihrer Maske.
+  out.push(`<g id="L0" mask="url(#m0)">${g.join("")}</g>`);
+  if (mode === "blur") out.push(`<g mask="url(#m1)"><g filter="url(#b1)" id="L1"></g></g><g mask="url(#m2)"><g filter="url(#b2)" id="L2"></g></g>`);
+
+  // Jetzt: klare rote Kante (beim Vorausschauen grau) mit Uhrzeit außen.
+  const [nx0, ny0] = pt(cx, cy, rIn - 8, A(w0)), [nx1, ny1] = pt(cx, cy, rTick + 2, A(w0));
+  const isNow = view === now;
+  out.push(`<line x1="${nx0}" y1="${ny0}" x2="${nx1}" y2="${ny1}" stroke="${isNow ? "var(--accent)" : "var(--text2)"}" stroke-width="1.5"/>`);
+  const [px, py] = pt(cx, cy, rNum, A(w0));
+  out.push(`<rect x="${px - 20}" y="${py - 9}" width="40" height="18" rx="4" fill="${isNow ? "var(--accent)" : "var(--selected)"}"/><text x="${px}" y="${py}" text-anchor="middle" dominant-baseline="central" font-size="11" font-weight="500" fill="${isNow ? "#fff" : "var(--text)"}">${clock(w0)}</text>`);
+  svg.innerHTML = out.join("");
+
+  // Titel entlang des Bogens, gekürzt bis sie passen.
+  const L0 = document.getElementById("L0");
+  marks.forEach(m => {
+    const add = (txt, size, weight, fill, dy) => {
+      const el = document.createElementNS(ns, "text"); el.setAttribute("font-size", size); el.setAttribute("font-weight", weight); el.setAttribute("fill", fill);
+      el.setAttribute("dy", dy); el.setAttribute("pointer-events", "none");
+      const tp = document.createElementNS(ns, "textPath"); tp.setAttribute("href", "#" + m.id); tp.setAttribute("startOffset", "6"); tp.textContent = txt; el.appendChild(tp); L0.appendChild(el);
+      let s = txt; while (el.getComputedTextLength() > m.len && s.length > 2) { s = s.slice(0, -2); tp.textContent = s + "…"; }
+      if (el.getComputedTextLength() > m.len || m.len < 24) el.remove();
+    };
+    if (m.two) { add(m.title, 12, 500, "var(--text)", -2); add(m.time, 11, 400, "var(--text2)", 12); }
+    else add(m.title, 12, 500, "var(--text)", 4);
+  });
+  // Unscharfe Ebenen: Kopie des fertigen Inhalts (ohne Klickflächen).
+  if (mode === "blur") ["L1", "L2"].forEach(id => { const el = document.getElementById(id); el.innerHTML = L0.innerHTML.replace(/ id="p\d+"/g, ""); el.setAttribute("pointer-events", "none"); });
+
+  renderCenter(cx, cy, rIn);
+  renderSide(w0, w1, v1);
+}
+
+function renderCenter(cx, cy, rIn) {
+  const c = document.getElementById("center"), stage = document.getElementById("stage"), svg = document.getElementById("dial");
+  const r = svg.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+  c.style.left = (r.left - sr.left + stage.scrollLeft + cx - rIn + 16) + "px"; c.style.top = (r.top - sr.top + stage.scrollTop + cy - rIn + 16) + "px";
+  c.style.width = c.style.height = (2 * rIn - 32) + "px";
+  const running = EVENTS.filter(e => e.s <= view && e.e > view && !e.tent).sort((a, b) => b.s - a.s)[0];
+  const next = EVENTS.filter(e => e.s > view).sort((a, b) => a.s - b.s)[0];
+  let mid = "";
+  if (running) mid = `<div class="cur"><span class="dot" style="--c:${COL[running.cal]}"></span>${running.title}</div><div class="meta">${dur(running.e - view)} left</div>`;
+  else if (next) mid = `<div class="cur" style="color:var(--text2)">Free for ${dur(next.s - view)}</div>`;
+  const look = view !== now ? `<button class="btn look" id="back"><i data-lucide="undo-2" class="s14"></i>Back to now</button>` : "";
+  c.innerHTML = `<div class="date">${view >= DAY ? "Thu, 8 Oct" : "Wed, 7 Oct"}</div><div class="time">${clock(view)}</div>${mid}
+    ${next ? `<div class="next">Next ${clock(next.s)} · ${next.title}</div>` : ""}
+    <div class="chips">${ALLDAY.map(([t, k]) => `<span class="chip" style="--c:${COL[k]}">${t}</span>`).join("")}</div>${look}`;
+  lucide.createIcons();
+  const b = document.getElementById("back"); if (b) b.onclick = () => { view = now; render(); };
+}
+
+function renderSide(w0, w1, v1) {
+  const s = document.getElementById("side");
+  const row = (e, dim) => `<div class="row${dim ? " dim" : ""}${selected === e.i ? " sel" : ""}" data-ev="${e.i}"><span class="tm">${clock(e.s)}–${clock(e.e)}</span><span class="dot" style="--c:${COL[e.cal]}"></span><span class="ti">${e.title}${e.tent ? " <span class='faint'>(tentative)</span>" : ""}</span></div>`;
+  const inWin = EVENTS.filter(e => e.e > w0 && e.s < w1).sort((a, b) => a.s - b.s);
+  const vis = inWin.filter(e => e.s < v1), later = inWin.filter(e => e.s >= v1);
+  s.innerHTML = `<h4>Next ${visH} hours</h4>${vis.map(e => row(e, false)).join("") || "<div class='faint'>Nothing planned</div>"}
+    <h4>Fading out, until ${clock(w1 + SEAM)}</h4>${later.map(e => row(e, true)).join("") || "<div class='faint'>Nothing planned</div>"}
+    <h4>Rings, outside to inside</h4><div class="legend">${CALS.map(([k, n]) => `<span><span class="dot" style="--c:${COL[k]}"></span>${n}</span>`).join("")}</div>
+    <div class="hint">The dial shows the next 12 hours; the last quarter fades out. Scroll over it to look ahead.</div>`;
+}
+
+document.addEventListener("click", ev => { const e = ev.target.closest("[data-ev]"); if (e) { selected = +e.dataset.ev; render(); } });
+document.getElementById("stage").addEventListener("wheel", ev => { if (narrow) return; ev.preventDefault(); view = Math.max(now - 12 * H, Math.min(now + 24 * H, view + Math.sign(ev.deltaY) * 15)); render(); }, {passive: false});
+const slider = document.getElementById("clock"); slider.value = now;
+slider.oninput = () => { now = view = +slider.value; document.getElementById("clockv").textContent = clock(now); render(); };
+document.getElementById("clockv").textContent = clock(now);
+const toggle = (attr, set) => document.querySelectorAll(`[${attr}]`).forEach(b => b.onclick = () => { set(b.getAttribute(attr)); document.querySelectorAll(`[${attr}]`).forEach(x => x.classList.toggle("on", x === b)); render(); });
+toggle("data-mode", v => mode = v);
+toggle("data-vis", v => visH = +v);
+addEventListener("resize", render);
+lucide.createIcons(); render();
+</script>
+</body></html>
