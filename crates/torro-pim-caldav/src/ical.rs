@@ -9,14 +9,14 @@ use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc}
 use torro_pim::{Event, EventTime, Todo};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
-struct Property<'a> {
-    name: &'a str,
-    params: Vec<(&'a str, &'a str)>,
-    value: &'a str,
+pub(crate) struct Property<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) params: Vec<(&'a str, &'a str)>,
+    pub(crate) value: &'a str,
 }
 
 impl Property<'_> {
-    fn param(&self, name: &str) -> Option<&str> {
+    pub(crate) fn param(&self, name: &str) -> Option<&str> {
         self.params.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| *value)
     }
 }
@@ -76,19 +76,22 @@ fn find<'p, 'a>(props: &'p [Property<'a>], name: &str) -> Option<&'p Property<'a
     props.iter().find(|p| p.name.eq_ignore_ascii_case(name))
 }
 
-fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
+/// The property links to the parent task: `RELATED-TO` with `RELTYPE=PARENT` or without
+/// `RELTYPE`, which means PARENT (RFC 5545 §3.2.15). Other kinds (`CHILD`, `SIBLING`, `X-…`)
+/// are not the model's.
+pub(crate) fn is_parent_link(prop: &Property<'_>) -> bool {
+    prop.name.eq_ignore_ascii_case("RELATED-TO")
+        && prop.param("RELTYPE").is_none_or(|t| t.eq_ignore_ascii_case("PARENT"))
+}
+
+/// The task one VTODO's own properties describe; `None` for a cancelled one.
+pub(crate) fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
     let get = |name: &str| find(props, name);
     // Cancelled tasks are skipped, like cancelled events.
     if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
         return None;
     }
-    // RELATED-TO without RELTYPE means PARENT (RFC 5545 §3.2.15).
-    let parent = props
-        .iter()
-        .filter(|p| p.name.eq_ignore_ascii_case("RELATED-TO"))
-        .find(|p| p.param("RELTYPE").is_none_or(|t| t.eq_ignore_ascii_case("PARENT")))
-        .map(|p| p.value.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let parent = props.iter().find(|p| is_parent_link(p)).map(|p| p.value.trim().to_string()).filter(|s| !s.is_empty());
     let completed =
         get("COMPLETED").is_some() || get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("COMPLETED"));
     Some(Todo {
@@ -106,7 +109,9 @@ fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
     })
 }
 
-fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
+/// The event one VEVENT's own properties describe; `None` for a cancelled one or one without
+/// a readable `DTSTART`.
+pub(crate) fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
     let get = |name: &str| find(props, name);
     if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
         return None;
@@ -182,8 +187,9 @@ fn parse_duration(value: &str) -> Option<Duration> {
     Some(Duration::seconds(sign * seconds))
 }
 
-/// Joins folded lines (a line break followed by a space or tab continues the line).
-fn unfold(ics: &str) -> Vec<String> {
+/// Joins folded lines (a line break followed by a space or tab continues the line). Bare LF
+/// line ends are accepted like CRLF; empty lines are dropped.
+pub(crate) fn unfold(ics: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for raw in ics.split('\n') {
         let raw = raw.strip_suffix('\r').unwrap_or(raw);
@@ -196,7 +202,8 @@ fn unfold(ics: &str) -> Vec<String> {
     lines
 }
 
-fn parse_line(line: &str) -> Option<Property<'_>> {
+/// One unfolded content line as a [`Property`]; `None` when it has no value part.
+pub(crate) fn parse_line(line: &str) -> Option<Property<'_>> {
     // The value starts at the first colon outside a quoted parameter value.
     let mut quoted = false;
     let colon = line.char_indices().find_map(|(i, c)| match c {

@@ -546,7 +546,7 @@ impl PimService {
                 let item = Item::new(Role::Calendar, &holder, &old_href, etag.as_deref(), &uid);
                 self.check_existing(&client, item).await?;
                 let old = Event { href: Some(old_href), collection: holder, ..event.clone() };
-                let new = client.save_event(Event { href: None, etag: None, ..event }).await?;
+                let new = client.copy_event(&old, event).await?;
                 client.delete_event(&old).await?;
                 self.state.write().await.events.retain(|e| e.href != old.href);
                 new
@@ -598,7 +598,7 @@ impl PimService {
                 let item = Item::new(Role::TaskList, &holder, &old_href, etag.as_deref(), &uid);
                 self.check_existing(&client, item).await?;
                 let old = Todo { href: Some(old_href), collection: holder, ..todo.clone() };
-                let new = client.save_todo(Todo { href: None, etag: None, ..todo }).await?;
+                let new = client.copy_todo(&old, todo).await?;
                 client.delete_todo(&old).await?;
                 self.state.write().await.todos.retain(|t| t.href != old.href);
                 new
@@ -1658,12 +1658,13 @@ mod tests {
         let listed = listed_event(&service, Some("\"1\"")).await;
         cache_occurrences(&service, &listed, false).await;
 
-        // The cache holds this version as a single event: written straight away.
+        // The cache holds this version as a single event: no check; the stored object is read
+        // only to write the change onto it (task P.1).
         let renamed = Event { summary: "Renamed".into(), ..listed.clone() };
         let response = service.handle_within(Request::SaveEvent { event: renamed }, Reach::Suite).await;
         let Response::Event { event: saved } = response else { panic!("expected the saved event, got {response:?}") };
         assert_eq!(saved.etag.as_deref(), Some("\"2\""));
-        assert_eq!(lines(&record), [format!("PUT {WORK}e.ics If-Match \"1\"")]);
+        assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("PUT {WORK}e.ics If-Match \"1\"")]);
 
         // A task: the cache does not know series of tasks, so the server is read first.
         let todo = listed_todo(&service, Some("\"1\"")).await;
@@ -1677,8 +1678,9 @@ mod tests {
         let response = service.handle_within(Request::SaveEvent { event: new }, Reach::Suite).await;
         assert!(matches!(response, Response::Event { .. }), "{response:?}");
         assert_eq!(
-            lines(&record)[1..],
+            lines(&record)[2..],
             [
+                format!("GET {WORK}t.ics"),
                 format!("GET {WORK}t.ics"),
                 format!("PUT {WORK}t.ics If-Match \"1\""),
                 // The saved version is cached as a single event, so no read before the delete.
@@ -1700,6 +1702,8 @@ mod tests {
         assert_eq!(
             lines(&record),
             [
+                format!("GET {WORK}e.ics"),
+                // The new item is written onto the old one, so nothing the model lacks is lost.
                 format!("GET {WORK}e.ics"),
                 format!("PUT {HOME}u.ics If-None-Match *"),
                 format!("DELETE {WORK}e.ics If-Match \"1\""),

@@ -62,7 +62,7 @@ K.21 (frei)
 ## P Aufgaben-Modell (auch für Nextcloud)
 
 ### P.1 CalDAV behält fremde Eigenschaften
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-pim-caldav/src/{ical,write,client}.rs`,
   `crates/torroworkplace/src/pim.rs`
 - Heute schreibt `to_ics_todo`/`to_ics_event` das Element beim Speichern komplett neu: Was das Modell nicht

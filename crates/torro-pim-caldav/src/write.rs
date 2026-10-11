@@ -12,6 +12,15 @@
 //! PUT or DELETE without `If-Match` would blindly replace whatever the server holds now, a
 //! whole series included. [`CalDavClient::stored_item`] reads what is there, so the core can
 //! check for a series before it writes.
+//!
+//! Other programs keep more in an item than the model knows: Nextcloud Tasks its sort order,
+//! categories and reminders, Thunderbird time zones, attendees and `X-MOZ-*` (task P.1 in
+//! `docs/tasks/github.md`). So an existing item is not written from the model alone:
+//! [`merge_ics_event`] / [`merge_ics_todo`] start from the object the server holds and replace
+//! only the properties of model fields that changed. Everything else, other components
+//! (`VTIMEZONE`, `VALARM`) and the parameters of unchanged properties (`TZID`) included, stays
+//! as it was. Lines are folded anew, so the result is valid even when the server sent long
+//! unfolded lines.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{StatusCode, Url};
@@ -19,6 +28,7 @@ use roxmltree::Node;
 use torro_pim::{Event, EventTime, ProviderError, Todo};
 
 use crate::CalDavClient;
+use crate::ical::{self, Property};
 
 const NS_DAV: &str = "DAV:";
 const PRODID: &str = "-//Torro//Workplace//DE";
@@ -26,27 +36,74 @@ const PRODID: &str = "-//Torro//Workplace//DE";
 /// The leading space of a continuation line counts towards the 75.
 const MAX_LINE_OCTETS: usize = 75;
 
-/// The event as a `VCALENDAR` text.
+/// The event as a new `VCALENDAR` text.
 pub fn to_ics_event(event: &Event) -> String {
     event_ics(event, Utc::now())
 }
 
-/// The task as a `VCALENDAR` text.
+/// The task as a new `VCALENDAR` text.
 pub fn to_ics_todo(todo: &Todo) -> String {
     todo_ics(todo, Utc::now())
+}
+
+/// The event written onto `stored`, the iCalendar object the server holds for it.
+///
+/// The VEVENT with the event's `uid` (else the first VEVENT) gets the model's values for the
+/// fields that differ from what `stored` says, plus a new `DTSTAMP` and `LAST-MODIFIED`; the
+/// properties of unchanged fields, every property the model does not know, nested and other
+/// components stay as they are. A field the model cleared (no location) loses its property.
+/// Without a VEVENT in `stored` the result is [`to_ics_event`].
+pub fn merge_ics_event(stored: &str, event: &Event) -> String {
+    event_onto(stored, event, Utc::now())
+}
+
+/// The task written onto `stored`, the iCalendar object the server holds for it.
+///
+/// Like [`merge_ics_event`] for the VTODO with the task's `uid` (else the first VTODO):
+/// `X-APPLE-SORT-ORDER`, `CATEGORIES`, `URL`, `VALARM`, `RELATED-TO` of other kinds and the like
+/// stay. Without a VTODO in `stored` the result is [`to_ics_todo`].
+pub fn merge_ics_todo(stored: &str, todo: &Todo) -> String {
+    todo_onto(stored, todo, Utc::now())
 }
 
 impl CalDavClient {
     /// Creates (`href: None`; a new uid when empty) or updates the event; returns it with
     /// `href` and `etag` set. An update needs the `etag` it was read with; without one nothing
-    /// is sent and the answer is an error.
+    /// is sent and the answer is an error. An update reads the stored object first and writes
+    /// the event onto it ([`merge_ics_event`]), so what other programs stored there stays.
     pub async fn save_event(&self, mut event: Event) -> Result<Event, ProviderError> {
         if event.uid.is_empty() {
             event.uid = new_uid();
         }
-        let ics = to_ics_event(&event);
+        // Refused before anything is read: an update without its ETag is never sent.
+        precondition(event.href.as_deref(), event.etag.as_deref())?;
+        let ics = match self.stored_ics(&event.collection, event.href.as_deref()).await? {
+            Some(stored) => merge_ics_event(&stored, &event),
+            None => to_ics_event(&event),
+        };
         let (href, etag) =
             self.put_item(&event.collection, &event.uid, event.href.as_deref(), event.etag.as_deref(), ics).await?;
+        event.href = Some(href);
+        event.etag = Some(etag);
+        Ok(event)
+    }
+
+    /// Creates `event` as a new item in its collection (its `href` and `etag` are ignored),
+    /// written onto the object the server holds for `from` (its `collection` and `href`), so
+    /// that moving an event to another calendar keeps what the model does not know. `from`
+    /// itself is left alone; the caller deletes it afterwards. Without `from.href`, or when
+    /// nothing is stored there any more, the event is written from the model alone.
+    pub async fn copy_event(&self, from: &Event, event: Event) -> Result<Event, ProviderError> {
+        let stored = self.stored_ics(&from.collection, from.href.as_deref()).await?;
+        let mut event = Event { href: None, etag: None, ..event };
+        if event.uid.is_empty() {
+            event.uid = new_uid();
+        }
+        let ics = match stored {
+            Some(stored) => merge_ics_event(&stored, &event),
+            None => to_ics_event(&event),
+        };
+        let (href, etag) = self.put_item(&event.collection, &event.uid, None, None, ics).await?;
         event.href = Some(href);
         event.etag = Some(etag);
         Ok(event)
@@ -61,14 +118,38 @@ impl CalDavClient {
 
     /// Creates (`href: None`; a new uid when empty) or updates the task; returns it with
     /// `href` and `etag` set. An update needs the `etag` it was read with; without one nothing
-    /// is sent and the answer is an error.
+    /// is sent and the answer is an error. An update reads the stored object first and writes
+    /// the task onto it ([`merge_ics_todo`]), so what other programs stored there stays.
     pub async fn save_todo(&self, mut todo: Todo) -> Result<Todo, ProviderError> {
         if todo.uid.is_empty() {
             todo.uid = new_uid();
         }
-        let ics = to_ics_todo(&todo);
+        precondition(todo.href.as_deref(), todo.etag.as_deref())?;
+        let ics = match self.stored_ics(&todo.collection, todo.href.as_deref()).await? {
+            Some(stored) => merge_ics_todo(&stored, &todo),
+            None => to_ics_todo(&todo),
+        };
         let (href, etag) =
             self.put_item(&todo.collection, &todo.uid, todo.href.as_deref(), todo.etag.as_deref(), ics).await?;
+        todo.href = Some(href);
+        todo.etag = Some(etag);
+        Ok(todo)
+    }
+
+    /// Creates `todo` as a new item in its collection (its `href` and `etag` are ignored),
+    /// written onto the object the server holds for `from`, like [`CalDavClient::copy_event`]:
+    /// moving a task to another list keeps its reminders, categories and sort order.
+    pub async fn copy_todo(&self, from: &Todo, todo: Todo) -> Result<Todo, ProviderError> {
+        let stored = self.stored_ics(&from.collection, from.href.as_deref()).await?;
+        let mut todo = Todo { href: None, etag: None, ..todo };
+        if todo.uid.is_empty() {
+            todo.uid = new_uid();
+        }
+        let ics = match stored {
+            Some(stored) => merge_ics_todo(&stored, &todo),
+            None => to_ics_todo(&todo),
+        };
+        let (href, etag) = self.put_item(&todo.collection, &todo.uid, None, None, ics).await?;
         todo.href = Some(href);
         todo.etag = Some(etag);
         Ok(todo)
@@ -150,6 +231,25 @@ impl CalDavClient {
     /// The core asks before it changes, moves or deletes an item it has not cached in that
     /// version: only the object itself tells whether writing it back would drop a rule.
     pub async fn stored_item(&self, collection: &str, href: &str) -> Result<Option<StoredItem>, ProviderError> {
+        let Some(fetched) = self.fetch_item(collection, href).await? else { return Ok(None) };
+        let etag = match fetched.etag {
+            Some(etag) => etag,
+            None => self.fetch_etag(&fetched.url).await?,
+        };
+        Ok(Some(StoredItem { etag, recurring: crate::ical::is_series(&fetched.ics) }))
+    }
+
+    /// The iCalendar object stored at `href` in `collection`, to write a change onto; `None`
+    /// without `href` (a new item) or when nothing is stored there (404). Which version it is
+    /// does not matter here: the PUT that follows carries the caller's `If-Match`, so a write
+    /// built on a newer version than the caller read fails with a conflict.
+    async fn stored_ics(&self, collection: &str, href: Option<&str>) -> Result<Option<String>, ProviderError> {
+        let Some(href) = href else { return Ok(None) };
+        Ok(self.fetch_item(collection, href).await?.map(|fetched| fetched.ics))
+    }
+
+    /// GETs one item directly in `collection` ([`item_url`]); `Ok(None)` on 404.
+    async fn fetch_item(&self, collection: &str, href: &str) -> Result<Option<Fetched>, ProviderError> {
         let url = resolve(collection, href)?;
         let response = self
             .http
@@ -165,13 +265,9 @@ impl CalDavClient {
         if !status.is_success() {
             return Err(status_error(status, href, &url));
         }
-        let header_etag = etag_header(&response);
+        let etag = etag_header(&response);
         let ics = response.text().await.map_err(transport_error)?;
-        let etag = match header_etag {
-            Some(etag) => etag,
-            None => self.fetch_etag(&url).await?,
-        };
-        Ok(Some(StoredItem { etag, recurring: crate::ical::is_series(&ics) }))
+        Ok(Some(Fetched { url, etag, ics }))
     }
 
     /// The ETag of one item, for servers that do not send it with the PUT answer.
@@ -190,6 +286,14 @@ pub struct StoredItem {
     /// The object is a series (`RRULE`, `RDATE` or `RECURRENCE-ID`): writing it back from one
     /// event or task would drop the rule and every exception.
     pub recurring: bool,
+}
+
+/// One item as a GET answered it.
+struct Fetched {
+    url: Url,
+    /// The `ETag` header, when the server sent one.
+    etag: Option<String>,
+    ics: String,
 }
 
 /// The precondition header of a PUT or DELETE: `If-None-Match: *` for a new item (no `href`),
@@ -216,38 +320,251 @@ fn etag_header(response: &reqwest::Response) -> Option<String> {
 }
 
 fn event_ics(event: &Event, now: DateTime<Utc>) -> String {
-    let mut body =
-        vec![text_line("UID", &event.uid), format!("DTSTAMP:{}", utc(now)), time_line("DTSTART", event.start)];
-    if let Some(end) = event.end {
-        body.push(time_line("DTEND", end));
-    }
-    body.push(text_line("SUMMARY", &event.summary));
-    push_optional_text(&mut body, "LOCATION", event.location.as_deref());
-    push_optional_text(&mut body, "DESCRIPTION", event.description.as_deref());
-    calendar("VEVENT", &body)
+    calendar("VEVENT", &new_lines(event_fields(event, None, now)))
 }
 
 fn todo_ics(todo: &Todo, now: DateTime<Utc>) -> String {
-    let mut body =
-        vec![text_line("UID", &todo.uid), format!("DTSTAMP:{}", utc(now)), text_line("SUMMARY", &todo.summary)];
-    if let Some(due) = todo.due {
-        body.push(time_line("DUE", due));
+    calendar("VTODO", &new_lines(todo_fields(todo, None, now)))
+}
+
+fn event_onto(stored: &str, event: &Event, now: DateTime<Utc>) -> String {
+    let merged = merge_component(stored, "VEVENT", &event.uid, |props| {
+        let before = ical::to_event(props, &event.collection);
+        let mut fields = event_fields(event, before.as_ref(), now);
+        fields.push(last_modified(now));
+        fields
+    });
+    merged.unwrap_or_else(|| event_ics(event, now))
+}
+
+fn todo_onto(stored: &str, todo: &Todo, now: DateTime<Utc>) -> String {
+    let merged = merge_component(stored, "VTODO", &todo.uid, |props| {
+        let before = ical::to_todo(props, &todo.collection);
+        let mut fields = todo_fields(todo, before.as_ref(), now);
+        fields.push(last_modified(now));
+        fields
+    });
+    merged.unwrap_or_else(|| todo_ics(todo, now))
+}
+
+/// Which stored properties a [`Field`] stands for.
+#[derive(Debug, Clone, Copy)]
+enum Covers {
+    /// Every property with one of these names (any case).
+    Names(&'static [&'static str]),
+    /// `RELATED-TO` to the parent ([`ical::is_parent_link`]); links of other kinds are kept.
+    ParentLink,
+}
+
+impl Covers {
+    fn matches(self, prop: &Property<'_>) -> bool {
+        match self {
+            Covers::Names(names) => names.iter().any(|name| prop.name.eq_ignore_ascii_case(name)),
+            Covers::ParentLink => ical::is_parent_link(prop),
+        }
     }
-    // RFC 5545: 1 is the highest priority, 9 the lowest, 0 means undefined.
-    if let Some(priority) = todo.priority.filter(|p| (1..=9).contains(p)) {
-        body.push(format!("PRIORITY:{priority}"));
+}
+
+/// One field of the model as content lines. When `changed`, the stored properties it covers
+/// are dropped and `lines` (unfolded, possibly none) take their place; otherwise the stored
+/// properties stay as they are, with their parameters and their exact text.
+struct Field {
+    covers: Covers,
+    changed: bool,
+    lines: Vec<String>,
+}
+
+impl Field {
+    fn new(names: &'static [&'static str], changed: bool, lines: Vec<String>) -> Field {
+        Field { covers: Covers::Names(names), changed, lines }
     }
-    if todo.completed {
-        body.push("STATUS:COMPLETED".to_string());
-        body.push(format!("COMPLETED:{}", utc(now)));
+}
+
+/// The lines of all changed fields, in order: the body of a new component.
+fn new_lines(fields: Vec<Field>) -> Vec<String> {
+    fields.into_iter().filter(|field| field.changed).flat_map(|field| field.lines).collect()
+}
+
+/// `DTSTAMP` says when the object was last written, so every write sets it.
+fn stamp(now: DateTime<Utc>) -> Field {
+    Field::new(&["DTSTAMP"], true, vec![format!("DTSTAMP:{}", utc(now))])
+}
+
+/// `LAST-MODIFIED`, set on every change of a stored object; new objects leave it out.
+fn last_modified(now: DateTime<Utc>) -> Field {
+    Field::new(&["LAST-MODIFIED"], true, vec![format!("LAST-MODIFIED:{}", utc(now))])
+}
+
+/// The fields of an event. `before` is the event as the stored object describes it; `None`
+/// (a new object, or one the model cannot read) marks every field as changed.
+fn event_fields(event: &Event, before: Option<&Event>, now: DateTime<Utc>) -> Vec<Field> {
+    let differs = |same: fn(&Event, &Event) -> bool| before.is_none_or(|before| !same(before, event));
+    let start_moved = differs(|a, b| a.start == b.start);
+    vec![
+        Field::new(&["UID"], differs(|a, b| a.uid == b.uid), vec![text_line("UID", &event.uid)]),
+        stamp(now),
+        Field::new(&["DTSTART"], start_moved, vec![time_line("DTSTART", event.start)]),
+        // A stored DURATION counts from DTSTART: when the start moves, the end is written as
+        // DTEND, or the event would grow or shrink.
+        Field::new(
+            &["DTEND", "DURATION"],
+            start_moved || differs(|a, b| a.end == b.end),
+            event.end.map(|end| time_line("DTEND", end)).into_iter().collect(),
+        ),
+        Field::new(&["SUMMARY"], differs(|a, b| a.summary == b.summary), vec![text_line("SUMMARY", &event.summary)]),
+        Field::new(
+            &["LOCATION"],
+            differs(|a, b| non_empty(&a.location) == non_empty(&b.location)),
+            optional_text("LOCATION", &event.location),
+        ),
+        Field::new(
+            &["DESCRIPTION"],
+            differs(|a, b| non_empty(&a.description) == non_empty(&b.description)),
+            optional_text("DESCRIPTION", &event.description),
+        ),
+    ]
+}
+
+/// The fields of a task; `before` as in [`event_fields`].
+fn todo_fields(todo: &Todo, before: Option<&Todo>, now: DateTime<Utc>) -> Vec<Field> {
+    let differs = |same: fn(&Todo, &Todo) -> bool| before.is_none_or(|before| !same(before, todo));
+    let parent = Field {
+        covers: Covers::ParentLink,
+        changed: differs(|a, b| a.parent == b.parent),
+        lines: todo.parent.iter().map(|parent| format!("RELATED-TO;RELTYPE=PARENT:{}", escape(parent))).collect(),
+    };
+    vec![
+        Field::new(&["UID"], differs(|a, b| a.uid == b.uid), vec![text_line("UID", &todo.uid)]),
+        stamp(now),
+        Field::new(&["SUMMARY"], differs(|a, b| a.summary == b.summary), vec![text_line("SUMMARY", &todo.summary)]),
+        Field::new(
+            &["DUE"],
+            differs(|a, b| a.due == b.due),
+            todo.due.map(|due| time_line("DUE", due)).into_iter().collect(),
+        ),
+        Field::new(
+            &["PRIORITY"],
+            differs(|a, b| priority(a) == priority(b)),
+            priority(todo).map(|p| format!("PRIORITY:{p}")).into_iter().collect(),
+        ),
+        // Status, completion time and percentage move together. While the state stays, all
+        // three stay as stored: `IN-PROCESS` at 40 %, or the time the task was really done.
+        Field::new(
+            &["STATUS", "COMPLETED", "PERCENT-COMPLETE"],
+            differs(|a, b| a.completed == b.completed),
+            completion_lines(todo.completed, now),
+        ),
+        parent,
+        Field::new(
+            &["DESCRIPTION"],
+            differs(|a, b| non_empty(&a.description) == non_empty(&b.description)),
+            optional_text("DESCRIPTION", &todo.description),
+        ),
+    ]
+}
+
+/// RFC 5545: 1 is the highest priority, 9 the lowest, 0 means undefined.
+fn priority(todo: &Todo) -> Option<u8> {
+    todo.priority.filter(|p| (1..=9).contains(p))
+}
+
+fn completion_lines(completed: bool, now: DateTime<Utc>) -> Vec<String> {
+    if completed {
+        vec!["STATUS:COMPLETED".to_string(), format!("COMPLETED:{}", utc(now)), "PERCENT-COMPLETE:100".to_string()]
     } else {
-        body.push("STATUS:NEEDS-ACTION".to_string());
+        vec!["STATUS:NEEDS-ACTION".to_string()]
     }
-    if let Some(parent) = &todo.parent {
-        body.push(format!("RELATED-TO;RELTYPE=PARENT:{}", escape(parent)));
+}
+
+/// An empty text counts as absent, in the model and as read.
+fn non_empty(value: &Option<String>) -> Option<&str> {
+    value.as_deref().filter(|v| !v.is_empty())
+}
+
+/// The line of an optional text field. An empty value is treated as absent: leaving the line
+/// out is how a cleared field is stored.
+fn optional_text(name: &str, value: &Option<String>) -> Vec<String> {
+    non_empty(value).map(|value| text_line(name, value)).into_iter().collect()
+}
+
+/// `stored` with the `component` (`VEVENT`, `VTODO`) that has `uid` (else the first one)
+/// rewritten by `fields`, which gets that component's own properties (not those of nested
+/// components such as `VALARM`). Properties covered by a changed field are dropped, the
+/// changed fields' lines follow right after `BEGIN` (RFC 5545 puts properties before nested
+/// components), and every other line stays. `None` when `stored` holds no such component.
+fn merge_component(
+    stored: &str,
+    component: &str,
+    uid: &str,
+    fields: impl FnOnce(&[Property<'_>]) -> Vec<Field>,
+) -> Option<String> {
+    let lines = ical::unfold(stored);
+    let parsed: Vec<Option<Property<'_>>> = lines.iter().map(|line| ical::parse_line(line)).collect();
+    let candidates = components(&parsed, component);
+    let has_uid = |candidate: &&Candidate| {
+        candidate
+            .own
+            .iter()
+            .filter_map(|&i| parsed.get(i)?.as_ref())
+            .any(|p| p.name.eq_ignore_ascii_case("UID") && p.value.trim() == uid)
+    };
+    let chosen = candidates.iter().find(has_uid).or_else(|| candidates.first())?;
+
+    let own: Vec<Property<'_>> = chosen.own.iter().filter_map(|&i| ical::parse_line(lines.get(i)?)).collect();
+    let fields = fields(&own);
+    let dropped = |prop: &Property<'_>| fields.iter().any(|field| field.changed && field.covers.matches(prop));
+
+    let mut out = String::new();
+    for (i, (line, prop)) in lines.iter().zip(&parsed).enumerate() {
+        if chosen.own.contains(&i) && prop.as_ref().is_some_and(dropped) {
+            continue;
+        }
+        push_line(&mut out, line);
+        if i == chosen.begin {
+            for new in fields.iter().filter(|field| field.changed).flat_map(|field| &field.lines) {
+                push_line(&mut out, new);
+            }
+        }
     }
-    push_optional_text(&mut body, "DESCRIPTION", todo.description.as_deref());
-    calendar("VTODO", &body)
+    Some(out)
+}
+
+/// One top-level component of a stored object: the index of its `BEGIN` line and of its own
+/// property lines.
+struct Candidate {
+    begin: usize,
+    own: Vec<usize>,
+}
+
+/// The `component`s directly inside the `VCALENDAR`, in order. Lines of nested components
+/// (`VALARM`) and of other components (`VTIMEZONE` with its `STANDARD`/`DAYLIGHT`) belong to
+/// none of them.
+fn components(parsed: &[Option<Property<'_>>], component: &str) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    let mut current: Option<Candidate> = None;
+    // 1 inside the VCALENDAR, 2 inside a component, 3 and more in nested ones.
+    let mut depth = 0usize;
+    for (i, prop) in parsed.iter().enumerate() {
+        let Some(prop) = prop else { continue };
+        if prop.name.eq_ignore_ascii_case("BEGIN") {
+            if depth == 1 && prop.value.trim().eq_ignore_ascii_case(component) {
+                current = Some(Candidate { begin: i, own: Vec::new() });
+            }
+            depth += 1;
+        } else if prop.name.eq_ignore_ascii_case("END") {
+            depth = depth.saturating_sub(1);
+            if depth == 1
+                && let Some(done) = current.take()
+            {
+                found.push(done);
+            }
+        } else if depth == 2
+            && let Some(candidate) = current.as_mut()
+        {
+            candidate.own.push(i);
+        }
+    }
+    found
 }
 
 /// Wraps one component in a `VCALENDAR`. `body` holds unfolded content lines.
@@ -279,14 +596,6 @@ fn push_line(out: &mut String, line: &str) {
         octets += len;
     }
     out.push_str("\r\n");
-}
-
-fn push_optional_text(body: &mut Vec<String>, name: &str, value: Option<&str>) {
-    // An empty value is treated as absent: the PUT replaces the whole object, so leaving the
-    // line out is how a cleared field is stored.
-    if let Some(value) = value.filter(|v| !v.is_empty()) {
-        body.push(text_line(name, value));
-    }
 }
 
 fn text_line(name: &str, value: &str) -> String {
@@ -612,6 +921,257 @@ mod tests {
             .find_map(|l| l.strip_prefix("SUMMARY:").map(str::to_string))
             .expect("summary line");
         assert_eq!(summary, "ÄÖÜ".repeat(50));
+    }
+
+    // Writing onto a stored object (task P.1): what the model does not know stays.
+
+    /// A task as Nextcloud Tasks writes it: sort order, categories, URL, a sibling link, an
+    /// attachment, a reminder, a folded description and an over-long unfolded line.
+    const NEXTCLOUD_TODO: &str = include_str!("../tests/fixtures/nextcloud-tasks-todo.ics");
+    /// An event as Thunderbird writes it: time zone, attendees, `X-MOZ-*` and a reminder.
+    const THUNDERBIRD_EVENT: &str = include_str!("../tests/fixtures/thunderbird-event.ics");
+
+    /// The moment of the write in these tests, and its form in the output.
+    fn later() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 12, 9, 30, 0).unwrap()
+    }
+    const LATER: &str = "20261012T093000Z";
+
+    /// The task in `ics`, as the core reads it.
+    fn read_todo(ics: &str) -> Todo {
+        ical::parse_todos(ics, COLLECTION).into_iter().next().expect("a task")
+    }
+
+    /// The event in `ics`, as the core reads it.
+    fn read_event(ics: &str) -> Event {
+        ical::parse_events(ics, COLLECTION).into_iter().next().expect("an event")
+    }
+
+    /// `written` is `stored` with exactly the lines `replaced` taken out and `new` added: every
+    /// other line is still there, unchanged and in its order.
+    fn assert_rewritten(stored: &str, written: &str, replaced: &[&str], new: &[String]) {
+        let stored = unfolded_lines(&stored.replace("\r\n", "\n").replace('\n', "\r\n"));
+        let written = unfolded_lines(written);
+        for line in replaced {
+            assert!(stored.iter().any(|l| l == line), "the fixture has no line {line:?}");
+        }
+        for line in new {
+            assert!(written.contains(line), "{line:?} is missing in:\n{}", written.join("\n"));
+        }
+        let kept: Vec<&String> = stored.iter().filter(|l| !replaced.contains(&l.as_str())).collect();
+        let rest: Vec<&String> = written.iter().filter(|l| !new.contains(l)).collect();
+        assert_eq!(rest, kept, "everything else stays as it was");
+    }
+
+    fn stamps() -> Vec<String> {
+        vec![format!("DTSTAMP:{LATER}"), format!("LAST-MODIFIED:{LATER}")]
+    }
+
+    fn with_stamps(lines: &[&str]) -> Vec<String> {
+        stamps().into_iter().chain(lines.iter().map(|l| l.to_string())).collect()
+    }
+
+    const TODO_STAMPS: [&str; 2] = ["LAST-MODIFIED:20261005T091500Z", "DTSTAMP:20261005T091500Z"];
+    const EVENT_STAMPS: [&str; 2] = ["LAST-MODIFIED:20261002T101500Z", "DTSTAMP:20261002T101500Z"];
+
+    #[test]
+    fn an_unchanged_task_keeps_every_line_but_its_time_stamps() {
+        let todo = read_todo(NEXTCLOUD_TODO);
+        let written = todo_onto(NEXTCLOUD_TODO, &todo, later());
+        assert_rewritten(NEXTCLOUD_TODO, &written, &TODO_STAMPS, &stamps());
+    }
+
+    #[test]
+    fn a_nextcloud_task_keeps_sort_order_categories_and_reminder_when_done() {
+        let mut todo = read_todo(NEXTCLOUD_TODO);
+        todo.summary = "Steuererklärung abschicken".into();
+        todo.completed = true;
+        let written = todo_onto(NEXTCLOUD_TODO, &todo, later());
+
+        let replaced = [
+            TODO_STAMPS[0],
+            TODO_STAMPS[1],
+            "SUMMARY:Steuererklärung abgeben",
+            "STATUS:IN-PROCESS",
+            "PERCENT-COMPLETE:40",
+        ];
+        let completed = format!("COMPLETED:{LATER}");
+        let new = with_stamps(&[
+            "SUMMARY:Steuererklärung abschicken",
+            "STATUS:COMPLETED",
+            &completed,
+            "PERCENT-COMPLETE:100",
+        ]);
+        assert_rewritten(NEXTCLOUD_TODO, &written, &replaced, &new);
+        // Spot checks of what the helper already covers, so a reader sees it.
+        let lines = unfolded_lines(&written);
+        for kept in ["X-APPLE-SORT-ORDER:2", "CATEGORIES:Finanzen,Privat", "BEGIN:VALARM", "TRIGGER;RELATED=END:-P1D"] {
+            assert!(lines.contains(&kept.to_string()), "{kept}");
+        }
+        assert_eq!(read_todo(&written), todo, "the written task reads back as saved");
+    }
+
+    #[test]
+    fn cleared_fields_are_gone_and_only_the_parent_link_is_dropped() {
+        let mut todo = read_todo(NEXTCLOUD_TODO);
+        todo.description = Some(String::new());
+        todo.priority = None;
+        todo.due = None;
+        todo.parent = None;
+        let written = todo_onto(NEXTCLOUD_TODO, &todo, later());
+        let replaced = [
+            TODO_STAMPS[0],
+            TODO_STAMPS[1],
+            "DESCRIPTION:Belege aus dem Ordner „Steuer 2025“ zusammensuchen\\, Anlage N ausfüllen und alles bis Ende Oktober abschicken.",
+            "PRIORITY:5",
+            "DUE;VALUE=DATE:20261031",
+            "RELATED-TO;RELTYPE=PARENT:b7e1d2c3-0000-4a5b-8c9d-aaaaaaaaaaaa",
+        ];
+        // The reminder's own DESCRIPTION and the sibling link stay (checked by the helper).
+        assert_rewritten(NEXTCLOUD_TODO, &written, &replaced, &stamps());
+        let back = read_todo(&written);
+        assert_eq!((back.description, back.priority, back.due, back.parent), (None, None, None, None));
+    }
+
+    #[test]
+    fn a_done_task_keeps_its_completion_time_and_reopening_clears_it() {
+        let done = NEXTCLOUD_TODO.replace(
+            "STATUS:IN-PROCESS\nPERCENT-COMPLETE:40",
+            "STATUS:COMPLETED\nCOMPLETED:20261006T120000Z\nPERCENT-COMPLETE:100",
+        );
+        let mut todo = read_todo(&done);
+        assert!(todo.completed);
+
+        todo.summary = "Erledigt".into();
+        let renamed = todo_onto(&done, &todo, later());
+        let replaced = [TODO_STAMPS[0], TODO_STAMPS[1], "SUMMARY:Steuererklärung abgeben"];
+        assert_rewritten(&done, &renamed, &replaced, &with_stamps(&["SUMMARY:Erledigt"]));
+
+        todo.summary = "Steuererklärung abgeben".into();
+        todo.completed = false;
+        let reopened = todo_onto(&done, &todo, later());
+        let replaced =
+            [TODO_STAMPS[0], TODO_STAMPS[1], "STATUS:COMPLETED", "COMPLETED:20261006T120000Z", "PERCENT-COMPLETE:100"];
+        assert_rewritten(&done, &reopened, &replaced, &with_stamps(&["STATUS:NEEDS-ACTION"]));
+        assert!(!read_todo(&reopened).completed);
+    }
+
+    #[test]
+    fn a_thunderbird_event_keeps_time_zone_attendees_and_reminder() {
+        let mut event = read_event(THUNDERBIRD_EVENT);
+        event.location = Some("Raum 4".into());
+        event.description = Some("Neue Agenda".into());
+        let written = event_onto(THUNDERBIRD_EVENT, &event, later());
+        let replaced = [
+            EVENT_STAMPS[0],
+            EVENT_STAMPS[1],
+            "LOCATION:Büro\\, Raum 3",
+            "DESCRIPTION:Agenda: Stand der Kacheln\\, Kalender und Aufgaben\\; danach Fragen.",
+        ];
+        let new = with_stamps(&["LOCATION:Raum 4", "DESCRIPTION:Neue Agenda"]);
+        assert_rewritten(THUNDERBIRD_EVENT, &written, &replaced, &new);
+        let lines = unfolded_lines(&written);
+        for kept in
+            ["DTSTART;TZID=Europe/Berlin:20261013T100000", "BEGIN:VTIMEZONE", "X-MOZ-GENERATION:3", "SEQUENCE:2"]
+        {
+            assert!(lines.contains(&kept.to_string()), "{kept}");
+        }
+        assert_eq!(read_event(&written), event);
+    }
+
+    #[test]
+    fn a_moved_event_gets_utc_times_and_keeps_the_rest() {
+        let mut event = read_event(THUNDERBIRD_EVENT);
+        event.start = EventTime::DateTime(at(14, 8));
+        event.end = Some(EventTime::DateTime(at(14, 9)));
+        let written = event_onto(THUNDERBIRD_EVENT, &event, later());
+        let replaced = [
+            EVENT_STAMPS[0],
+            EVENT_STAMPS[1],
+            "DTSTART;TZID=Europe/Berlin:20261013T100000",
+            "DTEND;TZID=Europe/Berlin:20261013T113000",
+        ];
+        let new = with_stamps(&["DTSTART:20261014T080000Z", "DTEND:20261014T090000Z"]);
+        assert_rewritten(THUNDERBIRD_EVENT, &written, &replaced, &new);
+    }
+
+    #[test]
+    fn a_duration_becomes_dtend_when_start_or_end_moves() {
+        let stored = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:d\r\nDTSTART:20261011T080000Z\r\nDURATION:PT1H\r\n\
+SUMMARY:Kurz\r\nX-FOO:bar\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        // The end moves: DTSTART stays as stored, the duration is replaced.
+        let mut event = read_event(stored);
+        event.end = Some(EventTime::DateTime(at(11, 10)));
+        let written = event_onto(stored, &event, later());
+        let new = with_stamps(&["DTEND:20261011T100000Z"]);
+        assert_rewritten(stored, &written, &["DURATION:PT1H"], &new);
+
+        // Only the start moves: a kept DURATION would move the end too, so DTEND is written.
+        let mut event = read_event(stored);
+        event.start = EventTime::DateTime(at(11, 7));
+        let written = event_onto(stored, &event, later());
+        let new = with_stamps(&["DTSTART:20261011T070000Z", "DTEND:20261011T090000Z"]);
+        assert_rewritten(stored, &written, &["DTSTART:20261011T080000Z", "DURATION:PT1H"], &new);
+        assert_eq!(read_event(&written), event);
+    }
+
+    #[test]
+    fn written_objects_are_folded_at_75_octets_with_crlf() {
+        let mut todo = read_todo(NEXTCLOUD_TODO);
+        todo.description = Some("Größe und Übung für Äpfel, Bäume; Wälder ".repeat(5));
+        let written = todo_onto(NEXTCLOUD_TODO, &todo, later());
+        assert!(written.ends_with("\r\n"));
+        assert!(!written.replace("\r\n", "").contains('\n'), "bare LF in output");
+        for line in written.split("\r\n") {
+            assert!(line.len() <= MAX_LINE_OCTETS, "line has {} octets: {line}", line.len());
+        }
+        // The server sent the attachment unfolded and too long; it is folded now and the same.
+        let attach = "ATTACH;FMTTYPE=application/pdf:https://cloud.example.org/remote.php/dav/files/anna/Steuer/Bescheid-2025.pdf";
+        assert!(attach.len() > MAX_LINE_OCTETS);
+        assert!(written.split("\r\n").any(|l| l.starts_with("ATTACH;") && l.len() <= MAX_LINE_OCTETS));
+        assert!(unfolded_lines(&written).contains(&attach.to_string()));
+        assert_eq!(read_todo(&written).description, todo.description);
+        // CRLF and bare LF from the server give the same result.
+        let crlf = NEXTCLOUD_TODO.replace('\n', "\r\n");
+        assert_eq!(todo_onto(&crlf, &todo, later()), written);
+    }
+
+    #[test]
+    fn the_component_with_the_uid_is_written_and_others_stay() {
+        let stored = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:a\r\nSUMMARY:Erste\r\nEND:VTODO\r\n\
+BEGIN:VTODO\r\nUID:b\r\nSUMMARY:Zweite\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let mut todo = ical::parse_todos(stored, COLLECTION).into_iter().nth(1).expect("second task");
+        todo.summary = "Zweite, neu".into();
+        let written = todo_onto(stored, &todo, later());
+        // `b` gets its stamps and the new summary; `a` stays as it was (checked by the helper).
+        assert_rewritten(stored, &written, &["SUMMARY:Zweite"], &with_stamps(&["SUMMARY:Zweite\\, neu"]));
+        let lines = unfolded_lines(&written);
+        let first = lines.iter().position(|l| l == "UID:a").expect("a");
+        let second = lines.iter().position(|l| l == "UID:b").expect("b");
+        let summary = lines.iter().position(|l| l == "SUMMARY:Zweite\\, neu").expect("new summary");
+        assert!(first < second && second.abs_diff(summary) < 6, "the new summary sits in `b`: {lines:?}");
+    }
+
+    #[test]
+    fn without_a_matching_component_the_object_is_written_anew() {
+        let todo = todo();
+        assert_eq!(todo_onto(THUNDERBIRD_EVENT, &todo, later()), todo_ics(&todo, later()));
+        let event = event();
+        assert_eq!(event_onto(NEXTCLOUD_TODO, &event, later()), event_ics(&event, later()));
+    }
+
+    #[test]
+    fn an_unreadable_stored_task_is_written_in_full_but_keeps_foreign_lines() {
+        // A cancelled task does not read as a task, so every field is written.
+        let stored = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:x\r\nSUMMARY:Alt\r\nSTATUS:CANCELLED\r\nX-FOO:bar\r\n\
+END:VTODO\r\nEND:VCALENDAR\r\n";
+        let todo = Todo { uid: "x".into(), summary: "Neu".into(), ..todo() };
+        let written = todo_onto(stored, &todo, later());
+        let lines = unfolded_lines(&written);
+        assert!(lines.contains(&"X-FOO:bar".to_string()));
+        assert!(lines.contains(&"SUMMARY:Neu".to_string()));
+        assert!(!lines.iter().any(|l| l == "SUMMARY:Alt" || l == "STATUS:CANCELLED"), "{lines:?}");
+        assert_eq!(lines.iter().filter(|l| l.starts_with("UID:")).count(), 1);
     }
 
     #[test]
