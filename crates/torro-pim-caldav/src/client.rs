@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use reqwest::{Method, StatusCode, Url};
-use torro_pim::{Collection, CollectionKind, Event, ProviderError};
+use torro_pim::{Collection, CollectionKind, Event, ProviderError, Todo};
 
 use crate::{CalDavAccount, http_error, ical};
 
@@ -87,22 +87,18 @@ impl CalDavClient {
 </c:calendar-query>"#
         );
         let xml = self.request("REPORT", &url, "1", &body).await?;
-        let doc = parse_xml(&xml)?;
-        let mut events = Vec::new();
-        for response in responses(&doc) {
-            if let Some(data) =
-                ok_prop(response).and_then(|p| child(p, NS_CALDAV, "calendar-data")).and_then(|n| n.text())
-            {
-                events.extend(ical::parse_events(data, collection));
-            }
-        }
-        Ok(events)
+        events_in_answer(&xml, collection)
     }
 
     /// All tasks of `collection` (task K.3), with `href` and `etag` set.
-    pub async fn todos(&self, collection: &str) -> Result<Vec<torro_pim::Todo>, ProviderError> {
-        let _ = collection;
-        Err(ProviderError::Other("todos not implemented yet (task K.3)".into()))
+    pub async fn todos(&self, collection: &str) -> Result<Vec<Todo>, ProviderError> {
+        let url = Url::parse(collection).map_err(|err| ProviderError::Other(err.to_string()))?;
+        let body = r#"<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VTODO"/></c:comp-filter></c:filter>
+</c:calendar-query>"#;
+        let xml = self.request("REPORT", &url, "1", body).await?;
+        todos_in_answer(&xml, collection)
     }
 
     /// PROPFIND Depth 0 for one property holding an `<d:href>`.
@@ -172,9 +168,145 @@ fn ok_prop<'a, 'i>(response: roxmltree::Node<'a, 'i>) -> Option<roxmltree::Node<
         .and_then(|ps| child(ps, NS_DAV, "prop"))
 }
 
+/// One resource of a calendar query answer.
+struct CalendarItem {
+    /// Absolute URL of the resource.
+    href: Option<String>,
+    /// Version of the resource, quotes as the server sends them.
+    etag: Option<String>,
+    /// The iCalendar object.
+    data: String,
+}
+
+/// The resources of a multistatus that carry `calendar-data`. Hrefs are relative to the
+/// collection URL, so they are resolved against `collection`.
+fn calendar_items(xml: &str, collection: &Url) -> Result<Vec<CalendarItem>, ProviderError> {
+    let doc = parse_xml(xml)?;
+    let items = responses(&doc)
+        .filter_map(|response| {
+            let prop = ok_prop(response)?;
+            let data = child(prop, NS_CALDAV, "calendar-data").and_then(|n| n.text())?;
+            let href = child(response, NS_DAV, "href")
+                .and_then(|n| n.text())
+                .and_then(|h| collection.join(h.trim()).ok())
+                .map(|url| url.to_string());
+            let etag = child(prop, NS_DAV, "getetag")
+                .and_then(|n| n.text())
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+                .map(str::to_string);
+            Some(CalendarItem { href, etag, data: data.to_string() })
+        })
+        .collect();
+    Ok(items)
+}
+
+/// The events of a calendar query answer for `collection`, each with the `href` and `etag`
+/// of the resource it was parsed from.
+fn events_in_answer(xml: &str, collection: &str) -> Result<Vec<Event>, ProviderError> {
+    let base = Url::parse(collection).map_err(|err| ProviderError::Other(err.to_string()))?;
+    let mut events = Vec::new();
+    for item in calendar_items(xml, &base)? {
+        for mut event in ical::parse_events(&item.data, collection) {
+            event.href.clone_from(&item.href);
+            event.etag.clone_from(&item.etag);
+            events.push(event);
+        }
+    }
+    Ok(events)
+}
+
+/// The tasks of a calendar query answer for `collection`, each with the `href` and `etag`
+/// of the resource it was parsed from.
+fn todos_in_answer(xml: &str, collection: &str) -> Result<Vec<Todo>, ProviderError> {
+    let base = Url::parse(collection).map_err(|err| ProviderError::Other(err.to_string()))?;
+    let mut todos = Vec::new();
+    for item in calendar_items(xml, &base)? {
+        for mut todo in ical::parse_todos(&item.data, collection) {
+            todo.href.clone_from(&item.href);
+            todo.etag.clone_from(&item.etag);
+            todos.push(todo);
+        }
+    }
+    Ok(todos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const COLLECTION: &str = "https://cloud.example.org/remote.php/dav/calendars/anna/personal/";
+
+    #[test]
+    fn events_get_href_and_etag_from_their_response() {
+        let xml = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:response><d:href>/remote.php/dav/calendars/anna/personal/workshop.ics</d:href>
+    <d:propstat><d:prop><d:getetag>"abc123"</d:getetag><c:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:workshop
+DTSTART:20261011T080000Z
+SUMMARY:Workshop
+END:VEVENT
+END:VCALENDAR
+</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response><d:href>other.ics</d:href>
+    <d:propstat><d:prop><d:getetag>"def456"</d:getetag><c:calendar-data>BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:other
+DTSTART:20261012T080000Z
+SUMMARY:Other
+END:VEVENT
+END:VCALENDAR
+</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+  <d:response><d:href>gone.ics</d:href>
+    <d:propstat><d:prop><d:getetag/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat>
+  </d:response>
+</d:multistatus>"#;
+        let events = events_in_answer(xml, COLLECTION).expect("answer parses");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].uid, "workshop");
+        assert_eq!(events[0].collection, COLLECTION);
+        assert_eq!(
+            events[0].href.as_deref(),
+            Some("https://cloud.example.org/remote.php/dav/calendars/anna/personal/workshop.ics")
+        );
+        assert_eq!(events[0].etag.as_deref(), Some("\"abc123\""));
+        assert_eq!(
+            events[1].href.as_deref(),
+            Some("https://cloud.example.org/remote.php/dav/calendars/anna/personal/other.ics")
+        );
+        assert_eq!(events[1].etag.as_deref(), Some("\"def456\""));
+    }
+
+    #[test]
+    fn todos_get_href_and_etag_from_their_response() {
+        let xml = r#"<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:response><d:href>/remote.php/dav/calendars/anna/tasks/steuer.ics</d:href>
+    <d:propstat><d:prop><d:getetag>"t-1"</d:getetag><c:calendar-data>BEGIN:VCALENDAR
+BEGIN:VTODO
+UID:steuer
+SUMMARY:Steuer machen
+PRIORITY:2
+END:VTODO
+END:VCALENDAR
+</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat>
+  </d:response>
+</d:multistatus>"#;
+        let todos = todos_in_answer(xml, COLLECTION).expect("answer parses");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].uid, "steuer");
+        assert_eq!(todos[0].summary, "Steuer machen");
+        assert_eq!(todos[0].priority, Some(2));
+        assert_eq!(
+            todos[0].href.as_deref(),
+            Some("https://cloud.example.org/remote.php/dav/calendars/anna/tasks/steuer.ics")
+        );
+        assert_eq!(todos[0].etag.as_deref(), Some("\"t-1\""));
+    }
 
     #[test]
     fn reads_multistatus() {

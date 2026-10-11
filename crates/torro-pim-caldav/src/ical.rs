@@ -1,4 +1,4 @@
-//! Just enough iCalendar (RFC 5545) to read events.
+//! Just enough iCalendar (RFC 5545) to read events (VEVENT) and tasks (VTODO).
 //!
 //! The server expands recurring events for us (`<C:expand>` in the calendar query), so
 //! every occurrence arrives as its own VEVENT with times in UTC. Times with a TZID that
@@ -6,7 +6,7 @@
 //! sync engine.
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
-use torro_pim::{Event, EventTime};
+use torro_pim::{Event, EventTime, Todo};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
 struct Property<'a> {
@@ -23,30 +23,78 @@ impl Property<'_> {
 
 /// The events in one iCalendar object (one `calendar-data`), skipping cancelled ones.
 pub fn parse_events(ics: &str, collection: &str) -> Vec<Event> {
-    let lines = unfold(ics);
     let mut events = Vec::new();
+    for_each_component(ics, "VEVENT", |props| events.extend(to_event(props, collection)));
+    events
+}
+
+/// The tasks in one iCalendar object (one `calendar-data`), skipping cancelled ones.
+pub fn parse_todos(ics: &str, collection: &str) -> Vec<Todo> {
+    let mut todos = Vec::new();
+    for_each_component(ics, "VTODO", |props| todos.extend(to_todo(props, collection)));
+    todos
+}
+
+/// Calls `visit` with the properties of every top-level `component` in `ics`. Properties of
+/// nested components (VALARM) are left out.
+fn for_each_component(ics: &str, component: &str, mut visit: impl FnMut(&[Property<'_>])) {
+    let lines = unfold(ics);
     let mut current: Option<Vec<Property<'_>>> = None;
     let mut depth = 0usize;
     for line in &lines {
         let Some(prop) = parse_line(line) else { continue };
         match (prop.name, current.as_mut()) {
-            ("BEGIN", None) if prop.value.eq_ignore_ascii_case("VEVENT") => current = Some(Vec::new()),
-            ("BEGIN", Some(_)) => depth += 1, // VALARM inside the event
+            ("BEGIN", None) if prop.value.eq_ignore_ascii_case(component) => current = Some(Vec::new()),
+            ("BEGIN", Some(_)) => depth += 1, // a nested component, e.g. VALARM
             ("END", Some(_)) if depth > 0 => depth -= 1,
             ("END", Some(_)) => {
-                if let Some(event) = current.take().and_then(|props| to_event(&props, collection)) {
-                    events.push(event);
+                if let Some(props) = current.take() {
+                    visit(&props);
                 }
             }
             (_, Some(props)) if depth == 0 => props.push(prop),
             _ => {}
         }
     }
-    events
+}
+
+/// The first property called `name`.
+fn find<'p, 'a>(props: &'p [Property<'a>], name: &str) -> Option<&'p Property<'a>> {
+    props.iter().find(|p| p.name.eq_ignore_ascii_case(name))
+}
+
+fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> {
+    let get = |name: &str| find(props, name);
+    // Cancelled tasks are skipped, like cancelled events.
+    if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
+        return None;
+    }
+    // RELATED-TO without RELTYPE means PARENT (RFC 5545 §3.2.15).
+    let parent = props
+        .iter()
+        .filter(|p| p.name.eq_ignore_ascii_case("RELATED-TO"))
+        .find(|p| p.param("RELTYPE").is_none_or(|t| t.eq_ignore_ascii_case("PARENT")))
+        .map(|p| p.value.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let completed =
+        get("COMPLETED").is_some() || get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("COMPLETED"));
+    Some(Todo {
+        uid: get("UID").map(|p| p.value.to_string()).unwrap_or_default(),
+        collection: collection.to_string(),
+        href: None,
+        etag: None,
+        summary: get("SUMMARY").map(|p| unescape(p.value)).unwrap_or_default(),
+        due: get("DUE").and_then(parse_time),
+        // 0 means undefined, as does a missing property; 1 is the highest priority.
+        priority: get("PRIORITY").and_then(|p| p.value.trim().parse::<u8>().ok()).filter(|p| (1..=9).contains(p)),
+        completed,
+        parent,
+        description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
+    })
 }
 
 fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
-    let get = |name: &str| props.iter().find(|p| p.name.eq_ignore_ascii_case(name));
+    let get = |name: &str| find(props, name);
     if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
         return None;
     }
@@ -200,5 +248,53 @@ mod tests {
         assert_eq!(parse_duration("PT1H30M"), Some(Duration::minutes(90)));
         assert_eq!(parse_duration("-PT15M"), Some(Duration::minutes(-15)));
         assert_eq!(parse_duration("P1W"), Some(Duration::days(7)));
+    }
+
+    const TODOS: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+BEGIN:VTODO\r\nUID:done-1\r\nSUMMARY:Steuer machen\r\nDUE;VALUE=DATE:20261015\r\nPRIORITY:1\r\n\
+STATUS:COMPLETED\r\nCOMPLETED:20261010T120000Z\r\nDESCRIPTION:Belege\\, Quittungen\\nund Auszüge\r\nEND:VTODO\r\n\
+BEGIN:VTODO\r\nUID:child-1\r\nSUMMARY:Belege sortieren\r\nDUE:20261012T090000Z\r\nPRIORITY:0\r\n\
+RELATED-TO;RELTYPE=PARENT:done-1\r\nBEGIN:VALARM\r\nTRIGGER:-PT15M\r\nACTION:DISPLAY\r\n\
+DESCRIPTION:Erinnerung\r\nEND:VALARM\r\nEND:VTODO\r\n\
+BEGIN:VTODO\r\nUID:plain-1\r\nSUMMARY:Milch\r\nRELATED-TO:done-1\r\nSTATUS:NEEDS-ACTION\r\nEND:VTODO\r\n\
+BEGIN:VTODO\r\nUID:gone\r\nSTATUS:CANCELLED\r\nEND:VTODO\r\n\
+BEGIN:VEVENT\r\nUID:not-a-task\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+    #[test]
+    fn reads_todos() {
+        let todos = parse_todos(TODOS, "/tasks/");
+        assert_eq!(todos.len(), 3, "cancelled tasks and events are skipped");
+
+        let done = &todos[0];
+        assert_eq!(done.uid, "done-1");
+        assert_eq!(done.collection, "/tasks/");
+        assert_eq!(done.summary, "Steuer machen");
+        assert_eq!(done.due, NaiveDate::from_ymd_opt(2026, 10, 15).map(EventTime::Date));
+        assert_eq!(done.priority, Some(1));
+        assert!(done.completed);
+        assert_eq!(done.parent, None);
+        assert_eq!(done.description.as_deref(), Some("Belege, Quittungen\nund Auszüge"));
+
+        let child = &todos[1];
+        assert_eq!(child.uid, "child-1");
+        assert!(matches!(child.due, Some(EventTime::DateTime(at)) if format_utc(at) == "20261012T090000Z"));
+        assert_eq!(child.priority, None, "priority 0 is undefined");
+        assert!(!child.completed);
+        assert_eq!(child.parent.as_deref(), Some("done-1"));
+        assert_eq!(child.description, None, "the alarm's description is not the task's");
+
+        let plain = &todos[2];
+        assert_eq!(plain.due, None);
+        assert_eq!(plain.parent.as_deref(), Some("done-1"), "RELATED-TO without RELTYPE is a parent");
+        assert!(!plain.completed);
+    }
+
+    #[test]
+    fn completed_property_marks_a_task_done() {
+        let ics =
+            "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:x\r\nCOMPLETED:20261010T120000Z\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let todos = parse_todos(ics, "/tasks/");
+        assert_eq!(todos.len(), 1);
+        assert!(todos[0].completed);
     }
 }
