@@ -226,7 +226,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 ### Aufgaben
 
 ### T.1 Seitenleiste und Listenzeile
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.5
 - **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torrotasks/src/list.rs`
 - Seitenleiste mit `sidebar`: Icons für Today/Planned/All, Zähler rechts in `META`

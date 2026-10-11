@@ -4583,6 +4583,7 @@ dependencies = [
  "iced",
  "torro-core",
  "torro-gui",
+ "torro-ipc",
  "torro-pim",
 ]
 

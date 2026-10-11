@@ -286,7 +286,10 @@ impl Detail {
         container(panel)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_| container::Style { background: Some(Background::Color(theme::SURFACE)), ..Default::default() })
+            .style(|t| container::Style {
+                background: Some(Background::Color(theme::palette(t).panel)),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -312,7 +315,7 @@ impl Detail {
             EventTime::Date(_) => Space::new().into(),
             EventTime::DateTime(at) => {
                 let time = datetime::format_time(datetime::to_local(at).time());
-                text(trf("Time {time} is kept", &[("time", &time)])).size(13).color(theme::MUTED).into()
+                text(trf("Time {time} is kept", &[("time", &time)])).size(13).style(theme::text_2).into()
             }
         }
     }

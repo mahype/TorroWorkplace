@@ -5,11 +5,7 @@
 //! Lists, smart lists (Heute, Geplant, Alle), quick add, subtasks, due dates, priorities.
 
 mod app;
-// The views still use the dark-only colour constants of `torro_gui::theme` (deprecated with F.2);
-// allowed here until C/T/W have moved them to `theme::palette`.
-#[allow(deprecated)]
 mod detail;
-#[allow(deprecated)]
 mod list;
 
 use torro_core::AppId;

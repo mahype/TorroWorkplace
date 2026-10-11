@@ -119,8 +119,13 @@ pub struct Palette {
     pub on_accent: Color,
     /// Status "fine, connected, checked" – in a dot or icon, always next to a word.
     pub ok: Color,
-    /// Status "waiting, deviating, overdue" – in a dot or icon, always next to a word.
+    /// Status "waiting, deviating, overdue" – in a dot or icon, always next to a word. Too light
+    /// for text and small icons on light surfaces; those use [`Palette::attention_text`].
     pub attention: Color,
+    /// Attention colour for text and small icons (an overdue date, the "Overdue" group icon):
+    /// ≥ 4.5:1 on every surface. Dark mode: [`Palette::attention`] itself; light mode: the
+    /// attention colour moved 50 % towards `text`.
+    pub attention_text: Color,
     /// Status "broken, refused" – in a dot or icon, always next to a word. Too light for text on
     /// light surfaces; text uses [`Palette::error_text`].
     pub error: Color,
@@ -200,6 +205,7 @@ const DARK: Palette = Palette {
     on_accent: Color::WHITE,
     ok: color(STATUS_OK),
     attention: color(STATUS_ATTENTION),
+    attention_text: color(STATUS_ATTENTION),
     error: color(STATUS_ERROR),
     error_text: color(STATUS_ERROR),
     inactive: color(STATUS_INACTIVE),
@@ -226,6 +232,7 @@ const LIGHT: Palette = Palette {
     on_accent: Color::WHITE,
     ok: color(STATUS_OK),
     attention: color(STATUS_ATTENTION),
+    attention_text: mixed(color(STATUS_ATTENTION), hex(0x18191B), 0.5),
     error: color(STATUS_ERROR),
     error_text: mixed(color(STATUS_ERROR), hex(0x18191B), 0.3),
     inactive: color(STATUS_INACTIVE),
@@ -487,6 +494,15 @@ mod tests {
             assert!(ratio >= 4.5, "{mode}: error_text on {surface} is {ratio:.2}:1");
         }
         assert_eq!(Palette::dark().error_text, Palette::dark().error, "dark mode keeps the status colour");
+    }
+
+    #[test]
+    fn attention_text_is_readable_on_every_surface() {
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            let (ratio, surface) = worst(p, p.attention_text);
+            assert!(ratio >= 4.5, "{mode}: attention_text on {surface} is {ratio:.2}:1");
+        }
+        assert_eq!(Palette::dark().attention_text, Palette::dark().attention, "dark mode keeps the status colour");
     }
 
     #[test]
