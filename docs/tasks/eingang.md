@@ -19,7 +19,7 @@ Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mi
 > M-, G-, P-Aufgaben).
 
 ```
-E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b         ← sofort möglich, nur neue Dateien
+E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b ── E3.2c   ← sofort möglich
        ├─ E2.2a
        │
 M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
@@ -32,7 +32,7 @@ M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
 E3.5 braucht E3.2, E1.2, P.2 · E2.5 braucht E2.3, E3.2, A.8 und die Freigabe ihres Sicherheitsteils
 ```
 
-**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1, E3.2 und E3.2b legen nur neue Crates an (plus je eine
+**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1, E3.2, E3.2b und E3.2c legen nur neue Crates an (plus je eine
 Zeile in der Wurzel-`Cargo.toml`) und laufen mit Demo-Daten. Sie dürfen sofort starten.
 
 ## Sicherheitsregeln des Eingangs (gelten für alle Aufgaben)
@@ -316,7 +316,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests je Taste, Rückgängig.
 
 ### E3.2b Feinschliff nach der Design-Prüfung von E3.1
-- [ ] erledigt
+- [x] erledigt (zweite Prüfung: alte Befunde behoben, neue in E3.2c)
 - **Modell:** Opus · **Braucht:** E3.2 · **Dateien:** `crates/torroinbox/src/{app,list,detail}.rs`
 - Aus der Prüfung am 2026-10-11 (Bilder: Scratchpad `review-inbox/`):
   - **Muss:** Kein hart abgeschnittener Text. Vorschau nur, wenn neben dem Titel genug Platz ist
@@ -332,6 +332,27 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **API/MCP:** keine.
 - **Abnahme:** `torro-design-review` ohne Muss-Befund; Bilder mit Fenster ganz auf dem Bildschirm
   (die weißen Streifen der ersten Prüfung kamen vom Fenster über dem Bildschirmrand).
+
+### E3.2c Zweite Design-Prüfung: Nacharbeit
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E3.2b · **Dateien:** `crates/torroinbox/src/{app,list,detail}.rs`,
+  `crates/torro-gui/src/theme.rs` (nur ein neues Token `size::ROW_TWO`), `crates/torro-gui/src/panel.rs`
+  (nur der Durchschein-Fehler)
+- Aus der Prüfung am 2026-10-12 (Bilder: Scratchpad `review-e32b/`):
+  - **Muss:** Zweizeilige Zeilen (Schmal, Mini) bekommen eigene Höhe `size::ROW_TWO` (52), `row_span`
+    rechnet damit; die Zeit steht auf der Zeile des Titels.
+  - **Muss:** In Schmal scheint der Auswahlbalken der Liste links durch das darübergelegte Paneel (und bei
+    Skalierung 1,6 eine Pixelspalte bei x=0). Das Paneel deckt dort die ganze Breite deckend ab.
+  - **Muss:** Stummschalten ohne Dialog und ohne roten Knopf: sofort stumm, mit dem Hinweis „Muted ·
+    Undo“ wie bei den anderen Änderungen (Regel: bestätigen *oder* rückgängig, nicht beides).
+  - **Soll:** Breit mit offenem Paneel: Liste füllt bis `CONTENT_MAX` statt `LIST` (keine 490 px Lücke).
+  - **Soll:** Vertagen-Menü zeigt die Zeit („13:30“, „Wed 09:00“) leise vor dem Tastenhinweis; die Auswahl
+    nennt im Titel das volle Datum, nicht zweimal den Tag, Knopf rechts wie im Dialog.
+  - **Soll:** Zahl im Kopf (Mittel) direkt am Menüknopf; Spur-Knopf im Paneel mit Wort („Move to Info“)
+    in Breit und Mittel; Fehlerzeile mit Symbol in Fehlerfarbe und Text in TEXT_2.
+  - **Schön:** Befehle in der Meldung nicht am „--“ umbrechen; Symbol im leeren Zustand größer (Token).
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne Muss-Befund.
 
 ### E3.3 Mini, Leiste und Tray
 - [ ] erledigt
