@@ -257,7 +257,7 @@ fn add_button<'a>() -> Element<'a, Message> {
 fn card<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let mut details = column![
         text(provider_name(&account.kind)).size(12).color(theme::MUTED),
-        text(account.label.as_str()).size(16).color(theme::TEXT),
+        text(account.label.as_str()).size(16).color(theme::TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         status_label(&status_line(&account.state)),
     ]
     .spacing(4)
@@ -279,7 +279,7 @@ fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> E
     let back =
         button(text(format!("‹ {}", tr("Accounts")))).style(button::text).padding([8, 12]).on_press(Message::Back);
     let heading = column![
-        text(account.label.as_str()).size(18).color(theme::TEXT),
+        text(account.label.as_str()).size(18).color(theme::TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         text(provider_name(&account.kind)).size(14).color(theme::MUTED),
     ]
     .spacing(4);

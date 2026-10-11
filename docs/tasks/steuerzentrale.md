@@ -67,7 +67,7 @@ Gemeinsam für alle Seiten-Aufgaben:
   Tray: Eintrag „Settings…“.
 
 ### S.11 Abschluss
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus
 - `#![allow(...)]` in `ui/mod.rs` entfernen, Übersetzungen eintragen, Design-Prüfung
   (Agent `torro-design-review`) bei 1100 px, 500 px und 360 px, Fehler beheben.

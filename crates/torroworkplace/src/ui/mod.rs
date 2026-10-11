@@ -258,10 +258,10 @@ impl Ui {
     fn sidebar(&self, full: bool) -> Element<'_, Message> {
         let mut list = column![].spacing(4).padding(16);
         for section in Section::ALL {
-            let style = if section == self.section && !full { button::primary } else { button::text };
+            let selected = section == self.section && !full;
             list = list.push(
                 button(text(section.label()).size(14))
-                    .style(style)
+                    .style(move |theme, status| sidebar_item(theme, status, selected))
                     .width(Length::Fill)
                     .padding([8, 12])
                     .on_press(Message::Select(section)),
@@ -301,6 +301,23 @@ impl Ui {
             page = page.push(text(problem.clone()).size(14).color(theme::attention()));
         }
         page.push(scrollable(content).height(Length::Fill)).into()
+    }
+}
+
+/// A sidebar entry: the selected one sits on a lighter surface instead of Torro red, so the
+/// page keeps its one loud moment (its primary button).
+fn sidebar_item(theme: &iced::Theme, status: button::Status, selected: bool) -> button::Style {
+    let base = button::text(theme, status);
+    let background = match (selected, status) {
+        (true, _) => Some(iced::Background::Color(theme::SURFACE_2)),
+        (false, button::Status::Hovered | button::Status::Pressed) => Some(iced::Background::Color(theme::SURFACE_2)),
+        _ => None,
+    };
+    button::Style {
+        background,
+        text_color: if selected { theme::TEXT } else { theme::MUTED },
+        border: iced::border::rounded(8),
+        ..base
     }
 }
 
