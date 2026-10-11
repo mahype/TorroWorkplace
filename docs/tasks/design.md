@@ -266,7 +266,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
 ### Steuerzentrale
 
 ### W.1 Seitengerüst
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.5
 - **Dateien:** `crates/torroworkplace/src/ui/mod.rs`
 - Seitenleiste über `sidebar` (Breite `SIDEBAR`, mit Icons). Jede Seite: `header_bar` mit Titel

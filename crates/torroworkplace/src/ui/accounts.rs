@@ -1,5 +1,5 @@
 //! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`): the accounts as cards (provider,
-//! label, status as symbol + word, last sync, chevron) under an "Add account" button; a detail
+//! label, status as symbol + word, last sync, chevron), "Add account" in the header bar; a detail
 //! page per account with the status ("Sync now"), the calendars and task lists (a switch each
 //! for showing them in the apps, read-only ones marked), the connection, and "Remove account…"
 //! behind a confirmation. Empty: a sentence about what to add. The add flow is `wizard.rs`
@@ -20,7 +20,11 @@ use torro_gui::widgets::{collection_color, color_dot, empty_state, modal, sectio
 use torro_ipc::{AccountInfo, Request};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
-use super::{Action, Data, wizard};
+use torro_gui::icon::Icon;
+use torro_gui::layout::SizeClass;
+use torro_gui::{style, widgets};
+
+use super::{Action, Data, Header, wizard};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -129,6 +133,23 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
 }
 
+/// The header bar of the page: "Add account" on the list; on an account's detail its label with
+/// a back button to the list.
+pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    if let Some(account) = selected(state, data) {
+        return Header { sub_page: Some((account.label.clone(), Message::Back)), actions: Vec::new() };
+    }
+    let add = match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Plus), tr("Add account"), style::button::primary, Some(Message::AddAccount))
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Plus, tr("Add account"), style::button::primary, Some(Message::AddAccount))
+        }
+    };
+    Header { sub_page: None, actions: vec![add] }
+}
+
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
 
 /// The accounts the list shows. An empty id is a sign-in in progress; the wizard shows that.
@@ -227,18 +248,13 @@ fn selected<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
 // ----- Views --------------------------------------------------------------------------------
 
 fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    let header = row![space::horizontal(), add_button()].align_y(Alignment::Center).width(Length::Fill);
     let accounts: Vec<&AccountInfo> = listed(&data.accounts).collect();
     let body: Element<'a, Message> = if accounts.is_empty() {
         empty_state(tr("No accounts yet."), tr("Add your Nextcloud to see calendars and tasks in the apps."))
     } else {
         column(accounts.into_iter().map(|account| card(account, now))).spacing(8).width(Length::Fill).into()
     };
-    column![header, body].spacing(16).width(Length::Fill).into()
-}
-
-fn add_button<'a>() -> Element<'a, Message> {
-    button(text(tr("Add account"))).style(button::primary).padding([8, 12]).on_press(Message::AddAccount).into()
+    body
 }
 
 /// One account in the list: provider, label, status, last sync, and a chevron.
@@ -264,8 +280,6 @@ fn card<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message
 
 /// The detail page: status, calendars and lists, connection, and removal.
 fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    let back =
-        button(text(format!("‹ {}", tr("Accounts")))).style(button::text).padding([8, 12]).on_press(Message::Back);
     let heading = column![
         text(account.label.as_str()).size(18).color(theme::TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
         text(provider_name(&account.kind)).size(14).color(theme::MUTED),
@@ -279,7 +293,7 @@ fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> E
     let remove = button(text(tr("Remove account…"))).style(danger_text).padding([8, 12]).on_press(Message::AskRemove);
     sections = sections.push(remove);
 
-    let page = column![back, heading, sections].spacing(24).width(Length::Fill);
+    let page = column![heading, sections].spacing(24).width(Length::Fill);
     container(page).width(Length::Fill).max_width(640).into()
 }
 

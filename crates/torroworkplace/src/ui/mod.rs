@@ -11,10 +11,17 @@
 //! pub enum Message            what the page's widgets report
 //! pub fn update(&mut State, Message, &Data) -> Action
 //! pub fn view<'a>(&'a State, &'a Data) -> Element<'a, Message>
+//! pub fn header<'a>(&'a State, &'a Data, SizeClass) -> Header<'a, Message>   (optional)
 //! ```
 //!
 //! Pages never talk to the daemon themselves: they return an [`Action`], the shell sends the
 //! request and reloads [`Data`].
+//!
+//! The window is the Linear frame of the suite (`torro_gui::shell`, design skill section 0):
+//! wide windows show the sidebar with the app switcher and the sections; medium and narrow ones
+//! put the sections into a menu at the top left ("Accounts ▾") and the sidebar into a drawer, the
+//! same way the calendar and the tasks app do. The page sits under a 44-high header bar with its
+//! title and actions, at most [`size::CONTENT_MAX`] wide.
 
 mod accounts;
 mod apps;
@@ -26,17 +33,20 @@ mod workspaces;
 use std::time::Duration;
 
 use iced::theme::Mode;
-use iced::widget::{button, column, container, row, scrollable, text};
-use iced::{Element, Length, Subscription, Task, Theme};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, responsive, row, scrollable, svg};
+use iced::{Alignment, Element, Fill, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::Settings;
-use torro_gui::theme::{self, Appearance};
+use torro_gui::icon::{self, Icon};
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::shell::{self, Switcher};
+use torro_gui::theme::{self, Appearance, palette, size, space};
+use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, AppInfo, Request, Response, Status, client};
 use torro_setups::TemplateSummary;
-
-/// Below this width the sidebar turns into a list and a section opens as its own page.
-const NARROW: f32 = 640.0;
 
 /// The sections in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +62,12 @@ impl Section {
     pub const ALL: [Section; 5] =
         [Section::Overview, Section::Accounts, Section::Workspaces, Section::Apps, Section::General];
 
+    /// The sections at the top of the sidebar; [`Section::General`] sits at its foot, where Linear
+    /// keeps "Settings".
+    fn nav() -> impl Iterator<Item = Section> {
+        Section::ALL.into_iter().filter(|&section| section != Section::General)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Section::Overview => tr("Overview"),
@@ -59,6 +75,17 @@ impl Section {
             Section::Workspaces => tr("Workspaces"),
             Section::Apps => tr("Apps"),
             Section::General => tr("General"),
+        }
+    }
+
+    /// The icon in the sidebar, the section menu and the header title.
+    fn icon(self) -> Icon {
+        match self {
+            Section::Overview => Icon::LayoutGrid,
+            Section::Accounts => Icon::Cloud,
+            Section::Workspaces => Icon::Layers,
+            Section::Apps => Icon::AppWindow,
+            Section::General => Icon::Settings,
         }
     }
 
@@ -100,11 +127,54 @@ pub enum Action {
     Select(Section),
 }
 
+/// What a page puts into the header bar next to the section title. A page module builds it in an
+/// optional `pub fn header<'a>(&'a State, &'a Data, SizeClass) -> Header<'a, Message>`; pages
+/// without one get [`Header::default`] (just the title).
+pub struct Header<'a, M> {
+    /// A page below the section that is open now (one account's detail): its name follows the
+    /// section title ("Accounts › cloud.example.org", only the name in medium and narrow) and a
+    /// back button in front of it sends the message. `None` on the section's own page.
+    pub sub_page: Option<(String, M)>,
+    /// The page's actions at the right of the bar, left to right; at most one primary button
+    /// ("Add account"). Text buttons from `torro_gui::widgets::text_button`; in the narrow and
+    /// mini layouts icon-only ones (`widgets::compact_button`) so the section menu keeps its room.
+    pub actions: Vec<Element<'a, M>>,
+}
+
+impl<M> Default for Header<'_, M> {
+    fn default() -> Self {
+        Self { sub_page: None, actions: Vec::new() }
+    }
+}
+
+impl<'a, M: 'a> Header<'a, M> {
+    /// The same header with the page's messages wrapped in the shell's (`Message::Accounts`).
+    fn map<N: 'a>(self, wrap: fn(M) -> N) -> Header<'a, N> {
+        Header {
+            sub_page: self.sub_page.map(|(name, back)| (name, wrap(back))),
+            actions: self.actions.into_iter().map(|action| action.map(wrap)).collect(),
+        }
+    }
+}
+
+/// The open menu of the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Menu {
+    /// The app switcher at the top of the sidebar.
+    Switcher,
+    /// The section menu in the header of the medium and narrow layouts.
+    Nav,
+}
+
 pub struct Ui {
     section: Section,
-    /// In a narrow window: showing the section list (true) or the page (false).
-    narrow_list: bool,
-    width: f32,
+    /// The menu that is open, if any.
+    menu: Option<Menu>,
+    /// Medium and narrow: the sidebar drawer is open.
+    drawer: bool,
+    /// The core has answered at least once (successfully or not); until then the page shows the
+    /// loading state instead of empty lists.
+    loaded: bool,
     /// The desktop's light/dark preference, for the appearance "System".
     system_mode: Mode,
     /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
@@ -123,15 +193,21 @@ pub struct Ui {
 #[derive(Debug, Clone)]
 pub enum Message {
     Select(Section),
-    /// Narrow window: back to the section list.
-    Back,
+    /// Open or close a menu.
+    ToggleMenu(Menu),
+    /// Close the open menu and the drawer (a click next to them).
+    CloseMenu,
+    /// Open or close the sidebar drawer (medium and narrow).
+    ToggleDrawer,
+    /// The app switcher and its search and "New" buttons.
+    Switcher(Switcher),
     Loaded(Box<Data>),
     Sent(Result<Response, String>),
-    Resized(f32),
     /// The desktop's light/dark preference (once at start, then whenever it changes).
     SystemMode(Mode),
+    /// Reload everything (every few seconds, and "Retry" when the core does not answer).
     Tick,
-    /// Escape: close whatever dialog the current page has open.
+    /// Escape: close the open menu, or else whatever dialog the current page has open.
     Escape,
     Overview(overview::Message),
     Accounts(accounts::Message),
@@ -163,8 +239,9 @@ impl Ui {
     fn new(section: Section) -> (Ui, Task<Message>) {
         let ui = Ui {
             section,
-            narrow_list: false,
-            width: 1100.0,
+            menu: None,
+            drawer: false,
+            loaded: false,
             system_mode: Mode::None,
             appearance: Appearance::System,
             data: Data::default(),
@@ -190,7 +267,6 @@ impl Ui {
         Subscription::batch([
             iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
-            iced::window::resize_events().map(|(_, size)| Message::Resized(size.width)),
             iced::event::listen_with(escape_key),
         ])
     }
@@ -198,17 +274,27 @@ impl Ui {
     fn update(&mut self, message: Message) -> Task<Message> {
         let action = match message {
             Message::Select(section) => {
-                self.section = section;
-                self.narrow_list = false;
+                self.select(section);
                 self.notice = None;
                 Action::None
             }
-            Message::Back => {
-                self.narrow_list = true;
+            Message::ToggleMenu(menu) => {
+                self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
                 Action::None
             }
+            Message::CloseMenu => {
+                self.close_menus();
+                Action::None
+            }
+            Message::ToggleDrawer => {
+                self.drawer = !self.drawer;
+                self.menu = None;
+                Action::None
+            }
+            Message::Switcher(switcher) => self.switcher(switcher),
             Message::Loaded(data) => {
                 self.data = *data;
+                self.loaded = true;
                 if self.data.error.is_none() {
                     self.appearance = self.data.settings.appearance;
                 }
@@ -222,16 +308,16 @@ impl Ui {
                 self.notice = result.err();
                 return load();
             }
-            Message::Resized(width) => {
-                self.width = width;
-                Action::None
-            }
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
                 Action::None
             }
             Message::Tick => return load(),
             Message::Escape => {
+                if self.menu.is_some() || self.drawer {
+                    self.close_menus();
+                    return Task::none();
+                }
                 let page = match self.section {
                     Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
@@ -251,6 +337,41 @@ impl Ui {
         self.perform(action)
     }
 
+    /// Shows `section`; a choice from the menu or the drawer also closes them.
+    fn select(&mut self, section: Section) {
+        self.section = section;
+        self.close_menus();
+    }
+
+    fn close_menus(&mut self) {
+        self.menu = None;
+        self.drawer = false;
+    }
+
+    /// What the app switcher's buttons do in the control centre.
+    fn switcher(&mut self, switcher: Switcher) -> Action {
+        match switcher {
+            Switcher::Toggle => {
+                self.menu = if self.menu == Some(Menu::Switcher) { None } else { Some(Menu::Switcher) };
+                Action::None
+            }
+            Switcher::OpenApp(app) => {
+                self.close_menus();
+                Action::Send(Request::OpenApp { app: app.to_string() })
+            }
+            // The control centre has nothing to search yet; the button only closes open menus.
+            Switcher::Search => {
+                self.close_menus();
+                Action::None
+            }
+            // "New" here means a new account, the one thing the control centre creates.
+            Switcher::New => {
+                self.select(Section::Accounts);
+                accounts::update(&mut self.accounts, accounts::Message::AddAccount, &self.data)
+            }
+        }
+    }
+
     fn perform(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::None => Task::none(),
@@ -262,90 +383,171 @@ impl Ui {
                 Task::none()
             }
             Action::Select(section) => {
-                self.section = section;
-                self.narrow_list = false;
+                self.select(section);
                 Task::none()
             }
         }
     }
 
+    /// The window in the layout of its real size: `responsive` hands over the size Iced laid out,
+    /// so the first frame already fits the tile (no assumed start width).
     fn view(&self) -> Element<'_, Message> {
-        let narrow = self.width < NARROW;
-        if narrow && self.narrow_list {
-            return container(self.sidebar(true)).width(Length::Fill).height(Length::Fill).into();
-        }
-        let page = self.page(narrow);
-        if narrow {
-            return page;
-        }
-        row![self.sidebar(false), page].height(Length::Fill).into()
+        responsive(move |size| self.window(layout::of(size))).into()
     }
 
-    /// The section list: a 220 px sidebar, or the whole window when narrow.
-    fn sidebar(&self, full: bool) -> Element<'_, Message> {
-        let mut list = column![].spacing(4).padding(16);
-        for section in Section::ALL {
-            let selected = section == self.section && !full;
-            list = list.push(
-                button(text(section.label()).size(14))
-                    .style(move |theme, status| sidebar_item(theme, status, selected))
-                    .width(Length::Fill)
-                    .padding([8, 12])
-                    .on_press(Message::Select(section)),
-            );
-        }
-        let version = text(format!("Torro Workplace · {} {}", tr("Version"), env!("CARGO_PKG_VERSION")))
-            .size(12)
-            .color(theme::MUTED);
-        let body = column![scrollable(list).height(Length::Fill), container(version).padding(16)];
-        let width = if full { Length::Fill } else { Length::Fixed(220.0) };
-        container(body)
-            .width(width)
-            .height(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(iced::Background::Color(theme::SURFACE)),
-                ..container::Style::default()
-            })
+    fn window(&self, class: SizeClass) -> Element<'_, Message> {
+        let (switcher, nav) = (Anchor::new(), Anchor::new());
+        let layer = self.menu.map(|menu| match menu {
+            Menu::Switcher => widgets::floating(
+                &switcher,
+                Placement::Below(Align::Start),
+                shell::switcher_menu(AppId::WORKPLACE, Message::Switcher),
+                Message::CloseMenu,
+            ),
+            Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu),
+        });
+        shell::shell(class, self.sidebar(&switcher), self.header(class, &nav), self.body(class), None)
+            .drawer(self.drawer, Message::CloseMenu)
+            .overlay(layer)
             .into()
     }
 
-    /// The current section's page with its title; a back button when narrow.
-    fn page(&self, narrow: bool) -> Element<'_, Message> {
-        let content: Element<'_, Message> = match self.section {
+    /// The count after a section in the sidebar and the menu: accounts and templates.
+    fn trail(&self, section: Section) -> Trail {
+        let count = match section {
+            Section::Accounts => accounts::listed(&self.data.accounts).count(),
+            Section::Workspaces => self.data.templates.len(),
+            _ => 0,
+        };
+        if count > 0 { Trail::Count(count) } else { Trail::None }
+    }
+
+    /// The sidebar: app switcher, the sections, and "General" with the version at the foot.
+    fn sidebar(&self, switcher: &Anchor) -> Element<'_, Message> {
+        let item = |section: Section| {
+            widgets::sidebar_item(
+                section.icon(),
+                section.label(),
+                self.trail(section),
+                section == self.section,
+                Message::Select(section),
+            )
+        };
+        let version = format!("Torro Workplace · {} {}", tr("Version"), env!("CARGO_PKG_VERSION"));
+        let version = container(typo::text(typo::META, version).style(theme::text_3).wrapping(Wrapping::None))
+            .center_y(size::ROW_SIDEBAR)
+            .padding(style::ITEM_PADDING)
+            .clip(true);
+        shell::sidebar(
+            shell::app_switcher(AppId::WORKPLACE, switcher, Message::Switcher),
+            Section::nav().map(item).collect(),
+            vec![item(Section::General), version.into()],
+        )
+    }
+
+    /// The section menu of the medium and narrow layouts: the sidebar's sections, "General" in a
+    /// part of its own as at the sidebar's foot.
+    fn nav_menu(&self) -> Element<'_, Message> {
+        let entry = |section: Section| {
+            MenuItem::new(section.icon(), section.label(), Message::Select(section))
+                .trail(self.trail(section))
+                .current(section == self.section)
+        };
+        widgets::menu(vec![
+            MenuSection::new(Section::nav().map(entry).collect()),
+            MenuSection::new(vec![entry(Section::General)]),
+        ])
+    }
+
+    /// What the current page adds to the header bar.
+    fn page_header(&self, class: SizeClass) -> Header<'_, Message> {
+        match self.section {
+            Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
+            _ => Header::default(),
+        }
+    }
+
+    /// The header bar: the title (wide) or the section menu with the drawer button (medium,
+    /// narrow); on a page below the section a back button and its name; the page's actions right.
+    fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
+        let Header { sub_page, actions } = self.page_header(class);
+        let section = self.section;
+        let wide = shell::has_sidebar(class);
+        let (leading, title): (Vec<Element<'_, Message>>, Element<'_, Message>) = match sub_page {
+            Some((name, back)) => {
+                let back = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
+                let title = if wide { crumb(section, name) } else { shell::header_title(None, name, None) };
+                (vec![back], title)
+            }
+            None if wide => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
+            None => (
+                vec![shell::sidebar_toggle(Message::ToggleDrawer)],
+                widgets::menu_button(nav, Some(section.icon()), section.label(), Message::ToggleMenu(Menu::Nav)),
+            ),
+        };
+        shell::header_bar(leading, title, actions)
+    }
+
+    /// The page: loading until the core answered, the error state when it does not answer (the
+    /// overview shows that itself), else the section's view under the notices – at most
+    /// `CONTENT_MAX` wide, scrolling inside the margin of the size class.
+    fn body(&self, class: SizeClass) -> Element<'_, Message> {
+        if !self.loaded {
+            return widgets::loading();
+        }
+        let unreachable = self.data.status.is_none() && self.data.error.is_some();
+        if unreachable && self.section != Section::Overview {
+            return widgets::error_state(
+                tr("Torro Workplace isn't responding. It may still be starting."),
+                Message::Tick,
+            );
+        }
+        let page: Element<'_, Message> = match self.section {
             Section::Overview => overview::view(&self.overview, &self.data).map(Message::Overview),
             Section::Accounts => accounts::view(&self.accounts, &self.data).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
             Section::Apps => apps::view(&self.apps, &self.data).map(Message::Apps),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
-        let mut header = row![].spacing(8).align_y(iced::Alignment::Center);
-        if narrow {
-            header = header.push(button(text("‹").size(14)).style(button::text).on_press(Message::Back));
-        }
-        header = header.push(text(self.section.label()).size(18));
-        let mut page = column![header].spacing(16).padding(24).width(Length::Fill);
-        for problem in [&self.notice, &self.data.error].into_iter().flatten() {
-            page = page.push(text(problem.clone()).size(14).color(theme::attention()));
-        }
-        page.push(scrollable(content).height(Length::Fill)).into()
+        let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
+        let page = column(notices).push(page).spacing(space::L);
+        scrollable(container(widgets::content(size::CONTENT_MAX, page)).padding(page_margin(class)))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .height(Fill)
+            .into()
     }
 }
 
-/// A sidebar entry: the selected one sits on a lighter surface instead of Torro red, so the
-/// page keeps its one loud moment (its primary button).
-fn sidebar_item(theme: &iced::Theme, status: button::Status, selected: bool) -> button::Style {
-    let base = button::text(theme, status);
-    let background = match (selected, status) {
-        (true, _) => Some(iced::Background::Color(theme::SURFACE_2)),
-        (false, button::Status::Hovered | button::Status::Pressed) => Some(iced::Background::Color(theme::SURFACE_2)),
-        _ => None,
-    };
-    button::Style {
-        background,
-        text_color: if selected { theme::TEXT } else { theme::MUTED },
-        border: iced::border::rounded(8),
-        ..base
+/// The margin around a page: 24, in a narrow window 16, in a tile 12 (design skill, section 6).
+fn page_margin(class: SizeClass) -> f32 {
+    match class {
+        SizeClass::Wide | SizeClass::Medium => space::XL,
+        SizeClass::Narrow => space::L,
+        SizeClass::Mini | SizeClass::Strip => space::M,
     }
+}
+
+/// "Accounts › cloud.example.org": the section in `text_3`, the page below it in `BODY_STRONG`.
+fn crumb<'a>(section: Section, name: String) -> Element<'a, Message> {
+    let chevron = icon::icon(Icon::ChevronRight, icon::SIZE_SM)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    row![
+        typo::text(typo::BODY, section.label()).style(theme::text_3).wrapping(Wrapping::None),
+        chevron,
+        typo::text(typo::BODY_STRONG, name).wrapping(Wrapping::None),
+    ]
+    .spacing(space::XS)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// A failed request or load above the page: an alert icon in the error colour, the message in
+/// `text` – the colour is only in the icon.
+fn notice<'a>(problem: String) -> Element<'a, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    row![alert, typo::text(typo::BODY, problem)].spacing(space::S).align_y(Alignment::Center).into()
 }
 
 /// Escape, wherever the focus is (a text input keeps it to itself otherwise).
@@ -435,5 +637,82 @@ mod tests {
         let _ = ui.update(loaded(Appearance::Light, None));
         let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
         assert_eq!(ui.theme(), theme::light());
+    }
+
+    #[test]
+    fn the_page_loads_until_the_core_answers() {
+        let (mut ui, _) = Ui::new(Section::Accounts);
+        assert!(!ui.loaded);
+        let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
+        assert!(ui.loaded, "a failed answer ends the loading state too");
+    }
+
+    #[test]
+    fn choosing_a_section_closes_menu_and_drawer() {
+        let (mut ui, _) = Ui::new(Section::Overview);
+        let _ = ui.update(Message::ToggleDrawer);
+        let _ = ui.update(Message::ToggleMenu(Menu::Nav));
+        assert_eq!(ui.menu, Some(Menu::Nav));
+        let _ = ui.update(Message::Select(Section::Workspaces));
+        assert_eq!(ui.section, Section::Workspaces);
+        assert_eq!((ui.menu, ui.drawer), (None, false));
+        let _ = ui.update(Message::ToggleMenu(Menu::Nav));
+        let _ = ui.update(Message::ToggleMenu(Menu::Nav));
+        assert_eq!(ui.menu, None, "the trigger closes its own menu");
+    }
+
+    #[test]
+    fn escape_closes_the_menu_before_the_dialog_below_it() {
+        let (mut ui, _) = Ui::new(Section::Overview);
+        let _ = ui.update(Message::Switcher(Switcher::New));
+        assert_eq!(ui.section, Section::Accounts, "New in the switcher adds an account");
+        assert!(ui.accounts.wizard.is_some());
+        let _ = ui.update(Message::Switcher(Switcher::Toggle));
+        assert_eq!(ui.menu, Some(Menu::Switcher));
+        let _ = ui.update(Message::Escape);
+        assert_eq!(ui.menu, None);
+        assert!(ui.accounts.wizard.is_some(), "the dialog stays for the next Escape");
+        let _ = ui.update(Message::Escape);
+        assert!(ui.accounts.wizard.is_none());
+    }
+
+    #[test]
+    fn the_switcher_opens_other_apps_through_the_core() {
+        let (mut ui, _) = Ui::new(Section::Overview);
+        ui.menu = Some(Menu::Switcher);
+        let action = ui.switcher(Switcher::OpenApp(AppId::CALENDAR.binary));
+        assert!(matches!(action, Action::Send(Request::OpenApp { ref app }) if app == "torrocalendar"));
+        assert_eq!(ui.menu, None);
+    }
+
+    #[test]
+    fn sections_have_distinct_icons() {
+        for (i, a) in Section::ALL.iter().enumerate() {
+            for b in &Section::ALL[i + 1..] {
+                assert_ne!(a.icon(), b.icon(), "{a:?} and {b:?}");
+            }
+        }
+        assert!(Section::nav().all(|section| section != Section::General), "General sits at the foot");
+    }
+
+    #[test]
+    fn page_margin_follows_the_size_class() {
+        assert_eq!(page_margin(SizeClass::Wide), space::XL);
+        assert_eq!(page_margin(SizeClass::Medium), space::XL);
+        assert_eq!(page_margin(SizeClass::Narrow), space::L);
+        assert_eq!(page_margin(SizeClass::Mini), space::M);
+    }
+
+    #[test]
+    fn the_window_builds_in_every_class_and_state() {
+        let (mut ui, _) = Ui::new(Section::Accounts);
+        for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = ui.window(class);
+        }
+        let _ = ui.update(loaded(Appearance::System, None));
+        let _ = ui.update(Message::ToggleMenu(Menu::Nav));
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = ui.window(class);
+        }
     }
 }
