@@ -372,13 +372,15 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
   „+ Parent“ in `TEXT_3`.
 
 ### D.9 Kleine Kacheln nachschärfen
-- [ ] erledigt
+- [x] erledigt
 - Kalender-Teil erledigt (Commit `fix(torrocalendar): mini tile names a later day first and fills with the days after (D.9)`)
 - **Modell:** Haiku · **Dateien:** `crates/torrocalendar/src/views/glance.rs`, `crates/torrotasks/src/glance.rs`
 - Kalender-Mini: „Tomorrow“ über der Zeit statt darunter, Mini hoch füllt mit Folgetagen.
   Aufgaben-Mini: Kopfzahl in `DISPLAY`, Orange nur im Punkt.
 - Aufgaben-Teil erledigt (Commit c8b54f9): Mini mit `DISPLAY`-Zahlen, Orange nur im Punkt. Offen: Kalender-Mini;
   die Leiste der Aufgaben zeigt „overdue“ noch orange (eigener Punkt).
+
+Offen aus D.9: In der Aufgaben-Leiste sind „overdue“ und die Rahmen überfälliger Chips noch orange.
 
 ### D.10 Tagesansicht in Breit
 - [x] erledigt
