@@ -1,84 +1,153 @@
-//! The detail panel for one task (task K.15 in `docs/tasks/kalender-aufgaben.md`).
+//! The detail of one task (K.15 in `docs/tasks/kalender-aufgaben.md`, Linear look from T.4 in
+//! `docs/tasks/design.md`, mock-up `docs/prototypes/linear/tasks.html`).
 //!
-//! The fields are a draft that starts from the loaded task:
-//! - Title: text field; Enter saves.
-//! - Done: checkbox.
-//! - List: pick list of the task lists. Moving a task changes its collection; a parent in
-//!   another list is dropped.
-//! - Due: a date typed as `11.10.2026`, `today` or `tomorrow` (`datetime::parse_date`), or set
-//!   with the Today, Tomorrow and Remove buttons. A date-time due keeps its time when only the
-//!   date changes; a new due is a whole day.
-//! - Priority: None, Low (9), Medium (5), High (1). Stored values map to the nearest choice.
-//! - Parent task: pick list of the other tasks in the same list, minus the task's own subtasks.
-//! - Notes: multi-line text.
+//! The main column ([`Detail::view`]): a crumb "List › Filter" in `text_3`, the title as a large
+//! borderless field (`HEADLINE`, wraps), in the medium and narrow layouts the properties as chips
+//! below it, the notes as a quiet field, the subtasks (round check to tick them, a click on the
+//! title opens them) and "Delete task" (`danger`, asks once). In the wide layout the properties
+//! stand in the window's properties column instead ([`Detail::properties`]).
 //!
-//! Save hands the changed task to the app as [`Action::Save`]. Delete asks once ("Really
-//! delete?") before [`Action::Delete`]. Close closes the panel. Input that cannot be read, or
-//! an empty title, shows a hint and blocks saving.
+//! Properties: status (open/done), priority (None, Low = 9, Medium = 5, High = 1; stored values
+//! map to the nearest), due date, list and parent task. A click on a property opens its editor
+//! as a floating menu or card ([`Detail::layer`]); the due card offers Today, Tomorrow, Next week
+//! and No date as chips and a field for any date (`11.10.2026`, `today`, `tomorrow`).
+//!
+//! Saving works like Linear: there is no Save button. A change of a property is saved at once;
+//! title and notes are saved a moment after typing stops ([`Detail::wants_autosave`]), on Enter
+//! in the title and when the detail is left ([`Detail::leave`]). Every save is the same
+//! [`Action::Save`] the panel always sent (the core's `save_todo`). Only one save is under way at
+//! a time: the server checks the etag, so the next save has to wait for the new one
+//! ([`Detail::stored`]). A title that is empty or a date that cannot be read is not saved; the
+//! hint appears only after a save was asked for (Enter, a property change, leaving).
 
 use std::collections::HashSet;
-use std::fmt;
 
-use chrono::{Local, NaiveDate};
+use chrono::{Days, Local, NaiveDate};
+use iced::widget::text::Wrapping;
 use iced::widget::{
-    Space, button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input,
+    Space, button, checkbox, column, container, mouse_area, row, rule, scrollable, svg, text_editor, text_input,
 };
-use iced::{Background, Element, Length};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
 use torro_core::i18n::{tr, trf};
-use torro_gui::datetime;
-use torro_gui::theme;
-use torro_gui::widgets::section_title;
+use torro_gui::icon::{self, Icon};
+use torro_gui::layout::SizeClass;
+use torro_gui::theme::{self, Palette, palette, size, space};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::{datetime, shell, style, typo};
 use torro_pim::{Collection, EventTime, Todo};
+
+use crate::list;
+
+/// The id of the date field in the due card, so opening the card can focus it.
+pub const DUE_INPUT: &str = "detail-due";
+/// Gap between icon and label inside a chip, as in `widgets::chip` (6 is allowed inside blocks).
+const ICON_GAP: f32 = 6.0;
+/// The one-pixel lines of the design.
+const LINE: f32 = 1.0;
+/// The parent menu shows at most this many entries and scrolls the rest.
+const PARENT_MENU_ROWS: f32 = 10.0;
+// design-check: allow the crumb's ring is the mock-up's `.ring` inside a crumb (12, line 2)
+const CRUMB_RING: f32 = 12.0;
+const RING_LINE: f32 = 2.0;
 
 /// The panel's state.
 #[derive(Debug)]
 pub struct Detail {
-    /// The task as it was loaded; the base for the saved version (keeps uid, href and etag).
+    /// The task as last stored; the base for the next save (keeps uid, href and etag).
     pub original: Todo,
+    /// The writable task lists, for moving the task.
     pub lists: Vec<Collection>,
-    /// Other tasks, for choosing a parent.
+    /// The other tasks, for the parent menu and the subtasks.
     pub others: Vec<Todo>,
-    /// Today, for the due date keywords and the Today and Tomorrow buttons.
+    /// Today, for the due keywords and chips.
     today: NaiveDate,
     draft: Draft,
-    /// The due date as typed. It can be unfinished or invalid; then the draft keeps its last
-    /// valid due and saving is blocked.
-    due_text: String,
-    /// The notes editor. `draft.notes` mirrors its text.
+    /// The title editor; `draft.summary` mirrors its text on one line.
+    title: text_editor::Content,
+    /// The notes editor; `draft.notes` mirrors its text.
     notes: text_editor::Content,
+    /// The date typed into the due card. It can be unfinished or invalid; then the draft keeps
+    /// its last valid due and saving is blocked.
+    due_text: String,
+    /// The property editor that is open.
+    open: Option<Editor>,
     /// Set by the first press on Delete; the second press confirms.
     confirm_delete: bool,
+    /// A save is under way; the next one waits for its answer (new etag).
+    saving: bool,
+    /// The last task handed out to be saved, so an unchanged draft is not sent again.
+    sent: Option<Todo>,
+    /// A save was asked for: from now on problems are shown.
+    attempted: bool,
+}
+
+/// The property editors that open as a floating layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Editor {
+    Priority,
+    Due,
+    List,
+    Parent,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    TitleChanged(String),
-    DoneToggled(bool),
-    ListSelected(ListChoice),
+    TitleEdited(text_editor::Action),
+    /// Enter in the title: save now.
+    TitleSubmit,
+    NotesEdited(text_editor::Action),
+    /// Save title and notes if they changed (the autosave tick, Escape in a field).
+    Flush,
+    /// Tick or untick the task itself.
+    ToggleDone,
+    /// Open a property editor; a second click closes it.
+    Open(Editor),
+    /// Close the open editor (click beside it).
+    CloseEditor,
+    PrioritySelected(Priority),
+    /// A [`Collection::id`].
+    ListSelected(String),
+    /// The parent's uid, `None` for none.
+    ParentSelected(Option<String>),
     DueChanged(String),
+    /// Enter in the date field: take the date and close the card.
+    DueSubmit,
     DueToday,
     DueTomorrow,
+    DueNextWeek,
     DueRemove,
-    PrioritySelected(Priority),
-    ParentSelected(ParentChoice),
-    NotesEdited(text_editor::Action),
-    Save,
+    /// Tick or untick the subtask with this uid.
+    ToggleSubtask(String),
+    /// Open the subtask with this uid in the detail.
+    OpenSubtask(String),
     Delete,
     CancelDelete,
     ConfirmDelete,
+    /// Close the detail.
     Close,
+    /// Escape: closes the innermost open thing (editor, delete question, then the detail).
+    Escape,
 }
 
 /// What the app should do after an update.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     None,
+    /// Save this task (the core's `save_todo`); report the answer with [`Detail::stored`] or
+    /// [`Detail::save_failed`].
     Save(Todo),
     Delete(Todo),
+    /// Close the detail; the app saves [`Detail::leave`] first.
     Close,
+    /// Tick or untick the task with this uid (a subtask), as the list does.
+    ToggleDone(String),
+    /// Show the task with this uid in the detail instead.
+    Show(String),
+    /// Give the keyboard focus to the widget with this id.
+    Focus(&'static str),
 }
 
-/// The priorities the pick list offers. iCalendar has nine levels; the app uses these four.
+/// The priorities the menu offers. iCalendar has nine levels; the app uses these four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Priority {
     None,
@@ -87,7 +156,7 @@ pub enum Priority {
     High,
 }
 
-const PRIORITIES: [Priority; 4] = [Priority::None, Priority::Low, Priority::Medium, Priority::High];
+const PRIORITIES: [Priority; 4] = [Priority::None, Priority::High, Priority::Medium, Priority::Low];
 
 impl Priority {
     /// The iCalendar priority stored for this choice; `None` means undefined.
@@ -110,42 +179,30 @@ impl Priority {
             _ => Priority::None,
         }
     }
-}
 
-impl fmt::Display for Priority {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Priority::None => tr("None"),
+    /// The short name, for chips and the menu.
+    fn label(self) -> &'static str {
+        match self {
+            Priority::None => tr("No priority"),
             Priority::Low => tr("Low"),
             Priority::Medium => tr("Medium"),
             Priority::High => tr("High"),
-        })
+        }
     }
-}
 
-/// An entry of the list pick list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListChoice {
-    id: String,
-    name: String,
-}
-
-impl fmt::Display for ListChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.name)
+    /// The long name, for the properties column ("Medium priority").
+    fn long_label(self) -> &'static str {
+        match self {
+            Priority::None => tr("No priority"),
+            Priority::Low => tr("Low priority"),
+            Priority::Medium => tr("Medium priority"),
+            Priority::High => tr("High priority"),
+        }
     }
-}
 
-/// An entry of the parent pick list. `uid` is `None` for "No parent task".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParentChoice {
-    uid: Option<String>,
-    title: String,
-}
-
-impl fmt::Display for ParentChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.title)
+    /// How many of the three bars are lit.
+    fn level(self) -> usize {
+        list::priority_level(self.to_todo())
     }
 }
 
@@ -164,35 +221,78 @@ struct Draft {
 }
 
 impl Detail {
+    /// The detail of `todo`; `lists` are the writable task lists, `all` every loaded task.
     pub fn new(todo: &Todo, lists: &[Collection], all: &[Todo]) -> Detail {
         let draft = draft_of(todo);
         Detail {
             original: todo.clone(),
             lists: lists.to_vec(),
-            others: all.iter().filter(|t| t.uid != todo.uid).cloned().collect(),
+            others: others_of(todo, all),
             today: Local::now().date_naive(),
-            due_text: todo.due.map(|due| datetime::format_date(due_day(due))).unwrap_or_default(),
+            title: text_editor::Content::with_text(&draft.summary),
             notes: text_editor::Content::with_text(&draft.notes),
+            due_text: due_input(draft.due),
             draft,
+            open: None,
             confirm_delete: false,
+            saving: false,
+            sent: None,
+            attempted: false,
         }
     }
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::TitleChanged(summary) => self.draft.summary = summary,
-            Message::DoneToggled(completed) => self.draft.completed = completed,
-            Message::ListSelected(list) => {
+            Message::TitleEdited(action) => {
+                self.title.perform(action);
+                // A title is one line; pasted line breaks become spaces.
+                self.draft.summary = self.title.text().replace(['\r', '\n'], " ");
+            }
+            Message::TitleSubmit => return self.request_save(true),
+            Message::NotesEdited(action) => {
+                self.notes.perform(action);
+                self.draft.notes = self.notes.text();
+            }
+            Message::Flush => return self.request_save(false),
+            Message::ToggleDone => {
+                self.draft.completed = !self.draft.completed;
+                return self.request_save(true);
+            }
+            Message::Open(editor) => {
+                self.confirm_delete = false;
+                if self.open == Some(editor) {
+                    self.open = None;
+                } else {
+                    self.open = Some(editor);
+                    if editor == Editor::Due {
+                        return Action::Focus(DUE_INPUT);
+                    }
+                }
+            }
+            Message::CloseEditor => self.open = None,
+            Message::PrioritySelected(priority) => {
+                self.open = None;
+                self.draft.priority = priority;
+                return self.request_save(true);
+            }
+            Message::ListSelected(id) => {
+                self.open = None;
                 // A parent in another list cannot stay: the server keeps parents within a list.
                 let parent_fits = self
                     .draft
                     .parent
                     .as_ref()
-                    .is_none_or(|uid| self.others.iter().any(|t| &t.uid == uid && t.collection == list.id));
+                    .is_none_or(|uid| self.others.iter().any(|t| &t.uid == uid && t.collection == id));
                 if !parent_fits {
                     self.draft.parent = None;
                 }
-                self.draft.collection = list.id;
+                self.draft.collection = id;
+                return self.request_save(true);
+            }
+            Message::ParentSelected(parent) => {
+                self.open = None;
+                self.draft.parent = parent;
+                return self.request_save(true);
             }
             Message::DueChanged(input) => {
                 if input.trim().is_empty() {
@@ -202,157 +302,559 @@ impl Detail {
                 }
                 self.due_text = input;
             }
-            Message::DueToday => self.set_due_day(self.today),
-            Message::DueTomorrow => self.set_due_day(self.today.succ_opt().unwrap_or(self.today)),
-            Message::DueRemove => {
-                self.draft.due = None;
-                self.due_text.clear();
-            }
-            Message::PrioritySelected(priority) => self.draft.priority = priority,
-            Message::ParentSelected(parent) => self.draft.parent = parent.uid,
-            Message::NotesEdited(action) => {
-                self.notes.perform(action);
-                self.draft.notes = self.notes.text();
-            }
-            Message::Save => {
-                if self.problem().is_some() {
-                    return Action::None;
+            Message::DueSubmit => {
+                if due_text_ok(&self.due_text, self.today) {
+                    self.open = None;
                 }
-                return Action::Save(build_todo(&self.original, &self.draft));
+                return self.request_save(true);
             }
-            Message::Delete => self.confirm_delete = true,
+            Message::DueToday => return self.pick_due(Some(self.today)),
+            Message::DueTomorrow => return self.pick_due(Some(self.today + Days::new(1))),
+            Message::DueNextWeek => return self.pick_due(Some(next_week(self.today))),
+            Message::DueRemove => return self.pick_due(None),
+            Message::ToggleSubtask(uid) => return Action::ToggleDone(uid),
+            Message::OpenSubtask(uid) => return Action::Show(uid),
+            Message::Delete => {
+                self.open = None;
+                self.confirm_delete = true;
+            }
             Message::CancelDelete => self.confirm_delete = false,
             Message::ConfirmDelete => {
                 self.confirm_delete = false;
                 return Action::Delete(self.original.clone());
             }
             Message::Close => return Action::Close,
+            Message::Escape => {
+                if self.open.is_some() {
+                    self.open = None;
+                } else if self.confirm_delete {
+                    self.confirm_delete = false;
+                } else {
+                    return Action::Close;
+                }
+            }
         }
         Action::None
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
-        let title = text_input(tr("Title"), &self.draft.summary)
-            .on_input(Message::TitleChanged)
-            .on_submit(Message::Save)
-            .size(18)
-            .padding(8);
-        let done = checkbox(self.draft.completed).label(tr("Done")).on_toggle(Message::DoneToggled);
-        let lists = self.list_choices();
-        let selected_list = lists.iter().find(|list| list.id == self.draft.collection).cloned();
-        let list = pick_list(lists, selected_list, Message::ListSelected).width(Length::Fill);
+    /// The task to save when the detail is closed or replaced: the draft if it changed, can be
+    /// saved and no save is under way. An empty title or unreadable date is dropped, as Linear
+    /// drops an empty title.
+    pub fn leave(&self) -> Option<Todo> {
+        (!self.saving && self.problem().is_none() && self.changed()).then(|| self.next())
+    }
 
-        let due = text_input(tr("Date, e.g. 11.10.2026 or tomorrow"), &self.due_text)
-            .on_input(Message::DueChanged)
-            .padding(8);
-        let due_buttons = row![
-            button(text(tr("Today"))).style(button::secondary).on_press(Message::DueToday),
-            button(text(tr("Tomorrow"))).style(button::secondary).on_press(Message::DueTomorrow),
-            button(text(tr("Remove"))).style(button::secondary).on_press(Message::DueRemove),
-        ]
-        .spacing(6);
+    /// Whether the app should send [`Message::Flush`] after a short pause: title or notes
+    /// changed, they can be saved and no save is under way. The app subscribes to a timer only
+    /// while this holds, so an idle detail costs nothing.
+    pub fn wants_autosave(&self) -> bool {
+        !self.saving && self.problem().is_none() && self.changed()
+    }
 
-        let priority = pick_list(PRIORITIES, Some(self.draft.priority), Message::PrioritySelected).width(Length::Fill);
-
-        let parents = self.parent_choices();
-        let selected_parent = parents.iter().find(|parent| parent.uid == self.draft.parent).cloned();
-        let parent = pick_list(parents, selected_parent, Message::ParentSelected).width(Length::Fill);
-
-        let notes = text_editor(&self.notes).on_action(Message::NotesEdited).height(Length::Fixed(140.0)).padding(8);
-
-        let mut body = column![
-            section_title(tr("Title")),
-            title,
-            done,
-            section_title(tr("List")),
-            list,
-            section_title(tr("Due")),
-            due,
-            due_buttons,
-        ]
-        .spacing(8);
-        if let Some(due) = self.draft.due {
-            body = body.push(self.due_hint(due));
+    /// The app's answer to [`Action::Save`] (or any other save of this task, e.g. a tick in the
+    /// list): `saved` is the stored version. Our own save keeps the draft (the user may have typed
+    /// on) and sends what changed meanwhile; a save from elsewhere replaces the draft.
+    pub fn stored(&mut self, saved: &Todo) -> Action {
+        if !self.saving {
+            self.reset(saved);
+            return Action::None;
         }
-        body = body.push(column![section_title(tr("Priority")), priority].spacing(8));
-        body = body.push(column![section_title(tr("Parent task")), parent].spacing(8));
-        body = body.push(column![section_title(tr("Notes")), notes].spacing(8));
-        if let Some(problem) = self.problem() {
-            body = body.push(text(problem).size(13).color(theme::attention()));
-        }
-        body = body.push(self.actions());
+        self.saving = false;
+        self.original = saved.clone();
+        self.request_save(false)
+    }
 
-        let panel = scrollable(body.padding(16).width(Length::Fill)).width(Length::Fill).height(Length::Fill);
-        container(panel)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| container::Style { background: Some(Background::Color(theme::SURFACE)), ..Default::default() })
-            .into()
+    /// The app's answer to a failed [`Action::Save`]: the draft stays, the next change tries again.
+    pub fn save_failed(&mut self) {
+        self.saving = false;
+    }
+
+    /// After a reload: the new lists and tasks. When nothing is pending, a version of this task
+    /// changed elsewhere replaces the draft.
+    pub fn refresh(&mut self, lists: &[Collection], all: &[Todo]) {
+        self.lists = lists.to_vec();
+        self.others = others_of(&self.original, all);
+        let loaded = all.iter().find(|t| t.uid == self.original.uid);
+        if let Some(loaded) = loaded
+            && !self.saving
+            && !self.changed()
+            && loaded != &self.original
+        {
+            self.reset(loaded);
+        }
+    }
+
+    /// Starts a version from `todo`, dropping the draft.
+    fn reset(&mut self, todo: &Todo) {
+        let draft = draft_of(todo);
+        if draft != self.draft {
+            self.title = text_editor::Content::with_text(&draft.summary);
+            self.notes = text_editor::Content::with_text(&draft.notes);
+            self.due_text = due_input(draft.due);
+            self.draft = draft;
+        }
+        self.original = todo.clone();
+        self.sent = None;
+    }
+
+    /// The task as it would be saved now.
+    fn next(&self) -> Todo {
+        build_todo(&self.original, &self.draft)
+    }
+
+    /// Whether the draft differs from the stored task and from what was last sent.
+    fn changed(&self) -> bool {
+        let next = self.next();
+        next != self.original && self.sent.as_ref() != Some(&next)
+    }
+
+    /// A save if the draft can and needs to be saved. `explicit` is a request by the user
+    /// (Enter, a property change): from then on problems are shown.
+    fn request_save(&mut self, explicit: bool) -> Action {
+        if self.problem().is_some() {
+            self.attempted |= explicit;
+            return Action::None;
+        }
+        if self.saving || !self.changed() {
+            return Action::None;
+        }
+        let next = self.next();
+        self.saving = true;
+        self.sent = Some(next.clone());
+        Action::Save(next)
+    }
+
+    fn pick_due(&mut self, day: Option<NaiveDate>) -> Action {
+        self.open = None;
+        self.draft.due = day.map(|day| due_with_date(self.draft.due, day));
+        self.due_text = due_input(self.draft.due);
+        self.request_save(true)
     }
 
     /// Why the draft cannot be saved yet; `None` when it can.
     fn problem(&self) -> Option<&'static str> {
-        if self.draft.summary.trim().is_empty() {
-            Some(tr("Enter a title."))
-        } else if !due_text_ok(&self.due_text, self.today) {
-            Some(tr("Date not understood. Try 11.10.2026, today or tomorrow."))
+        self.title_problem().or_else(|| self.due_problem())
+    }
+
+    fn title_problem(&self) -> Option<&'static str> {
+        self.draft.summary.trim().is_empty().then(|| tr("Enter a title."))
+    }
+
+    fn due_problem(&self) -> Option<&'static str> {
+        (!due_text_ok(&self.due_text, self.today))
+            .then(|| tr("Date not understood. Try 11.10.2026, today or tomorrow."))
+    }
+
+    /// A problem, once the user asked for a save.
+    fn shown(&self, problem: Option<&'static str>) -> Option<&'static str> {
+        problem.filter(|_| self.attempted)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // View
+    // -----------------------------------------------------------------------------------------
+
+    /// The main column for the layout `class`: crumb, title, chips (unless `class` has the
+    /// properties column), notes, subtasks, delete. `filter` is the list's current filter name for
+    /// the crumb (`None` when the filter is the task's own list). `anchor` is registered by the
+    /// trigger of the open editor; pass the same one to [`Detail::layer`].
+    ///
+    /// `p` is the palette of the current mode, for the marks that take a fixed colour.
+    pub fn view<'a>(
+        &'a self,
+        class: SizeClass,
+        filter: Option<String>,
+        anchor: &Anchor,
+        p: &'static Palette,
+    ) -> Element<'a, Message> {
+        let mut head = column![self.crumb(filter, class), self.title_field()].spacing(space::S);
+        if let Some(problem) = self.shown(self.title_problem()) {
+            head = head.push(error_text(problem));
+        }
+        // As in the mock-up: the notes follow the title closely (8) and keep a little more room
+        // (16) below the chips.
+        let notes_gap = if shell::has_props(class) {
+            space::S
         } else {
-            None
+            head = head.push(self.chips(anchor, p));
+            space::L
+        };
+        let mut body = column![column![head, self.notes_field()].spacing(notes_gap)].spacing(space::XL);
+        if let Some(subtasks) = self.subtasks_view() {
+            body = body.push(subtasks);
         }
+        body = body.push(self.delete_row());
+
+        let padding = match class {
+            SizeClass::Wide => space::XXL,
+            SizeClass::Medium => space::XL,
+            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => space::L,
+        };
+        let page = container(body.max_width(size::FORM_MAX)).width(Fill).padding(padding);
+        scrollable(page)
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill)
+            .into()
     }
 
-    fn set_due_day(&mut self, day: NaiveDate) {
-        self.draft.due = Some(due_with_date(self.draft.due, day));
-        self.due_text = datetime::format_date(day);
-    }
-
-    /// Under the due field: the time a date-time due keeps when only the date changes.
-    fn due_hint<'a>(&self, due: EventTime) -> Element<'a, Message> {
-        match due {
-            EventTime::Date(_) => Space::new().into(),
-            EventTime::DateTime(at) => {
-                let time = datetime::format_time(datetime::to_local(at).time());
-                text(trf("Time {time} is kept", &[("time", &time)])).size(13).color(theme::MUTED).into()
-            }
-        }
-    }
-
-    /// Delete on the left; Close and Save on the right. After the first Delete press the row
-    /// asks for confirmation instead.
-    fn actions(&self) -> Element<'_, Message> {
-        if self.confirm_delete {
-            return column![
-                text(tr("Really delete?")),
-                row![
-                    button(text(tr("Delete"))).style(button::danger).on_press(Message::ConfirmDelete),
-                    button(text(tr("Cancel"))).style(button::secondary).on_press(Message::CancelDelete),
-                ]
-                .spacing(8),
-            ]
-            .spacing(8)
-            .into();
-        }
-        let save = button(text(tr("Save")))
-            .style(button::primary)
-            .on_press_maybe(self.problem().is_none().then_some(Message::Save));
-        row![
-            button(text(tr("Delete"))).style(button::danger).on_press(Message::Delete),
-            Space::new().width(Length::Fill),
-            button(text(tr("Close"))).style(button::secondary).on_press(Message::Close),
-            save,
+    /// The properties column of the wide layout: "Properties" (status, priority, due), "List" and
+    /// "Parent task", as `prop_section`s.
+    pub fn properties<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
+        let priority = self.draft.priority;
+        let status = widgets::prop_row(
+            None,
+            row![self.check(), typo::text(typo::BODY, self.status_label())]
+                .spacing(space::S)
+                .align_y(Alignment::Center),
+            Some(Message::ToggleDone),
+        );
+        let priority_row = self.trigger(
+            Editor::Priority,
+            anchor,
+            widgets::prop_row(
+                None,
+                row![bars_cell(priority.level()), typo::text(typo::BODY, priority.long_label())]
+                    .spacing(space::S)
+                    .align_y(Alignment::Center),
+                Some(Message::Open(Editor::Priority)),
+            ),
+        );
+        let due = self.trigger(
+            Editor::Due,
+            anchor,
+            widgets::prop_row(Some(Mark::Icon(Icon::Calendar)), self.due_value(), Some(Message::Open(Editor::Due))),
+        );
+        let list_row = self.trigger(
+            Editor::List,
+            anchor,
+            widgets::prop_row(
+                Some(Mark::Ring(self.list_colour())),
+                typo::text(typo::BODY, self.list_name()),
+                self.can_move().then_some(Message::Open(Editor::List)),
+            ),
+        );
+        let parent = self.trigger(
+            Editor::Parent,
+            anchor,
+            widgets::prop_row(
+                Some(Mark::Icon(Icon::ListTodo)),
+                self.parent_value(),
+                Some(Message::Open(Editor::Parent)),
+            ),
+        );
+        column![
+            widgets::prop_section(tr("Properties"), vec![status, priority_row, due]),
+            widgets::prop_section(tr("List"), vec![list_row]),
+            widgets::prop_section(tr("Parent task"), vec![parent]),
         ]
-        .spacing(8)
+        .spacing(space::L)
         .into()
     }
 
-    fn list_choices(&self) -> Vec<ListChoice> {
-        self.lists.iter().map(|list| ListChoice { id: list.id.clone(), name: list.name.clone() }).collect()
+    /// The open editor as a floating layer next to `anchor`, or `None`. Hand it to the shell's
+    /// overlay; a click beside it sends [`Message::CloseEditor`].
+    pub fn layer<'a>(&'a self, anchor: &Anchor) -> Option<Element<'a, Message>> {
+        let card = match self.open? {
+            Editor::Priority => self.priority_menu(),
+            Editor::List => self.list_menu(),
+            Editor::Parent => self.parent_menu(),
+            Editor::Due => self.due_card(),
+        };
+        Some(widgets::floating(anchor, Placement::Below(Align::Start), card, Message::CloseEditor))
+    }
+
+    /// "● Work › Today" in `META` `text_3`, and in the side-by-side layouts a close button.
+    fn crumb<'a>(&'a self, filter: Option<String>, class: SizeClass) -> Element<'a, Message> {
+        let mut crumb =
+            row![ring(self.list_colour()), muted(self.list_name())].spacing(ICON_GAP).align_y(Alignment::Center);
+        if let Some(filter) = filter {
+            crumb = crumb.push(quiet_icon(Icon::ChevronRight, icon::SIZE_SM)).push(muted(filter));
+        }
+        let mut line = row![crumb, Space::new().width(Fill)].align_y(Alignment::Center);
+        // Narrow shows "‹ Back" in the header instead.
+        if matches!(class, SizeClass::Wide | SizeClass::Medium) {
+            line = line.push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Close)));
+        }
+        container(line).height(size::CONTROL_SM).center_y(size::CONTROL_SM).into()
+    }
+
+    /// The title as a large borderless field that wraps; Enter saves, Escape leaves the field.
+    fn title_field(&self) -> Element<'_, Message> {
+        text_editor(&self.title)
+            .placeholder(tr("Task title"))
+            .on_action(Message::TitleEdited)
+            .key_binding(|press| match press.key.as_ref() {
+                // Only while the field has focus: otherwise Enter and Escape belong to the window
+                // (open a task, close the detail).
+                _ if !is_focused(&press) => text_editor::Binding::from_key_press(press),
+                keyboard::Key::Named(keyboard::key::Named::Enter) => Some(text_editor::Binding::Sequence(vec![
+                    text_editor::Binding::Custom(Message::TitleSubmit),
+                    text_editor::Binding::Unfocus,
+                ])),
+                keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
+                _ => text_editor::Binding::from_key_press(press),
+            })
+            .font(typo::HEADLINE.font)
+            .size(typo::HEADLINE.size)
+            .line_height(typo::HEADLINE.line_height)
+            .padding(Padding::ZERO)
+            .wrapping(Wrapping::WordOrGlyph)
+            .style(|t, s| bare_editor(t, s, palette(t).text))
+            .into()
+    }
+
+    /// The notes as a quiet field in `text_2`, without a frame.
+    fn notes_field(&self) -> Element<'_, Message> {
+        text_editor(&self.notes)
+            .placeholder(tr("Add notes …"))
+            .on_action(Message::NotesEdited)
+            .key_binding(|press| match press.key.as_ref() {
+                _ if !is_focused(&press) => text_editor::Binding::from_key_press(press),
+                keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
+                _ => text_editor::Binding::from_key_press(press),
+            })
+            .font(typo::BODY.font)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .padding(Padding::ZERO)
+            .wrapping(Wrapping::WordOrGlyph)
+            .style(|t, s| bare_editor(t, s, palette(t).text_2))
+            .into()
+    }
+
+    /// The properties as chips under the title (medium and narrow layouts).
+    fn chips<'a>(&'a self, anchor: &Anchor, p: &'static Palette) -> Element<'a, Message> {
+        let priority = self.draft.priority;
+        let status_mark = if self.draft.completed {
+            Mark::Tinted(Icon::CircleCheck, self.list_colour())
+        } else {
+            Mark::Ring(p.text_3)
+        };
+        let status = widgets::chip(Some(status_mark), self.status_label(), Some(Message::ToggleDone));
+        let priority = self.trigger(
+            Editor::Priority,
+            anchor,
+            lead_chip(bars_cell(priority.level()), priority.label(), Message::Open(Editor::Priority)),
+        );
+        let due = self.trigger(
+            Editor::Due,
+            anchor,
+            widgets::chip(Some(Mark::Icon(Icon::Calendar)), self.due_label(), Some(Message::Open(Editor::Due))),
+        );
+        let list = self.trigger(
+            Editor::List,
+            anchor,
+            widgets::chip(
+                Some(Mark::Ring(self.list_colour())),
+                self.list_name(),
+                self.can_move().then_some(Message::Open(Editor::List)),
+            ),
+        );
+        // A task without a parent offers "+ Parent" in quiet text instead of an empty "Parent task" chip.
+        let parent_chip = match self.parent_title() {
+            Some(title) => widgets::chip(Some(Mark::Icon(Icon::ListTodo)), title, Some(Message::Open(Editor::Parent))),
+            None => add_chip(tr("Parent"), Message::Open(Editor::Parent)),
+        };
+        let parent = self.trigger(Editor::Parent, anchor, parent_chip);
+        widgets::chip_row(vec![status, priority, due, list, parent])
+    }
+
+    /// `content` anchored when `editor` is the open one, so its layer floats next to it.
+    fn trigger<'a>(&self, editor: Editor, anchor: &Anchor, content: Element<'a, Message>) -> Element<'a, Message> {
+        if self.open == Some(editor) { widgets::anchored(anchor, content) } else { content }
+    }
+
+    /// The round check of the task itself, in the list's colour.
+    fn check(&self) -> Element<'_, Message> {
+        checkbox(self.draft.completed)
+            .size(style::CHECK_SIZE)
+            .style(style::task_check(self.list_colour()))
+            .on_toggle(|_| Message::ToggleDone)
+            .into()
+    }
+
+    fn status_label(&self) -> &'static str {
+        if self.draft.completed { tr("Done") } else { tr("Open") }
+    }
+
+    fn due_label(&self) -> String {
+        match self.draft.due {
+            Some(due) => list::due_text(due, self.today),
+            None => tr("No due date").to_string(),
+        }
+    }
+
+    fn due_value(&self) -> Element<'_, Message> {
+        let label = typo::text(typo::BODY.tabular(), self.due_label());
+        if self.draft.due.is_some() { label.into() } else { label.style(theme::text_3).into() }
+    }
+
+    fn parent_value(&self) -> Element<'_, Message> {
+        match self.parent_title() {
+            Some(title) => {
+                container(typo::text(typo::BODY, title).wrapping(Wrapping::None)).width(Fill).clip(true).into()
+            }
+            None => typo::text(typo::BODY, tr("No parent task")).style(theme::text_3).into(),
+        }
+    }
+
+    /// The parent's title; "Unknown task" for a parent that is not loaded.
+    fn parent_title(&self) -> Option<String> {
+        let uid = self.draft.parent.as_ref()?;
+        Some(
+            self.others
+                .iter()
+                .find(|t| &t.uid == uid)
+                .map_or_else(|| tr("Unknown task").to_string(), |t| t.summary.clone()),
+        )
+    }
+
+    fn list(&self) -> Option<&Collection> {
+        self.lists.iter().find(|c| c.id == self.draft.collection)
+    }
+
+    fn list_name(&self) -> String {
+        self.list().map_or_else(|| tr("List").to_string(), |c| c.name.clone())
+    }
+
+    fn list_colour(&self) -> Color {
+        widgets::collection_color(self.list().and_then(|c| c.color.as_deref()))
+    }
+
+    /// Moving needs another writable list.
+    fn can_move(&self) -> bool {
+        self.lists.len() > 1
+    }
+
+    /// "Sub-tasks 1/3" and one row per subtask; `None` without subtasks.
+    fn subtasks_view(&self) -> Option<Element<'_, Message>> {
+        let subtasks = self.subtasks();
+        if subtasks.is_empty() {
+            return None;
+        }
+        let done = subtasks.iter().filter(|t| t.completed).count();
+        let progress = format!("{done}/{}", subtasks.len());
+        let head = row![
+            typo::text(typo::CAPTION, tr("Sub-tasks")).style(theme::text_3),
+            typo::text(typo::META.tabular(), progress).style(theme::text_3)
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+        let colour = self.list_colour();
+        let rows = subtasks.into_iter().map(|task| subtask_row(task, colour));
+        Some(column![container(head).padding(Padding::ZERO.bottom(space::XS))].extend(rows).into())
+    }
+
+    /// The direct subtasks, open first, then by title.
+    fn subtasks(&self) -> Vec<&Todo> {
+        let mut subtasks: Vec<&Todo> =
+            self.others.iter().filter(|t| t.parent.as_deref() == Some(self.original.uid.as_str())).collect();
+        subtasks.sort_by_key(|t| (t.completed, t.summary.to_lowercase()));
+        subtasks
+    }
+
+    /// "Delete task" (danger); after the first press the question with Delete and Cancel.
+    fn delete_row(&self) -> Element<'_, Message> {
+        if !self.confirm_delete {
+            let delete = widgets::text_button(None, tr("Delete task"), style::button::danger, Some(Message::Delete));
+            return on_axis(delete);
+        }
+        row![
+            typo::text(typo::BODY, tr("Really delete?")).style(theme::text_2),
+            widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete)),
+            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Center)
+        .into()
+    }
+
+    fn priority_menu(&self) -> Element<'_, Message> {
+        let items = PRIORITIES
+            .into_iter()
+            .map(|choice| MenuItem {
+                mark: None,
+                label: choice.label().into(),
+                trail: Trail::None,
+                current: choice == self.draft.priority,
+                on_press: Message::PrioritySelected(choice),
+            })
+            .collect();
+        widgets::menu(vec![MenuSection::titled(tr("Priority"), items)])
+    }
+
+    fn list_menu(&self) -> Element<'_, Message> {
+        let items = self
+            .lists
+            .iter()
+            .map(|list| {
+                MenuItem::new(
+                    Mark::Ring(widgets::collection_color(list.color.as_deref())),
+                    list.name.clone(),
+                    Message::ListSelected(list.id.clone()),
+                )
+                .current(list.id == self.draft.collection)
+            })
+            .collect();
+        widgets::menu(vec![MenuSection::titled(tr("Move to list"), items)])
+    }
+
+    /// "No parent task" and the possible parents; long menus scroll.
+    fn parent_menu(&self) -> Element<'_, Message> {
+        let items = self
+            .parent_choices()
+            .into_iter()
+            .map(|(uid, title)| MenuItem {
+                mark: None,
+                current: uid == self.draft.parent,
+                label: title.into(),
+                trail: Trail::None,
+                on_press: Message::ParentSelected(uid),
+            })
+            .collect();
+        let menu = widgets::menu(vec![MenuSection::titled(tr("Parent task"), items)]);
+        container(
+            scrollable(menu).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
+        )
+        .max_height(style::MENU_ITEM_HEIGHT * PARENT_MENU_ROWS)
+        .into()
+    }
+
+    /// The due card: quick choices as chips, then a field for any date.
+    fn due_card(&self) -> Element<'_, Message> {
+        let quick = widgets::chip_row(vec![
+            widgets::chip(None, tr("Today"), Some(Message::DueToday)),
+            widgets::chip(None, tr("Tomorrow"), Some(Message::DueTomorrow)),
+            widgets::chip(None, tr("Next week"), Some(Message::DueNextWeek)),
+            widgets::chip(None, tr("No date"), Some(Message::DueRemove)),
+        ]);
+        let field = text_input(tr("Pick a date, e.g. 11.10.2026"), &self.due_text)
+            .id(DUE_INPUT)
+            .on_input(Message::DueChanged)
+            .on_submit(Message::DueSubmit)
+            .padding(style::INPUT_PADDING)
+            .font(typo::BODY.font)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .style(style::text_input);
+        let mut card = column![widgets::section_title(tr("Due date")), quick, field].spacing(space::S);
+        if let Some(problem) = self.shown(self.due_problem()) {
+            card = card.push(error_text(problem));
+        } else if let Some(EventTime::DateTime(at)) = self.draft.due {
+            let time = datetime::format_time(datetime::to_local(at).time());
+            card =
+                card.push(typo::text(typo::META, trf("Time {time} is kept", &[("time", &time)])).style(theme::text_3));
+        }
+        // As wide as a floating card, so the four quick choices fit on one line.
+        container(card).width(widgets::POPOVER_WIDTH).padding(space::M).style(style::container::menu).into()
     }
 
     /// "No parent task", then the other tasks of the draft's list by title, without this task
     /// and its subtasks (they would make a cycle). A parent the list does not offer stays as
     /// "Unknown task", so the saved task keeps it.
-    fn parent_choices(&self) -> Vec<ParentChoice> {
+    fn parent_choices(&self) -> Vec<(Option<String>, String)> {
         let excluded = self.descendants();
         let mut tasks: Vec<&Todo> = self
             .others
@@ -361,15 +863,15 @@ impl Detail {
             .collect();
         tasks.sort_by_key(|t| t.summary.to_lowercase());
 
-        let mut choices = vec![ParentChoice { uid: None, title: tr("No parent task").to_string() }];
-        choices.extend(tasks.into_iter().map(|t| ParentChoice { uid: Some(t.uid.clone()), title: t.summary.clone() }));
+        let mut choices = vec![(None, tr("No parent task").to_string())];
+        choices.extend(tasks.into_iter().map(|t| (Some(t.uid.clone()), t.summary.clone())));
         let unknown = self
             .draft
             .parent
             .as_ref()
-            .filter(|uid| !choices.iter().any(|choice| choice.uid.as_deref() == Some(uid.as_str())));
+            .filter(|uid| !choices.iter().any(|(choice, _)| choice.as_deref() == Some(uid.as_str())));
         if let Some(uid) = unknown {
-            choices.push(ParentChoice { uid: Some(uid.clone()), title: tr("Unknown task").to_string() });
+            choices.push((Some(uid.clone()), tr("Unknown task").to_string()));
         }
         choices
     }
@@ -389,6 +891,109 @@ impl Detail {
     }
 }
 
+/// One subtask: round check in the list colour, the title (struck through when done) as a button
+/// that opens it; 32 high with a line below.
+fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
+    let uid = task.uid.clone();
+    let check = checkbox(task.completed)
+        .size(style::CHECK_SIZE)
+        .style(style::task_check(colour))
+        .on_toggle(move |_| Message::ToggleSubtask(uid.clone()));
+    let title = button(container(list::title_view(task)).width(Fill).clip(true).center_y(Fill))
+        .width(Fill)
+        .height(size::CONTROL - LINE)
+        .padding(style::ITEM_PADDING)
+        .style(style::button::list_row(false))
+        .on_press(Message::OpenSubtask(task.uid.clone()));
+    column![row![check, title].align_y(Alignment::Center), rule::horizontal(LINE).style(style::rule)].into()
+}
+
+/// Escape in a text field: leave it and save what was typed.
+/// Whether the editor that got `press` has the keyboard focus.
+fn is_focused(press: &text_editor::KeyPress) -> bool {
+    matches!(press.status, text_editor::Status::Focused { .. })
+}
+
+fn leave_field() -> text_editor::Binding<Message> {
+    text_editor::Binding::Sequence(vec![text_editor::Binding::Unfocus, text_editor::Binding::Custom(Message::Flush)])
+}
+
+/// A text editor without frame or surface (Linear's title and description): text in `value`,
+/// placeholder `text_3`. Focus shows as the caret; the field sits where its text is.
+fn bare_editor(theme: &Theme, status: text_editor::Status, value: Color) -> text_editor::Style {
+    let p = palette(theme);
+    let base = style::text_editor(theme, status);
+    let faded = matches!(status, text_editor::Status::Disabled);
+    text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: border::rounded(0).width(0).color(Color::TRANSPARENT),
+        placeholder: p.text_3,
+        value: if faded { value.scale_alpha(style::DISABLED_ALPHA) } else { value },
+        ..base
+    }
+}
+
+/// A chip whose mark is an element of its own (the priority bars); looks like `widgets::chip`.
+fn lead_chip<'a>(lead: Element<'a, Message>, label: &'a str, on_press: Message) -> Element<'a, Message> {
+    let content =
+        row![lead, typo::text(typo::META, label).wrapping(Wrapping::None)].spacing(ICON_GAP).align_y(Alignment::Center);
+    let chip =
+        container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
+    mouse_area(chip).on_press(on_press).into()
+}
+
+/// A chip that offers to add something ("+ Parent"): plus and label in `text_3`, otherwise as
+/// `widgets::chip`, so it reads as an empty slot rather than a value.
+fn add_chip<'a>(label: &'a str, on_press: Message) -> Element<'a, Message> {
+    let content = row![quiet_icon(Icon::Plus, icon::SIZE_SM), muted(label.to_string())]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
+    let chip =
+        container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
+    mouse_area(chip).on_press(on_press).into()
+}
+
+/// A text button moved left by its own padding, so its label stands on the content axis (the
+/// title, the notes) instead of 10 to the right of it; the hover surface reaches into the margin.
+fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
+}
+
+/// The priority bars in a 16-wide cell, so they line up with the icons of the other rows.
+fn bars_cell<'a>(level: usize) -> Element<'a, Message> {
+    container(list::priority_view(level)).center_x(icon::SIZE).into()
+}
+
+/// A ring in `colour` (a task list), as in the mock-up's crumb.
+fn ring<'a>(colour: Color) -> Element<'a, Message> {
+    container(Space::new())
+        .width(CRUMB_RING)
+        .height(CRUMB_RING)
+        .style(move |_| container::Style {
+            border: border::rounded(CRUMB_RING / 2.0).color(colour).width(RING_LINE),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+fn quiet_icon<'a>(which: Icon, edge: f32) -> Element<'a, Message> {
+    icon::icon(which, edge).style(|t, _| svg::Style { color: Some(palette(t).text_3) }).into()
+}
+
+fn muted<'a>(label: String) -> Element<'a, Message> {
+    typo::text(typo::META, label).style(theme::text_3).wrapping(Wrapping::None).into()
+}
+
+fn error_text<'a>(problem: &'a str) -> Element<'a, Message> {
+    typo::text(typo::META, problem)
+        .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) })
+        .into()
+}
+
+fn others_of(todo: &Todo, all: &[Todo]) -> Vec<Todo> {
+    all.iter().filter(|t| t.uid != todo.uid).cloned().collect()
+}
+
 fn draft_of(todo: &Todo) -> Draft {
     Draft {
         summary: todo.summary.clone(),
@@ -402,9 +1007,15 @@ fn draft_of(todo: &Todo) -> Draft {
 }
 
 /// The task as it is saved: the loaded task with the draft's fields. `uid`, `href` and `etag`
-/// stay as loaded; the etag is what the server checks the write against.
+/// stay as loaded; the etag is what the server checks the write against. A stored priority that
+/// maps to the unchanged choice is kept as it was.
 fn build_todo(original: &Todo, draft: &Draft) -> Todo {
     let notes = draft.notes.trim_end();
+    let priority = if Priority::from_todo(original.priority) == draft.priority {
+        original.priority
+    } else {
+        draft.priority.to_todo()
+    };
     Todo {
         uid: original.uid.clone(),
         // On the server a move between lists is a delete plus a create. The core does that
@@ -414,7 +1025,7 @@ fn build_todo(original: &Todo, draft: &Draft) -> Todo {
         etag: original.etag.clone(),
         summary: draft.summary.trim().to_string(),
         due: draft.due,
-        priority: draft.priority.to_todo(),
+        priority,
         completed: draft.completed,
         parent: draft.parent.clone(),
         description: (!notes.is_empty()).then(|| notes.to_string()),
@@ -429,6 +1040,11 @@ fn due_day(due: EventTime) -> NaiveDate {
     }
 }
 
+/// What the date field shows for `due`.
+fn due_input(due: Option<EventTime>) -> String {
+    due.map(|due| datetime::format_date(due_day(due))).unwrap_or_default()
+}
+
 /// The due after the user picks `day`. A date-time due keeps its local time of day; a date
 /// stays a date, and a new due is a whole day.
 fn due_with_date(current: Option<EventTime>, day: NaiveDate) -> EventTime {
@@ -441,6 +1057,11 @@ fn due_with_date(current: Option<EventTime>, day: NaiveDate) -> EventTime {
     }
 }
 
+/// "Next week": the first day of the next week (`datetime::week_start`), as in Things and Todoist.
+fn next_week(today: NaiveDate) -> NaiveDate {
+    datetime::week_start(today) + Days::new(7)
+}
+
 /// Empty is fine (no due); otherwise the text must be a date.
 fn due_text_ok(text: &str, today: NaiveDate) -> bool {
     text.trim().is_empty() || datetime::parse_date(text, today).is_some()
@@ -449,6 +1070,8 @@ fn due_text_ok(text: &str, today: NaiveDate) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
     use chrono::NaiveDateTime;
     use torro_pim::CollectionKind;
 
@@ -483,7 +1106,7 @@ mod tests {
         vec![list("work", "Work"), list("home", "Home")]
     }
 
-    /// The panel for `task`, with `others` next to it and today fixed to 11 October 2026.
+    /// The panel for `task`, with `others` next to it and today fixed to Sunday 11 October 2026.
     fn detail(task: &Todo, others: &[Todo]) -> Detail {
         let mut all = others.to_vec();
         all.push(task.clone());
@@ -492,16 +1115,30 @@ mod tests {
         detail
     }
 
-    /// The task the panel would save, or a panic when it does not save.
-    fn saved(detail: &mut Detail) -> Todo {
-        match detail.update(Message::Save) {
+    /// The task an update hands out to be saved, or a panic when it saves nothing.
+    fn saves(detail: &mut Detail, message: Message) -> Todo {
+        match detail.update(message) {
             Action::Save(todo) => todo,
             other => panic!("expected a save, got {other:?}"),
         }
     }
 
-    fn set_due(detail: &mut Detail, input: &str) {
-        detail.update(Message::DueChanged(input.into()));
+    /// The core's answer to a save: the same task with a new etag.
+    fn store(detail: &mut Detail, mut todo: Todo, etag: &str) -> Action {
+        todo.etag = Some(etag.into());
+        detail.stored(&todo)
+    }
+
+    fn type_title(detail: &mut Detail, title: &str) {
+        detail.update(Message::TitleEdited(text_editor::Action::SelectAll));
+        let paste = text_editor::Edit::Paste(Arc::new(title.to_string()));
+        detail.update(Message::TitleEdited(text_editor::Action::Edit(paste)));
+    }
+
+    fn type_notes(detail: &mut Detail, notes: &str) {
+        detail.update(Message::NotesEdited(text_editor::Action::SelectAll));
+        let paste = text_editor::Edit::Paste(Arc::new(notes.to_string()));
+        detail.update(Message::NotesEdited(text_editor::Action::Edit(paste)));
     }
 
     #[test]
@@ -510,13 +1147,20 @@ mod tests {
         task.href = Some("/cal/work/t1.ics".into());
         task.etag = Some("\"v7\"".into());
         let mut detail = detail(&task, &[]);
-        detail.update(Message::TitleChanged("  Buy oat milk  ".into()));
-        let todo = saved(&mut detail);
+        type_title(&mut detail, "  Buy oat milk  ");
+        let todo = saves(&mut detail, Message::TitleSubmit);
         assert_eq!(todo.uid, "t1");
         assert_eq!(todo.href.as_deref(), Some("/cal/work/t1.ics"));
         assert_eq!(todo.etag.as_deref(), Some("\"v7\""));
         assert_eq!(todo.collection, "work");
         assert_eq!(todo.summary, "Buy oat milk");
+    }
+
+    #[test]
+    fn pasted_line_breaks_stay_out_of_the_title() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        type_title(&mut detail, "two\nlines");
+        assert_eq!(saves(&mut detail, Message::TitleSubmit).summary, "two lines");
     }
 
     #[test]
@@ -552,19 +1196,26 @@ mod tests {
     }
 
     #[test]
-    fn chosen_priority_is_saved() {
+    fn chosen_priority_is_saved_at_once() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        detail.update(Message::PrioritySelected(Priority::Low));
-        assert_eq!(saved(&mut detail).priority, Some(9));
+        detail.update(Message::Open(Editor::Priority));
+        assert_eq!(saves(&mut detail, Message::PrioritySelected(Priority::Low)).priority, Some(9));
+        assert_eq!(detail.open, None, "picking closes the menu");
+    }
+
+    #[test]
+    fn an_unchanged_odd_priority_is_kept() {
+        let task = Todo { priority: Some(3), ..todo("t1", "a") };
+        let mut detail = detail(&task, &[]);
+        type_title(&mut detail, "b");
+        assert_eq!(saves(&mut detail, Message::TitleSubmit).priority, Some(3));
     }
 
     #[test]
     fn typed_date_becomes_a_whole_day() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        set_due(&mut detail, "12.10.2026");
-        assert_eq!(saved(&mut detail).due, Some(EventTime::Date(day(12))));
-        set_due(&mut detail, "");
-        assert_eq!(saved(&mut detail).due, None);
+        detail.update(Message::DueChanged("12.10.2026".into()));
+        assert_eq!(saves(&mut detail, Message::DueSubmit).due, Some(EventTime::Date(day(12))));
     }
 
     #[test]
@@ -572,55 +1223,141 @@ mod tests {
         let mut task = todo("t1", "a");
         task.due = Some(EventTime::DateTime(datetime::to_utc(at(11, 14, 30))));
         let mut detail = detail(&task, &[]);
-        set_due(&mut detail, "12.10.2026");
-        match saved(&mut detail).due {
+        detail.update(Message::DueChanged("12.10.2026".into()));
+        match saves(&mut detail, Message::DueSubmit).due {
             Some(EventTime::DateTime(instant)) => assert_eq!(datetime::to_local(instant), at(12, 14, 30)),
             other => panic!("expected a date-time due, got {other:?}"),
         }
     }
 
     #[test]
-    fn keywords_and_buttons_set_the_day() {
-        let mut detail = detail(&todo("t1", "a"), &[]);
-        detail.update(Message::DueTomorrow);
-        assert_eq!(saved(&mut detail).due, Some(EventTime::Date(day(12))));
-        assert_eq!(detail.due_text, "12.10.2026");
-        detail.update(Message::DueToday);
-        assert_eq!(saved(&mut detail).due, Some(EventTime::Date(day(11))));
-        detail.update(Message::DueRemove);
-        assert_eq!(saved(&mut detail).due, None);
-        assert!(detail.due_text.is_empty());
+    fn quick_choices_set_the_day() {
+        let task = todo("t1", "a");
+        let cases = [
+            (Message::DueTomorrow, Some(EventTime::Date(day(12)))),
+            (Message::DueNextWeek, Some(EventTime::Date(next_week(day(11))))),
+            (Message::DueRemove, None),
+        ];
+        for (message, due) in cases {
+            let mut detail = detail(&Todo { due: Some(EventTime::Date(day(11))), ..task.clone() }, &[]);
+            assert_eq!(saves(&mut detail, message).due, due);
+        }
+        let mut detail = detail(&task, &[]);
+        assert_eq!(saves(&mut detail, Message::DueToday).due, Some(EventTime::Date(day(11))));
+        assert_eq!(detail.due_text, "11.10.2026");
     }
 
     #[test]
-    fn buttons_keep_the_time_of_a_date_time_due() {
+    fn next_week_is_the_start_of_the_next_week() {
+        let next = next_week(day(11));
+        assert!(next > day(11) && next <= day(18));
+        assert_eq!(datetime::week_start(next), next);
+    }
+
+    #[test]
+    fn quick_choices_keep_the_time_of_a_date_time_due() {
         let mut task = todo("t1", "a");
         task.due = Some(EventTime::DateTime(datetime::to_utc(at(11, 9, 5))));
         let mut detail = detail(&task, &[]);
-        detail.update(Message::DueTomorrow);
-        match saved(&mut detail).due {
+        match saves(&mut detail, Message::DueTomorrow).due {
             Some(EventTime::DateTime(instant)) => assert_eq!(datetime::to_local(instant), at(12, 9, 5)),
             other => panic!("expected a date-time due, got {other:?}"),
         }
     }
 
     #[test]
-    fn unreadable_date_blocks_saving_and_keeps_the_last_due() {
+    fn unreadable_date_blocks_saving_and_shows_only_after_enter() {
         let mut task = todo("t1", "a");
         task.due = Some(EventTime::Date(day(12)));
         let mut detail = detail(&task, &[]);
-        set_due(&mut detail, "31.02.");
-        assert!(detail.problem().is_some());
-        assert!(matches!(detail.update(Message::Save), Action::None));
+        detail.update(Message::DueChanged("31.02.".into()));
+        assert_eq!(detail.shown(detail.due_problem()), None, "no hint while typing");
+        assert!(!detail.wants_autosave());
+        assert_eq!(detail.update(Message::DueSubmit), Action::None);
+        assert!(detail.shown(detail.due_problem()).is_some(), "hint after Enter");
         assert_eq!(detail.draft.due, Some(EventTime::Date(day(12))));
     }
 
     #[test]
-    fn empty_title_blocks_saving() {
+    fn empty_title_is_not_saved_and_hinted_after_enter() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        detail.update(Message::TitleChanged("   ".into()));
-        assert!(detail.problem().is_some());
-        assert!(matches!(detail.update(Message::Save), Action::None));
+        type_title(&mut detail, "   ");
+        assert!(!detail.wants_autosave());
+        assert_eq!(detail.shown(detail.title_problem()), None);
+        assert_eq!(detail.update(Message::TitleSubmit), Action::None);
+        assert_eq!(detail.shown(detail.title_problem()), Some(tr("Enter a title.")));
+        assert_eq!(detail.leave(), None, "leaving drops an empty title");
+    }
+
+    #[test]
+    fn typing_waits_for_the_autosave_tick() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        assert!(!detail.wants_autosave());
+        type_notes(&mut detail, "more");
+        assert!(detail.wants_autosave());
+        let todo = saves(&mut detail, Message::Flush);
+        assert_eq!(todo.description.as_deref(), Some("more"));
+        assert!(!detail.wants_autosave(), "nothing more while the save is under way");
+    }
+
+    #[test]
+    fn one_save_at_a_time_and_the_next_carries_the_new_etag() {
+        let mut detail = detail(&Todo { etag: Some("v1".into()), ..todo("t1", "a") }, &[]);
+        let first = saves(&mut detail, Message::ToggleDone);
+        assert!(first.completed);
+        // Typed while the first save is under way: waits.
+        type_title(&mut detail, "b");
+        assert_eq!(detail.update(Message::PrioritySelected(Priority::High)), Action::None);
+        match store(&mut detail, first, "v2") {
+            Action::Save(next) => {
+                assert_eq!(next.etag.as_deref(), Some("v2"));
+                assert_eq!(next.summary, "b");
+                assert_eq!(next.priority, Some(1));
+                assert!(next.completed);
+                assert_eq!(store(&mut detail, next, "v3"), Action::None, "nothing left to save");
+            }
+            other => panic!("expected the follow-up save, got {other:?}"),
+        }
+        assert_eq!(detail.title.text(), "b", "the typed title stays in the field");
+    }
+
+    #[test]
+    fn a_save_from_elsewhere_replaces_the_draft() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        let ticked = Todo { completed: true, etag: Some("v2".into()), ..todo("t1", "a") };
+        assert_eq!(detail.stored(&ticked), Action::None);
+        assert!(detail.draft.completed);
+        assert_eq!(detail.original.etag.as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn a_reload_takes_changes_only_when_nothing_is_pending() {
+        let task = todo("t1", "a");
+        let mut detail = detail(&task, &[]);
+        let renamed = Todo { summary: "renamed".into(), ..task.clone() };
+        detail.refresh(&lists(), std::slice::from_ref(&renamed));
+        assert_eq!(detail.draft.summary, "renamed");
+
+        type_notes(&mut detail, "mine");
+        let other = Todo { summary: "other".into(), ..task };
+        detail.refresh(&lists(), &[other]);
+        assert_eq!(detail.draft.summary, "renamed", "typed notes are not thrown away");
+    }
+
+    #[test]
+    fn a_failed_save_lets_the_next_change_try_again() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        saves(&mut detail, Message::ToggleDone);
+        detail.save_failed();
+        assert!(saves(&mut detail, Message::PrioritySelected(Priority::High)).completed);
+    }
+
+    #[test]
+    fn leaving_saves_what_is_pending() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        assert_eq!(detail.leave(), None);
+        type_title(&mut detail, "b");
+        assert_eq!(detail.leave().map(|t| t.summary), Some("b".into()));
     }
 
     #[test]
@@ -633,9 +1370,8 @@ mod tests {
             Todo { collection: "home".into(), ..todo("elsewhere", "elsewhere") },
         ];
         let detail = detail(&task, &others);
-        let choices = detail.parent_choices();
-        let uids: Vec<Option<&str>> = choices.iter().map(|c| c.uid.as_deref()).collect();
-        assert_eq!(uids, [None, Some("other")]);
+        let uids: Vec<Option<String>> = detail.parent_choices().into_iter().map(|(uid, _)| uid).collect();
+        assert_eq!(uids, [None, Some("other".into())]);
     }
 
     #[test]
@@ -643,21 +1379,19 @@ mod tests {
         let task = todo("t1", "a");
         let others = vec![todo("other", "Other"), Todo { collection: "home".into(), ..todo("elsewhere", "B") }];
         let mut detail = detail(&task, &others);
-        detail.update(Message::ListSelected(ListChoice { id: "home".into(), name: "Home".into() }));
-        let choices = detail.parent_choices();
-        let uids: Vec<Option<&str>> = choices.iter().map(|c| c.uid.as_deref()).collect();
-        assert_eq!(uids, [None, Some("elsewhere")]);
+        detail.update(Message::ListSelected("home".into()));
+        let uids: Vec<Option<String>> = detail.parent_choices().into_iter().map(|(uid, _)| uid).collect();
+        assert_eq!(uids, [None, Some("elsewhere".into())]);
     }
 
     #[test]
     fn parent_from_another_list_is_dropped_when_the_list_changes() {
         let mut task = todo("t1", "a");
         task.parent = Some("other".into());
-        let others = vec![todo("other", "Other")];
-        let mut detail = detail(&task, &others);
-        detail.update(Message::ListSelected(ListChoice { id: "home".into(), name: "Home".into() }));
-        assert_eq!(saved(&mut detail).parent, None);
-        assert_eq!(saved(&mut detail).collection, "home");
+        let mut detail = detail(&task, &[todo("other", "Other")]);
+        let moved = saves(&mut detail, Message::ListSelected("home".into()));
+        assert_eq!(moved.parent, None);
+        assert_eq!(moved.collection, "home");
     }
 
     #[test]
@@ -665,23 +1399,42 @@ mod tests {
         let mut task = todo("t1", "a");
         task.parent = Some("gone".into());
         let detail = detail(&task, &[]);
-        let choices = detail.parent_choices();
-        assert_eq!(choices.last().and_then(|c| c.uid.as_deref()), Some("gone"));
+        assert_eq!(detail.parent_choices().last().and_then(|(uid, _)| uid.as_deref()), Some("gone"));
+        assert_eq!(detail.parent_title(), Some(tr("Unknown task").to_string()));
     }
 
     #[test]
-    fn done_checkbox_is_saved() {
+    fn chosen_parent_is_saved() {
+        let mut detail = detail(&todo("t1", "a"), &[todo("p", "Parent")]);
+        assert_eq!(saves(&mut detail, Message::ParentSelected(Some("p".into()))).parent.as_deref(), Some("p"));
+    }
+
+    #[test]
+    fn subtasks_are_the_direct_children_open_first() {
+        let others = vec![
+            Todo { parent: Some("t1".into()), completed: true, ..todo("c1", "Alpha") },
+            Todo { parent: Some("t1".into()), ..todo("c2", "Zulu") },
+            Todo { parent: Some("c2".into()), ..todo("g", "Grandchild") },
+            todo("x", "Unrelated"),
+        ];
+        let detail = detail(&todo("t1", "a"), &others);
+        let uids: Vec<&str> = detail.subtasks().iter().map(|t| t.uid.as_str()).collect();
+        assert_eq!(uids, ["c2", "c1"]);
+    }
+
+    #[test]
+    fn subtask_clicks_go_to_the_app() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        detail.update(Message::DoneToggled(true));
-        assert!(saved(&mut detail).completed);
+        assert_eq!(detail.update(Message::ToggleSubtask("c".into())), Action::ToggleDone("c".into()));
+        assert_eq!(detail.update(Message::OpenSubtask("c".into())), Action::Show("c".into()));
     }
 
     #[test]
     fn delete_asks_once_before_deleting() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        assert!(matches!(detail.update(Message::Delete), Action::None));
+        assert_eq!(detail.update(Message::Delete), Action::None);
         assert!(detail.confirm_delete);
-        assert!(matches!(detail.update(Message::CancelDelete), Action::None));
+        assert_eq!(detail.update(Message::CancelDelete), Action::None);
         assert!(!detail.confirm_delete);
 
         detail.update(Message::Delete);
@@ -693,8 +1446,29 @@ mod tests {
     }
 
     #[test]
+    fn escape_closes_editor_then_question_then_detail() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        assert_eq!(detail.update(Message::Open(Editor::Due)), Action::Focus(DUE_INPUT));
+        assert_eq!(detail.update(Message::Escape), Action::None);
+        assert_eq!(detail.open, None);
+        detail.update(Message::Delete);
+        assert_eq!(detail.update(Message::Escape), Action::None);
+        assert!(!detail.confirm_delete);
+        assert_eq!(detail.update(Message::Escape), Action::Close);
+    }
+
+    #[test]
+    fn a_second_click_closes_the_editor() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        detail.update(Message::Open(Editor::List));
+        assert_eq!(detail.open, Some(Editor::List));
+        detail.update(Message::Open(Editor::List));
+        assert_eq!(detail.open, None);
+    }
+
+    #[test]
     fn close_closes() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        assert!(matches!(detail.update(Message::Close), Action::Close));
+        assert_eq!(detail.update(Message::Close), Action::Close);
     }
 }

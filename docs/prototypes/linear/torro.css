@@ -1,0 +1,113 @@
+/* Torro im Linear-Stil: gemeinsame Tokens und Bausteine für die Entwürfe (Kalender, Aufgaben).
+   Dunkel ist Standard; ?theme=light schaltet hell. Werte nach Linear (Redesign 2024), siehe docs/tasks/design.md. */
+@font-face{font-family:Inter;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf)}
+@font-face{font-family:Inter;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf)}
+@font-face{font-family:Inter;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf)}
+@font-face{font-family:"Inter Tabular";font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Regular.ttf)}
+@font-face{font-family:"Inter Tabular";font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Medium.ttf)}
+
+:root{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --accent:#D50C0C; --focus:rgba(255,255,255,.35);
+  --c-work:#5B8CFF; --c-personal:#3FB984; --c-family:#E8A33D; --c-birthday:#D96CA8; --c-groceries:#A78BFA;
+  --tint:18%; --shadow:0 12px 32px rgba(0,0,0,.5); --menu:#17181B;
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --focus:rgba(0,0,0,.5);
+  --c-work:#3B6EF0; --c-personal:#1F9D68; --c-family:#B06F12; --c-birthday:#C2508F; --c-groceries:#7C5CE6;
+  --tint:14%; --shadow:0 12px 32px rgba(0,0,0,.12); --menu:#FFFFFF;
+  color-scheme:light;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:400 13px/20px Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+.tab{font-family:"Inter Tabular",Inter,sans-serif}
+.muted{color:var(--text2)} .faint{color:var(--text3)}
+svg.i,svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+svg.i.s14{width:14px;height:14px}
+
+/* Fenster: Seitenleiste auf dem Grund, Inhalt als eingesetzte Fläche (Linear). */
+.app{display:flex;height:100vh}
+.sidebar{width:232px;flex:none;display:flex;flex-direction:column;padding:8px 8px 8px 8px;gap:2px}
+.panel{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+
+/* Seitenleiste */
+.switcher{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px;border-radius:6px}
+.switcher:hover{background:var(--hover)}
+.logo{width:20px;height:20px;border-radius:5px;background:var(--accent);display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.switcher b{font-weight:500}
+.switcher .grow{flex:1}
+.iconbtn{width:28px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--text2);border:0;background:none;padding:0}
+.iconbtn:hover{background:var(--hover);color:var(--text)}
+.iconbtn.boxed{background:var(--raised);border:1px solid var(--line-strong);color:var(--text)}
+.nav{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;color:var(--text2);text-decoration:none}
+.nav:hover{background:var(--hover);color:var(--text)}
+.nav.active{background:var(--selected);color:var(--text)}
+.nav .grow{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav .count{font-family:"Inter Tabular",Inter,sans-serif;font-size:12px;color:var(--text3)}
+.group{display:flex;align-items:center;gap:4px;height:28px;padding:0 8px;margin-top:12px;font-size:12px;font-weight:500;color:var(--text3)}
+.group svg{width:12px;height:12px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--c)}
+.ring{width:14px;height:14px;border-radius:50%;border:2px solid var(--c);flex:none}
+.sidebar .spacer{flex:1}
+
+/* Kopfleiste im Inhalt */
+.header{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px 0 16px;border-bottom:1px solid var(--line)}
+.crumbs{display:flex;align-items:center;gap:6px;color:var(--text2);white-space:nowrap}
+.crumbs b{color:var(--text);font-weight:500}
+.crumbs svg{color:var(--text3)}
+.header .grow{flex:1}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 Inter,sans-serif;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.seg{display:inline-flex;height:28px;padding:2px;border-radius:6px;background:var(--bg);border:1px solid var(--line)}
+.seg span{display:grid;place-items:center;padding:0 10px;border-radius:4px;font-size:12px;font-weight:500;color:var(--text3)}
+.seg span.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-strong)}
+kbd{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(--line-strong);border-radius:4px;padding:2px 4px}
+
+/* Eigenschaften-Spalte (Linear „Properties“) */
+.props{width:300px;flex:none;border-left:1px solid var(--line);padding:16px 16px 24px;overflow:auto}
+.props h4{margin:16px 0 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.props h4:first-child{margin-top:0}
+.prop{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 8px;margin:0 -8px;border-radius:6px;color:var(--text)}
+.prop:hover{background:var(--hover)}
+.prop svg{color:var(--text3)}
+.prop .faint{margin-left:auto}
+.avatar{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff;margin-left:-6px;border:2px solid var(--panel)}
+.avatar:first-child{margin-left:0}
+
+/* Größenklassen wie torro_gui::layout::of: l = breit (>= 1024), m = mittel (600–1023), s = schmal (< 600).
+   Gesetzt von size.js als <html data-size>. Die Hilfsklassen blenden Teile je Klasse aus. */
+html[data-size="m"] .sidebar,html[data-size="s"] .sidebar{display:none}
+html[data-size="m"] .panel,html[data-size="s"] .panel{margin:0;border:0;border-radius:0}
+html:not([data-size="l"]) .only-l{display:none!important}
+html[data-size="l"] .not-l{display:none!important}
+html:not([data-size="s"]) .only-s{display:none!important}
+html[data-size="s"] .not-s{display:none!important}
+html[data-size="s"] .header{padding:0 8px}
+
+/* Ausklappmenü und schwebende Karte: dorthin wandern Optionen, wenn die Kachel kleiner wird. */
+.dd{position:relative}
+.btn .chev{color:var(--text3)}
+.menu{position:absolute;top:calc(100% + 4px);left:0;min-width:232px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);padding:4px;z-index:30}
+.menu.right{left:auto;right:0}
+.menu .item{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:5px;color:var(--text);white-space:nowrap}
+.menu .item:hover,.menu .item.hl{background:var(--hover)}
+.menu .item .grow{flex:1}
+.menu .item .faint,.menu .item kbd{margin-left:auto}
+.menu .item.on::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--text2);margin-left:8px}
+.menu .label{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);padding:8px 8px 4px}
+.menu .sep{height:1px;background:var(--line);margin:4px 0}
+.popover{position:absolute;width:320px;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);padding:16px;z-index:30}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.pchip{height:26px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;color:var(--text)}
+.pchip svg{width:14px;height:14px;color:var(--text3)}

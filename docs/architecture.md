@@ -100,6 +100,13 @@ Zusätzlich kann unter Omarchy später ein eigenes Leistenwidget auf `status --j
 - **Offline zuerst:** Der Cache liegt beim Kern (SQLite), die Sync-Engine arbeitet im Hintergrund.
   Die Oberflächen warten nie auf das Netz.
 
+### Tiling- und Fenster-Modus
+
+Neben dem Tiling-Modus (ein Fenster pro App) gibt es den Fenster-Modus: eine Arbeitsfläche, die die
+Apps als Elemente einbettet. Dafür wird jede App eine Bibliothek (Zustand, `update`, `view`) plus ein
+dünnes Programm, und `torro-gui` bekommt ein gemeinsames Element-Interface. Konzept und Schritte:
+[modes.md](modes.md).
+
 ### Provider
 
 Provider implementieren `torro_pim::Provider` (`crates/torro-pim/src/provider.rs`). Ein neuer

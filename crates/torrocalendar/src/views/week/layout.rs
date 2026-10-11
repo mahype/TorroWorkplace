@@ -3,26 +3,30 @@
 //! rows, and hit-testing. `week.rs` draws the result.
 //!
 //! Coordinates are relative to the top left corner of the canvas they are drawn on. Columns
-//! are `[gutter][day 0][day 1]…`; the gutter is [`GUTTER_WIDTH`] wide, the day columns share
+//! are `[axis][day 0][day 1]…`; the time axis is [`axis_width`] wide, the day columns share
 //! the rest equally.
 
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::{Point, Rectangle, Size};
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::theme::{size, space};
 
 /// Height of one hour in the time grid.
-pub const HOUR_HEIGHT: f32 = 48.0;
+pub const HOUR_HEIGHT: f32 = size::HOUR;
 /// Height of the whole time grid, 24 hours.
 pub const GRID_HEIGHT: f32 = 24.0 * HOUR_HEIGHT;
-/// Width of the hour labels on the left.
-pub const GUTTER_WIDTH: f32 = 56.0;
-/// Shortest timed block, so that a zero-length entry stays visible and clickable.
+/// Shortest timed block, so that a zero-length entry stays visible and clickable: one line of
+/// `MICRO` text with a little air.
 pub const MIN_EVENT_HEIGHT: f32 = 18.0;
-/// Height of one row of bars in the all-day strip.
-pub const ALL_DAY_ROW_HEIGHT: f32 = 22.0;
+/// Pitch of the rows in the all-day strip; a chip is this less [`GAP`] high (22, as
+/// `calendar.html`'s `.chip`).
+pub const ALL_DAY_ROW_HEIGHT: f32 = space::XL;
+/// Padding above and below the chips in the all-day strip (`.allday > div{padding:4px 2px}`).
+const STRIP_PADDING: f32 = space::XS;
 /// Clicks in the grid round the time down to a multiple of this many minutes.
 pub const SLOT_MINUTES: u32 = 30;
 
-/// Gap between blocks and around them, in pixels.
+/// Gap between blocks and around them, in pixels (`.ev{left:2px;right:4px}`).
 const GAP: f32 = 2.0;
 const MINUTES_PER_DAY: f32 = 24.0 * 60.0;
 
@@ -191,10 +195,25 @@ pub fn day_span(
     (end_column > first_column).then_some(DaySpan { id, first: first_column, end: end_column })
 }
 
+/// Width of the time axis for a grid `total_width` wide: [`size::AXIS_NARROW`] in the narrow
+/// (and mini) layout, otherwise [`size::AXIS`].
+///
+/// The grid only knows its own width, not the window's. In the narrow and mini layout the content
+/// is flush with the window, so its width decides the class just as the window's would; in the
+/// medium and wide layout it is always wider than [`layout::NARROW_MAX_WIDTH`] less the sidebar.
+/// The height plays no part here, hence the unbounded one.
+pub fn axis_width(total_width: f32) -> f32 {
+    match layout::of(Size::new(total_width, f32::INFINITY)) {
+        SizeClass::Mini | SizeClass::Narrow => size::AXIS_NARROW,
+        SizeClass::Strip | SizeClass::Medium | SizeClass::Wide => size::AXIS,
+    }
+}
+
 /// Horizontal split: `(x of the first day column, width of a day column)`.
 pub fn columns(total_width: f32, count: usize) -> (f32, f32) {
     let count = count.max(1) as f32;
-    (GUTTER_WIDTH, (total_width - GUTTER_WIDTH).max(0.0) / count)
+    let axis = axis_width(total_width);
+    (axis, (total_width - axis).max(0.0) / count)
 }
 
 /// A timed block as drawn.
@@ -205,7 +224,8 @@ pub struct TimedBlock {
 }
 
 /// Places the timed segments: each day column is split into lanes for its overlapping
-/// segments. Segments shorter than [`MIN_EVENT_HEIGHT`] are drawn that tall.
+/// segments. A block ends [`GAP`] above its end time, so back-to-back entries stay apart;
+/// blocks shorter than [`MIN_EVENT_HEIGHT`] are drawn that tall.
 pub fn timed_blocks(segments: &[TimedSegment], count: usize, total_width: f32) -> Vec<TimedBlock> {
     let (x0, col_w) = columns(total_width, count);
     let mut blocks = Vec::with_capacity(segments.len());
@@ -216,7 +236,7 @@ pub fn timed_blocks(segments: &[TimedSegment], count: usize, total_width: f32) -
             let lane_width = (col_w - 2.0 * GAP) / lane.lanes as f32;
             let x = x0 + column as f32 * col_w + GAP + lane.lane as f32 * lane_width;
             let y = minutes_to_y(segment.start);
-            let height = (minutes_to_y(segment.end) - y).max(MIN_EVENT_HEIGHT);
+            let height = (minutes_to_y(segment.end) - y - GAP).max(MIN_EVENT_HEIGHT);
             blocks.push(TimedBlock {
                 id: segment.id,
                 rect: Rectangle::new(Point::new(x, y), Size::new(lane_width - GAP, height)),
@@ -253,8 +273,8 @@ pub fn bar_blocks(spans: &[DaySpan], count: usize, total_width: f32) -> (Vec<Bar
         .map(|(span, lane)| {
             let x = x0 + span.first as f32 * col_w + GAP;
             let width = (span.end - span.first) as f32 * col_w - 2.0 * GAP;
-            let y = GAP + lane.lane as f32 * ALL_DAY_ROW_HEIGHT;
-            let height = ALL_DAY_ROW_HEIGHT - 2.0 * GAP;
+            let y = STRIP_PADDING + lane.lane as f32 * ALL_DAY_ROW_HEIGHT;
+            let height = ALL_DAY_ROW_HEIGHT - GAP;
             BarBlock { id: span.id, rect: Rectangle::new(Point::new(x, y), Size::new(width, height)) }
         })
         .collect();
@@ -264,7 +284,37 @@ pub fn bar_blocks(spans: &[DaySpan], count: usize, total_width: f32) -> (Vec<Bar
 /// Height of the all-day strip with `rows` rows. At least one row, so empty days stay
 /// clickable.
 pub fn strip_height(rows: usize) -> f32 {
-    rows.max(1) as f32 * ALL_DAY_ROW_HEIGHT + 2.0 * GAP
+    rows.max(1) as f32 * ALL_DAY_ROW_HEIGHT - GAP + 2.0 * STRIP_PADDING
+}
+
+/// Free time in a day column: the gaps between the timed segments of `column` that last at
+/// least `min_minutes`, as `(start, end)` in minutes since midnight.
+///
+/// Only gaps *between* entries count: the time before the first and after the last entry of a
+/// day is not "free", it is the morning and the evening. A gap is cut to start no earlier than
+/// `from` (now, for today; `0.0` for days to come), so time that has passed is never offered.
+/// Overlapping and touching segments form one busy stretch.
+pub fn free_gaps(segments: &[TimedSegment], column: usize, from: f32, min_minutes: f32) -> Vec<(f32, f32)> {
+    let mut busy: Vec<(f32, f32)> =
+        segments.iter().filter(|s| s.column == column).map(|s| (s.start, s.end.max(s.start))).collect();
+    busy.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut gaps = Vec::new();
+    let mut busy_until: Option<f32> = None;
+    for (start, end) in busy {
+        if let Some(until) = busy_until {
+            let gap_start = until.max(from);
+            if start - gap_start >= min_minutes {
+                gaps.push((gap_start, start));
+            }
+        }
+        busy_until = Some(busy_until.map_or(end, |until| until.max(end)));
+    }
+    gaps
+}
+
+/// The y range of a span in minutes, for drawing something in a gap.
+pub fn y_range(start: f32, end: f32) -> (f32, f32) {
+    (minutes_to_y(start), minutes_to_y(end))
 }
 
 /// The day column at `x`, `None` in the gutter or outside the columns.
@@ -432,7 +482,17 @@ mod tests {
         assert!(close(a.width, b.width));
         assert!(a.x < b.x);
         assert!(close(a.y, 480.0));
-        assert!(close(a.height, 48.0));
+        assert!(close(a.height, 46.0), "an hour less the gap to the next block");
+    }
+
+    #[test]
+    fn back_to_back_blocks_do_not_touch() {
+        let segments = [
+            TimedSegment { id: 0, column: 0, start: 600.0, end: 660.0 },
+            TimedSegment { id: 1, column: 0, start: 660.0, end: 720.0 },
+        ];
+        let blocks = timed_blocks(&segments, 1, 500.0);
+        assert!(blocks[0].rect.y + blocks[0].rect.height < blocks[1].rect.y);
     }
 
     #[test]
@@ -448,19 +508,73 @@ mod tests {
         let blocks = timed_blocks(&segments, 7, 500.0);
         let inside = Point::new(60.0, 500.0);
         assert_eq!(grid_hit(&blocks, 7, 500.0, inside), Some(GridHit::Event(7)));
-        // y = 50 is 01:02, rounded down to 01:00, in column 1.
-        let empty = Point::new(56.0 + 63.0 + 10.0, 50.0);
+        // y = 50 is 01:02, rounded down to 01:00, in column 1 (narrow axis 44, columns 65 wide).
+        let empty = Point::new(44.0 + 65.0 + 10.0, 50.0);
         assert_eq!(grid_hit(&blocks, 7, 500.0, empty), Some(GridHit::Slot { column: 1, time: t(1, 0) }));
         assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(10.0, 50.0)), None);
         assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(100.0, GRID_HEIGHT + 5.0)), None);
     }
 
     #[test]
-    fn column_at_ignores_the_gutter() {
-        assert_eq!(column_at(55.9, 7, 500.0), None);
-        assert_eq!(column_at(56.0, 7, 500.0), Some(0));
-        assert_eq!(column_at(499.0, 7, 500.0), Some(6));
-        assert_eq!(column_at(500.0, 7, 500.0), None);
+    fn column_at_ignores_the_axis() {
+        assert_eq!(column_at(51.9, 7, 1000.0), None);
+        assert_eq!(column_at(52.0, 7, 1000.0), Some(0));
+        assert_eq!(column_at(999.0, 7, 1000.0), Some(6));
+        assert_eq!(column_at(1000.0, 7, 1000.0), None);
+        assert_eq!(column_at(43.9, 1, 500.0), None);
+        assert_eq!(column_at(44.0, 1, 500.0), Some(0));
+    }
+
+    #[test]
+    fn the_axis_is_narrower_in_the_narrow_layout() {
+        assert_eq!(axis_width(420.0), size::AXIS_NARROW);
+        assert_eq!(axis_width(300.0), size::AXIS_NARROW, "mini");
+        assert_eq!(axis_width(600.0), size::AXIS);
+        assert_eq!(axis_width(1200.0), size::AXIS);
+        assert_eq!(columns(1000.0, 7), (size::AXIS, (1000.0 - size::AXIS) / 7.0));
+    }
+
+    #[test]
+    fn strip_rows_are_chips_with_padding() {
+        // One row: 4 padding, a 22-high chip, 4 padding.
+        assert!(close(strip_height(0), 30.0));
+        assert!(close(strip_height(1), 30.0));
+        assert!(close(strip_height(2), 54.0));
+        let (bars, _) = bar_blocks(&[DaySpan { id: 0, first: 0, end: 1 }], 7, 1000.0);
+        assert!(close(bars[0].rect.y, 4.0));
+        assert!(close(bars[0].rect.height, 22.0));
+    }
+
+    fn seg(column: usize, start: f32, end: f32) -> TimedSegment {
+        TimedSegment { id: 0, column, start, end }
+    }
+
+    #[test]
+    fn free_gaps_are_between_entries_only() {
+        // 09:30–09:45, 15:00–16:00: one gap of 5¼ h; morning and evening are not "free".
+        let segments = [seg(0, 570.0, 585.0), seg(0, 900.0, 960.0), seg(1, 600.0, 700.0)];
+        assert_eq!(free_gaps(&segments, 0, 0.0, 120.0), vec![(585.0, 900.0)]);
+        assert_eq!(free_gaps(&segments, 1, 0.0, 120.0), vec![], "a single entry has no gap");
+        assert_eq!(free_gaps(&[], 0, 0.0, 120.0), vec![]);
+    }
+
+    #[test]
+    fn free_gaps_skip_short_gaps_and_merge_overlaps() {
+        let segments = [seg(0, 600.0, 720.0), seg(0, 660.0, 690.0), seg(0, 780.0, 840.0), seg(0, 1000.0, 1060.0)];
+        // 12:00–13:00 is one hour; 14:00–16:40 is long enough. The inner entry does not end the
+        // busy stretch early.
+        assert_eq!(free_gaps(&segments, 0, 0.0, 120.0), vec![(840.0, 1000.0)]);
+    }
+
+    #[test]
+    fn free_gaps_start_no_earlier_than_now() {
+        let segments = [seg(0, 600.0, 660.0), seg(0, 1020.0, 1080.0)];
+        // Now 14:20: 14:20–17:00 is still 2 h 40 min free.
+        assert_eq!(free_gaps(&segments, 0, 860.0, 120.0), vec![(860.0, 1020.0)]);
+        // Now 15:30: only 1½ h left, not worth a note.
+        assert_eq!(free_gaps(&segments, 0, 930.0, 120.0), vec![]);
+        // After the gap: nothing.
+        assert_eq!(free_gaps(&segments, 0, 1050.0, 120.0), vec![]);
     }
 
     #[test]

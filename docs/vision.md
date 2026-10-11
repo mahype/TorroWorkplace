@@ -15,6 +15,9 @@ Desktop verteilen lassen.
 - **Zuerst Hyprland (Omarchy)**, dann **AeroSpace auf dem Mac** und **GlazeWM unter Windows**.
 - **Workspace-Vorlagen** im Kern merken sich, welche Apps wo lagen und was in ihnen offen war, und
   stellen ganze Workspaces per Tastendruck oder beim Start wieder her (nach dem Vorbild von workspace-setups).
+- **Zwei Modi:** Im **Tiling-Modus** kachelt der Window Manager die App-Fenster. Wer keinen
+  Tiling-Manager hat, nutzt den **Fenster-Modus**: eine Torro-Arbeitsfläche, auf der die Elemente
+  der Suite frei angeordnet liegen, mit fertigem Startaufbau. Konzept: [modes.md](modes.md).
 - **Ein Befehl installiert alles.**
 
 ## Warum gerade jetzt: Arbeiten mit KI

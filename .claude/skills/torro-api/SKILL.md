@@ -38,8 +38,8 @@ Oberfläche und Tool danach parallel entstehen können.
      („Deletes the event on the server; it cannot be restored.“). Sie ist die Tool-Beschreibung
      für Agenten, also konkret und ohne Marketing. Kein `tr()`: Agenten lesen Englisch.
 4. **Handler** im Kern (`crates/torroworkplace/src/core.rs` bzw. dem Fachmodul), Fehler mit festen
-   Codes: `not-found`, `conflict`, `offline`, `auth`, `busy`, `unsupported`, `unauthorized`,
-   `forbidden`, `pending`, `error`. `message` ist für Menschen.
+   Codes: `not-found`, `conflict`, `offline`, `auth`, `busy`, `unsupported`, `not-connected`,
+   `workspace-not-empty`, `unauthorized`, `forbidden`, `pending`, `error`. `message` ist für Menschen.
 5. **MCP-Tool** in `crates/torroworkplace/src/mcp.rs`: bildet auf genau **einen** Request ab.
    Bequeme Eingaben sind erlaubt (Titel/Beginn/Ende statt eines ganzen `Event`). Kein eigener
    Datenzugriff, keine eigene Rechteprüfung.

@@ -3,6 +3,7 @@
 use std::fmt;
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_wm::{Rect, SplitDirection, WmError};
 
@@ -88,7 +89,7 @@ pub enum LayoutTree {
 }
 
 /// What a load does with windows already on the target workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum LoadMode {
     /// Only load into an empty workspace; otherwise fail with

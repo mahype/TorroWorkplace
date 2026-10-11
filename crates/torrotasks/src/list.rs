@@ -1,40 +1,53 @@
-//! The task list (task K.14 in `docs/tasks/kalender-aufgaben.md`).
+//! The task list (task K.14 in `docs/tasks/kalender-aufgaben.md`, Linear look from T.1 in
+//! `docs/tasks/design.md`).
 //!
-//! [`arrange`] picks and orders the tasks for a filter; [`view`] renders them: checkbox
-//! (→ `ToggleDone(index)`), title (struck through and dimmed when done; click →
-//! `Select(index)`), a due badge (`Today`, `Tomorrow`, `Mo, 12.10.`; overdue in the attention
-//! colour – never Torro red), a priority mark for high (1–4) and medium (5), the list's
-//! colour dot outside list filters. Subtasks (`parent` = another task's uid) sit indented
-//! under their parent. The selected task is highlighted. Empty → a friendly empty state
+//! [`arrange`] picks and orders the tasks for a filter, [`grouped`] splits them into the groups
+//! of the list (Overdue, Today, Upcoming, No date, Completed); [`view`] renders them as
+//! `widgets::list_row`s under `widgets::group_head`s, after `docs/prototypes/linear/tasks.html`:
+//! round check in the list's colour (→ `ToggleDone(index)`), priority as three rising bars, the
+//! title on one line (struck through and dimmed when done), the list as a pill (only where the
+//! filter mixes lists and the row is wide enough), the due date in `META` tabular (overdue in the
+//! attention colour – never Torro red). A click on the row → `Select(index)`. Subtasks
+//! (`parent` = another task's uid) sit indented under their parent. Empty → an empty state
 //! ("Nothing to do").
+//!
+//! For the keyboard (T.3) [`order`] gives the visible order of the rows and [`row_span`] where a
+//! row lies in the scrolled content, so `app.rs` can step through the rows and keep the chosen
+//! one in view; the scrollable reports its viewport as `Message::Scrolled`.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-use iced::widget::{Space, checkbox, column, container, mouse_area, rich_text, row, scrollable, span, text};
-use iced::{Alignment, Background, Color, Element, Length, mouse};
+use iced::widget::{Space, checkbox, column, container, rich_text, row, scrollable, span, text};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
 use torro_core::i18n::tr;
-use torro_core::theme::STATUS_ATTENTION;
-use torro_gui::datetime;
-use torro_gui::theme;
+use torro_gui::theme::{palette, size, space};
+use torro_gui::widgets::{self, Mark};
+use torro_gui::{datetime, icon, style, typo};
 use torro_pim::{EventTime, Todo};
 
 use crate::app::{Filter, Message};
-
-/// Indent per level of subtask.
-const INDENT: f32 = 20.0;
+use torro_gui::icon::Icon;
 
 /// What the list gets to draw.
 pub struct ListData<'a> {
     pub todos: &'a [Todo],
     /// Collection id → colour.
     pub colors: HashMap<String, Color>,
+    /// Collection id → name, for the list pill.
+    pub names: HashMap<String, String>,
     pub filter: &'a Filter,
     pub show_completed: bool,
     pub today: NaiveDate,
     /// Index into `todos` of the task in the detail panel.
     pub selected: Option<usize>,
+    /// Whether rows carry the list pill: off in a list filter (every row has the same list) and
+    /// below the medium layout (the title needs the room).
+    pub show_list: bool,
+    /// The attention colour for text of the current mode (`Palette::attention_text`), for the
+    /// "Overdue" group icon (a mark takes a fixed colour).
+    pub attention: Color,
 }
 
 /// The tasks to show as `(index into todos, depth)`: `depth` 0 for top-level tasks, 1 for
@@ -150,15 +163,15 @@ fn is_overdue(todo: &Todo, today: NaiveDate) -> bool {
     !todo.completed && todo.due.is_some_and(|due| due_date(due) < today)
 }
 
-/// `Today`, `Tomorrow`, `Yesterday`, otherwise `Mo, 12.10.` (short weekday name from
-/// `datetime::weekday_name`); a time of day is appended (`Today 14:00`).
-fn due_text(due: EventTime, today: NaiveDate) -> String {
+/// `Today`, `Tomorrow`, `Yesterday`, otherwise the short date (`Mon, 12 Oct`,
+/// `datetime::format_short_date`); a time of day is appended (`Today 14:00`).
+pub(crate) fn due_text(due: EventTime, today: NaiveDate) -> String {
     let day = due_date(due);
     let name = match (day - today).num_days() {
         0 => tr("Today").to_string(),
         1 => tr("Tomorrow").to_string(),
         -1 => tr("Yesterday").to_string(),
-        _ => format!("{}, {}", datetime::weekday_name(day, true), day.format("%d.%m.")),
+        _ => datetime::format_short_date(day, today),
     };
     match due {
         EventTime::Date(_) => name,
@@ -166,98 +179,255 @@ fn due_text(due: EventTime, today: NaiveDate) -> String {
     }
 }
 
-/// `!!` for high (1–4), `!` for medium (5), nothing otherwise.
-fn priority_mark(priority: Option<u8>) -> Option<&'static str> {
+/// Linear's priority levels: how many of the three bars are lit. iCalendar 1–4 is high (3),
+/// 5 medium (2), 6–9 low (1); 0 and anything else is none (0, all bars dim).
+pub(crate) fn priority_level(priority: Option<u8>) -> usize {
     match priority {
-        Some(1..=4) => Some("!!"),
-        Some(5) => Some("!"),
-        _ => None,
+        Some(1..=4) => 3,
+        Some(5) => 2,
+        Some(6..=9) => 1,
+        _ => 0,
     }
 }
 
+/// The groups of the list, top to bottom. Open tasks fall into the first four by their due day,
+/// done ones (shown with "Completed" on) into the last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    /// Open, due before today.
+    Overdue,
+    /// Open, due today.
+    Today,
+    /// Open, due after today.
+    Upcoming,
+    /// Open, without a due date.
+    NoDate,
+    /// Done.
+    Completed,
+}
+
+impl Group {
+    fn of(todo: &Todo, today: NaiveDate) -> Group {
+        if todo.completed {
+            return Group::Completed;
+        }
+        match todo.due.map(|due| due_date(due).cmp(&today)) {
+            Some(Ordering::Less) => Group::Overdue,
+            Some(Ordering::Equal) => Group::Today,
+            Some(Ordering::Greater) => Group::Upcoming,
+            None => Group::NoDate,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Group::Overdue => tr("Overdue"),
+            Group::Today => tr("Today"),
+            Group::Upcoming => tr("Upcoming"),
+            Group::NoDate => tr("No date"),
+            Group::Completed => tr("Completed"),
+        }
+    }
+
+    /// The icon of the group head; "Overdue" carries the attention colour as in the mock-up.
+    fn mark(self, attention: Color) -> Mark {
+        match self {
+            Group::Overdue => Mark::Tinted(Icon::CircleAlert, attention),
+            Group::Today => Mark::Icon(Icon::Sun),
+            Group::Upcoming => Mark::Icon(Icon::CalendarClock),
+            Group::NoDate => Mark::Icon(Icon::Layers),
+            Group::Completed => Mark::Icon(Icon::CircleCheck),
+        }
+    }
+}
+
+/// [`arrange`]'s tasks split into their [`Group`]s, in display order and without empty groups.
+/// A top-level task decides the group; its subtasks stay with it, so a tree is never split.
+/// [`arrange`] sorts open before done and then by due date, so every group is one run.
+pub fn grouped(data: &ListData<'_>) -> Vec<(Group, Vec<(usize, usize)>)> {
+    let mut groups: Vec<(Group, Vec<(usize, usize)>)> = Vec::new();
+    for (index, depth) in arrange(data) {
+        if depth == 0 {
+            let group = Group::of(&data.todos[index], data.today);
+            if groups.last().map(|(last, _)| *last) != Some(group) {
+                groups.push((group, Vec::new()));
+            }
+        }
+        if let Some((_, items)) = groups.last_mut() {
+            items.push((index, depth));
+        }
+    }
+    groups
+}
+
+/// How many open tasks `filter` shows: the counter of a sidebar row.
+pub fn open_count(todos: &[Todo], filter: &Filter, today: NaiveDate) -> usize {
+    let data = ListData {
+        todos,
+        colors: HashMap::new(),
+        names: HashMap::new(),
+        filter,
+        show_completed: false,
+        today,
+        selected: None,
+        show_list: false,
+        attention: Color::TRANSPARENT,
+    };
+    todos.iter().filter(|todo| is_shown(todo, &data)).count()
+}
+
+/// The id of the list's scrollable, so the keyboard can scroll the chosen row into view.
+pub const SCROLL: &str = "task-list";
+
+/// Height of a group head: the 4 above it plus the head itself (`widgets::group_head`).
+const GROUP_HEAD: f32 = space::XS + size::ROW_GROUP;
+/// The one-pixel line of a group head.
+const LINE: f32 = 1.0;
+/// What the first head leaves out: the gap above it and its line above, because the quick add box
+/// right above already ends the header area and a second line 8 below it would read as a double.
+const FIRST_TRIM: f32 = space::XS + LINE;
+
+/// Indices into `todos` of the rows as the list shows them, top to bottom.
+pub fn order(data: &ListData<'_>) -> Vec<usize> {
+    arrange(data).into_iter().map(|(index, _)| index).collect()
+}
+
+/// Where `todos[index]` lies in the list's content as `(top, bottom)`. The first row of a group
+/// starts at its head, so scrolling up to it shows the head too. `None` if the row is not shown.
+pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
+    // The first head is shorter by [`FIRST_TRIM`]; it still starts at the top of the content.
+    let mut y = -FIRST_TRIM;
+    for (_, items) in grouped(data) {
+        let head = y.max(0.0);
+        y += GROUP_HEAD;
+        for (n, (row, _)) in items.into_iter().enumerate() {
+            if row == index {
+                return Some((if n == 0 { head } else { y }, y + size::ROW));
+            }
+            y += size::ROW;
+        }
+    }
+    None
+}
+
+/// The list: group heads with their rows, scrolling; the empty state when nothing is shown.
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
-    let items = arrange(&data);
-    if items.is_empty() {
-        return empty_state();
+    let groups = grouped(&data);
+    if groups.is_empty() {
+        return widgets::empty_state(tr("Nothing to do"), tr("Add a task above"));
     }
-    let mut list = column![].spacing(2).width(Length::Fill);
-    for (index, depth) in items {
-        list = list.push(row_view(&data, index, depth));
+    let mut list = column![].width(Fill);
+    for (n, (group, items)) in groups.into_iter().enumerate() {
+        let head = widgets::group_head(group.mark(data.attention), group.label(), Some(items.len()), None);
+        list = list.push(if n == 0 { without_top(head) } else { head });
+        for (index, depth) in items {
+            list = list.push(row_view(&data, index, depth));
+        }
     }
-    scrollable(list).width(Length::Fill).height(Length::Fill).into()
+    scrollable(list)
+        .id(SCROLL)
+        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .width(Fill)
+        .height(Fill)
+        .into()
 }
 
-fn empty_state<'a>() -> Element<'a, Message> {
-    let hint = column![
-        text(tr("Nothing to do")).size(18).color(theme::MUTED),
-        text(tr("Add a task above")).size(13).color(theme::MUTED),
-    ]
-    .spacing(6)
-    .align_x(Alignment::Center);
-    container(hint).center(Length::Fill).into()
+/// The group head without its gap and line above: moved up by [`FIRST_TRIM`] inside a clipping
+/// container that is that much shorter, so only the part above the head's top line is cut off.
+fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message> {
+    container(container(head).padding(Padding { top: -FIRST_TRIM, ..Padding::ZERO })).clip(true).into()
 }
 
-/// One task: indent, checkbox, title, badges; the selected one gets the surface colour.
+/// One task: indent, check, priority, title, list pill, due date.
 fn row_view<'a>(data: &ListData<'a>, index: usize, depth: usize) -> Element<'a, Message> {
     let todo = &data.todos[index];
-    let selected = data.selected == Some(index);
-    let line = row![
-        Space::new().width(Length::Fixed(depth as f32 * INDENT)),
-        checkbox(todo.completed).on_toggle(move |_| Message::ToggleDone(index)),
-        title_view(todo, index),
-        badges_view(data, todo),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center);
-    container(line)
-        .padding([6, 8])
-        .width(Length::Fill)
-        .style(move |_| container::Style {
-            background: selected.then_some(Background::Color(theme::SURFACE)),
-            ..Default::default()
+    let colour = data.colors.get(&todo.collection).copied().unwrap_or_else(|| widgets::collection_color(None));
+    let mut cells: Vec<Element<'a, Message>> = Vec::new();
+    if depth > 0 {
+        cells.push(Space::new().width(depth as f32 * space::XL).into());
+    }
+    cells.push(
+        checkbox(todo.completed)
+            .size(style::CHECK_SIZE)
+            .style(style::task_check(colour))
+            .on_toggle(move |_| Message::ToggleDone(index))
+            .into(),
+    );
+    cells.push(priority_view(priority_level(todo.priority)));
+    // Iced 0.14 has no ellipsis: the title takes the free width and is clipped there, so it
+    // never runs under the pill and the date, which keep their own width.
+    cells.push(container(title_view(todo)).width(Fill).clip(true).into());
+    if data.show_list {
+        let name = data.names.get(&todo.collection).cloned().unwrap_or_default();
+        cells.push(widgets::pill(Some(colour), name));
+    }
+    if let Some(due) = todo.due {
+        let overdue = is_overdue(todo, data.today);
+        let date = typo::text(typo::META.tabular(), due_text(due, data.today)).wrapping(text::Wrapping::None).style(
+            move |t: &Theme| {
+                let p = palette(t);
+                text::Style { color: Some(if overdue { p.attention_text } else { p.text_3 }) }
+            },
+        );
+        cells.push(date.into());
+    }
+    widgets::list_row(cells, data.selected == Some(index), Some(Message::Select(index)))
+}
+
+/// The title on one line; a done task struck through in `text_3`.
+pub(crate) fn title_view<'a, M: 'a>(todo: &Todo) -> Element<'a, M> {
+    let fragment: text::Span<'static, ()> = span(todo.summary.clone()).strikethrough(todo.completed);
+    let completed = todo.completed;
+    rich_text(vec![fragment])
+        .size(typo::BODY.size)
+        .line_height(typo::BODY.line_height)
+        .font(typo::BODY.font)
+        .wrapping(text::Wrapping::None)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            text::Style { color: Some(if completed { p.text_3 } else { p.text }) }
         })
         .into()
 }
 
-fn title_view<'a>(todo: &Todo, index: usize) -> Element<'a, Message> {
-    let color = if todo.completed { theme::MUTED } else { theme::TEXT };
-    let fragment: text::Span<'static, ()> = span(todo.summary.clone()).color(color).strikethrough(todo.completed);
-    let title = rich_text(vec![fragment]).size(15).width(Length::Fill);
-    mouse_area(title).on_press(Message::Select(index)).interaction(mouse::Interaction::Pointer).into()
-}
+/// Width of one priority bar and the gap between the bars (the mock-up's `.prio`).
+// design-check: allow the priority glyph is drawn from boxes, its sizes are the mock-up's
+const BAR_WIDTH: f32 = 3.0;
+const BAR_GAP: f32 = 2.0;
+/// Heights of the three bars, rising; the tallest is the height of the glyph.
+const BAR_HEIGHTS: [f32; 3] = [5.0, 8.0, 12.0];
+const BAR_RADIUS: f32 = 1.0;
 
-/// Due date, priority and (outside list filters) the list's colour, right aligned.
-fn badges_view<'a>(data: &ListData<'a>, todo: &Todo) -> Element<'a, Message> {
-    let mut badges = row![].spacing(8).align_y(Alignment::Center);
-    if let Some(due) = todo.due {
-        let color = if is_overdue(todo, data.today) { theme::color(STATUS_ATTENTION) } else { theme::MUTED };
-        badges = badges.push(text(due_text(due, data.today)).size(13).color(color));
-    }
-    if let Some(mark) = priority_mark(todo.priority) {
-        let color = if todo.completed { theme::MUTED } else { theme::TEXT };
-        badges = badges.push(text(mark).size(13).color(color));
-    }
-    if !matches!(data.filter, Filter::List(_)) {
-        let color = data.colors.get(&todo.collection).copied().unwrap_or(theme::MUTED);
-        badges = badges.push(dot(color));
-    }
-    badges.into()
-}
-
-/// The list's colour, a small round dot.
-fn dot<'a>(color: Color) -> Element<'a, Message> {
-    container(Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
-        .style(move |_| container::Style {
-            background: Some(Background::Color(color)),
-            border: iced::border::rounded(4),
-            ..Default::default()
-        })
+/// Linear's priority glyph: three rising bars in a 14-wide cell, the first `level` in `text_2`,
+/// the rest in `line_strong`. Shape, not colour, carries the level.
+pub(crate) fn priority_view<'a, M: 'a>(level: usize) -> Element<'a, M> {
+    let bars = BAR_HEIGHTS.into_iter().enumerate().map(|(i, height)| {
+        let lit = i < level;
+        container(Space::new().width(BAR_WIDTH).height(height))
+            .style(move |t: &Theme| {
+                let p = palette(t);
+                container::Style {
+                    background: Some(Background::Color(if lit { p.text_2 } else { p.line_strong })),
+                    border: border::rounded(BAR_RADIUS),
+                    ..container::Style::default()
+                }
+            })
+            .into()
+    });
+    let glyph = BAR_HEIGHTS[2];
+    container(row(bars).spacing(BAR_GAP).align_y(Alignment::End))
+        .width(icon::SIZE_SM)
+        .height(glyph)
+        .align_bottom(glyph)
         .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torro_core::i18n::trf;
 
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")
@@ -286,10 +456,26 @@ mod tests {
         Some(EventTime::Date(day(d)))
     }
 
+    fn data<'a>(todos: &'a [Todo], filter: &'a Filter, show_completed: bool) -> ListData<'a> {
+        ListData {
+            todos,
+            colors: HashMap::new(),
+            names: HashMap::new(),
+            filter,
+            show_completed,
+            today: today(),
+            selected: None,
+            show_list: true,
+            attention: Color::BLACK,
+        }
+    }
+
     /// Summaries of the arranged tasks with their depth.
     fn shown<'a>(todos: &'a [Todo], filter: &'a Filter, show_completed: bool) -> Vec<(&'a str, usize)> {
-        let data = ListData { todos, colors: HashMap::new(), filter, show_completed, today: today(), selected: None };
-        arrange(&data).into_iter().map(|(i, depth)| (todos[i].summary.as_str(), depth)).collect()
+        arrange(&data(todos, filter, show_completed))
+            .into_iter()
+            .map(|(i, depth)| (todos[i].summary.as_str(), depth))
+            .collect()
     }
 
     fn names(todos: &[Todo], filter: &Filter, show_completed: bool) -> Vec<String> {
@@ -410,8 +596,10 @@ mod tests {
         assert_eq!(due_text(EventTime::Date(day(11)), today()), tr("Today"));
         assert_eq!(due_text(EventTime::Date(day(12)), today()), tr("Tomorrow"));
         assert_eq!(due_text(EventTime::Date(day(10)), today()), tr("Yesterday"));
-        assert_eq!(due_text(EventTime::Date(day(14)), today()), format!("{}, 14.10.", tr("Wed")));
-        assert_eq!(due_text(EventTime::Date(day(5)), today()), format!("{}, 05.10.", tr("Mon")));
+        assert_eq!(due_text(EventTime::Date(day(14)), today()), datetime::format_short_date(day(14), today()));
+        assert_eq!(due_text(EventTime::Date(day(5)), today()), datetime::format_short_date(day(5), today()));
+        let short = trf("{weekday}, {day} {month}", &[("weekday", &tr("Wed")), ("day", &14), ("month", &tr("Oct"))]);
+        assert_eq!(due_text(EventTime::Date(day(14)), today()), short, "one short form, without leading zeros");
     }
 
     #[test]
@@ -431,13 +619,88 @@ mod tests {
     }
 
     #[test]
-    fn priority_marks() {
-        assert_eq!(priority_mark(Some(1)), Some("!!"));
-        assert_eq!(priority_mark(Some(4)), Some("!!"));
-        assert_eq!(priority_mark(Some(5)), Some("!"));
-        assert_eq!(priority_mark(Some(6)), None);
-        assert_eq!(priority_mark(Some(9)), None);
-        assert_eq!(priority_mark(Some(0)), None);
-        assert_eq!(priority_mark(None), None);
+    fn priority_levels_follow_icalendar() {
+        assert_eq!(priority_level(Some(1)), 3);
+        assert_eq!(priority_level(Some(4)), 3);
+        assert_eq!(priority_level(Some(5)), 2);
+        assert_eq!(priority_level(Some(6)), 1);
+        assert_eq!(priority_level(Some(9)), 1);
+        assert_eq!(priority_level(Some(0)), 0);
+        assert_eq!(priority_level(None), 0);
+    }
+
+    #[test]
+    fn groups_follow_the_due_day_and_keep_subtasks_with_their_parent() {
+        let mut done = Todo { due: due(9), ..todo("d", "done") };
+        done.completed = true;
+        let todos = vec![
+            Todo { due: due(12), ..todo("u", "later") },
+            Todo { due: due(11), ..todo("t", "today") },
+            Todo { due: due(9), ..todo("o", "overdue") },
+            // An undated subtask stays under its overdue parent instead of moving to "No date".
+            Todo { parent: Some("o".into()), ..todo("c", "child") },
+            todo("n", "undated"),
+            done,
+        ];
+        let groups: Vec<(Group, Vec<&str>)> = grouped(&data(&todos, &Filter::All, true))
+            .into_iter()
+            .map(|(group, items)| (group, items.into_iter().map(|(i, _)| todos[i].summary.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                (Group::Overdue, vec!["overdue", "child"]),
+                (Group::Today, vec!["today"]),
+                (Group::Upcoming, vec!["later"]),
+                (Group::NoDate, vec!["undated"]),
+                (Group::Completed, vec!["done"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn order_is_the_row_order_and_spans_stack_up() {
+        let todos = vec![
+            Todo { due: due(12), ..todo("u", "later") },
+            Todo { due: due(9), ..todo("o", "overdue") },
+            Todo { parent: Some("o".into()), ..todo("c", "child") },
+            Todo { due: due(11), ..todo("t", "today") },
+        ];
+        let d = data(&todos, &Filter::All, false);
+        let names: Vec<&str> = order(&d).into_iter().map(|i| todos[i].summary.as_str()).collect();
+        assert_eq!(names, ["overdue", "child", "today", "later"]);
+
+        let span = |uid: &str| row_span(&d, todos.iter().position(|t| t.uid == uid).expect("task"));
+        // The first head is shorter by FIRST_TRIM.
+        let (head, row) = (GROUP_HEAD, size::ROW);
+        let first = head - FIRST_TRIM;
+        assert_eq!(span("o"), Some((0.0, first + row)), "the first row of a group starts at its head");
+        assert_eq!(span("c"), Some((first + row, first + 2.0 * row)));
+        assert_eq!(span("t"), Some((first + 2.0 * row, first + head + 3.0 * row)));
+        assert_eq!(span("u").map(|(_, bottom)| bottom), Some(first + 2.0 * head + 4.0 * row));
+        assert_eq!(row_span(&d, 99), None);
+    }
+
+    #[test]
+    fn nothing_shown_means_no_groups() {
+        assert!(grouped(&data(&[], &Filter::Today, false)).is_empty());
+    }
+
+    #[test]
+    fn group_labels_are_translated() {
+        assert_eq!(Group::Overdue.label(), tr("Overdue"));
+        assert_eq!(Group::NoDate.label(), tr("No date"));
+        assert_eq!(Group::Completed.label(), tr("Completed"));
+    }
+
+    #[test]
+    fn open_count_ignores_done_tasks() {
+        let mut done = Todo { due: due(11), ..todo("d", "done") };
+        done.completed = true;
+        let todos =
+            vec![Todo { due: due(10), ..todo("o", "overdue") }, Todo { due: due(13), ..todo("l", "later") }, done];
+        assert_eq!(open_count(&todos, &Filter::Today, today()), 1);
+        assert_eq!(open_count(&todos, &Filter::Planned, today()), 2);
+        assert_eq!(open_count(&todos, &Filter::All, today()), 2);
     }
 }

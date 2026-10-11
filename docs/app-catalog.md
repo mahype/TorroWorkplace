@@ -42,6 +42,8 @@ macOS-Menüleisten-Apps oder tmux-TUIs (siehe [research.md](research.md)).
 | TorroCast | gibt es; ebenso |
 | TorroEQ | gibt es; ebenso |
 | Benachrichtigungen | Idee: ein Fenster für alle Benachrichtigungen der Suite |
+| **Mail-Client der Suite** | Idee, am 2026-10-11 vorgemerkt: eigener Client mit eigener Oberfläche (Iced), spricht IMAP/SMTP direkt. Noch völlig offen, wie er aussieht, damit er ins Tiling-Schema passt (siehe [roadmap.md](roadmap.md#offene-fragen)) |
+| Chat (Nextcloud Talk) | Idee: erst ungelesene Nachrichten im Tray und schnell antworten, später eine schlanke Chat-App; nur Text, keine Anrufe |
 
 ## Suite-Infrastruktur
 

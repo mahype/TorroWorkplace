@@ -1,23 +1,33 @@
-//! Workspace templates (task S.7): list (name, windows, last updated), rename inline, delete
-//! with confirmation (`torro_gui::widgets::modal`), load into the active workspace (Add).
-//! Requests: `RenameTemplate`, `DeleteTemplate`, `LoadTemplate { mode: Add }`. Empty: one
-//! sentence explaining how to save a workspace from the tray menu.
+//! Workspace templates (task S.7): a settings group with a row per template (name, windows,
+//! last updated). A row shows one action, "Load" (into the active workspace, mode Add); rename
+//! (inline) and delete (with confirmation, a dialog over the whole window, [`overlay`]) sit in the
+//! "…" menu of the row, which is a layer over the window like the dialog. Requests:
+//! `RenameTemplate`, `DeleteTemplate`, `LoadTemplate { mode: Add }`. Empty: one sentence explaining
+//! how to save a workspace from the tray menu.
 
 use chrono::{DateTime, Utc};
-use iced::widget::{button, column, container, row, space, text, text_input};
-use iced::{Alignment, Background, Element, Length, Theme, border};
+use iced::widget::{row, text_input};
+use iced::{Alignment, Element, Fill};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime;
-use torro_gui::theme;
-use torro_gui::widgets::{empty_state, modal, section_title};
+use torro_gui::icon::Icon;
+use torro_gui::theme::space;
+use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, empty_state};
+use torro_gui::{style, typo};
 use torro_ipc::Request;
 use torro_setups::{LoadMode, TemplateSummary};
 
-use super::{Action, Data};
+use super::{Action, Data, confirm, row_frame, setting_row};
 
-/// Page-local state: at most one row is being renamed, at most one deletion is confirmed.
+/// Page-local state: at most one row has its menu open, at most one is being renamed, at most one
+/// deletion is confirmed.
 #[derive(Debug, Default)]
 pub struct State {
+    /// Id of the template whose "…" menu is open.
+    menu: Option<String>,
+    /// Where the "…" button of the open menu is, for the layer that floats next to it. Only that
+    /// one button registers, so a single anchor serves all rows.
+    anchor: Anchor,
     renaming: Option<Rename>,
     /// Id of the template whose delete dialog is open.
     confirm_delete: Option<String>,
@@ -33,14 +43,20 @@ struct Rename {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The "…" button of a row: opens its menu, or closes it when it is open.
+    ToggleMenu(String),
+    /// A click next to the menu, or Escape.
+    CloseMenu,
+    /// "Rename" in the menu.
     StartRename(String),
     RenameChanged(String),
     /// "Save" or Enter.
     SaveRename,
     /// "Cancel": the row goes back to showing the name it had.
     CancelRename,
-    LoadHere(String),
-    /// "Delete" in a row: opens the confirmation.
+    /// "Load" in a row.
+    Load(String),
+    /// "Delete" in the menu: opens the confirmation.
     AskDelete(String),
     /// "Cancel" in the dialog, or a click next to it.
     CancelDelete,
@@ -48,10 +64,13 @@ pub enum Message {
     ConfirmDelete,
 }
 
-/// What Escape means on this page right now: close the delete dialog, else stop renaming.
+/// What Escape means on this page right now: close the delete dialog, else the menu, else stop
+/// renaming.
 pub fn escape(state: &State) -> Option<Message> {
     if state.confirm_delete.is_some() {
         Some(Message::CancelDelete)
+    } else if state.menu.is_some() {
+        Some(Message::CloseMenu)
     } else if state.renaming.is_some() {
         Some(Message::CancelRename)
     } else {
@@ -61,7 +80,16 @@ pub fn escape(state: &State) -> Option<Message> {
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
+        Message::ToggleMenu(id) => {
+            state.menu = if state.menu.as_deref() == Some(id.as_str()) { None } else { Some(id) };
+            Action::None
+        }
+        Message::CloseMenu => {
+            state.menu = None;
+            Action::None
+        }
         Message::StartRename(id) => {
+            state.menu = None;
             state.renaming = find(data, &id).map(|template| Rename {
                 id: template.id.clone(),
                 original: template.name.clone(),
@@ -83,8 +111,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.renaming = None;
             Action::None
         }
-        Message::LoadHere(id) => Action::Send(Request::LoadTemplate { id, mode: LoadMode::Add }),
+        Message::Load(id) => Action::Send(Request::LoadTemplate { id, mode: LoadMode::Add }),
         Message::AskDelete(id) => {
+            state.menu = None;
             state.confirm_delete = Some(id);
             Action::None
         }
@@ -121,110 +150,82 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         );
     }
     let now = Utc::now();
-    let mut list = column![].spacing(8);
-    for template in &data.templates {
-        list = list.push(template_row(state, template, now));
-    }
-    let footer = text(tr("Save the active workspace from the tray menu: Save workspace.")).size(14).color(theme::MUTED);
-    let page: Element<'a, Message> =
-        column![section_title::<Message>(tr("Templates")), list, footer].spacing(16).into();
-    match state.confirm_delete.as_ref().and_then(|id| find(data, id)) {
-        Some(template) => modal(page, delete_dialog(template), 400.0, Message::CancelDelete),
-        None => page,
-    }
+    let rows = data.templates.iter().map(|template| template_row(state, template, now)).collect();
+    let footer = tr("Save the active workspace from the tray menu: Save workspace.");
+    widgets::group(tr("Templates"), rows, Some(footer.to_string()))
 }
 
-/// One template: name, meta line and actions; in rename mode the name becomes an input.
+/// The page's layer over the whole window: the delete confirmation while it is open, else the
+/// "…" menu of a row.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(template) = state.confirm_delete.as_ref().and_then(|id| find(data, id)) {
+        return Some(confirm(
+            tr("Delete this template?"),
+            trf("\"{name}\" will be deleted. Saved backups stay in the data folder.", &[("name", &template.name)]),
+            tr("Delete template"),
+            Message::ConfirmDelete,
+            Message::CancelDelete,
+        ));
+    }
+    let template = state.menu.as_ref().and_then(|id| find(data, id))?;
+    Some(widgets::floating(&state.anchor, Placement::Below(Align::End), row_menu(template), Message::CloseMenu))
+}
+
+/// The "…" menu of a row: rename and delete, the actions a row does not show.
+fn row_menu(template: &TemplateSummary) -> Element<'_, Message> {
+    let id = &template.id;
+    widgets::menu(vec![MenuSection::new(vec![
+        MenuItem::new(Icon::SquarePen, tr("Rename"), Message::StartRename(id.clone())),
+        MenuItem::new(Icon::X, tr("Delete"), Message::AskDelete(id.clone())),
+    ])])
+}
+
+/// One template: name, meta line, "Load" and the "…" menu button; in rename mode the row becomes
+/// an input.
 fn template_row<'a>(state: &'a State, template: &'a TemplateSummary, now: DateTime<Utc>) -> Element<'a, Message> {
-    let body: Element<'a, Message> = match state.renaming.as_ref().filter(|rename| rename.id == template.id) {
-        Some(rename) => rename_body(rename),
-        None => {
-            let meta = format!(
-                "{} · {}",
-                trf("{n} windows", &[("n", &template.windows)]),
-                trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
-            );
-            let actions = row![
-                button(text(tr("Rename")).size(14))
-                    .style(button::secondary)
-                    .on_press(Message::StartRename(template.id.clone())),
-                button(text(tr("Load here")).size(14))
-                    .style(button::secondary)
-                    .on_press(Message::LoadHere(template.id.clone())),
-                space().width(Length::Fill),
-                button(text(tr("Delete")).size(14))
-                    .style(button::text)
-                    .on_press(Message::AskDelete(template.id.clone())),
-            ]
-            .spacing(8)
+    if let Some(rename) = state.renaming.as_ref().filter(|rename| rename.id == template.id) {
+        return rename_row(rename);
+    }
+    let meta = format!(
+        "{} · {}",
+        if template.windows == 1 {
+            tr("1 window").to_string()
+        } else {
+            trf("{n} windows", &[("n", &template.windows)])
+        },
+        trf("Updated {when}", &[("when", &relative_time(template.updated, now))]),
+    );
+    let id = &template.id;
+    let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(id.clone())));
+    // Only the button of the open menu registers its place; the menu floats next to it.
+    let more = if state.menu.as_deref() == Some(id.as_str()) { widgets::anchored(&state.anchor, more) } else { more };
+    let actions =
+        row![widgets::text_button(None, tr("Load"), style::button::secondary, Some(Message::Load(id.clone()))), more]
+            .spacing(space::S)
             .align_y(Alignment::Center);
-            column![
-                text(template.name.clone()).size(16).color(theme::TEXT),
-                text(meta).size(12).color(theme::MUTED),
-                actions,
-            ]
-            .spacing(4)
-            .into()
-        }
-    };
-    card(body, 8.0, 16)
+    setting_row(None, template.name.as_str(), Some(meta), actions)
 }
 
-/// The rename row: the input, Enter saves, "Cancel" and "Save" below it.
-fn rename_body(rename: &Rename) -> Element<'_, Message> {
+/// The rename row: the input (Enter saves), "Cancel" and "Save" next to it.
+fn rename_row(rename: &Rename) -> Element<'_, Message> {
     let can_save = !rename.name.trim().is_empty();
-    let actions = row![
-        space().width(Length::Fill),
-        button(text(tr("Cancel")).size(14)).style(button::secondary).on_press(Message::CancelRename),
-        button(text(tr("Save")).size(14))
-            .style(button::primary)
-            .on_press_maybe(can_save.then_some(Message::SaveRename)),
+    let input = text_input(tr("Name"), &rename.name)
+        .size(typo::BODY.size)
+        .line_height(typo::BODY.line_height)
+        .font(typo::BODY.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+        .on_input(Message::RenameChanged)
+        .on_submit(Message::SaveRename);
+    let content = row![
+        input,
+        widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelRename)),
+        widgets::text_button(None, tr("Save"), style::button::primary, can_save.then_some(Message::SaveRename)),
     ]
-    .spacing(8)
+    .spacing(space::S)
     .align_y(Alignment::Center);
-    column![
-        text_input(tr("Name"), &rename.name)
-            .size(14)
-            .padding(8)
-            .width(Length::Fill)
-            .on_input(Message::RenameChanged)
-            .on_submit(Message::SaveRename),
-        actions,
-    ]
-    .spacing(8)
-    .into()
-}
-
-/// The confirmation for deleting one template. Saved backups are not touched.
-fn delete_dialog(template: &TemplateSummary) -> Element<'_, Message> {
-    let body = column![
-        text(tr("Delete this template?")).size(18).color(theme::TEXT),
-        text(trf("\"{name}\" will be deleted. Saved backups stay in the data folder.", &[("name", &template.name)]))
-            .size(14)
-            .color(theme::MUTED),
-        row![
-            space().width(Length::Fill),
-            button(text(tr("Cancel")).size(14)).style(button::secondary).on_press(Message::CancelDelete),
-            button(text(tr("Delete template")).size(14)).style(button::danger).on_press(Message::ConfirmDelete),
-        ]
-        .spacing(8)
-        .align_y(Alignment::Center),
-    ]
-    .spacing(16);
-    card(body, 12.0, 24)
-}
-
-/// A raised surface with rounded corners, for rows and the dialog.
-fn card<'a>(body: impl Into<Element<'a, Message>>, radius: f32, padding: u16) -> Element<'a, Message> {
-    container(body)
-        .padding(padding)
-        .width(Length::Fill)
-        .style(move |_: &Theme| container::Style {
-            background: Some(Background::Color(theme::SURFACE)),
-            border: border::rounded(radius),
-            ..container::Style::default()
-        })
-        .into()
+    row_frame(content, true)
 }
 
 fn find<'a>(data: &'a Data, id: &str) -> Option<&'a TemplateSummary> {
@@ -329,10 +330,56 @@ mod tests {
     }
 
     #[test]
-    fn load_here_sends_add_mode() {
+    fn load_sends_add_mode() {
         let mut state = State::default();
-        let request = sent(update(&mut state, Message::LoadHere("dev".into()), &data()));
+        let request = sent(update(&mut state, Message::Load("dev".into()), &data()));
         assert_eq!(request, Some(Request::LoadTemplate { id: "dev".into(), mode: LoadMode::Add }));
+    }
+
+    #[test]
+    fn the_menu_opens_toggles_and_closes() {
+        let data = data();
+        let mut state = State::default();
+        assert!(sent(update(&mut state, Message::ToggleMenu("dev".into()), &data)).is_none());
+        assert_eq!(state.menu.as_deref(), Some("dev"));
+        update(&mut state, Message::ToggleMenu("mail".into()), &data);
+        assert_eq!(state.menu.as_deref(), Some("mail"), "another row takes the menu over");
+        update(&mut state, Message::ToggleMenu("mail".into()), &data);
+        assert!(state.menu.is_none(), "the same button closes it again");
+        update(&mut state, Message::ToggleMenu("dev".into()), &data);
+        update(&mut state, Message::CloseMenu, &data);
+        assert!(state.menu.is_none());
+    }
+
+    #[test]
+    fn the_menu_entries_close_it_and_go_on() {
+        let data = data();
+        let mut state = State::default();
+        update(&mut state, Message::ToggleMenu("dev".into()), &data);
+        update(&mut state, Message::StartRename("dev".into()), &data);
+        assert!(state.menu.is_none());
+        assert!(state.renaming.is_some());
+
+        update(&mut state, Message::ToggleMenu("mail".into()), &data);
+        update(&mut state, Message::AskDelete("mail".into()), &data);
+        assert!(state.menu.is_none());
+        assert_eq!(state.confirm_delete.as_deref(), Some("mail"));
+    }
+
+    #[test]
+    fn escape_closes_the_dialog_then_the_menu_then_the_rename() {
+        let data = data();
+        let mut state = State::default();
+        assert!(escape(&state).is_none());
+        update(&mut state, Message::StartRename("dev".into()), &data);
+        update(&mut state, Message::ToggleMenu("mail".into()), &data);
+        update(&mut state, Message::AskDelete("mail".into()), &data);
+        update(&mut state, Message::ToggleMenu("mail".into()), &data);
+        assert!(matches!(escape(&state), Some(Message::CancelDelete)));
+        update(&mut state, Message::CancelDelete, &data);
+        assert!(matches!(escape(&state), Some(Message::CloseMenu)));
+        update(&mut state, Message::CloseMenu, &data);
+        assert!(matches!(escape(&state), Some(Message::CancelRename)));
     }
 
     #[test]
@@ -358,6 +405,20 @@ mod tests {
         let mut state = State::default();
         update(&mut state, Message::StartRename("dev".into()), &data);
         update(&mut state, Message::AskDelete("mail".into()), &data);
-        let _filled: Element<'_, Message> = view(&state, &data);
+        drop(view(&state, &data));
+        assert!(overlay(&state, &data).is_some(), "the delete confirmation is a window layer");
+        update(&mut state, Message::CancelDelete, &data);
+        assert!(overlay(&state, &data).is_none());
+    }
+
+    #[test]
+    fn the_open_menu_is_a_window_layer_for_a_known_template_only() {
+        let data = data();
+        let mut state = State::default();
+        update(&mut state, Message::ToggleMenu("dev".into()), &data);
+        assert!(overlay(&state, &data).is_some());
+        drop(view(&state, &data));
+        update(&mut state, Message::ToggleMenu("gone".into()), &data);
+        assert!(overlay(&state, &data).is_none(), "a menu for a template that is gone shows nothing");
     }
 }

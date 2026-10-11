@@ -5,164 +5,308 @@ description: Design-Regeln für alle Oberflächen von TorroWorkplace (Iced-Views
 
 # Torro-Design
 
+Stand 2026-10-11: **Vorbild ist Linear** (entschieden). Aufbau, Anordnung, Abstände, Schrift und
+Symbole folgen Linear; Referenz sind die Entwürfe in `docs/prototypes/linear/` (`calendar.html`,
+`tasks.html`, `torro.css`, Screenshots in drei Größen). Was dort steht, gilt; die Werte unten sind
+daraus übernommen. Das Fundament in Iced entsteht mit `docs/tasks/design.md` (F.2–F.6). Gibt es
+einen Token oder Baustein noch nicht, ist das kein Freibrief für Einzelwerte: Aufgabe nennen oder
+nachfragen.
+
 ## Das Ziel – an jeder Ansicht zu messen
 
-1. **Professionell.** Jede Ansicht wirkt wie aus einer Hand und auf dem Niveau von Linear,
-   Things 3, Fantastical oder Amie: ruhig, klar, dicht genug für Arbeit, nie überladen, nichts
-   wirkt zufällig oder „Entwickler-Oberfläche“.
-2. **Schöne, gut lesbare Schrift.** Eine moderne UI-Schrift (Abschnitt 3), saubere Hierarchie,
-   genug Kontrast, nichts zu klein.
-3. **Abstände immer richtig.** Jeder Abstand stammt aus der Skala (Abschnitt 2), gleiche Dinge
-   haben überall gleiche Abstände, alles liegt auf einer Achse.
+1. **Professionell und modern, wie Linear.** Jede Ansicht wirkt wie aus einer Hand: ruhig, klar,
+   dicht genug für Arbeit, nie überladen, nichts wirkt zufällig oder wie Iced-Standard.
+2. **Schöne, gut lesbare Schrift.** Inter in festen Stufen (Abschnitt 3), saubere Hierarchie.
+3. **Abstände immer richtig.** Jeder Abstand und jedes Maß stammt aus den Tokens (Abschnitt 2),
+   gleiche Dinge haben überall gleiche Abstände, alles liegt auf einer Achse.
 4. **In jeder Größe gut.** Die Apps laufen dauerhaft als Kacheln, von der Mini-Kachel bis zum
    halben 32:9-Monitor. Jede Größenklasse hat ein eigenes, durchdachtes Layout (Abschnitt 6).
 
 Ist eines der vier Ziele verfehlt, ist die Ansicht nicht fertig – auch wenn alle Tests grün sind.
 
+## 0. Fensteraufbau (Linear, für jede App gleich)
+
+Jede App ist ein eigenes Fenster (eine Kachel), aber alle sind gleich gebaut, damit die Suite wie
+aus einem Guss wirkt:
+
+```
+┌ Seitenleiste 232 (Grund BG) ┐┌ Inhalt: eingesetzte Fläche PANEL, Rand 8, Radius 8, Linie ────────┐
+│ [T] App ▾      🔍  [✎]      ││ Kopfleiste 44: Pfad/Titel · Navigation …… Ansicht · Filter · [+ Neu] │
+│ Navigation (Zeilen 28)      │├───────────────────────────────────────────┬───────────────────────┤
+│ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
+│ Listen/Kalender mit Punkt   ││                                           │ (nur Breit)           │
+│ …                           ││                                           │                       │
+│ ↗ andere App · Settings     ││                                           │                       │
+└─────────────────────────────┘└───────────────────────────────────────────┴───────────────────────┘
+```
+
+- **Oben links der App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü): öffnet die
+  anderen Apps der Suite (Kern-Befehl `OpenApp`), daneben Suche und „Neu“ (Kasten-Knopf).
+- **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt** als eingesetzte Fläche `PANEL` mit 8 Rand
+  oben/rechts/unten, Radius 8, 1-px-Linie. Ohne Seitenleiste (Mittel, Schmal) ist der Inhalt bündig
+  ohne Rand und Radius.
+- **Kopfleiste** 44 hoch im Inhalt: links Pfad bzw. Titel (`BODY_STRONG`) mit leiser Ergänzung in
+  `TEXT_3`, dann Navigation; rechts Ansicht, Filter, genau ein Primärknopf.
+- **Eigenschaften-Spalte** 300 breit rechts (Linear „Properties“): Gruppen mit `CAPTION`-Titel in
+  `TEXT_3`, Zeilen 32 mit Icon und Wert.
+- **Kleiner werden** in dieser Reihenfolge, nie etwas Funktion verlieren: (1) Seitenleiste ins Menü
+  oben links („Today ▾“, „Week ▾“), (2) Eigenschaften als schwebende Karte bzw. als Chips unter dem
+  Titel, (3) eine Ansicht ersetzt die andere (Detail statt Liste, Tag statt Woche) mit „‹ Zurück“.
+- **Hell und dunkel** für alle Apps gemeinsam (Einstellung „Appearance: System / Light / Dark“ in
+  der Steuerzentrale, über die API), live umschaltbar.
+
 ## 1. Tokens statt Einzelwerte
 
-- Farben **nur** aus `torro_gui::theme` (`BACKGROUND`, `SURFACE`, `SURFACE_2`, `LINE`, `TEXT`,
-  `MUTED`, `FAINT`, `NOW`, `attention()`, Palette-Farben). Kein `Color::from_rgb…` in den Apps.
-  Fehlt eine Farbe: in `torro-gui/src/theme.rs` ergänzen (eigene Aufgabe/Rückfrage), nicht lokal.
-- Quelle der Wahrheit ist `torro-design/tokens/tokens.json` → `torro-core/src/theme.rs` →
-  `torro-gui/src/theme.rs`. (Das Repo `torro-design` liegt nicht im Workspace; bei Zweifeln fragen.)
-- **Torro-Rot ist Marke, nie Status.** Ein lauter Moment pro Fenster: Auswahl, Primärknopf,
-  Zähler. Fehler = `STATUS_ERROR`, Warten/Abweichung = Attention-Orange, OK = Grün, inaktiv = Grau.
+- **In Apps keine Zahlen** in `.size()`, `.spacing()`, `.padding()`, `.width()`/`.height()`,
+  `.rounded()` und kein `Color::from_rgb…`: nur Tokens aus `torro_gui::{theme, typo}`.
+  **Keine Iced-Standardstile** (`button::primary`, `button::secondary`, Standard-Checkbox …): nur
+  `torro_gui::style` und die Bausteine aus `torro_gui::widgets`. `scripts/design-check.sh` prüft das
+  (F.6). Fehlt ein Token oder Stil: in `torro-gui` ergänzen (eigene Aufgabe/Rückfrage), nie lokal.
+- Markenfarben kommen aus `torro-design/tokens/tokens.json` → `torro-core/src/theme.rs`; die
+  neutralen Flächen und Textstufen stehen in `torro-gui/src/theme.rs`. (Das Repo `torro-design`
+  liegt nicht im Workspace; Änderungen dort als Rückfrage melden.)
 
-## 2. Raster, Abstände, Radien
+### Farben
 
-- 4er-Raster. Erlaubte Abstände: **4, 8, 12, 16, 24, 32, 48**. Keine 5, 7, 10, 15, 20.
-- Innerhalb einer Gruppe enger (4–8), zwischen Gruppen weiter (16–24). Nähe zeigt Zugehörigkeit.
-- Fensterrand und Karteninnenabstand: 16 (schmal) bzw. 24 (breit). Einheitlich pro App.
-- Radien: 4 (Chips, kleine Flächen), 8 (Knöpfe, Eingaben, Zeilen), 12 (Karten, Dialoge),
-  voll rund für Punkte/Avatare. Verschachtelte Radien: innen = außen − Innenabstand.
-- Linien sparsam: lieber Fläche (`SURFACE`/`SURFACE_2`) und Abstand als Rahmen. Trennlinien in `LINE`, 1 px.
+| Token | Dunkel | Hell | Wofür |
+|---|---|---|---|
+| `BG` | `#08090A` | `#F4F5F6` | Fenstergrund, Seitenleiste |
+| `PANEL` | `#0F1011` | `#FFFFFF` | Inhaltsfläche |
+| `RAISED` | `#141518` | `#F8F9FA` | Knöpfe `secondary`, Chips, Gruppenköpfe in Listen |
+| `HOVER` | `#16171A` | `#F0F1F3` | Hover |
+| `SELECTED` | `#1C1E22` | `#E9EAED` | Auswahl, gedrückt, aktives Segment |
+| `MENU` | `#17181B` | `#FFFFFF` | Menüs, schwebende Karten, Dialoge (mit Schatten) |
+| `SCRIM` | Schwarz 62 % | Schwarz 30 % | Abdunkeln hinter Dialogen |
+| `TEXT` | `#EDEEF0` | `#18191B` | Text |
+| `TEXT_2` | `#B4B8BF` | `#4F535A` | Sekundärtext, Beschreibungen |
+| `TEXT_3` | `#8A8F98` | `#62666D` | Metadaten, Zähler, Gruppentitel, Platzhalter (≥ 4.5:1 auf allen Flächen) |
+| `LINE` | Weiß 6 % | Schwarz 7 % | Trennlinien, Raster, Rand der Inhaltsfläche |
+| `LINE_STRONG` | Weiß 10 % | Schwarz 11 % | Rahmen von Knöpfen, Eingaben, Chips, Menüs |
+| `FOCUS_RING` | Weiß 35 % | Schwarz 50 % | Fokus, 2 px, 1 px Abstand (≥ 3:1) |
+| `ACCENT` | Torro-Rot `#D50C0C` | dto. | **nur** Primärknopf, Heute, Jetzt-Linie, App-Logo |
+| Kalender/Listen | `#5B8CFF` `#3FB984` `#E8A33D` `#D96CA8` `#A78BFA` | `#3B6EF0` `#1F9D68` `#B06F12` `#C2508F` `#7C5CE6` | Standardfarben, Tönung 18 % (hell 14 %) |
+
+### Akzent und Status
+
+- **Torro-Rot ist Marke, nie Status, nie Auswahl.** Pro Fenster: ein Primärknopf, Heute-Kreis,
+  Jetzt-Linie mit Zeitlabel in der Achse, das App-Logo. Aktiver Reiter, gewählte
+  Seitenleistenzeile, ausgewählte Zeile: neutral (`SELECTED` + `TEXT`), wie bei Linear.
+- Status: Fehler `STATUS_ERROR`, Warten/Abweichung/überfällig Attention-Orange, OK Grün, inaktiv
+  Grau – immer mit Wort oder Icon, Farbe nur im Punkt bzw. Icon.
+- Kalender- und Listenfarben gehören dem Nutzer: als Farbbalken, Punkt, Ring oder Häkchen, nie als
+  großflächige gesättigte Fläche.
+
+## 2. Abstände, Maße, Radien, Linien
+
+- **Abstände** `space::XS 4 · S 8 · M 12 · L 16 · XL 24 · XXL 32` (48 nur für große Leerzustände).
+  Innerhalb von Bausteinen sind 2 und 6 erlaubt (Segment-Innenrand, Icon-Text-Abstand in Chips),
+  sonst nur die Skala.
+- Label → Feld 4, innerhalb einer Gruppe 8, Gruppe → Gruppe 16–24. Nähe zeigt Zugehörigkeit.
+- **Maße** (aus den Entwürfen):
+
+| Token | Wert | Wofür |
+|---|---|---|
+| `CONTROL_SM` | 28 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
+| `CONTROL` | 32 | Eingaben, Eigenschaftszeilen |
+| `CONTROL_LG` | 36 | Schnelleingabe, Primärknopf im Dialog |
+| `ROW` | 40 | Listenzeile (Aufgaben) |
+| `ROW_SIDEBAR` | 28 | Seitenleisten- und Menüzeile (Menü 30) |
+| `ROW_GROUP` | 32 | Gruppenkopf in Listen („Overdue 2“) |
+| `HEADER` | 44 | Kopfleiste |
+| `SIDEBAR` | 232 | Seitenleiste |
+| `PROPS` | 300 | Eigenschaften-Spalte |
+| `LIST` | 460 / 380 | Liste neben dem Detail (Breit / Mittel) |
+| `HOUR` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
+| `INSET` | 8 | Rand der eingesetzten Inhaltsfläche |
+| `CONTENT_MAX` / `FORM_MAX` | 720 / 640 | Lesbreite von Listen bzw. Formularen ohne Detail |
+
+- Knöpfe: Höhe `CONTROL_SM`, Innenabstand waagerecht 10, Text `CAPTION`-Größe 12/500; Icon-Knöpfe
+  28×28; Icons 16 (in Knöpfen 14), Strich 1.75.
+- **Radien** `radius::XS 4` (Chips, Terminblöcke, Segment innen, Tasten-Hinweis) · `SM 6` (Knöpfe,
+  Zeilen, Eingaben, Menüeinträge) · `MD 8` (Inhaltsfläche, Menüs) · `LG 10` (schwebende Karten,
+  Dialoge) · voll rund für Punkte, Ringe, Avatare, Heute.
+- **Linien:** 1 logischer Pixel in `LINE`; Raster nur mit Innenlinien (keine Rahmen je Zelle,
+  keine Doppellinien). Listenzeilen durch Linien getrennt, Seitenleiste ohne Linien.
 
 ## 3. Typografie
 
-- **Schrift: Inter** (SIL Open Font License, frei mitzuliefern), die verbreitetste moderne UI-Schrift
-  und auf Bildschirmen sehr gut lesbar. Sie wird mit der App ausgeliefert (`include_bytes!` +
-  `iced::application(…).font(…)` und `default_font`), damit jede App auf jedem System gleich aussieht.
-  Nicht auf die Systemschrift verlassen – `Font::DEFAULT` ergibt je nach System z. B. Liberation
-  Sans oder Arial. (Stand heute: noch Systemschrift; das Einbinden ist eine eigene Aufgabe in `torro-gui`.)
-- Gewichte: Regular (400) für Text, Medium (500) für Hervorhebungen und Knöpfe, SemiBold (600)
-  für Titel. Kein Bold/Black, keine Kursiven für UI.
-- Größen: **12** (Abschnittstitel in Versalien, Metadaten), **14** (Fließtext, Listen, Knöpfe),
-  **16** (hervorgehobene Zeile), **18** (Ansichts-/Dialogtitel), **24** (Kopfzahl, z. B. Datum).
-- Höchstens drei Stufen pro Ansicht sichtbar. Hierarchie über Größe *und* Farbe (`TEXT` → `MUTED`),
-  nicht über viele Gewichte.
-- Zahlen, die sich ändern (Uhrzeiten, Zähler), sollen nicht springen: gleiche Breite einplanen.
-- Lange Texte kürzen mit Auslassung statt Umbruch in Zeilen; in Detailansichten umbrechen.
+- **Schrift: Inter 4** (SIL OFL), mit der App ausgeliefert (`torro_gui::fonts()`,
+  `torro_gui::settings()`), **Grundgröße 13** wie Linear. Nie `Font::DEFAULT`.
+  Größere Darstellung später über die Einstellung „Interface size“ (Iced `scale_factor`), nicht über
+  andere Schriftgrößen.
+- **Stufen** (`torro_gui::typo`), Zeilenhöhe immer absolut:
+
+| Stufe | Größe / Zeile | Gewicht | Wofür |
+|---|---|---|---|
+| `MICRO` | 11 / 14 | 400 | Zeitachse, Uhrzeit in Terminen, Wochentag in der Wochenleiste (immer tabellarisch) |
+| `CAPTION` | 12 / 16 | 500 | Gruppentitel (Satzschreibung, `TEXT_3`), Knöpfe, Chips, Badges |
+| `META` | 12 / 16 | 400 | Metadaten, Zähler, Fälligkeit |
+| `BODY` | 13 / 20 | 400 | Standard: Listen, Seitenleiste, Eingaben, Fließtext |
+| `BODY_STRONG` | 13 / 20 | 500 | Kopfleisten-Titel, Zeilentitel, Termintitel |
+| `TITLE` | 16 / 22 | 600 | Karten- und Dialogtitel |
+| `HEADLINE` | 22 / 28 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
+| `DISPLAY` | 28 / 32 | 600 | Kopfzahl in Mini (Uhrzeit, Zahl offener Aufgaben) |
+
+- Gewichte nur 400/500/600; kein Bold, keine Kursive. Hierarchie über Stufe *und* Farbe
+  (`TEXT` → `TEXT_2` → `TEXT_3`).
+- **Keine Versalien** für Abschnittstitel: Satzschreibung in `CAPTION` (wie Linear).
+- **Ziffern, die sich ändern** (Uhrzeiten, Achsen, Zähler, Daten in Spalten): `.tabular()`.
+- Lange Texte in Zeilen einzeilig mit Auslassung; in Detailansichten umbrechen. Kleinste Schrift 11
+  (`MICRO`), nur für tabellarische Ziffern und Wochentagskürzel.
 
 ## 4. Kontrast und Barrierefreiheit (WCAG 2.2 AA)
 
 - Text ≥ 4.5:1, große Schrift (≥ 18) und Bedienelemente/Icons ≥ 3:1.
-- Gemessen (dunkel, auf `BACKGROUND`): `TEXT` 16.5, `MUTED` 6.5, `FAINT` **2.4**, Torro-Rot **3.6**.
-  → `FAINT` nur für Deaktiviertes und Dekor, **nie** für lesbaren Text (auch nicht Platzhalter).
-  → Rot als Textfarbe nur groß oder als Fläche mit weißer Schrift (5.4:1).
-- Achtung hell: `MUTED` auf hellem Hintergrund hat nur 2.7:1. In hellen Themes eigene
-  Sekundärfarbe verwenden bzw. melden, dass sie fehlt.
+- Gemessen dunkel: `TEXT` ≥ 14.4, `TEXT_2` ≥ 8.4, `TEXT_3` ≥ 5.1 auf allen Flächen; hell: `TEXT`
+  ≥ 14.6, `TEXT_2` ≥ 6.4, `TEXT_3` ≥ 4.8. Weiß auf Torro-Rot 5.4; Rot auf dunklem Grund nur 3.5 →
+  Rot nie als kleiner Text, nur als Fläche mit weißer Schrift.
 - Information nie nur über Farbe: Status zusätzlich mit Text, Icon oder Form.
-- Alles per Tastatur bedienbar: Tab-Reihenfolge logisch, `Enter` bestätigt, `Escape` schließt/bricht ab,
-  Pfeiltasten in Listen und Rastern. Sichtbarer Fokus.
-- Klickziele mindestens 24×24 px, besser 32.
+- Alles per Tastatur bedienbar: Tab-Reihenfolge logisch, `Enter` bestätigt, `Escape`
+  schließt/bricht ab, Pfeiltasten in Listen und Rastern, Kurzbefehle für die Hauptaktionen
+  (in Menüs als Tasten-Hinweis rechts). Fokus sichtbar (`FOCUS_RING`, nicht Rot).
+- Klickziele mindestens 24×24, sonst 28.
 
-## 5. Zustände – jede Ansicht, jedes Element
+## 5. Zustände und Bausteine
 
-- Interaktive Elemente: normal, Hover, gedrückt, Fokus, deaktiviert – alle fünf gestalten.
-- Ansichten: **leer** (`widgets::empty_state` mit hilfreichem Hinweis, was zu tun ist),
-  **lädt** (ruhiger Platzhalter, kein Springen des Layouts), **Fehler** (was passiert ist + was
-  man tun kann + Knopf „Retry“), **voll** (lange Titel, viele Einträge, Überschneidungen).
+- **Jedes Bedienelement** hat fünf Zustände: normal; Hover = `HOVER`; gedrückt/ausgewählt =
+  `SELECTED`; Fokus = `FOCUS_RING`; deaktiviert = 40 % Deckkraft, keine Hover-Fläche.
+- **Knöpfe** (`style::button`): `primary` (Rot, weiß, höchstens einer pro Fenster), `secondary`
+  (`RAISED` mit `LINE_STRONG`-Rand), `ghost` (transparent, `TEXT_2`, Hover `HOVER` + `TEXT` –
+  Standard in Kopfleisten), `icon` (28×28 ghost), `boxed` (Icon-Knopf mit Rand, für „Neu“ in der
+  Seitenleiste), `danger` (ghost mit `STATUS_ERROR`-Text). Ansichten wechseln: `segmented` (Grund
+  `BG`, aktives Segment `SELECTED` mit `LINE_STRONG`-Kante).
+- **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius 8, Schatten, Innenrand 4;
+  Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `CAPTION`-
+  Titel; Trenner `LINE`.
+- **Schwebende Karte** (`widgets::popover`): 320 breit, `MENU`, Radius 10, Innenrand 16, Kopf mit
+  Kalender/Liste, Titel `TITLE`, Eigenschaftszeilen, unten Aktionen.
+- **Icons** nur aus `torro_gui::icon` (Lucide-SVG), nie Unicode-Glyphen wie ⟳ ‹ › ✓.
+- **Seitenleiste:** Zeilen 28 mit Icon 16, Text `BODY` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
+  Zahl rechts `META` tabellarisch in `TEXT_3`, Tasten-Hinweis als `kbd`. Gruppen „Lists ▾“ als
+  `CAPTION` in `TEXT_3` mit 12 Abstand darüber. Listen mit Ring (Aufgaben) bzw. Punkt (Kalender).
+- **Aufgabenzeile:** 40 hoch, Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
+  drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
+  Punkt) und Fälligkeit `META` tabellarisch (überfällig Attention-Orange). Gruppenköpfe 32 auf
+  `RAISED` mit Icon, Name, Zahl und „+“.
+- **Termine:** Fläche Kalenderfarbe 18 % (hell 14 %) über `PANEL`, 3-px-Balken links in voller
+  Farbe, Titel 12/500 in `TEXT`, Zeit `MICRO` in `TEXT_2`, Radius 4, kein Rahmen; kurze Termine
+  einzeilig „09:30 Titel“; unbestätigt gestrichelter Rahmen ohne Fläche; Aufgaben im Raster als
+  Umriss mit Kreis; vergangene 55 % Deckkraft; freie Zeit als „2 h free“ in `TEXT_3`.
+  **Heute** = roter Kreis mit weißer Zahl; **Jetzt** = rote Linie 1 px mit Punkt und Zeitlabel in
+  der Achse.
+- **Einstellungsseiten:** nur `widgets::group` (Titel, Zeilen 44 bzw. 56 mit Untertitel, Trennlinien,
+  erklärender Satz darunter in `TEXT_2`) – keine eigenen Karten. Eine sichtbare Aktion je Zeile, der
+  Rest im „…“-Menü.
+- **Ansichten:** **leer** (`empty_state`: was hier erscheint und was zu tun ist), **lädt**
+  (`loading()`, ruhiger Platzhalter, kein Springen), **Fehler** (`error_state`: was passiert ist +
+  „Retry“), **voll** (lange Titel, viele Einträge, Überschneidungen).
+- **Formulare:** Fehler erst nach dem ersten Speicherversuch oder beim Verlassen des Feldes,
+  nie vor der ersten Eingabe. Speichern bleibt aktiv und springt zum ersten Fehler.
 - Destruktive Aktionen: rückgängig machen anbieten oder bestätigen lassen, nie beides nötig.
 
 ## 6. Responsiv für Kachel-Fenster – von winzig bis riesig
 
 Torro-Apps laufen **dauerhaft** als Kacheln in gespeicherten Workspace-Vorlagen, oft viele
 nebeneinander. Beispiel beim Nutzer: ein 32:9-Monitor mit 7680×2160 bei Skalierung 2, also
-**3840×1080 logische Pixel**. Darauf liegen z. B. Kalender, Aufgaben und Benachrichtigungen als
-kleine Kacheln neben einer großen Musik- oder Arbeitsfläche. Jede Ansicht muss deshalb in
-**jeder** Größe gut aussehen – nicht nur funktionieren.
+**3840×1080 logische Pixel**. Jede Ansicht muss in **jeder** Größe gut aussehen – nicht nur
+funktionieren.
 
-**Größenklassen** (logische Pixel, Breite und Höhe getrennt bewerten):
+**Größenklassen** (logische Pixel), geprüft in dieser Reihenfolge – `torro_gui::layout::of(size)`
+(K.18), nie eigene Schwellen in Views:
 
-| Klasse | Größe | Zweck | Beispiel Kalender / Aufgaben |
-|---|---|---|---|
-| **Mini** | Breite < 360 *oder* Höhe < 280 | Auf einen Blick, kaum Bedienung | nächster Termin + „frei bis 14:00“ / Zahl offener Aufgaben + die nächsten 3 |
-| **Leiste** | Höhe < 280 *und* Breite ≥ 600 | Waagerechter Streifen | Termine von heute als Zeitstrahl / Aufgaben als Chips nebeneinander |
-| **Schmal** | Breite 360–599 | Eine Spalte, volle Bedienung | Agenda oder Tag / Liste, Detail ersetzt die Liste |
-| **Mittel** | Breite 600–1023 | Hauptansicht | Woche / Liste + Detail als Overlay |
-| **Breit** | Breite ≥ 1024 | Mehr Kontext daneben | Woche + Seitenleiste mit Kalendern / Liste + Detail nebeneinander |
-
-(Leiste geht vor Mini: ein flacher, breiter Streifen ist Leiste, nicht Mini.)
+| # | Klasse | Bedingung | Rand | Chrom | Beispiel Kalender / Aufgaben |
+|---|---|---|---|---|---|
+| 1 | **Leiste** | Höhe < 280 und Breite ≥ 600 | 8 senkrecht, 12 waagerecht | keins | Zeitstrahl von heute / Chips |
+| 2 | **Mini** | Breite < 360 oder Höhe < 280 | 12 | keins | nächster Termin + „free until 14:00“ / Zahl offener + nächste 3 |
+| 3 | **Schmal** | Breite < 600 | bündig | Kopf 44, Navigation im Menü | ein Tag mit Wochenleiste / Liste, Detail ersetzt die Liste |
+| 4 | **Mittel** | Breite < 1024 | bündig | Kopf 44, Navigation im Menü | Woche + schwebende Karte / Liste + Detail mit Chips |
+| 5 | **Breit** | sonst | eingesetzt 8 | Seitenleiste 232 + Kopf 44 + Eigenschaften 300 | Woche + Eigenschaften / Liste + Detail + Eigenschaften |
 
 Regeln:
 
-- **Das Layout wechselt, es schrumpft nicht.** Pro Klasse bewusst entscheiden, was gezeigt wird
-  (Inhalt nach Wichtigkeit ordnen). Schrift nie kleiner als 12, Klickziele nie kleiner als 24.
-- Reihenfolge beim Platzsparen: erst Ränder auf 8–12, dann Seitenleiste einklappen, dann
-  Werkzeugleiste auf Icons (mit Tooltip), dann Nebeninfos weglassen. Nie abschneiden, nie
-  überlappen, nie horizontal scrollen.
+- **Das Layout wechselt, es schrumpft nicht.** Pro Klasse bewusst entscheiden, was gezeigt wird.
+  Schrift nie kleiner als 12, Klickziele nie kleiner als 24.
+- Reihenfolge beim Platzsparen: Seitenleiste einklappen (Overlay), Werkzeugleiste auf Icons mit
+  Tooltip, Nebeninfos in eine zweite Zeile oder weglassen. Nie abschneiden, nie überlappen, nie
+  waagerecht scrollen.
 - **Mini und Leiste sind Anzeigen, keine Mini-Apps:** keine Werkzeugleiste, keine Formulare, keine
-  Dialoge. Höchstens eine Ein-Klick-Aktion, die den Zweck der Kachel ist (z. B. Aufgabe abhaken).
-  Vergrößern übernimmt der Tiling-Manager. Ruhig, ohne Deko, aus der Distanz lesbar.
-- **Groß heißt nicht gestreckt:** Textspalten max. ~70 Zeichen; Formulare und Detailansichten
-  max. ~640 breit; zusätzlicher Platz geht an Inhalt (mehr Tage, Seitenleiste), nicht an
-  Leerraum zwischen Elementen.
-- Zustand bleibt beim Größenwechsel erhalten (Auswahl, Scrollposition, gewähltes Datum).
-- In Iced liefert `iced::widget::responsive(|size| …)` die verfügbare Größe. Die Klasse daraus an
-  **einer** Stelle bestimmen: `torro_gui::layout::of(size)` → `SizeClass` (Aufgabe K.18), nicht
-  in jeder View eigene Schwellen.
+  Dialoge. Höchstens eine Ein-Klick-Aktion, die den Zweck der Kachel ist (z. B. abhaken). Ruhig,
+  aus der Distanz lesbar, Kopfzahl in `DISPLAY`.
+- **Groß heißt nicht gestreckt:** Listen und Seiten max. `CONTENT_MAX`, Formulare `FORM_MAX`,
+  zentriert bzw. links mit Seitenleiste; zusätzlicher Platz geht an Inhalt (mehr Tage, Detail
+  daneben), nicht an Leerraum zwischen Elementen.
+- Zustand bleibt beim Größenwechsel erhalten (Auswahl, Scrollposition, Datum, gewählte Ansicht –
+  in Schmal wird nur die *dargestellte* Ansicht angepasst).
 - **Dauerbetrieb:** nichts blinkt oder bewegt sich ohne Anlass; neu zeichnen nur bei Änderung bzw.
-  im Minutentakt (Uhrzeit); keine Spinner im Ruhezustand; geringe CPU- und GPU-Last.
-- **HiDPI:** alle Maße in logischen Pixeln; Icons als Vektor (SVG/Canvas), keine Rastergrafik;
-  Linien 1 logischer Pixel; bei Skalierung 1 und 2 sauber.
-- Die Mindestgröße (`torro_gui::window`, heute 360×320) darf Mini und Leiste nicht verhindern –
-  Ziel etwa 200×120.
-- Fenstertitel und Inhalt ohne Doppelungen; keine Fake-Titelleiste (der Tiling-Manager zeichnet keine).
+  im Minutentakt; keine Spinner im Ruhezustand; geringe CPU- und GPU-Last.
+- **HiDPI:** alle Maße logisch; Icons als Vektor; Linien 1 logischer Pixel.
+- Mindestgröße der Fenster 200×120 (`torro_gui::window`), damit Mini und Leiste möglich sind.
+- Fenstertitel und Inhalt ohne Doppelungen; keine Fake-Titelleiste.
 
 ## 7. Texte
 
-- Englisch zuerst, alles durch `tr()`/`trf()`. Satzanfang groß, Rest klein („New event“, nicht „New Event“).
+- Englisch zuerst, alles durch `tr()`/`trf()`. Satzanfang groß, Rest klein („New event“).
 - Knöpfe mit Verb („Save“, „Delete event“), nicht „OK“/„Yes“.
 - Fehlertexte ohne Schuld und ohne Fachjargon; sagen, was der Nutzer jetzt tun kann.
 - Kurz. Wenn ein Wort reicht, kein Satz.
 
 ## 8. Bewegung
 
-- Wenn Animation, dann 120–200 ms, ease-out, nur für Orientierung (öffnen, verschieben). Nie Pflicht,
-  um etwas zu verstehen.
+- Wenn Animation, dann 120–200 ms, ease-out, nur für Orientierung (öffnen, verschieben). Nie
+  Pflicht, um etwas zu verstehen.
 
 ## 9. Sichtprüfung (Pflicht bei UI-Änderungen)
 
-Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht in **allen Größenklassen** ansehen:
+Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht in **allen Größenklassen** ansehen.
+Immer nur **eine** App zur Zeit und nur Fenster mit der eigenen PID anfassen – die Fenster des
+Nutzers nie.
 
 ```bash
-app=torrocalendar   # bzw. torrotasks
+app=torrocalendar   # bzw. torrotasks; Steuerzentrale: torroworkplace ui --demo (ab Q.1)
 cargo build -p "$app"
-"./target/debug/$app" --demo & pid=$!   # nur dieses Fenster anfassen, nicht die des Nutzers
+"./target/debug/$app" --demo & pid=$!      # ab Q.1 auch: --open editor | detail | error | empty …
 sleep 3
-hyprctl dispatch setfloating "pid:$pid"
-for s in "240 160" "320 480" "1200 200" "480 900" "800 600" "1600 1000"; do
-  hyprctl dispatch resizewindowpixel "exact $s,pid:$pid"; sleep 0.5
-  geo=$(hyprctl clients -j | jq -r --argjson p "$pid" '.[] | select(.pid==$p) | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')
-  grim -g "$geo" "$SCRATCH/$app-${s/ /x}.png"
-done
+.claude/skills/torro-design/shoot.sh "$pid" "$app" "$SCRATCH/design"
 kill "$pid"
 ```
 
-Größen: Mini (240×160), Mini hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel
-(800×600), Breit (1600×1000). `$SCRATCH` = Scratchpad-Verzeichnis der Sitzung. Verhindert die
-Mindestgröße der App ein Format, ist das ein Befund. Die PNGs mit dem Read-Werkzeug öffnen und
-gegen diese Regeln prüfen. Läuft kein Hyprland, Sichtprüfung als „nicht möglich“ melden.
+`shoot.sh` stellt das Fenster schwebend, setzt nacheinander die sechs Größen Mini (240×160), Mini
+hoch (320×480), Leiste (1200×200), Schmal (480×900), Mittel (800×600) und Breit (1600×1000) und
+speichert je ein PNG. Hyprland ab 0.56 nimmt Befehle als Lua (`hl.dsp.window.float/resize/move`);
+das Skript nutzt diese Form. Eine Ansicht wechseln geht per Tastenkürzel an das Fenster:
+`hyprctl dispatch "hl.dsp.send_shortcut({ mods = '', key = 'm', window = 'pid:$pid' })"`.
+
+**Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
+Zustand direkt (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
+editor editor-new menu drawer switcher error empty loading`; Aufgaben: `detail menu display drawer
+switcher due error empty loading`; Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
+Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
+remove delete-template rename-template` und `--section overview|accounts|workspaces|apps|general`.
+`menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
+Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
+light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
+entfällt jedes im Code erzwungene „hell“); `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
+„jetzt“ samt Demo-Daten für wiederholbare Bilder (das Aufgaben-Detail liest die Uhr noch selbst).
+Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
+
+```bash
+./target/debug/torrocalendar --demo --open editor --appearance light --now 2026-10-13T10:30 & pid=$!
+sleep 3; .claude/skills/torro-design/shoot.sh "$pid" cal-editor "$SCRATCH/design"; kill "$pid"
+```
+
+`$SCRATCH` = Scratchpad-Verzeichnis der Sitzung. Hat das Fenster nicht die angeforderte Größe
+(Mindestgröße), ist das ein Befund. Die PNGs mit dem Read-Werkzeug öffnen und gegen diese Regeln
+prüfen. Scheint fremder Text durch, fehlt die Deckkraft-Regel (F.7) – Befund, kein App-Fehler.
+Läuft kein Hyprland, Sichtprüfung als „nicht möglich“ melden.
 
 ## 10. Prüfliste vor „fertig“
 
-- [ ] Ziel 1–4 erfüllt: professionell, gut lesbare Schrift (Inter, Skala, Gewichte), Abstände aus der Skala, in jeder Größe gut
-- [ ] Keine Farb-/Größenwerte außerhalb von Theme und den Skalen oben
-- [ ] Ein Akzent pro Fenster; Rot nicht als Status
-- [ ] Kontraste eingehalten, Status nicht nur über Farbe
-- [ ] Leer-, Lade-, Fehlerzustand vorhanden
-- [ ] Tastatur: Fokus sichtbar, Enter/Escape/Pfeile
-- [ ] In allen Größenklassen angesehen (Mini, Leiste, Schmal, Mittel, Breit): Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht gestreckt
-- [ ] Hell und dunkel bedacht
+- [ ] Ziel 1–4 erfüllt: modern und aus einem Guss, Inter in den Stufen, Abstände aus den Tokens, in jeder Größe gut
+- [ ] Keine Zahlen, Farben oder Iced-Standardstile in der App (`scripts/design-check.sh`)
+- [ ] Rot nur Primärknopf und Heute; Auswahl neutral; Status nie nur über Farbe
+- [ ] Icons aus `torro_gui::icon`, keine Unicode-Glyphen
+- [ ] Kontraste eingehalten, kein Text in `FAINT`
+- [ ] Leer-, Lade-, Fehlerzustand vorhanden; Formularfehler erst nach Speicherversuch
+- [ ] Tastatur: Fokus sichtbar, Enter/Escape/Pfeile, Kurzbefehle
+- [ ] In allen sechs Größen angesehen: Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht gestreckt
 - [ ] Alle Texte über `tr()`, englisch, Satzschreibung

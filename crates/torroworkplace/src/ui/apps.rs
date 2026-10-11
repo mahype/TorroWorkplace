@@ -1,22 +1,24 @@
-//! The apps of the suite (task S.8 in `docs/tasks/steuerzentrale.md`): one row per app from
-//! `torro_core::AppId::ALL` except the core itself. A row shows the name, a one-line
-//! description, the window class (for window rules), whether the app is installed, and an
-//! "Open" button that sends `Request::OpenApp`. Not installed means the button is disabled.
+//! The apps of the suite (task S.8 in `docs/tasks/steuerzentrale.md`): a settings group with one
+//! row per app the core reports with `Request::ListApps`. A row shows the name with the window
+//! class (for window rules) quietly behind it, below it a one-line description, at the right
+//! whether the app is installed (dot and word) and its one action, an "Open" button that sends
+//! `Request::OpenApp`. Not installed means the button is disabled. Everything in a row stays on
+//! its line and is cut off at the end when the window is narrow.
 //!
-//! "Installed" is looked up next to this executable and on `PATH`, so the control centre
-//! and the daemon agree on what they can start.
+//! The page does not look for the apps itself: the core knows where its apps are, so the control
+//! centre and the daemon agree on what they can start. Until the first answer arrives, the group
+//! shows a quiet loading line.
 
-use std::path::{Path, PathBuf};
-
-use iced::widget::{button, column, container, row, text};
-use iced::{Alignment, Background, Element, Length, border};
-use torro_core::AppId;
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, row};
+use iced::{Alignment, Element, Fill};
 use torro_core::i18n::{tr, trf};
-use torro_core::theme::STATUS_OK;
-use torro_gui::{theme, widgets};
-use torro_ipc::Request;
+use torro_gui::theme::{self, space};
+use torro_gui::widgets::{self, Status};
+use torro_gui::{style, typo};
+use torro_ipc::{AppInfo, Request};
 
-use super::{Action, Data};
+use super::{Action, Data, one_line, row_frame};
 
 #[derive(Debug, Default)]
 pub struct State {}
@@ -24,163 +26,136 @@ pub struct State {}
 #[derive(Debug, Clone)]
 pub enum Message {
     /// "Open" was pressed for the app with this binary name.
-    Open(&'static str),
+    Open(String),
 }
 
 pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
     match message {
-        Message::Open(binary) => Action::Send(Request::OpenApp { app: binary.into() }),
+        Message::Open(app) => Action::Send(Request::OpenApp { app }),
     }
 }
 
-pub fn view<'a>(_state: &'a State, _data: &'a Data) -> Element<'a, Message> {
-    // Looked up on every redraw: a handful of file checks, and the page reloads every few seconds
-    // anyway, so an app installed meanwhile shows up without reopening the window.
-    let dirs = search_dirs();
-    let mut list = column![widgets::section_title(tr("Suite apps"))].spacing(8);
-    for app in listed_apps() {
-        list = list.push(app_row(app, is_installed(app.binary, &dirs)));
+pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let title = tr("Suite apps");
+    match &data.apps {
+        // The core has not answered yet: one quiet line, so the page does not jump when the rows come.
+        None => column![widgets::section_title(title), typo::text(typo::META, tr("Loading …")).style(theme::text_3)]
+            .spacing(space::S)
+            .into(),
+        Some(apps) => widgets::group(
+            title,
+            apps.iter().map(app_row).collect(),
+            Some(tr("Opening an app brings its window to the front when it is already running.").to_string()),
+        ),
     }
-    column![
-        list,
-        text(tr("Opening an app brings its window to the front when it is already running."))
-            .size(14)
-            .color(theme::MUTED),
-    ]
-    .spacing(16)
-    .into()
 }
 
-/// The apps that get a row: every suite app except the core, which is the control centre itself.
-fn listed_apps() -> impl Iterator<Item = &'static AppId> {
-    AppId::ALL.iter().filter(|app| **app != AppId::WORKPLACE)
-}
-
-/// One app as a row: name and description on the left, status and "Open" on the right.
-fn app_row<'a>(app: &AppId, installed: bool) -> Element<'a, Message> {
-    let mut details = column![text(app_name(app)).size(16).color(theme::TEXT)].spacing(4).width(Length::Fill);
-    let description = app_description(app);
-    if !description.is_empty() {
-        details = details.push(text(description).size(14).color(theme::MUTED));
-    }
-    let class = trf("Window class: {class}", &[("class", &app.window_class)]);
-    details = details.push(text(class).size(12).color(theme::MUTED));
-
-    let status = if installed {
-        row![widgets::color_dot(theme::color(STATUS_OK), 8.0), text(tr("Installed")).size(14).color(theme::MUTED),]
-    } else {
-        row![widgets::color_dot(theme::MUTED, 8.0), text(tr("Not installed")).size(14).color(theme::MUTED)]
-    }
-    .spacing(8)
-    .align_y(Alignment::Center);
-
+/// One app as a row: name and window class and the description on the left, status and "Open" on
+/// the right.
+fn app_row<'a>(app: &'a AppInfo) -> Element<'a, Message> {
+    let (status, word) =
+        if app.installed { (Status::Ok, tr("Installed")) } else { (Status::Inactive, tr("Not installed")) };
+    let state =
+        row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2).wrapping(Wrapping::None)]
+            .spacing(space::S)
+            .align_y(Alignment::Center);
     // A button without a message is drawn disabled, so a missing app cannot be opened.
-    let open = button(text(tr("Open")).size(14))
-        .style(button::secondary)
-        .padding([8, 16])
-        .on_press_maybe(installed.then_some(Message::Open(app.binary)));
+    let open = widgets::text_button(None, tr("Open"), style::button::secondary, open_message(app));
+    let control = row![state, open].spacing(space::L).align_y(Alignment::Center);
 
-    let content = row![details, status, open].spacing(16).align_y(Alignment::Center);
-    container(content)
-        .padding(16)
-        .width(Length::Fill)
-        .style(|_| container::Style {
-            background: Some(Background::Color(theme::SURFACE)),
-            border: border::rounded(8),
-            ..container::Style::default()
-        })
-        .into()
+    // The class sits in the name's line, in the metadata colour, so a row stays at two lines.
+    let name = row![
+        typo::text(typo::BODY, app_name(app)).wrapping(Wrapping::None),
+        typo::text(typo::META, app_class(app)).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    let mut lines = column![container(name).width(Fill).clip(true)];
+    let description = app_description(&app.binary);
+    if !description.is_empty() {
+        lines = lines.push(one_line(typo::text(typo::META, description).style(theme::text_2)));
+    }
+    let content = row![lines.width(Fill), control].spacing(space::L).align_y(Alignment::Center);
+    row_frame(content, !description.is_empty())
 }
 
-/// The name shown for `app`: translated for the apps the suite ships, else the app's own name.
-fn app_name(app: &AppId) -> &'static str {
-    match app.binary {
-        "torrocalendar" => tr("Calendar"),
-        "torrotasks" => tr("Tasks"),
-        _ => app.display_name,
+/// The window class for window rules, as shown behind the name.
+fn app_class(app: &AppInfo) -> String {
+    trf("Window class: {class}", &[("class", &app.window_class)])
+}
+
+/// The message "Open" sends for `app`, or `None` for an app that is not installed.
+fn open_message(app: &AppInfo) -> Option<Message> {
+    app.installed.then(|| Message::Open(app.binary.clone()))
+}
+
+/// The name shown for `app`: translated for the apps the suite ships, else the name the core reports.
+fn app_name(app: &AppInfo) -> String {
+    match app.binary.as_str() {
+        "torrocalendar" => tr("Calendar").to_string(),
+        "torrotasks" => tr("Tasks").to_string(),
+        _ => app.name.clone(),
     }
 }
 
 /// The one-line description; empty for an app without one, which then gets no line.
-fn app_description(app: &AppId) -> &'static str {
-    match app.binary {
+fn app_description(binary: &str) -> &'static str {
+    match binary {
         "torrocalendar" => tr("Day, week, month and agenda"),
         "torrotasks" => tr("Lists, due dates and subtasks"),
         _ => "",
     }
 }
 
-/// The folders an app binary is looked for in: the folder of this executable, then `PATH`.
-fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
-        dirs.push(dir);
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
-    }
-    dirs
-}
-
-/// Whether a binary named `binary` exists in one of `dirs`. Takes the folders as an argument so
-/// tests can use temporary ones.
-fn is_installed(binary: &str, dirs: &[PathBuf]) -> bool {
-    let file = format!("{binary}{}", std::env::consts::EXE_SUFFIX);
-    dirs.iter().any(|dir| dir.join(&file).is_file())
-}
-
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use super::*;
 
-    #[test]
-    fn detects_installed_apps_in_the_given_dirs() {
-        let next_to_exe = tempfile::tempdir().expect("temp dir");
-        let on_path = tempfile::tempdir().expect("temp dir");
-        let empty = tempfile::tempdir().expect("temp dir");
-        let binary = format!("torrocalendar{}", std::env::consts::EXE_SUFFIX);
-        fs::write(on_path.path().join(&binary), b"").expect("write binary");
-        // A directory with the right name is not an installed binary.
-        fs::create_dir(next_to_exe.path().join("torrotasks")).expect("create dir");
-
-        let dirs = vec![next_to_exe.path().to_path_buf(), empty.path().to_path_buf(), on_path.path().to_path_buf()];
-        assert!(is_installed("torrocalendar", &dirs));
-        assert!(!is_installed("torrotasks", &dirs));
-        assert!(!is_installed("torrocalendar", &[empty.path().to_path_buf()]));
-        assert!(!is_installed("torrocalendar", &[]));
+    fn app(binary: &str, name: &str, installed: bool) -> AppInfo {
+        AppInfo { binary: binary.into(), name: name.into(), window_class: format!("torro-{binary}"), installed }
     }
 
     #[test]
-    fn rows_exclude_the_core() {
-        let rows: Vec<&AppId> = listed_apps().collect();
-        assert_eq!(rows.len(), AppId::ALL.len() - 1);
-        assert!(rows.iter().all(|app| app.binary != AppId::WORKPLACE.binary));
-        assert!(rows.iter().any(|app| app.binary == AppId::CALENDAR.binary));
-        assert!(rows.iter().any(|app| app.binary == AppId::TASKS.binary));
-    }
-
-    #[test]
-    fn names_are_translated_with_a_fallback() {
-        assert_eq!(app_name(&AppId::CALENDAR), tr("Calendar"));
-        assert_eq!(app_name(&AppId::TASKS), tr("Tasks"));
-        let other = AppId { window_class: "torro-other", binary: "torroother", dir: "other", display_name: "Other" };
-        assert_eq!(app_name(&other), "Other");
-        assert_eq!(app_description(&other), "");
+    fn open_is_offered_only_for_installed_apps() {
+        let installed = app("torrocalendar", "Torro Calendar", true);
+        let missing = app("torrotasks", "Torro Tasks", false);
+        assert!(matches!(open_message(&installed), Some(Message::Open(binary)) if binary == "torrocalendar"));
+        assert!(open_message(&missing).is_none());
     }
 
     #[test]
     fn open_asks_the_daemon_to_open_the_app() {
-        let action = update(&mut State::default(), Message::Open("torrocalendar"), &Data::default());
+        let message = Message::Open("torrocalendar".into());
+        let action = update(&mut State::default(), message, &Data::default());
         assert!(matches!(action, Action::Send(Request::OpenApp { app }) if app == "torrocalendar"));
     }
 
     #[test]
-    fn view_builds_for_every_state() {
+    fn names_are_translated_with_a_fallback() {
+        assert_eq!(app_name(&app("torrocalendar", "Torro Calendar", true)), tr("Calendar"));
+        assert_eq!(app_name(&app("torrotasks", "Torro Tasks", true)), tr("Tasks"));
+        assert_eq!(app_name(&app("torroother", "Other", true)), "Other");
+        assert_eq!(app_description("torroother"), "");
+    }
+
+    #[test]
+    fn the_window_class_is_named_and_the_description_stays_apart() {
+        let calendar = app("torrocalendar", "Torro Calendar", true);
+        assert_eq!(app_class(&calendar), trf("Window class: {class}", &[("class", &"torro-torrocalendar")]));
+        assert_eq!(app_description(&calendar.binary), tr("Day, week, month and agenda"));
+        assert!(!app_description(&calendar.binary).contains("torro-"), "the class is not part of the description");
+    }
+
+    #[test]
+    fn view_builds_while_loading_and_with_apps() {
         let state = State::default();
-        let data = Data::default();
-        let _page: Element<'_, Message> = view(&state, &data);
-        let _row: Element<'_, Message> = app_row(&AppId::TASKS, false);
+        let loading = Data::default();
+        let _page: Element<'_, Message> = view(&state, &loading);
+
+        let loaded = Data {
+            apps: Some(vec![app("torrocalendar", "Torro Calendar", true), app("torrotasks", "Torro Tasks", false)]),
+            ..Data::default()
+        };
+        let _page: Element<'_, Message> = view(&state, &loaded);
     }
 }

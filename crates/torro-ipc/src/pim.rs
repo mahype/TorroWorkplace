@@ -6,6 +6,10 @@
 //! `Offline`, `conflict` → `Conflict`, everything else → `Other(message)`), a core that is
 //! not running → `ProviderError::Other` with the `IpcError` message, an unexpected
 //! variant → `Other("unexpected answer …")`.
+//!
+//! Two methods combine requests, so the apps keep one call each: [`PimSource::account`] reads
+//! the state of the first account from `Accounts`, [`PimSource::collections`] joins
+//! `CalendarCollections` and `TaskCollections`.
 
 use std::path::PathBuf;
 
@@ -44,6 +48,14 @@ impl PimClient {
             Err(err) => Err(ProviderError::Other(err.to_string())),
         }
     }
+
+    /// Sends a request answered with [`Response::Collections`].
+    async fn ask_collections(&self, request: Request) -> Result<Vec<Collection>, ProviderError> {
+        match self.ask(request).await? {
+            Response::Collections { collections } => Ok(collections),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 /// An answer that is not the variant the request asks for.
@@ -67,9 +79,13 @@ fn with_uid(err: ProviderError, uid: &str) -> ProviderError {
 }
 
 impl PimSource for PimClient {
+    /// The state of the first account (today there is at most one Nextcloud); without one,
+    /// `NotConnected`. A sign-in that runs is listed as an account too, so it shows here.
     async fn account(&self) -> Result<AccountState, ProviderError> {
-        match self.ask(Request::Account).await? {
-            Response::Account { account } => Ok(account),
+        match self.ask(Request::Accounts).await? {
+            Response::Accounts { accounts } => {
+                Ok(accounts.into_iter().next().map_or(AccountState::NotConnected, |account| account.state))
+            }
             other => Err(unexpected(other)),
         }
     }
@@ -85,11 +101,20 @@ impl PimSource for PimClient {
         expect_ok(self.ask(Request::Sync).await?)
     }
 
+    /// The calendars, then the task lists that are not calendars as well: a collection with
+    /// events and todos is in both answers but listed once.
     async fn collections(&self) -> Result<Vec<Collection>, ProviderError> {
-        match self.ask(Request::Collections).await? {
-            Response::Collections { collections } => Ok(collections),
-            other => Err(unexpected(other)),
+        let (calendars, lists) = tokio::join!(
+            self.ask_collections(Request::CalendarCollections),
+            self.ask_collections(Request::TaskCollections)
+        );
+        let mut collections = calendars?;
+        for list in lists? {
+            if !collections.iter().any(|c| c.id == list.id) {
+                collections.push(list);
+            }
         }
+        Ok(collections)
     }
 
     async fn events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Event>, ProviderError> {
@@ -143,7 +168,7 @@ mod tests {
     use torro_pim::{CollectionKind, EventTime};
 
     use super::*;
-    use crate::{IpcError, client, server};
+    use crate::{AccountInfo, IpcError, client, server};
 
     fn utc(day: u32, hour: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, day, hour, 0, 0).unwrap()
@@ -165,6 +190,29 @@ mod tests {
             kind: CollectionKind::Both,
             color: Some("#3366ff".into()),
             writable: true,
+        }
+    }
+
+    fn calendar() -> Collection {
+        Collection {
+            id: "/cal/birthdays/".into(),
+            name: "Birthdays".into(),
+            kind: CollectionKind::Events,
+            ..collection()
+        }
+    }
+
+    fn list() -> Collection {
+        Collection { id: "/tasks/home/".into(), name: "Home".into(), kind: CollectionKind::Todos, ..collection() }
+    }
+
+    fn account_info() -> AccountInfo {
+        AccountInfo {
+            id: "nextcloud:anna@cloud.example.test".into(),
+            kind: "nextcloud".into(),
+            label: "anna@cloud.example.test".into(),
+            state: account(),
+            collections: vec![collection(), calendar(), list()],
         }
     }
 
@@ -210,13 +258,15 @@ mod tests {
     /// Canned answers for every request the client sends.
     fn answer(request: Request) -> Response {
         match request {
-            Request::Ping => Response::Pong { version: "test".into() },
-            Request::Account => Response::Account { account: account() },
+            Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
+            Request::Accounts => Response::Accounts { accounts: vec![account_info()] },
             Request::ConnectNextcloud { server } => {
                 Response::LoginStarted { login_url: format!("{server}/login/v2/flow") }
             }
             Request::Sync | Request::DeleteEvent { .. } | Request::DeleteTodo { .. } => Response::Ok,
-            Request::Collections => Response::Collections { collections: vec![collection()] },
+            // The collection with both kinds is in both answers.
+            Request::CalendarCollections => Response::Collections { collections: vec![collection(), calendar()] },
+            Request::TaskCollections => Response::Collections { collections: vec![list(), collection()] },
             // The summary echoes the requested range, so the test sees the arguments arrive.
             Request::Events { start, end } => {
                 Response::Events { events: vec![Event { summary: format!("{start} until {end}"), ..event() }] }
@@ -296,9 +346,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn collections_are_listed() {
+    async fn account_without_accounts_is_not_connected() {
+        let core = start(|request| async move {
+            match request {
+                Request::Accounts => Response::Accounts { accounts: vec![] },
+                other => answer(other),
+            }
+        })
+        .await;
+        assert_eq!(core.client().account().await.unwrap(), AccountState::NotConnected);
+    }
+
+    #[tokio::test]
+    async fn collections_join_calendars_and_lists_once_each() {
         let core = start(|request| async move { answer(request) }).await;
-        assert_eq!(core.client().collections().await.unwrap(), vec![collection()]);
+        assert_eq!(core.client().collections().await.unwrap(), vec![collection(), calendar(), list()]);
+    }
+
+    #[tokio::test]
+    async fn collections_fail_when_one_half_fails() {
+        let core = start(|request| async move {
+            match request {
+                Request::TaskCollections => Response::Error { code: "offline".into(), message: "down".into() },
+                other => answer(other),
+            }
+        })
+        .await;
+        assert_eq!(core.client().collections().await, Err(ProviderError::Offline));
     }
 
     #[tokio::test]

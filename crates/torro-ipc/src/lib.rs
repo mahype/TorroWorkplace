@@ -6,18 +6,30 @@
 //! each: `core.sock` in the core's state directory (a Unix domain socket; Windows named
 //! pipes follow with the GlazeWM backend).
 //!
-//! Wire format: one JSON object per line in each direction, one request per connection.
+//! Wire format: one JSON object per line in each direction, one request per connection. A
+//! client sends an [`Envelope`] with the API version, its [`Key`] and the [`Request`], whose
+//! `method` is the command name from the catalogue:
 //!
-//! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`].
+//! ```json
+//! {"v":1,"key":"torro_app_…","request":{"method":"calendar.list_events","start":"…","end":"…"}}
+//! ```
+//!
+//! The core answers with one bare [`Response`]. Without a valid key it answers only
+//! `system.ping`; everything else gets the error code `unauthorized`.
+//!
+//! Task 1.17 in `docs/tasks/phase-1.md` fills in [`server`] and [`client`]. The request set is
+//! the API of the suite (`docs/api.md`); [`api`] describes every request for API and MCP.
 
+pub mod api;
 pub mod client;
 pub mod pim;
 pub mod server;
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
@@ -27,92 +39,213 @@ use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
+use crate::api::{Rights, RightsTemplate};
+
 /// Where the core listens: `core.sock` in its state directory.
 pub fn socket_path() -> Option<PathBuf> {
     AppPaths::for_app(AppId::WORKPLACE).map(|p| p.state.join("core.sock"))
 }
 
+/// The app key of the core listening at `socket`: `app.key` next to it, in the core's state
+/// directory. The core creates it on its first start (mode 0600); the suite's own programs read
+/// it with [`client::call`] and never handle it themselves.
+pub fn app_key_path(socket: &Path) -> PathBuf {
+    socket.with_file_name("app.key")
+}
+
+/// The API version this crate speaks, `v` in every [`Envelope`]. New commands and new optional
+/// fields keep it; renaming, removing or new required fields make version 2.
+pub const API_VERSION: u32 = 1;
+
+/// A key as a client sends it: the app key (`torro_app_<64 hex>`) or a client key
+/// (`torro_<client id>_<64 hex>`).
+///
+/// Deliberately without `PartialEq` and with a `Debug` that hides the value: the core compares
+/// SHA-256 hashes in constant time, and a key must never end up in a log or an error message.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Key(String);
+
+impl Key {
+    pub fn new(key: impl Into<String>) -> Key {
+        Key(key.into())
+    }
+
+    /// The key itself, for hashing and for sending. Never print it.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Key(…)")
+    }
+}
+
+/// One line from a client: API version, key and request.
+///
+/// `key` may be missing; then the core answers only `system.ping`. The core answers with a bare
+/// [`Response`], not with an envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Envelope {
+    /// [`API_VERSION`]; a core answers other versions with the error code `unsupported`.
+    pub v: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<Key>,
+    pub request: Request,
+}
+
 /// What a client can ask the core for.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", tag = "method")]
+///
+/// Every case has an entry in the command catalogue ([`api::CATALOGUE`]), reached through
+/// [`Request::operation`]: its API name, area, access and whether agents get it as an MCP tool.
+/// A new case does not build until `operation` names its command. On the wire, `method` is the
+/// command name (`calendar.list_events`); the `#[serde(rename)]` of each case must equal its
+/// [`api::Command::name`], which the catalogue tests check.
+///
+/// The JSON Schema of every field comes from the types themselves (`schemars`, see
+/// [`api::request_schema`]); the doc comments of those types are the descriptions for agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "method")]
 pub enum Request {
     /// Version and health; also how a client finds out the core is up.
+    #[serde(rename = "system.ping")]
     Ping,
     /// Short status for bars and scripts.
+    #[serde(rename = "system.status")]
     Status,
+    /// Stops the core cleanly, as the tray's Quit does. Answered with [`Response::Ok`] before the
+    /// core ends. Only the app key may send it; a client key gets `forbidden`.
+    #[serde(rename = "system.quit")]
+    Quit,
     /// All templates.
+    #[serde(rename = "workspaces.list_templates")]
     ListTemplates,
     /// Saves the active workspace as a new template; `None` picks an automatic name.
-    SaveTemplate {
-        name: Option<String>,
-    },
+    #[serde(rename = "workspaces.save_template")]
+    SaveTemplate { name: Option<String> },
     /// Overwrites a template with the active workspace, keeping its name and settings.
-    UpdateTemplate {
-        id: String,
-    },
-    DeleteTemplate {
-        id: String,
-    },
+    #[serde(rename = "workspaces.update_template")]
+    UpdateTemplate { id: String },
+    #[serde(rename = "workspaces.delete_template")]
+    DeleteTemplate { id: String },
     /// Loads a template onto the active workspace.
+    #[serde(rename = "workspaces.load_template")]
     LoadTemplate {
         id: String,
+        /// `empty` (only into an empty workspace), `add` or `replace` (closes the windows there).
         mode: LoadMode,
     },
 
-    /// The account state ([`Response::Account`]).
-    Account,
     /// Starts Login Flow v2 for a Nextcloud; the core opens the browser and polls in the
     /// background ([`Response::LoginStarted`]).
-    ConnectNextcloud {
-        server: String,
-    },
-    /// Forgets the account and its secret.
-    DisconnectAccount,
+    #[serde(rename = "accounts.connect_nextcloud")]
+    ConnectNextcloud { server: String },
     /// Fetch calendars and tasks from the server now.
+    #[serde(rename = "accounts.sync")]
     Sync,
-    Collections,
+    /// The calendars the suite shows, i.e. the collections with events that are not hidden
+    /// ([`Response::Collections`]).
+    #[serde(rename = "calendar.list_calendars")]
+    CalendarCollections,
+    /// The task lists the suite shows, i.e. the collections with todos that are not hidden
+    /// ([`Response::Collections`]). A collection with both appears in both lists.
+    #[serde(rename = "tasks.list_lists")]
+    TaskCollections,
     /// Events overlapping `[start, end)`.
-    Events {
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    },
+    #[serde(rename = "calendar.list_events")]
+    Events { start: DateTime<Utc>, end: DateTime<Utc> },
+    #[serde(rename = "tasks.list_todos")]
     Todos,
     /// Creates (`href: None`) or updates; answered with [`Response::Event`].
-    SaveEvent {
-        event: Event,
-    },
-    DeleteEvent {
-        event: Event,
-    },
-    SaveTodo {
-        todo: Todo,
-    },
-    DeleteTodo {
-        todo: Todo,
-    },
+    #[serde(rename = "calendar.save_event")]
+    SaveEvent { event: Event },
+    #[serde(rename = "calendar.delete_event")]
+    DeleteEvent { event: Event },
+    #[serde(rename = "tasks.save_todo")]
+    SaveTodo { todo: Todo },
+    #[serde(rename = "tasks.delete_todo")]
+    DeleteTodo { todo: Todo },
 
     /// The suite-wide settings ([`Response::Settings`]).
+    #[serde(rename = "settings.get_settings")]
     Settings,
     /// Replaces the settings; the core applies what changed (start at login, hidden
     /// collections; the language applies to processes started afterwards).
-    UpdateSettings {
-        settings: Settings,
+    #[serde(rename = "settings.update_settings")]
+    UpdateSettings { settings: Settings },
+    /// Changes one setting and applies it like [`Request::UpdateSettings`]. `value` must fit
+    /// the key (see [`SettingKey`]); otherwise the answer is the error code `error` and
+    /// nothing changes. Answered with [`Response::Ok`].
+    #[serde(rename = "settings.set_setting")]
+    SetSetting {
+        key: SettingKey,
+        /// The new value; its type depends on `key`.
+        value: serde_json::Value,
     },
+    /// Shows (`shown: true`) or hides a calendar or task list in every app of the suite.
+    /// `collection` is a collection id of a connected account ([`AccountInfo::collections`]);
+    /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
+    #[serde(rename = "settings.set_collection_shown")]
+    SetCollectionShown { collection: String, shown: bool },
     /// All accounts with their state and collections ([`Response::Accounts`]).
+    #[serde(rename = "accounts.list_accounts")]
     Accounts,
     /// Removes an account, its secret and, where the server allows, its app password there.
-    RemoveAccount {
-        id: String,
-    },
+    #[serde(rename = "accounts.remove_account")]
+    RemoveAccount { id: String },
     /// Renames a template; its id stays.
-    RenameTemplate {
-        id: String,
-        name: String,
-    },
+    #[serde(rename = "workspaces.rename_template")]
+    RenameTemplate { id: String, name: String },
     /// Opens or focuses one of the suite's apps by binary name (`torrocalendar`, `torrotasks`).
-    OpenApp {
-        app: String,
+    #[serde(rename = "apps.open_app")]
+    OpenApp { app: String },
+    /// The suite's apps, the core itself excepted, and whether each is installed
+    /// ([`Response::Apps`]).
+    #[serde(rename = "apps.list_apps")]
+    ListApps,
+
+    // Agents and scripts. Only the app key may send these; a client key gets `forbidden`.
+    /// All clients with their rights, never with keys ([`Response::Clients`]).
+    #[serde(rename = "clients.list_clients")]
+    ListClients,
+    /// Connects a new client with the rights of `template` and answers with
+    /// [`Response::ClientKey`], the only time its key leaves the core. An empty `name` or `kind`
+    /// is `error`.
+    #[serde(rename = "clients.create_client")]
+    CreateClient {
+        /// What the person calls it: `Claude Code`.
+        name: String,
+        /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor` or `script`.
+        kind: String,
+        template: RightsTemplate,
     },
+    /// Replaces the rights of the client `id`; they apply from its next request. Answered with
+    /// [`Response::Ok`]; an unknown id is `not-found`.
+    #[serde(rename = "clients.update_client")]
+    UpdateClient { id: String, rights: Rights },
+    /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops
+    /// working at once. An unknown id is `not-found`.
+    #[serde(rename = "clients.new_key")]
+    NewClientKey { id: String },
+    /// Removes the client `id` and its key; the key stops working at once. Answered with
+    /// [`Response::Ok`]; an unknown id is `not-found`.
+    #[serde(rename = "clients.remove_client")]
+    RemoveClient { id: String },
+}
+
+/// A setting [`Request::SetSetting`] can change, with the `value` it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingKey {
+    /// The language of the suite: `"system"`, `"english"` or `"german"`. Applies to processes
+    /// started afterwards.
+    Language,
+    /// Light or dark colours: `"system"`, `"light"` or `"dark"`.
+    Appearance,
+    /// Start the core when the user logs in: `true` or `false`.
+    StartAtLogin,
 }
 
 /// The core's answer to one [`Request`].
@@ -121,6 +254,10 @@ pub enum Request {
 pub enum Response {
     Pong {
         version: String,
+        /// The API version the core speaks ([`API_VERSION`]); 0 from cores older than this
+        /// field.
+        #[serde(default)]
+        api: u32,
     },
     Status(Status),
     Templates {
@@ -135,9 +272,6 @@ pub enum Response {
     },
     /// Done, nothing to report.
     Ok,
-    Account {
-        account: AccountState,
-    },
     LoginStarted {
         login_url: String,
     },
@@ -162,9 +296,35 @@ pub enum Response {
     Accounts {
         accounts: Vec<AccountInfo>,
     },
-    /// The request failed; `code` is stable for scripts (`workspace-not-empty`, `not-found`,
-    /// `unsupported`, `busy`, `not-connected`, `offline`, `auth`, `conflict`, `error`),
-    /// `message` is for people.
+    Apps {
+        apps: Vec<AppInfo>,
+    },
+    Clients {
+        clients: Vec<ClientInfo>,
+    },
+    /// A new client or a new key: the only answer that ever carries a client key, and only to
+    /// the app key. Show or store it now; the core cannot tell it again.
+    ClientKey {
+        client: ClientInfo,
+        key: IssuedKey,
+    },
+    /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
+    ///
+    /// - `not-found`: no such template, account, collection or app (also a collection the
+    ///   client may not see),
+    /// - `workspace-not-empty`: a load with mode `empty` found windows,
+    /// - `busy`: another save or load is running,
+    /// - `unsupported`: no supported window manager, or an API version ([`Envelope::v`]) the
+    ///   core does not speak,
+    /// - `not-connected`: no account to read from or write to,
+    /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
+    ///   or the item changed there meanwhile,
+    /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
+    /// - `forbidden`: the client's rights do not cover the command, it is a `clients` command
+    ///   (app key only), or it would need a person's approval, which the core cannot ask for
+    ///   yet,
+    /// - `pending`: the command waits for a person to approve it,
+    /// - `error`: anything else.
     Error {
         code: String,
         message: String,
@@ -192,6 +352,77 @@ pub struct AccountInfo {
     pub collections: Vec<Collection>,
 }
 
+/// One of the suite's apps, as [`Request::ListApps`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// Binary name, also what [`Request::OpenApp`] takes: `torrocalendar`.
+    pub binary: String,
+    /// English product name: `Torro Calendar`. Front ends may show a translated name.
+    pub name: String,
+    /// Window class, for window rules: `torro-calendar`.
+    pub window_class: String,
+    /// The binary was found next to the core or on `PATH`, so `OpenApp` can start it.
+    pub installed: bool,
+}
+
+/// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash
+/// of its key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInfo {
+    /// Short random id, also part of its key: `3fa9c1d2`.
+    pub id: String,
+    /// `Claude Code`
+    pub name: String,
+    /// `claude-code`, `codex`, `claude-desktop`, `cursor` or `script`.
+    pub kind: String,
+    pub created: DateTime<Utc>,
+    /// The last request with its key, to the minute.
+    pub last_used: Option<DateTime<Utc>>,
+    pub rights: Rights,
+}
+
+/// A client key handed out by [`Response::ClientKey`].
+///
+/// Like [`Key`], its `Debug` hides the value. Unlike `Key` it can be compared, so answers can
+/// be: the comparison looks at every byte, whatever differs first. The core never compares keys
+/// this way; it checks hashes.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct IssuedKey(Key);
+
+impl IssuedKey {
+    pub fn new(key: Key) -> IssuedKey {
+        IssuedKey(key)
+    }
+
+    /// The key itself, to store it in the client's configuration or show it once. Never log it.
+    pub fn expose(&self) -> &str {
+        self.0.expose()
+    }
+
+    pub fn into_key(self) -> Key {
+        self.0
+    }
+}
+
+impl fmt::Debug for IssuedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("IssuedKey(…)")
+    }
+}
+
+impl PartialEq for IssuedKey {
+    fn eq(&self, other: &IssuedKey) -> bool {
+        let (a, b) = (self.expose().as_bytes(), other.expose().as_bytes());
+        let difference = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+        a.len() == b.len() && difference == 0
+    }
+}
+
+impl Eq for IssuedKey {}
+
 /// What `status --json` prints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -199,7 +430,9 @@ pub struct Status {
     pub version: String,
     /// Backend name (`hyprland`) or `unsupported`.
     pub backend: String,
+    /// The active workspace; `None` too for a client key without read access to `workspaces`.
     pub workspace: Option<String>,
+    /// Number of templates; 0 too for a client key without read access to `workspaces`.
     pub templates: usize,
     /// A load or save is running.
     pub busy: bool,
@@ -246,7 +479,60 @@ mod tests {
     fn requests_are_tagged_json() {
         let req = Request::LoadTemplate { id: "dev".into(), mode: LoadMode::Add };
         let json = serde_json::to_string(&req).unwrap();
-        assert_eq!(json, r#"{"method":"load-template","id":"dev","mode":"add"}"#);
+        assert_eq!(json, r#"{"method":"workspaces.load_template","id":"dev","mode":"add"}"#);
         assert_eq!(serde_json::from_str::<Request>(&json).unwrap(), req);
+    }
+
+    #[test]
+    fn envelope_carries_version_key_and_request() {
+        let envelope = Envelope { v: API_VERSION, key: Some(Key::new("torro_app_00")), request: Request::Ping };
+        let json = serde_json::to_string(&envelope).unwrap();
+        assert_eq!(json, r#"{"v":1,"key":"torro_app_00","request":{"method":"system.ping"}}"#);
+
+        let without_key = Envelope { key: None, ..envelope };
+        assert_eq!(serde_json::to_string(&without_key).unwrap(), r#"{"v":1,"request":{"method":"system.ping"}}"#);
+        let read: Envelope = serde_json::from_str(r#"{"v":1,"request":{"method":"system.status"}}"#).unwrap();
+        assert!(read.key.is_none());
+        assert_eq!(read.request, Request::Status);
+    }
+
+    #[test]
+    fn keys_do_not_show_in_debug_output() {
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), request: Request::Ping };
+        assert!(!format!("{envelope:?}").contains("secret"));
+    }
+
+    #[test]
+    fn pong_names_the_api_version_and_reads_older_cores() {
+        let pong = Response::Pong { version: "0.1.0".into(), api: API_VERSION };
+        assert_eq!(serde_json::to_string(&pong).unwrap(), r#"{"result":"pong","version":"0.1.0","api":1}"#);
+        let old: Response = serde_json::from_str(r#"{"result":"pong","version":"0.0.9"}"#).unwrap();
+        assert_eq!(old, Response::Pong { version: "0.0.9".into(), api: 0 });
+    }
+
+    #[test]
+    fn issued_keys_hide_in_debug_output_and_compare_whole() {
+        let key = IssuedKey::new(Key::new("torro_c1_secret"));
+        let response = Response::ClientKey {
+            client: ClientInfo {
+                id: "c1".into(),
+                name: "Script".into(),
+                kind: "script".into(),
+                created: Utc::now(),
+                last_used: None,
+                rights: api::RightsTemplate::ReadOnly.rights(),
+            },
+            key: key.clone(),
+        };
+        assert!(!format!("{response:?}").contains("secret"));
+        assert_eq!(serde_json::to_value(&response).unwrap()["key"], "torro_c1_secret");
+        assert_eq!(key, IssuedKey::new(Key::new("torro_c1_secret")));
+        assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secreT")));
+        assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secret2")));
+    }
+
+    #[test]
+    fn app_key_lies_next_to_the_socket() {
+        assert_eq!(app_key_path(Path::new("/run/torro/core.sock")), Path::new("/run/torro/app.key"));
     }
 }

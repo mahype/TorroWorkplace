@@ -1,0 +1,227 @@
+<title>Torro im Linear-Stil</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<style>
+/* Layout: eine Spalte, je App ein Abschnitt, darin die Größen als Bildkarten (breit oben, mittel/schmal nebeneinander). */
+:root{
+  --bg:#08090A; --panel:#0F1011; --card:#141518; --line:rgba(255,255,255,.08);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98; --accent:#D50C0C;
+  --font:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#F4F5F6; --panel:#FFFFFF; --card:#FFFFFF; --line:rgba(0,0,0,.09);
+  --text:#18191B; --text2:#4F535A; --text3:#6B6F76; color-scheme:light}}
+:root[data-theme="light"]{--bg:#F4F5F6; --panel:#FFFFFF; --card:#FFFFFF; --line:rgba(0,0,0,.09);
+  --text:#18191B; --text2:#4F535A; --text3:#6B6F76; color-scheme:light}
+body{background:var(--bg);color:var(--text);font:400 15px/1.55 var(--font);-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:32px 64px;display:grid;gap:40px}
+header{display:grid;gap:12px;max-width:68ch}
+.brand{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500;color:var(--text2)}
+.logo{width:22px;height:22px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600}
+h1{margin:0;font-size:clamp(26px,4vw,34px);line-height:1.15;font-weight:600;letter-spacing:-.015em;text-wrap:balance}
+h2{margin:0;font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em}
+p{margin:0}
+.lead{color:var(--text2)}
+.sizes{display:flex;flex-wrap:wrap;gap:8px}
+.size{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:6px;border:1px solid var(--line);background:var(--card);font-size:12px;font-weight:500;color:var(--text2);font-variant-numeric:tabular-nums}
+.size b{color:var(--text);font-weight:600}
+section{display:grid;gap:16px}
+section > p{color:var(--text2);max-width:72ch}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));align-items:start}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:grid}
+figure.wide{grid-column:1/-1}
+figure a{display:block;background:#000}
+figure img{display:block;width:100%;height:auto}
+figcaption{display:grid;gap:2px;padding:12px 14px 14px;font-size:13px;line-height:1.45;color:var(--text2)}
+figcaption b{color:var(--text);font-weight:600;font-size:14px}
+figcaption .tag{font-size:12px;color:var(--text3);font-variant-numeric:tabular-nums}
+.rules{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
+.rule{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:6px}
+.rule b{font-weight:600}
+.rule span{color:var(--text2);font-size:14px}
+ol.q{margin:0;padding-left:20px;display:grid;gap:10px;max-width:72ch}
+ol.q li span{display:block;color:var(--text2);font-size:14px}
+a{color:inherit}
+a:focus-visible{outline:2px solid var(--text3);outline-offset:2px}
+footer{color:var(--text3);font-size:13px}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="logo">T</span>Torro Workplace · Design-Entwurf</div>
+    <h1>Kalender und Aufgaben im Linear-Stil</h1>
+    <p class="lead">Aufbau, Abstände, Schrift und Symbole nach Linear: Seitenleiste auf dunklem Grund, Inhalt als eingesetzte Fläche, Eigenschaften rechts. Jede App läuft als eigene Kachel im Tiling-Manager und baut sich je nach Größe um. Antippen öffnet ein Bild in voller Größe.</p>
+    <div class="sizes">
+      <span class="size"><b>Breit</b> ab 1024 px</span>
+      <span class="size"><b>Mittel</b> 600–1023 px</span>
+      <span class="size"><b>Schmal</b> unter 600 px</span>
+    </div>
+  </header>
+
+  <section id="polish">
+    <h2>Feinschliff D.1–D.11 erledigt</h2>
+    <p>Titel enden jetzt mit „…“ statt mitten im Wort, Save bleibt im Editor immer sichtbar, die Tagesansicht zeigt rechts „Up next“, die Steuerzentrale hat eine eigene Mini-Kachel, Kontostatus und Datumsformen sind einheitlich.</p>
+    <div class="grid">
+      <figure class="wide"><a href="polish-real.png" target="_blank" rel="noopener"><img src="polish-real.png" alt="Echte Fenster mit Nextcloud-Daten" loading="lazy"></a>
+        <figcaption><b>Deine echten Fenster</b><span class="tag">Workspace 2 · Nextcloud-Daten</span>Aufgaben und Kalender nach dem Neustart, mit gekürzten Titeln („Düsseldorf elek…“).</figcaption></figure>
+      <figure><a href="polish-day.png" target="_blank" rel="noopener"><img src="polish-day.png" alt="Tagesansicht mit Up next" loading="lazy"></a>
+        <figcaption><b>Tag · breit · hell</b><span class="tag">D.10</span>Begrenzte Tagesspalte, rechts „Up next“.</figcaption></figure>
+      <figure><a href="polish-editor.png" target="_blank" rel="noopener"><img src="polish-editor.png" alt="Editor mit festen Aktionen" loading="lazy"></a>
+        <figcaption><b>Editor · mittel</b><span class="tag">D.5</span>Felder scrollen, Aktionen bleiben unten.</figcaption></figure>
+      <figure><a href="polish-cc-mini.png" target="_blank" rel="noopener"><img src="polish-cc-mini.png" alt="Steuerzentrale als Mini-Kachel" loading="lazy"></a>
+        <figcaption><b>Steuerzentrale · Mini</b><span class="tag">D.3 · 240 × 160</span>Nur der Zustand, ohne Kopf- und Seitenleiste.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="final">
+    <h2>Ergebnis: alle Aufgaben der Überarbeitung erledigt</h2>
+    <p>Stand nach der abschließenden Design-Prüfung (11.10.2026): Kalender, Aufgaben und Steuerzentrale sind eine Familie im Linear-Stil, hell und dunkel gleichwertig, in jeder Kachelgröße mit eigenem Layout. Offen ist Feinschliff (Titel mit „…“, Kleinstgrößen der Steuerzentrale, einheitliche Datumsform) – als Aufgaben D.1–D.11 geplant.</p>
+    <div class="grid">
+      <figure class="wide"><a href="final-cal-light.png" target="_blank" rel="noopener"><img src="final-cal-light.png" alt="Kalender Woche hell" loading="lazy"></a>
+        <figcaption><b>Kalender · Woche · hell</b><span class="tag">1440 × 900</span>Seitenleiste mit Mini-Monat, Jetzt-Linie, freie Zeit.</figcaption></figure>
+      <figure class="wide"><a href="final-tasks-light.png" target="_blank" rel="noopener"><img src="final-tasks-light.png" alt="Aufgaben hell mit Detail" loading="lazy"></a>
+        <figcaption><b>Aufgaben · hell</b><span class="tag">1600 × 1000</span>Liste, Detail und Eigenschaften-Spalte.</figcaption></figure>
+      <figure><a href="final-cal-dark.png" target="_blank" rel="noopener"><img src="final-cal-dark.png" alt="Kalender Woche dunkel" loading="lazy"></a>
+        <figcaption><b>Kalender · dunkel</b><span class="tag">1600 × 1000</span>Getönte Termine, Heute-Kreis, vergangene blasser.</figcaption></figure>
+      <figure><a href="final-cal-menu.png" target="_blank" rel="noopener"><img src="final-cal-menu.png" alt="Kalender mittel mit Menü" loading="lazy"></a>
+        <figcaption><b>Kalender · mittel · Menü</b><span class="tag">800 × 600</span>Ansichten und Kalender im Menü.</figcaption></figure>
+      <figure><a href="final-tasks-chips.png" target="_blank" rel="noopener"><img src="final-tasks-chips.png" alt="Aufgaben mittel mit Chips" loading="lazy"></a>
+        <figcaption><b>Aufgaben · mittel</b><span class="tag">800 × 600</span>Eigenschaften als Chips.</figcaption></figure>
+      <figure><a href="final-cal-narrow.png" target="_blank" rel="noopener"><img src="final-cal-narrow.png" alt="Kalender schmal" loading="lazy"></a>
+        <figcaption><b>Kalender · schmal</b><span class="tag">480 × 900</span>Tag mit Wochenleiste.</figcaption></figure>
+      <figure><a href="final-tasks-mini.png" target="_blank" rel="noopener"><img src="final-tasks-mini.png" alt="Aufgaben Mini hoch" loading="lazy"></a>
+        <figcaption><b>Aufgaben · Mini hoch</b><span class="tag">320 × 480</span>Überfällig und heute, nächste Aufgaben zum Abhaken.</figcaption></figure>
+      <figure><a href="final-cc-account.png" target="_blank" rel="noopener"><img src="final-cc-account.png" alt="Steuerzentrale Konto-Detail" loading="lazy"></a>
+        <figcaption><b>Steuerzentrale · Konto</b><span class="tag">1600 × 1000</span>Gruppen, Schalter, erklärender Satz.</figcaption></figure>
+      <figure><a href="final-cc-wizard.png" target="_blank" rel="noopener"><img src="final-cc-wizard.png" alt="Steuerzentrale Assistent" loading="lazy"></a>
+        <figcaption><b>Steuerzentrale · Add account</b><span class="tag">1600 × 1000</span>Dialog mit abgedunkeltem Fenster.</figcaption></figure>
+      <figure class="wide"><a href="final-cal-strip.png" target="_blank" rel="noopener"><img src="final-cal-strip.png" alt="Kalender als Leiste" loading="lazy"></a>
+        <figcaption><b>Kalender · Leiste</b><span class="tag">1200 × 200</span>Heute als Zeitstrahl mit Jetzt-Marke.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="apps">
+    <h2>Stand in Iced: die echten Apps</h2>
+    <p>Aufgaben und Kalender mit Beispieldaten (<code>--demo</code>), so wie sie jetzt laufen. Fertig: Fenster, Seitenleiste, Liste, Detail, Woche, Agenda, Editor. In Arbeit: Monat, Kopfleiste der Aufgaben, Einstellungsseiten; danach die Mini-Kachel und die Leiste.</p>
+    <div class="grid">
+      <figure class="wide"><a href="app-tasks-dark.png" target="_blank" rel="noopener"><img src="app-tasks-dark.png" alt="Aufgaben-App in Iced, breit, dunkel, mit Detail" loading="lazy"></a>
+        <figcaption><b>Aufgaben · breit · dunkel</b><span class="tag">torrotasks · 1440 × 900</span>Liste mit Gruppen, Detail mit Unteraufgaben, Eigenschaften rechts. Speichert automatisch.</figcaption></figure>
+      <figure class="wide"><a href="app-calendar-light.png" target="_blank" rel="noopener"><img src="app-calendar-light.png" alt="Kalender-App in Iced, breit, hell" loading="lazy"></a>
+        <figcaption><b>Kalender · Woche · hell</b><span class="tag">torrocalendar · 1440 × 900</span>Mini-Monat, Ansichten, Kalender mit Häkchen; getönte Termine mit Farbbalken, heute als roter Kreis.</figcaption></figure>
+      <figure><a href="app-calendar-dark.png" target="_blank" rel="noopener"><img src="app-calendar-dark.png" alt="Kalender-App in Iced, dunkel, mit Jetzt-Linie" loading="lazy"></a>
+        <figcaption><b>Kalender · Woche · dunkel</b><span class="tag">torrocalendar</span>Jetzt-Linie mit Uhrzeit, vergangene Termine blasser.</figcaption></figure>
+      <figure><a href="app-agenda-dark.png" target="_blank" rel="noopener"><img src="app-agenda-dark.png" alt="Agenda in Iced" loading="lazy"></a>
+        <figcaption><b>Kalender · Agenda</b><span class="tag">torrocalendar</span>Zeit links, Titel und Ort, Tagesköpfe.</figcaption></figure>
+      <figure><a href="app-editor-dark.png" target="_blank" rel="noopener"><img src="app-editor-dark.png" alt="Termin-Editor in Iced" loading="lazy"></a>
+        <figcaption><b>Kalender · Editor</b><span class="tag">torrocalendar</span>Großer Titel, Datum und Zeit in einer Zeile, Save als einziger roter Knopf.</figcaption></figure>
+      <figure><a href="app-tasks-light-m.png" target="_blank" rel="noopener"><img src="app-tasks-light-m.png" alt="Aufgaben mittel, hell" loading="lazy"></a>
+        <figcaption><b>Aufgaben · mittel · hell</b><span class="tag">torrotasks · 900 × 700</span>Eigenschaften als Chips unter dem Titel.</figcaption></figure>
+      <figure><a href="app-tasks-s.png" target="_blank" rel="noopener"><img src="app-tasks-s.png" alt="Aufgaben schmal mit Detail" loading="lazy"></a>
+        <figcaption><b>Aufgaben · schmal</b><span class="tag">torrotasks · 420 × 780</span>Das Detail ersetzt die Liste.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="glance">
+    <h2>Stand in Iced: Kalender als kleine Kachel</h2>
+    <p>Für dauerhaft gekachelte Fenster: In Mini und Leiste zeigt der Kalender nur das Wichtigste, aus der Distanz lesbar. Die Leiste ist der heutige Tag als waagerechter Zeitstrahl (Idee von HEY, ruhiger umgesetzt). Schmal zeigt einen Tag mit Wochenleiste darüber.</p>
+    <div class="grid">
+      <figure class="wide"><a href="glance-strip.png" target="_blank" rel="noopener"><img src="glance-strip.png" alt="Kalender als Leiste: Zeitstrahl des Tages" loading="lazy"></a>
+        <figcaption><b>Leiste</b><span class="tag">1200 × 200</span>Heute als Zeitstrahl, laufender Termin links („ends in 20 min“), Jetzt-Linie mit Uhrzeit, überlappende Termine in Bahnen.</figcaption></figure>
+      <figure><a href="glance-mini.png" target="_blank" rel="noopener"><img src="glance-mini.png" alt="Kalender als Mini-Kachel" loading="lazy"></a>
+        <figcaption><b>Mini hoch</b><span class="tag">320 × 480</span>Nächster Termin groß, „Free until 15:00“, danach die weiteren.</figcaption></figure>
+      <figure><a href="glance-mini-small.png" target="_blank" rel="noopener"><img src="glance-mini-small.png" alt="Kalender als kleinste Kachel" loading="lazy"></a>
+        <figcaption><b>Mini</b><span class="tag">240 × 160</span>Die kleinste Kachel.</figcaption></figure>
+      <figure><a href="glance-narrow.png" target="_blank" rel="noopener"><img src="glance-narrow.png" alt="Kalender schmal mit Wochenleiste, hell" loading="lazy"></a>
+        <figcaption><b>Schmal · hell</b><span class="tag">420 × 780</span>Ein Tag, darüber die Woche mit Punkten in Kalenderfarbe.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="iced-window">
+    <h2>Stand in Iced: das Linear-Fenster</h2>
+    <p>Das gemeinsame Fenster (F.5) in der echten GUI, als Beispiel „Tasks“ mit Beispieldaten: Seitenleiste, eingesetzte Inhaltsfläche, Eigenschaften-Spalte, in Mittel das Menü „Today ▾“. Darauf bauen jetzt Aufgaben, Kalender und Steuerzentrale auf.</p>
+    <div class="grid">
+      <figure class="wide"><a href="iced-window-l.png" target="_blank" rel="noopener"><img src="iced-window-l.png" alt="Linear-Fenster in Iced, breit, dunkel" loading="lazy"></a>
+        <figcaption><b>Breit · dunkel</b><span class="tag">Iced 0.14 · 1440 × 900</span>Vergleiche mit dem Entwurf „Aufgaben breit“ weiter unten.</figcaption></figure>
+      <figure><a href="iced-window-m-menu.png" target="_blank" rel="noopener"><img src="iced-window-m-menu.png" alt="Linear-Fenster in Iced, mittel, mit Menü" loading="lazy"></a>
+        <figcaption><b>Mittel · Menü</b><span class="tag">Iced 0.14 · 900 × 700</span>Seitenleiste als Menü, Eigenschaften als Chips.</figcaption></figure>
+      <figure><a href="iced-window-l-light.png" target="_blank" rel="noopener"><img src="iced-window-l-light.png" alt="Linear-Fenster in Iced, hell" loading="lazy"></a>
+        <figcaption><b>Breit · hell</b><span class="tag">Iced 0.14</span>Dasselbe Fenster im hellen Modus.</figcaption></figure>
+      <figure><a href="iced-window-s.png" target="_blank" rel="noopener"><img src="iced-window-s.png" alt="Linear-Fenster in Iced, schmal" loading="lazy"></a>
+        <figcaption><b>Schmal</b><span class="tag">Iced 0.14 · 420 × 780</span>Nur die Liste.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="iced">
+    <h2>Stand in Iced: die Bausteine</h2>
+    <p>So sehen die Stile jetzt in der echten GUI aus (Iced, Galerie aus F.3), jeweils normal, Hover, gedrückt und deaktiviert. Rot gibt es nur beim Primärknopf; Auswahl ist neutral. Der fremde Text im Hintergrund kommt von der Durchsichtigkeit unter Omarchy und verschwindet mit F.7. Das gemeinsame Linear-Fenster (F.5) ist in Arbeit, danach folgen die Apps.</p>
+    <div class="grid">
+      <figure><a href="iced-dark-buttons.png" target="_blank" rel="noopener"><img src="iced-dark-buttons.png" alt="Knöpfe und Häkchen in Iced, dunkel" loading="lazy"></a>
+        <figcaption><b>Knöpfe und Häkchen · dunkel</b><span class="tag">Iced 0.14</span>Primär, sekundär, ghost, danger, Icon-Knöpfe, Segmente; Häkchen in allen Kalenderfarben.</figcaption></figure>
+      <figure><a href="iced-light-buttons.png" target="_blank" rel="noopener"><img src="iced-light-buttons.png" alt="Knöpfe und Häkchen in Iced, hell" loading="lazy"></a>
+        <figcaption><b>Knöpfe und Häkchen · hell</b><span class="tag">Iced 0.14</span>Dieselben Bausteine im hellen Modus.</figcaption></figure>
+      <figure><a href="iced-light-rows.png" target="_blank" rel="noopener"><img src="iced-light-rows.png" alt="Zeilen und Menüeinträge in Iced, hell" loading="lazy"></a>
+        <figcaption><b>Zeilen und Menüs · hell</b><span class="tag">Iced 0.14</span>Seitenleistenzeile, Listenzeile, Menüeintrag mit Tasten-Hinweis.</figcaption></figure>
+      <figure><a href="iced-dark-inputs.png" target="_blank" rel="noopener"><img src="iced-dark-inputs.png" alt="Eingaben, Flächen und Live-Bedienelemente in Iced, dunkel" loading="lazy"></a>
+        <figcaption><b>Eingaben und Flächen · dunkel</b><span class="tag">Iced 0.14</span>Felder mit Fokus-Ring, Auswahlliste, Flächen der Fenster, echte Bedienelemente.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Wie die Apps kleiner werden</h2>
+    <div class="rules">
+      <div class="rule"><b>1. Navigation ins Menü</b><span>Die Seitenleiste verschwindet; Filter, Listen und Ansichten stecken in einem Menü oben links („Today ▾“, „Week ▾“).</span></div>
+      <div class="rule"><b>2. Details in Karten und Chips</b><span>Statt der Eigenschaften-Spalte öffnet ein Termin eine schwebende Karte; Aufgaben zeigen ihre Eigenschaften als Chips unter dem Titel.</span></div>
+      <div class="rule"><b>3. Eine Ansicht ersetzt die andere</b><span>Schmal zeigt nur einen Tag bzw. nur die Liste; das Detail ersetzt die Liste, mit „‹ Zurück“.</span></div>
+    </div>
+  </section>
+
+  <section id="kalender">
+    <h2>Kalender</h2>
+    <p>Seitenleiste mit Mini-Monat zum Navigieren (wie Notion Calendar), getönte Termine mit Farbbalken, unbestätigte gestrichelt, freie Zeit in Lücken, Aufgaben als Umriss und die Ablage „This week“ unten.</p>
+    <div class="grid">
+      <figure class="wide"><a href="cal-l.png" target="_blank" rel="noopener"><img src="cal-l.png" alt="Kalender breit: Seitenleiste, Woche, Eigenschaften-Spalte" loading="lazy"></a>
+        <figcaption><b>Breit</b><span class="tag">1440 × 900</span>Seitenleiste mit Mini-Monat, Ansichten und Kalendern · Woche · rechts die Eigenschaften des gewählten Termins.</figcaption></figure>
+      <figure><a href="cal-m.png" target="_blank" rel="noopener"><img src="cal-m.png" alt="Kalender mittel mit Terminkarte" loading="lazy"></a>
+        <figcaption><b>Mittel</b><span class="tag">900 × 700</span>Woche über die volle Breite, Termin als schwebende Karte.</figcaption></figure>
+      <figure><a href="cal-m-menu.png" target="_blank" rel="noopener"><img src="cal-m-menu.png" alt="Kalender mittel mit offenem Ansichtsmenü" loading="lazy"></a>
+        <figcaption><b>Mittel · Menü</b><span class="tag">900 × 700</span>Ansichten und Kalender aus der Seitenleiste im Menü „Week ▾“.</figcaption></figure>
+      <figure><a href="cal-s.png" target="_blank" rel="noopener"><img src="cal-s.png" alt="Kalender schmal: ein Tag mit Wochenleiste" loading="lazy"></a>
+        <figcaption><b>Schmal</b><span class="tag">420 × 780</span>Ein Tag, darüber die Woche als Leiste mit Punkten; Aufgaben als „3 tasks this week ›“.</figcaption></figure>
+      <figure><a href="cal-s-menu.png" target="_blank" rel="noopener"><img src="cal-s-menu.png" alt="Kalender schmal mit offenem Menü" loading="lazy"></a>
+        <figcaption><b>Schmal · Menü</b><span class="tag">420 × 780</span>Dasselbe Menü, rechts ausgerichtet.</figcaption></figure>
+      <figure><a href="cal-m-light.png" target="_blank" rel="noopener"><img src="cal-m-light.png" alt="Kalender mittel im hellen Modus" loading="lazy"></a>
+        <figcaption><b>Mittel · hell</b><span class="tag">900 × 700</span>Heller Modus mit denselben Bausteinen.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="aufgaben">
+    <h2>Aufgaben</h2>
+    <p>Aufgebaut wie Linears Issue-Liste: Gruppen „Overdue · Today · Upcoming“, Prioritäts-Balken, Liste als Etikett, Fälligkeit rechts. Das Detail zeigt Unteraufgaben und wer was geändert hat, auch Agenten.</p>
+    <div class="grid">
+      <figure class="wide"><a href="tasks-l.png" target="_blank" rel="noopener"><img src="tasks-l.png" alt="Aufgaben breit: Seitenleiste, Liste, Detail, Eigenschaften" loading="lazy"></a>
+        <figcaption><b>Breit</b><span class="tag">1440 × 900</span>Seitenleiste · Liste · Detail · Eigenschaften-Spalte.</figcaption></figure>
+      <figure><a href="tasks-m.png" target="_blank" rel="noopener"><img src="tasks-m.png" alt="Aufgaben mittel: Liste und Detail" loading="lazy"></a>
+        <figcaption><b>Mittel</b><span class="tag">900 × 700</span>Liste und Detail; Eigenschaften als Chips unter dem Titel.</figcaption></figure>
+      <figure><a href="tasks-m-menu.png" target="_blank" rel="noopener"><img src="tasks-m-menu.png" alt="Aufgaben mittel mit offenem Menü" loading="lazy"></a>
+        <figcaption><b>Mittel · Menü</b><span class="tag">900 × 700</span>Die ganze Seitenleiste im Menü „Today ▾“.</figcaption></figure>
+      <figure><a href="tasks-s.png" target="_blank" rel="noopener"><img src="tasks-s.png" alt="Aufgaben schmal: nur die Liste" loading="lazy"></a>
+        <figcaption><b>Schmal</b><span class="tag">420 × 780</span>Nur die Liste, Etiketten fallen weg.</figcaption></figure>
+      <figure><a href="tasks-s-detail.png" target="_blank" rel="noopener"><img src="tasks-s-detail.png" alt="Aufgaben schmal: Detail ersetzt die Liste" loading="lazy"></a>
+        <figcaption><b>Schmal · Detail</b><span class="tag">420 × 780</span>Das Detail ersetzt die Liste, „‹ Today“ führt zurück.</figcaption></figure>
+      <figure><a href="tasks-m-light.png" target="_blank" rel="noopener"><img src="tasks-m-light.png" alt="Aufgaben mittel im hellen Modus" loading="lazy"></a>
+        <figcaption><b>Mittel · hell</b><span class="tag">900 × 700</span>Heller Modus.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="fragen">
+    <h2>Noch zu entscheiden</h2>
+    <ol class="q">
+      <li><b>Grundgröße 13 (Linear) oder 14?</b><span>Vorschlag: 13 wie Linear und eine Einstellung „Interface size“, mit der Iced alles skaliert.</span></li>
+      <li><b>Eingesetzter Inhalt mit Rand</b><span>Typisch Linear; mit Hyprland-Rahmen eventuell doppelt. Erst echt gekachelt beurteilen, notfalls bündig.</span></li>
+      <li><b>Mini und Leiste als Nächstes?</b><span>Kachel mit nächstem Termin und „Free until …“, Leiste als waagerechter Tageszeitstrahl wie bei HEY.</span></li>
+      <li><b>Steuerzentrale im selben Stil</b><span>Seitenleiste mit Abschnitten, Einstellungen als gruppierte Listen.</span></li>
+    </ol>
+  </section>
+
+  <footer>Entwurf in HTML, noch kein Iced-Code. Quelle im Repository unter docs/prototypes/linear/.</footer>
+</div>

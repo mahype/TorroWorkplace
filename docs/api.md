@@ -1,6 +1,6 @@
 # API und MCP: jede Funktion dreimal
 
-Stand: 2026-10-11. **Konzept zur Freigabe.** Aufgaben: [tasks/api-mcp.md](tasks/api-mcp.md).
+Stand: 2026-10-11. **Freigegeben** (Entscheidungen unten). Aufgaben: [tasks/api-mcp.md](tasks/api-mcp.md).
 
 ## Die Regel
 
@@ -76,14 +76,26 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | Bereich | Lesen | Schreiben | Löschen | Verwalten (`Admin`) |
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
-| `workspaces` | `list_templates` | `save_template`, `update_template`, `rename_template`, `load_template` | `delete_template` | |
+| `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `accounts` | `list_accounts`, `account` | `sync` | | `connect_nextcloud`, `remove_account` |
-| `settings` | `get_settings` | | | `update_settings` |
+| `accounts` | `list_accounts` | `sync` | | `connect_nextcloud`, `remove_account` |
+| `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
-| `clients` | | | | Agenten und Schlüssel verwalten (**nur App-Schlüssel**, siehe unten) |
+| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | | | `decide_approval` (**nur App-Schlüssel**) |
+
+¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
+schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::operation()`).
+`update_template` überschreibt eine Vorlage unwiederbringlich und ist deshalb `Delete`.
+
+Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
+`accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)
+ermittelt künftig der Dienst, nicht mehr die Steuerzentrale.
+
+`set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
+Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine
+Sammlung einblendet, erweitert, was Agenten sehen.
 
 `Collections` liefert heute Kalender und Aufgabenlisten zusammen; die API teilt das nach Bereich
 auf (`calendar.list_calendars`, `tasks.list_lists`), damit die Rechte sauber greifen. Die Präfixe
@@ -113,7 +125,9 @@ Nach dem Vorbild von TorroMail, an den Stellen verbessert, an denen TorroMail L�
   `client-<id>`) und in der Konfiguration des Clients. In `clients.json` (Config-Verzeichnis, 0600)
   steht nur der SHA-256 mit Name, Art, Rechten und „zuletzt benutzt“.
 - **Jede Anfrage trägt den Schlüssel.** Das Protokoll bekommt einen Umschlag:
-  `{"v":1,"key":"torro_…","request":{"method":"…",…}}`. Ohne gültigen Schlüssel antwortet der
+  `{"v":1,"key":"torro_…","request":{"method":"calendar.list_events",…}}`. `method` ist der Name
+  aus dem Katalog; es gibt nur einen Namen je Befehl. Antworten kommen ohne Umschlag, als eine
+  JSON-Zeile mit `result`. Ohne gültigen Schlüssel antwortet der
   Dienst nur auf `ping` (damit ein Client eine hilfreiche Meldung zeigen kann) und sonst mit
   `unauthorized`.
 - **Die eigenen Programme** (Steuerzentrale, Apps, Tray, `ctl`) nutzen den **App-Schlüssel**, den
@@ -141,6 +155,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide`): nur mit dem App-Schlüssel, also nur durch
    einen Menschen in der Oberfläche oder per Benachrichtigung.
+4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
+   Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 
 Anmeldungen bei Anbietern (Login Flow v2, GitHub) gibt es über die API, sie enden aber immer im
 Browser des Menschen; ein Agent bekommt nie ein Passwort zu sehen.
@@ -154,7 +170,8 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 - **Je Bereich eine Stufe**: Kein Zugriff · Lesen · Lesen und Schreiben · Voll (mit Löschen).
   `Admin`-Befehle (Konten verbinden/entfernen, Einstellungen ändern) sind ein eigener Schalter je
-  Bereich, Standard aus.
+  Bereich, Standard aus. Ist er an, braucht jeder `Admin`-Befehl trotzdem eine Freigabe durch den
+  Menschen, unabhängig von „Freigabe vorher“.
 - **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten (später auch
   Repositories, Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
@@ -167,6 +184,13 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 Für jede Anfrage: Schlüssel → Client → `Request::operation()` → Stufe im Bereich reicht? →
 Sammlung freigegeben? → Freigabe nötig? → ausführen → protokollieren. Rechte werden bei der
 Ausführung einer Freigabe **noch einmal** geprüft.
+
+- Rechte gelten je Anfrage: Eine Änderung wirkt ab der nächsten Anfrage, eine laufende läuft mit
+  dem Stand zu Ende, mit dem sie angenommen wurde.
+- Ein Termin oder eine Aufgabe ist nur erreichbar, wenn das aufgelöste `href` ein **direktes Kind**
+  einer erlaubten Sammlung ist (gleicher Server, kein `..`).
+- **Verschieben** (`save_event`/`save_todo` mit anderer `collection`) braucht nur `Write`, obwohl
+  es im Ursprung löscht: Die Daten bleiben erhalten. Beide Sammlungen müssen erreichbar sein.
 
 ## Freigaben: der Mensch entscheidet
 
@@ -251,12 +275,23 @@ Ersetzt „AI & agents“ aus [settings.md](settings.md).
 - Eigene Coder-Agenten für API und MCP gibt es nicht: Die Arbeit ist dank Katalog klein und
   mechanisch, die vorhandenen `torro-coder-*` erledigen sie mit dem Skill.
 
-## Offene Fragen
+## Entscheidungen
 
-1. HTTP-API: gleich mitbauen oder erst, wenn es einen Nutzer gibt? Vorschlag: später.
-2. App-Schlüssel als Datei (`app.key`, 0600) oder im Schlüsselbund? Vorschlag: Datei, weil jede
-   App ihn beim Start braucht und der Schlüsselbund unter Linux beim ersten Zugriff nachfragen
-   kann. Sicherheit gleich (siehe „Was der Schlüssel schützt“).
-3. Sollen Agenten Konten verbinden und Einstellungen ändern dürfen, wenn der Mensch das freischaltet
-   (`Admin`-Schalter), oder bleibt das wie in TorroMail grundsätzlich der Oberfläche vorbehalten?
-   Vorschlag: freischaltbar, Standard aus, immer mit Freigabe.
+Getroffen am 2026-10-11.
+
+1. **HTTP-API später.** Sie kommt erst, wenn es einen ersten Nutzer gibt (Aufgabe A.10).
+2. **App-Schlüssel als Datei** (`app.key` im State-Verzeichnis, 0600), weil jede App ihn beim Start
+   braucht und der Schlüsselbund unter Linux beim ersten Zugriff nachfragen kann. Sicherheit gleich
+   (siehe „Was der Schlüssel schützt“).
+3. **Admin für Agenten freischaltbar**: eigener Schalter je Bereich, Standard aus, und jeder
+   `Admin`-Befehl eines Agenten braucht immer eine Freigabe.
+4. **Überschreiben ist Löschen**: `update_template` und `load_template` mit `replace` brauchen
+   `Delete`.
+5. **Ein-Konto-Requests entfallen**: `Account` und `DisconnectAccount` gehen in `Accounts` und
+   `RemoveAccount` auf.
+6. **Ein Name je Befehl**: Mit dem Umschlag (A.1) trägt `method` den Katalognamen
+   (`calendar.list_calendars`); die alten Draht-Namen (`calendar-collections`) entfallen.
+7. **Volle Schemata**: `Event`, `Todo`, `Settings` und `LoadMode` bekommen JSON-Schemata
+   (`schemars`), damit Agenten wissen, welche Felder nötig sind (A.0c).
+8. **Tray-Befehle**: „Settings…“ öffnet die Steuerzentrale über `apps.open_app` (auch für API
+   und MCP); „Quit“ wird `system.quit`, nur App-Schlüssel (siehe „Was nie nach außen geht“).

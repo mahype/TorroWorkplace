@@ -14,6 +14,7 @@ workspace = true
 torro-core.workspace = true
 torro-wm.workspace = true
 chrono.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

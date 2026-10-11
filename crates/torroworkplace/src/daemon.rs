@@ -2,7 +2,8 @@
 //!
 //! One process per session. The main task owns a multi-threaded tokio runtime and runs:
 //!
-//! - the socket (`torro_ipc::server`) for `ctl`, hotkeys and later the control centre,
+//! - the socket (`torro_ipc::server`) for `ctl`, hotkeys, the control centre, the apps and
+//!   agents; every request there passes the key check ([`Core::handle_from`]),
 //! - the tray icon (Linux: ksni; it runs its own D-Bus task on the same runtime),
 //! - a refresher that rebuilds the tray menu after every command and on window manager
 //!   events (debounced),
@@ -15,9 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use torro_ipc::{Request, Response, client, server, socket_path};
+use torro_core::AppId;
+use torro_core::paths::AppPaths;
+use torro_ipc::{Request, Response, app_key_path, client, server, socket_path};
 use torro_setups::storage::Store;
 
+use crate::clients::{Clients, SystemKeychain};
 use crate::core::{Core, Snapshot};
 use crate::tray;
 
@@ -35,11 +39,16 @@ impl Daemon {
     pub fn run(&self, request: Request) {
         let core = Arc::clone(&self.core);
         let refresh = self.refresh.clone();
+        let quit = self.quit.clone();
         self.runtime.spawn(async move {
             let what = describe(&request);
+            let ends = matches!(request, Request::Quit);
             let _ = refresh.send(());
             let response = core.handle(request).await;
             report(&what, &response);
+            if ends && matches!(response, Response::Ok) {
+                end_after_answer(quit);
+            }
             let _ = refresh.send(());
         });
     }
@@ -53,39 +62,19 @@ impl Daemon {
             }
         });
     }
+}
 
-    /// Opens the control centre (`torroworkplace ui`) in its own process, so it neither blocks
-    /// the tray nor goes away with it.
-    pub fn open_settings(&self) {
-        let program = match std::env::current_exe() {
-            Ok(program) => program,
-            Err(err) => {
-                eprintln!("torroworkplace: cannot find the settings: {err}");
-                return;
-            }
-        };
-        let mut command = std::process::Command::new(program);
-        command
-            .arg("ui")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        match command.spawn() {
-            Ok(mut child) => {
-                std::thread::spawn(move || child.wait());
-            }
-            Err(err) => eprintln!("torroworkplace: cannot open the settings: {err}"),
-        }
-    }
+/// How long a quit waits before it ends the service. The socket server writes the answer only
+/// after the handler returned, so ending at once could cut the `Ok` off; the grace time lets it
+/// go out first.
+const ANSWER_GRACE: Duration = Duration::from_millis(200);
 
-    pub fn quit(&self) {
-        let _ = self.quit.send(());
-    }
+/// Ends the service once the answer to a `system.quit` is on its way (see [`ANSWER_GRACE`]).
+fn end_after_answer(quit: mpsc::UnboundedSender<()>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(ANSWER_GRACE).await;
+        let _ = quit.send(());
+    });
 }
 
 /// Runs the service until it is told to quit. `headless` skips the tray icon.
@@ -111,11 +100,21 @@ async fn serve(headless: bool) -> Result<(), String> {
     if let Ok(Response::Pong { .. }) = client::call(&socket, &Request::Ping).await {
         return Err("already running".into());
     }
+    // The app key goes next to the socket, where `torro_ipc::client` looks for it.
+    let config = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.config;
+    // Reading or creating the files may wait for another core starting at the same time.
+    let app_key = app_key_path(&socket);
+    let clients = tokio::task::spawn_blocking(move || {
+        Clients::open(&app_key, &config.join("clients.json"), Box::new(SystemKeychain))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     let store = Store::open_default().map_err(|err| err.to_string())?;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();
-    let core = Arc::new(Core::new(backend, store, pim));
+    let core = Arc::new(Core::new(backend, store, pim, clients));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -123,16 +122,27 @@ async fn serve(headless: bool) -> Result<(), String> {
     let ipc = {
         let core = Arc::clone(&core);
         let refresh = refresh_tx.clone();
+        let quit = quit_tx.clone();
         let socket = socket.clone();
         tokio::spawn(async move {
-            server::serve(&socket, move |request| {
+            server::serve_with_key(&socket, move |key, request| {
                 let core = Arc::clone(&core);
                 let refresh = refresh.clone();
+                let quit = quit.clone();
                 async move {
                     // Hotkeys go through `ctl`, so commands from the socket get the same
                     // notifications as clicks in the tray.
                     let changes = changes_state(&request).then(|| describe(&request));
-                    let response = core.handle(request).await;
+                    let ends = matches!(request, Request::Quit);
+                    // A refused request ran nothing: no notification, no new menu, so a foreign
+                    // client cannot flood the desktop.
+                    let response = match core.handle_from(key.as_ref(), request).await {
+                        Ok(response) => response,
+                        Err(refused) => return refused.response(),
+                    };
+                    if ends && matches!(response, Response::Ok) {
+                        end_after_answer(quit);
+                    }
                     if let Some(what) = changes {
                         report(&what, &response);
                         let _ = refresh.send(());
@@ -245,16 +255,16 @@ fn describe(request: &Request) -> String {
     match request {
         Request::Ping => "ping".into(),
         Request::Status => "status".into(),
+        Request::Quit => "quit".into(),
         Request::ListTemplates => "list".into(),
         Request::SaveTemplate { .. } => "save".into(),
         Request::UpdateTemplate { id } => format!("update {id}"),
         Request::DeleteTemplate { id } => format!("delete {id}"),
         Request::LoadTemplate { id, .. } => format!("load {id}"),
-        Request::Account => "account".into(),
         Request::ConnectNextcloud { server } => format!("connect {server}"),
-        Request::DisconnectAccount => "disconnect".into(),
         Request::Sync => "sync".into(),
-        Request::Collections => "collections".into(),
+        Request::CalendarCollections => "calendars".into(),
+        Request::TaskCollections => "task lists".into(),
         Request::Events { .. } => "events".into(),
         Request::Todos => "todos".into(),
         Request::SaveEvent { .. } => "save event".into(),
@@ -263,10 +273,20 @@ fn describe(request: &Request) -> String {
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
+        Request::SetSetting { key, .. } => format!("set {key:?}"),
+        Request::SetCollectionShown { collection, shown } => {
+            format!("{} {collection}", if *shown { "show" } else { "hide" })
+        }
         Request::Accounts => "accounts".into(),
         Request::RemoveAccount { id } => format!("remove account {id}"),
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
         Request::OpenApp { app } => format!("open {app}"),
+        Request::ListApps => "apps".into(),
+        Request::ListClients => "clients".into(),
+        Request::CreateClient { .. } => "create client".into(),
+        Request::UpdateClient { id, .. } => format!("update client {id}"),
+        Request::NewClientKey { id } => format!("new key for client {id}"),
+        Request::RemoveClient { id } => format!("remove client {id}"),
     }
 }
 

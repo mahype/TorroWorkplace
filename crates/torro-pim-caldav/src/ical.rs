@@ -35,6 +35,19 @@ pub fn parse_todos(ics: &str, collection: &str) -> Vec<Todo> {
     todos
 }
 
+/// The iCalendar object holds a series: an event or task with a rule (`RRULE`), extra dates
+/// (`RDATE`) or a changed occurrence (`RECURRENCE-ID`). Writing such an object back from one
+/// event or task would drop the rule and every exception, so the core refuses it.
+pub fn is_series(ics: &str) -> bool {
+    let mut series = false;
+    for component in ["VEVENT", "VTODO"] {
+        for_each_component(ics, component, |props| {
+            series |= ["RRULE", "RDATE", "RECURRENCE-ID"].iter().any(|name| find(props, name).is_some());
+        });
+    }
+    series
+}
+
 /// Calls `visit` with the properties of every top-level `component` in `ics`. Properties of
 /// nested components (VALARM) are left out.
 fn for_each_component(ics: &str, component: &str, mut visit: impl FnMut(&[Property<'_>])) {
@@ -108,7 +121,7 @@ fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
         collection: collection.to_string(),
         href: None,
         etag: None,
-        recurring: get("RECURRENCE-ID").is_some() || get("RRULE").is_some(),
+        recurring: get("RECURRENCE-ID").is_some() || get("RRULE").is_some() || get("RDATE").is_some(),
         summary: get("SUMMARY").map(|p| unescape(p.value)).unwrap_or_default(),
         start,
         end,
@@ -296,5 +309,34 @@ BEGIN:VEVENT\r\nUID:not-a-task\r\nDTSTART:20261011T080000Z\r\nEND:VEVENT\r\nEND:
         let todos = parse_todos(ics, "/tasks/");
         assert_eq!(todos.len(), 1);
         assert!(todos[0].completed);
+    }
+
+    #[test]
+    fn series_are_told_by_rule_dates_or_changed_occurrence() {
+        let wrap = |component: &str, extra: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:{component}\r\nUID:x\r\nDTSTART:20261011T080000Z\r\n{extra}END:{component}\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        assert!(is_series(&wrap("VEVENT", "RRULE:FREQ=WEEKLY\r\n")));
+        assert!(is_series(&wrap("VEVENT", "RDATE:20261018T080000Z\r\n")));
+        assert!(is_series(&wrap("VEVENT", "RECURRENCE-ID:20261018T080000Z\r\n")));
+        assert!(is_series(&wrap("VTODO", "rrule:FREQ=DAILY\r\n")), "names are case-insensitive");
+        assert!(!is_series(&wrap("VEVENT", "")));
+        assert!(!is_series(&wrap("VTODO", "SUMMARY:RRULE in the text\r\n")));
+        assert!(!is_series(SAMPLE), "single events, an alarm and a cancelled one");
+        assert!(!is_series(TODOS));
+        // A rule inside an alarm is not the event's.
+        assert!(!is_series(&wrap("VEVENT", "BEGIN:VALARM\r\nRRULE:FREQ=DAILY\r\nEND:VALARM\r\n")));
+    }
+
+    #[test]
+    fn events_with_extra_dates_are_recurring() {
+        // A server that does not expand series hands over RDATE-only ones as they are.
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nDTSTART:20261011T080000Z\r\n\
+RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let events = parse_events(ics, "/cal/");
+        assert_eq!(events.len(), 1);
+        assert!(events[0].recurring);
     }
 }

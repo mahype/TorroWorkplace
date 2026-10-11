@@ -8,13 +8,15 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::AppId;
 use crate::paths::AppPaths;
+use crate::theme::Appearance;
 
 /// The language the suite speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     /// Follow the system (`LANG` and friends).
@@ -25,11 +27,16 @@ pub enum Language {
 }
 
 /// All suite-wide settings.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
+    /// Language of the suite: `system` follows the desktop, `english` and `german` fix it.
+    /// Applies to processes started afterwards.
     #[serde(default)]
     pub language: Language,
+    /// Light or dark colours for every app; `System` follows the desktop.
+    #[serde(default)]
+    pub appearance: Appearance,
     /// Start `torroworkplace daemon` when the user logs in.
     #[serde(default)]
     pub start_at_login: bool,
@@ -145,9 +152,17 @@ mod tests {
     fn valid_file_loads_its_values() {
         let dir = TempDir::new("valid");
         let path = dir.file("settings.json");
-        fs::write(&path, r#"{"language":"german","startAtLogin":true,"hiddenCollections":["work"]}"#).expect("write");
-        let expected =
-            Settings { language: Language::German, start_at_login: true, hidden_collections: vec!["work".into()] };
+        fs::write(
+            &path,
+            r#"{"language":"german","appearance":"dark","startAtLogin":true,"hiddenCollections":["work"]}"#,
+        )
+        .expect("write");
+        let expected = Settings {
+            language: Language::German,
+            appearance: Appearance::Dark,
+            start_at_login: true,
+            hidden_collections: vec!["work".into()],
+        };
         assert_eq!(load_from(&path), expected);
     }
 
@@ -159,6 +174,16 @@ mod tests {
         let loaded = load_from(&path);
         assert_eq!(loaded.language, Language::English);
         assert!(!loaded.start_at_login);
+    }
+
+    #[test]
+    fn a_file_from_before_appearance_loads_as_system() {
+        let dir = TempDir::new("no-appearance");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","startAtLogin":true,"hiddenCollections":[]}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.appearance, Appearance::System);
+        assert_eq!(loaded.language, Language::German);
     }
 
     #[test]
@@ -177,6 +202,7 @@ mod tests {
         let path = dir.file("nested/settings.json");
         let first = Settings {
             language: Language::English,
+            appearance: Appearance::Light,
             start_at_login: true,
             hidden_collections: vec!["a".into(), "b".into()],
         };

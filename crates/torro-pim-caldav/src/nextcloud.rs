@@ -1,4 +1,4 @@
-//! Signing in to Nextcloud with Login Flow v2.
+//! Signing in to Nextcloud with Login Flow v2, and the remote wipe check that belongs to it.
 //!
 //! The way Nextcloud's own desktop and mobile clients sign in, and the closest thing to
 //! OAuth that works on every Nextcloud without an admin registering a client first:
@@ -10,6 +10,12 @@
 //!    it under Settings → Security → Devices & sessions and can revoke it there.
 //!
 //! https://docs.nextcloud.com/server/latest/developer_manual/client_apis/LoginFlow/index.html
+//!
+//! Remote wipe ([`check_wipe`], [`confirm_wipe`]): the user or an admin can mark this device for
+//! wiping under "Devices & sessions". The server then refuses the app password, and a client that
+//! got 401/403 is expected to ask whether it should wipe itself and to confirm when it did.
+//!
+//! https://docs.nextcloud.com/server/latest/developer_manual/client_apis/RemoteWipe/index.html
 
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -45,6 +51,13 @@ struct StartResponse {
 struct PollInfo {
     token: String,
     endpoint: String,
+}
+
+/// The answer to the wipe check: `{"wipe": true}`.
+#[derive(Deserialize)]
+struct WipeCheckResponse {
+    #[serde(default)]
+    wipe: bool,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +130,79 @@ impl LoginFlow {
     }
 }
 
+/// Asks the server whether this device was marked for wiping. `Ok(true)` means: remove the
+/// account, its app password and all cached data, then call [`confirm_wipe`].
+///
+/// `POST <server>/index.php/core/wipe/check` with the form field `token=<app password>`
+/// (`core/Controller/WipeController.php::checkWipe` in nextcloud/server): 200 `{"wipe": true}` =
+/// wipe; 404 = nothing to wipe or the token is unknown (revoked, not a Login Flow token). The route
+/// is public and rate limited (10 calls in 5 minutes per client), so callers ask once per refusal,
+/// never in a loop. A 429, 503 (maintenance) or an unreadable answer is an error: then nothing is
+/// known and nothing must be deleted.
+pub async fn check_wipe(http: &reqwest::Client, server: &str, app_password: &str) -> Result<bool, ProviderError> {
+    let request = wipe_request(http, server, WIPE_CHECK_PATH, app_password)?;
+    let response = http.execute(request).await.map_err(http_error)?;
+    let status = response.status();
+    let answer =
+        if status.is_success() { response.json::<WipeCheckResponse>().await.ok().map(|a| a.wipe) } else { None };
+    check_wipe_outcome(status, answer)
+}
+
+/// Tells the server that this device wiped itself; the server then deletes the app password and
+/// tells the user. Same token and route family as [`check_wipe`]
+/// (`WipeController::wipeDone`): 200 = done, 404 = no wipe pending for this token.
+pub async fn confirm_wipe(http: &reqwest::Client, server: &str, app_password: &str) -> Result<(), ProviderError> {
+    let request = wipe_request(http, server, WIPE_SUCCESS_PATH, app_password)?;
+    let response = http.execute(request).await.map_err(http_error)?;
+    confirm_wipe_outcome(response.status())
+}
+
+const WIPE_CHECK_PATH: &str = "/index.php/core/wipe/check";
+const WIPE_SUCCESS_PATH: &str = "/index.php/core/wipe/success";
+
+/// The form POST both wipe routes expect. Kept apart so it can be checked without a network: the
+/// app password travels in the form body only, never in the URL, and no `Authorization` header is
+/// sent (the server already refuses the password as a login).
+fn wipe_request(
+    http: &reqwest::Client,
+    server: &str,
+    path: &str,
+    app_password: &str,
+) -> Result<reqwest::Request, ProviderError> {
+    http.post(format!("{}{path}", server.trim_end_matches('/')))
+        .form(&[("token", app_password)])
+        .build()
+        .map_err(|err| ProviderError::Other(format!("cannot build the wipe request: {err}")))
+}
+
+/// Maps the wipe check's status and decoded body (`None` when unreadable or not a success).
+fn check_wipe_outcome(status: StatusCode, wipe: Option<bool>) -> Result<bool, ProviderError> {
+    match (status, wipe) {
+        (StatusCode::NOT_FOUND, _) => Ok(false),
+        (status, Some(wipe)) if status.is_success() => Ok(wipe),
+        (status, None) if status.is_success() => {
+            Err(ProviderError::Other("the server's answer to the wipe check is unreadable".into()))
+        }
+        (status, _) => Err(wipe_status_error("wipe check", status)),
+    }
+}
+
+fn confirm_wipe_outcome(status: StatusCode) -> Result<(), ProviderError> {
+    match status {
+        status if status.is_success() => Ok(()),
+        StatusCode::NOT_FOUND => Err(ProviderError::Other("the server has no wipe pending for this device".into())),
+        status => Err(wipe_status_error("wipe confirmation", status)),
+    }
+}
+
+fn wipe_status_error(what: &str, status: StatusCode) -> ProviderError {
+    ProviderError::Other(match status {
+        StatusCode::TOO_MANY_REQUESTS => format!("{what}: the server asks to slow down (HTTP 429)"),
+        StatusCode::SERVICE_UNAVAILABLE => format!("{what}: the server is in maintenance mode"),
+        status => format!("{what} failed (HTTP {})", status.as_u16()),
+    })
+}
+
 /// CalDAV root of a Nextcloud.
 pub fn dav_url(server: &str) -> String {
     format!("{}/remote.php/dav/", server.trim_end_matches('/'))
@@ -134,5 +220,47 @@ mod tests {
         assert_eq!(ok("https://example.org/nc/apps/files/?dir=/"), Some("https://example.org/nc".into()));
         assert_eq!(ok("http://localhost:8080/index.php/login"), Some("http://localhost:8080".into()));
         assert!(normalize_server("").is_err());
+    }
+
+    #[test]
+    fn wipe_requests_post_the_token_as_a_form() {
+        let http = reqwest::Client::new();
+        for (path, url) in [
+            (WIPE_CHECK_PATH, "https://cloud.example.org/nc/index.php/core/wipe/check"),
+            (WIPE_SUCCESS_PATH, "https://cloud.example.org/nc/index.php/core/wipe/success"),
+        ] {
+            let request = wipe_request(&http, "https://cloud.example.org/nc/", path, "app-secret").expect("request");
+            assert_eq!(request.method(), reqwest::Method::POST);
+            assert_eq!(request.url().as_str(), url);
+            assert!(!request.url().as_str().contains("app-secret"), "the secret never goes into the URL");
+            assert!(request.headers().get(reqwest::header::AUTHORIZATION).is_none());
+            assert_eq!(
+                request.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+                Some("application/x-www-form-urlencoded")
+            );
+            assert_eq!(request.body().and_then(|b| b.as_bytes()), Some(&b"token=app-secret"[..]));
+        }
+    }
+
+    #[test]
+    fn wipe_check_wipes_only_when_the_server_says_so() {
+        assert_eq!(check_wipe_outcome(StatusCode::OK, Some(true)), Ok(true));
+        assert_eq!(check_wipe_outcome(StatusCode::OK, Some(false)), Ok(false));
+        assert_eq!(check_wipe_outcome(StatusCode::NOT_FOUND, None), Ok(false));
+        assert!(check_wipe_outcome(StatusCode::OK, None).is_err(), "unreadable answer");
+        for status in [401, 403, 429, 500, 503] {
+            let status = StatusCode::from_u16(status).expect("status");
+            assert!(check_wipe_outcome(status, None).is_err(), "{status}");
+            assert!(check_wipe_outcome(status, Some(true)).is_err(), "{status}");
+        }
+    }
+
+    #[test]
+    fn wipe_confirmation_accepts_only_success() {
+        assert_eq!(confirm_wipe_outcome(StatusCode::OK), Ok(()));
+        for status in [404, 429, 500, 503] {
+            let status = StatusCode::from_u16(status).expect("status");
+            assert!(confirm_wipe_outcome(status).is_err(), "{status}");
+        }
     }
 }

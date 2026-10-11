@@ -113,7 +113,9 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     menu.push(
         StandardItem {
             label: tr("Settings…").into(),
-            activate: Box::new(|tray: &mut Tray| tray.daemon.open_settings()),
+            activate: Box::new(|tray: &mut Tray| {
+                tray.daemon.run(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string() })
+            }),
             ..Default::default()
         }
         .into(),
@@ -121,7 +123,7 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     menu.push(
         StandardItem {
             label: tr("Quit").into(),
-            activate: Box::new(|tray: &mut Tray| tray.daemon.quit()),
+            activate: Box::new(|tray: &mut Tray| tray.daemon.run(Request::Quit)),
             ..Default::default()
         }
         .into(),

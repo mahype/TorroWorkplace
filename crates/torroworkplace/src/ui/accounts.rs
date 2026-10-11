@@ -1,26 +1,30 @@
-//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`): the accounts as cards (provider,
-//! label, status as symbol + word, last sync, chevron) under an "Add account" button; a detail
-//! page per account with the status ("Sync now"), the calendars and task lists (a switch each
-//! for showing them in the apps, read-only ones marked), the connection, and "Remove account…"
-//! behind a confirmation. Empty: a sentence about what to add. The add flow is `wizard.rs`
-//! (task S.6), shown as a dialog over the page.
+//! Accounts (task S.5 in `docs/tasks/steuerzentrale.md`): the accounts as rows of one settings
+//! group per provider (status dot, label on one line, status and last sync below, chevron), "Add
+//! account" in the header bar; a detail page per account with groups for the status ("Sync
+//! now"), the calendars and task lists (a switch each for showing them in the apps, read-only
+//! ones marked) and the connection, and "Remove account…" behind a confirmation. Empty: a
+//! sentence about what to add. The add flow is `wizard.rs` (task S.6); it and the confirmation
+//! are dialogs over the whole window ([`overlay`]).
 //!
-//! Requests: `Sync`, `RemoveAccount { id }`, and `UpdateSettings` with the whole `Settings`
-//! and only `hidden_collections` changed. The pure parts (relative time, status text,
-//! toggling a collection, which accounts are listed) are plain functions with unit tests.
+//! Requests: `Sync`, `RemoveAccount { id }`, and `SetCollectionShown { collection, shown }` for
+//! the switches. The pure parts (relative time, status text, whether a collection is shown,
+//! which accounts are listed) are plain functions with unit tests.
 
 use chrono::{DateTime, Utc};
-use iced::widget::{button, column, container, row, space, text, toggler};
-use iced::{Alignment, Background, Color, Element, Length, border};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, column, container, row, toggler};
+use iced::{Element, Fill};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
-use torro_core::theme::{STATUS_ERROR, STATUS_OK};
-use torro_gui::theme;
-use torro_gui::widgets::{collection_color, color_dot, empty_state, modal, section_title};
+use torro_gui::icon::Icon;
+use torro_gui::layout::SizeClass;
+use torro_gui::theme::{self, size, space};
+use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
+use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, Request};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
-use super::{Action, Data, wizard};
+use super::{Action, Data, Header, chevron, confirm, dialog, pressable, setting_row, wizard};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -95,9 +99,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::SyncNow => Action::Send(Request::Sync),
-        Message::SetShown { collection, shown } => Action::Send(Request::UpdateSettings {
-            settings: with_collection_shown(&data.settings, &collection, shown),
-        }),
+        Message::SetShown { collection, shown } => Action::Send(Request::SetCollectionShown { collection, shown }),
         Message::AskRemove => {
             state.confirm_remove = true;
             Action::None
@@ -118,17 +120,45 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
-    let page = match selected(state, data) {
+    match selected(state, data) {
         Some(account) => detail(account, data, now),
         None => list(data, now),
-    };
-    match &state.wizard {
-        Some(wizard) => {
-            modal(page, wizard::view(wizard, data).map(Message::Wizard), 520.0, Message::Wizard(wizard::Message::Close))
-        }
-        None if state.confirm_remove => modal(page, remove_dialog(), 420.0, Message::CancelRemove),
-        None => page,
     }
+}
+
+/// The page's dialog over the whole window: the add-account dialog, else the "Remove this
+/// account?" confirmation; `None` while neither is open.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(wizard) = &state.wizard {
+        let content = wizard::view(wizard, data).map(Message::Wizard);
+        return Some(dialog(content, size::FORM_MAX, Message::Wizard(wizard::Message::Close)));
+    }
+    state.confirm_remove.then(|| {
+        confirm(
+            tr("Remove this account?"),
+            tr("This only removes the account from Torro Workplace. Your data stays on the server.").to_string(),
+            tr("Remove account"),
+            Message::Remove,
+            Message::CancelRemove,
+        )
+    })
+}
+
+/// The header bar of the page: "Add account" on the list; on an account's detail its label with
+/// a back button to the list.
+pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    if let Some(account) = selected(state, data) {
+        return Header { sub_page: Some((account.label.clone(), Message::Back)), actions: Vec::new() };
+    }
+    let add = match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Plus), tr("Add account"), style::button::primary, Some(Message::AddAccount))
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Plus, tr("Add account"), style::button::primary, Some(Message::AddAccount))
+        }
+    };
+    Header { sub_page: None, actions: vec![add] }
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
@@ -146,10 +176,10 @@ pub fn provider_name(kind: &str) -> String {
     }
 }
 
-/// Symbol, word and tone of an account state. Status is never shown by colour alone.
+/// Word and tone of an account state. Status is never shown by colour alone: the word goes next
+/// to the dot of the tone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
-    pub symbol: &'static str,
     pub text: String,
     pub tone: Tone,
 }
@@ -162,21 +192,57 @@ pub enum Tone {
     Error,
 }
 
-pub fn status_line(state: &AccountState) -> StatusLine {
-    match state {
-        AccountState::NotConnected => {
-            StatusLine { symbol: "!", text: tr("Needs sign-in").to_string(), tone: Tone::Attention }
-        }
-        AccountState::SigningIn { .. } => {
-            StatusLine { symbol: "◌", text: tr("Signing in…").to_string(), tone: Tone::Attention }
-        }
-        AccountState::Connected { problem: Some(problem), .. } => {
-            StatusLine { symbol: "✕", text: trf("Problem: {problem}", &[("problem", problem)]), tone: Tone::Error }
-        }
-        AccountState::Connected { problem: None, .. } => {
-            StatusLine { symbol: "✓", text: tr("Connected").to_string(), tone: Tone::Ok }
+impl Tone {
+    /// The dot that goes with the word.
+    fn status(self) -> Status {
+        match self {
+            Tone::Ok => Status::Ok,
+            Tone::Attention => Status::Attention,
+            Tone::Error => Status::Error,
         }
     }
+}
+
+pub fn status_line(state: &AccountState) -> StatusLine {
+    match state {
+        AccountState::NotConnected => StatusLine { text: tr("Needs sign-in").to_string(), tone: Tone::Attention },
+        AccountState::SigningIn { .. } => StatusLine { text: tr("Signing in…").to_string(), tone: Tone::Attention },
+        AccountState::Connected { problem: Some(problem), .. } => {
+            StatusLine { text: trf("Problem: {problem}", &[("problem", problem)]), tone: Tone::Error }
+        }
+        AccountState::Connected { problem: None, .. } => {
+            StatusLine { text: tr("Connected").to_string(), tone: Tone::Ok }
+        }
+    }
+}
+
+/// The line under an account's name in the list: its status, and for a healthy connection when it
+/// last synced ("Connected · Last synced 5 min ago").
+pub fn account_detail(state: &AccountState, now: DateTime<Utc>) -> String {
+    let status = status_line(state).text;
+    match state {
+        AccountState::Connected { last_sync, problem: None, .. } => {
+            format!("{status} · {}", last_synced_text(*last_sync, now))
+        }
+        _ => status,
+    }
+}
+
+/// The providers of `accounts`, each once, in the order they first appear: one group per provider.
+fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<&'a str> {
+    let mut kinds: Vec<&str> = Vec::new();
+    for account in accounts {
+        if !kinds.contains(&account.kind.as_str()) {
+            kinds.push(&account.kind);
+        }
+    }
+    kinds
+}
+
+/// "Calendar", "Task list · Read-only": the line under a collection's name.
+fn collection_detail(collection: &Collection) -> String {
+    let kind = kind_name(collection.kind);
+    if collection.writable { kind.to_string() } else { format!("{kind} · {}", tr("Read-only")) }
 }
 
 /// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago". A time in the future
@@ -212,16 +278,6 @@ pub fn is_shown(settings: &Settings, collection: &str) -> bool {
     !settings.hidden_collections.iter().any(|hidden| hidden == collection)
 }
 
-/// The settings with one collection shown or hidden; everything else stays as it is.
-pub fn with_collection_shown(settings: &Settings, collection: &str, shown: bool) -> Settings {
-    let mut next = settings.clone();
-    next.hidden_collections.retain(|id| id != collection);
-    if !shown {
-        next.hidden_collections.push(collection.to_string());
-    }
-    next
-}
-
 fn kind_name(kind: CollectionKind) -> &'static str {
     match kind {
         CollectionKind::Events => tr("Calendar"),
@@ -239,203 +295,109 @@ fn selected<'a>(state: &State, data: &'a Data) -> Option<&'a AccountInfo> {
 // ----- Views --------------------------------------------------------------------------------
 
 fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    let header = row![space::horizontal(), add_button()].align_y(Alignment::Center).width(Length::Fill);
     let accounts: Vec<&AccountInfo> = listed(&data.accounts).collect();
-    let body: Element<'a, Message> = if accounts.is_empty() {
-        empty_state(tr("No accounts yet."), tr("Add your Nextcloud to see calendars and tasks in the apps."))
-    } else {
-        column(accounts.into_iter().map(|account| card(account, now))).spacing(8).width(Length::Fill).into()
-    };
-    column![header, body].spacing(16).width(Length::Fill).into()
-}
-
-fn add_button<'a>() -> Element<'a, Message> {
-    button(text(tr("Add account"))).style(button::primary).padding([8, 12]).on_press(Message::AddAccount).into()
-}
-
-/// One account in the list: provider, label, status, last sync, and a chevron.
-fn card<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
-    let mut details = column![
-        text(provider_name(&account.kind)).size(12).color(theme::MUTED),
-        text(account.label.as_str()).size(16).color(theme::TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        status_label(&status_line(&account.state)),
-    ]
-    .spacing(4)
-    .width(Length::Fill);
-    if let AccountState::Connected { last_sync, .. } = &account.state {
-        details = details.push(text(last_synced_text(*last_sync, now)).size(12).color(theme::MUTED));
+    if accounts.is_empty() {
+        return empty_state(tr("No accounts yet."), tr("Add your Nextcloud to see calendars and tasks in the apps."));
     }
-    let content = row![details, text("›").size(18).color(theme::MUTED)].spacing(8).align_y(Alignment::Center);
-    button(content)
-        .style(card_button)
-        .padding(16)
-        .width(Length::Fill)
-        .on_press(Message::Open(account.id.clone()))
+    let groups = providers(&accounts).into_iter().map(|kind| {
+        let rows = accounts.iter().filter(|account| account.kind == kind).map(|account| account_row(account, now));
+        widgets::group(provider_name(kind), rows.collect(), None)
+    });
+    column(groups).spacing(space::XL).into()
+}
+
+/// One account in the list: status dot, label, status and last sync, and a chevron; the whole row
+/// opens the detail page.
+fn account_row<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
+    let dot = widgets::status_dot(status_line(&account.state).tone.status());
+    let row = setting_row(Some(dot), account.label.as_str(), Some(account_detail(&account.state, now)), chevron());
+    pressable(row, Some(Message::Open(account.id.clone())))
+}
+
+/// The detail page: the name, then the groups for status, calendars and lists and the connection,
+/// and the removal at the end.
+fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+    let name = typo::text(typo::HEADLINE, account.label.as_str()).wrapping(Wrapping::None);
+    let heading = column![
+        container(name).width(Fill).clip(true),
+        typo::text(typo::META, provider_name(&account.kind)).style(theme::text_2),
+    ]
+    .spacing(space::XS);
+    let remove = widgets::text_button(None, tr("Remove account…"), style::button::danger, Some(Message::AskRemove));
+    column![heading, status_group(account, now), collections_group(account, &data.settings)]
+        .push(connection_group(account))
+        .push(on_axis(remove))
+        .spacing(space::XL)
         .into()
 }
 
-/// The detail page: status, calendars and lists, connection, and removal.
-fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
-    let back =
-        button(text(format!("‹ {}", tr("Accounts")))).style(button::text).padding([8, 12]).on_press(Message::Back);
-    let heading = column![
-        text(account.label.as_str()).size(18).color(theme::TEXT).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-        text(provider_name(&account.kind)).size(14).color(theme::MUTED),
-    ]
-    .spacing(4);
-
-    let mut sections = column![status_group(account, now), collections_group(account, &data.settings)].spacing(32);
-    if let Some(connection) = connection_group(account) {
-        sections = sections.push(connection);
-    }
-    let remove = button(text(tr("Remove account…"))).style(danger_text).padding([8, 12]).on_press(Message::AskRemove);
-    sections = sections.push(remove);
-
-    let page = column![back, heading, sections].spacing(24).width(Length::Fill);
-    container(page).width(Length::Fill).max_width(640).into()
+/// A text button moved left by its own padding, so its label stands on the page's content axis
+/// (the name, the groups) instead of 10 to the right of it; the hover surface reaches into the margin.
+fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
 }
 
+/// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
 fn status_group<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
-    let mut head = row![status_label(&status_line(&account.state))].align_y(Alignment::Center).width(Length::Fill);
-    let mut body = column![].spacing(8);
-    if let AccountState::Connected { last_sync, .. } = &account.state {
-        head = head
-            .push(space::horizontal())
-            .push(button(text(tr("Sync now"))).style(button::secondary).padding([8, 12]).on_press(Message::SyncNow));
-        body = body.push(text(last_synced_text(*last_sync, now)).size(14).color(theme::MUTED));
-    }
-    group(tr("Status"), column![head, body].spacing(8), None)
-}
-
-fn collections_group<'a>(account: &'a AccountInfo, settings: &Settings) -> Element<'a, Message> {
-    let body: Element<'a, Message> = if account.collections.is_empty() {
-        text(tr("No calendars or task lists yet. Use Sync now to fetch them from the server."))
-            .size(14)
-            .color(theme::MUTED)
-            .into()
-    } else {
-        column(account.collections.iter().map(|collection| collection_row(collection, settings))).spacing(12).into()
+    let line = status_line(&account.state);
+    let (detail, sync) = match &account.state {
+        AccountState::Connected { last_sync, .. } => (
+            Some(last_synced_text(*last_sync, now)),
+            Some(widgets::text_button(
+                Some(Icon::RefreshCw),
+                tr("Sync now"),
+                style::button::secondary,
+                Some(Message::SyncNow),
+            )),
+        ),
+        AccountState::NotConnected | AccountState::SigningIn { .. } => (None, None),
     };
-    group(
-        tr("Calendars and lists"),
-        body,
-        Some(tr("Hidden calendars and lists stay on the server; the apps just don't show them.")),
-    )
+    let row = setting_row(Some(widgets::status_dot(line.tone.status())), line.text, detail, sync);
+    widgets::group(tr("Status"), vec![row], None)
 }
 
-/// One calendar or task list: colour dot, name, kind, "Read-only", and the "Show in apps" switch.
-fn collection_row<'a>(collection: &'a Collection, settings: &Settings) -> Element<'a, Message> {
-    let mut meta = row![text(kind_name(collection.kind)).size(12).color(theme::MUTED)].spacing(8);
-    if !collection.writable {
-        meta = meta.push(text(tr("Read-only")).size(12).color(theme::MUTED));
+/// The calendars and task lists with their switches; before the first sync a sentence instead
+/// (an empty group would be a bare frame).
+fn collections_group<'a>(account: &'a AccountInfo, settings: &Settings) -> Element<'a, Message> {
+    let title = tr("Calendars and lists");
+    if account.collections.is_empty() {
+        let hint = tr("No calendars or task lists yet. Use Sync now to fetch them from the server.");
+        return column![widgets::section_title(title), typo::text(typo::BODY, hint).style(theme::text_2)]
+            .spacing(space::S)
+            .into();
     }
-    let info = column![text(collection.name.as_str()).size(14).color(theme::TEXT), meta].spacing(4).width(Length::Fill);
+    let rows = account.collections.iter().map(|collection| collection_row(collection, settings)).collect();
+    let footer = tr("Hidden calendars and lists stay on the server; the apps just don't show them.");
+    widgets::group(title, rows, Some(footer.to_string()))
+}
+
+/// One calendar or task list: colour dot, name, kind and "Read-only", and the "Show in apps" switch.
+fn collection_row<'a>(collection: &'a Collection, settings: &Settings) -> Element<'a, Message> {
     let id = collection.id.clone();
     let switch = toggler(is_shown(settings, &collection.id))
-        .label(tr("Show in apps"))
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
         .on_toggle(move |shown| Message::SetShown { collection: id.clone(), shown });
-    row![color_dot(collection_color(collection.color.as_deref()), 12.0), info, switch]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into()
+    let dot = color_dot(collection_color(collection.color.as_deref()), space::S);
+    setting_row(Some(dot), collection.name.as_str(), Some(collection_detail(collection)), switch)
 }
 
 /// Server and user, and where the app password lives. Nothing to show without a server.
 fn connection_group<'a>(account: &'a AccountInfo) -> Option<Element<'a, Message>> {
-    let mut rows = column![].spacing(8);
-    match &account.state {
-        AccountState::Connected { server, login_name, .. } => {
-            rows = rows
-                .push(key_value(tr("Server"), server.as_str()))
-                .push(key_value(tr("User"), login_name.as_str()))
-                .push(text(tr("App password stored in the system keychain")).size(14).color(theme::MUTED));
-        }
-        AccountState::SigningIn { server, .. } => {
-            rows = rows.push(key_value(tr("Server"), server.as_str()));
-        }
+    let (server, user) = match &account.state {
+        AccountState::Connected { server, login_name, .. } => (server, Some(login_name)),
+        AccountState::SigningIn { server, .. } => (server, None),
         AccountState::NotConnected => return None,
-    }
-    Some(group(tr("Connection"), rows, None))
-}
-
-fn key_value<'a>(key: &'static str, value: &'a str) -> Element<'a, Message> {
-    row![text(key).size(14).color(theme::MUTED).width(96), text(value).size(14).color(theme::TEXT)].spacing(8).into()
-}
-
-/// A group: a small heading, a card with the rows, and an optional sentence below it.
-fn group<'a>(title: &str, body: impl Into<Element<'a, Message>>, footer: Option<&'static str>) -> Element<'a, Message> {
-    let card = container(body).padding(16).width(Length::Fill).style(surface_card);
-    let mut group = column![section_title(title), card].spacing(8).width(Length::Fill);
-    if let Some(footer) = footer {
-        group = group.push(text(footer).size(14).color(theme::MUTED));
-    }
-    group.into()
-}
-
-/// The confirmation for removing the account. The consequence is stated, the button says what
-/// it does, and "Cancel" is next to it.
-fn remove_dialog<'a>() -> Element<'a, Message> {
-    let buttons = row![
-        space::horizontal(),
-        button(text(tr("Cancel"))).style(button::secondary).padding([8, 12]).on_press(Message::CancelRemove),
-        button(text(tr("Remove account"))).style(button::danger).padding([8, 12]).on_press(Message::Remove),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .width(Length::Fill);
-    let content = column![
-        text(tr("Remove this account?")).size(18).color(theme::TEXT),
-        text(tr("This only removes the account from Torro Workplace. Your data stays on the server."))
-            .size(14)
-            .color(theme::MUTED),
-        buttons,
-    ]
-    .spacing(16)
-    .padding(24)
-    .width(Length::Fill);
-    container(content).style(surface_card).into()
-}
-
-/// Symbol and word in the status colour.
-fn status_label<'a>(line: &StatusLine) -> Element<'a, Message> {
-    text(format!("{}  {}", line.symbol, line.text)).size(14).color(tone_color(line.tone)).into()
-}
-
-fn tone_color(tone: Tone) -> Color {
-    match tone {
-        Tone::Ok => theme::color(STATUS_OK),
-        Tone::Attention => theme::attention(),
-        Tone::Error => theme::color(STATUS_ERROR),
-    }
-}
-
-/// A card: raised surface, hairline border, radius 12.
-fn surface_card(_theme: &iced::Theme) -> container::Style {
-    container::Style {
-        text_color: Some(theme::TEXT),
-        background: Some(Background::Color(theme::SURFACE)),
-        border: border::rounded(12).color(theme::LINE).width(1),
-        ..container::Style::default()
-    }
-}
-
-/// A list row that is a card itself; it lifts on hover and press.
-fn card_button(app_theme: &iced::Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered | button::Status::Pressed => theme::SURFACE_2,
-        _ => theme::SURFACE,
     };
-    button::Style {
-        background: Some(Background::Color(background)),
-        border: border::rounded(12).color(theme::LINE).width(1),
-        ..button::text(app_theme, status)
-    }
+    let mut rows = vec![value_row(tr("Server"), server)];
+    rows.extend(user.map(|user| value_row(tr("User"), user)));
+    let footer = user.map(|_| tr("App password stored in the system keychain").to_string());
+    Some(widgets::group(tr("Connection"), rows, footer))
 }
 
-/// A text button in the error colour, for "Remove account…".
-fn danger_text(app_theme: &iced::Theme, status: button::Status) -> button::Style {
-    button::Style { text_color: theme::color(STATUS_ERROR), ..button::text(app_theme, status) }
+/// A row with a value at the right in `text_2`, on one line.
+fn value_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
+    setting_row(None, label, None, typo::text(typo::BODY, value).style(theme::text_2).wrapping(Wrapping::None))
 }
 
 #[cfg(test)]
@@ -491,11 +453,12 @@ mod tests {
         let connected_line = status_line(&connected(None, None));
         assert_eq!(connected_line.text, tr("Connected"));
         assert_eq!(connected_line.tone, Tone::Ok);
-        assert_eq!(connected_line.symbol, "✓");
+        assert_eq!(connected_line.tone.status(), Status::Ok);
 
         let problem = status_line(&connected(None, Some("Server unreachable")));
         assert_eq!(problem.text, trf("Problem: {problem}", &[("problem", &"Server unreachable")]));
         assert_eq!(problem.tone, Tone::Error);
+        assert_eq!(problem.tone.status(), Status::Error);
 
         let signing_in = status_line(&AccountState::SigningIn {
             server: "https://cloud.example.org".into(),
@@ -507,6 +470,72 @@ mod tests {
         let not_connected = status_line(&AccountState::NotConnected);
         assert_eq!(not_connected.text, tr("Needs sign-in"));
         assert_eq!(not_connected.tone, Tone::Attention);
+    }
+
+    #[test]
+    fn the_list_row_says_status_and_last_sync() {
+        let now = Utc::now();
+        let five_minutes = last_synced_text(Some(now - TimeDelta::minutes(5)), now);
+        let healthy = connected(Some(now - TimeDelta::minutes(5)), None);
+        assert_eq!(account_detail(&healthy, now), format!("{} · {five_minutes}", tr("Connected")));
+        let broken = connected(Some(now), Some("Server unreachable"));
+        assert_eq!(account_detail(&broken, now), status_line(&broken).text, "a problem needs the whole line");
+        assert_eq!(account_detail(&AccountState::NotConnected, now), tr("Needs sign-in"));
+    }
+
+    #[test]
+    fn one_group_per_provider_in_order_of_appearance() {
+        let mut github = account("github:anna", connected(None, None));
+        github.kind = "github".into();
+        let (a, b) = (account("nextcloud:a", connected(None, None)), account("nextcloud:b", connected(None, None)));
+        assert_eq!(providers(&[&a, &github, &b]), ["nextcloud", "github"]);
+    }
+
+    #[test]
+    fn collections_say_kind_and_read_only() {
+        let mut collection = Collection {
+            id: "work".into(),
+            name: "Work".into(),
+            kind: CollectionKind::Events,
+            color: None,
+            writable: true,
+        };
+        assert_eq!(collection_detail(&collection), tr("Calendar"));
+        collection.writable = false;
+        assert_eq!(collection_detail(&collection), format!("{} · {}", tr("Calendar"), tr("Read-only")));
+    }
+
+    #[test]
+    fn dialogs_are_window_layers() {
+        let data = Data::default();
+        let mut state = State::default();
+        assert!(overlay(&state, &data).is_none());
+        update(&mut state, Message::AskRemove, &data);
+        assert!(overlay(&state, &data).is_some());
+        update(&mut state, Message::CancelRemove, &data);
+        update(&mut state, Message::AddAccount, &data);
+        assert!(overlay(&state, &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::Wizard(wizard::Message::Close))));
+    }
+
+    #[test]
+    fn pages_build_for_list_and_detail() {
+        let now = Utc::now();
+        let mut anna = account("nextcloud:anna@cloud.example.org", connected(Some(now), None));
+        anna.collections = vec![Collection {
+            id: "work".into(),
+            name: "Work".into(),
+            kind: CollectionKind::Todos,
+            color: Some("#5B8CFF".into()),
+            writable: false,
+        }];
+        let data =
+            Data { accounts: vec![anna, account("nextcloud:ben", AccountState::NotConnected)], ..Data::default() };
+        let mut state = State::default();
+        drop(view(&state, &data));
+        update(&mut state, Message::Open("nextcloud:anna@cloud.example.org".into()), &data);
+        drop(view(&state, &data));
+        drop(view(&State::default(), &Data::default()));
     }
 
     #[test]
@@ -526,20 +555,23 @@ mod tests {
     }
 
     #[test]
-    fn toggling_a_collection_edits_only_hidden_collections() {
-        let base = Settings { hidden_collections: vec!["a".into()], start_at_login: true, ..Settings::default() };
-
+    fn a_collection_is_shown_unless_hidden() {
+        let base = Settings { hidden_collections: vec!["a".into()], ..Settings::default() };
         assert!(!is_shown(&base, "a"));
         assert!(is_shown(&base, "b"));
+    }
 
-        let shown = with_collection_shown(&base, "a", true);
-        assert!(shown.hidden_collections.is_empty());
-        assert!(shown.start_at_login);
-
-        let hidden = with_collection_shown(&base, "b", false);
-        assert_eq!(hidden.hidden_collections, ["a".to_string(), "b".to_string()]);
-
-        let hidden_twice = with_collection_shown(&hidden, "b", false);
-        assert_eq!(hidden_twice.hidden_collections, ["a".to_string(), "b".to_string()]);
+    #[test]
+    fn the_switch_sends_only_its_collection() {
+        let data = Data::default();
+        for shown in [true, false] {
+            let message = Message::SetShown { collection: "a".into(), shown };
+            let action = update(&mut State::default(), message, &data);
+            assert!(
+                matches!(action, Action::Send(Request::SetCollectionShown { ref collection, shown: s })
+                    if collection == "a" && s == shown),
+                "{action:?}"
+            );
+        }
     }
 }

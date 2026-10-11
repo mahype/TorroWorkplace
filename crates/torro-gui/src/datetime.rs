@@ -1,5 +1,11 @@
 //! German date and time input and output, and the calendar arithmetic the views need.
 //!
+//! One date form for the apps (D.7 in `docs/tasks/design.md`): the short form
+//! [`format_short_date`] ("Sat, 3 Oct", German "Sa, 3. Okt.") wherever a date is shown in a row,
+//! heading or chip; the long form [`format_long_date`] for titles; and [`format_date`]
+//! (`11.10.2026`) for the fields people type into. [`parse_date`] stays tolerant: it reads the
+//! field form, the short year, the day and month alone, and the keywords.
+//!
 //! Task K.1 in `docs/tasks/kalender-aufgaben.md`. All functions are pure and work on local
 //! dates/times (`chrono::NaiveDate`, `NaiveTime`); converting to and from UTC instants
 //! happens with [`to_utc`] and [`to_local`].
@@ -10,6 +16,7 @@ use torro_core::i18n::{tr, trf};
 // English names; `tr` gives the German ones (see torro_core::i18n).
 const WEEKDAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const WEEKDAYS_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTHS_SHORT: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS: [&str; 12] = [
     "January",
     "February",
@@ -108,6 +115,28 @@ pub fn format_long_date(date: NaiveDate) -> String {
     )
 }
 
+/// `Sat, 3 Oct` (German `Sa, 3. Okt.`): the short form of a date, for rows, headings and chips.
+/// A date outside the year of `today` gets its year (`Sat, 2 Jan 2027`), so it cannot be taken for
+/// one of this year.
+pub fn format_short_date(date: NaiveDate, today: NaiveDate) -> String {
+    let weekday = weekday_name(date, true);
+    let month = month_name_short(date.month());
+    if date.year() == today.year() {
+        trf("{weekday}, {day} {month}", &[("weekday", &weekday), ("day", &date.day()), ("month", &month)])
+    } else {
+        trf(
+            "{weekday}, {day} {month} {year}",
+            &[("weekday", &weekday), ("day", &date.day()), ("month", &month), ("year", &date.year())],
+        )
+    }
+}
+
+/// `3 Oct` (German `3. Okt.`): the short form without the weekday, where the weekday stands
+/// beside it already or the room is too small for it.
+pub fn format_day_month(date: NaiveDate) -> String {
+    trf("{day} {month}", &[("day", &date.day()), ("month", &month_name_short(date.month()))])
+}
+
 /// Weekday name, `Monday` … `Sunday`; short form `Mon` … `Sun` with `short` (translated).
 pub fn weekday_name(date: NaiveDate, short: bool) -> &'static str {
     let index = date.weekday().num_days_from_monday() as usize;
@@ -117,6 +146,11 @@ pub fn weekday_name(date: NaiveDate, short: bool) -> &'static str {
 /// Month name, `January` … `December` (translated).
 pub fn month_name(month: u32) -> &'static str {
     MONTHS.get(month.wrapping_sub(1) as usize).map(|name| tr(name)).unwrap_or("")
+}
+
+/// Short month name, `Jan` … `Dec` (translated).
+pub fn month_name_short(month: u32) -> &'static str {
+    MONTHS_SHORT.get(month.wrapping_sub(1) as usize).map(|name| tr(name)).unwrap_or("")
 }
 
 /// The Monday of the ISO week containing `date`.
@@ -161,6 +195,35 @@ mod tests {
         assert_eq!(week_start(d(2026, 10, 11)), d(2026, 10, 5));
         let grid = month_grid(d(2026, 10, 20));
         assert_eq!((grid.len(), grid[0], grid[41]), (42, d(2026, 9, 28), d(2026, 11, 8)));
+    }
+
+    #[test]
+    fn the_short_form_names_weekday_day_and_month() {
+        let today = d(2026, 10, 11);
+        let expected = trf("{weekday}, {day} {month}", &[("weekday", &tr("Sat")), ("day", &3), ("month", &tr("Oct"))]);
+        assert_eq!(format_short_date(d(2026, 10, 3), today), expected);
+        assert_eq!(format_day_month(d(2026, 10, 3)), trf("{day} {month}", &[("day", &3), ("month", &tr("Oct"))]));
+        assert_eq!(month_name_short(10), tr("Oct"));
+        assert_eq!(month_name_short(13), "");
+    }
+
+    #[test]
+    fn the_short_form_adds_the_year_for_other_years() {
+        let today = d(2026, 10, 11);
+        let expected = trf(
+            "{weekday}, {day} {month} {year}",
+            &[("weekday", &tr("Sat")), ("day", &2), ("month", &tr("Jan")), ("year", &2027)],
+        );
+        assert_eq!(format_short_date(d(2027, 1, 2), today), expected);
+        assert_ne!(format_short_date(d(2027, 1, 2), today), format_short_date(d(2026, 1, 2), today));
+    }
+
+    #[test]
+    fn what_the_fields_show_can_be_read_back() {
+        let today = d(2026, 10, 11);
+        for date in [d(2026, 10, 3), d(2027, 1, 2), d(2020, 2, 29)] {
+            assert_eq!(parse_date(&format_date(date), today), Some(date));
+        }
     }
 
     fn t(h: u32, m: u32) -> NaiveTime {

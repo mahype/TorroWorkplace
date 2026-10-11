@@ -1,15 +1,20 @@
-//! The command-line clients of the core: `ctl setups …` and `status`.
+//! The command-line clients of the core: `ctl setups …`, `ctl clients …` and `status`.
 //!
 //! Each command becomes one [`Request`], goes to the daemon over the local socket and prints
 //! the [`Response`]: short lines for people, or the response as JSON with `--json` for bars
 //! and scripts. [`parse`] only reads the arguments and is tested without a socket; [`run`]
 //! talks to the core. Exit codes: 0 done, 1 failed or core not running, 3 a load found the
 //! workspace not empty, 64 bad arguments.
+//!
+//! `ctl clients` connects agents and scripts before the control centre can (A.6): `add` prints
+//! the new key once, `new-key` a replacement; neither can be shown again.
 
 use std::fmt;
 use std::process::ExitCode;
 
-use torro_ipc::{Request, Response, socket_path};
+use torro_core::i18n::{tr, trf};
+use torro_ipc::api::{Rights, RightsTemplate};
+use torro_ipc::{ClientInfo, Request, Response, socket_path};
 use torro_setups::{LoadMode, TemplateSummary};
 
 const USAGE: &str = "usage:
@@ -18,7 +23,24 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups save [<name>] [--json]
   torroworkplace ctl setups update <id> [--json]
   torroworkplace ctl setups delete <id> [--json]
-  torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]";
+  torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]
+  torroworkplace ctl clients list [--json]
+  torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script]
+                                        [--template read-only|read-and-write|full-access] [--json]
+  torroworkplace ctl clients remove <id> [--json]
+  torroworkplace ctl clients new-key <id> [--json]
+  torroworkplace ctl quit [--json]";
+
+/// The kind of a client added without `--kind`.
+const DEFAULT_KIND: &str = "script";
+
+/// The options that take a value, as given on the command line.
+#[derive(Debug, Default)]
+struct Options<'a> {
+    mode: Option<&'a str>,
+    kind: Option<&'a str>,
+    template: Option<&'a str>,
+}
 
 /// One parsed command line: what to ask the core and how to print the answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,28 +81,41 @@ pub fn from_args(args: &[String]) -> ExitCode {
 }
 
 /// Turns the arguments (starting with `status` or `ctl`) into a [`Command`].
-/// `--json` works everywhere; `--mode` only for `ctl setups load`.
+/// `--json` works everywhere; `--mode` only for `ctl setups load`, `--kind` and `--template`
+/// only for `ctl clients add`.
 pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     let Some((head, rest)) = args.split_first() else {
         return Err(UsageError::new("missing command"));
     };
 
     let mut json = false;
-    let mut mode: Option<&str> = None;
+    let mut options = Options::default();
     let mut words: Vec<&str> = Vec::new();
     let mut rest_iter = rest.iter();
     while let Some(arg) = rest_iter.next() {
-        match arg.as_str() {
-            "--json" => json = true,
-            "--mode" => {
-                let value =
-                    rest_iter.next().ok_or_else(|| UsageError::new("--mode needs a value: empty, add or replace"))?;
-                mode = Some(value.as_str());
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
+            _ => (arg.as_str(), None),
+        };
+        let slot = match flag {
+            "--json" if inline.is_none() => {
+                json = true;
+                continue;
             }
-            flag if flag.starts_with("--mode=") => mode = flag.strip_prefix("--mode="),
-            flag if flag.starts_with('-') => return Err(UsageError::new(format!("unknown option {flag}"))),
-            word => words.push(word),
-        }
+            "--mode" => &mut options.mode,
+            "--kind" => &mut options.kind,
+            "--template" => &mut options.template,
+            flag if flag.starts_with('-') => return Err(UsageError::new(format!("unknown option {arg}"))),
+            word => {
+                words.push(word);
+                continue;
+            }
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => rest_iter.next().map(String::as_str).ok_or_else(|| missing_value(flag))?,
+        };
+        *slot = Some(value);
     }
 
     let request = match head.as_str() {
@@ -90,22 +125,77 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
             }
             Request::Status
         }
-        "ctl" => ctl_request(&words, mode)?,
+        "ctl" => ctl_request(&words, &options)?,
         other => return Err(UsageError::new(format!("unknown command {other:?}"))),
     };
 
-    if mode.is_some() && !matches!(request, Request::LoadTemplate { .. }) {
+    if options.mode.is_some() && !matches!(request, Request::LoadTemplate { .. }) {
         return Err(UsageError::new("--mode only applies to ctl setups load"));
+    }
+    if (options.kind.is_some() || options.template.is_some()) && !matches!(request, Request::CreateClient { .. }) {
+        return Err(UsageError::new(tr("--kind and --template only apply to ctl clients add")));
     }
     Ok(Command { request, json })
 }
 
-fn ctl_request(words: &[&str], mode: Option<&str>) -> Result<Request, UsageError> {
+/// The error for an option given without its value.
+fn missing_value(flag: &str) -> UsageError {
+    match flag {
+        "--mode" => UsageError::new("--mode needs a value: empty, add or replace"),
+        "--kind" => UsageError::new(tr("--kind needs a value, e.g. claude-code or script")),
+        _ => UsageError::new(tr("--template needs a value: read-only, read-and-write or full-access")),
+    }
+}
+
+fn ctl_request(words: &[&str], options: &Options) -> Result<Request, UsageError> {
     match words {
-        ["setups", verb, args @ ..] => setups_request(verb, args, mode),
+        ["setups", verb, args @ ..] => setups_request(verb, args, options.mode),
         ["setups"] => Err(UsageError::new("ctl setups needs a subcommand: list, save, update, delete or load")),
+        ["clients", verb, args @ ..] => clients_request(verb, args, options),
+        ["clients"] => Err(UsageError::new(tr("ctl clients needs a subcommand: list, add, remove or new-key"))),
+        ["quit"] => Ok(Request::Quit),
+        ["quit", ..] => Err(UsageError::new("ctl quit takes no arguments")),
         [] => Err(UsageError::new("ctl needs a group, e.g. `ctl setups list`")),
-        [other, ..] => Err(UsageError::new(format!("unknown ctl group {other:?}; try setups"))),
+        [other, ..] => Err(UsageError::new(format!("unknown ctl group {other:?}; try setups, clients or quit"))),
+    }
+}
+
+/// `ctl clients …`: the agents and scripts that may use the API.
+fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Request, UsageError> {
+    match (verb, args) {
+        ("list", []) => Ok(Request::ListClients),
+        ("add", [name]) => Ok(Request::CreateClient {
+            name: name.to_string(),
+            kind: options.kind.unwrap_or(DEFAULT_KIND).to_string(),
+            template: parse_template(options.template)?,
+        }),
+        ("remove", [id]) => Ok(Request::RemoveClient { id: id.to_string() }),
+        ("new-key", [id]) => Ok(Request::NewClientKey { id: id.to_string() }),
+        ("add", []) => Err(UsageError::new(tr("ctl clients add needs a name"))),
+        ("remove" | "new-key", []) => {
+            Err(UsageError::new(trf("ctl clients {verb} needs a client id", &[("verb", &verb)])))
+        }
+        ("list" | "add" | "remove" | "new-key", _) => {
+            Err(UsageError::new(trf("too many arguments for ctl clients {verb}", &[("verb", &verb)])))
+        }
+        _ => Err(UsageError::new(trf(
+            "unknown subcommand {verb}; try list, add, remove or new-key",
+            &[("verb", &format!("{verb:?}"))],
+        ))),
+    }
+}
+
+/// `--template`; without it the standard template, *Read and write*.
+fn parse_template(template: Option<&str>) -> Result<RightsTemplate, UsageError> {
+    match template {
+        None => Ok(RightsTemplate::default()),
+        Some("read-only") => Ok(RightsTemplate::ReadOnly),
+        Some("read-and-write") => Ok(RightsTemplate::ReadAndWrite),
+        Some("full-access") => Ok(RightsTemplate::FullAccess),
+        Some(other) => Err(UsageError::new(trf(
+            "unknown template {template}; use read-only, read-and-write or full-access",
+            &[("template", &format!("{other:?}"))],
+        ))),
     }
 }
 
@@ -191,7 +281,7 @@ pub fn error_exit_status(code: &str) -> u8 {
 /// Human-readable text for a successful response.
 pub fn render(response: &Response) -> String {
     match response {
-        Response::Pong { version } => format!("torroworkplace {version}"),
+        Response::Pong { version, .. } => format!("torroworkplace {version}"),
         Response::Status(status) => format!(
             "torroworkplace {}\nbackend:   {}\nworkspace: {}\ntemplates: {}\nbusy:      {}",
             status.version,
@@ -215,6 +305,17 @@ pub fn render(response: &Response) -> String {
             }
             text
         }
+        Response::Clients { clients } => {
+            if clients.is_empty() {
+                return tr("No agents or scripts are connected.").to_string();
+            }
+            clients.iter().map(client_line).collect::<Vec<_>>().join("\n")
+        }
+        Response::ClientKey { client, key } => format!(
+            "{}\n{}",
+            trf("Key for {name} ({id}). It is shown only this once:", &[("name", &client.name), ("id", &client.id)]),
+            key.expose(),
+        ),
         Response::Ok => "ok".to_string(),
         Response::Error { message, .. } => message.clone(),
         // Calendar and task answers are for the apps; show them as JSON.
@@ -231,6 +332,27 @@ fn template_line(template: &TemplateSummary, id_width: usize) -> String {
         template.windows,
         plural(template.windows, "window", "windows"),
     )
+}
+
+/// `id  name  kind  rights  last use`; ids all have the same length, so the columns line up.
+fn client_line(client: &ClientInfo) -> String {
+    let last_used = match client.last_used {
+        Some(time) => {
+            trf("last used {time}", &[("time", &time.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"))])
+        }
+        None => tr("never used").to_string(),
+    };
+    format!("{}  {}  {}  {}  {last_used}", client.id, client.name, client.kind, rights_word(&client.rights))
+}
+
+/// The template the rights match, or that they were changed afterwards.
+fn rights_word(rights: &Rights) -> &'static str {
+    match rights.template() {
+        Some(RightsTemplate::ReadOnly) => tr("Read only"),
+        Some(RightsTemplate::ReadAndWrite) => tr("Read and write"),
+        Some(RightsTemplate::FullAccess) => tr("Full access"),
+        None => tr("Custom rights"),
+    }
 }
 
 fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
@@ -335,6 +457,91 @@ mod tests {
         assert!(parse_strs(&["ctl", "setups", "list", "extra"]).is_err());
         assert!(parse_strs(&["ctl", "setups", "save", "a", "b"]).is_err());
         assert!(parse_strs(&["ctl", "setups", "list", "--verbose"]).is_err());
+    }
+
+    #[test]
+    fn ctl_quit_asks_the_core_to_stop() {
+        assert_eq!(request(&["ctl", "quit"]), Request::Quit);
+        assert!(parse_strs(&["ctl", "quit", "now"]).is_err());
+    }
+
+    #[test]
+    fn clients_list_remove_and_new_key() {
+        assert_eq!(request(&["ctl", "clients", "list"]), Request::ListClients);
+        assert_eq!(request(&["ctl", "clients", "remove", "a1b2c3d4"]), Request::RemoveClient { id: "a1b2c3d4".into() });
+        assert_eq!(
+            request(&["ctl", "clients", "new-key", "a1b2c3d4"]),
+            Request::NewClientKey { id: "a1b2c3d4".into() }
+        );
+        assert!(parse_strs(&["ctl", "clients", "remove"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "new-key"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "list", "extra"]).is_err());
+        assert!(parse_strs(&["ctl", "clients"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn clients_add_with_name_kind_and_template() {
+        let add =
+            |kind: &str, template| Request::CreateClient { name: "Claude Code".into(), kind: kind.into(), template };
+        assert_eq!(request(&["ctl", "clients", "add", "Claude Code"]), add("script", RightsTemplate::ReadAndWrite));
+        assert_eq!(
+            request(&["ctl", "clients", "add", "Claude Code", "--kind", "claude-code", "--template=read-only"]),
+            add("claude-code", RightsTemplate::ReadOnly)
+        );
+        assert_eq!(
+            request(&["ctl", "clients", "add", "--template", "full-access", "Claude Code", "--kind=codex"]),
+            add("codex", RightsTemplate::FullAccess)
+        );
+        assert!(parse_strs(&["ctl", "clients", "add"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "add", "A", "B"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "add", "A", "--template", "everything"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "add", "A", "--kind"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "list", "--kind", "codex"]).is_err());
+        assert!(parse_strs(&["ctl", "setups", "list", "--template", "read-only"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "add", "A", "--mode", "add"]).is_err());
+    }
+
+    fn client_info(rights: Rights, last_used: Option<DateTime<Utc>>) -> ClientInfo {
+        ClientInfo {
+            id: "a1b2c3d4".into(),
+            name: "Claude Code".into(),
+            kind: "claude-code".into(),
+            created: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            last_used,
+            rights,
+        }
+    }
+
+    #[test]
+    fn clients_are_listed_with_their_rights() {
+        assert_eq!(render(&Response::Clients { clients: vec![] }), tr("No agents or scripts are connected."));
+        let mut custom = RightsTemplate::ReadOnly.rights();
+        custom.calendars = torro_ipc::api::Selection::Only(vec![]);
+        let response = Response::Clients {
+            clients: vec![client_info(RightsTemplate::ReadOnly.rights(), None), client_info(custom, None)],
+        };
+        let expected = format!(
+            "a1b2c3d4  Claude Code  claude-code  {}  {}\na1b2c3d4  Claude Code  claude-code  {}  {}",
+            tr("Read only"),
+            tr("never used"),
+            tr("Custom rights"),
+            tr("never used")
+        );
+        assert_eq!(render(&response), expected);
+    }
+
+    #[test]
+    fn a_new_key_is_printed_once_with_a_warning() {
+        let response = Response::ClientKey {
+            client: client_info(RightsTemplate::ReadAndWrite.rights(), None),
+            key: torro_ipc::IssuedKey::new(torro_ipc::Key::new("torro_a1b2c3d4_00")),
+        };
+        let expected = format!(
+            "{}\ntorro_a1b2c3d4_00",
+            trf("Key for {name} ({id}). It is shown only this once:", &[("name", &"Claude Code"), ("id", &"a1b2c3d4")])
+        );
+        assert_eq!(render(&response), expected);
     }
 
     #[test]

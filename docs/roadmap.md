@@ -39,6 +39,28 @@ Vorbild von TorroWhisper und TorroMail. Konzept: [settings.md](settings.md). Vor
 **GitHub** (OAuth Device Flow, Issues und Pull Requests), **Slack** (Erwähnungen, Nachrichten),
 **KI-Anbieter** (API-Schlüssel, Agenten).
 
+## Vorgemerkt: Tiling- und Fenster-Modus (grundlegend)
+
+Am 2026-10-11 vorgemerkt: Nicht jeder hat einen Tiling-Manager. Neben dem Tiling-Modus kommt ein
+Fenster-Modus mit einer Torro-Arbeitsfläche, auf der die Elemente der Suite frei (im Raster)
+angeordnet werden, mit fertigem Startaufbau und eigenen Vorlagen. Konzept: [modes.md](modes.md).
+Die ersten Schritte (Apps in Bibliothek + Programm teilen, Element-Interface) sollen vor weiteren
+großen App-Aufgaben kommen, weil sie später teurer werden.
+
+## Vorgemerkt: weitere Nextcloud-Funktionen
+
+Am 2026-10-11 aus der Übersicht über die Nextcloud-Schnittstellen ausgewählt. Jede Funktion wird
+über die Capabilities des Servers erkannt; fehlt sie, sagt die Oberfläche es freundlich.
+
+- **Avatar:** Profilbild des eigenen Kontos und anderer Benutzer (`/index.php/avatar/<uid>/<größe>`).
+- **Notifications:** Benachrichtigungen des Servers im Tray und als Desktop-Benachrichtigung, mit
+  ihren Aktionen als Knöpfe; neue Benachrichtigungen per `notify_push` statt Abfragen.
+- **Unified Search:** eine Suche über alle Nextcloud-Apps; Treffer öffnen in der passenden
+  Torro-App, alles andere im Browser.
+- **Talk ausprobieren:** erst Text-Chat (ungelesene Nachrichten, schnell antworten), keine Anrufe.
+- **Nextcloud Mail** nutzen wir nicht: Die App ist ein Webmailer auf dem Server und gibt keine
+  Zugangsdaten heraus. Mail läuft über einen eigenen Client (siehe [app-catalog.md](app-catalog.md)).
+
 ## Phase 2: Kern auf allen Systemen
 
 1. **Steuerzentrale** (`torroworkplace ui`, Iced): Vorlagen benennen, Strategien je Fenster, Einstellungen.
@@ -82,6 +104,12 @@ werden und der Kern mit einem Befehl installiert ist.
 
 ## Offene Fragen
 
+- **Fenster-Modus:** Wie heißen die Elemente (Widgets?) und die Fläche (Workplace, Board, Desk?)?
+  Siehe [modes.md](modes.md#offen).
+
 - Zeigt die Omarchy-Leiste (Quickshell) Icon und Untermenüs von `ksni` sauber an?
 - Wie genau lassen sich Layouts unter AeroSpace und GlazeWM aufbauen?
 - Bundle-IDs und Signierung auf macOS (Team-ID wie bei TorroMail?)
+- **Mail-Client der Suite:** Wie passt Mail ins Tiling-Schema („eine App, eine Frage, ein Fenster“)?
+  Ein Fenster oder mehrere kleine (z. B. Eingang sichten, Lesen, Schreiben)? Wie verhält er sich zu
+  TorroMail: Teile übernehmen, ersetzen oder getrennt weiterführen? Liegen die Mail-Konten im Kern?

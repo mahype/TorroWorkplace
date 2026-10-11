@@ -3,23 +3,25 @@
 //! state, last sync, number of templates – and a "Needs your attention" card listing
 //! accounts whose state is `Connected { problem: Some(..) }` or that need a new sign-in,
 //! each with a button that jumps to Accounts (`Action::Select(Section::Accounts)`).
+//!
+//! The tiles have the surface of a settings group; a status is a dot and a word, the colour only
+//! in the dot. The tiles share the width of the page evenly, at least [`TILE_MIN_WIDTH`] each, and
+//! wrap onto further lines when the window is narrow. "Needs your attention" is a settings group
+//! with a row per account.
 
-use iced::widget::{Row, button, column, container, row, space, text};
-use iced::{Alignment, Background, Color, Element, Length, Theme, border};
+use iced::widget::{Row, column, container, responsive, row, space as blank};
+use iced::{Alignment, Element, Length};
 use torro_core::i18n::{tr, trf};
-use torro_core::theme::{STATUS_ERROR, STATUS_OK};
-use torro_gui::{theme, widgets};
+use torro_gui::theme::{self, space};
+use torro_gui::widgets::{self, Status as Dot};
+use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, Status};
 use torro_pim::AccountState;
 
-use super::{Action, Data, Section};
+use super::{Action, Data, Section, setting_row};
 
-/// One status tile. Tiles wrap onto further lines when the window is narrow.
-const TILE_WIDTH: f32 = 200.0;
-/// Between tiles and between attention rows: items of one group sit close together.
-const GROUP_GAP: f32 = 8.0;
-/// Between the groups of the page.
-const SECTION_GAP: f32 = 24.0;
+/// The least width of a status tile; below that the tiles wrap onto further lines.
+const TILE_MIN_WIDTH: f32 = 160.0;
 
 #[derive(Debug, Default)]
 pub struct State {}
@@ -38,12 +40,12 @@ pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
 
 pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let items = attention(&data.accounts);
-    column![at_a_glance(data), needs_attention(&items, data.status.is_some())].spacing(SECTION_GAP).into()
+    column![at_a_glance(data), needs_attention(&items, data.status.is_some())].spacing(space::XL).into()
 }
 
-/// How a status is shown. The symbol carries the meaning next to the colour.
+/// How a status is shown: a dot in its colour next to the word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tone {
+pub(super) enum Tone {
     /// Running, connected, fine.
     Ok,
     /// Waiting for the user.
@@ -57,58 +59,41 @@ enum Tone {
 }
 
 impl Tone {
-    fn symbol(self) -> &'static str {
+    /// The dot in front of the word; a plain fact has none.
+    pub(super) fn dot(self) -> Option<Dot> {
         match self {
-            Tone::Ok => "●",
-            Tone::Attention => "▲",
-            Tone::Error => "■",
-            Tone::Inactive => "○",
-            Tone::Plain => "",
-        }
-    }
-
-    fn color(self) -> Color {
-        match self {
-            Tone::Ok => theme::color(STATUS_OK),
-            Tone::Attention => theme::attention(),
-            Tone::Error => theme::color(STATUS_ERROR),
-            Tone::Inactive => theme::MUTED,
-            Tone::Plain => theme::TEXT,
+            Tone::Ok => Some(Dot::Ok),
+            Tone::Attention => Some(Dot::Attention),
+            Tone::Error => Some(Dot::Error),
+            Tone::Inactive => Some(Dot::Inactive),
+            Tone::Plain => None,
         }
     }
 }
 
-/// One line of a tile: a status with its symbol, or a plain fact.
+/// One line of a tile: a status with its dot, or a plain fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Line {
-    tone: Tone,
-    text: String,
+pub(super) struct Line {
+    pub(super) tone: Tone,
+    pub(super) text: String,
 }
 
 impl Line {
     fn new(tone: Tone, text: impl Into<String>) -> Line {
         Line { tone, text: text.into() }
     }
-
-    /// `● Running`, `▲ Needs sign-in`; a plain fact has no symbol.
-    fn label(&self) -> String {
-        match self.tone.symbol() {
-            "" => self.text.clone(),
-            symbol => format!("{symbol} {}", self.text),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Tile {
-    title: &'static str,
-    headline: Line,
-    detail: Option<String>,
+pub(super) struct Tile {
+    pub(super) title: &'static str,
+    pub(super) headline: Line,
+    pub(super) detail: Option<String>,
 }
 
 /// Why an account needs the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Reason {
+pub(super) enum Reason {
     /// Not signed in yet.
     SignIn,
     /// Signed in, but the last sync failed; the server's words.
@@ -116,23 +101,25 @@ enum Reason {
 }
 
 impl Reason {
-    fn line(&self) -> Line {
+    pub(super) fn line(&self) -> Line {
         match self {
             Reason::SignIn => Line::new(Tone::Attention, tr("Needs sign-in")),
-            Reason::Problem(problem) => Line::new(Tone::Attention, problem.clone()),
+            // The same words and tone as the account list (`accounts::status_line`): a problem is
+            // an error everywhere, only a missing sign-in is attention.
+            Reason::Problem(problem) => Line::new(Tone::Error, trf("Problem: {problem}", &[("problem", problem)])),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Attention {
-    label: String,
-    reason: Reason,
+pub(super) struct Attention {
+    pub(super) label: String,
+    pub(super) reason: Reason,
 }
 
 /// The accounts that need the user: not signed in, or the last sync failed. An account that
 /// is signing in right now is not listed, the user is already on it.
-fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
+pub(super) fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
     accounts
         .iter()
         .filter_map(|account| {
@@ -147,7 +134,7 @@ fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
 }
 
 /// The four tiles in reading order: core, window manager, accounts, workspaces.
-fn tiles(data: &Data) -> Vec<Tile> {
+pub(super) fn tiles(data: &Data) -> Vec<Tile> {
     vec![
         core_tile(data.status.as_ref(), data.error.as_deref()),
         window_manager_tile(data.status.as_ref()),
@@ -179,14 +166,19 @@ fn window_manager_tile(status: Option<&Status>) -> Tile {
 }
 
 fn accounts_tile(accounts: &[AccountInfo]) -> Tile {
-    let headline = if !attention(accounts).is_empty() {
+    let items = attention(accounts);
+    let problems = items.iter().filter(|item| matches!(item.reason, Reason::Problem(_))).count();
+    // The heaviest reason names the tile: a problem outweighs a missing sign-in.
+    let headline = if problems > 0 {
+        Line::new(Tone::Error, counted(problems, "1 problem", "{n} problems"))
+    } else if !items.is_empty() {
         Line::new(Tone::Attention, tr("Needs sign-in"))
     } else if accounts.is_empty() {
         Line::new(Tone::Inactive, tr("Not set up"))
     } else if accounts.iter().all(|account| matches!(account.state, AccountState::Connected { .. })) {
         Line::new(Tone::Ok, tr("Connected"))
     } else {
-        Line::new(Tone::Inactive, tr("Signing in …"))
+        Line::new(Tone::Attention, tr("Signing in …"))
     };
     let detail = if accounts.is_empty() {
         tr("Add one in Accounts").to_string()
@@ -211,64 +203,73 @@ fn counted(n: usize, one: &'static str, many: &'static str) -> String {
 }
 
 fn at_a_glance<'a>(data: &Data) -> Element<'a, Message> {
-    let grid = Row::with_children(tiles(data).into_iter().map(tile_view))
-        .spacing(GROUP_GAP)
-        .width(Length::Fill)
-        .wrap()
-        .vertical_spacing(GROUP_GAP);
-    column![widgets::section_title(tr("At a glance")), grid].spacing(GROUP_GAP).into()
+    let tiles = tiles(data);
+    // Iced's wrapping row lays its children out loose, so they cannot share the width. The page
+    // width decides how many tiles fit a line; `responsive` hands it over and takes the height of
+    // its content.
+    let grid = responsive(move |bounds| tile_grid(tiles.clone(), bounds.width)).height(Length::Shrink);
+    column![widgets::section_title(tr("At a glance")), grid].spacing(space::S).into()
 }
 
-fn tile_view<'a>(tile: Tile) -> Element<'a, Message> {
-    let color = tile.headline.tone.color();
-    let mut body =
-        column![widgets::section_title(tile.title), text(tile.headline.label()).size(16).color(color)].spacing(8);
-    if let Some(detail) = tile.detail {
-        body = body.push(text(detail).size(14).color(theme::MUTED));
+/// How many tiles of at least [`TILE_MIN_WIDTH`] fit a line `width` wide with `space::S` between
+/// them: at least one, at most `count`.
+fn tiles_per_line(width: f32, count: usize) -> usize {
+    let fit = ((width + space::S) / (TILE_MIN_WIDTH + space::S)).floor();
+    (fit as usize).clamp(1, count.max(1))
+}
+
+/// The tiles in lines of equal width: each tile takes the same share of a line, and a short last
+/// line is filled up with empty shares so its tiles are as wide as the others.
+fn tile_grid<'a>(tiles: Vec<Tile>, width: f32) -> Element<'a, Message> {
+    let per_line = tiles_per_line(width, tiles.len());
+    let mut lines = column![].spacing(space::S);
+    let mut tiles = tiles.into_iter().peekable();
+    while tiles.peek().is_some() {
+        let mut line = Row::new().spacing(space::S).width(Length::Fill);
+        for _ in 0..per_line {
+            line = line.push(match tiles.next() {
+                Some(tile) => tile_view(tile),
+                None => blank::horizontal().width(Length::FillPortion(1)).into(),
+            });
+        }
+        lines = lines.push(line);
     }
-    container(body).width(Length::Fixed(TILE_WIDTH)).padding(16).style(card).into()
+    lines.into()
+}
+
+/// A tile: its title, the status as dot and word, and a detail line below.
+fn tile_view<'a>(tile: Tile) -> Element<'a, Message> {
+    let headline = row![]
+        .push(tile.headline.tone.dot().map(widgets::status_dot))
+        .push(typo::text(typo::BODY_STRONG, tile.headline.text))
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+    // A tile without a detail keeps an empty line, so the tiles of a line are equally tall (Iced
+    // cannot stretch tiles that are `Fill` in both directions to the tallest of their line).
+    let detail = typo::text(typo::META, tile.detail.unwrap_or_default()).style(theme::text_2);
+    let body = column![widgets::section_title(tile.title), headline, detail].spacing(space::S);
+    container(body).width(Length::FillPortion(1)).padding(space::L).style(style::container::group).into()
 }
 
 /// The attention group, or a calm line when nothing needs the user. Without a running core
 /// the list is unknown, so the page says so instead of claiming all is well.
 fn needs_attention<'a>(items: &[Attention], core_running: bool) -> Element<'a, Message> {
     if !core_running {
-        return text(tr("Start the core to see what needs your attention.")).size(14).color(theme::MUTED).into();
+        return typo::text(typo::BODY, tr("Start the core to see what needs your attention."))
+            .style(theme::text_2)
+            .into();
     }
     if items.is_empty() {
-        return text(tr("Everything is running.")).size(14).into();
+        return typo::text(typo::BODY, tr("Everything is running.")).style(theme::text_2).into();
     }
-    column![
-        widgets::section_title(tr("Needs your attention")),
-        column(items.iter().map(attention_row)).spacing(GROUP_GAP)
-    ]
-    .spacing(GROUP_GAP)
-    .into()
+    widgets::group(tr("Needs your attention"), items.iter().map(attention_row).collect(), None)
 }
 
+/// An account that needs the user: dot, name, the reason below, and the way to Accounts.
 fn attention_row<'a>(item: &Attention) -> Element<'a, Message> {
-    let info = column![
-        text(item.label.clone()).size(14),
-        text(item.reason.line().label()).size(14).color(theme::attention()),
-    ]
-    .spacing(4);
-    let content = row![
-        info,
-        space::horizontal(),
-        button(text(tr("Open accounts")).size(14)).style(button::secondary).on_press(Message::OpenAccounts),
-    ]
-    .spacing(16)
-    .align_y(Alignment::Center);
-    container(content).padding(16).width(Length::Fill).style(card).into()
-}
-
-/// A raised card: the surface colour with a 12 px radius.
-fn card(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(theme::SURFACE)),
-        border: border::rounded(12),
-        ..container::Style::default()
-    }
+    let line = item.reason.line();
+    let open = widgets::text_button(None, tr("Open accounts"), style::button::secondary, Some(Message::OpenAccounts));
+    setting_row(line.tone.dot().map(widgets::status_dot), item.label.clone(), Some(line.text), open)
 }
 
 #[cfg(test)]
@@ -323,6 +324,13 @@ mod tests {
     }
 
     #[test]
+    fn a_reason_looks_like_the_status_in_the_account_list() {
+        let problem = Reason::Problem("Server unreachable".into()).line();
+        assert_eq!(problem, Line::new(Tone::Error, trf("Problem: {problem}", &[("problem", &"Server unreachable")])));
+        assert_eq!(Reason::SignIn.line(), Line::new(Tone::Attention, tr("Needs sign-in")));
+    }
+
+    #[test]
     fn nothing_to_report_when_all_is_connected() {
         let accounts = [account("anna@cloud.example.test", connected(None))];
         assert!(attention(&accounts).is_empty());
@@ -359,6 +367,18 @@ mod tests {
         assert_eq!(needs.headline, Line::new(Tone::Attention, tr("Needs sign-in")));
         assert_eq!(needs.detail, Some(trf("{n} accounts", &[("n", &2)])));
 
+        // A problem outweighs a missing sign-in, and is an error like in the account list.
+        let broken = accounts_tile(&[
+            account("ben", AccountState::NotConnected),
+            account("carla", connected(Some("Server unreachable"))),
+        ]);
+        assert_eq!(broken.headline, Line::new(Tone::Error, tr("1 problem")));
+        let two = accounts_tile(&[
+            account("anna", connected(Some("Server unreachable"))),
+            account("carla", connected(Some("Timeout"))),
+        ]);
+        assert_eq!(two.headline, Line::new(Tone::Error, trf("{n} problems", &[("n", &2)])));
+
         let none = accounts_tile(&[]);
         assert_eq!(none.headline, Line::new(Tone::Inactive, tr("Not set up")));
         assert_eq!(none.detail.as_deref(), Some(tr("Add one in Accounts")));
@@ -372,8 +392,45 @@ mod tests {
     }
 
     #[test]
-    fn status_is_symbol_and_word() {
-        assert_eq!(Line::new(Tone::Attention, tr("Needs sign-in")).label(), format!("▲ {}", tr("Needs sign-in")));
-        assert_eq!(Line::new(Tone::Plain, "3").label(), "3");
+    fn a_status_has_a_dot_a_fact_has_none() {
+        assert_eq!(Tone::Ok.dot(), Some(Dot::Ok));
+        assert_eq!(Tone::Attention.dot(), Some(Dot::Attention));
+        assert_eq!(Tone::Error.dot(), Some(Dot::Error));
+        assert_eq!(Tone::Inactive.dot(), Some(Dot::Inactive));
+        assert_eq!(Tone::Plain.dot(), None);
+    }
+
+    #[test]
+    fn tiles_wrap_by_width_and_never_below_one_line() {
+        let min = TILE_MIN_WIDTH;
+        // Four tiles with the gaps between them need 4 × min + 3 × gap.
+        assert_eq!(tiles_per_line(4.0 * min + 3.0 * space::S, 4), 4);
+        assert_eq!(tiles_per_line(4.0 * min + 3.0 * space::S - 1.0, 4), 3);
+        assert_eq!(tiles_per_line(2.0 * min + space::S, 4), 2);
+        assert_eq!(tiles_per_line(min, 4), 1);
+        assert_eq!(tiles_per_line(100.0, 4), 1, "a window narrower than a tile still shows one");
+        assert_eq!(tiles_per_line(0.0, 4), 1);
+        assert_eq!(tiles_per_line(2000.0, 4), 4, "never more per line than there are tiles");
+        assert_eq!(tiles_per_line(2000.0, 0), 1);
+    }
+
+    #[test]
+    fn the_grid_builds_in_every_width() {
+        let data = Data { status: Some(status("hyprland")), ..Data::default() };
+        for width in [0.0, 160.0, 388.0, 720.0, 2000.0] {
+            drop(tile_grid(tiles(&data), width));
+        }
+    }
+
+    #[test]
+    fn page_builds_with_and_without_core() {
+        let state = State::default();
+        drop(view(&state, &Data::default()));
+        let data = Data {
+            status: Some(status("hyprland")),
+            accounts: vec![account("ben@cloud.example.test", AccountState::NotConnected)],
+            ..Data::default()
+        };
+        drop(view(&state, &data));
     }
 }
