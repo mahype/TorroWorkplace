@@ -79,9 +79,10 @@ const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
 
 /// Height of a group head: the 4 above it plus the head itself (`widgets::group_head`).
 const GROUP_HEAD: f32 = space::XS + size::ROW_GROUP;
-/// What the first head leaves out: the gap above it and its line above, because the header bar
-/// right above already ends with a line, and a second one 4 below it would read as a double.
-const FIRST_TRIM: f32 = space::XS + size::HAIRLINE;
+/// What every head leaves out: the gap above it and its line above. Above the first head the
+/// header bar already ends with a line, above the others the last row of the group before; a
+/// second line 4 below either would read as a double.
+const HEAD_TRIM: f32 = space::XS + size::HAIRLINE;
 
 /// A group of the list while something is waiting ([`groups`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,12 +147,12 @@ pub fn row_span(items: &[Item], index: usize, row: f32) -> Option<(f32, f32)> {
         let top = index as f32 * row;
         return (index < items.len()).then_some((top, top + row));
     }
-    // The first head is shorter by `FIRST_TRIM`; it still starts at the top of the content.
-    let mut y = -FIRST_TRIM;
+    // Every head is shorter by `HEAD_TRIM` ([`without_top`]).
+    let mut y = 0.0;
     let height = row;
     for (_, range) in groups {
-        let head = y.max(0.0);
-        y += GROUP_HEAD;
+        let head = y;
+        y += GROUP_HEAD - HEAD_TRIM;
         for row in range.clone() {
             if row == index {
                 return Some((if row == range.start { head } else { y }, y + height));
@@ -179,9 +180,9 @@ fn list<'a>(data: &ListData<'a>, width: f32) -> Element<'a, Message> {
     if groups.is_empty() {
         rows = rows.extend(data.items.iter().map(|item| row_view(data, item, width)));
     }
-    for (n, (group, range)) in groups.into_iter().enumerate() {
+    for (group, range) in groups {
         let head = widgets::group_head(group.mark(data.attention), group.label(), Some(range.len()), None);
-        rows = rows.push(if n == 0 { without_top(head) } else { head });
+        rows = rows.push(without_top(head));
         rows = rows.extend(data.items[range].iter().map(|item| row_view(data, item, width)));
     }
     scrollable(rows)
@@ -194,10 +195,10 @@ fn list<'a>(data: &ListData<'a>, width: f32) -> Element<'a, Message> {
         .into()
 }
 
-/// The group head without its gap and line above: moved up by [`FIRST_TRIM`] inside a clipping
+/// The group head without its gap and line above: moved up by [`HEAD_TRIM`] inside a clipping
 /// container, so only the part above the head's top line is cut off (as in torrotasks).
 fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message> {
-    container(container(head).padding(Padding { top: -FIRST_TRIM, ..Padding::ZERO })).clip(true).into()
+    container(container(head).padding(Padding { top: -HEAD_TRIM, ..Padding::ZERO })).clip(true).into()
 }
 
 /// One entry in a row `width` wide: icon, title and preview (one line, or two in narrow windows),
@@ -559,14 +560,14 @@ mod tests {
         let mut items: Vec<Item> = demo::sample(now()).into_iter().filter(|i| i.state.is_open()).collect();
         items.sort_by_key(|item| !is_waiting(item));
         let waiting = items.iter().filter(|item| is_waiting(item)).count();
-        let first_head = GROUP_HEAD - FIRST_TRIM;
+        let head = GROUP_HEAD - HEAD_TRIM;
         assert_eq!(row_height(false), size::ROW);
         assert_eq!(row_height(true), size::ROW_TWO, "two lines get their own height");
         for row in [row_height(false), row_height(true)] {
-            assert_eq!(row_span(&items, 0, row), Some((0.0, first_head + row)), "the first row shows its head");
-            assert_eq!(row_span(&items, 1, row), Some((first_head + row, first_head + 2.0 * row)));
-            let other = first_head + waiting as f32 * row;
-            assert_eq!(row_span(&items, waiting, row), Some((other, other + GROUP_HEAD + row)));
+            assert_eq!(row_span(&items, 0, row), Some((0.0, head + row)), "the first row shows its head");
+            assert_eq!(row_span(&items, 1, row), Some((head + row, head + 2.0 * row)));
+            let other = head + waiting as f32 * row;
+            assert_eq!(row_span(&items, waiting, row), Some((other, other + head + row)), "no double line");
             assert_eq!(row_span(&items, items.len(), row), None);
             let calm = &items[waiting..];
             assert_eq!(row_span(calm, 1, row), Some((row, 2.0 * row)), "no heads: plain rows");

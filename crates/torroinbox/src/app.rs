@@ -1659,7 +1659,7 @@ impl NavEntry {
 fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
     let label = source.label();
     let text = if muted {
-        trf("Muted {source}", &[("source", &label)])
+        trf("New entries from {source} muted", &[("source", &label)])
     } else {
         trf("Unmuted {source}", &[("source", &label)])
     };
@@ -1938,7 +1938,7 @@ mod tests {
         assert_eq!(failed.error, Some(Failure { what: tr("Couldn't change the entry."), why: DEMO_ERROR.into() }));
         let app = loaded(&["--open", "mute"]);
         let hint = app.hint.as_ref().expect("the hint after muting");
-        assert_eq!(hint.text, trf("Muted {source}", &[("source", &claude.label())]));
+        assert_eq!(hint.text, trf("New entries from {source} muted", &[("source", &claude.label())]));
         assert_eq!(hint.undo, Some(Undo::Mute(claude, false)));
         for state in ["undo", "mute"] {
             let mut app = loaded(&["--open", state]);
@@ -2376,7 +2376,7 @@ mod tests {
         deliver(&mut app);
         assert!(app.is_muted(&deploy));
         let hint = app.hint.clone().expect("the hint");
-        assert_eq!(hint.text, trf("Muted {source}", &[("source", &"deploy")]));
+        assert_eq!(hint.text, trf("New entries from {source} muted", &[("source", &"deploy")]));
         assert_eq!(hint.undo, Some(Undo::Mute(deploy.clone(), false)));
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), false, false)), "undo unmutes");

@@ -611,7 +611,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Next day", "Nächster Tag"),
     ("Mute {source}", "{source} stummschalten"),
     ("Unmute {source}", "{source} wieder zulassen"),
-    ("Muted {source}", "{source} stummgeschaltet"),
+    ("New entries from {source} muted", "Neue Einträge von {source} stumm"),
     ("Unmuted {source}", "{source} wieder zugelassen"),
     ("Entries from the suite can't be muted.", "Einträge der Suite lassen sich nicht stummschalten."),
     ("An approval closes once it is decided.", "Eine Freigabe schließt sich, sobald sie entschieden ist."),
