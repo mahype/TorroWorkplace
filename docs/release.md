@@ -106,8 +106,7 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
   Release, `packaging/macos/make-app.sh` baut `Torro Calendar.app` (Info.plist aus `Info.plist.in`, optional
   `.icns` aus einem 1024-px-PNG), dann `codesign --options runtime`, `xcrun notarytool submit --wait`,
   `xcrun stapler staple`, `ditto` zu `<bin>-<arch>-apple-darwin.app.zip`, Upload ans Release.
-- Nötig dafür: Apple Developer Program (99 USD/Jahr), Zertifikat „Developer ID Application“, ein App-Store-
-  Connect-API-Schlüssel (`.p8`, Key-ID, Issuer-ID). `notarytool` nimmt `.zip`, `.dmg` und `.pkg`; eine `.zip`
+- Nötig dafür: Apple Developer Program (99 USD/Jahr), Zertifikat „Developer ID Application“, für die Notarisierung Apple-ID, Team-ID und ein app-spezifisches Passwort (wie TorroMail). `notarytool` nimmt `.zip`, `.dmg` und `.pkg`; eine `.zip`
   lässt sich nicht heften, daher wird das Bündel geheftet und danach gezippt.
 - Keine Universal-Binary: `dist` kann `universal2-apple-darwin` (noch) nicht als Ziel. Es gibt zwei Archive.
   GitHub stellt den letzten Intel-Runner (`macos-15-intel`) bis Herbst 2027 bereit; danach entfällt
@@ -172,13 +171,23 @@ Reihenfolge ist egal, außer wo vermerkt. Erst wenn ein Punkt erledigt ist, die 
 
 ### macOS
 
-- [ ] Apple Developer Program beitreten (99 USD/Jahr), Zertifikat „Developer ID Application“ erzeugen,
-      mit privatem Schlüssel als `.p12` exportieren, App-Store-Connect-API-Schlüssel anlegen.
-- [ ] Secrets `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-      `APPLE_API_KEY_P8`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`.
+Gleiche Secrets wie bei TorroMail (dort `docs/RELEASING.md`); die Werte sind dieselben, sie müssen nur in
+diesem Repository noch einmal eingetragen werden.
+
+| Secret | Inhalt |
+|---|---|
+| `MACOS_CERTIFICATE_P12` | Base64 des exportierten Zertifikats „Developer ID Application“ (`.p12`) |
+| `MACOS_CERTIFICATE_PASSWORD` | Passwort, mit dem die `.p12` exportiert wurde |
+| `APPLE_ID` | Apple-ID (E-Mail) des Entwicklerkontos |
+| `APPLE_TEAM_ID` | Team-ID (10 Zeichen) |
+| `APPLE_APP_SPECIFIC_PASSWORD` | App-spezifisches Passwort von appleid.apple.com (für `notarytool`) |
+
+- [x] Apple Developer Program, Zertifikat „Developer ID Application“ (vorhanden, wie TorroMail).
+- [ ] Die fünf Secrets oben in diesem Repository eintragen (Settings → Secrets and variables → Actions).
 - [ ] Repository-Variable `MACOS_APP_ENABLED` auf `true` setzen (Schalter im Workflow).
+- [x] `publish-jobs` um `"./publish-macos-app"` erweitert: Nach jedem Release entstehen signierte und
+      notarisierte `Torro Workplace.app`, `Torro Calendar.app`, `Torro Tasks.app` (arm64 und x86_64).
 - [ ] Echte Icons (1024-px-PNG) in `packaging/macos/icons/` ablegen und an `make-app.sh` übergeben.
-- [ ] Entweder `publish-jobs` um `"./publish-macos-app"` erweitern oder den Workflow von Hand mit dem Tag starten.
 
 ### Windows (später)
 

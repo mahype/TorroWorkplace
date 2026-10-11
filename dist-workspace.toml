@@ -23,9 +23,17 @@ targets = [
 # Publish the formulae to the tap after the GitHub Release is created.
 # Needs the secret HOMEBREW_TAP_TOKEN and the existing tap repository.
 # publish-jobs = ["homebrew"]
+# Signed and notarised .app bundles for macOS (.github/workflows/publish-macos-app.yml). Needs the
+# signing secrets and the repository variable MACOS_APP_ENABLED=true, see docs/release.md.
+publish-jobs = ["./publish-macos-app"]
 # Where the shell and PowerShell installers put the binaries.
 install-path = "CARGO_HOME"
 # No self-updater: updates go through the package managers.
 install-updater = false
 # Pull requests only run the plan step (no artefact builds).
 pr-run-mode = "plan"
+
+# The macOS job downloads the released binaries and uploads the .app bundles, so it needs write access to
+# the release contents (a called workflow cannot have more rights than its caller grants).
+[dist.github-custom-job-permissions]
+"publish-macos-app" = { contents = "write" }
