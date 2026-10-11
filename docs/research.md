@@ -1,6 +1,6 @@
 # Recherche: ähnliche Projekte, Techniken, Installation
 
-Stand: 2026-10-05. Zahlen zum Speicherbedarf sind grobe Richtwerte aus gemischten Quellen.
+Stand: 2026-10-05, Tiling-Manager ergänzt am 2026-10-11. Zahlen zum Speicherbedarf sind grobe Richtwerte aus gemischten Quellen.
 
 ## Fazit vorweg
 
@@ -12,6 +12,7 @@ Stand: 2026-10-05. Zahlen zum Speicherbedarf sind grobe Richtwerte aus gemischte
   oder tmux-TUIs. Ein kachelbares Fenster „Agenten“ und eines für „Verbrauch“ gibt es
   plattformübergreifend nicht.
 - **Technik:** Rust-Kern + ratatui-TUI (sehr leicht) als Grundlage für alle Systeme. Die GUI kommt danach; Favorit ist **Iced**, entschieden wird nach einem Vergleich (Phase 3).
+- **Tiling-Manager:** Hyprland (Linux), AeroSpace (macOS), GlazeWM (Windows); siehe Abschnitt 6.
 - **Tray-Icon:** Omarchy 4 hat eine Tray-Leiste (Quickshell, StatusNotifierItem). Linux: `ksni` (ohne GTK), macOS/Windows: `tray-icon`.
 
 ## 1. Suiten und „Desktop als Dashboard“
@@ -80,7 +81,24 @@ Benchmark-Sammlung: https://github.com/GoldStrikeArch/rust-gui-desktop-ecosystem
 
 Plan: eine kleine Abstraktion im Kern, `ksni` unter Linux und `tray-icon` auf macOS und Windows.
 
-## 6. Alles auf einmal installieren
+## 6. Tiling-Manager pro System
+
+Recherche vom 2026-10-11. Entschieden: Hyprland, AeroSpace, GlazeWM.
+
+| Tiling-Manager | System | Stand | Schnittstelle | Bewertung |
+|---|---|---|---|---|
+| **Hyprland** | Linux | 0.56 (hier unter Omarchy 4.0.4) | `hyprctl -j`, Befehls- und Ereignis-Socket | Gesetzt; workspace-setups zeigt, dass Erfassen und Aufbauen mit Teilungsverhältnissen funktionieren |
+| **AeroSpace** | macOS | v0.21.3-Beta (Juli 2026), noch vor 1.0: https://github.com/nikitabobko/AeroSpace/releases | CLI `aerospace list-windows --json`, `list-workspaces`, `move-node-to-workspace`, `join-with`, `resize` | **Gewählt.** Kein Abschalten von SIP, eigene virtuelle Workspaces, i3-artiger Baum. Keine Ereignisschnittstelle (nur Callbacks in der Konfiguration), Teilungsverhältnisse nur näherungsweise |
+| yabai | macOS | — | `yabai -m query` (JSON), BSP mit Verhältnissen | Für Spaces muss SIP teilweise aus; verworfen |
+| Amethyst | macOS | — | kaum steuerbar | Verworfen |
+| **GlazeWM** | Windows | v3.10.1 (März 2026), GPL-3, Rust: https://github.com/glzr-io/glazewm | WebSocket `ws://127.0.0.1:6123` mit `query` (windows, workspaces, monitors), `command` und `sub` (Ereignisse); Crate `wm-ipc-client` im Repo | **Gewählt.** Freie Lizenz, i3-artig wie AeroSpace |
+| komorebi | Windows | v0.1.41 (Mai 2026), Rust: https://github.com/LGUG2Z/komorebi | `komorebic`, Socket, `state` als JSON, Ereignis-Abo, „apply state“ | Technisch stark, aber Komorebi-Lizenz (Fork von PolyForm Strict): nur private Nutzung, beruflich kostenpflichtig. Höchstens später als zweites Backend |
+
+Folge: AeroSpace und GlazeWM arbeiten mit i3-artigen Bäumen, Hyprland mit dwindle. Vorlagen speichern
+das Layout deshalb neutral als Binärbaum aus Teilungen (Richtung und Verhältnis), erfasst aus den
+Fensterrechtecken; jedes Backend baut ihn so genau auf, wie es geht.
+
+## 7. Alles auf einmal installieren
 
 - **Homebrew:** Tap `mahype/homebrew-torro` mit einer Formel pro App plus einer Meta-Formel
   oder einem Brewfile (`brew bundle`), siehe https://docs.brew.sh/Brew-Bundle-and-Brewfile.

@@ -1,3 +1,4 @@
 # GUI
 
-Phase 2: native Iced front ends, one crate per app (`torrotasks-gui`, `torrocalendar-gui`) on the same core as the TUIs.
+Iced front ends on the same core: first the control centre (`torroworkplace ui`), later the apps
+(tasks, calendar). See [docs/core.md](../docs/core.md) and [docs/roadmap.md](../docs/roadmap.md).
