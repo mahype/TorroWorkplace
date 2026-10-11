@@ -176,7 +176,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - **Abnahme:** Tests mit Fake-`/proc` und Fake-`.desktop`-Dateien.
 
 ### 1.13 Workspace erfassen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** 1.10, 1.11, 1.12
 - **Dateien:** `crates/torro-setups/src/capture.rs`
 - **Ziel:** `capture(wm, id, resolve, now) -> Template` (Signatur steht in `capture.rs`): Fenster des
