@@ -345,6 +345,7 @@ Sichtprüfung jeweils mit den Startparametern aus Q.1 (Skill `torro-design`, Abs
 
 ### D.6 Fehler- und Leertexte mit Zusammenhang
 - [ ] erledigt
+- Kalender-Teil erledigt (Commit `fix(torrocalendar): say so when the week or day has no events (D.6)`)
 - Steuerzentralen-Teil erledigt (Commit e379459): Demo-Fehlertext in `ui/launch.rs` mit großem Satzanfang.
 - **Modell:** Haiku · **Dateien:** `crates/torrotasks/src/app.rs`, `crates/torroworkplace/src/ui/launch.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrocalendar/src/views/week.rs`
 - Aufgaben wie der Kalender: „Tasks could not be loaded: …“ plus was zu tun ist; Demo-Fehlertexte

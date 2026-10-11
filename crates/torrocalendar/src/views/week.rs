@@ -27,7 +27,7 @@ use iced::widget::canvas::{self, Action, Frame, Path, Stroke};
 use iced::widget::scrollable::{AbsoluteOffset, Direction};
 use iced::widget::text::{Alignment, Style as TextStyle};
 use iced::widget::{Id, Space, column, container, responsive, row, rule, scrollable};
-use iced::{Background, Color, Element, Event, Length, Point, Rectangle, Size, Task, Theme, mouse};
+use iced::{Background, Color, Element, Event, Length, Padding, Point, Rectangle, Size, Task, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_time, to_local, weekday_name};
 use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
@@ -125,10 +125,22 @@ pub fn day_under_strip(data: ViewData<'_>) -> Element<'_, Message> {
 /// The header (with `with_header`), the all-day strip and the scrolling grid for a view of
 /// `bounds`.
 fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message> {
-    let header = with_header.then(|| header(&plan.days, plan.now.date(), layout::axis_width(bounds.width)));
+    let axis = layout::axis_width(bounds.width);
+    let header = with_header.then(|| header(&plan.days, plan.now.date(), axis));
     let strip_height = layout::strip_height(layout::strip_rows(&plan.bars));
-    let strip =
-        iced::widget::canvas(Strip { plan: plan.clone() }).width(Length::Fill).height(Length::Fixed(strip_height));
+    // Without a single event the strip says so, quietly, above an empty grid (design skill,
+    // section 5: an empty view says what would be here).
+    let strip: Element<'static, Message> = match plan.empty_note() {
+        Some(note) => container(typo::text(typo::META, note).style(theme::text_3))
+            .padding(Padding::ZERO.left(axis))
+            .center_x(Length::Fill)
+            .center_y(Length::Fixed(strip_height))
+            .into(),
+        None => iced::widget::canvas(Strip { plan: plan.clone() })
+            .width(Length::Fill)
+            .height(Length::Fixed(strip_height))
+            .into(),
+    };
     // What the grid's scrollable gets: the view less the header, the strip and their lines.
     let above = if with_header { size::HEADER + size::HAIRLINE } else { 0.0 } + strip_height + size::HAIRLINE;
     let pad = morning_pad(bounds.height - above);
@@ -214,6 +226,20 @@ impl Plan {
             }
         }
         plan
+    }
+
+    /// The quiet line of a view without any event: "No events this week", "No events today", or
+    /// "No events" for another single day. `None` as soon as there is one.
+    fn empty_note(&self) -> Option<&'static str> {
+        if !self.entries.is_empty() {
+            None
+        } else if self.days.len() > 1 {
+            Some(tr("No events this week"))
+        } else if self.days.first() == Some(&self.now.date()) {
+            Some(tr("No events today"))
+        } else {
+            Some(tr("No events"))
+        }
     }
 
     fn today_column(&self) -> Option<usize> {
@@ -816,6 +842,29 @@ mod tests {
         assert_eq!(listed(&data).len(), 4, "seen from the day before, the whole day comes");
         assert_eq!(listed(&data)[1], ("Standup".into(), "09:30".to_string()));
         let _: Element<'_, Message> = day_props(&data);
+    }
+
+    #[test]
+    fn an_empty_grid_says_so_for_its_week_or_day() {
+        let monday = at(5, 0, 0).date();
+        let empty = |start: NaiveDate, days: i64| {
+            let data = ViewData {
+                items: Vec::new(),
+                start,
+                end: start + Duration::days(days),
+                anchor: start,
+                now: at(7, 14, 20),
+            };
+            Plan::new(&data).empty_note()
+        };
+        assert_eq!(empty(monday, 7), Some(tr("No events this week")));
+        assert_eq!(empty(at(7, 0, 0).date(), 1), Some(tr("No events today")));
+        assert_eq!(empty(at(8, 0, 0).date(), 1), Some(tr("No events")));
+        let event = calendar_event("Standup", local(7, 9, 30), Some(local(7, 9, 45)));
+        let items = vec![super::super::Item { index: 0, event: &event, color: Color::BLACK }];
+        let data =
+            ViewData { items, start: monday, end: monday + Duration::days(7), anchor: monday, now: at(7, 14, 20) };
+        assert_eq!(Plan::new(&data).empty_note(), None);
     }
 
     #[test]
