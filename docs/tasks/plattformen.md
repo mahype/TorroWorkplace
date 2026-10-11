@@ -148,7 +148,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   einem geschlossenen Programm laden, es startet und landet am richtigen Platz.
 
 ### X.9 Windows-Paket: Symbol und Versionsangaben in der `.exe`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/{torroworkplace,torrocalendar,torrotasks}/build.rs` (neu),
   deren `Cargo.toml`, `packaging/windows/` (neu: `.ico` aus `packaging/linux/icons/*.svg`), `Cargo.toml`
 - Jede `.exe` bekommt Symbol, Produktname, Version und Hersteller als Windows-Ressource (z. B. mit

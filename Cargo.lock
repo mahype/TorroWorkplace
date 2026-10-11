@@ -4615,6 +4615,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "winresource",
 ]
 
 [[package]]
@@ -4628,6 +4629,7 @@ dependencies = [
  "torro-ipc",
  "torro-pim",
  "webbrowser",
+ "winresource",
 ]
 
 [[package]]
@@ -4658,6 +4660,7 @@ dependencies = [
  "torro-tui",
  "torro-wm",
  "webbrowser",
+ "winresource",
 ]
 
 [[package]]
@@ -5708,6 +5711,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0986a8b1d586b7d3e4fe3d9ea39fb451ae22869dcea4aa109d287a374d866087"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]

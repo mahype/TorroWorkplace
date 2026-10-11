@@ -43,6 +43,9 @@ rmcp = { version = "3.5.1", default-features = false, features = ["server", "tra
 roxmltree = "0.21.1"
 schemars = { version = "1.2.2", features = ["chrono04"] }
 webbrowser = "1.2.4"
+# Only used by the build scripts of the three executables (icon and version info). Without the `toml` feature:
+# the values are set in `build.rs`, not read from `Cargo.toml`.
+winresource = { version = "0.1.31", default-features = false }
 ksni = "0.3.6"
 notify-rust = "4.18.2"
 serde = { version = "1.0", features = ["derive"] }
