@@ -23,34 +23,54 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
 - [ ] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Braucht:** M1.1 · **Dateien:**
   `crates/torro-core/src/account.rs`, `crates/torro-pim-caldav/src/{lib,client}.rs` und neu
-  `discover.rs`, `crates/torroworkplace/src/{account,pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
-  `docs/api-reference.md`
+  `discover.rs`, `crates/torroworkplace/src/{account,pim,core,mcp,clients}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `docs/api.md`, `docs/api-reference.md`
 - **Konto:** `AccountKind::CalDav` mit Server-URL (die gefundene DAV-Basis), Anmeldename und
   Anzeigename (Anbieter bzw. Domain, z. B. „mailbox.org“); Kennung `caldav:<login>@<host>` (nie mit
-  `client-` beginnend); Passwort bzw. App-Passwort im Schlüsselbund unter der Kennung wie bei Nextcloud.
-- **Dienstsuche** (`discover.rs`, ohne Anmeldung): aus einer E-Mail-Adresse bzw. Domain der Reihe nach
+  `client-` beginnend, Anmeldename ohne `/`, weil M1.1 Sammlungs-Kennungen am ersten `/` trennt);
+  Passwort bzw. App-Passwort im Schlüsselbund unter der Kennung wie bei Nextcloud. Erneutes Verbinden
+  derselben Kennung („Change password…“) ersetzt nur die Zugangsdaten; ausgeblendete Sammlungen und
+  Rechte-Auswahlen bleiben.
+- **Neue Regel in `docs/api.md`, „Was nie nach außen geht“, Punkt 5:** Geheimnisse entgegennehmen oder
+  übertragen (Anmeldung mit Passwort, Import aus einem fremden Schlüsselbund) nur mit dem App-Schlüssel,
+  also nur aus der Oberfläche. Durchgesetzt in `Rights::allows` (auch Script-Schlüssel mit Admin bekommen
+  `forbidden`) und im Test `names_follow_the_rules` (`kept_back`). Solche Requests landen nie in
+  `approvals.json`.
+- **Passwort als eigener Typ** `Secret` nach dem Vorbild von `Key` in `torro-ipc`: `Debug` zeigt `***`,
+  Schema `string` mit `writeOnly`; ebenso in den Verbindungsdaten des CalDAV-Clients.
+- **Dienstsuche** (`discover.rs`, ohne Anmeldung): aus einer E-Mail-Adresse bzw. Domain (nur die Domain
+  geht hinaus, nie der lokale Teil) der Reihe nach
   1. DNS SRV `_caldavs._tcp.<domain>` (+ TXT `path=`), RFC 6764;
   2. `https://<domain>/.well-known/caldav` und `https://caldav.<domain>/.well-known/caldav` mit
      Weiterleitungen (höchstens 5, nur https);
   3. eine kleine Tabelle bekannter Anbieter (mailbox.org, Posteo, Fastmail, iCloud, Zoho; Gmail und
      Outlook/Hotmail/Microsoft-Domains als „nicht unterstützt“ mit Grund).
-  Ergebnis: Kandidaten-URL(s) oder „nicht gefunden“. Mit Anmeldung prüft `CalDavClient` dann
+  Schutz gegen Missbrauch als Netz-Sonde: keine IP-Literale, Ziele (auch nach Weiterleitungen), die auf
+  Loopback, private, Link-Local- oder ULA-Adressen auflösen, werden abgelehnt; nur https; kurze Timeouts,
+  wenige Anfragen je Aufruf; die Antwort enthält nie Server-Inhalte oder Header; protokolliert wird nur der
+  Befehl, nicht die Adresse.
+  Ergebnis: Kandidaten-URL(s), „nicht gefunden“ oder „nicht unterstützt“ – alles normale Antworten. Mit Anmeldung prüft `CalDavClient` dann
   `current-user-principal` und meldet, ob es **Kalender** (VEVENT) und **Aufgaben** (VTODO) gibt.
 - **Sync** wie Nextcloud über M1.1 (eigener Zustand je Konto); Nextcloud-Eigenes (Remote Wipe,
   Login Flow, Platzhalternamen) nur für Nextcloud-Konten. 401/403 → Problem „Password was refused“ am Konto.
 - **API:**
   - `Request::DiscoverServices { address }` · `accounts.discover_services` · Zugriff Read – sucht ohne
-    Anmeldung, liefert Anbieter, gefundene URL, „unsupported“ mit Grund.
-  - `Request::ConnectCalDav { address, server: Option<String>, login_name, password }` ·
-    `accounts.connect_caldav` · Zugriff Admin – meldet an, prüft, speichert das Passwort nur im
-    Schlüsselbund, legt das Konto an und gleicht ab. Antwort ohne Passwort. Fehlercodes `auth`,
-    `not-found` (kein CalDAV), `unsupported`, `offline`.
-- **MCP:** `accounts_discover_services` ja. `accounts_connect_caldav` **Never** – das Passwort müsste
-  durch den Agenten gehen; Agenten verwalten nie Konten mit Geheimnissen („Was nie nach außen geht“).
+    Anmeldung. Antwort `Response::Discovery { provider, urls, unsupported: Option<String> }`.
+  - `Request::ConnectCalDav { address, server: Option<String>, login_name, password: Secret, calendars:
+    bool, tasks: bool }` · `accounts.connect_caldav` · Zugriff Admin, nur App-Schlüssel (Regel oben) –
+    meldet an, prüft, speichert das Passwort nur im Schlüsselbund, legt das Konto an, blendet nicht
+    gewählte Dienste aus und gleicht ab. Antwort: das Konto (`AccountInfo`) und welche Dienste der Server
+    hat (VEVENT/VTODO), ohne Passwort. Fehlercodes `auth`, `not-found` (unter der URL kein CalDAV),
+    `unsupported`, `offline`.
+  - Katalogbeschreibungen von `accounts.remove_account` und `accounts.sync` anpassen: App-Passwort-
+    Widerruf und Remote Wipe gelten nur für Nextcloud-Konten.
+- **MCP:** `accounts_discover_services` ja. `accounts_connect_caldav` **Never** – Punkt 5 der neuen
+  Regel: Ein Agent nimmt nie ein Passwort entgegen und reicht es weiter.
 - **Abnahme:** Tests ohne Netz: Suche gegen einen lokalen Fake-Resolver und `httpmock` (SRV, well-known
   mit Weiterleitung, Tabelle, nicht unterstützt), Anmelden mit falschem Passwort (`auth`), zwei Konten
-  (Nextcloud + CalDAV) synchronisieren getrennt; Antworten enthalten nie das Passwort; API-Referenz neu
-  erzeugt; `torro-api-review` ohne Befund.
+  (Nextcloud + CalDAV) synchronisieren getrennt; IP-/Loopback-Ziel abgelehnt; Client-Schlüssel mit Admin
+  → `forbidden` für `connect_caldav`; das Passwort erscheint weder in Antwort noch in `Debug`,
+  Fehlermeldung, Protokoll oder `approvals.json`; API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
 ### M7.2 Steuerzentrale: Mail-Anbieter im Assistenten
 - [ ] erledigt
@@ -60,7 +80,7 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
   „Server“ nur aufklappbar unter „Advanced“. Bei „nicht unterstützt“ der Grund und nichts weiter.
   Schritt 2: Passwort-Feld mit Hinweis, wo es nötig ist: „Use an app password“ mit Link-Text für iCloud
   und Fastmail. Schritt 3: gefundene Dienste als Häkchen (Calendars, Tasks), vorausgewählt; „Mail“
-  ausgegraut mit „Coming later“. Fehler `auth` am Passwort-Feld, erst nach dem ersten Versuch.
+  ausgegraut mit „Coming later“; die Wahl geht als `calendars`/`tasks` mit `accounts.connect_caldav`. Fehler `auth` am Passwort-Feld, erst nach dem ersten Versuch.
   Kontoseite: Art „CalDAV“, Server, Status, „Change password…“ (sendet `accounts.connect_caldav` erneut).
 - **API/MCP:** nutzt M7.1; keine neuen Befehle.
 - **Abnahme:** Sichtprüfung aller Schritte (Breit, Mittel, Schmal, hell/dunkel) mit `--demo`-Zuständen,
@@ -78,13 +98,17 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
 
 ### M7.4 Aus TorroMail übernehmen
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** M7.2 · **Dateien:** `crates/torroworkplace/src/{account,core}.rs`,
-  `crates/torroworkplace/src/ui/wizard.rs`, `crates/torro-ipc/src/{lib,api}.rs`
+- **Modell:** Sonnet · **Braucht:** M7.2 · **Dateien:** `crates/torroworkplace/src/{account,core,mcp}.rs`,
+  `crates/torroworkplace/src/ui/wizard.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`
 - **Oberfläche:** Gibt es TorroMail-Konten, bietet der Assistent oben „Use accounts from TorroMail?“ an:
   Liste mit Adresse und gefundenem CalDAV; übernommen werden Adresse, Server, Benutzer. Das Passwort holt
   der Kern **nach Zustimmung** aus dem Schlüsselbund-Eintrag `TorroMail/<id>` und legt es unter
   `torroworkplace` ab (siehe `mail.md`, Abschnitt TorroMail).
-- **API:** `Request::TorroMailAccounts` · `accounts.list_torromail_accounts` · Read (ohne Geheimnisse);
-  `Request::ImportTorroMailAccount { id }` · `accounts.import_torromail_account` · Admin.
-- **MCP:** `accounts_list_torromail_accounts` ja; Import **Never** (bewegt ein Geheimnis).
-- **Abnahme:** Tests mit Fake-Schlüsselbund; Import ohne Zustimmung unmöglich; `torro-api-review`.
+- **API:** `Request::TorroMailAccounts` · `accounts.list_torromail_accounts` · Read – Beschreibung:
+  „Lists accounts of the separate TorroMail app (address, server, user), without passwords; they are not
+  connected to the suite.“ `Request::ImportTorroMailAccount { id }` · `accounts.import_torromail_account` ·
+  Admin, nur App-Schlüssel (Punkt 5 in `api.md`).
+- **MCP:** `accounts_list_torromail_accounts` ja; Import **Never** – ein Agent könnte sonst fremde
+  Zugangsdaten in die Suite holen. Die Zustimmung ist der Klick in der Oberfläche.
+- **Abnahme:** Tests mit Fake-Schlüsselbund; Import nur mit App-Schlüssel (Client-Schlüssel → `forbidden`);
+  `torro-api-review`.
