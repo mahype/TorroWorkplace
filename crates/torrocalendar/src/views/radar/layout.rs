@@ -1,13 +1,15 @@
-//! Geometry of the radar, free of Iced widgets so that it can be tested: time to angle and back
-//! within the window, how the last quarter fades out, the ticks and numerals of the dial, the
-//! radii of the rings, the arcs of the events with their lanes, hit-testing, and where the
-//! letters of a title go along an arc. `radar.rs` draws the result.
+//! Geometry of the radar, free of Iced widgets so that it can be tested: where the window of a
+//! day starts, time to angle and back within the window, how the last quarter fades out, the
+//! ticks and numerals of the dial, the radii of the rings, the arcs of the events with their
+//! lanes, hit-testing, turning the dial by dragging, and where the letters of a title go along an
+//! arc. `radar.rs` draws the result.
 //!
 //! Angles are in degrees, 0 at the top (where the 12 stands), growing clockwise, as on a clock.
-//! Times inside the window are minutes after its start ("rel"); the window starts at now plus the
-//! look-ahead and covers twelve hours, one turn of the 12-hour dial.
+//! Times inside the window are minutes after its start ("rel"); the window starts at the start of
+//! the shown day ([`day_start`]: now for today) plus the turn of the dial, and covers twelve
+//! hours, one turn of the 12-hour dial.
 
-use chrono::{Duration, NaiveDateTime, Timelike};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::{Point, Size};
 use torro_gui::typo::{self, text_width};
 
@@ -27,14 +29,22 @@ pub const END: f32 = WINDOW - SEAM;
 pub const FADE_PIECE: f32 = 2.0;
 /// Degrees per minute: twelve hours are a turn.
 const DEGREES_PER_MINUTE: f32 = 360.0 / WINDOW;
-/// One notch of the mouse wheel over the dial looks this far ahead or back (minutes).
+/// One notch of the mouse wheel over the dial turns it this far (minutes).
 pub const WHEEL_STEP: i64 = 15;
-/// ‹ › in the header look this far ahead or back (minutes).
+/// ↑ and ↓ turn the dial this far (minutes).
 pub const HOUR_STEP: i64 = 60;
-/// How far back the look-ahead goes (minutes).
+/// How far back the dial turns from the start of the day (minutes).
 pub const LOOK_BACK: i64 = -12 * 60;
-/// How far ahead the look-ahead goes (minutes).
+/// How far ahead the dial turns from the start of the day (minutes).
 pub const LOOK_AHEAD: i64 = 24 * 60;
+/// A day other than today opens at this hour…
+const DAY_OPENS: u32 = 8;
+/// …or at the hour of an earlier event, but never before the night ends.
+const NIGHT_ENDS: u32 = 6;
+/// A press on the dial turns it only once the pointer has moved this far (pixels); less is a click.
+pub const DRAG_THRESHOLD: f32 = 4.0;
+/// Dragging turns the dial in steps of this many minutes.
+pub const DRAG_SNAP: f32 = 5.0;
 /// No numeral this close to the start of the window, where the time chip sits (minutes, on both
 /// sides of it).
 const NUMERAL_CLEARANCE: f32 = 20.0;
@@ -62,9 +72,46 @@ const ARC_INSET: f32 = 0.4;
 /// The shortest arc, so an event without length stays visible and clickable (degrees).
 const ARC_MIN: f32 = 1.2;
 
-/// The look-ahead `minutes` kept to [`LOOK_BACK`] … [`LOOK_AHEAD`].
+/// The turn of the dial, `minutes` from the start of the day, kept to [`LOOK_BACK`] …
+/// [`LOOK_AHEAD`].
 pub fn clamp_offset(minutes: i64) -> i64 {
     minutes.clamp(LOOK_BACK, LOOK_AHEAD)
+}
+
+/// Where the window of `day` starts before the dial is turned. Today: at `now`. Any other day: at
+/// [`DAY_OPENS`] (08:00), or at the full hour of an earlier event that day, but never before
+/// [`NIGHT_ENDS`] (06:00). `starts` are the starts of the timed events the caller knows (all-day
+/// ones left out); only those starting on `day` count, not one begun the evening before.
+pub fn day_start(day: NaiveDate, now: NaiveDateTime, starts: impl IntoIterator<Item = NaiveDateTime>) -> NaiveDateTime {
+    if day == now.date() {
+        return now;
+    }
+    let first = starts.into_iter().filter(|start| start.date() == day).map(|start| start.hour()).min();
+    let hour = first.map_or(DAY_OPENS, |hour| hour.min(DAY_OPENS)).max(NIGHT_ENDS);
+    day.and_time(NaiveTime::MIN) + Duration::hours(i64::from(hour))
+}
+
+/// The signed turn from direction `from` to direction `to` (degrees, −180 … 180): the short way
+/// round, so a drag over the 12 (from 359° to 1°) is two degrees, not −358.
+pub fn turn_between(from: f32, to: f32) -> f32 {
+    (to - from + 180.0).rem_euclid(360.0) - 180.0
+}
+
+/// The minutes a turn of `degrees` moves the window: 360° are twelve hours, clockwise is later.
+pub fn minutes_of_turn(degrees: f32) -> f32 {
+    degrees / DEGREES_PER_MINUTE
+}
+
+/// `minutes` of dragging cut to whole [`DRAG_SNAP`] steps: the minutes to turn now and the rest to
+/// carry into the next move (with the same sign), so slow drags add up instead of getting lost.
+pub fn snap(minutes: f32) -> (i64, f32) {
+    let steps = (minutes / DRAG_SNAP).trunc();
+    ((steps * DRAG_SNAP) as i64, minutes - steps * DRAG_SNAP)
+}
+
+/// A press at `origin` has become a drag at `point`: the pointer moved [`DRAG_THRESHOLD`] or more.
+pub fn is_drag(origin: Point, point: Point) -> bool {
+    (point.x - origin.x).hypot(point.y - origin.y) >= DRAG_THRESHOLD
 }
 
 /// The angle of the hand of a 12-hour clock at `at` (15:00 is at 90°, like 03:00).
@@ -121,7 +168,7 @@ pub fn pieces(from: f32, to: f32) -> Vec<Piece> {
 /// The twelve hours from `start` on the dial.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Window {
-    /// Where the window starts: now plus the look-ahead.
+    /// Where the window starts: the start of the day plus the turn of the dial.
     pub start: NaiveDateTime,
     /// The angle of `start` on the dial.
     pub angle0: f32,
@@ -255,6 +302,13 @@ impl Dial {
     pub fn polar(&self, point: Point) -> (f32, f32) {
         let (dx, dy) = (point.x - self.center.x, point.y - self.center.y);
         (dx.hypot(dy), dx.atan2(-dy).to_degrees().rem_euclid(360.0))
+    }
+
+    /// A press at `point` can turn the dial: it lies on the dial, from the outer half of the
+    /// middle out to the numerals. Near the centre a small move swings the direction wildly.
+    pub fn grabbable(&self, point: Point) -> bool {
+        let (radius, _) = self.polar(point);
+        (self.radius * INNER_SHARE..=self.radius).contains(&radius)
     }
 }
 
@@ -418,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn the_window_starts_at_now_plus_the_look_ahead() {
+    fn a_turned_window_maps_time_to_angle_and_back() {
         let now = at(13, 14, 20);
         let window = Window::new(now + Duration::minutes(90));
         assert_eq!(window.start, at(13, 15, 50));
@@ -434,7 +488,50 @@ mod tests {
     }
 
     #[test]
-    fn the_look_ahead_stays_between_twelve_hours_back_and_a_day_ahead() {
+    fn today_opens_at_now_and_other_days_in_the_morning() {
+        let day = at(14, 0, 0).date();
+        let now = at(13, 14, 20);
+        assert_eq!(day_start(now.date(), now, [at(13, 7, 0)]), now, "today: now, whatever came earlier");
+        assert_eq!(day_start(day, now, []), at(14, 8, 0), "no events: 08:00");
+        assert_eq!(day_start(day, now, [at(14, 10, 0), at(14, 6, 30)]), at(14, 6, 0), "the full hour before");
+        assert_eq!(day_start(day, now, [at(14, 5, 0)]), at(14, 6, 0), "never before the night ends");
+        assert_eq!(day_start(day, now, [at(14, 9, 0)]), at(14, 8, 0), "a later event changes nothing");
+        assert_eq!(day_start(day, now, [at(13, 23, 0), at(15, 6, 0)]), at(14, 8, 0), "only that day's events");
+        // A day in the past opens the same way.
+        assert_eq!(day_start(at(12, 0, 0).date(), now, [at(12, 7, 15)]), at(12, 7, 0));
+    }
+
+    #[test]
+    fn dragging_turns_by_the_angle_between_two_moves_on_a_five_minute_grid() {
+        assert!(close(turn_between(90.0, 120.0), 30.0));
+        assert!(close(turn_between(120.0, 90.0), -30.0));
+        assert!(close(turn_between(350.0, 10.0), 20.0), "clockwise over the 12");
+        assert!(close(turn_between(10.0, 350.0), -20.0), "anticlockwise over the 12");
+        assert!(close(minutes_of_turn(30.0), 60.0), "an hour per numeral");
+        assert!(close(minutes_of_turn(-360.0), -WINDOW), "a turn back is twelve hours back");
+        assert_eq!(snap(7.0), (5, 2.0));
+        assert_eq!(snap(-7.0), (-5, -2.0), "the rest keeps its sign");
+        assert_eq!(snap(4.0), (0, 4.0), "less than a step waits");
+        // Two slow moves of 1.5° each (3 minutes) make one step together.
+        let (first, rest) = snap(minutes_of_turn(turn_between(0.0, 1.5)));
+        let (second, _) = snap(minutes_of_turn(turn_between(1.5, 3.0)) + rest);
+        assert_eq!((first, second), (0, 5));
+    }
+
+    #[test]
+    fn a_press_becomes_a_drag_after_four_pixels_on_the_dial() {
+        let origin = Point::new(100.0, 100.0);
+        assert!(!is_drag(origin, Point::new(103.0, 100.0)), "a click that trembles stays a click");
+        assert!(is_drag(origin, Point::new(103.0, 104.0)));
+        let dial = Dial::fit(Size::new(800.0, 700.0), 24.0, 2);
+        assert!(dial.grabbable(dial.point(dial.numerals, 45.0)), "on the numerals");
+        assert!(dial.grabbable(dial.point(dial.inner + 1.0, 200.0)), "on the rings");
+        assert!(!dial.grabbable(dial.center), "not in the centre");
+        assert!(!dial.grabbable(dial.point(dial.radius + 4.0, 0.0)), "not beside the dial");
+    }
+
+    #[test]
+    fn the_turn_stays_between_twelve_hours_back_and_a_day_ahead() {
         assert_eq!(clamp_offset(0), 0);
         assert_eq!(clamp_offset(-13 * 60), LOOK_BACK);
         assert_eq!(clamp_offset(25 * 60), LOOK_AHEAD);

@@ -307,7 +307,7 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   `torro-gui`. In Schmal liegen Liste und Kopftitel nicht auf einer Achse.
 
 ### K.23 Radar: Tage blättern, Uhrzeit am Zifferblatt drehen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.22 · **Dateien:** `crates/torrocalendar/src/app.rs`,
   `crates/torrocalendar/src/views/radar.rs`, `crates/torrocalendar/src/views/radar/layout.rs`
 - Wunsch des Nutzers (2026-10-11): Mit ‹ › kam man nur stundenweise voran und höchstens bis morgen;
@@ -334,6 +334,11 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   mit Versatz 0, Klick im kleinen Monat bleibt im Radar, ↑ ↓, Ziehen (Winkel → Minuten, über 0°
   hinweg, Raster, Schwelle Klick/Ziehen), Kantenfarbe; fmt, clippy, test (auch `TORRO_LANG=de`)
   grün; Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
+- **Umgesetzt (abweichend):** Schmal zeigt das Radar jetzt unter der Wochenleiste (vorher ohne).
+  ‹ › blättern vom gewählten Tag aus; ist das Zifferblatt über Mitternacht gedreht, nennt der
+  Titel schon den Folgetag. `Message::LookAhead` heißt jetzt `Message::Turn`. Termine öffnen
+  beim Drücken, ein Klick in freie Zeit legt beim Loslassen an. Greifen geht vom halben Radius bis
+  zum Rand des Zifferblatts. Ziehen nur per Unit-Test geprüft.
 
 ### K.24 Kalender: Agenda neu gestalten
 - [ ] erledigt

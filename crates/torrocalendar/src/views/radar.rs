@@ -1,10 +1,13 @@
-//! Radar: the next twelve hours on a clock face (task K.22 in `docs/tasks/kalender-aufgaben.md`,
-//! prototype `docs/prototypes/calendar/radar.html`, mode "fade out", 3/4 visible).
+//! Radar: twelve hours of a day on a clock face (tasks K.22 and K.23 in
+//! `docs/tasks/kalender-aufgaben.md`, prototype `docs/prototypes/calendar/radar.html`, mode
+//! "fade out", 3/4 visible).
 //!
 //! A 12-hour dial, 12 at the top, numbered with the real hours of the day (`15` where the 3
-//! stands). The window starts at now plus the look-ahead – a clear red edge with the time in a
-//! chip outside – and runs one turn: the first nine hours in full, the last three fading out to
-//! nothing just before the edge. Iced has no masks, so the fading quarter is drawn in pieces of
+//! stands). The window starts at the start of the shown day – now for today, else 08:00 or the
+//! hour of an earlier event ([`layout::day_start`]) – plus the turn of the dial. Its start is a
+//! clear edge with the time in a chip outside, red at now and `text_2` anywhere else; the window
+//! runs one turn: the first nine hours in full, the last three fading out to nothing just before
+//! the edge. Iced has no masks, so the fading quarter is drawn in pieces of
 //! two degrees, each with the opacity of its middle ([`layout::pieces`]).
 //!
 //! Every calendar with timed events in the window gets a ring, in the order of the sidebar, the
@@ -14,13 +17,15 @@
 //! time on a second line where the lane is wide enough.
 //!
 //! The middle says the date and the time, what runs ("40 min left") or how long is free, what
-//! comes next and what lasts all day; while looking ahead, "Back to now". Beside the dial (in the
+//! comes next and what lasts all day; away from now, "Back to now". Beside the dial (in the
 //! properties column when wide, at the right when medium, below when narrow) the events of the
 //! next nine hours and of the fading quarter are listed.
 //!
 //! Clicks: an arc → `OpenEvent`, free room in the rings → `NewEvent` (rounded down to the quarter
-//! hour), a list row → `OpenEvent`. The mouse wheel over the dial looks ahead or back in quarter
-//! hours (`LookAhead`; not in the narrow layout, where the wheel scrolls the page).
+//! hour), a list row → `OpenEvent`. The dial turns (`Turn`): the mouse wheel over it in quarter
+//! hours (not in the narrow layout, where the wheel scrolls the page), and dragging it like a
+//! knob – clockwise is later, a turn is twelve hours, in five-minute steps. A press only becomes
+//! a drag after a few pixels, so a click stays a click.
 //!
 //! The geometry is in `radar/layout.rs`.
 
@@ -114,9 +119,13 @@ const MAJOR: typo::Level = typo::BODY_STRONG.tabular();
 const DIM_DOT: f32 = 0.55;
 /// The middle shows at most this many all-day chips.
 const CHIPS: usize = 2;
+/// While dragging, the pointer this close to the centre does not turn the dial: there the
+/// direction swings at the smallest move.
+const DRAG_DEAD: f32 = space::XL;
 
-/// The radar for `data`, looking `offset` minutes ahead of `data.now`, the rings in the order of
-/// `calendars` (collection ids, as in the sidebar), its list `at`.
+/// The radar for the day `data.anchor`, its dial turned `offset` minutes from the start of that
+/// day ([`start`]), the rings in the order of `calendars` (collection ids, as in the sidebar), its
+/// list `at`.
 pub fn view<'a>(data: ViewData<'a>, calendars: &[String], offset: i64, at: ListAt) -> Element<'a, Message> {
     let plan = Plan::new(&data, calendars, offset);
     match at {
@@ -137,6 +146,15 @@ pub fn view<'a>(data: ViewData<'a>, calendars: &[String], offset: i64, at: ListA
         }
         ListAt::Below => responsive(move |bounds| narrow(plan.clone(), bounds.width)).into(),
     }
+}
+
+/// Where the window starts: the start of the day `data.anchor` ([`layout::day_start`] over the
+/// timed events of `data`: now for today, else 08:00 or the full hour of an earlier event, never
+/// before 06:00) plus `offset` minutes of turning (kept to [`clamp_offset`]). The header names the
+/// day of this time.
+pub fn start(data: &ViewData<'_>, offset: i64) -> NaiveDateTime {
+    let starts = data.items.iter().map(glance::Entry::new).filter(|entry| !entry.all_day).map(|entry| entry.start);
+    layout::day_start(data.anchor, data.now, starts) + Duration::minutes(clamp_offset(offset))
 }
 
 /// The list for the properties column of the wide layout: the same as beside the dial.
@@ -200,7 +218,8 @@ struct Plan {
     window: Window,
     /// The real now: what has ended by then is faded.
     now: NaiveDateTime,
-    /// Looking ahead (or back): the edge is grey instead of red, "Back to now" shows.
+    /// Away from now (another day, or the dial turned): the edge is grey instead of red, "Back to
+    /// now" shows.
     looking: bool,
     entries: Vec<Entry>,
     /// The timed entries in the window, in their rings.
@@ -212,7 +231,7 @@ struct Plan {
 
 impl Plan {
     fn new(data: &ViewData<'_>, calendars: &[String], offset: i64) -> Plan {
-        let window = Window::new(data.now + Duration::minutes(offset));
+        let window = Window::new(start(data, offset));
         let mut entries: Vec<Entry> = data
             .items
             .iter()
@@ -241,7 +260,7 @@ impl Plan {
         Plan {
             window,
             now: data.now,
-            looking: offset != 0,
+            looking: data.anchor != data.now.date() || offset != 0,
             entries,
             spans,
             rings: rings.len(),
@@ -415,14 +434,32 @@ struct Radar {
     plan: Plan,
     /// Room to the edges of the canvas.
     margin: f32,
-    /// The wheel looks ahead (not in the narrow layout, where it scrolls the page).
+    /// The wheel turns the dial (not in the narrow layout, where it scrolls the page).
     wheel: bool,
 }
 
-/// Smooth scrolling (touchpads) comes in pixels; they add up to wheel steps.
+/// What the canvas keeps between events.
 #[derive(Debug, Default)]
-struct Scroll {
+struct Grip {
+    /// Smooth scrolling (touchpads) comes in pixels; they add up to wheel steps.
     pixels: f32,
+    /// The left button is down on the dial, outside an event.
+    press: Option<Press>,
+}
+
+/// A press on the dial outside an event: a click (a new event in free room) until the pointer
+/// moves [`layout::DRAG_THRESHOLD`], then a drag that turns the dial.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Press {
+    /// Where it was pressed, in the canvas.
+    origin: Point,
+    /// What a click there means: free room starts an event; elsewhere on the dial nothing.
+    hit: Option<Hit>,
+    /// The direction of the pointer at the last move (degrees).
+    angle: f32,
+    dragging: bool,
+    /// Minutes turned but not yet sent: less than a [`layout::DRAG_SNAP`] step.
+    rest: f32,
 }
 
 impl Radar {
@@ -450,8 +487,55 @@ impl Radar {
         }
     }
 
-    /// Wheel steps from a scroll; down looks ahead, like the page would move on.
-    fn steps(state: &mut Scroll, delta: mouse::ScrollDelta) -> i64 {
+    /// The left button goes down at `point`: an event opens at once; elsewhere on the dial the
+    /// press is kept until it turns out to be a click or a drag.
+    fn press(&self, state: &mut Grip, bounds: Size, point: Point) -> Option<Action<Message>> {
+        let hit = self.hit(bounds, point);
+        if let Some(Hit::Event(id)) = hit {
+            let message = Message::OpenEvent(self.plan.entries.get(id)?.index);
+            return Some(Action::publish(message).and_capture());
+        }
+        let dial = self.dial(bounds);
+        if dial.outer <= 0.0 || !dial.grabbable(point) {
+            return None;
+        }
+        let (_, angle) = dial.polar(point);
+        state.press = Some(Press { origin: point, hit, angle, dragging: false, rest: 0.0 });
+        Some(Action::capture())
+    }
+
+    /// The pointer moved to `point` with the button down: past the threshold the press is a drag,
+    /// and the angle turned since the last move turns the dial (in whole snap steps, the rest
+    /// carried on).
+    fn drag(&self, state: &mut Grip, bounds: Size, point: Point) -> Option<Action<Message>> {
+        let press = state.press.as_mut()?;
+        if !press.dragging && !layout::is_drag(press.origin, point) {
+            return None;
+        }
+        press.dragging = true;
+        let (radius, angle) = self.dial(bounds).polar(point);
+        if radius < DRAG_DEAD {
+            return Some(Action::capture());
+        }
+        let turned = layout::minutes_of_turn(layout::turn_between(press.angle, angle)) + press.rest;
+        let (minutes, rest) = layout::snap(turned);
+        press.angle = angle;
+        press.rest = rest;
+        if minutes == 0 {
+            return Some(Action::capture());
+        }
+        Some(Action::publish(Message::Turn(minutes)).and_capture())
+    }
+
+    /// The left button comes up: a press that never moved is a click.
+    fn release(&self, state: &mut Grip) -> Option<Action<Message>> {
+        let press = state.press.take()?;
+        let click = if press.dragging { None } else { press.hit.and_then(|hit| self.message(hit)) };
+        Some(click.map_or_else(Action::capture, |message| Action::publish(message).and_capture()))
+    }
+
+    /// Wheel steps from a scroll; down turns later, like the page would move on.
+    fn steps(state: &mut Grip, delta: mouse::ScrollDelta) -> i64 {
         match delta {
             mouse::ScrollDelta::Lines { y, .. } => {
                 state.pixels = 0.0;
@@ -468,41 +552,53 @@ impl Radar {
 }
 
 impl canvas::Program<Message> for Radar {
-    type State = Scroll;
+    type State = Grip;
 
     fn update(
         &self,
-        state: &mut Scroll,
+        state: &mut Grip,
         event: &Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
-        let point = cursor.position_in(bounds)?;
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                let message = self.message(self.hit(bounds.size(), point)?)?;
-                Some(Action::publish(message).and_capture())
+                self.press(state, bounds.size(), cursor.position_in(bounds)?)
             }
+            // A drag goes on beside the canvas: the knob turns as long as the button is down.
+            Event::Mouse(mouse::Event::CursorMoved { .. }) if state.press.is_some() => {
+                self.drag(state, bounds.size(), cursor.position_from(bounds.position())?)
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => self.release(state),
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if self.wheel => {
+                cursor.position_in(bounds)?;
                 let steps = Radar::steps(state, *delta);
                 if steps == 0 {
                     return Some(Action::capture());
                 }
-                Some(Action::publish(Message::LookAhead(steps * WHEEL_STEP)).and_capture())
+                Some(Action::publish(Message::Turn(steps * WHEEL_STEP)).and_capture())
             }
             _ => None,
         }
     }
 
-    fn mouse_interaction(&self, _state: &Scroll, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
-        let over = cursor.position_in(bounds).and_then(|point| self.hit(bounds.size(), point));
-        // The hand only over events; free room stays calm although a click there starts one.
-        if matches!(over, Some(Hit::Event(_))) { mouse::Interaction::Pointer } else { mouse::Interaction::Idle }
+    /// The hand over events, an open hand over the rest of the dial (it can be turned), a closed
+    /// one while it is.
+    fn mouse_interaction(&self, state: &Grip, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if state.press.is_some_and(|press| press.dragging) {
+            return mouse::Interaction::Grabbing;
+        }
+        let Some(point) = cursor.position_in(bounds) else { return mouse::Interaction::Idle };
+        match self.hit(bounds.size(), point) {
+            Some(Hit::Event(_)) => mouse::Interaction::Pointer,
+            _ if self.dial(bounds.size()).grabbable(point) => mouse::Interaction::Grab,
+            _ => mouse::Interaction::Idle,
+        }
     }
 
     fn draw(
         &self,
-        _state: &Scroll,
+        _state: &Grip,
         renderer: &iced::Renderer,
         theme: &Theme,
         bounds: Rectangle,
@@ -698,12 +794,17 @@ fn arc_time(entry: &Entry, room: f32) -> Option<String> {
     [range, start].into_iter().find(|time| text_width(time, typo::MICRO) <= room)
 }
 
-/// The clear edge at the start of the window: a line through the rings and the ticks, red at now
-/// and `text_2` while looking ahead, with the time in a chip on the numerals' circle.
+/// The colours of the start edge, of the chip with its time and of the time: red with white
+/// figures at now, `text_2` on the neutral selection anywhere else (`looking`).
+fn edge_colours(p: &Palette, looking: bool) -> (Color, Color, Color) {
+    if looking { (p.text_2, p.selected, p.text) } else { (p.accent, p.accent, p.on_accent) }
+}
+
+/// The clear edge at the start of the window: a line through the rings and the ticks, with the
+/// time in a chip on the numerals' circle ([`edge_colours`]).
 fn start_edge(frame: &mut Frame, dial: &Dial, plan: &Plan, p: &Palette) {
     let angle = plan.window.angle0;
-    let (edge, chip, figures) =
-        if plan.looking { (p.text_2, p.selected, p.text) } else { (p.accent, p.accent, p.on_accent) };
+    let (edge, chip, figures) = edge_colours(p, plan.looking);
     let from = dial.point((dial.inner - EDGE_INSIDE).max(0.0), angle);
     let to = dial.point(dial.ticks + EDGE_OUTSIDE, angle);
     line(frame, from, to, edge, EDGE_WIDTH);
@@ -803,11 +904,16 @@ mod tests {
     }
 
     fn data(events: &[CalendarEvent]) -> ViewData<'_> {
-        let day = at(13, 0, 0).date();
+        data_on(events, 13)
+    }
+
+    /// The radar on 2026-10-`day` while it is Tuesday the 13th, 14:20.
+    fn data_on(events: &[CalendarEvent], day: u32) -> ViewData<'_> {
+        let day = at(day, 0, 0).date();
         ViewData {
             items: events.iter().enumerate().map(|(index, event)| Item { index, event, color: Color::BLACK }).collect(),
-            start: day,
-            end: day + Duration::days(2),
+            start: day - Duration::days(1),
+            end: day + Duration::days(3),
             anchor: day,
             now: at(13, 14, 20),
             selected: None,
@@ -877,31 +983,121 @@ mod tests {
     }
 
     #[test]
+    fn today_starts_at_now_with_a_red_edge_and_other_days_in_the_morning_with_a_grey_one() {
+        let events = events();
+        let today = Plan::new(&data(&events), &calendars(), 0);
+        assert_eq!((today.window.start, today.looking), (at(13, 14, 20), false));
+        let turned = Plan::new(&data(&events), &calendars(), 60);
+        assert_eq!((turned.window.start, turned.looking), (at(13, 15, 20), true));
+        // Wednesday: the late call at midnight opens it as early as the night allows.
+        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0);
+        assert_eq!((tomorrow.window.start, tomorrow.looking), (at(14, 6, 0), true));
+        // An event begun the evening before does not count: 08:00.
+        let overnight = [event("work", "Release", local(14, 22, 0), local(15, 1, 0))];
+        assert_eq!(start(&data_on(&overnight, 15), 0), at(15, 8, 0));
+        // An early event opens the day at its hour, an all-day one does not.
+        let early = vec![
+            event("work", "Early train", local(15, 6, 30), local(15, 7, 30)),
+            event("family", "Trip", EventTime::Date(at(15, 0, 0).date()), EventTime::Date(at(16, 0, 0).date())),
+        ];
+        assert_eq!(start(&data_on(&early, 15), 0), at(15, 6, 0));
+        assert_eq!(start(&data_on(&early[1..], 15), 0), at(15, 8, 0), "all-day events do not count");
+        assert_eq!(start(&data_on(&early, 15), -90), at(15, 4, 30), "turned back before it");
+        assert_eq!(start(&data_on(&early, 15), 99 * 60), at(16, 6, 0), "a day ahead at most");
+    }
+
+    #[test]
+    fn the_edge_is_red_at_now_and_grey_elsewhere() {
+        for theme in [theme::theme(), theme::light()] {
+            let p = palette(&theme);
+            assert_eq!(edge_colours(p, false), (p.accent, p.accent, p.on_accent));
+            assert_eq!(edge_colours(p, true), (p.text_2, p.selected, p.text));
+        }
+    }
+
+    fn mouse(event: mouse::Event) -> Event {
+        Event::Mouse(event)
+    }
+
+    fn moved(position: Point) -> Event {
+        mouse(mouse::Event::CursorMoved { position })
+    }
+
+    const PRESS: mouse::Event = mouse::Event::ButtonPressed(mouse::Button::Left);
+    const RELEASE: mouse::Event = mouse::Event::ButtonReleased(mouse::Button::Left);
+
+    /// The message an update publishes, if any.
+    fn published(action: Option<Action<Message>>) -> Option<Message> {
+        action.and_then(|action| action.into_inner().0)
+    }
+
+    #[test]
     fn a_click_on_an_arc_opens_its_event_and_free_room_starts_one_at_the_quarter_hour() {
         let radar = radar();
         let bounds = Size::new(1000.0, 900.0);
+        let rect = Rectangle::new(Point::ORIGIN, bounds);
         let dial = radar.dial(bounds);
         let arcs = layout::arcs(&dial, &radar.plan.window, &radar.plan.spans);
         let run = arcs.iter().find(|a| radar.plan.entries[a.id].event.title == "Run").expect("run is drawn");
         let on_run = dial.point(run.middle(), (run.from + run.to) / 2.0);
-        assert!(matches!(radar.message(radar.hit(bounds, on_run).expect("hit")), Some(Message::OpenEvent(2))));
-        // 21:10 in the outer ring is free: a new event at 21:00.
+        let cursor = |point: Point| mouse::Cursor::Available(point);
+        let mut state = Grip::default();
+        let open = published(radar.update(&mut state, &mouse(PRESS), rect, cursor(on_run)));
+        assert!(matches!(open, Some(Message::OpenEvent(2))), "{open:?}");
+        assert_eq!(state.press, None, "an event opens at once and is never dragged");
+        // 21:10 in the outer ring is free: a new event at 21:00 when the button comes up again.
         let free = dial.point(dial.ring(0).0 + 1.0, radar.plan.window.angle(410.0));
-        let message = radar.message(radar.hit(bounds, free).expect("free room"));
+        assert!(published(radar.update(&mut state, &mouse(PRESS), rect, cursor(free))).is_none());
+        let trembling = Point::new(free.x + 2.0, free.y + 1.0);
+        assert!(published(radar.update(&mut state, &moved(trembling), rect, cursor(trembling))).is_none());
+        let message = published(radar.update(&mut state, &mouse(RELEASE), rect, cursor(trembling)));
         let expected = NaiveTime::from_hms_opt(21, 0, 0);
         assert!(
             matches!(message, Some(Message::NewEvent { date, time }) if date == at(13, 0, 0).date() && time == expected),
             "{message:?}"
         );
-        let cursor = |point: Point| mouse::Cursor::Available(point);
-        let rect = Rectangle::new(Point::ORIGIN, bounds);
-        assert_eq!(radar.mouse_interaction(&Scroll::default(), rect, cursor(on_run)), mouse::Interaction::Pointer);
-        assert_eq!(radar.mouse_interaction(&Scroll::default(), rect, cursor(free)), mouse::Interaction::Idle);
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(on_run)), mouse::Interaction::Pointer);
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(free)), mouse::Interaction::Grab);
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(dial.center)), mouse::Interaction::Idle);
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(Point::new(2.0, 2.0))), mouse::Interaction::Idle);
     }
 
     #[test]
-    fn the_wheel_looks_ahead_in_quarter_hours() {
-        let mut scroll = Scroll::default();
+    fn dragging_the_dial_turns_it_clockwise_later_and_is_no_click() {
+        let radar = radar();
+        let bounds = Size::new(1000.0, 900.0);
+        let rect = Rectangle::new(Point::ORIGIN, bounds);
+        let dial = radar.dial(bounds);
+        let on_dial = |angle: f32| dial.point(dial.numerals, angle);
+        let cursor = |point: Point| mouse::Cursor::Available(point);
+        let mut state = Grip::default();
+        // Pressed on the numerals at 350°, just left of the 12.
+        assert!(published(radar.update(&mut state, &mouse(PRESS), rect, cursor(on_dial(350.0)))).is_none());
+        assert!(state.press.is_some_and(|press| !press.dragging));
+        // Clockwise over the 12 to 5°: 15° are half an hour later.
+        let turned = published(radar.update(&mut state, &moved(on_dial(5.0)), rect, cursor(on_dial(5.0))));
+        assert!(matches!(turned, Some(Message::Turn(30))), "{turned:?}");
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(on_dial(5.0))), mouse::Interaction::Grabbing);
+        // 1° more is two minutes: not yet a step; another 2° make it one, with a minute left.
+        assert!(published(radar.update(&mut state, &moved(on_dial(6.0)), rect, cursor(on_dial(6.0)))).is_none());
+        let step = published(radar.update(&mut state, &moved(on_dial(8.0)), rect, cursor(on_dial(8.0))));
+        assert!(matches!(step, Some(Message::Turn(5))), "{step:?}");
+        // Back anticlockwise, beyond the canvas too: earlier.
+        let outside = Point::new(dial.center.x - 2.0 * dial.radius, dial.center.y);
+        let back = published(radar.update(&mut state, &moved(outside), rect, mouse::Cursor::Available(outside)));
+        assert!(matches!(back, Some(Message::Turn(minutes)) if minutes < 0), "{back:?}");
+        // Letting go after a drag is no click.
+        assert!(published(radar.update(&mut state, &mouse(RELEASE), rect, cursor(outside))).is_none());
+        assert_eq!(state.press, None);
+        // Nothing turns without a press, and a press beside the dial is ignored.
+        assert!(radar.update(&mut state, &moved(on_dial(90.0)), rect, cursor(on_dial(90.0))).is_none());
+        assert!(radar.update(&mut state, &mouse(PRESS), rect, cursor(Point::new(2.0, 2.0))).is_none());
+        assert_eq!(state.press, None);
+    }
+
+    #[test]
+    fn the_wheel_turns_in_quarter_hours() {
+        let mut scroll = Grip::default();
         assert_eq!(Radar::steps(&mut scroll, mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 }), 1, "down looks ahead");
         assert_eq!(Radar::steps(&mut scroll, mouse::ScrollDelta::Lines { x: 0.0, y: 2.0 }), -2);
         assert_eq!(Radar::steps(&mut scroll, mouse::ScrollDelta::Pixels { x: 0.0, y: -30.0 }), 0, "not yet a step");
@@ -909,7 +1105,7 @@ mod tests {
         let radar = radar();
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 900.0));
         let wheel = Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 } });
-        let mut state = Scroll::default();
+        let mut state = Grip::default();
         let cursor = mouse::Cursor::Available(Point::new(500.0, 450.0));
         assert!(radar.update(&mut state, &wheel, bounds, cursor).is_some());
         let narrow = Radar { wheel: false, ..radar };
