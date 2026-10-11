@@ -305,22 +305,33 @@ fn draw_block(frame: &mut Frame, rect: Rectangle, entry: &Entry, centered: bool)
     frame.fill(&shape, Color { a: EVENT_ALPHA, ..entry.color });
     frame.stroke(&shape, Stroke::default().with_color(entry.color).with_width(1.0));
 
-    let content = match entry.time {
-        Some(time) => format!("{} {}", format_time(time), entry.title),
-        None => entry.title.clone(),
+    // One line per piece of text, never wrapped: in a narrow tile wrapping would break words
+    // into single letters. The clip cuts what does not fit.
+    let line_height = EVENT_TEXT_SIZE * 1.25;
+    let lines: Vec<String> = match entry.time {
+        Some(time) if !centered && rect.height >= 2.0 * line_height + 6.0 => {
+            vec![format_time(time), entry.title.clone()]
+        }
+        Some(time) => vec![format!("{} {}", format_time(time), entry.title)],
+        None => vec![entry.title.clone()],
     };
-    let (y, align_y) =
-        if centered { (rect.y + rect.height / 2.0, Vertical::Center) } else { (rect.y + 3.0, Vertical::Top) };
     frame.with_clip(rect, |frame| {
-        frame.fill_text(canvas::Text {
-            content,
-            position: Point::new(rect.x + 6.0, y),
-            max_width: (rect.width - 10.0).max(0.0),
-            color: TEXT,
-            size: Pixels(EVENT_TEXT_SIZE),
-            align_y,
-            ..Default::default()
-        });
+        for (i, content) in lines.into_iter().enumerate() {
+            let (y, align_y) = if centered {
+                (rect.y + rect.height / 2.0, Vertical::Center)
+            } else {
+                (rect.y + 3.0 + i as f32 * line_height, Vertical::Top)
+            };
+            frame.fill_text(canvas::Text {
+                content,
+                position: Point::new(rect.x + 6.0, y),
+                max_width: f32::INFINITY,
+                color: TEXT,
+                size: Pixels(EVENT_TEXT_SIZE),
+                align_y,
+                ..Default::default()
+            });
+        }
     });
 }
 

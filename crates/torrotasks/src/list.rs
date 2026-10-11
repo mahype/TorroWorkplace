@@ -410,8 +410,8 @@ mod tests {
         assert_eq!(due_text(EventTime::Date(day(11)), today()), tr("Today"));
         assert_eq!(due_text(EventTime::Date(day(12)), today()), tr("Tomorrow"));
         assert_eq!(due_text(EventTime::Date(day(10)), today()), tr("Yesterday"));
-        assert_eq!(due_text(EventTime::Date(day(14)), today()), "Mi, 14.10.");
-        assert_eq!(due_text(EventTime::Date(day(5)), today()), "Mo, 05.10.");
+        assert_eq!(due_text(EventTime::Date(day(14)), today()), format!("{}, 14.10.", tr("Wed")));
+        assert_eq!(due_text(EventTime::Date(day(5)), today()), format!("{}, 05.10.", tr("Mon")));
     }
 
     #[test]

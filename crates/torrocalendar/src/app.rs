@@ -56,6 +56,8 @@ pub struct App {
     loading: bool,
     error: Option<String>,
     editor: Option<Editor>,
+    /// The time grid has been scrolled to the morning once; it only exists after the first load.
+    scrolled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -101,8 +103,9 @@ impl App {
             loading: true,
             error: None,
             editor: None,
+            scrolled: false,
         };
-        let task = app.fetch_account().chain(views::week::scroll_to_morning());
+        let task = app.fetch_account();
         (app, task)
     }
 
@@ -158,6 +161,10 @@ impl App {
                         self.collections = collections;
                         self.events = events;
                         self.error = None;
+                        if !self.scrolled {
+                            self.scrolled = true;
+                            return self.scroll_to_morning();
+                        }
                     }
                     Err(err) => self.error = Some(err),
                 }
@@ -271,32 +278,34 @@ impl App {
         }
     }
 
+    /// Navigation left, views and actions right; wraps onto a second line in a narrow tile.
     fn toolbar(&self) -> Element<'_, Message> {
+        let small = |label: &'static str| text(label).size(14);
         let mut views = row![].spacing(4);
         for view in CalView::ALL {
-            let label = button(text(view.label())).on_press(Message::SetView(view));
-            views = views.push(if view == self.view {
-                label.style(button::primary)
-            } else {
-                label.style(button::secondary)
-            });
+            let style = if view == self.view { button::primary } else { button::secondary };
+            views =
+                views.push(button(small(view.label())).padding([4, 10]).style(style).on_press(Message::SetView(view)));
         }
-        row![
-            button(text(tr("Today"))).style(button::secondary).on_press(Message::Today),
-            button(text("‹")).style(button::secondary).on_press(Message::Prev),
-            button(text("›")).style(button::secondary).on_press(Message::Next),
-            text(self.heading()).size(18),
-            iced::widget::Space::new().width(Length::Fill),
+        let navigation = row![
+            button(small(tr("Today"))).padding([4, 10]).style(button::secondary).on_press(Message::Today),
+            button(small("‹")).padding([4, 10]).style(button::secondary).on_press(Message::Prev),
+            button(small("›")).padding([4, 10]).style(button::secondary).on_press(Message::Next),
+            text(self.heading()).size(17),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        let actions = row![
             views,
-            button(text(tr("+ Event")))
+            button(small(tr("+ Event")))
+                .padding([4, 10])
                 .style(button::primary)
                 .on_press(Message::NewEvent { date: self.anchor, time: Some(NaiveTime::MIN + Days::hours(9)) }),
-            button(text("⟳")).style(button::secondary).on_press(Message::Refresh),
+            button(small("⟳")).padding([4, 10]).style(button::secondary).on_press(Message::Refresh),
         ]
-        .spacing(8)
-        .padding(10)
-        .align_y(iced::Alignment::Center)
-        .into()
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+        row![navigation, actions].spacing(16).padding(10).wrap().vertical_spacing(8).into()
     }
 
     fn sidebar(&self) -> Element<'_, Message> {

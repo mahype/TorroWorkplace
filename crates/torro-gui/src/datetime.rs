@@ -5,22 +5,24 @@
 //! happens with [`to_utc`] and [`to_local`].
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use torro_core::i18n::{tr, trf};
 
-const WEEKDAYS: [&str; 7] = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"];
-const WEEKDAYS_SHORT: [&str; 7] = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+// English names; `tr` gives the German ones (see torro_core::i18n).
+const WEEKDAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const WEEKDAYS_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const MONTHS: [&str; 12] = [
-    "Januar",
-    "Februar",
-    "März",
+    "January",
+    "February",
+    "March",
     "April",
-    "Mai",
-    "Juni",
-    "Juli",
+    "May",
+    "June",
+    "July",
     "August",
     "September",
-    "Oktober",
+    "October",
     "November",
-    "Dezember",
+    "December",
 ];
 
 /// `11.10.2026`, `11.10.26`, `11.10.` (year of `today`), `11.10` → date. Keywords:
@@ -93,20 +95,28 @@ pub fn format_time(time: NaiveTime) -> String {
     time.format("%H:%M").to_string()
 }
 
-/// `Sonntag, 11. Oktober 2026`
+/// `Sunday, 11 October 2026` (German: `Sonntag, 11. Oktober 2026`)
 pub fn format_long_date(date: NaiveDate) -> String {
-    format!("{}, {}. {} {}", weekday_name(date, false), date.day(), month_name(date.month()), date.year())
+    trf(
+        "{weekday}, {day} {month} {year}",
+        &[
+            ("weekday", &weekday_name(date, false)),
+            ("day", &date.day()),
+            ("month", &month_name(date.month())),
+            ("year", &date.year()),
+        ],
+    )
 }
 
-/// German weekday name, `Montag` … `Sonntag`; short form `Mo` … `So` with `short`.
+/// Weekday name, `Monday` … `Sunday`; short form `Mon` … `Sun` with `short` (translated).
 pub fn weekday_name(date: NaiveDate, short: bool) -> &'static str {
     let index = date.weekday().num_days_from_monday() as usize;
-    if short { WEEKDAYS_SHORT[index] } else { WEEKDAYS[index] }
+    tr(if short { WEEKDAYS_SHORT[index] } else { WEEKDAYS[index] })
 }
 
-/// German month name, `Januar` … `Dezember`.
+/// Month name, `January` … `December` (translated).
 pub fn month_name(month: u32) -> &'static str {
-    MONTHS.get(month.wrapping_sub(1) as usize).copied().unwrap_or("")
+    MONTHS.get(month.wrapping_sub(1) as usize).map(|name| tr(name)).unwrap_or("")
 }
 
 /// The Monday of the ISO week containing `date`.
@@ -142,8 +152,12 @@ mod tests {
 
     #[test]
     fn names_and_weeks() {
-        assert_eq!(format_long_date(d(2026, 10, 11)), "Sonntag, 11. Oktober 2026");
-        assert_eq!(weekday_name(d(2026, 10, 12), true), "Mo");
+        let long = trf(
+            "{weekday}, {day} {month} {year}",
+            &[("weekday", &tr("Sunday")), ("day", &11), ("month", &tr("October")), ("year", &2026)],
+        );
+        assert_eq!(format_long_date(d(2026, 10, 11)), long);
+        assert_eq!(weekday_name(d(2026, 10, 12), true), tr("Mon"));
         assert_eq!(week_start(d(2026, 10, 11)), d(2026, 10, 5));
         let grid = month_grid(d(2026, 10, 20));
         assert_eq!((grid.len(), grid[0], grid[41]), (42, d(2026, 9, 28), d(2026, 11, 8)));

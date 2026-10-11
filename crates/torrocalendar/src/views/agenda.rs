@@ -394,9 +394,9 @@ mod tests {
         let today = day(11);
         assert_eq!(day_heading(day(11), today), tr("Today"));
         assert_eq!(day_heading(day(12), today), tr("Tomorrow"));
-        assert_eq!(day_heading(day(14), today), "Mi, 14.10.");
+        assert_eq!(day_heading(day(14), today), format!("{}, 14.10.", tr("Wed")));
         assert_eq!(day_heading(day(12), day(11)), tr("Tomorrow"));
-        assert_eq!(day_heading(day(20), day(11)), "Di, 20.10.");
+        assert_eq!(day_heading(day(20), day(11)), format!("{}, 20.10.", tr("Tue")));
     }
 
     #[test]
