@@ -31,25 +31,41 @@ impl Hyprland {
     }
 }
 
+/// The normal windows from the answers to `j/clients` and `j/monitors`, with monitor names
+/// filled in and, if given, only those on `workspace`. Split out of [`Hyprland::windows`] so it
+/// can be tested without a socket.
+fn windows_from_answers(
+    clients: &str,
+    monitors: &str,
+    workspace: Option<&WorkspaceId>,
+) -> Result<Vec<Window>, WmError> {
+    let names = json::monitor_names(monitors)?;
+    let windows = json::join_monitor_names(json::parse_clients_with_monitor(clients)?, &names);
+    Ok(match workspace {
+        Some(workspace) => windows.into_iter().filter(|window| &window.workspace == workspace).collect(),
+        None => windows,
+    })
+}
+
 impl WindowManager for Hyprland {
     fn name(&self) -> &'static str {
         "hyprland"
     }
 
-    /// Task 1.5.
     async fn active_workspace(&self) -> Result<WorkspaceId, WmError> {
-        Err(WmError::NotImplemented("hyprland active_workspace (task 1.5)"))
+        let answer = socket::request(&self.socket_dir, "j/activeworkspace").await?;
+        json::parse_active_workspace(&answer)
     }
 
-    /// Task 1.5.
     async fn windows(&self, workspace: Option<&WorkspaceId>) -> Result<Vec<Window>, WmError> {
-        let _ = workspace;
-        Err(WmError::NotImplemented("hyprland windows (task 1.5)"))
+        let clients = socket::request(&self.socket_dir, "j/clients").await?;
+        let monitors = socket::request(&self.socket_dir, "j/monitors").await?;
+        windows_from_answers(&clients, &monitors, workspace)
     }
 
-    /// Task 1.5.
     async fn monitors(&self) -> Result<Vec<Monitor>, WmError> {
-        Err(WmError::NotImplemented("hyprland monitors (task 1.5)"))
+        let answer = socket::request(&self.socket_dir, "j/monitors").await?;
+        json::parse_monitors(&answer)
     }
 
     /// Task 1.6.
@@ -85,5 +101,52 @@ impl WindowManager for Hyprland {
     /// Task 1.7.
     async fn events(&self) -> Result<Events, WmError> {
         events::subscribe(&self.socket_dir).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CLIENTS: &str = include_str!("../../tests/fixtures/hyprland-clients.json");
+    const MONITORS: &str = include_str!("../../tests/fixtures/hyprland-monitors.json");
+
+    #[test]
+    fn windows_carry_monitor_name_from_monitors_answer() {
+        let windows = windows_from_answers(CLIENTS, MONITORS, None).expect("fixtures parse");
+        assert_eq!(windows.len(), 7);
+        assert!(windows.iter().all(|w| w.monitor.as_deref() == Some("HDMI-A-1")));
+    }
+
+    #[test]
+    fn workspace_filter_keeps_only_that_workspace() {
+        let all = windows_from_answers(CLIENTS, MONITORS, None).expect("fixtures parse");
+        let on_one = windows_from_answers(CLIENTS, MONITORS, Some(&WorkspaceId("1".into()))).expect("fixtures parse");
+        assert!(!on_one.is_empty());
+        assert!(on_one.len() < all.len());
+        assert!(on_one.iter().all(|w| w.workspace == WorkspaceId("1".into())));
+        let expected: Vec<&Window> = all.iter().filter(|w| w.workspace == WorkspaceId("1".into())).collect();
+        assert_eq!(on_one.iter().collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn workspace_without_windows_gives_empty_list() {
+        let windows = windows_from_answers(CLIENTS, MONITORS, Some(&WorkspaceId("42".into()))).expect("fixtures parse");
+        assert!(windows.is_empty());
+    }
+
+    /// Needs a running Hyprland on this machine: `cargo test -p torro-wm -- --ignored`.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[ignore = "needs a running Hyprland instance"]
+    async fn live_windows_of_active_workspace_carry_monitor_names() {
+        let wm = Hyprland::from_env(|key| std::env::var(key).ok()).expect("Hyprland environment");
+        let active = wm.active_workspace().await.expect("active workspace");
+        let windows = wm.windows(Some(&active)).await.expect("windows of active workspace");
+        eprintln!("active workspace {active}: {} window(s)", windows.len());
+        assert!(windows.iter().all(|w| w.workspace == active), "window on another workspace");
+        for window in &windows {
+            assert!(window.monitor.is_some(), "{} ({}) has no monitor name", window.id, window.class);
+        }
     }
 }

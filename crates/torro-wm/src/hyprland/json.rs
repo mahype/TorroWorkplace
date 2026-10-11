@@ -5,15 +5,49 @@
 //! Hyprland's JSON has many more fields than we need; serde ignores the rest, so a new
 //! Hyprland version that adds fields does not break parsing.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 use crate::{Monitor, Rect, Window, WindowId, WmError, WorkspaceId};
 
 /// The normal windows in a `j/clients` answer: mapped, not hidden, with a class, on a
-/// regular workspace (id ≠ 0, name not `special:…`).
+/// regular workspace (id ≠ 0, name not `special:…`). `monitor` is left `None`; see
+/// [`join_monitor_names`].
 pub fn parse_clients(json: &str) -> Result<Vec<Window>, WmError> {
+    Ok(parse_clients_with_monitor(json)?.into_iter().map(|(window, _)| window).collect())
+}
+
+/// Like [`parse_clients`], but also returns each window's numeric monitor id from the
+/// `monitor` field of `j/clients`.
+pub fn parse_clients_with_monitor(json: &str) -> Result<Vec<(Window, Option<i64>)>, WmError> {
     let clients: Vec<RawClient> = serde_json::from_str(json).map_err(|err| protocol("clients", &err))?;
-    Ok(clients.into_iter().filter(RawClient::is_normal).map(Window::from).collect())
+    Ok(clients
+        .into_iter()
+        .filter(RawClient::is_normal)
+        .map(|client| {
+            let monitor_id = client.monitor;
+            (Window::from(client), monitor_id)
+        })
+        .collect())
+}
+
+/// Maps monitor ids to monitor names from a `j/monitors` answer.
+pub fn monitor_names(json: &str) -> Result<HashMap<i64, String>, WmError> {
+    let monitors: Vec<RawMonitorId> = serde_json::from_str(json).map_err(|err| protocol("monitors", &err))?;
+    Ok(monitors.into_iter().map(|monitor| (monitor.id, monitor.name)).collect())
+}
+
+/// Sets `Window::monitor` from the monitor id of each window. Ids that are not in `names`
+/// (for example a monitor that was unplugged meanwhile) leave the monitor `None`.
+pub fn join_monitor_names(clients: Vec<(Window, Option<i64>)>, names: &HashMap<i64, String>) -> Vec<Window> {
+    clients
+        .into_iter()
+        .map(|(mut window, monitor_id)| {
+            window.monitor = monitor_id.and_then(|id| names.get(&id).cloned());
+            window
+        })
+        .collect()
 }
 
 /// The workspace name in a `j/activeworkspace` answer.
@@ -59,6 +93,9 @@ struct RawClient {
     size: [i32; 2],
     #[serde(default)]
     floating: bool,
+    /// Id of the monitor the window is on; its name is in `j/monitors`.
+    #[serde(default)]
+    monitor: Option<i64>,
     /// `-1` (or missing) when Hyprland does not know the process.
     #[serde(default)]
     pid: Option<i64>,
@@ -123,6 +160,13 @@ impl RawWorkspace {
     fn is_special(&self) -> bool {
         self.name == "special" || self.name.starts_with("special:")
     }
+}
+
+/// The id and name of one entry of `j/monitors`, for the join with `j/clients`.
+#[derive(Debug, Deserialize)]
+struct RawMonitorId {
+    id: i64,
+    name: String,
 }
 
 /// One entry of `j/monitors`.
@@ -277,5 +321,47 @@ mod tests {
 
         let zero = r#"[{"name": "DP-1", "width": 1, "height": 1, "scale": 0}]"#;
         assert!(matches!(parse_monitors(zero), Err(WmError::Protocol(_))));
+    }
+
+    #[test]
+    fn monitor_names_fixture_maps_id_to_name() {
+        let names = monitor_names(MONITORS).expect("fixture parses");
+        assert_eq!(names.get(&0).map(String::as_str), Some("HDMI-A-1"));
+        assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn join_gives_every_fixture_window_the_monitor_name() {
+        let clients = parse_clients_with_monitor(CLIENTS).expect("fixture parses");
+        let names = monitor_names(MONITORS).expect("fixture parses");
+        let windows = join_monitor_names(clients, &names);
+        assert_eq!(windows.len(), 7);
+        for window in &windows {
+            assert_eq!(window.monitor.as_deref(), Some("HDMI-A-1"), "{}", window.id);
+        }
+    }
+
+    #[test]
+    fn join_matches_each_window_to_its_own_monitor() {
+        let clients = r#"[
+            {"address": "0x1", "class": "a", "workspace": {"id": 1, "name": "1"}, "monitor": 1},
+            {"address": "0x2", "class": "b", "workspace": {"id": 2, "name": "2"}, "monitor": 0},
+            {"address": "0x3", "class": "c", "workspace": {"id": 2, "name": "2"}, "monitor": 7},
+            {"address": "0x4", "class": "d", "workspace": {"id": 2, "name": "2"}}
+        ]"#;
+        let monitors = r#"[
+            {"id": 0, "name": "DP-1", "width": 1, "height": 1, "scale": 1},
+            {"id": 1, "name": "eDP-1", "width": 1, "height": 1, "scale": 1}
+        ]"#;
+        let names = monitor_names(monitors).expect("parses");
+        let windows = join_monitor_names(parse_clients_with_monitor(clients).expect("parses"), &names);
+        let monitor_of: Vec<Option<&str>> = windows.iter().map(|w| w.monitor.as_deref()).collect();
+        // Unknown id 7 and a missing `monitor` field both stay unnamed.
+        assert_eq!(monitor_of, vec![Some("eDP-1"), Some("DP-1"), None, None]);
+    }
+
+    #[test]
+    fn monitor_names_reject_garbage() {
+        assert!(matches!(monitor_names("{not json"), Err(WmError::Protocol(_))));
     }
 }
