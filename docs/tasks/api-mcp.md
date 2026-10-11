@@ -9,7 +9,7 @@ Entscheidungen: [api.md, „Entscheidungen“](../api.md#entscheidungen) (2026-1
 Reihenfolge in drei Meilensteinen:
 
 1. **Alle bisherigen Funktionen über MCP, mit Rechten:** A.0 → (A.0b, A.0d parallel) → A.0c → A.1 →
-   A.2 → A.4. Bis A.3 lehnt der Dienst ab, was eine Freigabe bräuchte.
+   A.2 → (A.4, A.2b parallel). Bis A.3 lehnt der Dienst ab, was eine Freigabe bräuchte.
    A.4 darf ab A.1 entstehen, wird aber erst nach A.2 zusammengeführt, damit es nie einen
    Agenten-Schlüssel ohne Rechteprüfung gibt.
 2. **Sicherheit und Nachvollziehbarkeit:** A.3 und A.5 parallel.
@@ -107,6 +107,18 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** Tabelle-Test über alle Katalogeinträge × Stufen; fremde Sammlung = `not-found`;
   ausgeblendete Sammlung taucht für einen Client-Schlüssel in keiner Antwort auf;
   `clients.*` mit Client-Schlüssel = `forbidden`.
+
+### A.2b Serien und Überschreiben im Kern absichern
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** A.2 · **Dateien:** `crates/torroworkplace/src/pim.rs`, `crates/torro-pim-caldav/src/write.rs`, `crates/torro-pim-caldav/src/*.rs` (nur falls für das Lesen eines Elements nötig)
+- Aus dem API-Check von A.4: Ob ein Termin zu einer Serie gehört, prüft der Kern heute nur am
+  mitgeschickten `recurring`. Künftig bestimmt er es selbst aus Cache oder Server anhand von `href`;
+  `save_event`/`delete_event` auf eine Serie bleiben `unsupported`, egal was der Client schickt.
+- Ändern oder Löschen eines vorhandenen Elements (mit `href`) ohne `etag` wird abgelehnt
+  (`conflict` bzw. `error` mit klarer Meldung); kein PUT/DELETE ohne `If-Match` auf vorhandene
+  Elemente. Neu anlegen bleibt `If-None-Match: *`.
+- **Abnahme:** Tests: Serie mit `recurring: false` überschreiben → abgelehnt; Update ohne `etag` →
+  abgelehnt; normales Update mit `etag` → geht.
 
 ### A.3 Freigaben
 - [ ] erledigt
