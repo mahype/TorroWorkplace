@@ -213,7 +213,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Hover `list_row`. Tageskopf `CAPTION` mit Datum rechts in `TEXT_3`. Inhalt `content(CONTENT_MAX)`.
 
 ### C.5 Editor
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** F.5
 - **Dateien:** `crates/torrocalendar/src/editor.rs`
 - Titel als großes randloses Feld (`TITLE`), Felder `CONTROL` hoch mit `style::text_input`,

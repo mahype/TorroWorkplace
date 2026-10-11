@@ -76,9 +76,6 @@ pub enum Menu {
     View,
 }
 
-/// Width of the event editor dialog (until C.5 gives it its own layout).
-const EDITOR_WIDTH: f32 = 460.0;
-
 /// Days the agenda shows from its anchor on.
 const AGENDA_DAYS: i64 = 30;
 
@@ -385,6 +382,8 @@ impl App {
                 match editor.update(message) {
                     editor::Action::None => {}
                     editor::Action::Close => self.editor = None,
+                    // The first field with a problem, after a press on Save.
+                    editor::Action::Focus(id) => return iced::widget::operation::focus(id),
                     editor::Action::Save(event) => {
                         let source = self.source.clone();
                         return Task::perform(
@@ -452,7 +451,7 @@ impl App {
             Some(editor) => modal(
                 window,
                 editor.view().map(Message::Editor),
-                EDITOR_WIDTH,
+                editor::WIDTH,
                 Message::Editor(editor::Message::Cancel),
             ),
             None => window,

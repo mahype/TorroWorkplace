@@ -1,23 +1,45 @@
 //! Creating and editing an event (task K.12 in `docs/tasks/kalender-aufgaben.md`).
 //!
-//! A card over the calendar with: title, calendar (pick list), all-day toggle, start date
-//! and time, end date and time (German input, `torro_gui::datetime::parse_*`), location,
-//! notes; buttons Save, Cancel and (for existing events) Delete. Invalid input shows a short
-//! hint and disables Save. Recurring occurrences (`event.recurring`) open read-only with a
-//! note that series cannot be edited yet, and only Close. Escape closes: [`subscription`]
-//! reports it, and the app batches it into its own subscription while the editor is open.
+//! A dialog over the calendar, after Linear (task C.5): a large borderless title, then the
+//! calendar (pick list with its colour dot), the all-day switch, start and end (date and time
+//! side by side, `torro_gui::datetime::parse_*`), location and notes; Delete (danger) on the
+//! left, Cancel (ghost) and Save (the one primary button) on the right.
+//!
+//! Errors stay hidden until the first attempt to save. Save is always active: with problems it
+//! marks the field that is wrong, says why under it and hands the app an [`Action::Focus`] for
+//! it, then the message follows the input live. (Iced 0.14 reports no "field left" event, so
+//! leaving a field alone does not validate it.) Enter in a single-line field saves.
+//!
+//! Recurring occurrences (`event.recurring`) and events of read-only calendars open as plain
+//! details with a note and only Close. Escape closes: [`subscription`] reports it, and the app
+//! batches it into its own subscription while the editor is open.
 //!
 //! The form works on strings, as the user typed them. [`Form::build`] turns it into an
 //! [`Event`]: all-day events store an exclusive end date, so the form's inclusive end date
 //! gets one day added on save and one day taken off when an event is shown.
 
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
-use iced::widget::{button, column, container, pick_list, row, space, text, text_editor, text_input, toggler};
-use iced::{Alignment, Background, Element, Length, Subscription, border, keyboard};
+use iced::widget::{
+    column, container, pick_list, row, rule, scrollable, space as blank, svg, text, text_editor, text_input, toggler,
+};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Subscription, Theme, keyboard};
 use torro_core::i18n::tr;
 use torro_gui::datetime::{format_date, format_time, parse_date, parse_time, to_local, to_utc};
-use torro_gui::theme;
+use torro_gui::icon::{self, Icon, icon};
+use torro_gui::theme::{self, palette, size, space};
+use torro_gui::widgets::{collection_color, color_dot, icon_button, text_button};
+use torro_gui::{style, typo};
 use torro_pim::{Collection, Event, EventTime};
+
+/// Width of the dialog; the app centres it at most this wide and lets it shrink in narrow windows.
+pub const WIDTH: f32 = 520.0;
+
+/// Ids of the inputs that [`Action::Focus`] can name.
+const TITLE_ID: &str = "editor-title";
+const START_DATE_ID: &str = "editor-start-date";
+const START_TIME_ID: &str = "editor-start-time";
+const END_DATE_ID: &str = "editor-end-date";
+const END_TIME_ID: &str = "editor-end-time";
 
 /// Start and end time shown for an all-day event, so that switching it to timed gives
 /// sensible values.
@@ -36,6 +58,8 @@ pub struct Editor {
     form: Form,
     /// The notes as an editor widget; `form.notes` mirrors its text.
     notes: text_editor::Content,
+    /// Save has been pressed once: from then on the first problem is shown at its field.
+    attempted: bool,
 }
 
 /// A calendar in the pick list: the id that goes into the event, the name that is shown.
@@ -43,6 +67,8 @@ pub struct Editor {
 pub struct CalendarChoice {
     id: String,
     name: String,
+    /// The calendar's colour as the server reports it (`#RRGGBB`), for the dot next to the name.
+    color: Option<String>,
 }
 
 impl std::fmt::Display for CalendarChoice {
@@ -74,6 +100,8 @@ pub enum Action {
     Save(Event),
     Delete(Event),
     Close,
+    /// Give the keyboard focus to the input with this id (the first one with a problem).
+    Focus(&'static str),
 }
 
 /// Why the form cannot be saved yet. The first one found is shown as the hint.
@@ -90,7 +118,37 @@ pub enum Problem {
     EndDateBeforeStart,
 }
 
+/// The group of the form a problem belongs to, which is where its message is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Calendar,
+    Title,
+    Start,
+    End,
+}
+
 impl Problem {
+    fn field(self) -> Field {
+        match self {
+            Problem::ChooseCalendar | Problem::CalendarMove => Field::Calendar,
+            Problem::TitleEmpty => Field::Title,
+            Problem::StartDate | Problem::StartTime => Field::Start,
+            Problem::EndDate | Problem::EndTime | Problem::EndBeforeStart | Problem::EndDateBeforeStart => Field::End,
+        }
+    }
+
+    /// The input to mark and focus. The calendar is a pick list, which Iced cannot focus.
+    fn input(self) -> Option<&'static str> {
+        match self {
+            Problem::ChooseCalendar | Problem::CalendarMove => None,
+            Problem::TitleEmpty => Some(TITLE_ID),
+            Problem::StartDate => Some(START_DATE_ID),
+            Problem::StartTime => Some(START_TIME_ID),
+            Problem::EndDate | Problem::EndDateBeforeStart => Some(END_DATE_ID),
+            Problem::EndTime | Problem::EndBeforeStart => Some(END_TIME_ID),
+        }
+    }
+
     fn message(self) -> &'static str {
         match self {
             Problem::ChooseCalendar => tr("Choose a calendar"),
@@ -245,13 +303,14 @@ fn calendar_choices(calendars: &[Collection], current: Option<&str>) -> Vec<Cale
     let mut choices: Vec<CalendarChoice> = calendars
         .iter()
         .filter(|c| c.kind.has_events() && c.writable)
-        .map(|c| CalendarChoice { id: c.id.clone(), name: c.name.clone() })
+        .map(|c| CalendarChoice { id: c.id.clone(), name: c.name.clone(), color: c.color.clone() })
         .collect();
     if let Some(id) = current
         && !choices.iter().any(|c| c.id == id)
     {
-        let name = calendars.iter().find(|c| c.id == id).map_or_else(|| id.to_string(), |c| c.name.clone());
-        choices.insert(0, CalendarChoice { id: id.to_string(), name });
+        let own = calendars.iter().find(|c| c.id == id);
+        let name = own.map_or_else(|| id.to_string(), |c| c.name.clone());
+        choices.insert(0, CalendarChoice { id: id.to_string(), name, color: own.and_then(|c| c.color.clone()) });
     }
     choices
 }
@@ -262,7 +321,7 @@ impl Editor {
     pub fn new_event(calendars: &[Collection], date: NaiveDate, time: Option<NaiveTime>) -> Editor {
         let choices = calendar_choices(calendars, None);
         let form = Form::for_new(date, time, choices.first().cloned());
-        Editor { original: None, choices, read_only: None, notes: text_editor::Content::new(), form }
+        Editor { original: None, choices, read_only: None, notes: text_editor::Content::new(), form, attempted: false }
     }
 
     pub fn edit(event: &Event, calendars: &[Collection]) -> Editor {
@@ -282,6 +341,7 @@ impl Editor {
             read_only,
             notes: text_editor::Content::with_text(&form.notes),
             form,
+            attempted: false,
         }
     }
 
@@ -303,8 +363,12 @@ impl Editor {
                 if self.is_recurring() {
                     return Action::None;
                 }
-                if let Ok(event) = self.check() {
-                    return Action::Save(event);
+                match self.check() {
+                    Ok(event) => return Action::Save(event),
+                    Err(problem) => {
+                        self.attempted = true;
+                        return problem.input().map_or(Action::None, Action::Focus);
+                    }
                 }
             }
             Message::Delete => {
@@ -330,56 +394,109 @@ impl Editor {
         self.form.build(Local::now().date_naive(), self.original.as_ref())
     }
 
+    /// The first problem, once Save has been pressed; before that the form stays quiet.
+    fn shown_problem(&self) -> Option<Problem> {
+        if self.attempted { self.check().err() } else { None }
+    }
+
     fn form_view(&self) -> Element<'_, Message> {
         let form = &self.form;
-        let problem = self.check().err();
-
-        let mut start = row![text_input(tr("Date"), &form.start_date).on_input(Message::StartDate).width(Length::Fill)]
-            .spacing(8)
-            .width(Length::Fill);
-        let mut end = row![text_input(tr("Date"), &form.end_date).on_input(Message::EndDate).width(Length::Fill)]
-            .spacing(8)
-            .width(Length::Fill);
-        if !form.all_day {
-            start =
-                start.push(text_input(tr("Time"), &form.start_time).on_input(Message::StartTime).width(Length::Fill));
-            end = end.push(text_input(tr("Time"), &form.end_time).on_input(Message::EndTime).width(Length::Fill));
-        }
-
-        let calendar = pick_list(self.choices.as_slice(), form.calendar.clone(), Message::Calendar)
-            .placeholder(tr("Choose a calendar"))
-            .width(Length::Fill);
-
-        let mut actions = row![].spacing(8).width(Length::Fill).align_y(Alignment::Center);
-        if self.original.is_some() {
-            actions = actions.push(button(text(tr("Delete"))).style(button::danger).on_press(Message::Delete));
-        }
-        actions = actions
-            .push(space().width(Length::Fill))
-            .push(button(text(tr("Cancel"))).style(button::secondary).on_press(Message::Cancel))
-            .push(
-                button(text(tr("Save")))
-                    .style(button::primary)
-                    .on_press_maybe(problem.is_none().then_some(Message::Save)),
-            );
+        let shown = self.shown_problem();
+        let invalid = |input: &str| shown.is_some_and(|problem| problem.input() == Some(input));
+        let problem_in = |field: Field| shown.filter(|problem| problem.field() == field);
 
         let heading = if self.original.is_some() { tr("Edit event") } else { tr("New event") };
-        let mut body = column![
-            text(heading).size(18),
-            field(tr("Title"), text_input("", &form.title).on_input(Message::Title)),
-            field(tr("Calendar"), calendar),
-            toggler(form.all_day).label(tr("All day")).on_toggle(Message::AllDay),
-            field(tr("Start"), start),
-            field(tr("End"), end),
-            field(tr("Location"), text_input("", &form.location).on_input(Message::Location)),
-            field(tr("Notes"), text_editor(&self.notes).on_action(Message::Notes).height(120.0)),
+        let head = row![
+            typo::text(typo::CAPTION, heading).style(theme::text_3),
+            blank::horizontal(),
+            icon_button(Icon::X, tr("Close"), Some(Message::Cancel)),
         ]
-        .spacing(12)
-        .width(Length::Fill);
-        if let Some(problem) = problem {
-            body = body.push(text(problem.message()).size(13).color(theme::attention()));
+        .align_y(Alignment::Center);
+        let title = group(None, title_input(&form.title), problem_in(Field::Title));
+
+        let calendar_invalid = problem_in(Field::Calendar).is_some();
+        let mut calendar = row![].spacing(space::S).align_y(Alignment::Center);
+        if let Some(choice) = &form.calendar {
+            calendar = calendar.push(color_dot(collection_color(choice.color.as_deref()), space::S));
         }
-        card(body.push(actions))
+        calendar = calendar.push(
+            pick_list(self.choices.as_slice(), form.calendar.clone(), Message::Calendar)
+                .placeholder(tr("Choose a calendar"))
+                .padding(style::INPUT_PADDING)
+                .text_size(typo::BODY.size)
+                .text_line_height(typo::BODY.line_height)
+                .font(typo::BODY.font)
+                .width(Length::Fill)
+                .style(move |theme, status| {
+                    let mut look = style::pick_list(theme, status);
+                    if calendar_invalid {
+                        look.border.color = palette(theme).error_text;
+                    }
+                    look
+                })
+                .menu_style(style::pick_list_menu),
+        );
+
+        let all_day = toggler(form.all_day)
+            .label(tr("All day"))
+            .on_toggle(Message::AllDay)
+            .size(style::CHECK_SIZE)
+            .text_size(typo::BODY.size)
+            .text_line_height(typo::BODY.line_height)
+            .font(typo::BODY.font)
+            .spacing(space::S)
+            .style(style::toggler);
+
+        let start = moment(
+            form.all_day,
+            Input::new(tr("Date"), &form.start_date, Message::StartDate, START_DATE_ID, invalid(START_DATE_ID)),
+            Input::new(tr("Time"), &form.start_time, Message::StartTime, START_TIME_ID, invalid(START_TIME_ID)),
+        );
+        let end = moment(
+            form.all_day,
+            Input::new(tr("Date"), &form.end_date, Message::EndDate, END_DATE_ID, invalid(END_DATE_ID)),
+            Input::new(tr("Time"), &form.end_time, Message::EndTime, END_TIME_ID, invalid(END_TIME_ID)),
+        );
+
+        let location = text_input("", &form.location)
+            .on_input(Message::Location)
+            .on_submit(Message::Save)
+            .padding(style::INPUT_PADDING)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .font(typo::BODY.font)
+            .style(flagged(false));
+        let notes = text_editor(&self.notes)
+            .on_action(Message::Notes)
+            .padding(style::INPUT_PADDING)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .font(typo::BODY.font)
+            .min_height(size::CONTROL * NOTES_MIN_ROWS)
+            .max_height(size::CONTROL * NOTES_MAX_ROWS)
+            .style(style::text_editor);
+
+        // Save stays active so that a click always answers: it saves, or shows what is missing.
+        let mut actions = row![].spacing(space::S).align_y(Alignment::Center);
+        if self.original.is_some() {
+            actions = actions.push(text_button(None, tr("Delete"), style::button::danger, Some(Message::Delete)));
+        }
+        actions = actions
+            .push(blank::horizontal())
+            .push(text_button(None, tr("Cancel"), style::button::ghost, Some(Message::Cancel)))
+            .push(text_button(None, tr("Save"), style::button::primary, Some(Message::Save)));
+
+        let fields = column![
+            column![head, title].spacing(space::S),
+            group(Some(tr("Calendar")), calendar, problem_in(Field::Calendar)),
+            all_day,
+            group(Some(tr("Start")), start, problem_in(Field::Start)),
+            group(Some(tr("End")), end, problem_in(Field::End)),
+            group(Some(tr("Location")), location, None),
+            group(Some(tr("Notes")), notes, None),
+        ]
+        .spacing(space::L);
+        card(column![fields, rule::horizontal(1).style(style::rule), actions].spacing(space::L))
     }
 
     /// A recurring occurrence or an event in a read-only calendar: the details as text, a
@@ -391,28 +508,36 @@ impl Editor {
         } else {
             format!("{} {} – {} {}", form.start_date, form.start_time, form.end_date, form.end_time)
         };
-        let calendar = form.calendar.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+        let calendar = form.calendar.as_ref().map(|c| (collection_color(c.color.as_deref()), c.name.clone()));
 
-        let mut body =
-            column![text(form.title.clone()).size(18), detail(tr("Calendar"), calendar), detail(tr("When"), when)]
-                .spacing(12)
-                .width(Length::Fill);
+        let head = row![
+            typo::text(typo::TITLE, form.title.clone()).width(Length::Fill),
+            icon_button(Icon::X, tr("Close"), Some(Message::Cancel)),
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Start);
+        let mut details = column![].spacing(space::L);
+        if let Some((color, name)) = calendar {
+            let value = row![color_dot(color, space::S), typo::text(typo::BODY, name)]
+                .spacing(space::S)
+                .align_y(Alignment::Center);
+            details = details.push(detail(tr("Calendar"), value));
+        }
+        details = details.push(detail(tr("When"), typo::text(typo::BODY.tabular(), when)));
         if !form.location.is_empty() {
-            body = body.push(detail(tr("Location"), form.location.clone()));
+            details = details.push(detail(tr("Location"), typo::text(typo::BODY, form.location.clone())));
         }
         if !form.notes.is_empty() {
-            body = body.push(detail(tr("Notes"), form.notes.clone()));
+            details = details.push(detail(tr("Notes"), typo::text(typo::BODY, form.notes.clone())));
         }
+        let mut body = column![head, details].spacing(space::L);
         if let Some(reason) = self.read_only {
-            body = body.push(text(tr(reason)).size(13).color(theme::MUTED));
+            body = body.push(typo::text(typo::META, tr(reason)).style(theme::text_2));
         }
-        let close = row![
-            space().width(Length::Fill),
-            button(text(tr("Close"))).style(button::secondary).on_press(Message::Cancel)
-        ]
-        .width(Length::Fill)
-        .align_y(Alignment::Center);
-        card(body.push(close))
+        let close =
+            row![blank::horizontal(), text_button(None, tr("Close"), style::button::secondary, Some(Message::Cancel))]
+                .align_y(Alignment::Center);
+        card(body.push(rule::horizontal(1).style(style::rule)).push(close).spacing(space::L))
     }
 }
 
@@ -437,28 +562,142 @@ fn escape_to_cancel(
     }
 }
 
-/// A label above an input.
-fn field<'a>(label: &'static str, input: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    column![text(label).size(12).color(theme::MUTED), input.into()].spacing(4).width(Length::Fill).into()
+/// Date and time side by side, in these proportions (a date is wider than "14:30").
+const DATE_PORTION: u16 = 3;
+const TIME_PORTION: u16 = 2;
+/// The notes start three input heights tall and grow to five before they scroll.
+const NOTES_MIN_ROWS: f32 = 3.0;
+const NOTES_MAX_ROWS: f32 = 5.0;
+
+/// One single-line field of the form, with what it needs to be built.
+struct Input<'a> {
+    placeholder: &'static str,
+    value: &'a str,
+    on_input: fn(String) -> Message,
+    id: &'static str,
+    invalid: bool,
+}
+
+impl<'a> Input<'a> {
+    fn new(
+        placeholder: &'static str,
+        value: &'a str,
+        on_input: fn(String) -> Message,
+        id: &'static str,
+        invalid: bool,
+    ) -> Self {
+        Input { placeholder, value, on_input, id, invalid }
+    }
+
+    /// A 32-high input in tabular figures, so that dates and times line up; Enter saves.
+    fn view(self) -> text_input::TextInput<'a, Message> {
+        text_input(self.placeholder, self.value)
+            .id(self.id)
+            .on_input(self.on_input)
+            .on_submit(Message::Save)
+            .padding(style::INPUT_PADDING)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .font(typo::BODY.tabular().font)
+            .style(flagged(self.invalid))
+    }
+}
+
+/// Date and time side by side. All-day events have no time; the empty cell keeps the date as wide
+/// as when timed.
+fn moment<'a>(all_day: bool, date: Input<'a>, time: Input<'a>) -> Element<'a, Message> {
+    let time: Element<'a, Message> = if all_day {
+        blank::horizontal().width(Length::FillPortion(TIME_PORTION)).into()
+    } else {
+        time.view().width(Length::FillPortion(TIME_PORTION)).into()
+    };
+    row![date.view().width(Length::FillPortion(DATE_PORTION)), time].spacing(space::S).into()
+}
+
+/// The input style, with the border in the error colour while the field has the problem. The
+/// message under the field says what is wrong, so the colour is never the only sign.
+fn flagged(invalid: bool) -> impl Fn(&Theme, text_input::Status) -> text_input::Style {
+    move |theme, status| {
+        let mut look = style::text_input(theme, status);
+        if invalid {
+            look.border.color = palette(theme).error_text;
+        }
+        look
+    }
+}
+
+/// The event's title: large (`TITLE`) and without a frame, like the title of a Linear issue. It
+/// has no horizontal padding so that its text sits on the same edge as the labels below.
+fn title_input(value: &str) -> Element<'_, Message> {
+    text_input(tr("Title"), value)
+        .id(TITLE_ID)
+        .on_input(Message::Title)
+        .on_submit(Message::Save)
+        .padding(Padding::new(0.0).top(space::XS).bottom(space::XS))
+        .size(typo::TITLE.size)
+        .line_height(typo::TITLE.line_height)
+        .font(typo::TITLE.font)
+        .style(|theme, status| text_input::Style {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            ..style::text_input(theme, status)
+        })
+        .into()
+}
+
+/// A label (`CAPTION`, `text_2`) 4 above its input, and under it the problem with this field.
+fn group<'a>(
+    label: Option<&'static str>,
+    input: impl Into<Element<'a, Message>>,
+    problem: Option<Problem>,
+) -> Element<'a, Message> {
+    let mut group = column![].spacing(space::XS).width(Length::Fill);
+    if let Some(label) = label {
+        group = group.push(typo::text(typo::CAPTION, label).style(theme::text_2));
+    }
+    group = group.push(input.into());
+    if let Some(problem) = problem {
+        group = group.push(problem_line(problem));
+    }
+    group.into()
+}
+
+/// What is wrong, in the error colour with an icon: "(!) Enter a title".
+fn problem_line<'a>(problem: Problem) -> Element<'a, Message> {
+    let mark =
+        icon(Icon::CircleAlert, icon::SIZE_SM).style(|theme, _| svg::Style { color: Some(palette(theme).error_text) });
+    row![
+        // The icon is centred on the first line of the message, which may wrap in a narrow window.
+        container(mark).center_y(typo::META.line_height.to_absolute(typo::META.size)),
+        typo::text(typo::META, problem.message()).style(|theme| text::Style { color: Some(palette(theme).error_text) }),
+    ]
+    .spacing(space::XS)
+    .align_y(Alignment::Start)
+    .into()
 }
 
 /// A label above a value, for the read-only view.
-fn detail<'a>(label: &'static str, value: String) -> Element<'a, Message> {
-    column![text(label).size(12).color(theme::MUTED), text(value).size(14)].spacing(4).width(Length::Fill).into()
+fn detail<'a>(label: &'static str, value: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    column![typo::text(typo::CAPTION, label).style(theme::text_2), value.into()]
+        .spacing(space::XS)
+        .width(Length::Fill)
+        .into()
 }
 
-/// The surface the editor sits on: a rounded card of at most 460 px.
+/// The surface the editor sits on: a dialog ([`style::container::popover`]: `menu`, radius 10).
+/// The whole card scrolls when the window is too low for it, since Iced cannot pin the buttons
+/// below a scrolling part.
 fn card<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    container(body)
-        .padding(24)
-        .width(Length::Fill)
-        .max_width(460.0)
-        .style(|_theme| container::Style {
-            background: Some(Background::Color(theme::SURFACE)),
-            border: border::rounded(12.0),
-            ..Default::default()
-        })
-        .into()
+    let inner = container(body).padding(space::XL).width(Length::Fill);
+    container(
+        scrollable(inner)
+            .width(Length::Fill)
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable),
+    )
+    .width(Length::Fill)
+    .style(style::container::popover)
+    .into()
 }
 
 #[cfg(test)]
@@ -561,7 +800,7 @@ mod tests {
         let mut editor =
             Editor::new_event(&calendars(), day(2026, 10, 11), Some(NaiveTime::from_hms_opt(14, 0, 0).unwrap()));
         assert_eq!(problem(&editor), Problem::TitleEmpty);
-        assert!(matches!(editor.update(Message::Save), Action::None));
+        assert!(matches!(editor.update(Message::Save), Action::Focus(TITLE_ID)));
 
         set_title(&mut editor, "Call");
         assert!(editor.check().is_ok());
@@ -587,6 +826,65 @@ mod tests {
     }
 
     #[test]
+    fn errors_wait_for_the_first_attempt_to_save() {
+        let mut editor =
+            Editor::new_event(&calendars(), day(2026, 10, 11), Some(NaiveTime::from_hms_opt(14, 0, 0).unwrap()));
+        // An empty title is a problem, but nobody has asked to save yet.
+        assert_eq!(problem(&editor), Problem::TitleEmpty);
+        assert_eq!(editor.shown_problem(), None);
+        editor.update(Message::StartTime("25:00".into()));
+        assert_eq!(editor.shown_problem(), None, "typing in another field does not reveal anything either");
+
+        // Save stays possible: it shows the first problem and asks for the focus on its field.
+        assert!(matches!(editor.update(Message::Save), Action::Focus(TITLE_ID)));
+        assert_eq!(editor.shown_problem(), Some(Problem::TitleEmpty));
+
+        // From then on the message follows what is typed.
+        set_title(&mut editor, "Call");
+        assert_eq!(editor.shown_problem(), Some(Problem::StartTime));
+        assert!(matches!(editor.update(Message::Save), Action::Focus(START_TIME_ID)));
+        editor.update(Message::StartTime("14:00".into()));
+        assert_eq!(editor.shown_problem(), None);
+        assert!(matches!(editor.update(Message::Save), Action::Save(_)));
+    }
+
+    #[test]
+    fn a_problem_in_the_calendar_shows_without_a_focus_target() {
+        let mut editor = Editor::new_event(&[], day(2026, 10, 11), None);
+        set_title(&mut editor, "Orphan");
+        // Iced cannot focus a pick list: nothing to focus, but the problem is shown.
+        assert!(matches!(editor.update(Message::Save), Action::None));
+        assert_eq!(editor.shown_problem(), Some(Problem::ChooseCalendar));
+    }
+
+    #[test]
+    fn every_problem_belongs_to_a_group_and_most_to_an_input() {
+        let all = [
+            (Problem::ChooseCalendar, Field::Calendar, None),
+            (Problem::CalendarMove, Field::Calendar, None),
+            (Problem::TitleEmpty, Field::Title, Some(TITLE_ID)),
+            (Problem::StartDate, Field::Start, Some(START_DATE_ID)),
+            (Problem::StartTime, Field::Start, Some(START_TIME_ID)),
+            (Problem::EndDate, Field::End, Some(END_DATE_ID)),
+            (Problem::EndTime, Field::End, Some(END_TIME_ID)),
+            (Problem::EndBeforeStart, Field::End, Some(END_TIME_ID)),
+            (Problem::EndDateBeforeStart, Field::End, Some(END_DATE_ID)),
+        ];
+        for (problem, field, input) in all {
+            assert_eq!(problem.field(), field, "{problem:?}");
+            assert_eq!(problem.input(), input, "{problem:?}");
+        }
+    }
+
+    #[test]
+    fn form_view_builds_with_problems_shown() {
+        let mut editor = Editor::new_event(&calendars(), day(2026, 10, 11), None);
+        editor.update(Message::Save);
+        assert!(editor.attempted);
+        let _view: Element<'_, Message> = editor.view();
+    }
+
+    #[test]
     fn all_day_end_date_may_not_be_before_start_date() {
         let mut editor = Editor::new_event(&calendars(), day(2026, 10, 11), None);
         set_title(&mut editor, "Trip");
@@ -607,7 +905,7 @@ mod tests {
         let event = stored("Standup", EventTime::Date(day(2026, 10, 11)), Some(EventTime::Date(day(2026, 10, 12))));
         let mut editor = Editor::edit(&event, &calendars());
         assert!(editor.check().is_ok());
-        editor.update(Message::Calendar(CalendarChoice { id: "home".into(), name: "Home".into() }));
+        editor.update(Message::Calendar(CalendarChoice { id: "home".into(), name: "Home".into(), color: None }));
         assert_eq!(problem(&editor), Problem::CalendarMove);
     }
 
