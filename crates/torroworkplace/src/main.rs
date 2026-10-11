@@ -23,9 +23,6 @@ mod notify;
 mod pim;
 mod settings_service;
 mod tray;
-// The views still use the dark-only colour constants of `torro_gui::theme` (deprecated with F.2);
-// allowed here until C/T/W have moved them to `theme::palette`.
-#[allow(deprecated)]
 mod ui;
 
 const APP: AppId = AppId::WORKPLACE;

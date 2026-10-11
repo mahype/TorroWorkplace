@@ -8,11 +8,7 @@
 //! time; `--appearance light|dark|system` overrides the stored appearance (see [`app::Launch`]).
 
 mod app;
-// The views still use the dark-only colour constants of `torro_gui::theme` (deprecated with F.2);
-// allowed here until C/T/W have moved them to `theme::palette`.
-#[allow(deprecated)]
 mod editor;
-#[allow(deprecated)]
 mod views;
 
 use std::process::ExitCode;
