@@ -16,6 +16,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Füge deine Nextcloud hinzu, um Kalender und Aufgaben in den Apps zu sehen.",
     ),
     ("App password stored in the system keychain", "App-Passwort im Schlüsselbund des Systems gespeichert"),
+    ("Appearance", "Erscheinungsbild"),
     ("Apps", "Apps"),
     (
         "Arrange a workspace, then choose Save workspace in the tray menu.",
@@ -32,6 +33,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Continue", "Weiter"),
     ("Core", "Kern"),
     ("Core is not running", "Der Kern läuft nicht"),
+    ("Dark", "Dunkel"),
     ("Delete template", "Vorlage löschen"),
     ("Delete this template?", "Diese Vorlage löschen?"),
     ("Detected", "Erkannt"),
@@ -45,6 +47,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Issues and projects", "Issues und Projekte"),
     ("just now", "gerade eben"),
     ("Last synced {when}", "Zuletzt synchronisiert {when}"),
+    ("Light", "Hell"),
+    (
+        "Light or dark colours for all Torro apps. “System” follows your desktop.",
+        "Helle oder dunkle Farben für alle Torro-Apps. „System“ folgt deinem Desktop.",
+    ),
     ("Mentions and messages", "Erwähnungen und Nachrichten"),
     ("Name", "Name"),
     ("{n} d ago", "vor {n} Tg."),
