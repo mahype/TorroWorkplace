@@ -283,6 +283,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Show sidebar", "Seitenleiste zeigen"),
     ("Workplace", "Workplace"),
     // Calendar
+    ("Add location", "Ort hinzufügen"),
+    ("Delete event", "Termin löschen"),
+    ("Event title", "Titel des Termins"),
     ("No events this week", "Keine Termine diese Woche"),
     ("No events today", "Heute keine Termine"),
     ("Up next", "Als Nächstes"),
