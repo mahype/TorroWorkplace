@@ -12,3 +12,10 @@ workspace = true
 
 [dependencies]
 torro-core.workspace = true
+torro-setups.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

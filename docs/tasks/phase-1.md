@@ -11,6 +11,8 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
   mehrere Teile ineinandergreifen; dort lohnt das größere Modell.
 - Reihenfolge: Eine Aufgabe beginnt erst, wenn alle unter **Braucht** erledigt sind. Aufgaben ohne
   gegenseitige Abhängigkeit können parallel laufen.
+- Die Signaturen aus 1.0 stehen im Code, jeweils mit Doc-Kommentar. Der Doc-Kommentar ist Teil der
+  Aufgabe: Was dort steht, soll die Umsetzung erfüllen.
 - Startprompt für eine neue Sitzung:
 
   > Lies CLAUDE.md und erledige Aufgabe 1.X aus docs/tasks/phase-1.md. Halte dich an die
@@ -23,7 +25,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
  ├─ 1.1 Tray-Versuch ─ 1.2 Icon
  ├─ 1.3 Hyprland-Socket ─ 1.4 JSON lesen ─ 1.5 Abfragen ─┬─ 1.6 Steuern ─ 1.8 Layout-Befehle
  │                                                       └─ 1.7 Ereignisse
- ├─ 1.9 Backend erkennen
+ ├─ 1.9 Backend erkennen (nach 1.3)
  ├─ 1.10 Layout erfassen   1.11 Ablage   1.12 Startbefehle
  │        └──────────┬───────────┘──────────┘
  │               1.13 Erfassen ─ 1.14 Laden: Modi + herholen ─ 1.15 Laden: neu starten ─ 1.16 Laden: Layout
@@ -34,7 +36,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 ## Aufgaben
 
 ### 1.0 Gerüst und Schnittstellen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** –
 - **Ziel:** Alles, worauf die anderen Aufgaben aufbauen, steht als kompilierender Code mit
   festgelegten Typen und Signaturen. Implementierungen geben vorerst `Err(…NotImplemented)` zurück.
@@ -132,9 +134,9 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 
 ### 1.9 Backend erkennen
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** 1.0
+- **Modell:** Haiku · **Braucht:** 1.3
 - **Dateien:** `crates/torro-wm/src/detect.rs`
-- **Ziel:** `detect(env) -> Backend`: Hyprland, wenn `HYPRLAND_INSTANCE_SIGNATURE` gesetzt ist; sonst
+- **Ziel:** `detect(env) -> Backend`: Hyprland, wenn `Hyprland::from_env(env)` gelingt; sonst
   `Unsupported` mit einem lesbaren Namen („AeroSpace (macOS)“, „GlazeWM (Windows)“, „unbekannt“).
 - **Abnahme:** Unit-Tests mit gesetzter und fehlender Variable.
 
@@ -176,8 +178,8 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** 1.10, 1.11, 1.12
 - **Dateien:** `crates/torro-setups/src/capture.rs`
-- **Ziel:** `capture(&impl WindowManager) -> Template`: Fenster des aktiven Workspace, Baum (1.10),
-  Startbefehle (1.12), Name automatisch „Workspace 3, 11.10. 14:20“, Standardstrategie je Fenster
+- **Ziel:** `capture(wm, id, resolve, now) -> Template` (Signatur steht in `capture.rs`): Fenster des
+  aktiven Workspace, Baum (1.10), Startbefehle über `resolve`, Name automatisch „Workspace 3, 11.10. 14:20“, Standardstrategie je Fenster
   (`Move` für Programme, die nur einmal laufen, z. B. Spotify, Slack, Signal; sonst `New`).
 - **Referenz:** `apps/workspace-setups/workspace_setups/capture.py`.
 - **Abnahme:** Test mit `FakeWm` und drei Fenstern ergibt die erwartete Vorlage.
@@ -194,7 +196,7 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 ### 1.15 Laden: Programme neu starten
 - [ ] erledigt
 - **Modell:** Haiku, bei Problemen Sonnet · **Braucht:** 1.14, 1.7
-- **Dateien:** `crates/torro-setups/src/restore.rs`, `crates/torro-setups/src/launch/linux.rs`
+- **Dateien:** `crates/torro-setups/src/restore.rs`, `crates/torro-setups/src/launch/mod.rs` (`SystemLauncher`)
 - **Ziel:** Strategie `New`: Programm losgelöst starten (eigene Prozessgruppe, Ausgabe verworfen),
   auf ein neues Fenster warten (Ereignisse, Zeitlimit z. B. 15 s) und es dem Eintrag zuordnen:
   zuerst über die PID-Abstammung, sonst über die Klasse. Fehler bei einem Fenster brechen nicht das
@@ -206,8 +208,10 @@ Arbeit: [CLAUDE.md](../../CLAUDE.md).
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** 1.15, 1.8
 - **Dateien:** `crates/torro-setups/src/restore.rs`
-- **Ziel:** Fenster in Baum-Reihenfolge aufbauen: vor jedem Fenster `prepare_insert` am
-  Geschwisterfenster, danach `place` mit dem Verhältnis.
+- **Ziel:** Den Baum **von oben nach unten** aufbauen, wie im Doc-Kommentar von `restore.rs`
+  beschrieben: Bei einer Teilung kommt das erste Blatt von `second` neben das erste Blatt von
+  `first` (`prepare_insert`, öffnen bzw. herholen, `place` mit dem Verhältnis), danach werden beide
+  Hälften genauso aufgebaut.
 - **Abnahme:** Test mit `FakeWm` prüft die Reihenfolge der Aufrufe für einen verschachtelten Baum.
 
 ### 1.17 IPC zwischen Dienst und Clients

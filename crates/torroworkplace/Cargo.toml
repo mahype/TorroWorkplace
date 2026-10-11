@@ -16,3 +16,12 @@ torro-pim.workspace = true
 torro-pim-caldav.workspace = true
 torro-ipc.workspace = true
 torro-tui.workspace = true
+torro-wm.workspace = true
+torro-setups.workspace = true
+chrono.workspace = true
+notify-rust.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni.workspace = true
