@@ -77,7 +77,11 @@ pub fn parse_monitors(data: Value) -> Result<Vec<Monitor>, WmError> {
 /// The normal windows in the `data` of a `query monitors` answer: every window of every
 /// workspace except minimized ones, with workspace name and monitor name filled in. Windows on
 /// workspaces that are not shown count as well; GlazeWM merely hides them.
-pub fn parse_windows(data: Value) -> Result<Vec<Window>, WmError> {
+///
+/// GlazeWM sends no process id, only the window handle. `process_of` turns a handle into the
+/// owning process (production: `pid::process_id`); a parameter, so tests do not depend on
+/// which handles exist on the machine that runs them.
+pub fn parse_windows(data: Value, process_of: impl Fn(isize) -> Option<u32>) -> Result<Vec<Window>, WmError> {
     let mut windows = Vec::new();
     for monitor in monitor_tree(data)? {
         for workspace in monitor.children.into_iter().filter_map(RawContainer::into_workspace) {
@@ -87,7 +91,7 @@ pub fn parse_windows(data: Value) -> Result<Vec<Window>, WmError> {
             windows.extend(
                 raw.into_iter()
                     .filter(|window| window.state.kind != "minimized")
-                    .map(|window| window.into_window(name.clone(), monitor.device_name.clone())),
+                    .map(|window| window.into_window(name.clone(), monitor.device_name.clone(), &process_of)),
             );
         }
     }
@@ -226,7 +230,7 @@ pub(crate) struct RawSplit {
 }
 
 /// GlazeWM's `WindowDto`. It carries no process id and no workspace: the workspace follows from
-/// the tree, the process only from the window handle, which we cannot query here.
+/// the tree, the process from the window handle (`pid.rs`).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RawWindow {
@@ -237,6 +241,9 @@ pub(crate) struct RawWindow {
     /// The executable's file name without extension (`firefox`), GlazeWM's `process_name`.
     #[serde(default)]
     pub(crate) process_name: String,
+    /// The `HWND` of the window.
+    #[serde(default)]
+    handle: isize,
     x: i32,
     y: i32,
     width: i32,
@@ -245,12 +252,17 @@ pub(crate) struct RawWindow {
 }
 
 impl RawWindow {
-    fn into_window(self, workspace: WorkspaceId, monitor: String) -> Window {
+    fn into_window(
+        self,
+        workspace: WorkspaceId,
+        monitor: String,
+        process_of: &impl Fn(isize) -> Option<u32>,
+    ) -> Window {
         Window {
             id: WindowId(self.id),
             class: self.process_name,
             title: self.title,
-            pid: None,
+            pid: process_of(self.handle),
             workspace,
             monitor: Some(monitor),
             rect: Rect { x: self.x, y: self.y, width: self.width, height: self.height },
@@ -315,7 +327,7 @@ mod tests {
 
     #[test]
     fn windows_come_from_all_workspaces_without_minimized_ones() {
-        let windows = parse_windows(data_of(MONITORS)).expect("windows parse");
+        let windows = parse_windows(data_of(MONITORS), |_| None).expect("windows parse");
         let ids: Vec<&WindowId> = windows.iter().map(|w| &w.id).collect();
         // Notepad (07) is minimized and left out; Spotify (04) sits on a hidden workspace and stays.
         assert_eq!(ids, vec![&id(1), &id(2), &id(3), &id(4), &id(6), &id(5)]);
@@ -323,7 +335,7 @@ mod tests {
 
     #[test]
     fn window_in_split_container_maps_onto_neutral_fields() {
-        let windows = parse_windows(data_of(MONITORS)).expect("windows parse");
+        let windows = parse_windows(data_of(MONITORS), |_| None).expect("windows parse");
         let code = windows.iter().find(|w| w.id == id(3)).expect("Code window");
         assert_eq!(
             code,
@@ -342,8 +354,18 @@ mod tests {
     }
 
     #[test]
+    fn process_comes_from_the_window_handle() {
+        // The fixture's handles are made up; the lookup is stood in for by the handle itself.
+        let windows = parse_windows(data_of(MONITORS), |handle| u32::try_from(handle).ok()).expect("windows parse");
+        let code = windows.iter().find(|w| w.id == id(3)).expect("Code window");
+        assert_eq!(code.pid, Some(131890));
+        let unknown = parse_windows(data_of(MONITORS), |_| None).expect("windows parse");
+        assert!(unknown.iter().all(|w| w.pid.is_none()));
+    }
+
+    #[test]
     fn floating_window_and_second_monitor() {
-        let windows = parse_windows(data_of(MONITORS)).expect("windows parse");
+        let windows = parse_windows(data_of(MONITORS), |_| None).expect("windows parse");
         let calculator = windows.iter().find(|w| w.id == id(5)).expect("Calculator window");
         assert!(calculator.floating);
         assert!(!calculator.fullscreen);

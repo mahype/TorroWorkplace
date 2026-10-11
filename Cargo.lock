@@ -4674,6 +4674,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sysinfo",
  "tempfile",
  "tokio",
  "torro-core",
@@ -4696,6 +4697,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

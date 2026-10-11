@@ -13,6 +13,7 @@
 
 pub mod events;
 pub mod json;
+mod pid;
 pub mod socket;
 
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
@@ -128,7 +129,7 @@ impl WindowManager for GlazeWm {
 
     async fn windows(&self, workspace: Option<&WorkspaceId>) -> Result<Vec<Window>, WmError> {
         // `query windows` names no workspace or monitor; the monitor tree has both.
-        let windows = json::parse_windows(socket::request(self.port, "query monitors").await?)?;
+        let windows = json::parse_windows(socket::request(self.port, "query monitors").await?, pid::process_id)?;
         Ok(match workspace {
             Some(workspace) => windows.into_iter().filter(|window| &window.workspace == workspace).collect(),
             None => windows,

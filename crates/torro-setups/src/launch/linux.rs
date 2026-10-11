@@ -7,13 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use super::strip_secrets;
+
 /// Field codes of the `Exec=` key (Desktop Entry spec). We start nothing with files or URLs,
 /// so every code is removed.
 const FIELD_CODES: &str = "fFuUdDnNickvm";
-
-/// Words that mark an argument as a credential, matched case-insensitively against the part
-/// before `=`. Mirrors `SECRET` in `apps/workspace-setups/workspace_setups/commands.py`.
-const SECRET_WORDS: [&str; 8] = ["token", "password", "passwd", "secret", "apikey", "api-key", "api_key", "auth"];
 
 /// The command line of `pid` from `<proc_root>/<pid>/cmdline` (NUL-separated), with
 /// [`strip_secrets`] applied; `None` when unreadable or empty.
@@ -92,28 +90,6 @@ pub fn desktop_dirs(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     data_home.into_iter().chain(data_dirs).map(|dir| dir.join("applications")).collect()
 }
 
-/// Drops arguments that look like credentials: `--password x`, `--password=x`, `--token …`,
-/// `token=…`, `secret=…`, `apikey=…` and the like (case-insensitive).
-pub fn strip_secrets(args: Vec<String>) -> Vec<String> {
-    let mut iter = args.into_iter();
-    // The first element is the program, not an argument, so it is always kept.
-    let mut kept: Vec<String> = iter.next().into_iter().collect();
-    let mut skip_next = false;
-    for arg in iter {
-        if std::mem::take(&mut skip_next) {
-            continue;
-        }
-        let key = arg.split_once('=').map_or(arg.as_str(), |(key, _)| key);
-        if is_secret_key(key) {
-            // `--password x` takes its value from the next argument; `password=x` does not.
-            skip_next = !arg.contains('=');
-            continue;
-        }
-        kept.push(arg);
-    }
-    kept
-}
-
 /// `pid` and all its ancestors (via `PPid:` in `<proc_root>/<pid>/status`), for matching
 /// a new window to the process we started.
 pub fn process_ancestors(proc_root: &Path, pid: u32) -> HashSet<u32> {
@@ -128,17 +104,6 @@ pub fn process_ancestors(proc_root: &Path, pid: u32) -> HashSet<u32> {
         current = parent;
     }
     ancestors
-}
-
-/// Flags that contain a secret word but carry no secret (Chromium's keyring backend).
-const NOT_SECRET: &[&str] = &["password-store"];
-
-fn is_secret_key(key: &str) -> bool {
-    let lowered = key.to_lowercase();
-    if NOT_SECRET.contains(&lowered.trim_start_matches('-')) {
-        return false;
-    }
-    SECRET_WORDS.iter().any(|word| lowered.contains(word))
 }
 
 fn parent_pid(proc_root: &Path, pid: u32) -> Option<u32> {
@@ -331,30 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn strip_secrets_removes_flag_with_separate_value() {
-        let args = words(&["app", "--password", "x", "--keep", "--Token", "abc", "--url", "y"]);
-        assert_eq!(strip_secrets(args), words(&["app", "--keep", "--url", "y"]));
-    }
-
-    #[test]
-    fn strip_secrets_removes_flag_with_equals_value() {
-        let args = words(&["app", "--password=x", "--passwd=y", "--api-key=z", "--keep=1"]);
-        assert_eq!(strip_secrets(args), words(&["app", "--keep=1"]));
-    }
-
-    #[test]
-    fn strip_secrets_removes_key_value_words_in_any_case() {
-        let args = words(&["app", "token=abc", "SECRET=s", "ApiKey=k", "API_KEY=v", "auth=a", "lang=de"]);
-        assert_eq!(strip_secrets(args), words(&["app", "lang=de"]));
-    }
-
-    #[test]
-    fn strip_secrets_keeps_chromium_password_store() {
-        let args = words(&["chromium", "--password-store=gnome-libsecret", "--password=x"]);
-        assert_eq!(strip_secrets(args), words(&["chromium", "--password-store=gnome-libsecret"]));
-    }
-
-    #[test]
     fn rewritten_cmdline_is_split_on_spaces() {
         let proc = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(proc.path().join("42")).unwrap();
@@ -364,12 +305,6 @@ mod tests {
             command_from_proc(proc.path(), 42),
             Some(words(&["/usr/lib/chromium/chromium", "--ozone-platform=wayland"]))
         );
-    }
-
-    #[test]
-    fn strip_secrets_keeps_the_program_name() {
-        assert_eq!(strip_secrets(words(&["/opt/auth-helper/run"])), words(&["/opt/auth-helper/run"]));
-        assert!(strip_secrets(Vec::new()).is_empty());
     }
 
     #[test]

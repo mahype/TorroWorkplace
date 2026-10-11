@@ -19,5 +19,9 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
+# Program path and arguments of a pid on macOS and Windows (Linux reads `/proc`), safe and without `unsafe`.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+sysinfo.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
