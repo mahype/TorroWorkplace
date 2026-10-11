@@ -282,7 +282,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   Trennlinien, Chevron-Icon bei Zeilen, die eine Seite öffnen). Konto-Namen mit Auslassung.
 
 ### W.3 Overview
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** W.2
 - **Dateien:** `crates/torroworkplace/src/ui/overview.rs`
 - Kacheln flexibel (min. 160, `FillPortion`) statt fest 200; Status als `status_dot` + Wort in

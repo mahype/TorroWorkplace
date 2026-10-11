@@ -5,9 +5,11 @@
 //! each with a button that jumps to Accounts (`Action::Select(Section::Accounts)`).
 //!
 //! The tiles have the surface of a settings group; a status is a dot and a word, the colour only
-//! in the dot. "Needs your attention" is a settings group with a row per account.
+//! in the dot. The tiles share the width of the page evenly, at least [`TILE_MIN_WIDTH`] each, and
+//! wrap onto further lines when the window is narrow. "Needs your attention" is a settings group
+//! with a row per account.
 
-use iced::widget::{Row, column, container, row};
+use iced::widget::{Row, column, container, responsive, row, space as blank};
 use iced::{Alignment, Element, Length};
 use torro_core::i18n::{tr, trf};
 use torro_gui::theme::{self, space};
@@ -18,8 +20,8 @@ use torro_pim::AccountState;
 
 use super::{Action, Data, Section, setting_row};
 
-/// One status tile. Tiles wrap onto further lines when the window is narrow.
-const TILE_WIDTH: f32 = 200.0;
+/// The least width of a status tile; below that the tiles wrap onto further lines.
+const TILE_MIN_WIDTH: f32 = 160.0;
 
 #[derive(Debug, Default)]
 pub struct State {}
@@ -194,12 +196,38 @@ fn counted(n: usize, one: &'static str, many: &'static str) -> String {
 }
 
 fn at_a_glance<'a>(data: &Data) -> Element<'a, Message> {
-    let grid = Row::with_children(tiles(data).into_iter().map(tile_view))
-        .spacing(space::S)
-        .width(Length::Fill)
-        .wrap()
-        .vertical_spacing(space::S);
+    let tiles = tiles(data);
+    // Iced's wrapping row lays its children out loose, so they cannot share the width. The page
+    // width decides how many tiles fit a line; `responsive` hands it over and takes the height of
+    // its content.
+    let grid = responsive(move |bounds| tile_grid(tiles.clone(), bounds.width)).height(Length::Shrink);
     column![widgets::section_title(tr("At a glance")), grid].spacing(space::S).into()
+}
+
+/// How many tiles of at least [`TILE_MIN_WIDTH`] fit a line `width` wide with `space::S` between
+/// them: at least one, at most `count`.
+fn tiles_per_line(width: f32, count: usize) -> usize {
+    let fit = ((width + space::S) / (TILE_MIN_WIDTH + space::S)).floor();
+    (fit as usize).clamp(1, count.max(1))
+}
+
+/// The tiles in lines of equal width: each tile takes the same share of a line, and a short last
+/// line is filled up with empty shares so its tiles are as wide as the others.
+fn tile_grid<'a>(tiles: Vec<Tile>, width: f32) -> Element<'a, Message> {
+    let per_line = tiles_per_line(width, tiles.len());
+    let mut lines = column![].spacing(space::S);
+    let mut tiles = tiles.into_iter().peekable();
+    while tiles.peek().is_some() {
+        let mut line = Row::new().spacing(space::S).width(Length::Fill);
+        for _ in 0..per_line {
+            line = line.push(match tiles.next() {
+                Some(tile) => tile_view(tile),
+                None => blank::horizontal().width(Length::FillPortion(1)).into(),
+            });
+        }
+        lines = lines.push(line);
+    }
+    lines.into()
 }
 
 /// A tile: its title, the status as dot and word, and a detail line below.
@@ -209,11 +237,11 @@ fn tile_view<'a>(tile: Tile) -> Element<'a, Message> {
         .push(typo::text(typo::BODY_STRONG, tile.headline.text))
         .spacing(space::S)
         .align_y(Alignment::Center);
-    let mut body = column![widgets::section_title(tile.title), headline].spacing(space::S);
-    if let Some(detail) = tile.detail {
-        body = body.push(typo::text(typo::META, detail).style(theme::text_2));
-    }
-    container(body).width(TILE_WIDTH).padding(space::L).style(style::container::group).into()
+    // A tile without a detail keeps an empty line, so the tiles of a line are equally tall (Iced
+    // cannot stretch tiles that are `Fill` in both directions to the tallest of their line).
+    let detail = typo::text(typo::META, tile.detail.unwrap_or_default()).style(theme::text_2);
+    let body = column![widgets::section_title(tile.title), headline, detail].spacing(space::S);
+    container(body).width(Length::FillPortion(1)).padding(space::L).style(style::container::group).into()
 }
 
 /// The attention group, or a calm line when nothing needs the user. Without a running core
@@ -344,6 +372,28 @@ mod tests {
         assert_eq!(Tone::Error.dot(), Some(Dot::Error));
         assert_eq!(Tone::Inactive.dot(), Some(Dot::Inactive));
         assert_eq!(Tone::Plain.dot(), None);
+    }
+
+    #[test]
+    fn tiles_wrap_by_width_and_never_below_one_line() {
+        let min = TILE_MIN_WIDTH;
+        // Four tiles with the gaps between them need 4 × min + 3 × gap.
+        assert_eq!(tiles_per_line(4.0 * min + 3.0 * space::S, 4), 4);
+        assert_eq!(tiles_per_line(4.0 * min + 3.0 * space::S - 1.0, 4), 3);
+        assert_eq!(tiles_per_line(2.0 * min + space::S, 4), 2);
+        assert_eq!(tiles_per_line(min, 4), 1);
+        assert_eq!(tiles_per_line(100.0, 4), 1, "a window narrower than a tile still shows one");
+        assert_eq!(tiles_per_line(0.0, 4), 1);
+        assert_eq!(tiles_per_line(2000.0, 4), 4, "never more per line than there are tiles");
+        assert_eq!(tiles_per_line(2000.0, 0), 1);
+    }
+
+    #[test]
+    fn the_grid_builds_in_every_width() {
+        let data = Data { status: Some(status("hyprland")), ..Data::default() };
+        for width in [0.0, 160.0, 388.0, 720.0, 2000.0] {
+            drop(tile_grid(tiles(&data), width));
+        }
     }
 
     #[test]
