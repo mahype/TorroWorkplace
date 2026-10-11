@@ -6,7 +6,11 @@
 //! "Remove account…" behind a confirmation that names the account and acts on it alone. A
 //! sign-in in progress (an entry without an id) is a "Signing in…" row without a detail page.
 //! Empty: a sentence about what to add. The add flow is `wizard.rs` (task S.6); it and the confirmation
-//! are dialogs over the whole window ([`overlay`]).
+//! are dialogs over the whole window ([`overlay`]). The shell hands the answers to requests to
+//! [`answered`], so the dialog shows the outcome of its own requests.
+//!
+//! A GitHub account (task G.1) has no calendars or lists yet: its detail page shows what the
+//! token's scopes allow and what is missing ([`github_permissions`]) in place of them.
 //!
 //! Requests: `Sync`, `RemoveAccount { id }`, and `SetCollectionShown { collection, shown }` for
 //! the switches. The pure parts (relative time, status text, whether a collection is shown,
@@ -23,7 +27,7 @@ use torro_gui::layout::SizeClass;
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
 use torro_gui::{style, typo};
-use torro_ipc::{AccountInfo, Request};
+use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
 use super::{Action, Data, Header, chevron, confirm, dialog, pressable, setting_row, wizard};
@@ -79,7 +83,7 @@ pub fn escape(state: &State) -> Option<Message> {
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::AddAccount => {
-            state.wizard = Some(wizard::State::default());
+            state.wizard = Some(wizard::State::new());
             Action::None
         }
         Message::Wizard(wizard::Message::Close) => {
@@ -119,6 +123,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
         }
     }
+}
+
+/// The answer to a request the shell sent: the add-account dialog takes the answers to its own
+/// requests ([`wizard::answered`]). Returns whether it did; then the shell shows no notice.
+pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    state.wizard.as_mut().is_some_and(|wizard| wizard::answered(wizard, result))
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -193,6 +203,7 @@ fn pending_name(account: &AccountInfo) -> &str {
 pub fn provider_name(kind: &str) -> String {
     match kind {
         "nextcloud" => tr("Nextcloud").to_string(),
+        "github" => tr("GitHub").to_string(),
         other => other.to_string(),
     }
 }
@@ -357,7 +368,12 @@ fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> E
     ]
     .spacing(space::XS);
     let remove = widgets::text_button(None, tr("Remove account…"), style::button::danger, Some(Message::AskRemove));
-    column![heading, status_group(account, now), collections_group(account, &data.settings)]
+    // A GitHub account has no calendars or lists (yet); what its token may do matters instead.
+    let middle = match account.kind.as_str() {
+        "github" => permissions_group(account.scopes.as_deref()),
+        _ => collections_group(account, &data.settings),
+    };
+    column![heading, status_group(account, now), middle]
         .push(connection_group(account))
         .push(on_axis(remove))
         .spacing(space::XL)
@@ -424,8 +440,78 @@ fn connection_group<'a>(account: &'a AccountInfo) -> Option<Element<'a, Message>
     };
     let mut rows = vec![value_row(tr("Server"), server)];
     rows.extend(user.map(|user| value_row(tr("User"), user)));
-    let footer = user.map(|_| tr("App password stored in the system keychain").to_string());
+    let stored = match account.kind.as_str() {
+        "github" => tr("Token stored in the system keychain"),
+        _ => tr("App password stored in the system keychain"),
+    };
+    let footer = user.map(|_| stored.to_string());
     Some(widgets::group(tr("Connection"), rows, footer))
+}
+
+/// What a GitHub token allows: a row per permission with a dot and a word (never colour alone),
+/// and the scopes GitHub reported. A fine-grained token does not tell, so the group says what
+/// it needs instead.
+fn permissions_group<'a>(scopes: Option<&[String]>) -> Element<'a, Message> {
+    let Some(scopes) = scopes else {
+        let row = setting_row(
+            None,
+            tr("Fine-grained token"),
+            Some(tr("GitHub does not report its permissions; they are set per repository.").to_string()),
+            Space::new(),
+        );
+        let footer = tr("Closing issues needs Issues: Read and write. Pull requests need Pull requests: Read.");
+        return widgets::group(tr("Permissions"), vec![row], Some(footer.to_string()));
+    };
+    let rows = github_permissions(scopes)
+        .into_iter()
+        .map(|permission| {
+            let (status, detail) = match permission.allowed {
+                true => (Status::Ok, tr("Allowed")),
+                false => (Status::Attention, permission.missing),
+            };
+            setting_row(Some(widgets::status_dot(status)), permission.name, Some(detail.to_string()), Space::new())
+        })
+        .collect();
+    let footer = match scopes {
+        [] => tr("The token has no scopes. Change them on GitHub, then use Sync now.").to_string(),
+        scopes => {
+            trf("Token scopes: {scopes}. Change them on GitHub, then use Sync now.", &[("scopes", &scopes.join(", "))])
+        }
+    };
+    widgets::group(tr("Permissions"), rows, Some(footer))
+}
+
+/// One thing a GitHub token allows or not, with the sentence that says what is missing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Permission {
+    pub name: &'static str,
+    pub allowed: bool,
+    /// What it takes, shown when not allowed.
+    pub missing: &'static str,
+}
+
+/// What a token with the OAuth `scopes` of a classic token or the GitHub CLI allows
+/// (`docs/settings.md`, "GitHub: Rechte"): private repositories with `repo`, closing issues with
+/// `repo` or `public_repo` (public repositories only), projects with `read:project` or `project`.
+pub fn github_permissions(scopes: &[String]) -> Vec<Permission> {
+    let has = |wanted: &[&str]| scopes.iter().any(|scope| wanted.contains(&scope.as_str()));
+    vec![
+        Permission {
+            name: tr("Private repositories"),
+            allowed: has(&["repo"]),
+            missing: tr("Private repositories need the repo scope"),
+        },
+        Permission {
+            name: tr("Close issues"),
+            allowed: has(&["repo", "public_repo"]),
+            missing: tr("Closing issues needs write access to issues"),
+        },
+        Permission {
+            name: tr("Projects"),
+            allowed: has(&["read:project", "project"]),
+            missing: tr("Projects need the read:project permission"),
+        },
+    ]
 }
 
 /// A row with a value at the right in `text_2`, on one line.
@@ -455,6 +541,7 @@ mod tests {
             label: "anna@cloud.example.org".into(),
             state,
             collections: vec![],
+            scopes: None,
         }
     }
 
@@ -632,7 +719,42 @@ mod tests {
     #[test]
     fn provider_names() {
         assert_eq!(provider_name("nextcloud"), tr("Nextcloud"));
-        assert_eq!(provider_name("github"), "github");
+        assert_eq!(provider_name("github"), tr("GitHub"));
+        assert_eq!(provider_name("slack"), "slack");
+    }
+
+    #[test]
+    fn github_permissions_follow_the_scopes() {
+        let allowed = |scopes: &[&str]| -> Vec<bool> {
+            let scopes: Vec<String> = scopes.iter().map(|s| s.to_string()).collect();
+            github_permissions(&scopes).iter().map(|p| p.allowed).collect()
+        };
+        assert_eq!(allowed(&[]), [false, false, false]);
+        assert_eq!(allowed(&["repo", "read:org"]), [true, true, false]);
+        assert_eq!(allowed(&["public_repo"]), [false, true, false]);
+        assert_eq!(allowed(&["repo", "read:project"]), [true, true, true]);
+        let close = &github_permissions(&[])[1];
+        assert_eq!(close.missing, tr("Closing issues needs write access to issues"));
+    }
+
+    #[test]
+    fn the_github_detail_page_builds_with_and_without_scopes() {
+        let mut github = account("github:mahype", connected(Some(Utc::now()), None));
+        github.kind = "github".into();
+        for scopes in [Some(vec!["repo".to_string()]), Some(vec![]), None] {
+            github.scopes = scopes;
+            let data = Data { accounts: vec![github.clone()], ..Data::default() };
+            let state = State { selected: Some(github.id.clone()), ..State::default() };
+            drop(view(&state, &data));
+        }
+    }
+
+    #[test]
+    fn the_dialog_takes_only_its_own_answers() {
+        let mut state = State::default();
+        assert!(!answered(&mut state, &Err("no template".into())), "no dialog: the shell shows it");
+        update(&mut state, Message::AddAccount, &Data::default());
+        assert!(!answered(&mut state, &Err("no template".into())), "the dialog waits for nothing yet");
     }
 
     #[test]

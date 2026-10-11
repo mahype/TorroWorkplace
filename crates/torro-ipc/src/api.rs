@@ -249,8 +249,15 @@ impl Rights {
     /// the admin ones (`system.quit`), and no `clients` command: those are for the app key only,
     /// so no client can switch the service off or give itself rights.
     ///
+    /// No command kept from agents ([`Mcp::Never`]) is allowed either, whatever the rights say:
+    /// they are for the app key only, so a script key with admin rights cannot hand the core a
+    /// secret (`accounts.set_github_token`) any more than an agent can.
+    ///
     /// Collections and approval are checked after this, by the core.
     pub fn allows(&self, operation: Operation) -> bool {
+        if operation.command.mcp == Mcp::Never {
+            return false;
+        }
         match operation.area() {
             Area::System => operation.access != Access::Admin,
             Area::Clients => false,
@@ -444,6 +451,8 @@ impl Request {
             Request::LoadTemplate { .. } => &LOAD_TEMPLATE,
             Request::RenameTemplate { .. } => &RENAME_TEMPLATE,
             Request::ConnectNextcloud { .. } => &CONNECT_NEXTCLOUD,
+            Request::ConnectGithub => &CONNECT_GITHUB,
+            Request::SetGithubToken { .. } => &SET_GITHUB_TOKEN,
             Request::Sync => &SYNC,
             Request::Accounts => &LIST_ACCOUNTS,
             Request::RemoveAccount { .. } => &REMOVE_ACCOUNT,
@@ -512,6 +521,8 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_ACCOUNTS,
     &SYNC,
     &CONNECT_NEXTCLOUD,
+    &CONNECT_GITHUB,
+    &SET_GITHUB_TOKEN,
     &REMOVE_ACCOUNT,
     &GET_SETTINGS,
     &SET_SETTING,
@@ -690,9 +701,10 @@ static LIST_ACCOUNTS: Command = Command {
     area: Area::Accounts,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists every connected account with its id, state (connected, signing in, last sync, problem) \
-                  and its calendars and task lists, whose ids start with the account id. Passwords and tokens are \
-                  never part of the answer.",
+    description: "Lists every connected account (Nextcloud, GitHub) with its id, state (connected, signing in, \
+                  last sync, problem) and its calendars and task lists, whose ids start with the account id; for \
+                  GitHub accounts also the scopes of their token. Passwords and tokens are never part of the \
+                  answer.",
 };
 
 static SYNC: Command = Command {
@@ -701,9 +713,10 @@ static SYNC: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Fetches calendars, events and tasks from the servers of all accounts now instead of at the next \
-                  automatic sync, which runs every five minutes. An account that fails keeps its cached data; the \
-                  others are synced anyway. If a server refuses the sign-in and has marked this device for a \
-                  remote wipe, that account and its cached data are removed from this device.",
+                  automatic sync, which runs every five minutes, and checks the tokens of the GitHub accounts \
+                  again. An account that fails keeps its cached data; the others are synced anyway. If a Nextcloud \
+                  refuses the sign-in and has marked this device for a remote wipe, that account and its cached \
+                  data are removed from this device.",
 };
 
 static CONNECT_NEXTCLOUD: Command = Command {
@@ -716,14 +729,38 @@ static CONNECT_NEXTCLOUD: Command = Command {
                   account) and syncs it. Show the URL to the person; never open it yourself.",
 };
 
+static CONNECT_GITHUB: Command = Command {
+    name: "accounts.connect_github",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Asks for a GitHub account to be connected. For agents and scripts the core only opens the Torro \
+                  Workplace control centre on its accounts page, where a person picks the GitHub CLI's sign-in or \
+                  pastes a token, and answers `opened`; the token never reaches the caller. The control centre \
+                  itself takes over the GitHub CLI's sign-in (`gh auth token`) and gets `not-connected` without \
+                  one.",
+};
+
+// Never an MCP tool, and for the app key only: the token is a secret (`docs/api.md`, "Was nie nach
+// außen geht", 1), so no agent or script may hand one to the core.
+static SET_GITHUB_TOKEN: Command = Command {
+    name: "accounts.set_github_token",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Connects a GitHub account with a personal access token a person pasted in the control centre: \
+                  checks it with GitHub, keeps it in the system keychain and returns the account without the \
+                  token. Only the app key may use it.",
+};
+
 static REMOVE_ACCOUNT: Command = Command {
     name: "accounts.remove_account",
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Removes one account (id from list_accounts) from this device: revokes its app password on the \
-                  server where possible and deletes its stored secret and its cached calendars and tasks. Other \
-                  accounts stay. An unknown id fails with `not-found`.",
+                  server where possible (Nextcloud) and deletes its stored secret and its cached calendars and \
+                  tasks. Other accounts stay. An unknown id fails with `not-found`.",
 };
 
 static GET_SETTINGS: Command = Command {
@@ -902,6 +939,8 @@ mod tests {
             Request::LoadTemplate { id: "dev".into(), mode: LoadMode::Add },
             Request::RenameTemplate { id: "dev".into(), name: "Dev".into() },
             Request::ConnectNextcloud { server: "cloud.example.test".into() },
+            Request::ConnectGithub,
+            Request::SetGithubToken { token: crate::Secret::new("ghp_example") },
             Request::Sync,
             Request::Accounts,
             Request::RemoveAccount { id: "nextcloud:anna@cloud.example.test".into() },
@@ -994,9 +1033,10 @@ mod tests {
             // MCP clients accept tool names up to 64 characters.
             assert!(command.tool_name().len() <= 64, "{}", command.name);
             assert!(!command.description.is_empty() && command.description.ends_with('.'), "{}", command.name);
-            // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals and quitting the
-            // service are kept from agents.
-            let kept_back = command.area == Area::Clients || command.name == "system.quit";
+            // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals, quitting the
+            // service and taking secrets in are kept from agents.
+            let kept_back =
+                command.area == Area::Clients || matches!(command.name, "system.quit" | "accounts.set_github_token");
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
             if command.area == Area::Clients {
@@ -1088,6 +1128,8 @@ mod tests {
                     }
                     let operation = Operation { command, access: command.access };
                     let expected = match (command.area, command.access) {
+                        // Kept from agents means for the app key only.
+                        _ if command.mcp == Mcp::Never => false,
                         (Area::System, Access::Admin) => false,
                         (Area::System, _) => true,
                         (Area::Clients, _) => false,
@@ -1118,6 +1160,29 @@ mod tests {
             assert!(!template.rights().allows(Request::Quit.operation()), "{template:?}");
         }
         assert!(RightsTemplate::ReadOnly.rights().allows(Request::Status.operation()));
+    }
+
+    #[test]
+    fn only_the_app_key_may_hand_in_a_github_token() {
+        // Not even full access with the admin switch of every area opens it: the token is a secret.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let token = Request::SetGithubToken { token: crate::Secret::new("ghp_example") };
+        assert!(!rights.allows(token.operation()));
+        assert!(rights.allows(Request::ConnectGithub.operation()), "asking a person to connect is an admin command");
+        assert_eq!(Request::ConnectGithub.operation().access, Access::Admin);
+    }
+
+    #[test]
+    fn the_github_token_is_a_write_only_string_in_the_schema() {
+        let schema = SET_GITHUB_TOKEN.input_schema().expect("schema");
+        let token = schema.as_value().pointer("/properties/token").expect("token is a field");
+        assert_eq!(token.get("type"), Some(&serde_json::json!("string")));
+        assert_eq!(token.get("writeOnly"), Some(&serde_json::json!(true)));
+        assert!(token.get("description").is_some(), "{token}");
+        assert!(CONNECT_GITHUB.input_schema().expect("schema").get("required").is_none());
     }
 
     #[test]

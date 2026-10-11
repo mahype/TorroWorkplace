@@ -2,14 +2,18 @@
 //!
 //! An account is set up once and serves every app. Where and as whom lives in
 //! `accounts.json` in the core's config directory; the secret (for Nextcloud the app
-//! password from Login Flow v2) lives in the system keychain: Secret Service on Linux,
-//! Keychain on macOS, Credential Manager on Windows.
+//! password from Login Flow v2, for GitHub the token) lives in the system keychain: Secret
+//! Service on Linux, Keychain on macOS, Credential Manager on Windows.
+//!
+//! A secret on its way there travels as a [`Secret`], which never shows its value in `Debug`.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
 
 use crate::AppId;
@@ -27,6 +31,73 @@ pub const ACCOUNTS_FILE: &str = "accounts.json";
 pub enum AccountKind {
     /// Nextcloud: CalDAV for calendars and tasks, more to come.
     Nextcloud,
+    /// GitHub: issues and pull requests (task G.1). Written `github`.
+    #[serde(rename = "github")]
+    GitHub,
+}
+
+/// Where GitHub accounts live: the `server` of every [`Account::github`].
+pub const GITHUB_SERVER: &str = "https://github.com";
+
+/// A secret on its way to the keychain or to its server: a password, an app password, a token.
+///
+/// `Debug` shows `Secret(…)`, never the value, so a secret cannot slip into a log, an error
+/// message or an answer by accident. It serializes as the plain string (a request has to carry
+/// it), and its JSON Schema is a `string` marked `writeOnly`. Comparing looks at every byte,
+/// whatever differs first. Meant for every secret a request carries (GitHub tokens since G.1;
+/// the CalDAV password of task M7 can take it over).
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(secret: impl Into<String>) -> Secret {
+        Secret(secret.into())
+    }
+
+    /// The secret itself, to store it or to send it to its server. Never print it.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    /// Nothing but white space, so nothing to store.
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+impl PartialEq for Secret {
+    fn eq(&self, other: &Secret) -> bool {
+        let (a, b) = (self.0.as_bytes(), other.0.as_bytes());
+        let difference = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+        a.len() == b.len() && difference == 0
+    }
+}
+
+impl Eq for Secret {}
+
+impl JsonSchema for Secret {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "Secret".into()
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        let mut schema = Schema::default();
+        schema.insert("type".into(), "string".into());
+        // Clients send it; the core never sends it back.
+        schema.insert("writeOnly".into(), true.into());
+        schema
+    }
 }
 
 /// One account, without its secret.
@@ -49,6 +120,17 @@ impl Account {
             kind: AccountKind::Nextcloud,
             server: server.trim_end_matches('/').to_string(),
             login_name: login_name.to_string(),
+        }
+    }
+
+    /// The GitHub account of `login` (task G.1): id `github:<login>`, server [`GITHUB_SERVER`].
+    /// The caller checks `login` (GitHub's own answer to the token); it never holds a `/`.
+    pub fn github(login: &str) -> Account {
+        Account {
+            id: format!("github:{login}"),
+            kind: AccountKind::GitHub,
+            server: GITHUB_SERVER.to_string(),
+            login_name: login.to_string(),
         }
     }
 
@@ -120,17 +202,23 @@ pub fn load_from(path: &Path) -> Result<Vec<Account>, AccountError> {
 
 /// Replaces the stored accounts. Secrets are not touched.
 pub fn save(accounts: &[Account]) -> Result<(), AccountError> {
-    let file = accounts_file()?;
-    if let Some(dir) = file.parent() {
+    save_to(&accounts_file()?, accounts)
+}
+
+/// Replaces the account list at `path` (an [`ACCOUNTS_FILE`]) atomically; secrets are not
+/// touched. For callers that are handed their config directory, like [`load_from`].
+pub fn save_to(path: &Path, accounts: &[Account]) -> Result<(), AccountError> {
+    if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(AccountError::Io)?;
     }
     let json = serde_json::to_vec_pretty(accounts).map_err(AccountError::Format)?;
-    let tmp = file.with_extension("json.tmp");
+    let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, json).map_err(AccountError::Io)?;
-    fs::rename(&tmp, &file).map_err(AccountError::Io)
+    fs::rename(&tmp, path).map_err(AccountError::Io)
 }
 
-fn accounts_file() -> Result<PathBuf, AccountError> {
+/// Where this user's account list lives: [`ACCOUNTS_FILE`] in the core's config directory.
+pub fn accounts_file() -> Result<PathBuf, AccountError> {
     AppPaths::for_app(AppId::WORKPLACE).map(|p| p.config.join(ACCOUNTS_FILE)).ok_or(AccountError::NoHome)
 }
 
@@ -156,5 +244,42 @@ mod tests {
         let read = load_from(&path);
         let _ = fs::remove_file(&path);
         assert_eq!(read.expect("read"), accounts);
+    }
+
+    #[test]
+    fn github_accounts_are_named_after_the_login_and_written_github() {
+        let account = Account::github("mahype");
+        assert_eq!((account.id.as_str(), account.server.as_str()), ("github:mahype", GITHUB_SERVER));
+        assert_eq!(account.kind, AccountKind::GitHub);
+        let json = serde_json::to_value(&account).expect("json");
+        assert_eq!(json["kind"], "github");
+        assert_eq!(serde_json::from_value::<Account>(json).expect("read back"), account);
+    }
+
+    #[test]
+    fn a_list_is_saved_to_the_given_file_and_read_back() {
+        // A directory of our own in the system's temp directory; never the user's list.
+        let dir = std::env::temp_dir().join(format!("torro-core-save-{}", std::process::id()));
+        let path = dir.join("config").join(ACCOUNTS_FILE);
+        let accounts = vec![Account::nextcloud("https://cloud.example.org", "anna"), Account::github("anna")];
+        let saved = save_to(&path, &accounts);
+        let read = load_from(&path);
+        let _ = fs::remove_dir_all(&dir);
+        saved.expect("saved");
+        assert_eq!(read.expect("read"), accounts);
+    }
+
+    #[test]
+    fn secrets_hide_in_debug_compare_whole_and_serialize_plain() {
+        let secret = Secret::new("ghp_secret");
+        assert_eq!(format!("{secret:?}"), "Secret(…)");
+        assert_eq!(serde_json::to_value(&secret).expect("json"), "ghp_secret");
+        assert_eq!(serde_json::from_str::<Secret>("\"ghp_secret\"").expect("parses"), secret);
+        assert_ne!(secret, Secret::new("ghp_secreT"));
+        assert_ne!(secret, Secret::new("ghp_secret2"));
+        assert!(Secret::new(" \t").is_blank() && !secret.is_blank());
+        let schema = schemars::schema_for!(Secret);
+        assert_eq!(schema.get("type"), Some(&"string".into()));
+        assert_eq!(schema.get("writeOnly"), Some(&true.into()));
     }
 }

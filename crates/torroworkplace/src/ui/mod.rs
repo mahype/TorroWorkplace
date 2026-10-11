@@ -350,6 +350,25 @@ impl Ui {
                 vec![]
             }
             Open::Wizard => vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)],
+            Open::WizardGithub | Open::WizardToken => {
+                let mut messages = vec![
+                    Message::Select(Section::Accounts),
+                    Message::Accounts(accounts::Message::AddAccount),
+                    Message::Accounts(accounts::Message::Wizard(wizard::Message::ChooseProvider(
+                        wizard::Provider::GitHub,
+                    ))),
+                ];
+                if open == Open::WizardToken {
+                    messages.push(Message::Accounts(accounts::Message::Wizard(wizard::Message::PasteToken)));
+                }
+                messages
+            }
+            Open::GithubDetail => {
+                let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                messages.extend(github.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
+                messages
+            }
             Open::AccountDetail | Open::Remove => {
                 let mut messages = vec![Message::Select(Section::Accounts)];
                 messages.extend(first_account.map(|id| Message::Accounts(accounts::Message::Open(id))));
@@ -456,7 +475,9 @@ impl Ui {
                 Action::None
             }
             Message::Sent(result) => {
-                self.notice = result.err();
+                // The add-account dialog shows the outcome of its own requests itself.
+                let in_dialog = accounts::answered(&mut self.accounts, &result);
+                self.notice = if in_dialog { None } else { result.err() };
                 return self.reload();
             }
             Message::SystemMode(mode) => {
@@ -1126,6 +1147,13 @@ mod tests {
         assert_eq!((detail.section, detail.accounts.selected.as_ref()), (Section::Accounts, Some(&first)));
         assert!(!detail.accounts.confirm_remove && detail.page_overlay().is_none());
 
+        for state in ["wizard-ways", "wizard-token"] {
+            let github = started(&["--demo", "--open", state]);
+            assert!(github.accounts.busy() || github.page_overlay().is_some(), "{state}: the dialog is open");
+        }
+        let github = started(&["--demo", "--open", "scopes-detail"]);
+        assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
+
         let remove = started(&["--demo", "--open", "remove"]);
         assert_eq!(remove.accounts.selected.as_ref(), Some(&first));
         assert!(remove.accounts.confirm_remove && remove.page_overlay().is_some());
@@ -1183,7 +1211,7 @@ mod tests {
             let text = format!("{message:?}");
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
-        assert_eq!(demo.data.accounts.len(), 2, "removing an account in the demo changes nothing");
+        assert_eq!(demo.data.accounts.len(), 3, "removing an account in the demo changes nothing");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");

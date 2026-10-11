@@ -8,7 +8,7 @@ use std::sync::Arc;
 use chrono::Local;
 use tokio::sync::Mutex;
 use torro_core::AppId;
-use torro_ipc::{API_VERSION, IssuedKey, Key, Request, Response, Status};
+use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, Status};
 use torro_pim::AccountState;
 use torro_setups::capture::{auto_name, capture};
 use torro_setups::launch::{Launcher, SystemLauncher, command_for};
@@ -17,6 +17,7 @@ use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
+use crate::account::github::{GithubAccounts, GithubError};
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::pim::{PimService, Reach};
 use crate::settings_service::SettingsStore;
@@ -34,6 +35,14 @@ fn sibling(name: &str) -> std::path::PathBuf {
 /// other apps start without arguments.
 fn launch_command(app: AppId, program: String) -> Vec<String> {
     if app == AppId::WORKPLACE { vec![program, "ui".into()] } else { vec![program] }
+}
+
+/// Starts the control centre on its accounts page, where a person finishes what a client asked
+/// for (`accounts.connect_github`).
+fn start_accounts_page() -> Result<(), String> {
+    let mut command = launch_command(AppId::WORKPLACE, sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned());
+    command.extend(["--section".to_string(), "accounts".to_string()]);
+    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
 }
 
 /// What the tray menu is built from.
@@ -54,7 +63,7 @@ pub struct Snapshot {
 }
 
 /// The core's state: window manager, template store, settings, the keys that may talk to it,
-/// and a lock so only one save or load runs at a time.
+/// the GitHub accounts, and a lock so only one save or load runs at a time.
 pub struct Core {
     backend: Backend,
     store: Store,
@@ -62,15 +71,37 @@ pub struct Core {
     pim: Arc<PimService>,
     settings: SettingsStore,
     clients: Clients,
+    /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
+    /// calendars or task lists, and the core lists both kinds together.
+    github: Arc<GithubAccounts>,
+    /// Starts the control centre on its accounts page ([`start_accounts_page`]); tests count
+    /// the calls instead.
+    start_accounts: fn() -> Result<(), String>,
 }
 
 impl Core {
     /// The core over `backend` and `store`. The settings are the ones `pim` reads
     /// ([`PimService::settings`]), so hiding a collection and filtering it use the same file.
-    /// `clients` decides which keys get in ([`Core::handle_from`]).
+    /// `clients` decides which keys get in ([`Core::handle_from`]). The GitHub accounts are the
+    /// user's ([`GithubAccounts::system`]), loaded only by [`Core::start`].
     pub fn new(backend: Backend, store: Store, pim: Arc<PimService>, clients: Clients) -> Core {
         let settings = pim.settings().clone();
-        Core { backend, store, work: Mutex::new(()), pim, settings, clients }
+        Core {
+            backend,
+            store,
+            work: Mutex::new(()),
+            pim,
+            settings,
+            clients,
+            github: Arc::new(GithubAccounts::system()),
+            start_accounts: start_accounts_page,
+        }
+    }
+
+    /// Starts the background work [`Core::new`] leaves out: loads the GitHub accounts and checks
+    /// their tokens. The daemon calls it once, next to `PimService::start`.
+    pub fn start(&self) {
+        self.github.start();
     }
 
     /// A request from the socket with the key the client sent. Every request from outside the
@@ -160,8 +191,10 @@ impl Core {
                 })
                 .await
             }
+            Request::Sync => self.sync(reach).await,
+            Request::ConnectGithub => self.connect_github(client).await,
+            Request::SetGithubToken { token } => account_answer(self.github.connect_token(token).await),
             pim @ (Request::ConnectNextcloud { .. }
-            | Request::Sync
             | Request::CalendarCollections
             | Request::TaskCollections
             | Request::Events { .. }
@@ -195,7 +228,11 @@ impl Core {
                 Err(message) => Response::Error { code: "error".into(), message },
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
-            Request::Accounts => Response::Accounts { accounts: self.pim.accounts_within(reach).await },
+            Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
+            Request::RemoveAccount { id } if self.github.knows(&id).await => match self.github.remove(&id).await {
+                Ok(()) => Response::Ok,
+                Err(message) => Response::Error { code: "error".into(), message },
+            },
             Request::RemoveAccount { id } => self.pim.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
                 Ok(template) => Response::Saved { template },
@@ -216,6 +253,53 @@ impl Core {
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => done(self.clients.remove(&id).await),
+        }
+    }
+
+    /// Every account as `reach` may see it: the calendar service's accounts, then the GitHub
+    /// accounts (which have no collections and no secrets in the answer), and a sign-in that runs
+    /// last, as `accounts.list_accounts` promises.
+    async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
+        let mut accounts = self.pim.accounts_within(reach).await;
+        let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
+        accounts.splice(at..at, self.github.infos().await);
+        accounts
+    }
+
+    /// Syncs the calendar accounts, then checks the GitHub tokens again. Neither stops the
+    /// other; the answer is the first failure. Without a Nextcloud account but with a GitHub
+    /// one there is something to sync, so the calendar service's `not-connected` does not count.
+    async fn sync(&self, reach: Reach<'_>) -> Response {
+        let pim = self.pim.handle_within(Request::Sync, reach).await;
+        let github = self.github.check_all().await;
+        let only_github = matches!(&pim, Response::Error { code, .. } if code == "not-connected")
+            && !self.github.infos().await.is_empty();
+        match (pim, github) {
+            (_, Err(err)) if only_github => github_error(&err),
+            (_, Ok(())) if only_github => Response::Ok,
+            (Response::Ok, Err(err)) => github_error(&err),
+            (pim, _) => pim,
+        }
+    }
+
+    /// `accounts.connect_github`. The control centre (app key, tray) takes over the GitHub CLI's
+    /// sign-in. A client never does: the core shows the person the accounts page (an open
+    /// control centre comes to the front, else one starts there) and answers `opened`.
+    async fn connect_github(&self, client: bool) -> Response {
+        if !client {
+            return account_answer(self.github.connect_cli().await);
+        }
+        if let Ok(windows) = self.backend.windows(None).await
+            && let Some(window) = windows.iter().find(|w| w.class == AppId::WORKPLACE.window_class)
+        {
+            return match self.backend.focus_window(&window.id).await {
+                Ok(()) => Response::Opened,
+                Err(err) => Response::Error { code: "error".into(), message: err.to_string() },
+            };
+        }
+        match (self.start_accounts)() {
+            Ok(()) => Response::Opened,
+            Err(message) => Response::Error { code: "error".into(), message },
         }
     }
 
@@ -359,6 +443,18 @@ fn issued(result: Result<(torro_ipc::ClientInfo, Key), ClientsError>) -> Respons
 
 fn done(result: Result<(), ClientsError>) -> Response {
     result.map_or_else(|err| clients_error(&err), |()| Response::Ok)
+}
+
+/// The answer to a GitHub sign-in: the account, or the error with its code. Never the token.
+fn account_answer(result: Result<AccountInfo, GithubError>) -> Response {
+    match result {
+        Ok(account) => Response::Account { account },
+        Err(err) => github_error(&err),
+    }
+}
+
+fn github_error(err: &GithubError) -> Response {
+    Response::Error { code: err.code().into(), message: err.to_string() }
 }
 
 fn clients_error(err: &ClientsError) -> Response {
@@ -832,6 +928,129 @@ mod tests {
         assert!(!settings_file(dir.path()).exists());
         settings.hidden_collections = vec![id("/cal/work/")];
         assert_eq!(core.handle(Request::UpdateSettings { settings }).await, Response::Ok);
+    }
+
+    use crate::account::github::tests::{MemoryTokens, NO_CLI, accounts_file, fake_github, service, viewer};
+
+    /// How often a test core started the control centre's accounts page.
+    static ACCOUNT_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_account_page() -> Result<(), String> {
+        ACCOUNT_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// [`core`] with GitHub accounts on the fake GitHub at `graphql`, without a GitHub CLI, the
+    /// keychain `tokens`, and a counter instead of starting the control centre.
+    fn core_with_github(dir: &std::path::Path, tokens: &MemoryTokens, graphql: &str) -> Core {
+        Core {
+            github: Arc::new(service(dir, tokens, graphql, NO_CLI)),
+            start_accounts: count_account_page,
+            ..core(dir)
+        }
+    }
+
+    const TOKEN: &str = "ghp_coreSECRET";
+
+    #[tokio::test]
+    async fn the_control_centre_connects_github_lists_it_and_removes_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let (url, _) = fake_github(|_| (200, Some("repo"), viewer("mahype"))).await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        let Response::Account { account } = ask(&core, Some(&app_key), set).await else {
+            panic!("a token is answered with the account");
+        };
+        assert_eq!(
+            (account.id.as_str(), account.scopes.as_deref()),
+            ("github:mahype", Some(&["repo".to_string()][..]))
+        );
+        let listed = ask(&core, Some(&app_key), Request::Accounts).await;
+        assert_eq!(listed, Response::Accounts { accounts: vec![account.clone()] });
+        for answer in [serde_json::to_string(&listed).expect("json"), format!("{listed:?}")] {
+            assert!(!answer.contains("SECRET"), "{answer}");
+        }
+        assert_eq!(tokens.get_plain("github:mahype").as_deref(), Some(TOKEN));
+        assert!(!std::fs::read_to_string(accounts_file(dir.path())).expect("stored").contains("SECRET"));
+
+        let remove = Request::RemoveAccount { id: "github:mahype".into() };
+        assert_eq!(ask(&core, Some(&app_key), remove.clone()).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), Request::Accounts).await, Response::Accounts { accounts: vec![] });
+        assert_eq!(code(&ask(&core, Some(&app_key), remove).await), "not-found", "gone, like any unknown id");
+    }
+
+    #[tokio::test]
+    async fn no_client_key_hands_in_a_github_token() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let (url, record) = fake_github(|_| (200, Some("repo"), viewer("mahype"))).await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        let Err(refused) = core.handle_from(Some(&key), set).await else { panic!("refused") };
+        assert_eq!(refused, Refused::Forbidden { command: "accounts.set_github_token" });
+        assert!(record.lock().expect("record").is_empty(), "nothing went to GitHub");
+        assert_eq!(tokens.get_plain("github:mahype"), None);
+        assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn without_a_cli_sign_in_connecting_github_is_not_connected() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_github(dir.path(), &MemoryTokens::default(), "http://127.0.0.1:9/graphql");
+        let answer = core.handle(Request::ConnectGithub).await;
+        assert_eq!(code(&answer), "not-connected");
+        let Response::Error { message, .. } = answer else { unreachable!() };
+        assert!(message.contains("gh auth login"), "says what to do: {message}");
+    }
+
+    #[tokio::test]
+    async fn a_client_asking_to_connect_github_only_opens_the_accounts_page() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core_with_github(dir.path(), &MemoryTokens::default(), "http://127.0.0.1:9/graphql");
+        let rights = RightsTemplate::FullAccess.rights();
+        let before = ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst);
+        // Without a GitHub CLI the control centre's way would be `not-connected`: the CLI is not
+        // asked for a client.
+        assert_eq!(core.handle_within(Request::ConnectGithub, Reach::Client(&rights)).await, Response::Opened);
+        assert_eq!(ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+        // From the socket it is an admin command: it waits for approval like any other.
+        let mut admin = RightsTemplate::FullAccess.rights();
+        admin.areas.insert(Area::Accounts, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, admin).await;
+        let refused = core.handle_from(Some(&key), Request::ConnectGithub).await;
+        assert_eq!(refused, Err(Refused::NeedsApproval { command: "accounts.connect_github" }));
+    }
+
+    #[tokio::test]
+    async fn sync_checks_the_github_tokens_and_reports_a_refused_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let accepted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let gate = Arc::clone(&accepted);
+        let (url, _) = fake_github(move |_| match gate.load(std::sync::atomic::Ordering::SeqCst) {
+            true => (200, Some("repo"), viewer("mahype")),
+            false => (401, None, String::new()),
+        })
+        .await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        assert_eq!(core.handle(Request::Sync).await, Response::Ok);
+
+        accepted.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(code(&core.handle(Request::Sync).await), "auth");
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        assert!(
+            matches!(&accounts[0].state, AccountState::Connected { problem: Some(p), .. } if p.starts_with("Sign in again"))
+        );
     }
 
     #[tokio::test]

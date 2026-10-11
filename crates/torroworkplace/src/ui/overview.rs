@@ -302,6 +302,7 @@ mod tests {
                 login_url: "https://cloud.example.test/login".into(),
             },
             collections: Vec::new(),
+            scopes: None,
         }
     }
 
@@ -312,6 +313,7 @@ mod tests {
             label: label.into(),
             state,
             collections: Vec::new(),
+            scopes: None,
         }
     }
 

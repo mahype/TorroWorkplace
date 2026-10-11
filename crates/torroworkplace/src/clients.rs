@@ -854,7 +854,7 @@ fn from_hex(text: &str) -> Option<KeyHash> {
 pub(crate) mod tests {
     use std::collections::HashMap;
 
-    use torro_ipc::api::{Access, Area, AreaRights, CATALOGUE, Level, Selection};
+    use torro_ipc::api::{Access, Area, AreaRights, CATALOGUE, Level, Mcp, Selection};
 
     use super::*;
 
@@ -1077,6 +1077,8 @@ pub(crate) mod tests {
                 clients.update(&client.id, rights.clone()).await.expect("rights changed");
                 for command in CATALOGUE {
                     let allowed = match (command.area, command.access) {
+                        // Kept from agents means for the app key only (`Rights::allows`).
+                        _ if command.mcp == Mcp::Never => false,
                         (Area::System, Access::Admin) => false,
                         (Area::System, _) => true,
                         (Area::Clients, _) => false,

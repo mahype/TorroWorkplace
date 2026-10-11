@@ -32,6 +32,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
+pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_pim::{AccountState, Collection, Event, Todo};
@@ -143,6 +144,30 @@ pub enum Request {
     /// to an account that exists already replaces its app password, the others stay.
     #[serde(rename = "accounts.connect_nextcloud")]
     ConnectNextcloud { server: String },
+    /// Connects the GitHub account the GitHub CLI (`gh`) is signed in to (task G.1). The core runs
+    /// `gh auth token` itself, checks the token with GitHub (GraphQL `viewer { login }`, scopes
+    /// from `X-OAuth-Scopes`) and keeps it in the system keychain only; the account is
+    /// `github:<login>`, added to the others or, for the same login, replacing its token.
+    /// Answered with [`Response::Account`]. Error codes: `not-connected` when `gh` is missing or
+    /// not signed in (the message says what to do), `auth` when GitHub refuses the token,
+    /// `offline`, `error`.
+    ///
+    /// A client key never takes over the CLI's sign-in: for it the core opens the control
+    /// centre's accounts page (`torroworkplace ui --section accounts`), where a person finishes,
+    /// and answers [`Response::Opened`].
+    #[serde(rename = "accounts.connect_github")]
+    ConnectGithub,
+    /// Connects a GitHub account with a token a person pasted: checked and stored like
+    /// [`Request::ConnectGithub`], answered with [`Response::Account`]; error codes `auth`,
+    /// `offline`, `error`. Only the app key may send it: every client key gets `forbidden`,
+    /// whatever its rights, because the token is a secret (`docs/api.md`, "Was nie nach außen
+    /// geht").
+    #[serde(rename = "accounts.set_github_token")]
+    SetGithubToken {
+        /// A personal access token from github.com, classic (`ghp_…`) or fine-grained
+        /// (`github_pat_…`). It goes into the system keychain only and is never part of an answer.
+        token: Secret,
+    },
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
     /// its own: one that fails keeps its cache and its problem, the others are updated. The
     /// answer is the first failure, else [`Response::Ok`].
@@ -331,6 +356,14 @@ pub enum Response {
         client: ClientInfo,
         key: IssuedKey,
     },
+    /// The account a sign-in just connected ([`Request::ConnectGithub`],
+    /// [`Request::SetGithubToken`]), as [`Request::Accounts`] lists it; never with its secret.
+    Account {
+        account: AccountInfo,
+    },
+    /// The control centre was opened so a person can finish the request there (a client's
+    /// [`Request::ConnectGithub`]); nothing has changed yet.
+    Opened,
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -339,13 +372,14 @@ pub enum Response {
     /// - `busy`: another save or load is running,
     /// - `unsupported`: no supported window manager, or an API version ([`Envelope::v`]) the
     ///   core does not speak,
-    /// - `not-connected`: no account to read from or write to,
+    /// - `not-connected`: no account to read from or write to, or no GitHub CLI sign-in to take
+    ///   over,
     /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
     ///   or the item changed there meanwhile,
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
-    /// - `forbidden`: the client's rights do not cover the command, it is a `clients` command
-    ///   (app key only), or it would need a person's approval, which the core cannot ask for
-    ///   yet,
+    /// - `forbidden`: the client's rights do not cover the command, it is for the app key only
+    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`), or it would need a
+    ///   person's approval, which the core cannot ask for yet,
     /// - `pending`: the command waits for a person to approve it,
     /// - `error`: anything else.
     Error {
@@ -367,13 +401,20 @@ pub struct AccountInfo {
     /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`; the front part of
     /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
-    /// Provider: `nextcloud` (later `github`, `slack`, …).
+    /// Provider: `nextcloud` or `github` (later `slack`, …).
     pub kind: String,
-    /// `anna@cloud.example.org`
+    /// `anna@cloud.example.org`; for GitHub the login.
     pub label: String,
     pub state: AccountState,
-    /// All collections of the account, hidden ones included.
+    /// All collections of the account, hidden ones included. None for GitHub yet.
     pub collections: Vec<Collection>,
+    /// What the account's token may do, as the provider reported it when the core last checked
+    /// it: for GitHub the OAuth scopes of a classic token or of the GitHub CLI's sign-in
+    /// (`X-OAuth-Scopes`: `repo`, `read:org`, …; empty for a token without scopes). `None` when
+    /// the provider does not tell: Nextcloud, and fine-grained GitHub tokens, whose permissions
+    /// are set per repository on GitHub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<String>>,
 }
 
 /// One of the suite's apps, as [`Request::ListApps`] reports it.
@@ -524,6 +565,27 @@ mod tests {
     fn keys_do_not_show_in_debug_output() {
         let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), request: Request::Ping };
         assert!(!format!("{envelope:?}").contains("secret"));
+    }
+
+    #[test]
+    fn a_github_token_does_not_show_in_debug_output() {
+        let request = Request::SetGithubToken { token: Secret::new("ghp_secret") };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        assert!(!format!("{envelope:?}").contains("secret"), "{envelope:?}");
+        let json = serde_json::to_string(&request).expect("serializes");
+        assert_eq!(json, r#"{"method":"accounts.set_github_token","token":"ghp_secret"}"#);
+        assert_eq!(serde_json::from_str::<Request>(&json).expect("parses"), request);
+    }
+
+    #[test]
+    fn accounts_without_scopes_read_and_write_as_before() {
+        let json = r#"{"id":"nextcloud:anna@cloud","kind":"nextcloud","label":"anna@cloud",
+            "state":{"state":"not-connected"},"collections":[]}"#;
+        let account: AccountInfo = serde_json::from_str(json).expect("an answer of an older core");
+        assert_eq!(account.scopes, None);
+        assert!(!serde_json::to_string(&account).expect("json").contains("scopes"));
+        let github = AccountInfo { scopes: Some(vec!["repo".into()]), kind: "github".into(), ..account };
+        assert_eq!(serde_json::to_value(&github).expect("json")["scopes"], serde_json::json!(["repo"]));
     }
 
     #[test]

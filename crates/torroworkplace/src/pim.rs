@@ -144,6 +144,7 @@ impl Slot {
             label: self.label(),
             state: self.state(),
             collections: self.collections.clone(),
+            scopes: None,
         }
     }
 }
@@ -943,6 +944,7 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
             label: server.clone(),
             state: AccountState::SigningIn { server: server.clone(), login_url: login_url.clone() },
             collections: Vec::new(),
+            scopes: None,
         });
     }
     infos
@@ -1323,6 +1325,7 @@ pub(crate) mod tests {
                     login_url: "https://cloud.example.org/login/v2/flow/x".into(),
                 },
                 collections: vec![],
+                scopes: None,
             }
         );
     }
@@ -1349,6 +1352,7 @@ pub(crate) mod tests {
                     problem: Some("server not reachable".into()),
                 },
                 collections: vec![collection(&cal("work")), collection(&cal("home"))],
+                scopes: None,
             }]
         );
     }

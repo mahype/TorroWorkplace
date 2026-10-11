@@ -724,6 +724,14 @@ mod tests {
     }
 
     #[test]
+    fn agents_may_ask_for_github_but_never_hand_in_a_token() {
+        assert_eq!(request_for("accounts_connect_github", JsonObject::new(), &Utc), Ok(Request::ConnectGithub));
+        let token = args(json!({"token": "ghp_x"}));
+        assert_eq!(request_for("accounts_set_github_token", token, &Utc), Err(ToolError::UnknownTool));
+        assert!(tools().iter().all(|tool| tool.name != "accounts_set_github_token"));
+    }
+
+    #[test]
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);
         assert_eq!(zoom, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: json!(1.25) }));

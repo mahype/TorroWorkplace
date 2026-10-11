@@ -143,7 +143,7 @@ K.21 (frei)
 ## G GitHub
 
 ### G.1 GitHub-Konto
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M1.1, M1.2 · **Dateien:** `crates/torro-core/src/account.rs`, `crates/torroworkplace/src/{account,core,mcp}.rs`,
   `crates/torroworkplace/src/ui/{accounts,wizard}.rs`, `crates/torro-ipc/src/{lib,api}.rs`
 - `AccountKind::GitHub`. Assistent: „Use GitHub CLI sign-in“ (wenn `gh auth token` etwas liefert, einmal

@@ -119,6 +119,7 @@ async fn serve(headless: bool) -> Result<(), String> {
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();
     let core = Arc::new(Core::new(backend, store, pim, clients));
+    core.start();
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -266,6 +267,9 @@ fn describe(request: &Request) -> String {
         Request::DeleteTemplate { id } => format!("delete {id}"),
         Request::LoadTemplate { id, .. } => format!("load {id}"),
         Request::ConnectNextcloud { server } => format!("connect {server}"),
+        Request::ConnectGithub => "connect github".into(),
+        // Never the token.
+        Request::SetGithubToken { .. } => "set github token".into(),
         Request::Sync => "sync".into(),
         Request::CalendarCollections => "calendars".into(),
         Request::TaskCollections => "task lists".into(),

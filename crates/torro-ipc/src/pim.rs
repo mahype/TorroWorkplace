@@ -218,6 +218,7 @@ mod tests {
             label: "anna@cloud.example.test".into(),
             state: account(),
             collections: vec![collection(), calendar(), list()],
+            scopes: None,
         }
     }
 
