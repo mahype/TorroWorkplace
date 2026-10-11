@@ -334,7 +334,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   (die weißen Streifen der ersten Prüfung kamen vom Fenster über dem Bildschirmrand).
 
 ### E3.2c Zweite Design-Prüfung: Nacharbeit
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E3.2b · **Dateien:** `crates/torroinbox/src/{app,list,detail}.rs`,
   `crates/torro-gui/src/theme.rs` (nur ein neues Token `size::ROW_TWO`), `crates/torro-gui/src/panel.rs`
   (nur der Durchschein-Fehler)
