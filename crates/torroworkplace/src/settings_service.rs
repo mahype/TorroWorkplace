@@ -1,9 +1,13 @@
 //! The core's side of the settings: reading, saving and applying them.
 //!
 //! Task S.1 in `docs/tasks/steuerzentrale.md`. `torro_core::settings` holds the type and the
-//! file; this module applies changes: start at login (an XDG autostart entry on Linux,
-//! `~/.config/autostart/torro-workplace.desktop`; macOS and Windows later). Hidden collections
-//! are applied by `pim.rs`, which reads [`SettingsStore::current`] on every request.
+//! file; this module applies changes: start at login (task X.3). It is one entry per system, all
+//! starting the running program with `daemon`: an XDG autostart entry on Linux
+//! (`~/.config/autostart/torro-workplace.desktop`), a LaunchAgent on macOS
+//! (`~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist`) and the value
+//! `TorroWorkplace` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows.
+//! Hidden collections are applied by `pim.rs`, which reads [`SettingsStore::current`] on every
+//! request.
 //!
 //! The file is not looked up here but handed in ([`SettingsStore`]): the daemon uses the user's
 //! `settings.json`, tests a file in a temp directory, so no test reads or writes the real one
@@ -242,12 +246,25 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Turns the start-at-login entry of this system on or off (see the module docs for where it is).
+/// The entry points at the running program, so switching the setting off and on again after the
+/// program moved updates it.
 #[cfg(target_os = "linux")]
 fn apply_start_at_login(enabled: bool) -> Result<(), String> {
     autostart::set_enabled(enabled)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn apply_start_at_login(enabled: bool) -> Result<(), String> {
+    launch_agent::set_enabled(enabled)
+}
+
+#[cfg(windows)]
+fn apply_start_at_login(enabled: bool) -> Result<(), String> {
+    run_key::set_enabled(enabled)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 fn apply_start_at_login(_enabled: bool) -> Result<(), String> {
     eprintln!("start at login is not supported on this system yet");
     Ok(())
@@ -407,6 +424,291 @@ mod autostart {
             remove_entry(&path).expect("remove entry");
             assert!(!path.exists());
             remove_entry(&path).expect("removing a missing entry is fine");
+        }
+    }
+}
+
+/// The LaunchAgent (macOS): `launchd` starts every agent in `~/Library/LaunchAgents` at login.
+///
+/// Switching it off only deletes the file, without `launchctl bootout`: the running daemon is the
+/// one the user is talking to right now and should not be killed by a settings change, and
+/// `launchd` reads the file only at the next login, so a registration left over until then cannot
+/// start anything. The same goes for switching on: no `launchctl bootstrap`, the daemon is
+/// already running.
+#[cfg(target_os = "macos")]
+mod launch_agent {
+    use std::env;
+    use std::fs;
+    use std::io;
+    use std::path::{Path, PathBuf};
+
+    const LABEL: &str = "io.github.mahype.torro-workplace";
+
+    /// Creates the agent when `enabled`, removes it otherwise. Uses the real home directory and
+    /// the running program, which inside an `.app` bundle is `Contents/MacOS/torroworkplace`.
+    pub fn set_enabled(enabled: bool) -> Result<(), String> {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let path = plist_path(home.as_deref()).ok_or("no home directory, so no login item")?;
+        if !enabled {
+            return remove_plist(&path);
+        }
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        let content = plist(&exe)?;
+        write_plist(&path, &content).map_err(|err| format!("cannot write {}: {err}", path.display()))
+    }
+
+    /// `~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist`. An empty or relative home
+    /// counts as none: a relative path would land wherever the process happens to run.
+    fn plist_path(home: Option<&Path>) -> Option<PathBuf> {
+        let home = home.filter(|home| home.is_absolute())?;
+        Some(home.join("Library").join("LaunchAgents").join(format!("{LABEL}.plist")))
+    }
+
+    /// The property list: runs `<exe> daemon` at login. `ProcessType` Interactive keeps the
+    /// system from throttling the daemon like a background job. Fails for a path that is not
+    /// UTF-8, which a property list cannot hold.
+    fn plist(exe: &Path) -> Result<String, String> {
+        let exe = exe.to_str().ok_or_else(|| format!("{} is not valid UTF-8", exe.display()))?;
+        let exe = xml_escape(exe);
+        Ok(format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+             <plist version=\"1.0\">\n\
+             <dict>\n\
+             \t<key>Label</key>\n\
+             \t<string>{LABEL}</string>\n\
+             \t<key>ProgramArguments</key>\n\
+             \t<array>\n\
+             \t\t<string>{exe}</string>\n\
+             \t\t<string>daemon</string>\n\
+             \t</array>\n\
+             \t<key>RunAtLoad</key>\n\
+             \t<true/>\n\
+             \t<key>ProcessType</key>\n\
+             \t<string>Interactive</string>\n\
+             </dict>\n\
+             </plist>\n"
+        ))
+    }
+
+    /// `text` as XML character data: the characters XML reserves are replaced.
+    fn xml_escape(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for c in text.chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&apos;"),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    fn write_plist(path: &Path, content: &str) -> io::Result<()> {
+        let dir = path.parent().ok_or_else(|| io::Error::other("login item has no directory"))?;
+        fs::create_dir_all(dir)?;
+        fs::write(path, content)
+    }
+
+    /// Removing a file that is not there is fine: the goal is that it is gone.
+    fn remove_plist(path: &Path) -> Result<(), String> {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(format!("cannot remove {}: {err}", path.display())),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn path_is_in_the_users_launch_agents() {
+            let path = plist_path(Some(Path::new("/Users/anna")));
+            assert_eq!(
+                path,
+                Some(PathBuf::from("/Users/anna/Library/LaunchAgents/io.github.mahype.torro-workplace.plist"))
+            );
+        }
+
+        #[test]
+        fn no_home_or_a_relative_one_gives_no_path() {
+            assert_eq!(plist_path(None), None);
+            assert_eq!(plist_path(Some(Path::new(""))), None);
+            assert_eq!(plist_path(Some(Path::new("anna"))), None);
+        }
+
+        #[test]
+        fn plist_has_the_expected_content() {
+            let content = plist(Path::new("/Applications/Torro.app/Contents/MacOS/torroworkplace")).expect("plist");
+            let expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                <plist version=\"1.0\">\n\
+                <dict>\n\
+                \t<key>Label</key>\n\
+                \t<string>io.github.mahype.torro-workplace</string>\n\
+                \t<key>ProgramArguments</key>\n\
+                \t<array>\n\
+                \t\t<string>/Applications/Torro.app/Contents/MacOS/torroworkplace</string>\n\
+                \t\t<string>daemon</string>\n\
+                \t</array>\n\
+                \t<key>RunAtLoad</key>\n\
+                \t<true/>\n\
+                \t<key>ProcessType</key>\n\
+                \t<string>Interactive</string>\n\
+                </dict>\n\
+                </plist>\n";
+            assert_eq!(content, expected);
+        }
+
+        #[test]
+        fn special_characters_in_the_path_are_escaped() {
+            let content = plist(Path::new("/Users/a&b/<x>/\"y\"/it's/torroworkplace")).expect("plist");
+            assert!(
+                content.contains("<string>/Users/a&amp;b/&lt;x&gt;/&quot;y&quot;/it&apos;s/torroworkplace</string>"),
+                "{content}"
+            );
+        }
+
+        #[test]
+        fn a_path_with_spaces_stays_one_argument() {
+            let content = plist(Path::new("/Users/Anna Meyer/Torro Apps/torroworkplace")).expect("plist");
+            assert!(content.contains("<string>/Users/Anna Meyer/Torro Apps/torroworkplace</string>"));
+        }
+
+        #[test]
+        fn a_path_that_is_not_utf8_is_refused() {
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+            let path = Path::new(OsStr::from_bytes(b"/tmp/\xff/torroworkplace"));
+            assert!(plist(path).is_err());
+        }
+
+        #[test]
+        fn plist_is_created_and_removed() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = plist_path(Some(dir.path())).expect("path");
+            let content = plist(Path::new("/usr/local/bin/torroworkplace")).expect("plist");
+
+            write_plist(&path, &content).expect("create plist, with the missing directories");
+            assert_eq!(fs::read_to_string(&path).expect("read plist"), content);
+
+            remove_plist(&path).expect("remove plist");
+            assert!(!path.exists());
+            remove_plist(&path).expect("removing a missing plist is fine");
+        }
+    }
+}
+
+/// The `Run` key (Windows): Explorer starts every value under
+/// `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` as a command line at login. Per user,
+/// so it needs no administrator rights.
+#[cfg(windows)]
+mod run_key {
+    use std::env;
+    use std::io;
+    use std::path::Path;
+
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const VALUE_NAME: &str = "TorroWorkplace";
+
+    /// Sets the value when `enabled`, deletes it otherwise. Uses the real `Run` key and the
+    /// running program.
+    pub fn set_enabled(enabled: bool) -> Result<(), String> {
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        set_in(RUN_KEY, enabled, &exe).map_err(|err| format!(r"cannot change HKCU\{RUN_KEY}: {err}"))
+    }
+
+    /// `set_enabled` on the key `subkey` of `HKEY_CURRENT_USER`, which tests point at a key of
+    /// their own so they never touch `Run`.
+    fn set_in(subkey: &str, enabled: bool, exe: &Path) -> io::Result<()> {
+        let user = RegKey::predef(HKEY_CURRENT_USER);
+        if enabled {
+            // Opens the key, or creates it (the test keys do not exist yet).
+            let (key, _) = user.create_subkey(subkey)?;
+            return key.set_value(VALUE_NAME, &command_line(exe));
+        }
+        // Removing what is not there is fine: the goal is that it is gone.
+        let key = match user.open_subkey_with_flags(subkey, KEY_SET_VALUE) {
+            Ok(key) => key,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        match key.delete_value(VALUE_NAME) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        }
+    }
+
+    /// `"<exe>" daemon`. The path is quoted so one with spaces (`C:\Program Files\…`) stays the
+    /// program; Windows paths cannot contain a quote, so there is nothing to escape.
+    fn command_line(exe: &Path) -> String {
+        format!("\"{}\" daemon", exe.display())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// A key of its own for one test, removed again when the test ends, even by a failure.
+        struct TestKey(String);
+
+        impl TestKey {
+            fn new(name: &str) -> TestKey {
+                TestKey(format!(r"Software\TorroWorkplaceTest\{name}-{}", std::process::id()))
+            }
+
+            fn value(&self) -> io::Result<String> {
+                let key = RegKey::predef(HKEY_CURRENT_USER).open_subkey(&self.0)?;
+                key.get_value(VALUE_NAME)
+            }
+        }
+
+        impl Drop for TestKey {
+            fn drop(&mut self) {
+                let user = RegKey::predef(HKEY_CURRENT_USER);
+                let _ = user.delete_subkey_all(&self.0);
+                // Only succeeds when no other test key is left in it; the parent stays otherwise.
+                let _ = user.delete_subkey(r"Software\TorroWorkplaceTest");
+            }
+        }
+
+        #[test]
+        fn command_line_quotes_the_path() {
+            assert_eq!(
+                command_line(Path::new(r"C:\Program Files\Torro Workplace\torroworkplace.exe")),
+                r#""C:\Program Files\Torro Workplace\torroworkplace.exe" daemon"#
+            );
+        }
+
+        #[test]
+        fn value_is_set_replaced_and_deleted() {
+            let key = TestKey::new("set");
+            set_in(&key.0, true, Path::new(r"C:\one\torroworkplace.exe")).expect("set");
+            assert_eq!(key.value().expect("value"), r#""C:\one\torroworkplace.exe" daemon"#);
+
+            set_in(&key.0, true, Path::new(r"C:\two words\torroworkplace.exe")).expect("replace");
+            assert_eq!(key.value().expect("value"), r#""C:\two words\torroworkplace.exe" daemon"#);
+
+            set_in(&key.0, false, Path::new(r"C:\ignored.exe")).expect("delete");
+            assert!(key.value().is_err());
+        }
+
+        #[test]
+        fn deleting_what_is_not_there_is_fine() {
+            let missing_key = TestKey::new("missing");
+            set_in(&missing_key.0, false, Path::new(r"C:\x.exe")).expect("no key");
+
+            let missing_value = TestKey::new("novalue");
+            RegKey::predef(HKEY_CURRENT_USER).create_subkey(&missing_value.0).expect("create key");
+            set_in(&missing_value.0, false, Path::new(r"C:\x.exe")).expect("no value");
         }
     }
 }

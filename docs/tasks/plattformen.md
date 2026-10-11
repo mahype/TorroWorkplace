@@ -65,7 +65,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   `initialize`, wenn ein Programm es über Pipes startet. Linux und macOS unverändert.
 
 ### X.3 Start beim Anmelden auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** – · **Dateien:** `crates/torroworkplace/src/settings_service.rs`
 - „Start at login“ ist heute nur ein XDG-Autostart-Eintrag (Linux). macOS: LaunchAgent
   `~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist` (`RunAtLoad`, Programm `torroworkplace daemon`,

@@ -38,5 +38,8 @@ webbrowser.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+winreg.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
