@@ -130,6 +130,10 @@ K.21 (frei)
   `move_todo` (Demo und Socket-Client). Sortierart über `settings.set_setting` (neuer `SettingKey`,
   Katalogbeschreibung ergänzen; Admin wie alle Einstellungen). **MCP:** `tasks_move_todo`.
 - **Oberfläche:** P.3b.
+- Nachtrag aus der API-Prüfung: `list_order` prüft die Reichweite gegen die für den Client **sichtbaren
+  Aufgabenlisten** (`PimService::sees_task_list`), nicht gegen die Auswahl allein; versteckte Listen und
+  Kalender-Kennungen sind `not-found` (auch bei `Selection::All`), `set_list_order` nimmt nur bekannte Aufgabenlisten.
+  Katalogtexte von `tasks.move_todo` und `list_order` präzisiert.
 - Abnahme: Tests für Einsortieren (Anfang, Mitte, Ende, Lücken, Neu-Nummerieren), `conflict`, fremde Liste,
   Rechte (Client ohne die Liste → `not-found`), MCP-Tool baut den richtigen Request.
 

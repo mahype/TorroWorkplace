@@ -704,7 +704,8 @@ static MOVE_TODO: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Puts a task (`href` and `etag` from list_todos) right before another task of the same list \
-                  (`before`, its `href`) or, without `before`, at the end, for lists ordered by hand. Tasks are \
+                  (`before`, its `href`) or, without `before`, at the end. Works in any list; the order is shown \
+                  in lists set to \"manual order\" (settings.set_setting `list_order`). Tasks are \
                   ordered among those with the same parent that are open or done like it, smaller `sort_order` \
                   first, tasks without one last; only tasks whose number must change are written and returned. \
                   If a write fails, the task has not moved yet: reload with list_todos and try again.",
@@ -797,8 +798,8 @@ static SET_SETTING: Command = Command {
                   2.0, 1.0 = 100 %, rounded to the nearest browser zoom step; every open window follows), `night` \
                   ({\"from\": \"22:00\", \"to\": \"06:00\"}, times on the quarter hour; the calendar's timeline and \
                   radar fold or shade it and do not count it as free time; the same time twice means no night) or \
-                  `list_order` ({\"list\": \"<list id>\", \"order\": \"manual\"} to order a task list by hand with \
-                  tasks.move_todo, or \"due_date\" to group it by due date again).",
+                  `list_order` ({\"list\": \"<the id from tasks.list_lists>\", \"order\": \"manual\"} to order a \
+                  task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {

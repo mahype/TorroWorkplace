@@ -446,6 +446,17 @@ impl PimService {
         self.state.read().await.collections().any(|c| c.id == id)
     }
 
+    /// `id` is a task list (a collection with todos) of a connected account, hidden or not.
+    pub async fn knows_task_list(&self, id: &str) -> bool {
+        self.state.read().await.collections().any(|c| c.id == id && c.kind.has_todos())
+    }
+
+    /// `id` is a task list that `reach` sees: shown, in the selection and holding todos. What a
+    /// client may not see behaves as if it did not exist.
+    pub async fn sees_task_list(&self, reach: Reach<'_>, id: &str) -> bool {
+        self.seen(reach, Role::TaskList).await.iter().any(|list| list.id == id)
+    }
+
     /// Fills the cache of the first account as a sync would, for the core's handler tests; with
     /// no account yet, [`PimService::pretend_signed_in`] first.
     #[cfg(test)]

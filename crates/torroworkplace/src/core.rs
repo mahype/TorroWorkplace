@@ -168,8 +168,10 @@ impl Core {
                 let selected = rights.calendars.contains(collection) || rights.task_lists.contains(collection);
                 (!selected).then(|| collection.clone())
             }
-            (Reach::Client(rights), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
-                list_of(value).filter(|list| !rights.task_lists.contains(list))
+            // Only shown task lists in the selection: hidden lists and calendars look unknown.
+            (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
+                let list = list_of(value)?;
+                (!self.pim.sees_task_list(reach, &list).await).then_some(list)
             }
             (reach, request) => self.pim.out_of_reach(reach, request).await,
         }
@@ -316,10 +318,10 @@ impl Core {
     }
 
     /// `settings.set_setting` with `list_order` (task P.3a): like every setting, but the list must
-    /// be a task list of a connected account, else `not-found` and nothing is written.
+    /// be a task list (not a calendar) of a connected account, else `not-found` and nothing is written.
     async fn set_list_order(&self, value: &serde_json::Value) -> Response {
         if let Some(list) = list_of(value)
-            && !self.pim.knows_collection(&list).await
+            && !self.pim.knows_task_list(&list).await
         {
             return no_collection(&list);
         }
@@ -803,6 +805,8 @@ mod tests {
         assert_eq!(core.handle(manual("/tasks/home/")).await, Response::Ok);
         assert_eq!(settings(&core).await.list_order(&id("/tasks/work/")), ListOrder::Manual);
         assert_eq!(code(&core.handle(manual("/tasks/nope/")).await), "not-found");
+        core.pim.cache_collections(vec![list("/tasks/work/"), list("/tasks/home/"), calendar(&id("/cal/work/"))]).await;
+        assert_eq!(code(&core.handle(manual("/cal/work/")).await), "not-found", "a calendar has no list order");
         let wrong = Request::SetSetting { key: SettingKey::ListOrder, value: serde_json::json!({"order": "manual"}) };
         assert_eq!(code(&core.handle(wrong).await), "error");
 
@@ -816,6 +820,31 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden", "admin: approval");
         let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
         assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
+    }
+
+    #[tokio::test]
+    async fn a_client_with_all_lists_cannot_probe_hidden_lists_or_calendars() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let list = |path: &str| torro_pim::Collection { kind: torro_pim::CollectionKind::Todos, ..calendar(&id(path)) };
+        core.pim
+            .cache_collections(vec![list("/tasks/work/"), list("/tasks/secret/"), calendar(&id("/cal/work/"))])
+            .await;
+        core.handle(Request::SetCollectionShown { collection: id("/tasks/secret/"), shown: false }).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights.task_lists = Selection::All;
+        let key = client(&core, rights).await.1;
+        let manual = |path: &str| Request::SetSetting {
+            key: SettingKey::ListOrder,
+            value: serde_json::json!({"list": id(path), "order": "manual"}),
+        };
+        // Admin needs an approval ("forbidden") for a list it sees; the others never get that far.
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/secret/")).await), "not-found", "hidden list");
+        assert_eq!(code(&ask(&core, Some(&key), manual("/cal/work/")).await), "not-found", "a calendar");
     }
 
     #[tokio::test]
