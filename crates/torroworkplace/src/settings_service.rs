@@ -64,6 +64,16 @@ impl SettingsStore {
         self.change(|settings| *settings = new)
     }
 
+    /// Like [`SettingsStore::update`], but the hidden collections stay as stored, read under the
+    /// same lock as the write, so a collection hidden meanwhile is not shown again. For clients,
+    /// which never see the hidden collections and so cannot send them back.
+    pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
+        self.change(|settings| {
+            let hidden = std::mem::take(&mut settings.hidden_collections);
+            *settings = Settings { hidden_collections: hidden, ..new };
+        })
+    }
+
     /// Sets one setting (`Request::SetSetting`). The value is checked against the key before the
     /// file is read; a value that does not fit is an error and changes nothing.
     pub fn set(&self, key: SettingKey, value: &serde_json::Value) -> Result<(), String> {
@@ -387,6 +397,16 @@ mod tests {
                 hidden_collections: vec!["work".into()],
             }
         );
+    }
+
+    #[test]
+    fn an_update_from_a_client_keeps_the_hidden_collections() {
+        let (_dir, store) = store();
+        store.set_collection_shown("secret", false).expect("hidden");
+        let new = Settings { language: Language::German, hidden_collections: vec![], ..Settings::default() };
+        store.update_keeping_hidden(new).expect("updated");
+        let stored = store.current();
+        assert_eq!((stored.language, stored.hidden_collections), (Language::German, vec!["secret".to_string()]));
     }
 
     #[test]

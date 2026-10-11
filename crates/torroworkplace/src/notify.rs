@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn queries_get_no_notification() {
-        assert_eq!(message("ping", &Response::Pong { version: "0.0.1".into() }), None);
+        assert_eq!(message("ping", &Response::Pong { version: "0.0.1".into(), api: torro_ipc::API_VERSION }), None);
         assert_eq!(message("list", &Response::Templates { templates: vec![] }), None);
     }
 

@@ -10,19 +10,24 @@
 //! [`Request::operation`] is an exhaustive `match`, so a new request does not build until it has
 //! a command here, and the access it needs can depend on the request's fields (loading a template
 //! with `mode: replace` closes windows and needs [`Access::Delete`]).
+//!
+//! The rights a person grants a client (`docs/api.md`, "Rechte") are described here too
+//! ([`Rights`]), next to the areas and access levels they are made of; the core checks them.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
-use schemars::Schema;
 use schemars::generate::SchemaSettings;
+use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
 use torro_setups::LoadMode;
 
 use crate::Request;
 
 /// The part of the suite a person grants rights for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Ordered as the control centre lists them; [`Rights::areas`] is keyed by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Area {
     /// Health and status of the core.
@@ -37,9 +42,30 @@ pub enum Area {
     Settings,
     /// The suite's apps.
     Apps,
+    /// The agents and scripts that may use the API, their keys and rights. Only the app key may
+    /// use it, whatever a client's rights say: no agent may give itself more rights.
+    Clients,
 }
 
 impl Area {
+    /// Every area, in the order of the enum.
+    pub const ALL: [Area; 8] = [
+        Area::System,
+        Area::Workspaces,
+        Area::Calendar,
+        Area::Tasks,
+        Area::Accounts,
+        Area::Settings,
+        Area::Apps,
+        Area::Clients,
+    ];
+
+    /// Rights for this area can be granted to a client. `system` is open to every valid key and
+    /// `clients` to the app key only, so neither has a level in [`Rights::areas`].
+    pub fn grantable(self) -> bool {
+        !matches!(self, Area::System | Area::Clients)
+    }
+
     /// The name in commands and rights: `calendar`. Every command name starts with it.
     pub fn name(self) -> &'static str {
         match self {
@@ -50,6 +76,7 @@ impl Area {
             Area::Accounts => "accounts",
             Area::Settings => "settings",
             Area::Apps => "apps",
+            Area::Clients => "clients",
         }
     }
 }
@@ -67,6 +94,239 @@ pub enum Access {
     /// Accounts, settings, connections: a separate switch per area, and an agent always needs a
     /// person's approval for it.
     Admin,
+}
+
+impl Access {
+    /// Whether holding `self` allows a command that needs `needed`.
+    ///
+    /// `Read` < `Write` < `Delete`: each covers the ones before it. `Admin` stands apart: it
+    /// covers only itself, and no other access covers it, because it is a switch of its own.
+    pub fn covers(self, needed: Access) -> bool {
+        match (self, needed) {
+            (Access::Admin, needed) => needed == Access::Admin,
+            (_, Access::Admin) => false,
+            (held, needed) => held.rank() >= needed.rank(),
+        }
+    }
+
+    /// The order of `Read`, `Write` and `Delete`; `Admin` is kept out of it by [`Access::covers`].
+    fn rank(self) -> u8 {
+        match self {
+            Access::Read => 0,
+            Access::Write => 1,
+            Access::Delete | Access::Admin => 2,
+        }
+    }
+}
+
+/// The level a client has in one area: no access, read, read and write, or full. Ordered from
+/// least to most.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    /// No command of the area.
+    #[serde(rename = "none")]
+    NoAccess,
+    /// Only commands that change nothing.
+    Read,
+    /// Read, create, change and trigger.
+    Write,
+    /// Everything but the admin commands, deleting and overwriting included.
+    Full,
+}
+
+impl Level {
+    /// The most this level allows, `None` for [`Level::NoAccess`]. Never [`Access::Admin`].
+    pub fn access(self) -> Option<Access> {
+        match self {
+            Level::NoAccess => None,
+            Level::Read => Some(Access::Read),
+            Level::Write => Some(Access::Write),
+            Level::Full => Some(Access::Delete),
+        }
+    }
+}
+
+/// A client's rights in one area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AreaRights {
+    pub level: Level,
+    /// The admin commands of the area (connect or remove accounts, change settings). Off unless
+    /// a person switches it on; even then every admin command of a client needs approval.
+    pub admin: bool,
+}
+
+impl AreaRights {
+    /// No access and no admin commands: what an area not listed in [`Rights::areas`] gets.
+    pub const NONE: AreaRights = AreaRights { level: Level::NoAccess, admin: false };
+
+    /// Whether these rights allow a command that needs `access`.
+    pub fn allows(self, access: Access) -> bool {
+        match access {
+            Access::Admin => self.admin,
+            needed => self.level.access().is_some_and(|held| held.covers(needed)),
+        }
+    }
+}
+
+/// Which calendars or task lists a client may see: all, or the ones with these ids.
+///
+/// A collection outside the selection behaves for the client as if it did not exist
+/// (`not-found`). Collections hidden in the suite are left out for every client anyway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Selection {
+    /// Every collection of this kind, also ones added later.
+    All,
+    /// Only the collections with these ids (from `accounts.list_accounts`).
+    Only(Vec<String>),
+}
+
+impl Selection {
+    /// `id` is part of the selection.
+    pub fn contains(&self, id: &str) -> bool {
+        match self {
+            Selection::All => true,
+            Selection::Only(ids) => ids.iter().any(|selected| selected == id),
+        }
+    }
+
+    /// The collections both selections contain.
+    pub fn common(&self, other: &Selection) -> Selection {
+        match (self, other) {
+            (Selection::All, selection) | (selection, Selection::All) => selection.clone(),
+            (Selection::Only(ids), other) => {
+                Selection::Only(ids.iter().filter(|id| other.contains(id)).cloned().collect())
+            }
+        }
+    }
+}
+
+/// When a client's command waits for a person's approval.
+///
+/// Admin commands always wait, whatever is set here (decision 3 in `docs/api.md`). Ordered from
+/// least to most asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Confirm {
+    /// Never, except for admin commands.
+    Never,
+    /// Before deleting or overwriting something.
+    #[default]
+    OnDelete,
+    /// Before every command that changes something.
+    OnEveryChange,
+}
+
+/// What a client may do. Kept per client in `clients.json`; only the app key may change it.
+///
+/// The core checks in this order: [`Rights::allows`] (level and admin switch of the area), then
+/// the collections ([`Rights::calendars`], [`Rights::task_lists`]), then
+/// [`Rights::needs_approval`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Rights {
+    /// Level and admin switch per area. An area not listed has no access, so areas added later
+    /// start closed. Entries for `system` and `clients` are ignored ([`Area::grantable`]).
+    pub areas: BTreeMap<Area, AreaRights>,
+    /// The calendars the client sees and may write to.
+    pub calendars: Selection,
+    /// The task lists the client sees and may write to.
+    pub task_lists: Selection,
+    /// When a command waits for a person's approval.
+    pub confirm: Confirm,
+}
+
+impl Rights {
+    /// The rights in `area`; [`AreaRights::NONE`] when it is not listed.
+    pub fn area(&self, area: Area) -> AreaRights {
+        self.areas.get(&area).copied().unwrap_or(AreaRights::NONE)
+    }
+
+    /// Whether level and admin switch allow `operation`. Every `system` command is allowed and
+    /// no `clients` command: those are for the app key only.
+    ///
+    /// Collections and approval are checked after this, by the core.
+    pub fn allows(&self, operation: Operation) -> bool {
+        match operation.area() {
+            Area::System => true,
+            Area::Clients => false,
+            area => self.area(area).allows(operation.access),
+        }
+    }
+
+    /// Whether a command that needs `access` must wait for a person's approval: every admin
+    /// command, deleting unless [`Confirm::Never`], every change with [`Confirm::OnEveryChange`].
+    ///
+    /// Until approvals exist (A.3 in `docs/tasks/api-mcp.md`) the core refuses these commands
+    /// with `forbidden` instead of running them without asking.
+    pub fn needs_approval(&self, access: Access) -> bool {
+        match access {
+            Access::Admin => true,
+            Access::Delete => self.confirm != Confirm::Never,
+            Access::Write => self.confirm == Confirm::OnEveryChange,
+            Access::Read => false,
+        }
+    }
+
+    /// What both `self` and `other` allow: the lower level and both admin switches per area, the
+    /// collections in both selections, the stricter approval. The core keeps these when it
+    /// cannot store a change of rights, so a failed write never leaves the wider ones in force.
+    pub fn common(&self, other: &Rights) -> Rights {
+        let areas = self
+            .areas
+            .keys()
+            .map(|&area| {
+                let (mine, theirs) = (self.area(area), other.area(area));
+                (area, AreaRights { level: mine.level.min(theirs.level), admin: mine.admin && theirs.admin })
+            })
+            .collect();
+        Rights {
+            areas,
+            calendars: self.calendars.common(&other.calendars),
+            task_lists: self.task_lists.common(&other.task_lists),
+            confirm: self.confirm.max(other.confirm),
+        }
+    }
+
+    /// The template these rights equal exactly; `None` once a row was changed.
+    pub fn template(&self) -> Option<RightsTemplate> {
+        RightsTemplate::ALL.into_iter().find(|template| template.rights() == *self)
+    }
+}
+
+/// The rights a new client starts with; afterwards every row can be changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RightsTemplate {
+    /// Read everything, change nothing.
+    ReadOnly,
+    /// Read, write and delete everything; deleting waits for a person's approval.
+    #[default]
+    ReadAndWrite,
+    /// Read, write and delete everything without asking.
+    FullAccess,
+}
+
+impl RightsTemplate {
+    pub const ALL: [RightsTemplate; 3] =
+        [RightsTemplate::ReadOnly, RightsTemplate::ReadAndWrite, RightsTemplate::FullAccess];
+
+    /// The rights of this template: the same level in every grantable area, all calendars and
+    /// task lists. No template switches on admin commands; a person does that per area.
+    pub fn rights(self) -> Rights {
+        let (level, confirm) = match self {
+            RightsTemplate::ReadOnly => (Level::Read, Confirm::OnDelete),
+            RightsTemplate::ReadAndWrite => (Level::Full, Confirm::OnDelete),
+            RightsTemplate::FullAccess => (Level::Full, Confirm::Never),
+        };
+        let areas = Area::ALL
+            .into_iter()
+            .filter(|area| area.grantable())
+            .map(|area| (area, AreaRights { level, admin: false }))
+            .collect();
+        Rights { areas, calendars: Selection::All, task_lists: Selection::All, confirm }
+    }
 }
 
 /// Whether agents get a command as an MCP tool.
@@ -197,6 +457,11 @@ impl Request {
             Request::SetCollectionShown { .. } => &SET_COLLECTION_SHOWN,
             Request::ListApps => &LIST_APPS,
             Request::OpenApp { .. } => &OPEN_APP,
+            Request::ListClients => &LIST_CLIENTS,
+            Request::CreateClient { .. } => &CREATE_CLIENT,
+            Request::UpdateClient { .. } => &UPDATE_CLIENT,
+            Request::NewClientKey { .. } => &NEW_KEY,
+            Request::RemoveClient { .. } => &REMOVE_CLIENT,
         };
         let access = match self {
             // Replacing closes the windows on the workspace: nothing brings them back.
@@ -249,6 +514,11 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_SETTINGS,
     &LIST_APPS,
     &OPEN_APP,
+    &LIST_CLIENTS,
+    &CREATE_CLIENT,
+    &UPDATE_CLIENT,
+    &NEW_KEY,
+    &REMOVE_CLIENT,
 ];
 
 static PING: Command = Command {
@@ -484,6 +754,51 @@ static OPEN_APP: Command = Command {
                   when it already runs.",
 };
 
+// The `clients` commands are never MCP tools, and only the app key may use them (`docs/api.md`,
+// "Was nie nach außen geht", 2): otherwise an agent could give itself more rights.
+
+static LIST_CLIENTS: Command = Command {
+    name: "clients.list_clients",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Lists the agents and scripts that may use the API with name, kind, rights and when they were last \
+                  used. Keys are never part of the answer.",
+};
+
+static CREATE_CLIENT: Command = Command {
+    name: "clients.create_client",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Connects a new agent or script with the rights of a template and returns its key. The key is in \
+                  this answer only; the core keeps just its hash.",
+};
+
+static UPDATE_CLIENT: Command = Command {
+    name: "clients.update_client",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Replaces the rights of a client. They apply from its next request.",
+};
+
+static NEW_KEY: Command = Command {
+    name: "clients.new_key",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Makes a new key for a client and returns it once. The old key stops working at once.",
+};
+
+static REMOVE_CLIENT: Command = Command {
+    name: "clients.remove_client",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Removes a client and its key from this device. The key stops working at once.",
+};
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -570,6 +885,15 @@ mod tests {
             Request::SetCollectionShown { collection: "/cal/work/".into(), shown: false },
             Request::ListApps,
             Request::OpenApp { app: "torrocalendar".into() },
+            Request::ListClients,
+            Request::CreateClient {
+                name: "Claude Code".into(),
+                kind: "claude-code".into(),
+                template: RightsTemplate::ReadAndWrite,
+            },
+            Request::UpdateClient { id: "3fa9c1d2".into(), rights: RightsTemplate::ReadOnly.rights() },
+            Request::NewClientKey { id: "3fa9c1d2".into() },
+            Request::RemoveClient { id: "3fa9c1d2".into() },
         ]
     }
 
@@ -637,8 +961,158 @@ mod tests {
             assert!(command.tool_name().len() <= 64, "{}", command.name);
             assert!(!command.description.is_empty() && command.description.ends_with('.'), "{}", command.name);
             // Rule from docs/api.md: only secrets, clients and approvals are kept from agents.
-            assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
+            assert_eq!(command.mcp == Mcp::Never, command.area == Area::Clients, "{}", command.name);
+            // Only the app key may manage clients, so all of their commands are admin commands.
+            if command.area == Area::Clients {
+                assert_eq!(command.access, Access::Admin, "{}", command.name);
+            }
         }
+    }
+
+    const ACCESSES: [Access; 4] = [Access::Read, Access::Write, Access::Delete, Access::Admin];
+    const LEVELS: [Level; 4] = [Level::NoAccess, Level::Read, Level::Write, Level::Full];
+
+    #[test]
+    fn access_covers_lower_levels_and_admin_stands_apart() {
+        for held in ACCESSES {
+            for needed in ACCESSES {
+                let expected = match (held, needed) {
+                    (Access::Admin, Access::Admin) => true,
+                    (Access::Admin, _) | (_, Access::Admin) => false,
+                    (Access::Read, needed) => needed == Access::Read,
+                    (Access::Write, needed) => needed != Access::Delete,
+                    (Access::Delete, _) => true,
+                };
+                assert_eq!(held.covers(needed), expected, "{held:?} covers {needed:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn levels_and_the_admin_switch_allow_what_they_say() {
+        let allows = |level, admin, access| AreaRights { level, admin }.allows(access);
+        for admin in [false, true] {
+            assert!(!allows(Level::NoAccess, admin, Access::Read));
+            assert!(allows(Level::Read, admin, Access::Read) && !allows(Level::Read, admin, Access::Write));
+            assert!(allows(Level::Write, admin, Access::Write) && !allows(Level::Write, admin, Access::Delete));
+            assert!(allows(Level::Full, admin, Access::Delete));
+            for level in LEVELS {
+                assert_eq!(allows(level, admin, Access::Admin), admin, "{level:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn approval_is_needed_for_admin_always_and_otherwise_as_confirm_says() {
+        let needs = |confirm, access| Rights { confirm, ..RightsTemplate::FullAccess.rights() }.needs_approval(access);
+        for confirm in [Confirm::Never, Confirm::OnDelete, Confirm::OnEveryChange] {
+            assert!(needs(confirm, Access::Admin), "{confirm:?}");
+            assert!(!needs(confirm, Access::Read), "{confirm:?}");
+        }
+        assert!(!needs(Confirm::Never, Access::Delete) && !needs(Confirm::Never, Access::Write));
+        assert!(needs(Confirm::OnDelete, Access::Delete) && !needs(Confirm::OnDelete, Access::Write));
+        assert!(needs(Confirm::OnEveryChange, Access::Delete) && needs(Confirm::OnEveryChange, Access::Write));
+        assert_eq!(Confirm::default(), Confirm::OnDelete);
+    }
+
+    #[test]
+    fn templates_grant_every_grantable_area_without_admin() {
+        for template in RightsTemplate::ALL {
+            let rights = template.rights();
+            assert_eq!(rights.template(), Some(template));
+            for area in Area::ALL {
+                assert_eq!(rights.areas.contains_key(&area), area.grantable(), "{template:?} {area:?}");
+                assert!(!rights.area(area).admin, "{template:?} {area:?}");
+            }
+            assert_eq!((&rights.calendars, &rights.task_lists), (&Selection::All, &Selection::All));
+        }
+        let level = |template: RightsTemplate| template.rights().area(Area::Calendar).level;
+        assert_eq!(level(RightsTemplate::ReadOnly), Level::Read);
+        assert_eq!(level(RightsTemplate::ReadAndWrite), Level::Full);
+        assert_eq!(level(RightsTemplate::FullAccess), Level::Full);
+        assert_eq!(RightsTemplate::ReadAndWrite.rights().confirm, Confirm::OnDelete);
+        assert_eq!(RightsTemplate::FullAccess.rights().confirm, Confirm::Never);
+        assert_eq!(RightsTemplate::default(), RightsTemplate::ReadAndWrite);
+
+        let mut changed = RightsTemplate::ReadOnly.rights();
+        changed.calendars = Selection::Only(vec!["/cal/work/".into()]);
+        assert_eq!(changed.template(), None);
+    }
+
+    /// The table: every command of the catalogue against every level and admin switch. A new
+    /// command is covered without touching this test.
+    #[test]
+    fn rights_allow_each_command_by_level_and_admin_switch() {
+        for command in CATALOGUE {
+            for level in LEVELS {
+                for admin in [false, true] {
+                    let mut rights = RightsTemplate::ReadOnly.rights();
+                    for area in Area::ALL {
+                        rights.areas.insert(area, AreaRights { level, admin });
+                    }
+                    let operation = Operation { command, access: command.access };
+                    let expected = match (command.area, command.access) {
+                        (Area::System, _) => true,
+                        (Area::Clients, _) => false,
+                        (_, Access::Admin) => admin,
+                        (_, Access::Read) => level != Level::NoAccess,
+                        (_, Access::Write) => matches!(level, Level::Write | Level::Full),
+                        (_, Access::Delete) => level == Level::Full,
+                    };
+                    assert_eq!(rights.allows(operation), expected, "{} with {level:?}, admin {admin}", command.name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_area_without_entry_has_no_access() {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.remove(&Area::Calendar);
+        assert_eq!(rights.area(Area::Calendar), AreaRights::NONE);
+        assert!(!rights.allows(Request::CalendarCollections.operation()));
+        assert!(rights.allows(Request::Ping.operation()), "system needs no entry");
+    }
+
+    #[test]
+    fn rights_are_stored_readably() {
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.task_lists = Selection::Only(vec!["/tasks/home/".into()]);
+        let json = serde_json::to_value(&rights).expect("serializes");
+        assert_eq!(json["areas"]["calendar"], serde_json::json!({"level": "full", "admin": false}));
+        assert_eq!(json["calendars"], serde_json::json!("all"));
+        assert_eq!(json["taskLists"], serde_json::json!({"only": ["/tasks/home/"]}));
+        assert_eq!(json["confirm"], serde_json::json!("on_delete"));
+        assert_eq!(serde_json::from_value::<Rights>(json).expect("parses"), rights);
+        assert_eq!(serde_json::to_value(Level::NoAccess).expect("serializes"), serde_json::json!("none"));
+    }
+
+    #[test]
+    fn common_rights_are_what_both_allow() {
+        let mut wide = RightsTemplate::FullAccess.rights();
+        wide.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        wide.task_lists = Selection::Only(vec!["/tasks/a/".into(), "/tasks/b/".into()]);
+        let mut narrow = RightsTemplate::ReadOnly.rights();
+        narrow.areas.remove(&Area::Apps);
+        narrow.calendars = Selection::Only(vec!["/cal/work/".into()]);
+        narrow.task_lists = Selection::Only(vec!["/tasks/b/".into(), "/tasks/c/".into()]);
+
+        for common in [wide.common(&narrow), narrow.common(&wide)] {
+            assert_eq!(common.area(Area::Calendar), AreaRights { level: Level::Read, admin: false });
+            assert_eq!(common.area(Area::Settings), AreaRights { level: Level::Read, admin: false });
+            assert_eq!(common.area(Area::Apps), AreaRights::NONE);
+            assert_eq!(common.calendars, Selection::Only(vec!["/cal/work/".into()]));
+            assert_eq!(common.task_lists, Selection::Only(vec!["/tasks/b/".into()]));
+            assert_eq!(common.confirm, Confirm::OnDelete);
+        }
+        assert_eq!(wide.common(&wide), wide);
+    }
+
+    #[test]
+    fn selections_contain_their_ids() {
+        assert!(Selection::All.contains("/cal/any/"));
+        let only = Selection::Only(vec!["/cal/work/".into()]);
+        assert!(only.contains("/cal/work/") && !only.contains("/cal/home/"));
     }
 
     #[test]
@@ -660,6 +1134,7 @@ mod tests {
         assert_eq!(Request::ListApps.operation().area(), Area::Apps);
         assert_eq!(access(Request::ListApps), Access::Read);
         assert_eq!(Request::Accounts.operation().name(), "accounts.list_accounts");
+        assert_eq!(Request::ListClients.operation().area(), Area::Clients);
     }
 
     #[test]

@@ -117,8 +117,14 @@ async fn serve(headless: bool) -> Result<(), String> {
     }
     // The app key goes next to the socket, where `torro_ipc::client` looks for it.
     let config = AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.config;
-    let clients = Clients::open(&app_key_path(&socket), &config.join("clients.json"), Box::new(SystemKeychain))
-        .map_err(|err| err.to_string())?;
+    // Reading or creating the files may wait for another core starting at the same time.
+    let app_key = app_key_path(&socket);
+    let clients = tokio::task::spawn_blocking(move || {
+        Clients::open(&app_key, &config.join("clients.json"), Box::new(SystemKeychain))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
     let store = Store::open_default().map_err(|err| err.to_string())?;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
     let pim = Arc::new(crate::pim::PimService::new());
@@ -284,6 +290,11 @@ fn describe(request: &Request) -> String {
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
         Request::OpenApp { app } => format!("open {app}"),
         Request::ListApps => "apps".into(),
+        Request::ListClients => "clients".into(),
+        Request::CreateClient { .. } => "create client".into(),
+        Request::UpdateClient { id, .. } => format!("update client {id}"),
+        Request::NewClientKey { id } => format!("new key for client {id}"),
+        Request::RemoveClient { id } => format!("remove client {id}"),
     }
 }
 

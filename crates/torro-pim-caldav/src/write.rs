@@ -277,9 +277,42 @@ fn parse_url(text: &str) -> Result<Url, ProviderError> {
     Url::parse(text).map_err(|err| ProviderError::Other(format!("{text}: {err}")))
 }
 
-/// The absolute URL of an item href, which may be a path or a full URL.
+/// The absolute URL of the item `href` (a path or a full URL, as the server lists it), but only
+/// when it is an item **directly in** `collection`; `None` otherwise.
+///
+/// `href` is resolved against the collection the way the request will be sent (WHATWG URL
+/// rules: `..`, `%2e%2e` and `\` are applied, `//` starts a new host), and only then compared:
+/// same scheme, host and port, no user, query or fragment, and a path that is the collection's
+/// path plus one non-empty name without `/` and without an encoded `/` or `\`. A text prefix
+/// would not do: `…/work/../home/x.ics` starts with `…/work/` but names an item in `home`.
+///
+/// Every write and delete goes through here, so no href can reach outside its collection, and
+/// the core checks a client's hrefs with the same function before anything is sent.
+pub fn item_url(collection: &str, href: &str) -> Option<Url> {
+    let mut base = Url::parse(collection).ok()?;
+    if !base.path().ends_with('/') {
+        let folder = format!("{}/", base.path());
+        base.set_path(&folder);
+    }
+    let url = base.join(href.trim()).ok()?;
+    let same_server = url.scheme() == base.scheme()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default();
+    let nothing_else =
+        url.username().is_empty() && url.password().is_none() && url.query().is_none() && url.fragment().is_none();
+    let name = url.path().strip_prefix(base.path())?;
+    let lower = name.to_ascii_lowercase();
+    let one_name = !name.is_empty()
+        && !name.contains('/')
+        && !lower.contains("%2f")
+        && !lower.contains("%5c")
+        && !lower.replace("%2e", ".").chars().all(|c| c == '.');
+    (same_server && nothing_else && one_name).then_some(url)
+}
+
+/// [`item_url`], as an error when `href` is not an item directly in `collection`.
 fn resolve(collection: &str, href: &str) -> Result<Url, ProviderError> {
-    parse_url(collection)?.join(href.trim()).map_err(|err| ProviderError::Other(err.to_string()))
+    item_url(collection, href).ok_or_else(|| ProviderError::Other(format!("{href} is not an item in {collection}")))
 }
 
 /// `<collection with trailing slash><uid>.ics`; the uid is one path segment, so a `/` in it
@@ -534,6 +567,62 @@ mod tests {
                 .expect("url");
         assert_eq!(with_slash.as_str(), expected);
         assert_eq!(without_slash.as_str(), expected);
+    }
+
+    #[test]
+    fn an_item_directly_in_the_collection_resolves() {
+        let expected = "https://cloud.example.org/remote.php/dav/calendars/anna/personal/evt-1.ics";
+        for href in [
+            "/remote.php/dav/calendars/anna/personal/evt-1.ics",
+            "evt-1.ics",
+            " https://cloud.example.org/remote.php/dav/calendars/anna/personal/evt-1.ics ",
+            "https://cloud.example.org:443/remote.php/dav/calendars/anna/personal/evt-1.ics",
+        ] {
+            assert_eq!(item_url(COLLECTION, href).map(String::from).as_deref(), Some(expected), "{href}");
+        }
+        let without_slash = "https://cloud.example.org/remote.php/dav/calendars/anna/personal";
+        assert_eq!(item_url(without_slash, "evt-1.ics").map(String::from).as_deref(), Some(expected));
+        assert!(resolve(COLLECTION, "evt-1.ics").is_ok());
+    }
+
+    #[test]
+    fn hrefs_outside_the_collection_are_refused() {
+        for href in [
+            // Up and into a sibling calendar, plain and percent-encoded.
+            "/remote.php/dav/calendars/anna/personal/../work/evt-1.ics",
+            "/remote.php/dav/calendars/anna/personal/%2e%2e/work/evt-1.ics",
+            "/remote.php/dav/calendars/anna/personal/%2E%2E/work/evt-1.ics",
+            "/remote.php/dav/calendars/anna/personal/.%2e/work/evt-1.ics",
+            "../work/evt-1.ics",
+            "../../../files/anna/notes.txt",
+            // Backslashes count as slashes in http URLs; encoded ones must not slip through.
+            "/remote.php/dav/calendars/anna/personal/..\\work\\evt-1.ics",
+            "\\remote.php\\dav\\files\\anna\\notes.txt",
+            "evt%2F1.ics",
+            "evt%5c1.ics",
+            // Doubled slashes and children of children.
+            "/remote.php/dav/calendars/anna/personal//evt-1.ics",
+            "/remote.php/dav/calendars/anna/personal/sub/evt-1.ics",
+            // Other hosts, ports, schemes, users.
+            "//evil.example.org/remote.php/dav/calendars/anna/personal/evt-1.ics",
+            "https://evil.example.org/remote.php/dav/calendars/anna/personal/evt-1.ics",
+            "https://cloud.example.org:8443/remote.php/dav/calendars/anna/personal/evt-1.ics",
+            "http://cloud.example.org/remote.php/dav/calendars/anna/personal/evt-1.ics",
+            "https://bob@cloud.example.org/remote.php/dav/calendars/anna/personal/evt-1.ics",
+            // Absolute paths elsewhere, the collection itself, queries and fragments.
+            "/remote.php/dav/files/anna/notes.txt",
+            "/remote.php/dav/calendars/anna/personal/",
+            "/remote.php/dav/calendars/anna/personal",
+            "/remote.php/dav/calendars/anna/personal/.",
+            "/remote.php/dav/calendars/anna/personal/%2e",
+            "evt-1.ics?x=1",
+            "evt-1.ics#x",
+            "",
+        ] {
+            assert_eq!(item_url(COLLECTION, href), None, "{href:?}");
+            assert!(resolve(COLLECTION, href).is_err(), "{href:?}");
+        }
+        assert_eq!(item_url("not a url", "evt-1.ics"), None);
     }
 
     #[test]

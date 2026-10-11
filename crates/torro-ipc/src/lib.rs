@@ -39,6 +39,8 @@ use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
+use crate::api::{Rights, RightsTemplate};
+
 /// Where the core listens: `core.sock` in its state directory.
 pub fn socket_path() -> Option<PathBuf> {
     AppPaths::for_app(AppId::WORKPLACE).map(|p| p.state.join("core.sock"))
@@ -199,6 +201,34 @@ pub enum Request {
     /// ([`Response::Apps`]).
     #[serde(rename = "apps.list_apps")]
     ListApps,
+
+    // Agents and scripts. Only the app key may send these; a client key gets `forbidden`.
+    /// All clients with their rights, never with keys ([`Response::Clients`]).
+    #[serde(rename = "clients.list_clients")]
+    ListClients,
+    /// Connects a new client with the rights of `template` and answers with
+    /// [`Response::ClientKey`], the only time its key leaves the core. An empty `name` or `kind`
+    /// is `error`.
+    #[serde(rename = "clients.create_client")]
+    CreateClient {
+        /// What the person calls it: `Claude Code`.
+        name: String,
+        /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor` or `script`.
+        kind: String,
+        template: RightsTemplate,
+    },
+    /// Replaces the rights of the client `id`; they apply from its next request. Answered with
+    /// [`Response::Ok`]; an unknown id is `not-found`.
+    #[serde(rename = "clients.update_client")]
+    UpdateClient { id: String, rights: Rights },
+    /// Gives the client `id` a new key, answered with [`Response::ClientKey`]; the old key stops
+    /// working at once. An unknown id is `not-found`.
+    #[serde(rename = "clients.new_key")]
+    NewClientKey { id: String },
+    /// Removes the client `id` and its key; the key stops working at once. Answered with
+    /// [`Response::Ok`]; an unknown id is `not-found`.
+    #[serde(rename = "clients.remove_client")]
+    RemoveClient { id: String },
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -220,6 +250,10 @@ pub enum SettingKey {
 pub enum Response {
     Pong {
         version: String,
+        /// The API version the core speaks ([`API_VERSION`]); 0 from cores older than this
+        /// field.
+        #[serde(default)]
+        api: u32,
     },
     Status(Status),
     Templates {
@@ -261,6 +295,15 @@ pub enum Response {
     Apps {
         apps: Vec<AppInfo>,
     },
+    Clients {
+        clients: Vec<ClientInfo>,
+    },
+    /// A new client or a new key: the only answer that ever carries a client key, and only to
+    /// the app key. Show or store it now; the core cannot tell it again.
+    ClientKey {
+        client: ClientInfo,
+        key: IssuedKey,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -273,7 +316,9 @@ pub enum Response {
     /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
     ///   or the item changed there meanwhile,
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
-    /// - `forbidden`: the client's rights do not cover the command,
+    /// - `forbidden`: the client's rights do not cover the command, it is a `clients` command
+    ///   (app key only), or it would need a person's approval, which the core cannot ask for
+    ///   yet,
     /// - `pending`: the command waits for a person to approve it,
     /// - `error`: anything else.
     Error {
@@ -317,6 +362,63 @@ pub struct AppInfo {
     pub installed: bool,
 }
 
+/// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash
+/// of its key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientInfo {
+    /// Short random id, also part of its key: `3fa9c1d2`.
+    pub id: String,
+    /// `Claude Code`
+    pub name: String,
+    /// `claude-code`, `codex`, `claude-desktop`, `cursor` or `script`.
+    pub kind: String,
+    pub created: DateTime<Utc>,
+    /// The last request with its key, to the minute.
+    pub last_used: Option<DateTime<Utc>>,
+    pub rights: Rights,
+}
+
+/// A client key handed out by [`Response::ClientKey`].
+///
+/// Like [`Key`], its `Debug` hides the value. Unlike `Key` it can be compared, so answers can
+/// be: the comparison looks at every byte, whatever differs first. The core never compares keys
+/// this way; it checks hashes.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct IssuedKey(Key);
+
+impl IssuedKey {
+    pub fn new(key: Key) -> IssuedKey {
+        IssuedKey(key)
+    }
+
+    /// The key itself, to store it in the client's configuration or show it once. Never log it.
+    pub fn expose(&self) -> &str {
+        self.0.expose()
+    }
+
+    pub fn into_key(self) -> Key {
+        self.0
+    }
+}
+
+impl fmt::Debug for IssuedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("IssuedKey(…)")
+    }
+}
+
+impl PartialEq for IssuedKey {
+    fn eq(&self, other: &IssuedKey) -> bool {
+        let (a, b) = (self.expose().as_bytes(), other.expose().as_bytes());
+        let difference = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+        a.len() == b.len() && difference == 0
+    }
+}
+
+impl Eq for IssuedKey {}
+
 /// What `status --json` prints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -324,7 +426,9 @@ pub struct Status {
     pub version: String,
     /// Backend name (`hyprland`) or `unsupported`.
     pub backend: String,
+    /// The active workspace; `None` too for a client key without read access to `workspaces`.
     pub workspace: Option<String>,
+    /// Number of templates; 0 too for a client key without read access to `workspaces`.
     pub templates: usize,
     /// A load or save is running.
     pub busy: bool,
@@ -392,6 +496,35 @@ mod tests {
     fn keys_do_not_show_in_debug_output() {
         let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_secret")), request: Request::Ping };
         assert!(!format!("{envelope:?}").contains("secret"));
+    }
+
+    #[test]
+    fn pong_names_the_api_version_and_reads_older_cores() {
+        let pong = Response::Pong { version: "0.1.0".into(), api: API_VERSION };
+        assert_eq!(serde_json::to_string(&pong).unwrap(), r#"{"result":"pong","version":"0.1.0","api":1}"#);
+        let old: Response = serde_json::from_str(r#"{"result":"pong","version":"0.0.9"}"#).unwrap();
+        assert_eq!(old, Response::Pong { version: "0.0.9".into(), api: 0 });
+    }
+
+    #[test]
+    fn issued_keys_hide_in_debug_output_and_compare_whole() {
+        let key = IssuedKey::new(Key::new("torro_c1_secret"));
+        let response = Response::ClientKey {
+            client: ClientInfo {
+                id: "c1".into(),
+                name: "Script".into(),
+                kind: "script".into(),
+                created: Utc::now(),
+                last_used: None,
+                rights: api::RightsTemplate::ReadOnly.rights(),
+            },
+            key: key.clone(),
+        };
+        assert!(!format!("{response:?}").contains("secret"));
+        assert_eq!(serde_json::to_value(&response).unwrap()["key"], "torro_c1_secret");
+        assert_eq!(key, IssuedKey::new(Key::new("torro_c1_secret")));
+        assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secreT")));
+        assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secret2")));
     }
 
     #[test]

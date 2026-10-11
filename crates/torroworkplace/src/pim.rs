@@ -13,6 +13,9 @@
 //!   was marked for a remote wipe and, if so, removes the account, its secret and the cache
 //!   (task S.12, `account::remote_wipe`).
 //! - An SQLite cache that survives restarts comes later.
+//! - Who asks decides what is seen ([`Reach`]): collections hidden in the suite and, for a
+//!   client key, collections outside its selection are left out before anything is read, so
+//!   their events and tasks are neither fetched nor answered.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -20,10 +23,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, Duration as Span, Local, Utc};
 use tokio::sync::{Mutex, RwLock};
+use torro_ipc::api::Rights;
 use torro_ipc::{Request, Response};
 use torro_pim::{AccountState, Collection, Event, EventTime, ProviderError, Todo};
 use torro_pim_caldav::CalDavClient;
 use torro_pim_caldav::nextcloud;
+use torro_pim_caldav::write::item_url;
 
 use torro_core::i18n::tr;
 
@@ -54,6 +59,42 @@ struct State {
     /// Nextcloud rate-limits the check, and asking again on every failed request would not
     /// change the answer; a successful sync or a new sign-in clears it.
     wipe_checked: bool,
+}
+
+/// Whose request is answered, and so which collections it reaches (`docs/api.md`, "Rechte").
+#[derive(Debug, Clone, Copy)]
+pub enum Reach<'a> {
+    /// The suite's own programs: reads see every collection that is not hidden; writes go to
+    /// any collection, and the account list shows the hidden ones too, so they can be shown
+    /// again.
+    Suite,
+    /// A client key: reads and writes reach only the shown collections in its selection
+    /// ([`Rights::calendars`], [`Rights::task_lists`]); the account list leaves the others out.
+    Client(&'a Rights),
+}
+
+/// What a collection is asked for as: a calendar (events) or a task list (todos). A collection
+/// with both is either, and a client's selection is checked for the role asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Calendar,
+    TaskList,
+}
+
+impl Reach<'_> {
+    /// `collection` serves as `role`, is not `hidden` and is in the selection.
+    fn sees(&self, collection: &Collection, role: Role, hidden: &[String]) -> bool {
+        let fits = match role {
+            Role::Calendar => collection.kind.has_events(),
+            Role::TaskList => collection.kind.has_todos(),
+        };
+        let selected = match (self, role) {
+            (Reach::Suite, _) => true,
+            (Reach::Client(rights), Role::Calendar) => rights.calendars.contains(&collection.id),
+            (Reach::Client(rights), Role::TaskList) => rights.task_lists.contains(&collection.id),
+        };
+        fits && selected && !hidden.contains(&collection.id)
+    }
 }
 
 /// See the module docs.
@@ -98,6 +139,10 @@ impl PimService {
         let service = Arc::clone(self);
         tokio::spawn(async move {
             match account::keychain(account::stored).await {
+                // Its secret would be a client's key, which must never go to a server.
+                Ok(Some(connected)) if crate::clients::is_client_keychain_account(&connected.account.id) => {
+                    eprintln!("torroworkplace: ignoring the stored account: its id is reserved for agent keys");
+                }
                 Ok(Some(connected)) => {
                     let mut state = service.state.write().await;
                     state.client = service.http.as_ref().and_then(|http| account::caldav(http, &connected).ok());
@@ -116,8 +161,13 @@ impl PimService {
         });
     }
 
-    /// Answers the calendar, task and account requests; other requests are not ours.
-    pub async fn handle(self: &Arc<Self>, request: Request) -> Response {
+    /// Answers the calendar, task and account requests with only what `reach` sees: the lists
+    /// leave out the other collections, and their events and tasks are not read at all. Other
+    /// requests are not ours.
+    ///
+    /// Writes are not checked here; for a client the core asks [`PimService::out_of_reach`]
+    /// first.
+    pub async fn handle_within(self: &Arc<Self>, request: Request, reach: Reach<'_>) -> Response {
         match request {
             Request::ConnectNextcloud { server } => self.connect(server).await,
             // `sync` runs the remote wipe check itself.
@@ -125,17 +175,22 @@ impl PimService {
                 Ok(()) => Response::Ok,
                 Err(err) => provider_error(&err),
             },
-            Request::CalendarCollections => self.shown_collections(|c| c.kind.has_events()).await,
-            Request::TaskCollections => self.shown_collections(|c| c.kind.has_todos()).await,
-            Request::Events { start, end } => match self.events(start, end).await {
-                Ok(events) => {
-                    Response::Events { events: without_hidden(events, &self.hidden_collections(), |e| &e.collection) }
+            Request::CalendarCollections => {
+                Response::Collections { collections: self.seen(reach, Role::Calendar).await }
+            }
+            Request::TaskCollections => Response::Collections { collections: self.seen(reach, Role::TaskList).await },
+            Request::Events { start, end } => {
+                let calendars = ids(self.seen(reach, Role::Calendar).await);
+                match self.events(start, end, &calendars).await {
+                    Ok(events) => Response::Events { events },
+                    Err(err) => self.failed(err).await,
                 }
-                Err(err) => self.failed(err).await,
-            },
+            }
             Request::Todos => {
-                let todos = self.state.read().await.todos.clone();
-                Response::Todos { todos: without_hidden(todos, &self.hidden_collections(), |t| &t.collection) }
+                let lists = ids(self.seen(reach, Role::TaskList).await);
+                let todos =
+                    self.state.read().await.todos.iter().filter(|t| lists.contains(&t.collection)).cloned().collect();
+                Response::Todos { todos }
             }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
@@ -157,10 +212,38 @@ impl PimService {
         }
     }
 
-    /// The cached collections that `fit` (calendars or task lists) and are not hidden.
-    async fn shown_collections(&self, fit: impl Fn(&Collection) -> bool) -> Response {
-        let collections = self.state.read().await.collections.clone();
-        Response::Collections { collections: shown(collections, &self.hidden_collections(), fit) }
+    /// The cached collections `reach` sees as `role`.
+    async fn seen(&self, reach: Reach<'_>, role: Role) -> Vec<Collection> {
+        let hidden = self.hidden_collections();
+        let state = self.state.read().await;
+        state.collections.iter().filter(|c| reach.sees(c, role, &hidden)).cloned().collect()
+    }
+
+    /// For a client: the collection (or the item's `href`) a write would touch outside its
+    /// reach, which the core answers with `not-found`. `None` when the write stays inside, for
+    /// requests that are not writes of events or tasks, and always for the suite.
+    ///
+    /// The `href` counts too: saving an item with the `href` of another collection moves it
+    /// and deletes it there ([`moved`]).
+    pub async fn out_of_reach(&self, reach: Reach<'_>, request: &Request) -> Option<String> {
+        if let Reach::Suite = reach {
+            return None;
+        }
+        let (role, collection, href) = match request {
+            Request::SaveEvent { event } | Request::DeleteEvent { event } => {
+                (Role::Calendar, &event.collection, event.href.as_deref())
+            }
+            Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
+                (Role::TaskList, &todo.collection, todo.href.as_deref())
+            }
+            _ => return None,
+        };
+        let seen = ids(self.seen(reach, role).await);
+        if !seen.contains(collection) {
+            return Some(collection.clone());
+        }
+        // Resolved, not compared as text: `…/work/../home/x.ics` names an item in `home`.
+        href.filter(|href| !seen.iter().any(|id| item_url(id, href).is_some())).map(str::to_string)
     }
 
     /// The collections the user hid in the control centre. Read on every request: the file is
@@ -180,9 +263,28 @@ impl PimService {
         self.state.write().await.collections = collections;
     }
 
-    /// All accounts with state and all collections, for the control centre (task S.2).
-    pub async fn accounts(&self) -> Vec<torro_ipc::AccountInfo> {
-        account_infos(&*self.state.read().await)
+    /// Stores an account as a sign-in would, without network or keychain, for the core's
+    /// handler tests.
+    #[cfg(test)]
+    pub async fn pretend_signed_in(&self) {
+        let account = torro_core::Account::nextcloud("https://cloud.example.org/", "anna");
+        self.state.write().await.account = Some(Connected { account, app_password: "secret".into() });
+    }
+
+    /// The accounts with their state, as `reach` may see them: for the suite with all
+    /// collections, hidden ones included, so the control centre can show them again (task S.2);
+    /// for a client only with the collections it sees as calendar or task list.
+    pub async fn accounts_within(&self, reach: Reach<'_>) -> Vec<torro_ipc::AccountInfo> {
+        let mut accounts = account_infos(&*self.state.read().await);
+        if let Reach::Client(_) = reach {
+            let hidden = self.hidden_collections();
+            for account in &mut accounts {
+                account
+                    .collections
+                    .retain(|c| reach.sees(c, Role::Calendar, &hidden) || reach.sees(c, Role::TaskList, &hidden));
+            }
+        }
+        accounts
     }
 
     /// Removes the account `id`: revokes its app password on the server (best effort),
@@ -390,7 +492,13 @@ impl PimService {
         }
     }
 
-    async fn events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<Event>, ProviderError> {
+    /// The events in `calendars` (ids) that overlap `[start, end)`; other calendars are not read.
+    async fn events(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        calendars: &[String],
+    ) -> Result<Vec<Event>, ProviderError> {
         {
             let state = self.state.read().await;
             if state.client.is_none() {
@@ -399,15 +507,15 @@ impl PimService {
             if let Some(window) = state.window
                 && covers(window, start, end)
             {
-                return Ok(state.events.iter().filter(|e| overlaps(e, start, end)).cloned().collect());
+                let wanted = |e: &&Event| calendars.contains(&e.collection) && overlaps(e, start, end);
+                return Ok(state.events.iter().filter(wanted).cloned().collect());
             }
         }
         // Outside the cached window: ask the server.
         let client = self.client().await?;
-        let collections = self.state.read().await.collections.clone();
         let mut events = Vec::new();
-        for collection in collections.iter().filter(|c| c.kind.has_events()) {
-            events.extend(client.events(&collection.id, start, end).await?);
+        for calendar in calendars {
+            events.extend(client.events(calendar, start, end).await?);
         }
         Ok(events)
     }
@@ -419,9 +527,11 @@ impl PimService {
         self.check_writable(&event.collection).await?;
         let client = self.client().await?;
         let saved = match moved(event.href.as_deref(), &event.collection) {
-            // Moving to another calendar: create there, then remove the old one.
+            // Moving to another calendar: create there, then remove the old one from the
+            // calendar that holds it.
             Some(old_href) => {
-                let old = Event { href: Some(old_href), ..event.clone() };
+                let holder = self.holder_of(&old_href).await?;
+                let old = Event { href: Some(old_href), collection: holder, ..event.clone() };
                 let new = client.save_event(Event { href: None, etag: None, ..event }).await?;
                 client.delete_event(&old).await?;
                 self.state.write().await.events.retain(|e| e.href != old.href);
@@ -445,12 +555,21 @@ impl PimService {
         Ok(())
     }
 
+    /// The id of the cached collection that holds the item `href` directly ([`item_url`]); an
+    /// error before anything is written when none does.
+    async fn holder_of(&self, href: &str) -> Result<String, ProviderError> {
+        let state = self.state.read().await;
+        let holder = state.collections.iter().find(|c| item_url(&c.id, href).is_some());
+        holder.map(|c| c.id.clone()).ok_or_else(|| ProviderError::Other(format!("{href} is in no known collection")))
+    }
+
     async fn save_todo(&self, todo: Todo) -> Result<Todo, ProviderError> {
         self.check_writable(&todo.collection).await?;
         let client = self.client().await?;
         let saved = match moved(todo.href.as_deref(), &todo.collection) {
             Some(old_href) => {
-                let old = Todo { href: Some(old_href), ..todo.clone() };
+                let holder = self.holder_of(&old_href).await?;
+                let old = Todo { href: Some(old_href), collection: holder, ..todo.clone() };
                 let new = client.save_todo(Todo { href: None, etag: None, ..todo }).await?;
                 client.delete_todo(&old).await?;
                 self.state.write().await.todos.retain(|t| t.href != old.href);
@@ -540,18 +659,9 @@ fn host(server: &str) -> &str {
     server.split_once("://").map_or(server, |(_, rest)| rest).trim_end_matches('/')
 }
 
-/// Leaves out the items whose collection (`collection_of`) is hidden.
-fn without_hidden<T>(items: Vec<T>, hidden: &[String], collection_of: impl Fn(&T) -> &String) -> Vec<T> {
-    if hidden.is_empty() {
-        return items;
-    }
-    items.into_iter().filter(|item| !hidden.contains(collection_of(item))).collect()
-}
-
-/// The `collections` that `fit` and are not `hidden`.
-fn shown(collections: Vec<Collection>, hidden: &[String], fit: impl Fn(&Collection) -> bool) -> Vec<Collection> {
-    let fitting = collections.into_iter().filter(|c| fit(c)).collect();
-    without_hidden(fitting, hidden, |c| &c.id)
+/// The ids of `collections`.
+fn ids(collections: Vec<Collection>) -> Vec<String> {
+    collections.into_iter().map(|c| c.id).collect()
 }
 
 /// Everything the cache holds, fetched from the server.
@@ -591,10 +701,10 @@ fn placeholder_name(name: &str) -> Option<&'static str> {
     }
 }
 
-/// The old href when an item moves to another collection (its href is not inside the
-/// collection any more).
+/// The old href when an item moves to another collection: its href is not an item directly in
+/// `collection` any more, resolved as the request will be ([`item_url`]).
 fn moved(href: Option<&str>, collection: &str) -> Option<String> {
-    href.filter(|href| !href.starts_with(collection)).map(str::to_string)
+    href.filter(|href| item_url(collection, href).is_none()).map(str::to_string)
 }
 
 /// The cached window covers `[start, end)`, with a day of slack for all-day entries
@@ -679,21 +789,25 @@ mod tests {
     async fn without_account_reads_are_empty_and_writes_fail() {
         let service = service();
         assert_eq!(service.account_state().await, AccountState::NotConnected);
-        assert_eq!(service.handle(Request::Todos).await, Response::Todos { todos: vec![] });
+        assert_eq!(service.handle_within(Request::Todos, Reach::Suite).await, Response::Todos { todos: vec![] });
         let now = Utc::now();
         assert_eq!(
-            service.handle(Request::Events { start: now, end: now + Span::days(1) }).await,
+            service.handle_within(Request::Events { start: now, end: now + Span::days(1) }, Reach::Suite).await,
             Response::Events { events: vec![] }
         );
-        let response = service.handle(Request::SaveEvent { event: event(now, 1) }).await;
+        let response = service.handle_within(Request::SaveEvent { event: event(now, 1) }, Reach::Suite).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-connected"), "{response:?}");
     }
 
     #[tokio::test]
     async fn recurring_occurrences_are_refused() {
         let service = service();
-        let response =
-            service.handle(Request::DeleteEvent { event: Event { recurring: true, ..event(Utc::now(), 1) } }).await;
+        let response = service
+            .handle_within(
+                Request::DeleteEvent { event: Event { recurring: true, ..event(Utc::now(), 1) } },
+                Reach::Suite,
+            )
+            .await;
         assert!(
             matches!(response, Response::Error { ref message, .. } if message.contains("recurring")),
             "{response:?}"
@@ -789,35 +903,204 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hidden_collections_and_their_items_are_left_out() {
-        let hidden = vec!["home".to_string()];
-        let collections = without_hidden(vec![collection("work"), collection("home")], &hidden, |c| &c.id);
-        assert_eq!(collections, vec![collection("work")]);
-        let mut private = event(Utc::now(), 1);
-        private.collection = "home".into();
-        let mut work = event(Utc::now(), 1);
-        work.collection = "work".into();
-        let events = without_hidden(vec![private, work.clone()], &hidden, |e| &e.collection);
-        assert_eq!(events, vec![work]);
-        let all = without_hidden(vec![collection("home")], &[], |c| &c.id);
-        assert_eq!(all, vec![collection("home")]);
-    }
-
     fn of_kind(id: &str, kind: torro_pim::CollectionKind) -> Collection {
         Collection { kind, ..collection(id) }
     }
 
+    fn seen_by(reach: Reach<'_>, all: &[Collection], role: Role, hidden: &[String]) -> Vec<String> {
+        all.iter().filter(|c| reach.sees(c, role, hidden)).map(|c| c.id.clone()).collect()
+    }
+
     #[test]
-    fn calendars_and_task_lists_are_told_apart() {
+    fn calendars_and_task_lists_are_told_apart_and_hidden_ones_left_out() {
         use torro_pim::CollectionKind::{Both, Events, Todos};
         let all = vec![of_kind("work", Both), of_kind("birthdays", Events), of_kind("home", Todos)];
-        let calendars = shown(all.clone(), &[], |c| c.kind.has_events());
-        assert_eq!(calendars, vec![of_kind("work", Both), of_kind("birthdays", Events)]);
-        let lists = shown(all.clone(), &[], |c| c.kind.has_todos());
-        assert_eq!(lists, vec![of_kind("work", Both), of_kind("home", Todos)]);
+        assert_eq!(seen_by(Reach::Suite, &all, Role::Calendar, &[]), ["work", "birthdays"]);
+        assert_eq!(seen_by(Reach::Suite, &all, Role::TaskList, &[]), ["work", "home"]);
         let hidden = vec!["work".to_string()];
-        assert_eq!(shown(all, &hidden, |c| c.kind.has_todos()), vec![of_kind("home", Todos)]);
+        assert_eq!(seen_by(Reach::Suite, &all, Role::TaskList, &hidden), ["home"]);
+    }
+
+    #[test]
+    fn a_client_sees_its_selection_per_role_and_nothing_hidden() {
+        use torro_ipc::api::{RightsTemplate, Selection};
+        use torro_pim::CollectionKind::{Both, Events, Todos};
+        let all = vec![of_kind("work", Both), of_kind("birthdays", Events), of_kind("home", Todos)];
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.calendars = Selection::Only(vec!["birthdays".into()]);
+        rights.task_lists = Selection::Only(vec!["work".into()]);
+        let client = Reach::Client(&rights);
+        assert_eq!(seen_by(client, &all, Role::Calendar, &[]), ["birthdays"]);
+        assert_eq!(seen_by(client, &all, Role::TaskList, &[]), ["work"]);
+        assert!(seen_by(client, &all, Role::TaskList, &["work".to_string()]).is_empty());
+    }
+
+    /// A connected service with the calendars `work` and `home`, one event in each, inside the
+    /// cached window, and a todo in each.
+    async fn filled_service(settings: SettingsStore) -> Arc<PimService> {
+        let service = service_with(settings);
+        let now = Utc::now();
+        {
+            let mut state = service.state.write().await;
+            let http = reqwest::Client::new();
+            state.client = Some(account::caldav(&http, &connected()).expect("a client, no network"));
+            state.account = Some(connected());
+            state.collections = vec![
+                of_kind(&cal("work"), torro_pim::CollectionKind::Both),
+                of_kind(&cal("home"), torro_pim::CollectionKind::Both),
+            ];
+            state.window = Some((now - Span::days(90), now + Span::days(365)));
+            for id in [cal("work"), cal("home")] {
+                state.events.push(Event { collection: id.clone(), href: Some(format!("{id}e.ics")), ..event(now, 1) });
+                state.todos.push(Todo {
+                    uid: id.clone(),
+                    collection: id.clone(),
+                    href: Some(format!("{id}t.ics")),
+                    etag: None,
+                    summary: "Todo".into(),
+                    due: None,
+                    priority: None,
+                    completed: false,
+                    parent: None,
+                    description: None,
+                });
+            }
+        }
+        service
+    }
+
+    const CALENDARS: &str = "https://cloud.example.org/remote.php/dav/calendars/anna/";
+
+    /// The collection id (a URL, as the server lists it) of the calendar `name`.
+    fn cal(name: &str) -> String {
+        format!("{CALENDARS}{name}/")
+    }
+
+    /// `name` of [`cal`]`(name)`, for short assertions.
+    fn short(id: &str) -> String {
+        id.trim_start_matches(CALENDARS).trim_end_matches('/').to_string()
+    }
+
+    fn collections_of(response: Response) -> Vec<String> {
+        match response {
+            Response::Collections { collections } => collections.iter().map(|c| short(&c.id)).collect(),
+            Response::Events { events } => events.iter().map(|e| short(&e.collection)).collect(),
+            Response::Todos { todos } => todos.iter().map(|t| short(&t.collection)).collect(),
+            other => panic!("expected a list, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_only_its_shown_selection() {
+        use torro_ipc::api::{RightsTemplate, Selection};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = SettingsStore::at(dir.path().join("settings.json"));
+        let service = filled_service(settings.clone()).await;
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.calendars = Selection::Only(vec![cal("work")]);
+        let client = Reach::Client(&rights);
+        let now = Utc::now();
+        let events = || Request::Events { start: now - Span::days(1), end: now + Span::days(1) };
+
+        assert_eq!(collections_of(service.handle_within(Request::CalendarCollections, client).await), ["work"]);
+        assert_eq!(collections_of(service.handle_within(events(), client).await), ["work"]);
+        assert_eq!(collections_of(service.handle_within(Request::Todos, client).await), ["work", "home"]);
+        assert_eq!(
+            collections_of(service.handle_within(events(), Reach::Suite).await),
+            ["work", "home"],
+            "the suite sees all"
+        );
+
+        settings.set_collection_shown(&cal("work"), false).expect("hide work");
+        assert!(collections_of(service.handle_within(events(), client).await).is_empty());
+        assert_eq!(collections_of(service.handle_within(Request::TaskCollections, client).await), ["home"]);
+        assert_eq!(
+            collections_of(service.handle_within(Request::Todos, Reach::Suite).await),
+            ["home"],
+            "hidden for the suite too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_lists_accounts_without_collections_it_may_not_see() {
+        use torro_ipc::api::{RightsTemplate, Selection};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = SettingsStore::at(dir.path().join("settings.json"));
+        let service = filled_service(settings.clone()).await;
+        settings.set_collection_shown(&cal("home"), false).expect("hide home");
+        let rights = RightsTemplate::ReadOnly.rights();
+        let listed = |accounts: Vec<torro_ipc::AccountInfo>| {
+            accounts[0].collections.iter().map(|c| short(&c.id)).collect::<Vec<_>>()
+        };
+
+        assert_eq!(listed(service.accounts_within(Reach::Client(&rights)).await), ["work"]);
+        assert_eq!(
+            listed(service.accounts_within(Reach::Suite).await),
+            ["work", "home"],
+            "the control centre lists hidden ones"
+        );
+        let mut none = rights.clone();
+        none.calendars = Selection::Only(vec![]);
+        none.task_lists = Selection::Only(vec![]);
+        assert!(listed(service.accounts_within(Reach::Client(&none)).await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn writes_outside_a_clients_reach_are_named() {
+        use torro_ipc::api::{RightsTemplate, Selection};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = SettingsStore::at(dir.path().join("settings.json"));
+        let service = filled_service(settings.clone()).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.calendars = Selection::Only(vec![cal("work")]);
+        let client = Reach::Client(&rights);
+        let now = Utc::now();
+        let save = |collection: &str, href: Option<&str>| Request::SaveEvent {
+            event: Event { collection: collection.into(), href: href.map(str::to_string), ..event(now, 1) },
+        };
+        let (work, home) = (cal("work"), cal("home"));
+        let service = &service;
+        let out = |request| async move { service.out_of_reach(client, &request).await };
+
+        assert_eq!(out(save(&work, None)).await, None);
+        assert_eq!(out(save(&work, Some(&format!("{work}e.ics")))).await, None);
+        assert_eq!(out(save(&work, Some("/remote.php/dav/calendars/anna/work/e.ics"))).await, None);
+        assert_eq!(out(save(&home, None)).await, Some(home.clone()));
+        assert_eq!(out(save("nowhere", None)).await, Some("nowhere".into()));
+        // Moving an event out of a calendar it may not see would delete it there.
+        assert_eq!(out(save(&work, Some(&format!("{home}e.ics")))).await, Some(format!("{home}e.ics")));
+        // Hrefs that start like `work` but resolve elsewhere: the API check of A.2.
+        for href in [
+            format!("{work}../home/e.ics"),
+            format!("{work}%2e%2e/home/e.ics"),
+            format!("{work}%2E%2E/home/e.ics"),
+            format!("{work}..\\home\\e.ics"),
+            format!("{work}/e.ics"),
+            format!("{work}sub/e.ics"),
+            format!("{work}../../../files/anna/notes.txt"),
+            "/remote.php/dav/files/anna/notes.txt".to_string(),
+            "https://evil.example.org/remote.php/dav/calendars/anna/work/e.ics".to_string(),
+        ] {
+            assert_eq!(out(save(&work, Some(&href))).await, Some(href.clone()), "{href}");
+        }
+        assert_eq!(service.out_of_reach(Reach::Suite, &save(&home, None)).await, None);
+
+        settings.set_collection_shown(&work, false).expect("hide work");
+        assert_eq!(out(save(&work, None)).await, Some(work.clone()));
+        let todo = Request::DeleteTodo { todo: service.state.read().await.todos[1].clone() };
+        assert_eq!(out(todo).await, None, "task lists: all");
+    }
+
+    #[tokio::test]
+    async fn a_move_deletes_only_in_the_collection_that_holds_the_item() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let service = filled_service(SettingsStore::at(dir.path().join("settings.json"))).await;
+        assert_eq!(service.holder_of(&format!("{}e.ics", cal("home"))).await, Ok(cal("home")));
+        let outside = format!("{}../../files/anna/notes.txt", cal("home"));
+        assert!(service.holder_of(&outside).await.is_err(), "no collection holds it, so nothing is written");
+        let moved_out = Event { href: Some(outside), ..event(Utc::now(), 1) };
+        let response = service.handle_within(Request::SaveEvent { event: moved_out }, Reach::Suite).await;
+        assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
     }
 
     #[tokio::test]
@@ -843,7 +1126,7 @@ mod tests {
         service.state.write().await.account = Some(connected());
         assert!(service.remove_account("nextcloud:bob@cloud.example.org").await.is_err());
         assert!(service.remove_account("").await.is_err());
-        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1);
     }
 
     /// A service whose server just refused the app password, with a filled cache.
@@ -892,7 +1175,7 @@ mod tests {
         assert_eq!(result, Ok(Some(true)));
         assert_eq!(steps, ["check", "forget", "report"]);
         assert_eq!(service.account_state().await, AccountState::NotConnected);
-        assert!(service.accounts().await.is_empty());
+        assert!(service.accounts_within(Reach::Suite).await.is_empty());
         assert!(service.state.read().await.collections.is_empty());
     }
 
@@ -902,13 +1185,13 @@ mod tests {
         let (result, steps) = wipe(&service, Ok(false)).await;
         assert_eq!(result, Ok(Some(false)));
         assert_eq!(steps, ["check"]);
-        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1);
         assert_eq!(service.state.read().await.collections, vec![collection("work")]);
         // The next refused request does not ask the server again.
         let (result, steps) = wipe(&service, Ok(true)).await;
         assert_eq!(result, Ok(None));
         assert!(steps.is_empty());
-        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1);
     }
 
     #[tokio::test]
@@ -917,7 +1200,7 @@ mod tests {
         let (result, steps) = wipe(&service, Err(ProviderError::Offline)).await;
         assert!(result.is_err());
         assert_eq!(steps, ["check"]);
-        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1);
         assert_eq!(service.state.read().await.collections, vec![collection("work")]);
         let (_, steps) = wipe(&service, Ok(false)).await;
         assert_eq!(steps, ["check"], "a failed check runs again on the next refusal");
@@ -937,7 +1220,7 @@ mod tests {
         }
         service.forget_locally(|| async { Ok(()) }).await.expect("forgotten");
         assert_eq!(settings.current().hidden_collections, ["elsewhere"]);
-        assert!(service.accounts().await.is_empty());
+        assert!(service.accounts_within(Reach::Suite).await.is_empty());
     }
 
     #[tokio::test]
@@ -954,7 +1237,7 @@ mod tests {
         let result = service.forget_locally(|| async { Err("keychain locked".to_string()) }).await;
         assert!(result.is_err());
         assert_eq!(settings.current().hidden_collections, ["work"]);
-        assert_eq!(service.accounts().await.len(), 1);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1);
     }
 
     #[tokio::test]

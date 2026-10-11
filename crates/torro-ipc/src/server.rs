@@ -178,7 +178,7 @@ mod tests {
     /// Pong to `Ping`, `Ok` to everything else.
     async fn answer(request: Request) -> Response {
         match request {
-            Request::Ping => Response::Pong { version: "test".into() },
+            Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
             _ => Response::Ok,
         }
     }
@@ -209,7 +209,7 @@ mod tests {
         wait_until_listening(&path).await;
 
         let response = client::call(&path, &Request::Ping).await.unwrap();
-        assert_eq!(response, Response::Pong { version: "test".into() });
+        assert_eq!(response, Response::Pong { version: "test".into(), api: crate::API_VERSION });
         server.abort();
     }
 
@@ -222,7 +222,7 @@ mod tests {
             let barrier = Arc::clone(&barrier);
             async move {
                 match request {
-                    Request::Ping => Response::Pong { version: "test".into() },
+                    Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
                     _ => {
                         barrier.wait().await;
                         Response::Ok
@@ -264,7 +264,7 @@ mod tests {
 
         // The first core is still the one answering.
         let response = client::call(&path, &Request::Ping).await.unwrap();
-        assert_eq!(response, Response::Pong { version: "test".into() });
+        assert_eq!(response, Response::Pong { version: "test".into(), api: crate::API_VERSION });
         server.abort();
     }
 
@@ -388,7 +388,7 @@ mod tests {
 
         // The malformed client did not take the server down with it.
         let response = client::call(&path, &Request::Ping).await.unwrap();
-        assert_eq!(response, Response::Pong { version: "test".into() });
+        assert_eq!(response, Response::Pong { version: "test".into(), api: crate::API_VERSION });
         server.abort();
     }
 
@@ -406,7 +406,7 @@ mod tests {
         let path = socket_in(dir);
         let handler = |key: Option<Key>, request: Request| async move {
             match request {
-                Request::Ping => Response::Pong { version: "test".into() },
+                Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
                 _ => Response::Error {
                     code: "echo".into(),
                     message: key.map(|k| k.expose().to_string()).unwrap_or_default(),

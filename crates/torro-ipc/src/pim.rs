@@ -258,7 +258,7 @@ mod tests {
     /// Canned answers for every request the client sends.
     fn answer(request: Request) -> Response {
         match request {
-            Request::Ping => Response::Pong { version: "test".into() },
+            Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
             Request::Accounts => Response::Accounts { accounts: vec![account_info()] },
             Request::ConnectNextcloud { server } => {
                 Response::LoginStarted { login_url: format!("{server}/login/v2/flow") }
