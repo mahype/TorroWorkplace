@@ -10,8 +10,10 @@ Reihenfolge: **M1** (Grundlage) → **P** (Aufgaben-Modell, gilt auch für Nextc
 ```
 M1.1 ─┬─ M1.2
       ├─ M1.3
-      └─ G.1 ── G.2 ─┬─ G.3 ── G.4
-P.1 ── P.2 ─┬─ P.3   ├─ G.5
+      ├─ M1.4
+      └─ G.1 ── G.2 ─┬─ G.3 ─┬─ G.4
+                     │       └─ G.5
+P.1 ── P.2 ─┬─ P.3a ─┼─ P.3b (nach dem Redesign)
             └────────┴─ G.6
 K.21 (frei)
 ```
@@ -113,18 +115,30 @@ K.21 (frei)
   **API/MCP:** über `tasks.save_todo`/`tasks.list_todos` (gibt es), Schema der Tools wächst mit.
 - Abnahme: Lesen/Schreiben der neuen Eigenschaften, alte JSON ohne die Felder.
 
-### P.3 Reihenfolge von Hand
+### P.3a Reihenfolge von Hand: Kern, API, MCP
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** P.2 · **Dateien:** `crates/torrotasks/src/{app,list}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
-  `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-core/src/settings.rs` (Sortierart je Liste)
-- Je Liste wählbar: „Group by due date“ (wie heute) oder „Manual order“. In „Manual order“ ziehen oder
-  Alt+↑/↓; geschrieben wird `X-APPLE-SORT-ORDER` nur bei den Aufgaben, die sich bewegen (wie Nextcloud Tasks).
-- **Oberfläche:** Aufgaben › Liste › Menü „Sort“. **API:** `Request::MoveTodo` · `tasks.move_todo`
-  `{ todo: href + etag, before: Option<href> }` · Write; wie `save_todo` an `href`/`etag` erkannt, `before` muss
-  in derselben Liste liegen (sonst `not-found`), veraltete ETags → `conflict`; geschrieben werden nur die
-  Aufgaben, deren Platz sich ändert. `out_of_reach` prüft beide. Sortierart über `settings.set_setting`
-  (neuer `SettingKey`, Katalogbeschreibung ergänzen; Admin wie alle Einstellungen). **MCP:** `tasks_move_todo`.
-- Abnahme: Tests für Einsortieren (Anfang, Mitte, Ende, Lücken), `conflict`, fremde Liste; Sichtprüfung.
+- **Modell:** Opus · **Braucht:** P.2 · **Dateien:** `crates/torro-ipc/src/{lib,api,pim}.rs`, `crates/torro-pim/src/source.rs`,
+  `crates/torro-pim/src/demo.rs`, `crates/torro-gui/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp}.rs`,
+  `crates/torro-core/src/settings.rs` (Sortierart je Liste)
+- Gerüst der Funktion (Request und Katalog zuerst, damit P.3b die Oberfläche darauf baut). Je Liste eine Sortierart:
+  „Group by due date“ (wie heute, Standard) oder „Manual order“. Verschieben schreibt `X-APPLE-SORT-ORDER` nur bei
+  den Aufgaben, deren Platz sich ändert (wie Nextcloud Tasks: kleinere Zahl steht oben; Lücken nutzen, nur bei
+  Bedarf neu nummerieren).
+- **API:** `Request::MoveTodo` · `tasks.move_todo` `{ todo: href + etag, before: Option<href> }` · Write; wie
+  `save_todo` an `href`/`etag` erkannt, `before` muss in derselben Liste liegen (sonst `not-found`), veraltete
+  ETags → `conflict`; Antwort: die geänderten Aufgaben. `out_of_reach` prüft beide. `PimSource` bekommt
+  `move_todo` (Demo und Socket-Client). Sortierart über `settings.set_setting` (neuer `SettingKey`,
+  Katalogbeschreibung ergänzen; Admin wie alle Einstellungen). **MCP:** `tasks_move_todo`.
+- **Oberfläche:** P.3b.
+- Abnahme: Tests für Einsortieren (Anfang, Mitte, Ende, Lücken, Neu-Nummerieren), `conflict`, fremde Liste,
+  Rechte (Client ohne die Liste → `not-found`), MCP-Tool baut den richtigen Request.
+
+### P.3b Reihenfolge von Hand: Oberfläche
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** P.3a, Redesign der Aufgaben-App · **Dateien:** `crates/torrotasks/src/{app,list}.rs`
+- In „Manual order“ Griff beim Hover im linken Innenrand, Ziehen mit Platzhalterzeile, Alt+↑/↓; Liste › Menü
+  „Display“ › „Order“. Nutzt `tasks.move_todo` und `settings.set_setting` aus P.3a.
+- Abnahme: Sichtprüfung, Tests der Tastatur.
 
 ## G GitHub
 
@@ -225,7 +239,7 @@ K.21 (frei)
 
 ### G.6 Verweise: Issues in eigene Listen holen
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** G.2, P.2, P.3 · **Dateien:** `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+- **Modell:** Opus · **Braucht:** G.2, P.2, P.3a · **Dateien:** `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torrotasks/src/{app,list,detail}.rs`
 - Link in der Schnelleingabe: in einer Filterliste → anheften; in einer schreibbaren Liste → **Verweis** (VTODO
   mit `URL`, `X-TORRO-LINK`, Titel von GitHub). In einer Filterliste „Add to list…“ im Detail und Ziehen auf
