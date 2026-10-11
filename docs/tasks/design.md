@@ -465,3 +465,23 @@ ist der Zustand der Seitenleiste reine Fensteransicht).
 - **Modell:** Sonnet · **Braucht:** U.3 · **Dateien:** `crates/torrotasks/src/{app,detail}.rs`
 - Das Detail nutzt das Paneel aus U.3: Breit daneben (wie heute), Mittel und Schmal darüber statt
   „Liste schmaler“ bzw. „Detail ersetzt die Liste“. Inhalt und Verhalten bleiben.
+
+### Z.1 Zoomen wie im Browser (Strg + Plus / Minus / 0)
+- [ ] erledigt
+- **Modell:** Opus · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs` (bzw. wo `SetSetting` behandelt wird), `crates/torro-gui/src/{lib,shell}.rs` (oder neues `zoom.rs`), `crates/torrocalendar/src/{main,app}.rs`, `crates/torrotasks/src/{main,app}.rs`, `crates/torroworkplace/src/ui/{mod,general}.rs`, `crates/torroworkplace/src/main.rs`, Skill `torro-design` (Abschnitt 3)
+- Wunsch: Schrift und Oberfläche insgesamt größer und kleiner stellen wie im Browser.
+- **Oberfläche:** In jeder App vergrößert Strg + Plus (auch Strg + `=` und Ziffernblock-Plus),
+  verkleinert Strg + Minus, setzt Strg + 0 zurück. Stufen wie im Browser: 67 %, 75 %, 80 %, 90 %,
+  100 %, 110 %, 125 %, 150 %, 175 %, 200 %. Umgesetzt über Icelds `scale_factor` für das ganze Fenster
+  (Layout, Abstände und Schrift wachsen gemeinsam; die Größenklassen rechnen in logischen Pixeln weiter).
+  Steuerzentrale › General: Zeile „Zoom“ mit −, Prozentwert, + und „Reset“. Beim Ändern kurz eine
+  ruhige Anzeige „110 %“ (wie im Browser), keine Benachrichtigung.
+- **Gilt für die ganze Suite:** Der Wert steht in `Settings` (`zoom`, Standard 1.0, `#[serde(default)]`),
+  damit gekachelte Fenster gleich groß bleiben; alle Apps übernehmen eine Änderung live (wie
+  `appearance`, F.8). Mit `--demo` nur im Prozess, nichts speichern.
+- **API:** `SettingKey::Zoom` für `settings.set_setting` (Wert: Zahl 0.67–2.0, wird auf die nächste
+  Stufe gerundet), Beschreibung im Katalog ergänzen; `settings.get_settings` liefert das Feld mit.
+- **MCP:** `settings_set_setting` kann `zoom` setzen (gleicher Katalogeintrag, Beschreibung nennt den Wert).
+- Abnahme: Tests für Stufen (nächste/vorige, Grenzen, Runden), Tastenerkennung, Settings-Lesen alter
+  Dateien ohne `zoom`, `SetSetting` mit gültigem und ungültigem Wert; Sichtprüfung aller drei Apps bei
+  80 %, 100 %, 150 % in Breit und Mittel.
