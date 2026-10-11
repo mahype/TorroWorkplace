@@ -8,17 +8,21 @@
 //! header (narrow); in the wide layout its properties fill the shell's properties column. It has
 //! no Save button: it hands out saves as it changes, and while title or notes wait to be saved a
 //! one-second timer sends `Flush` ([`AUTOSAVE`]).
+//!
+//! The header (T.2) has one primary button, "New task", that focuses the quick add row (the same
+//! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
+//! is no filter function yet, so no "Filter" button.
 
 use std::time::Duration;
 
 use chrono::{Local, NaiveDate};
 use iced::theme::Mode;
-use iced::widget::{column, container, responsive, row, rule, text, text_input, toggler};
+use iced::widget::{Space, column, container, responsive, row, rule, stack, svg, text, text_input};
 use iced::{Alignment, Element, Fill, Padding, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
-use torro_gui::icon::Icon;
+use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Switcher};
 use torro_gui::source::Source;
@@ -51,10 +55,16 @@ pub enum Menu {
     Switcher,
     /// The navigation menu of the medium and narrow layouts ("Today ▾").
     Nav,
+    /// The Display menu in the header ("Show completed").
+    Display,
 }
 
 /// The id of the quick add field, so "New" can focus it.
 const QUICK_ADD: &str = "quick-add";
+/// Where the quick add text starts: past the "+" icon, which sits 12 in from the edge.
+const QUICK_ADD_START: f32 = space::M + icon::SIZE_SM + space::S;
+/// Where the quick add text ends: before the key hint.
+const QUICK_ADD_END: f32 = space::XXL + space::S;
 /// The one-pixel line between the list and the detail.
 const LINE: f32 = 1.0;
 /// How long after the last keystroke typed title or notes are saved.
@@ -69,6 +79,8 @@ pub struct App {
     todos: Vec<Todo>,
     filter: Filter,
     show_completed: bool,
+    /// Whether tasks have been loaded once; until then the list shows loading (or the error).
+    loaded: bool,
     quick_add: String,
     /// Index into `todos` of the task open in the detail panel.
     selected: Option<usize>,
@@ -108,6 +120,8 @@ pub enum Message {
     Switcher(Switcher),
     /// Open or close the navigation menu ("Today ▾").
     ToggleNav,
+    /// Open or close the Display menu in the header.
+    ToggleDisplay,
     /// Open the sidebar drawer (medium and narrow layouts).
     ShowDrawer,
     /// Close the open menu and the drawer (click beside them).
@@ -133,6 +147,7 @@ impl App {
             todos: Vec::new(),
             filter: Filter::Today,
             show_completed: false,
+            loaded: false,
             quick_add: String::new(),
             selected: None,
             detail: None,
@@ -197,6 +212,7 @@ impl App {
                 Ok((collections, todos)) => {
                     self.collections = collections;
                     self.todos = todos;
+                    self.loaded = true;
                     self.error = None;
                     // Keep the detail panel on the same task after a reload.
                     let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
@@ -305,6 +321,7 @@ impl App {
             // The app has no search yet; the button only closes what is open.
             Message::Switcher(Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
+            Message::ToggleDisplay => self.toggle_menu(Menu::Display),
             Message::ShowDrawer => {
                 self.menu = None;
                 self.drawer = true;
@@ -352,9 +369,9 @@ impl App {
 
     /// The whole window in the layout of `class`.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, nav, property) = (Anchor::new(), Anchor::new(), Anchor::new());
+        let (switcher, nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
         let sidebar = self.sidebar(&switcher);
-        let header = self.header(class, &nav);
+        let header = self.header(class, &nav, &display);
         let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
                 &switcher,
@@ -363,6 +380,9 @@ impl App {
                 Message::CloseMenu,
             ),
             Menu::Nav => widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu),
+            Menu::Display => {
+                widgets::floating(&display, Placement::Below(Align::End), self.display_menu(), Message::CloseMenu)
+            }
         });
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         let layer = menu.or_else(editor);
@@ -377,19 +397,11 @@ impl App {
             .into()
     }
 
-    /// The header: the filter's title (wide) or the navigation menu (medium, narrow), then the
-    /// "Completed" switch and refresh.
-    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
+    /// The header: the filter's title (wide) or the navigation menu (medium, narrow), then Display,
+    /// refresh and the one primary button "New task" ("+" alone in the narrow layouts).
+    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, display: &Anchor) -> Element<'a, Message> {
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
-        let completed = toggler(self.show_completed)
-            .label(tr("Completed"))
-            .size(style::CHECK_SIZE)
-            .text_size(typo::BODY.size)
-            .text_line_height(typo::BODY.line_height)
-            .style(style::toggler)
-            .on_toggle(Message::ShowCompleted);
-        let trailing = [completed.into(), widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh))];
         let icon = filter_icon(&self.filter);
         let narrow = matches!(class, SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip);
         if narrow && self.detail.is_some() {
@@ -402,6 +414,31 @@ impl App {
             );
             return shell::header_bar([], back, []);
         }
+        let new_task = Message::Switcher(Switcher::New);
+        let (show_display, new_button) = match class {
+            SizeClass::Wide => (
+                widgets::text_button(
+                    Some(Icon::SlidersHorizontal),
+                    tr("Display"),
+                    style::button::ghost,
+                    Some(Message::ToggleDisplay),
+                ),
+                widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task)),
+            ),
+            SizeClass::Medium => (
+                widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay)),
+                widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task)),
+            ),
+            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => (
+                widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay)),
+                widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task)),
+            ),
+        };
+        let trailing = [
+            widgets::anchored(display, show_display),
+            widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)),
+            new_button,
+        ];
         match class {
             SizeClass::Wide => shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing),
             SizeClass::Medium => {
@@ -418,6 +455,16 @@ impl App {
                 trailing,
             ),
         }
+    }
+
+    /// The Display menu: "Show completed" as a check, the choice that used to be a switch.
+    fn display_menu(&self) -> Element<'_, Message> {
+        let check = Mark::Check(palette(&self.theme()).text_2, self.show_completed);
+        widgets::menu(vec![MenuSection::new(vec![MenuItem::new(
+            check,
+            tr("Show completed"),
+            Message::ShowCompleted(!self.show_completed),
+        )])])
     }
 
     /// The content below the header: the list, and the detail beside it (wide, medium) or
@@ -437,15 +484,16 @@ impl App {
             .into()
     }
 
-    /// Quick add, an error line if there is one, and the grouped list.
+    /// The quick add row, an error line if there is one, and the grouped list; loading and the
+    /// error of a first load stand in for all three.
     fn list(&self, class: SizeClass) -> Element<'_, Message> {
-        let quick_add = text_input(tr("New task …"), &self.quick_add)
-            .id(QUICK_ADD)
-            .on_input(Message::QuickAddChanged)
-            .on_submit(Message::QuickAddSubmit)
-            .padding(style::INPUT_PADDING)
-            .style(style::text_input);
-        let mut top = column![quick_add].spacing(space::S);
+        if !self.loaded {
+            return match &self.error {
+                Some(err) => widgets::error_state(err.as_str(), Message::Refresh),
+                None => widgets::loading(),
+            };
+        }
+        let mut top = column![self.quick_add_row()].spacing(space::S);
         if let Some(err) = &self.error {
             top = top.push(
                 typo::text(typo::META, err.clone())
@@ -468,6 +516,26 @@ impl App {
             .width(Fill)
             .height(Fill)
             .into()
+    }
+
+    /// The quick add row: a calm line like a list row ("+ New task …", the key hint "N" at the
+    /// end) that is a text input underneath. The icon and the hint lie over it, so the input keeps
+    /// its hover and focus states; the hint goes away as soon as something is typed.
+    fn quick_add_row(&self) -> Element<'_, Message> {
+        let input = text_input(tr("New task …"), &self.quick_add)
+            .id(QUICK_ADD)
+            .on_input(Message::QuickAddChanged)
+            .on_submit(Message::QuickAddSubmit)
+            .padding(Padding { top: space::S, bottom: space::S, left: QUICK_ADD_START, right: QUICK_ADD_END })
+            .style(style::text_input);
+        let plus = icon::icon(Icon::Plus, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
+        let mut over =
+            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::M]);
+        if self.quick_add.is_empty() {
+            over = over.push(widgets::kbd("N"));
+        }
+        // 8 above and below the 20-high text make the row `CONTROL_LG` (36) high.
+        stack![input, over].height(size::CONTROL_LG).into()
     }
 
     /// The filters with their icon and open count, then one entry per task list (ring, count).
@@ -808,5 +876,31 @@ mod tests {
     #[test]
     fn without_a_preference_the_system_appearance_is_dark() {
         assert_eq!(demo_app().theme(), theme::theme());
+    }
+
+    #[test]
+    fn the_display_menu_holds_show_completed_and_closes_with_escape() {
+        let mut app = demo_app();
+        let _ = app.update(Message::ToggleDisplay);
+        assert_eq!(app.menu, Some(Menu::Display));
+        let _ = app.update(Message::ShowCompleted(true));
+        assert!(app.show_completed && app.menu == Some(Menu::Display), "ticking keeps the menu open");
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.menu, None);
+        let _ = app.update(Message::ToggleDisplay);
+        let _ = app.update(Message::ToggleNav);
+        assert_eq!(app.menu, Some(Menu::Nav), "one menu at a time");
+    }
+
+    #[test]
+    fn the_list_shows_loading_until_the_first_load() {
+        let mut app = demo_app();
+        assert!(!app.loaded);
+        let _ = app.update(Message::Loaded(Err("offline".into())));
+        assert!(!app.loaded && app.error.is_some(), "a failed first load keeps the error state");
+        let _ = app.update(Message::Loaded(Ok((Vec::new(), Vec::new()))));
+        assert!(app.loaded && app.error.is_none());
+        let _ = app.update(Message::Loaded(Err("offline".into())));
+        assert!(app.loaded, "a later error does not throw the list away");
     }
 }

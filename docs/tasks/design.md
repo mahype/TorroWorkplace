@@ -237,7 +237,7 @@ Die Aufgaben ändern nur das Aussehen und die Bedienung, keine Funktionen – au
   zweite Zeile. Liste in `content(CONTENT_MAX)`.
 
 ### T.2 Kopf und Schnelleingabe
-- [x] erledigt
+- [ ] erledigt
 - **Modell:** Haiku · **Braucht:** T.1
 - **Dateien:** `crates/torrotasks/src/app.rs`
 - `header_bar`: Titel `HEADLINE` mit Zahl offener in `TEXT_2`; „Show completed“ als Ghost-Icon
