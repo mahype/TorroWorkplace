@@ -3088,7 +3088,8 @@ mod tests {
             ..crate::approvals::InboxFacts::default()
         };
         assert_eq!(asked.summary, crate::approvals::inbox_summary(&request, &facts));
-        assert!(asked.summary.contains("\"Fix 'it'\"") && asked.summary.contains("\"Deploy failed\""));
+        // Without the quote marks around them: those differ by language (`tr`).
+        assert!(asked.summary.contains("Fix 'it'") && asked.summary.contains("Deploy failed"));
         assert_eq!(created_on(&fake), 0, "nothing ran yet");
 
         let app_key = crate::clients::tests::app_key(dir.path());
