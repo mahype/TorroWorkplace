@@ -47,7 +47,8 @@ const USAGE: &str = "usage:
   torroworkplace ctl deny <id> [--json]
   torroworkplace ctl quit [--json]
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
-  torroworkplace hook claude-code|codex|gemini   (run by an agent's hooks; reads stdin, prints nothing)";
+  torroworkplace hook claude-code|codex|gemini [--key-file <file>]
+                                                 (run by an agent's hooks; reads stdin, prints nothing)";
 
 /// The kind of a client added without `--kind`.
 const DEFAULT_KIND: &str = "script";

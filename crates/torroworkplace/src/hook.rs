@@ -183,7 +183,7 @@ fn report_from_args(args: &[String]) {
             stderr,
             "{}: {}",
             crate::APP.binary,
-            tr("the hook needs one agent: torroworkplace hook claude-code|codex|gemini")
+            tr("the hook needs one agent: torroworkplace hook claude-code|codex|gemini [--key-file <file>]")
         );
         return;
     };
