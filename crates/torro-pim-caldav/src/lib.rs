@@ -5,23 +5,27 @@
 //! own sign-in (`nextcloud`, Login Flow v2).
 //!
 //! - `client`: discovery (`current-user-principal`, `calendar-home-set`), collections,
-//!   events in a time range and tasks (task K.3 in `docs/tasks/kalender-aufgaben.md`).
+//!   events in a time range and tasks (task K.3 in `docs/tasks/kalender-aufgaben.md`), and which
+//!   services an account offers ([`Services`], task M7.1).
+//! - `discover`: finding the CalDAV service of a mail address without signing in (task M7.1).
 //! - `write`: iCalendar output and ETag-guarded PUT/DELETE (task K.4).
 //! - `ical`: reading iCalendar.
 //!
 //! `sync-collection` and the `torro_pim::Provider` implementation come with the SQLite cache.
 
 mod client;
+pub mod discover;
 mod ical;
 pub mod nextcloud;
 pub mod write;
 
 use std::time::Duration;
 
-pub use client::CalDavClient;
+pub use client::{CalDavClient, Services};
 use torro_pim::ProviderError;
 
-/// Where and as whom to connect. The password lives in the system keychain, not here.
+/// Where and as whom to connect. The password lives in the system keychain and reaches the
+/// client as a `torro_core::account::Secret` ([`CalDavClient::new`]), not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalDavAccount {
     /// Server or principal URL, e.g. `https://cloud.example.org/remote.php/dav/`.

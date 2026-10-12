@@ -11,8 +11,14 @@ description = "CalDAV/iCalendar provider (VEVENT, VTODO) for torro-pim: Nextclou
 workspace = true
 
 [dependencies]
+torro-core.workspace = true
 torro-pim.workspace = true
 chrono.workspace = true
+hickory-resolver.workspace = true
 reqwest.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+httpmock.workspace = true

@@ -944,6 +944,25 @@ mod tests {
         assert!(tools().iter().all(|tool| tool.name != "accounts_set_github_token"));
     }
 
+    /// Task M7.1: an agent may search for a mail provider's calendar service, but never takes a
+    /// password in and hands it on.
+    #[test]
+    fn agents_may_search_a_caldav_service_but_never_sign_in_with_a_password() {
+        let search = request_for("accounts_discover_services", args(json!({"address": "anna@mailbox.org"})), &Utc);
+        assert_eq!(search, Ok(Request::DiscoverServices { address: "anna@mailbox.org".into() }));
+        let hints = tools().iter().find(|t| t.name == "accounts_discover_services").and_then(|t| t.annotations.clone());
+        assert_eq!(hints.and_then(|h| h.read_only_hint), Some(true));
+        let sign_in = args(json!({
+            "address": "anna@mailbox.org",
+            "login_name": "anna@mailbox.org",
+            "password": "hunter2",
+            "calendars": true,
+            "tasks": true
+        }));
+        assert_eq!(request_for("accounts_connect_caldav", sign_in, &Utc), Err(ToolError::UnknownTool));
+        assert!(tools().iter().all(|tool| tool.name != "accounts_connect_caldav"));
+    }
+
     #[test]
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);

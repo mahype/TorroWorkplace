@@ -80,7 +80,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
 | `inbox` | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
-| `accounts` | `list_accounts` | `sync` | | `connect_nextcloud`, `remove_account` |
+| `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `set_github_token` und `connect_caldav` (**nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
@@ -129,6 +129,21 @@ und keinen Inhalt, nur die Freigabe. Den Hook richtet der Assistent ein
 (`torroworkplace hook claude-code|codex --key-file <datei> --answer`, Timeout 40 s); ohne
 Entscheidung gibt er nichts aus, und der Agent fragt wie gewohnt im Terminal. Gemini CLI hat keinen
 Hook, der eine Antwort annimmt.
+
+⁶ `discover_services { address }` (M7.1) sucht ohne Anmeldung den CalDAV-Dienst eines Mail-Anbieters:
+DNS SRV `_caldavs._tcp.<domain>` (mit TXT `path=`), dann `/.well-known/caldav` auf `<domain>` und
+`caldav.<domain>`, dann eine Tabelle bekannter Anbieter; Gmail und Microsoft-Domains sind „nicht
+unterstützt“ mit Grund, ohne dass etwas gesendet wird. Weil Agenten es dürfen, darf es keine Netz-Sonde
+werden: nur die Domain geht hinaus, nie der lokale Teil; keine IP-Literale; jeder Name (auch SRV-Ziele
+und Weiterleitungen) wird abgelehnt, wenn eine seiner Adressen nicht öffentlich ist (Loopback, privat,
+Link-Local, ULA …), und der HTTP-Client verbindet sich nur mit den so geprüften Adressen; nur https,
+kein Proxy, höchstens fünf Weiterleitungen, kurze Timeouts. Die Antwort nennt nur Anbieter und
+Adressen, nie Inhalte oder Header eines Servers; Protokoll und Audit nennen den Befehl, nicht die
+Adresse. Anmelden (`connect_caldav`) kann nur der App-Schlüssel (Punkt 5). Bewusst hingenommen: Wem
+eine Domain gehört, der kann über SRV bis zu drei öffentliche Ziele mit beliebigem Port nennen und an
+„gefunden/nicht gefunden“ ablesen, ob dort ein Server antwortet; und die Anmeldung selbst nutzt den
+normalen HTTP-Client, eine Adresse kann also zwischen Suche und Anmeldung anders auflösen. Beides
+betrifft nur öffentliche Adressen bzw. eine Anmeldung, die ein Mensch auslöst.
 
 **`inbox`** (E1.1, Konzept [eingang.md](eingang.md)): Die Auswahl geht hier über **Quellen** statt
 Sammlungen, `Rights.inbox_sources` mit den Schlüsseln der Quellen (`suite`, `agent:claude-code`,
@@ -250,9 +265,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    einen Menschen in der Oberfläche oder per Benachrichtigung.
 4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
-5. **Geheimnisse entgegennehmen** (Token einfügen `accounts.set_github_token`, später Anmeldung mit
-   Passwort, Import aus einem fremden Schlüsselbund): nur mit dem App-Schlüssel, also nur aus der
-   Oberfläche. Solche Requests landen nie in einer Freigabe.
+5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
+   Anmeldung mit Passwort `accounts.connect_caldav`, Import aus einem fremden Schlüsselbund): nur mit
+   dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
+   reicht es weiter. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten
+   bekommt `forbidden`) und im Test `names_follow_the_rules` (`kept_back`). Solche Requests landen nie
+   in einer Freigabe (`approvals.json`), und das Passwort erscheint in keiner Antwort, keiner
+   Fehlermeldung, keinem `Debug` und keinem Protokoll (Typ `Secret`, im Schema `writeOnly`).
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

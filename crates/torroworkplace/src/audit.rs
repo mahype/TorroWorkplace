@@ -191,6 +191,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ConnectNextcloud { .. }
         | Request::ConnectGithub
         | Request::SetGithubToken { .. }
+        // Never the address searched or signed in with (task M7.1): it names a person.
+        | Request::DiscoverServices { .. }
+        | Request::ConnectCalDav { .. }
         | Request::Sync
         | Request::CalendarCollections
         | Request::TaskCollections
