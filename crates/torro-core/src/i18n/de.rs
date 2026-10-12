@@ -1650,16 +1650,36 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Take accounts over from TorroMail (M7.4)
     ("Connecting…", "Verbinde …"),
-    ("Copies the mail servers, user name and password. TorroMail keeps its accounts.", "Übernimmt Mailserver, Benutzername und Passwort. TorroMail behält seine Konten."),
+    (
+        "Copies the mail servers, user name and password. TorroMail keeps its accounts.",
+        "Übernimmt Mailserver, Benutzername und Passwort. TorroMail behält seine Konten.",
+    ),
     ("Enter password", "Passwort eingeben"),
     ("Not completely set up in TorroMail.", "In TorroMail nicht vollständig eingerichtet."),
     ("Not supported", "Nicht unterstützt"),
-    ("Signs in with Google or Microsoft, which Torro Workplace does not support yet.", "Meldet sich über Google oder Microsoft an, was Torro Workplace noch nicht unterstützt."),
-    ("The password could not be read from TorroMail. Enter it to connect.", "Das Passwort konnte nicht aus TorroMail gelesen werden. Gib es ein, um zu verbinden."),
+    (
+        "Signs in with Google or Microsoft, which Torro Workplace does not support yet.",
+        "Meldet sich über Google oder Microsoft an, was Torro Workplace noch nicht unterstützt.",
+    ),
+    (
+        "The password could not be read from TorroMail. Enter it to connect.",
+        "Das Passwort konnte nicht aus TorroMail gelesen werden. Gib es ein, um zu verbinden.",
+    ),
     ("This account is connected already.", "Dieses Konto ist bereits verbunden."),
-    ("TorroMail has no password for this account. Enter it to connect.", "TorroMail hat kein Passwort für dieses Konto. Gib es ein, um zu verbinden."),
+    (
+        "TorroMail has no password for this account. Enter it to connect.",
+        "TorroMail hat kein Passwort für dieses Konto. Gib es ein, um zu verbinden.",
+    ),
     ("TorroMail has no such account.", "TorroMail hat dieses Konto nicht."),
     ("Use", "Übernehmen"),
     ("Use accounts from TorroMail?", "Konten aus TorroMail übernehmen?"),
-    ("Uses JMAP, which Torro Workplace does not support yet.", "Nutzt JMAP, was Torro Workplace noch nicht unterstützt."),
+    (
+        "Uses JMAP, which Torro Workplace does not support yet.",
+        "Nutzt JMAP, was Torro Workplace noch nicht unterstützt.",
+    ),
+    // Mail in mini, strip and notifications (E4.4)
+    ("From {senders}", "Von {senders}"),
+    ("{n} unread", "{n} ungelesen"),
+    ("{n} new messages from {senders}", "{n} neue Nachrichten von {senders}"),
+    ("{names} and {n} more", "{names} und {n} weitere"),
 ];
