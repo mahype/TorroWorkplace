@@ -1238,4 +1238,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Diese Liste wurde anderswo geändert. Sie zeigt jetzt die aktuelle Fassung; nimm deine Änderungen noch einmal vor und speichere.",
     ),
     ("This list was deleted elsewhere.", "Diese Liste wurde anderswo gelöscht."),
+    ("Close GitHub issue \"{title}\" ({issue})", "GitHub-Issue „{title}“ ({issue}) schließen"),
+    ("Reopen GitHub issue \"{title}\" ({issue})", "GitHub-Issue „{title}“ ({issue}) wieder öffnen"),
 ];
