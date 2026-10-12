@@ -203,6 +203,12 @@ pub enum Request {
     /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
     /// another calendar of the same account; moving to another account fails with `unsupported`.
     ///
+    /// A link to a GitHub issue ([`Request::AddLink`]) in a writable list: changing `completed`
+    /// closes (reopens) the issue too, after the task is stored, for a client only with write
+    /// access to `github` and the issue's repository in its selection (else only the task
+    /// changes). The answer then carries the issue's new state in `link.github`. A client that
+    /// sets or changes a `link` to a repository outside its selection gets `not-found`.
+    ///
     /// Marking a GitHub issue in a filter list done closes it on GitHub (reopening reopens it);
     /// pull requests are never closed; other fields of a GitHub match cannot be changed (task
     /// G.5). Those are `unsupported`, as is a new task in a filter list; a stale `etag` is
@@ -324,6 +330,36 @@ pub enum Request {
         collection: String,
         /// The item: its address on github.com, `owner/repo#12` or its link id
         /// (`github:owner/repo#12`) as `source.pinned` lists it.
+        url: String,
+    },
+    /// Adds the GitHub issue or pull request `url` to the task list `collection` (task G.6,
+    /// `docs/github.md`, "Verweis"). Answered with [`Response::Todo`]: the item as the list holds
+    /// it now, with what GitHub reports in `link.github`.
+    ///
+    /// - A **GitHub filter list**: the item is pinned (the list's revision goes up by one) and the
+    ///   list fetched again; pinned already, nothing changes.
+    /// - A **writable task list**: a *link*, a task (VTODO) with `url`, `link` (only its id,
+    ///   `X-TORRO-LINK`) and GitHub's title, done when the item is closed or merged, written like
+    ///   [`Request::SaveTodo`]. One link per item and list: when the list has one already, that one
+    ///   is the answer. From then on the core takes title and state from GitHub on every refresh
+    ///   (closed or merged = done; never the other way round) and leaves due date, priority, order
+    ///   and sub-tasks alone. Ticking it with `tasks.save_todo` closes an issue on GitHub as well
+    ///   (unticking reopens it), never a pull request.
+    ///
+    /// Codes: `error` when `url` names no issue or pull request; `not-found` for a list that does
+    /// not exist (or that a client may not see), an item GitHub does not have or the token cannot
+    /// reach, and for a client an item outside its repositories (`api::Rights::github_repos`,
+    /// GitHub is not asked then); `forbidden` for a client without read access to `github` (to
+    /// pin: write access); `not-connected` when no GitHub account has a token on this device;
+    /// `auth`, `offline` when GitHub refuses the token or cannot be reached; a read-only Nextcloud
+    /// list and failed writes as in [`Request::SaveTodo`].
+    #[serde(rename = "tasks.add_link")]
+    AddLink {
+        /// Id of the task list (`<account-id>/<list URL>`) or GitHub filter list
+        /// (`github:<login>/<list-id>`) from `tasks.list_lists`.
+        collection: String,
+        /// The item: its address on github.com (`https://github.com/owner/repo/issues/12`,
+        /// `…/pull/12`), `owner/repo#12` or its link id `github:owner/repo#12`.
         url: String,
     },
 

@@ -88,6 +88,11 @@ const PULL_REQUESTS: &str = "Pull requests are never closed or reopened here";
 /// What deleting a filter list's item is answered with (core: `unsupported`).
 const NOT_DELETED: &str = "The items of a GitHub filter list cannot be deleted; they live on GitHub";
 
+/// What adding something that is no GitHub link is answered with (core: `error`).
+const NO_LINK: &str = "Paste the address of a GitHub issue or pull request, or owner/repo#12";
+/// What adding a GitHub item the sample does not have is answered with (core: `not-found`).
+const UNKNOWN_ITEM: &str = "The demo knows only the GitHub items of its sample";
+
 /// At most this many searches per filter list, as the core allows.
 const MAX_QUERIES: usize = 10;
 /// At most this many matches come with a preview, as from the core.
@@ -899,6 +904,14 @@ impl PimSource for DemoSource {
                 if slot.etag != todo.etag {
                     return Err(ProviderError::Conflict { uid: todo.uid });
                 }
+                // Ticking a link to an issue closes the issue too, as the core does (task G.6).
+                let issue = slot.link.as_ref().and_then(|link| link.github.as_ref()).map(|github| github.kind);
+                if issue == Some(GitHubKind::Issue)
+                    && slot.completed != todo.completed
+                    && let Some(github) = todo.link.as_mut().and_then(|link| link.github.as_mut())
+                {
+                    github.state = if todo.completed { GitHubState::Closed } else { GitHubState::Open };
+                }
                 todo.etag = Some(version);
                 *slot = todo.clone();
             }
@@ -965,6 +978,61 @@ impl PimSource for DemoSource {
         let id = filter.pinned.remove(at);
         data.todos.retain(|t| t.collection != collection || t.link.as_ref().is_none_or(|link| link.id != id));
         Ok(())
+    }
+
+    /// Like the core (task G.6), for the GitHub items of the sample only – the demo cannot ask
+    /// GitHub: pinned in a filter list, a new link task in a writable list; an item the list holds
+    /// already is the answer.
+    async fn add_link(&self, collection: String, url: String) -> Result<Todo, ProviderError> {
+        let link = Link::pasted(&url).ok_or_else(|| ProviderError::Other(NO_LINK.into()))?;
+        let mut data = self.lock();
+        let same = |t: &Todo| t.link.as_ref().is_some_and(|l| l.id.eq_ignore_ascii_case(&link.id));
+        if let Some(held) = data.todos.iter().find(|t| t.collection == collection && same(t)) {
+            return Ok(held.clone());
+        }
+        let known = data.todos.iter().find(|t| same(t) && t.link.as_ref().is_some_and(|l| l.github.is_some()));
+        let Some(known) = known.cloned() else {
+            return Err(ProviderError::Other(UNKNOWN_ITEM.into()));
+        };
+        data.next_id += 1;
+        let next = data.next_id;
+        let version = format!("\"demo-{next}\"");
+        let position = data.todos.iter().filter(|t| t.collection == collection).count();
+        let Some(list) = data.collections.iter_mut().find(|c| c.id == collection && c.kind.has_todos()) else {
+            return Err(ProviderError::Other(format!("No task list {collection}")));
+        };
+        let todo = match (&mut list.source, list.writable) {
+            (Some(filter), _) => {
+                filter.pinned.push(link.id.clone());
+                filter.revision += 1;
+                Todo {
+                    uid: link.id.clone(),
+                    collection: collection.clone(),
+                    href: known.url.clone(),
+                    etag: Some(version),
+                    due: None,
+                    priority: None,
+                    parent: None,
+                    sort_order: i64::try_from(position).ok(),
+                    ..known
+                }
+            }
+            (None, true) => {
+                let uid = format!("demo-todo-{next}");
+                // The core stores the address, the link id and GitHub's title; done when closed.
+                Todo {
+                    href: Some(format!("{}{uid}.ics", url_of(&collection))),
+                    etag: Some(version),
+                    completed: known.completed,
+                    url: known.url.clone(),
+                    link: known.link.clone(),
+                    ..todo(&collection, &uid, &known.summary, None)
+                }
+            }
+            (None, false) => return Err(ProviderError::Other(format!("{} is read-only", list.name))),
+        };
+        data.todos.push(todo.clone());
+        Ok(todo)
     }
 
     /// A new list of the GitHub account with a fresh id (`github:mahype/list-<n>`, never handed
@@ -1206,6 +1274,29 @@ mod tests {
         assert_eq!(needs_me.map(|s| s.pinned.len()), Some(0));
         assert!(source.unpin_issue(NEEDS_ME.into(), pinned.id.clone()).await.is_err(), "only once");
         assert!(source.unpin_issue(TASKS.into(), pinned.id).await.is_err(), "no filter list");
+    }
+
+    #[tokio::test]
+    async fn a_link_is_pinned_in_a_filter_list_and_a_task_elsewhere_and_ticking_it_closes_the_issue() {
+        let source = DemoSource::new(sunday());
+        let address = format!("https://github.com/{REPO}/issues/145");
+        let pinned = source.add_link(NEEDS_ME.into(), address.clone()).await.expect("pinned");
+        assert_eq!((pinned.collection.as_str(), pinned.uid.as_str()), (NEEDS_ME, Link::github(REPO, 145).id.as_str()));
+        let collections = source.collections().await.expect("collections");
+        let needs_me = collections.iter().find(|c| c.id == NEEDS_ME).and_then(|c| c.source.clone()).expect("a list");
+        assert!(needs_me.pinned.contains(&pinned.uid) && needs_me.revision == 2);
+        assert_eq!(source.add_link(NEEDS_ME.into(), address.clone()).await, Ok(pinned), "pinned once");
+
+        let link = source.add_link(GROCERIES.into(), address).await.expect("a link task");
+        assert!(link.href.is_some() && link.collection == GROCERIES && !link.completed);
+        assert_eq!(link.link.as_ref().map(|l| l.id.as_str()), Some(Link::github(REPO, 145).id.as_str()));
+        let ticked = source.save_todo(Todo { completed: true, ..link }).await.expect("ticked");
+        let state = ticked.link.as_ref().and_then(|l| l.github.as_ref()).map(|g| g.state);
+        assert_eq!(state, Some(GitHubState::Closed), "the issue closes with it");
+
+        assert_eq!(source.add_link(TASKS.into(), "Buy milk".into()).await, Err(ProviderError::Other(NO_LINK.into())));
+        let unknown = source.add_link(TASKS.into(), "a/b#1".into()).await;
+        assert_eq!(unknown, Err(ProviderError::Other(UNKNOWN_ITEM.into())));
     }
 
     #[tokio::test]

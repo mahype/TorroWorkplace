@@ -19,8 +19,10 @@
 //!
 //! - [`Detail::head`]: the row in the window's header bar (44, line below, split from the
 //!   list's head by the app) with the path "List › Parent" (only the real hierarchy), ↑ ↓ to the
-//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, Unpin for an item pinned in
-//!   its filter list ([`Detail::pinned`], task G.3), Delete task – never for a GitHub item) and ✕;
+//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, "Add to list…" for an item of
+//!   a filter list – it becomes a link task in the list picked, [`Action::AddLink`], task G.6 –,
+//!   Unpin for an item pinned in its filter list ([`Detail::pinned`], task G.3), Delete task – never
+//!   for a GitHub item) and ✕;
 //!   in narrow windows "‹ <list view>" instead of path and ✕.
 //! - [`Detail::main_column`]: title with check or GitHub state (an issue of a filter list: its
 //!   check, which closes it, [`Detail::issue_check`], task G.5), for GitHub the line "state ·
@@ -129,6 +131,8 @@ pub struct Detail {
     open: Option<Editor>,
     /// Set by "Delete task" in the "…" menu; the menu then asks once more.
     confirm_delete: bool,
+    /// Set by "Add to list…" in the "…" menu (task G.6); the menu then shows the lists to pick.
+    choosing_list: bool,
     /// A save is under way; the next one waits for its answer (new etag).
     saving: bool,
     /// The last task handed out to be saved, so an unchanged draft is not sent again.
@@ -206,6 +210,10 @@ pub enum Message {
     CopyLink,
     /// "Unpin" in the "…" menu of a pinned item ([`Detail::pinned`]).
     Unpin,
+    /// "Add to list…" in the "…" menu of a filter list's item: show the lists to pick (task G.6).
+    AddToList,
+    /// A list ([`Collection::id`]) picked after "Add to list…".
+    AddToListSelected(String),
     /// "Delete task" in the "…" menu: ask once more.
     Delete,
     CancelDelete,
@@ -248,6 +256,13 @@ pub enum Action {
     Unpin {
         collection: String,
         item: String,
+    },
+    /// Add the GitHub item `url` (its link id, `github:owner/repo#12`) to the task list
+    /// `collection` as a link (`tasks.add_link`, task G.6) and reload; the detail stays on the
+    /// filter list's item.
+    AddLink {
+        collection: String,
+        url: String,
     },
     /// Show the task above the open one in the list (as ↑ moves the cursor), if there is one.
     Previous,
@@ -293,6 +308,8 @@ enum More {
     CopyLink,
     /// "Open on GitHub" for a GitHub link, else "Open link".
     OpenLink,
+    /// A GitHub item of a filter list: "Add to list…", then the writable lists (task G.6).
+    AddToList,
     /// A pinned item of a filter list.
     Unpin,
     Delete,
@@ -371,6 +388,7 @@ impl Detail {
             draft,
             open: None,
             confirm_delete: false,
+            choosing_list: false,
             saving: false,
             sent: None,
             attempted: false,
@@ -404,6 +422,7 @@ impl Detail {
             }
             Message::Open(editor) => {
                 self.confirm_delete = false;
+                self.choosing_list = false;
                 if self.open == Some(editor) {
                     self.open = None;
                 } else {
@@ -479,6 +498,14 @@ impl Detail {
                 let item = self.original.link.as_ref().map(|link| link.id.clone());
                 if let Some(item) = item.filter(|_| self.pinned) {
                     return Action::Unpin { collection: self.original.collection.clone(), item };
+                }
+            }
+            Message::AddToList => self.choosing_list = self.can_add_to_list(),
+            Message::AddToListSelected(collection) => {
+                self.close_editor();
+                let url = self.original.link.as_ref().map(|link| link.id.clone());
+                if let Some(url) = url.filter(|_| self.can_add_to_list()) {
+                    return Action::AddLink { collection, url };
                 }
             }
             Message::Delete => self.confirm_delete = self.can_delete(),
@@ -607,6 +634,7 @@ impl Detail {
     fn close_editor(&mut self) {
         self.open = None;
         self.confirm_delete = false;
+        self.choosing_list = false;
     }
 
     /// A new open sub-task with the typed title in this task's list; the field empties for the
@@ -681,6 +709,12 @@ impl Detail {
     /// Deleting is for tasks only: a GitHub item lives on GitHub (and in a read-only list).
     fn can_delete(&self) -> bool {
         self.editable() && self.github().is_none()
+    }
+
+    /// "Add to list…" is for a GitHub item of a filter list (read-only here) while there is a
+    /// writable list to add it to.
+    fn can_add_to_list(&self) -> bool {
+        !self.editable() && self.github_ref().is_some() && !self.lists.is_empty()
     }
 
     /// Moving needs another writable list.
@@ -832,6 +866,9 @@ impl Detail {
         let mut items = Vec::new();
         if self.link_target().is_some() {
             items.extend([More::CopyLink, More::OpenLink]);
+        }
+        if self.can_add_to_list() {
+            items.push(More::AddToList);
         }
         if self.pinned && self.original.link.is_some() {
             items.push(More::Unpin);
@@ -1382,6 +1419,15 @@ impl Detail {
                     };
                     first.push(MenuItem::new(mark, label, Message::OpenLink).trail(Trail::Icon(Icon::ArrowUpRight)));
                 }
+                // After "Add to list…" the menu lists where it can go, as "Move to list" does.
+                More::AddToList if self.choosing_list => {
+                    sections.push(MenuSection::titled(tr("Add to list"), self.add_to_list_items()))
+                }
+                More::AddToList => sections.push(MenuSection::new(vec![MenuItem::new(
+                    Icon::Plus,
+                    tr("Add to list…"),
+                    Message::AddToList,
+                )])),
                 // The icon set has no pin; X says "take it out" as Cancel does.
                 More::Unpin => {
                     sections.push(MenuSection::new(vec![MenuItem::new(Icon::X, tr("Unpin"), Message::Unpin)]))
@@ -1418,6 +1464,15 @@ impl Detail {
             })
             .collect();
         widgets::menu(vec![MenuSection::titled(tr("Priority"), items)])
+    }
+
+    /// The writable lists a filter list's item can be added to, each with its ring.
+    fn add_to_list_items(&self) -> Vec<MenuItem<'_, Message>> {
+        let ring = |list: &Collection| Mark::Ring(widgets::collection_color(list.color.as_deref()));
+        let item = |list: &Collection| {
+            MenuItem::new(ring(list), list.name.clone(), Message::AddToListSelected(list.id.clone()))
+        };
+        self.lists.iter().map(item).collect()
     }
 
     fn list_menu(&self) -> Element<'_, Message> {
@@ -2235,7 +2290,7 @@ mod tests {
     fn the_more_menu_never_deletes_a_github_item() {
         let item = github_item(pull_request());
         let mut detail = detail_of(&item);
-        assert_eq!(detail.more_items(), [More::CopyLink, More::OpenLink]);
+        assert_eq!(detail.more_items(), [More::CopyLink, More::OpenLink, More::AddToList]);
         detail.update(Message::Open(Editor::More));
         detail.update(Message::Delete);
         assert!(!detail.confirm_delete);
@@ -2252,7 +2307,7 @@ mod tests {
         assert!(!detail.more_items().contains(&More::Unpin), "not pinned");
         assert_eq!(detail.update(Message::Unpin), Action::None, "nothing to unpin");
         detail.pinned = true;
-        assert_eq!(detail.more_items(), [More::CopyLink, More::OpenLink, More::Unpin]);
+        assert_eq!(detail.more_items(), [More::CopyLink, More::OpenLink, More::AddToList, More::Unpin]);
         detail.update(Message::Open(Editor::More));
         assert!(detail.layer(&Anchor::new()).is_some());
         let unpin = Action::Unpin {
@@ -2261,6 +2316,25 @@ mod tests {
         };
         assert_eq!(detail.update(Message::Unpin), unpin, "the list and the link id as source.pinned has it");
         assert_eq!(detail.open, None, "the menu closes");
+    }
+
+    #[test]
+    fn an_item_of_a_filter_list_can_be_added_to_a_writable_list_as_a_link() {
+        let mut detail = detail_of(&github_item(pull_request()));
+        detail.update(Message::Open(Editor::More));
+        assert_eq!(detail.update(Message::AddToList), Action::None);
+        assert!(detail.choosing_list && detail.open == Some(Editor::More), "the menu shows the lists");
+        assert!(detail.layer(&Anchor::new()).is_some());
+        let add = Action::AddLink { collection: "home".into(), url: "github:mahype/TorroWorkplace#131".into() };
+        assert_eq!(detail.update(Message::AddToListSelected("home".into())), add, "the list and the link id");
+        assert!(!detail.choosing_list && detail.open.is_none(), "the menu closes");
+
+        // A task of a writable list, linked or not, is moved instead; without lists there is nowhere.
+        let in_list = Todo { collection: "work".into(), ..github_item(pull_request()) };
+        assert!(!detail_of(&in_list).more_items().contains(&More::AddToList));
+        let mut nowhere = Detail::new(&github_item(pull_request()), &[], &[]);
+        assert!(!nowhere.more_items().contains(&More::AddToList));
+        assert_eq!(nowhere.update(Message::AddToListSelected("home".into())), Action::None);
     }
 
     #[test]

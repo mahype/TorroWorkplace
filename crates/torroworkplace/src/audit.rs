@@ -227,7 +227,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UpdateFilterList { collection: list, .. }
         | Request::DeleteFilterList { collection: list }
         | Request::SetCollectionShown { collection: list, .. } => vec![collection(list)],
-        Request::UnpinIssue { collection: list, url } => vec![collection(list), format!("item:{}", hashed(url))],
+        Request::UnpinIssue { collection: list, url } | Request::AddLink { collection: list, url } => {
+            vec![collection(list), format!("item:{}", hashed(url))]
+        }
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()

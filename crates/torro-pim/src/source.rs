@@ -83,6 +83,21 @@ pub trait PimSource: Send + Sync {
     /// list (the core's `not-found`).
     fn unpin_issue(&self, collection: String, item: String) -> impl Future<Output = Result<(), ProviderError>> + Send;
 
+    /// Adds the GitHub issue or pull request `url` to the task list `collection`
+    /// (`tasks.add_link`, task G.6): pinned in a GitHub filter list, a *link* (a task with the
+    /// item's address, its link id and GitHub's title) in a writable list. `url` is what the person
+    /// pasted: the item's address on github.com, `owner/repo#12` or `github:owner/repo#12`.
+    ///
+    /// Returns the task as the list holds it now, with the GitHub details in `link.github`; when
+    /// the list holds the item already, that task. Reload the tasks afterwards (pinning fetches
+    /// the filter list again).
+    ///
+    /// [`ProviderError::Other`] with the core's message when `url` names no issue or pull request,
+    /// GitHub does not have it, no GitHub account is connected, or the list is read-only or unknown;
+    /// [`ProviderError::Auth`] / [`ProviderError::Offline`] when GitHub refuses the token or cannot
+    /// be reached.
+    fn add_link(&self, collection: String, url: String) -> impl Future<Output = Result<Todo, ProviderError>> + Send;
+
     /// Creates a GitHub filter list of the GitHub account `account` (`github:<login>`, as
     /// [`PimSource::accounts`] lists it) from `definition` (`tasks.create_filter_list`, dialog of
     /// task G.4). Returns the new list as [`PimSource::collections`] will list it: id

@@ -192,6 +192,14 @@ impl PimSource for PimClient {
         expect_ok(self.ask(Request::UnpinIssue { collection, url: item }).await?)
     }
 
+    /// `Request::AddLink`; the answer is the task the list holds.
+    async fn add_link(&self, collection: String, url: String) -> Result<Todo, ProviderError> {
+        match self.ask(Request::AddLink { collection, url }).await? {
+            Response::Todo { todo } => Ok(todo),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `Request::CreateFilterList` with the definition's fields.
     async fn create_filter_list(
         &self,
@@ -373,6 +381,13 @@ mod tests {
             }
             Request::UnpinIssue { .. } => {
                 Response::Error { code: "not-found".into(), message: "the list does not pin it".into() }
+            }
+            // The answer names what arrived: the list and the pasted address.
+            Request::AddLink { url, .. } if !url.contains('#') => {
+                Response::Error { code: "error".into(), message: "not a GitHub link".into() }
+            }
+            Request::AddLink { collection, url } => {
+                Response::Todo { todo: stored_todo(Todo { collection, url: Some(url), ..todo() }) }
             }
             // The collection with both kinds is in both answers.
             Request::CalendarCollections => Response::Collections { collections: vec![collection(), calendar()] },
@@ -617,6 +632,19 @@ mod tests {
         client.unpin_issue("github:mahype/bugs".into(), "github:mahype/TorroWorkplace#7".into()).await.unwrap();
         let other = client.unpin_issue("github:mahype/bugs".into(), "github:mahype/TorroWorkplace#8".into()).await;
         assert_eq!(other, Err(ProviderError::Other("the list does not pin it".into())));
+    }
+
+    #[tokio::test]
+    async fn add_link_sends_list_and_address_and_returns_the_task() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let added = client.add_link("/tasks/home/".into(), "mahype/TorroWorkplace#7".into()).await.unwrap();
+        assert_eq!(
+            (added.collection.as_str(), added.url.as_deref()),
+            ("/tasks/home/", Some("mahype/TorroWorkplace#7"))
+        );
+        let refused = client.add_link("/tasks/home/".into(), "no link".into()).await;
+        assert_eq!(refused, Err(ProviderError::Other("not a GitHub link".into())));
     }
 
     #[tokio::test]

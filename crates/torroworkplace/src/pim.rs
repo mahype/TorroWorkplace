@@ -52,7 +52,18 @@
 //!   `not-found`) and write access to `github` (else `forbidden`), both checked before GitHub is
 //!   asked. The answer updates the item in every filter list that holds it, so it stays (done)
 //!   until the next refresh – and "Undo" finds it.
+//! - **Links** (task G.6, `docs/github.md`, "Verweis"): `tasks.add_link` pins an issue or pull
+//!   request to a filter list, or writes a task with its address, link id and GitHub's title into
+//!   a writable list ([`PimService::add_link`]). The core keeps what GitHub reports about every
+//!   linked item in [`State::links`], fetched in one go ([`PimService::reconcile_links`]: one
+//!   GraphQL call per 50 items, with the filter lists' refresh), and hands it out in `link.github`
+//!   only to whom may see the repository. Title and state go into the stored task when they
+//!   changed (closed or merged = done, never back), ETag-guarded, nothing else of it. Ticking a link
+//!   to an issue closes it on GitHub too ([`PimService::save_link_todo`]), under the rights of
+//!   G.5. A client may neither add nor write a link to a repository outside its selection: GitHub
+//!   would otherwise tell it the title through the task.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,7 +75,7 @@ use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
-use torro_pim::model::GitHubKind;
+use torro_pim::model::{GitHubKind, GitHubState, Link};
 use torro_pim::source::move_plan;
 use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, ProviderError, Todo, combined_state};
 use torro_pim_caldav::CalDavClient;
@@ -215,6 +226,9 @@ struct State {
     signing_in: Option<(String, String)>,
     /// The filter lists of the GitHub accounts the core knows (task G.2).
     filters: Vec<FilterSlot>,
+    /// What GitHub last reported about the items the tasks of the accounts link to (task G.6),
+    /// by [`link_key`]. For everyone; a client reads it only through [`Reach::with_details`].
+    links: HashMap<String, item::Item>,
     /// The stored accounts were read (or could not be), so `accounts` is all there is.
     loaded: bool,
 }
@@ -437,6 +451,39 @@ impl Reach<'_> {
         }
         collection
     }
+
+    /// A task of an account with what GitHub reports about the item it links to (task G.6), from
+    /// `links`: only with read access to `github` and the item's repository in reach, since it
+    /// came with the token. Every other task, and a link nothing is known about, as it is.
+    fn with_details(&self, mut todo: Todo, links: &HashMap<String, item::Item>) -> Todo {
+        let known = todo.link.as_ref().and_then(|link| links.get(&link_key(&link.id)));
+        if let Some(item) = known.filter(|item| self.reads_github() && self.reaches_repo(item.repo()))
+            && let Some(link) = todo.link.as_mut()
+        {
+            link.github = details_of(item);
+        }
+        todo
+    }
+
+    /// The suite, or a client with write access to `github` and `repo` (`owner/name`) in reach:
+    /// who may close and reopen its issues (tasks G.5, G.6).
+    fn closes_issues_of(&self, repo: &str) -> bool {
+        match self {
+            Reach::Suite => true,
+            Reach::Client(rights) => rights.area(Area::Github).allows(Access::Write) && rights.reaches_repo(repo),
+        }
+    }
+}
+
+/// The key of a link id in [`State::links`]: GitHub compares repository names without regard to
+/// case, so `github:Mahype/Torro#1` and `github:mahype/torro#1` are one item.
+fn link_key(id: &str) -> String {
+    id.to_ascii_lowercase()
+}
+
+/// What GitHub reports about `item`, as `link.github` of a task carries it.
+fn details_of(item: &item::Item) -> Option<torro_pim::model::GitHubDetails> {
+    item.to_todo("", 0).link.and_then(|link| link.github)
 }
 
 /// See the module docs.
@@ -562,12 +609,13 @@ impl PimService {
             Request::Todos => {
                 let lists = ids(self.seen(reach, Role::TaskList).await);
                 let state = self.state.read().await;
+                // Links come with what GitHub reports, for whom may see it (task G.6).
                 let mut todos: Vec<Todo> = state
                     .accounts
                     .iter()
                     .flat_map(|slot| &slot.todos)
                     .filter(|t| lists.contains(&t.collection))
-                    .cloned()
+                    .map(|todo| reach.with_details(todo.clone(), &state.links))
                     .collect();
                 // Filter lists: every item checked against the client's repositories first.
                 let filters = state.filters.iter().flat_map(|slot| &slot.lists);
@@ -636,8 +684,22 @@ impl PimService {
                 }
                 return reach.todo_for(todo).is_none().then(|| todo.uid.clone());
             }
+            // A link set or changed to a repository outside the client's: refreshing it would
+            // write that item's title from GitHub into the task (task G.6).
+            Request::SaveTodo { todo } if self.links_elsewhere(reach, todo).await => {
+                return todo.link.as_ref().map(|link| link.id.clone());
+            }
             Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
                 (Role::TaskList, &todo.collection, todo.href.as_deref())
+            }
+            // The list as the client sees it (a filter list only inside its repositories), and the
+            // item's repository; one GitHub does not name yet is checked again by the handler.
+            Request::AddLink { collection, url } => {
+                if !self.sees_task_list(reach, collection).await {
+                    return Some(collection.clone());
+                }
+                let outside = address::issue_ref(url).is_some_and(|issue| !reach.reaches_repo(&issue.repo));
+                return outside.then(|| url.clone());
             }
             Request::UpdateFilterList { collection, .. } | Request::DeleteFilterList { collection } => {
                 return (!self.sees_task_list(reach, collection).await).then(|| collection.clone());
@@ -1425,8 +1487,12 @@ impl PimService {
                     ..named(&todo.collection)
                 }
             }
+            // Ticking a link to an issue closes or reopens the issue too (task G.6): named like the
+            // tick of a filter list's issue, by the link the cache holds.
             Request::SaveTodo { todo } => {
-                written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, true)
+                let facts = written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, true);
+                let issue = ticked_issue(&state, todo).map(|issue| format!("{}#{}", issue.repo, issue.number));
+                Facts { issue, ..facts }
             }
             Request::MoveTodo { href, .. } => match cached_todo(&state, href) {
                 Some(todo) => {
@@ -1926,6 +1992,330 @@ impl PimService {
     }
 }
 
+/// Why a client may not add a GitHub link (task G.6): the item is read with the GitHub token.
+pub const NO_GITHUB_READ: &str = "adding a GitHub link needs read access to github";
+/// Why a client may not pin to a filter list: pinning changes the list, as `tasks.unpin_issue` does.
+pub const NO_GITHUB_PIN: &str = "pinning to a GitHub filter list needs write access to github";
+/// The answer to `tasks.add_link` with something that names no issue or pull request.
+const NOT_A_LINK: &str =
+    "not a link to a GitHub issue or pull request: paste its address on github.com or write owner/repo#12";
+/// The answer when no GitHub account has a token on this device.
+const NO_GITHUB_ACCOUNT: &str = "no GitHub account is connected on this device: connect one in Settings";
+
+/// Links to GitHub issues and pull requests (task G.6). The core hands in the [`Api`] of the
+/// filter list's account, or of the first GitHub account with a token for a task list, and has
+/// checked the reach ([`PimService::out_of_reach`]) and the rights ([`PimService::add_link_refusal`])
+/// before a client's request comes here; the handlers check both again for an approved run.
+impl PimService {
+    /// For a client: why it may not add a link to `collection`, as the answer – `forbidden`
+    /// without read access to `github` ([`NO_GITHUB_READ`]), and for a filter list without write
+    /// access ([`NO_GITHUB_PIN`]). `None` when it may, and always for the suite.
+    pub async fn add_link_refusal(&self, reach: Reach<'_>, collection: &str) -> Option<Response> {
+        let Reach::Client(rights) = reach else { return None };
+        let github = rights.area(Area::Github);
+        if !github.allows(Access::Read) {
+            return Some(error("forbidden", NO_GITHUB_READ.into()));
+        }
+        if self.is_filter_list(collection).await && !github.allows(Access::Write) {
+            return Some(error("forbidden", NO_GITHUB_PIN.into()));
+        }
+        None
+    }
+
+    /// `tasks.add_link`: the issue or pull request `url` (an address on github.com,
+    /// `owner/repo#12` or a link id) in the list `collection`, answered with the task the list
+    /// holds as `reach` may see it ([`Response::Todo`]). In this order:
+    ///
+    /// - `url` names no item: `error` ([`NOT_A_LINK`]);
+    /// - a client without the rights ([`PimService::add_link_refusal`]): `forbidden`; with the
+    ///   item's repository outside its selection: `not-found`, before GitHub is asked;
+    /// - a task list: refused as a write to it is ([`PimService::place`]: unknown `not-found`,
+    ///   read-only `error`), and a link to the same item in it is the answer, without GitHub;
+    /// - no `api`: `not-connected`; GitHub asked once ([`Api::items`]): its failure with its code
+    ///   (for a client a fixed message), an item it does not have or the token does not reach
+    ///   `not-found` – also for a client when GitHub names a repository outside its selection (a
+    ///   renamed one);
+    /// - a filter list: the item is pinned ([`PimService::pin`]); a task list: a new task with
+    ///   GitHub's title, the item's address and its link id, done when it is closed or merged
+    ///   ([`PimService::save_todo`]).
+    ///
+    /// What GitHub reported goes into [`State::links`]; logs name the item by its link id only.
+    pub async fn add_link(&self, collection: &str, url: &str, api: Option<&Api>, reach: Reach<'_>) -> Response {
+        let Some(issue) = address::issue_ref(url) else {
+            return error("error", NOT_A_LINK.into());
+        };
+        if let Some(refused) = self.add_link_refusal(reach, collection).await {
+            return refused;
+        }
+        if !reach.reaches_repo(&issue.repo) {
+            return no_item(&issue);
+        }
+        let filter = self.filter_list_account(collection).await;
+        if filter.is_none() {
+            if let Err(err) = self.place(collection).await {
+                return self.write_failed(err).await;
+            }
+            if let Some(held) = self.held_link(collection, &issue).await {
+                return Response::Todo { todo: reach.with_details(held, &self.state.read().await.links) };
+            }
+        }
+        let Some(api) = api else {
+            return error("not-connected", NO_GITHUB_ACCOUNT.into());
+        };
+        let item = match api.items(std::slice::from_ref(&issue)).await {
+            Ok(items) => items.into_iter().next(),
+            Err(err) => {
+                eprintln!("torroworkplace: {} not read from GitHub: {}", issue.link_id(), err.code());
+                return error(err.code(), reach.message_of(&err));
+            }
+        };
+        // GitHub follows a renamed repository: what counts is where the item is now.
+        let Some(item) = item.filter(|item| reach.reaches_repo(item.repo())) else {
+            return no_item(&issue);
+        };
+        self.state.write().await.links.insert(link_key(&item.id.link_id()), item.clone());
+        match filter {
+            Some(account) => self.pin(&account, collection, &item, api, reach).await,
+            None => self.write_link(collection, &item, reach).await,
+        }
+    }
+
+    /// Pins `item` to the filter list `collection` of `account`: its link id joins `pinned`, the
+    /// revision goes up by one and the list is fetched again. Pinned already: nothing changes. The
+    /// answer is the item as the list holds it (as GitHub just reported it when the fetch failed).
+    async fn pin(&self, account: &str, collection: &str, item: &item::Item, api: &Api, reach: Reach<'_>) -> Response {
+        let mut added = false;
+        let changed = self
+            .change_filter_list(account, collection, |list| {
+                let pinned = |id: &String| address::issue_ref(id).is_some_and(|pinned| pinned.same(&item.id));
+                if !list.pinned.iter().any(pinned) {
+                    list.pinned.push(item.id.link_id());
+                    list.revision += 1;
+                    added = true;
+                }
+                Ok(())
+            })
+            .await;
+        match changed {
+            Ok(list) if added => self.fetch_filter_list(account, &list, Some(api)).await,
+            Ok(_) => {}
+            Err((code, message)) => return error(code, message),
+        }
+        let held = {
+            let state = self.state.read().await;
+            let same = |todo: &&Todo| address::issue_ref(&todo.uid).is_some_and(|held| held.same(&item.id));
+            state.filter(collection).and_then(|(_, list)| list.todos.iter().find(same).cloned())
+        };
+        let todo = held.unwrap_or_else(|| item.to_todo(collection, 0));
+        match reach.todo_for(&todo) {
+            Some(todo) => Response::Todo { todo },
+            None => no_item(&item.id),
+        }
+    }
+
+    /// Writes a new link task for `item` into the task list `collection` through
+    /// [`PimService::save_todo`] (its checks and its cache): GitHub's title, the item's address,
+    /// its link id, done when it is closed or merged; nothing else is set.
+    async fn write_link(&self, collection: &str, item: &item::Item, reach: Reach<'_>) -> Response {
+        let todo = Todo {
+            uid: String::new(),
+            collection: collection.to_string(),
+            href: None,
+            etag: None,
+            summary: item.title.clone(),
+            due: None,
+            priority: None,
+            completed: item.state != GitHubState::Open,
+            parent: None,
+            description: None,
+            url: Some(item.url.clone()),
+            categories: Vec::new(),
+            sort_order: None,
+            link: Some(Link::github(item.repo(), item.id.number)),
+        };
+        match self.save_todo(todo).await {
+            Ok(saved) => Response::Todo { todo: reach.with_details(saved, &self.state.read().await.links) },
+            Err(err) => {
+                eprintln!("torroworkplace: link to {} not written: {}", item.id.link_id(), write_code(&err));
+                self.write_failed(err).await
+            }
+        }
+    }
+
+    /// The cached task of the list `collection` that links to `issue`, if there is one.
+    async fn held_link(&self, collection: &str, issue: &IssueRef) -> Option<Todo> {
+        let state = self.state.read().await;
+        let todos = state.owner(collection).map(|slot| slot.todos.as_slice()).unwrap_or_default();
+        todos
+            .iter()
+            .find(|todo| todo.collection == collection && linked_issue(todo).is_some_and(|i| i.same(issue)))
+            .cloned()
+    }
+
+    /// For a client: `todo` links to an item outside its repositories with a link it did not
+    /// read so (a new task, or another link than the cached one at its `href`). Refreshing that
+    /// link would write the item's title from GitHub into the task, where the client reads it.
+    async fn links_elsewhere(&self, reach: Reach<'_>, todo: &Todo) -> bool {
+        let Some(issue) = linked_issue(todo).filter(|issue| !reach.reaches_repo(&issue.repo)) else {
+            return false;
+        };
+        let state = self.state.read().await;
+        let held = todo.href.as_deref().and_then(|href| cached_todo(&state, href)).and_then(linked_issue);
+        !held.is_some_and(|held| held.same(&issue))
+    }
+
+    /// `tasks.save_todo` on a task of a writable list (task G.6): stored as
+    /// [`PimService::save_todo`] stores it; when that ticks or unticks a link to an issue
+    /// ([`ticked_issue`]) and `reach` may close its issues ([`Reach::closes_issues_of`]), the issue
+    /// is then closed as completed or reopened with `api`. GitHub's refusal (or no `api`) is only
+    /// logged: the task is stored, and the answer's `link.github` shows the issue as it is.
+    pub async fn save_link_todo(&self, todo: Todo, api: Option<&Api>, reach: Reach<'_>) -> Response {
+        let ticked = ticked_issue(&*self.state.read().await, &todo);
+        let saved = match self.save_todo(todo).await {
+            Ok(saved) => saved,
+            Err(err) => return self.write_failed(err).await,
+        };
+        if let Some(issue) = ticked.filter(|issue| reach.closes_issues_of(&issue.repo)) {
+            self.tick_issue(&issue, saved.completed, api).await;
+        }
+        Response::Todo { todo: reach.with_details(saved, &self.state.read().await.links) }
+    }
+
+    /// Closes (`done`) or reopens the linked issue `issue` on GitHub and keeps GitHub's answer in
+    /// [`State::links`]. A failure is logged with the link id and its code.
+    async fn tick_issue(&self, issue: &IssueRef, done: bool, api: Option<&Api>) {
+        let Some(api) = api else {
+            eprintln!("torroworkplace: {} not changed on GitHub: no token", issue.link_id());
+            return;
+        };
+        match api.set_issue_done(issue, done).await {
+            Ok(item) => {
+                self.state.write().await.links.insert(link_key(&item.id.link_id()), item);
+            }
+            Err(err) => eprintln!("torroworkplace: {} not changed on GitHub: {}", issue.link_id(), err.code()),
+        }
+    }
+
+    /// Brings the links in the accounts' task lists in step with GitHub (task G.6), with the
+    /// filter lists' refresh (start, every five minutes, `accounts.sync`):
+    ///
+    /// - every linked item once, all in one go ([`Api::items`]: one GraphQL call per 50 items,
+    ///   aliases with variables); GitHub's answers replace [`State::links`];
+    /// - a task whose title differs, or that is open while its item is closed or merged, is
+    ///   written with the new title and done ([`PimService::save_todo`], with its cached etag, so a
+    ///   task changed elsewhere meanwhile is left for the next round); nothing else of it changes,
+    ///   and nothing is reopened from GitHub: a link ticked by hand (a pull request, or without the
+    ///   right to close the issue) stays done.
+    ///
+    /// Without `api` or without links nothing happens; a failed call keeps what was known. Logs
+    /// name links by id only.
+    pub async fn reconcile_links(&self, api: Option<&Api>) {
+        let refs: Vec<IssueRef> = {
+            let state = self.state.read().await;
+            let mut refs: Vec<IssueRef> = Vec::new();
+            for issue in state.accounts.iter().flat_map(|slot| &slot.todos).filter_map(linked_issue) {
+                if !refs.iter().any(|known| known.same(&issue)) {
+                    refs.push(issue);
+                }
+            }
+            refs
+        };
+        let Some(api) = api.filter(|_| !refs.is_empty()) else { return };
+        let items = match api.items(&refs).await {
+            Ok(items) => items,
+            Err(err) => {
+                eprintln!("torroworkplace: links not refreshed from GitHub: {}", err.code());
+                return;
+            }
+        };
+        let changes: Vec<Todo> = {
+            let mut state = self.state.write().await;
+            state.links = items.into_iter().map(|item| (link_key(&item.id.link_id()), item)).collect();
+            let todos = state.accounts.iter().flat_map(|slot| &slot.todos);
+            todos.filter_map(|todo| in_step(todo, &state.links)).collect()
+        };
+        for todo in changes {
+            let id = todo.link.as_ref().map(|link| link.id.clone()).unwrap_or_default();
+            if let Err(err) = self.save_todo(todo).await {
+                eprintln!("torroworkplace: link {id} not brought in step with GitHub: {}", write_code(&err));
+            }
+        }
+    }
+
+    /// All accounts are read and each synced once or failed to (task G.6): the core waits for it
+    /// before it first brings the links in step with GitHub.
+    pub async fn cache_ready(&self) -> bool {
+        let state = self.state.read().await;
+        state.loaded && state.accounts.iter().all(|slot| slot.last_sync.is_some() || slot.problem.is_some())
+    }
+
+    /// Puts `todos` into the cache of the first account as a sync would, for the core's handler
+    /// tests (task G.6).
+    #[cfg(test)]
+    pub async fn cache_todos(&self, todos: Vec<Todo>) {
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.todos = todos;
+        }
+    }
+
+    /// The tasks cached for the first account, as stored there (without GitHub's details).
+    #[cfg(test)]
+    pub async fn cached_todos(&self) -> Vec<Todo> {
+        self.state.read().await.accounts.first().map(|slot| slot.todos.clone()).unwrap_or_default()
+    }
+}
+
+/// The GitHub issue or pull request the task `todo` links to (`link.id`
+/// `github:<owner>/<repo>#<n>`), if any.
+fn linked_issue(todo: &Todo) -> Option<IssueRef> {
+    let (repo, number) = todo.link.as_ref()?.github_ref()?;
+    Some(IssueRef { repo: repo.to_string(), number })
+}
+
+/// The issue that saving `todo` closes or reopens on GitHub (task G.6): the cached task at its
+/// `href` links to it, `todo` keeps that link, `completed` changes, and as far as the core knows
+/// ([`State::links`]) it is an issue whose state is the other one. `None` for every other save,
+/// also for a new task and for a pull request.
+fn ticked_issue(state: &State, todo: &Todo) -> Option<IssueRef> {
+    let held = cached_todo(state, todo.href.as_deref()?)?;
+    let issue = linked_issue(held)?;
+    if held.completed == todo.completed || !linked_issue(todo).is_some_and(|sent| sent.same(&issue)) {
+        return None;
+    }
+    match held.link.as_ref().and_then(|link| state.links.get(&link_key(&link.id))) {
+        Some(item) if item.kind != GitHubKind::Issue => None,
+        Some(item) if (item.state != GitHubState::Open) == todo.completed => None,
+        _ => Some(issue),
+    }
+}
+
+/// The link task `todo` in step with what GitHub reports in `links`: GitHub's title, and done
+/// when the item is closed or merged. `None` when nothing changes, for a task GitHub said nothing
+/// about, and for one that was never stored.
+fn in_step(todo: &Todo, links: &HashMap<String, item::Item>) -> Option<Todo> {
+    let item = links.get(&link_key(&todo.link.as_ref()?.id))?;
+    todo.href.as_ref()?;
+    let summary = if item.title.trim().is_empty() { todo.summary.clone() } else { item.title.clone() };
+    let completed = todo.completed || item.state != GitHubState::Open;
+    (summary != todo.summary || completed != todo.completed).then(|| Todo { summary, completed, ..todo.clone() })
+}
+
+/// The API error code of a failed write, for a log line.
+fn write_code(err: &WriteError) -> &'static str {
+    match err {
+        WriteError::Refused { code, .. } => code,
+        WriteError::Provider(Failed { err: ProviderError::Auth, .. }) => "auth",
+        WriteError::Provider(Failed { err: ProviderError::Offline, .. }) => "offline",
+        WriteError::Provider(Failed { err: ProviderError::Conflict { .. }, .. }) => "conflict",
+        WriteError::Provider(_) => "error",
+    }
+}
+
+/// The answer for an item GitHub does not have, or that a client may not see: `not-found`.
+fn no_item(issue: &IssueRef) -> Response {
+    error("not-found", format!("GitHub has no issue or pull request {}, or it cannot be reached", issue.link_id()))
+}
+
 /// Name, colour and searches of a filter list as `tasks.create_filter_list` and
 /// `tasks.update_filter_list` send them, before [`checked_definition`].
 #[derive(Debug, Clone, Copy)]
@@ -2388,6 +2778,7 @@ pub(crate) mod tests {
             signing_in: Some(("cloud.example.org".into(), "https://cloud.example.org/login/v2/flow/x".into())),
             filters: Vec::new(),
             loaded: true,
+            ..State::default()
         };
         let infos = account_infos(&state);
         assert_eq!(infos.len(), 2);

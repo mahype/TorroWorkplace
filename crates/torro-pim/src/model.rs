@@ -219,6 +219,38 @@ impl Link {
         Some((repo, number.parse().ok()?))
     }
 
+    /// The GitHub link `input` names, as a person pastes it (task G.6): the address of an issue or
+    /// pull request on github.com (`https://github.com/owner/repo/issues/12`, `…/pull/12/files`,
+    /// with or without `https://` or `www.`, anything after the number ignored), `owner/repo#12`
+    /// or a link id `github:owner/repo#12`; surrounding spaces do not count. `None` for anything
+    /// else, so the tasks app can tell a pasted link from a title. The core reads the same forms
+    /// (`torro_pim_github::address::issue_ref`) and decides; this only recognises them.
+    pub fn pasted(input: &str) -> Option<Link> {
+        let input = input.trim();
+        let id = Link { id: input.to_string(), github: None };
+        if id.github_ref().is_some() {
+            return Some(id);
+        }
+        let part =
+            |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        let number = |n: &str| n.parse::<u64>().ok();
+        if let Some((repo, n)) = input.split_once('#')
+            && let Some((owner, name)) = repo.split_once('/')
+            && part(owner)
+            && part(name)
+        {
+            return Some(Link::github(repo, number(n)?));
+        }
+        let rest = input.strip_prefix("https://").or_else(|| input.strip_prefix("http://")).unwrap_or(input);
+        let rest = rest.strip_prefix("www.").unwrap_or(rest);
+        let path = rest.strip_prefix("github.com/")?.split(['?', '#']).next().unwrap_or_default();
+        let mut segments = path.split('/');
+        let (owner, name, page, n) = (segments.next()?, segments.next()?, segments.next()?, segments.next()?);
+        (part(owner) && part(name) && matches!(page, "issues" | "pull"))
+            .then(|| number(n).map(|n| Link::github(&format!("{owner}/{name}"), n)))
+            .flatten()
+    }
+
     /// The item's page: `https://github.com/<owner>/<repo>/issues/<number>` for a GitHub id
     /// (GitHub forwards it to the pull request when it is one); `None` for other ids.
     pub fn web_url(&self) -> Option<String> {
@@ -407,6 +439,32 @@ mod tests {
         ] {
             let link = Link { id: other.into(), github: None };
             assert_eq!((link.github_ref(), link.web_url()), (None, None), "{other}");
+        }
+    }
+
+    #[test]
+    fn pasted_links_are_recognised_and_titles_are_not() {
+        let wanted = Some(Link::github("mahype/TorroWorkplace", 12));
+        for input in [
+            "github:mahype/TorroWorkplace#12",
+            "mahype/TorroWorkplace#12",
+            " https://github.com/mahype/TorroWorkplace/issues/12 ",
+            "https://github.com/mahype/TorroWorkplace/pull/12/files",
+            "github.com/mahype/TorroWorkplace/issues/12#issuecomment-1",
+            "https://www.github.com/mahype/TorroWorkplace/issues/12?x=1",
+        ] {
+            assert_eq!(Link::pasted(input), wanted, "{input}");
+        }
+        for title in [
+            "Buy oat milk",
+            "Fix #12",
+            "mahype#12",
+            "https://github.com/mahype/TorroWorkplace/issues",
+            "https://example.org/mahype/TorroWorkplace/issues/12",
+            "https://github.com/mahype/Torro Workplace/issues/12",
+            "a/b#x",
+        ] {
+            assert_eq!(Link::pasted(title), None, "{title}");
         }
     }
 }

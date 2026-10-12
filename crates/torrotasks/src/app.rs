@@ -47,6 +47,14 @@
 //! view. Plain keys are ignored while a text field has the focus ([`shortcut`], [`typing`]) or a
 //! menu is open.
 //!
+//! GitHub links (task G.6): a GitHub address or `owner/repo#12` in quick add ([`Link::pasted`])
+//! goes to the core's `add_link` instead of becoming a task titled with it: in a task list a link
+//! task with GitHub's title (and the due date quick add gives there), in a filter list – whose quick
+//! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list…" in the detail of a
+//! filter list's item does the same for the list picked. A link has the issue's check in the list
+//! and the detail; ticking one goes the way of an issue of a filter list, so "Issue closed · Undo"
+//! shows when the core closed the issue too.
+//!
 //! GitHub filter lists (task G.4): "New filter list…" closes the GitHub account's group in the
 //! sidebar, the "…" menu in the head of a filter list has "Edit filter…" and "Delete list…". The
 //! dialog itself is `filter.rs`; the app only opens it, runs its tasks and acts on its
@@ -77,7 +85,7 @@ use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
 use torro_pim::account::{GITHUB_KIND, account_of, combined_state_for};
 use torro_pim::demo::DemoSource;
-use torro_pim::model::{GitHubFilter, GitHubKind};
+use torro_pim::model::{GitHubFilter, GitHubKind, GitHubState, Link};
 use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, Todo};
 
 use crate::detail::{self, Detail, Fit};
@@ -506,6 +514,10 @@ pub enum Message {
     IssueChanged(Result<Todo, String>),
     /// "Undo" in the "Issue closed" card: reopen it.
     Undo,
+    /// The core's answer to a GitHub link pasted into quick add or "Add to list…" (task G.6): the
+    /// task the list holds, and the due date and priority quick add gives a new task there
+    /// ([`quick_add_fields`]), which a link in a task list then gets.
+    LinkAdded(Result<Todo, String>, Option<EventTime>, Option<u8>),
     /// The clock while the card shows; it goes after [`NOTICE_FOR`].
     NoticeTick(iced::time::Instant),
     Refresh,
@@ -785,6 +797,22 @@ impl App {
             Message::QuickAddSubmit => {
                 let summary = self.quick_add.trim().to_string();
                 let (due, priority, list) = quick_add_fields(self.quick_group.as_ref(), &self.filter, self.today);
+                // A filter list takes GitHub links only: they are pinned there (task G.6).
+                if let Filter::List(id) = &self.filter
+                    && self.filter_source(id).is_some()
+                {
+                    if summary.is_empty() {
+                        return Task::none();
+                    }
+                    if Link::pasted(&summary).is_none() {
+                        self.error =
+                            Some(tr("Only links to GitHub issues and pull requests can be pinned here").into());
+                        return Task::none();
+                    }
+                    let id = id.clone();
+                    self.quick_add.clear();
+                    return self.add_link(id, summary, None, None);
+                }
                 let writable = list.filter(|id| self.writable_lists().iter().any(|c| &c.id == id));
                 let Some(collection) = writable.or_else(|| self.target_list()) else {
                     self.error = Some(tr("No task list yet").into());
@@ -795,6 +823,10 @@ impl App {
                 }
                 self.quick_add.clear();
                 self.quick_group = None;
+                // A pasted GitHub link becomes a link task with GitHub's title (task G.6).
+                if Link::pasted(&summary).is_some() {
+                    return self.add_link(collection, summary, due, priority);
+                }
                 let todo = Todo {
                     uid: String::new(),
                     collection,
@@ -815,7 +847,8 @@ impl App {
             }
             Message::ToggleDone(index) => {
                 if let Some(todo) = self.toggled(index) {
-                    if self.filter_source(&todo.collection).is_some() {
+                    // A link closes its issue too (task G.6): the answer may bring "Issue closed".
+                    if self.filter_source(&todo.collection).is_some() || list::github_of(&todo).is_some() {
                         return self.change_issue(todo);
                     }
                     return self.save(todo);
@@ -876,6 +909,7 @@ impl App {
                 Err(err) => self.error = Some(trf("Unpin failed: {error}", &[("error", &err)])),
             },
             Message::IssueChanged(result) => return self.issue_changed(result),
+            Message::LinkAdded(result, due, priority) => return self.link_added(result, due, priority),
             Message::Undo => {
                 if let Some(todo) = self.undo() {
                     return self.change_issue(todo);
@@ -1467,10 +1501,11 @@ impl App {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
-        let mut content = match self.shown_filter_list() {
-            Some(source) => column(self.filter_hints(source)),
-            None => column![self.quick_add_row()],
-        };
+        // A filter list takes pasted GitHub links, which are pinned (task G.6); its hints follow.
+        let mut content = column![self.quick_add_row()];
+        if let Some(source) = self.shown_filter_list() {
+            content = content.extend(self.filter_hints(source));
+        }
         if let Some(err) = &self.error {
             let line = typo::text(typo::META, err.clone())
                 .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) });
@@ -1515,7 +1550,11 @@ impl App {
     fn quick_add_row(&self) -> Element<'_, Message> {
         let height = size::ROW - LINE;
         let above = (height - typo::line_height(typo::BODY)) / 2.0;
-        let input = text_input(tr("Add a task or paste a GitHub link…"), &self.quick_add)
+        let placeholder = match self.shown_filter_list() {
+            Some(_) => tr("Paste a GitHub link to pin…"),
+            None => tr("Add a task or paste a GitHub link…"),
+        };
+        let input = text_input(placeholder, &self.quick_add)
             .id(QUICK_ADD)
             .on_input(Message::QuickAddChanged)
             .on_submit(Message::QuickAddSubmit)
@@ -1727,6 +1766,7 @@ impl App {
                     Message::Unpinned,
                 )
             }
+            detail::Action::AddLink { collection, url } => self.add_link(collection, url, None, None),
             detail::Action::Previous => self.step(false),
             detail::Action::Next => self.step(true),
         }
@@ -1922,10 +1962,15 @@ impl App {
     /// Whether `todo` is an issue of a GitHub filter list, which has a check: `Some(true)` when
     /// ticking may close it, `Some(false)` when its account's token may not write issues (the check
     /// is locked); `None` for pull requests and every task outside a filter list.
+    ///
+    /// A link in a task list (task G.6), issue or pull request, is a task of its own: `Some(true)`,
+    /// ticking it always works (it closes an issue too where the core may).
     fn issue_check(&self, todo: &Todo) -> Option<bool> {
-        self.filter_source(&todo.collection)?;
-        let issue = list::github_of(todo).is_some_and(|github| github.kind == GitHubKind::Issue);
-        issue.then(|| self.may_close(&todo.collection))
+        let github = list::github_of(todo)?;
+        if self.filter_source(&todo.collection).is_none() {
+            return Some(true);
+        }
+        (github.kind == GitHubKind::Issue).then(|| self.may_close(&todo.collection))
     }
 
     /// Whether the account of the filter list `id` may close issues
@@ -1980,12 +2025,52 @@ impl App {
         if let Some(shown) = self.todos.iter_mut().find(|t| same(t)) {
             *shown = saved.clone();
         }
-        self.notice = saved.completed.then(|| Notice { todo: saved.clone(), since: iced::time::Instant::now() });
+        // Only when an issue was really closed: a link to a pull request, or one whose issue the
+        // core could not close, is only done itself.
+        let closed = list::github_of(&saved)
+            .is_some_and(|github| github.kind == GitHubKind::Issue && github.state != GitHubState::Open);
+        self.notice =
+            (saved.completed && closed).then(|| Notice { todo: saved.clone(), since: iced::time::Instant::now() });
         let follow_up = match self.detail.as_mut() {
             Some(detail) if same(&detail.original) => detail.stored(&saved),
             _ => detail::Action::None,
         };
         Task::batch([self.detail_action(follow_up), self.load()])
+    }
+
+    /// Adds the GitHub item `url` to the list `collection` through the core's `add_link` (task
+    /// G.6): pinned in a filter list, a link task elsewhere. `due` and `priority` are what quick add
+    /// gives a new task there; the answer comes as [`Message::LinkAdded`].
+    fn add_link(&self, collection: String, url: String, due: Option<EventTime>, priority: Option<u8>) -> Task<Message> {
+        let source = self.source.clone();
+        Task::perform(async move { source.add_link(collection, url).await.map_err(|e| e.to_string()) }, move |r| {
+            Message::LinkAdded(r, due, priority)
+        })
+    }
+
+    /// The core's answer to [`App::add_link`]: a new link task in a task list gets the due date and
+    /// priority quick add gives there (it has none of its own yet), then the list is loaded again.
+    /// A refusal (no GitHub account, an item GitHub does not have …) is the error line.
+    fn link_added(
+        &mut self,
+        result: Result<Todo, String>,
+        due: Option<EventTime>,
+        priority: Option<u8>,
+    ) -> Task<Message> {
+        let added = match result {
+            Ok(added) => added,
+            Err(err) => {
+                self.error = Some(trf("Couldn't add the link: {error}", &[("error", &err)]));
+                return Task::none();
+            }
+        };
+        self.error = None;
+        let planned = Todo { due: added.due.or(due), priority: added.priority.or(priority), ..added.clone() };
+        let writable = self.writable_lists().iter().any(|list| list.id == added.collection);
+        if writable && planned != added {
+            return self.save(planned);
+        }
+        self.load()
     }
 
     /// `window` with the "Issue closed" card at the bottom centre while it shows. Always the same
@@ -2283,6 +2368,67 @@ mod tests {
         let closed = stored(&app, Todo { completed: true, ..app.todos[issue].clone() });
         let _ = app.update(Message::IssueChanged(Ok(closed.clone())));
         assert_eq!(app.detail.as_ref().map(|detail| detail.original.clone()), Some(closed), "the state follows");
+    }
+
+    /// Index of the task of the demo with the link id `github:mahype/TorroWorkplace#<number>` in
+    /// the list "Tasks" (a link, task G.6).
+    fn link_in_tasks(app: &App, number: u64) -> usize {
+        let id = Link::github("mahype/TorroWorkplace", number).id;
+        let link = |t: &Todo| t.link.as_ref().is_some_and(|l| l.id == id) && app.filter_source(&t.collection).is_none();
+        app.todos.iter().position(link).expect("a link of the sample")
+    }
+
+    #[test]
+    fn a_pasted_link_is_added_as_a_link_in_a_task_list_and_pinned_in_a_filter_list() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let address = "https://github.com/mahype/TorroWorkplace/issues/145";
+        let _ = app.update(Message::QuickAddChanged(address.into()));
+        assert!(app.update(Message::QuickAddSubmit).units() > 0, "the core is asked");
+        assert!(app.quick_add.is_empty() && app.error.is_none());
+
+        // Under "Today" the new link is due today, as any task added there.
+        let target = app.target_list().expect("a writable list");
+        let added = iced::futures::executor::block_on(app.source.add_link(target, address.into())).expect("added");
+        assert_eq!((added.summary.as_str(), added.due), ("Week view: all-day events cover the day names", None));
+        let today = Some(EventTime::Date(app.today));
+        assert!(app.update(Message::LinkAdded(Ok(added.clone()), today, None)).units() > 0, "saved with its day");
+        let refused = Message::LinkAdded(Err("GitHub has no such issue".into()), None, None);
+        let _ = app.update(refused);
+        assert!(app.error.as_deref().is_some_and(|e| e.contains("GitHub has no such issue")));
+
+        // A filter list takes links only, and pins them.
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        let _ = app.update(Message::QuickAddChanged("Buy oat milk".into()));
+        assert_eq!(app.update(Message::QuickAddSubmit).units(), 0, "nothing to pin");
+        assert_eq!(app.quick_add, "Buy oat milk", "the text stays to be corrected");
+        assert!(app.error.is_some());
+        let _ = app.update(Message::QuickAddChanged("mahype/TorroWorkplace#145".into()));
+        assert!(app.update(Message::QuickAddSubmit).units() > 0);
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+    }
+
+    #[test]
+    fn a_link_has_a_check_and_says_issue_closed_only_when_its_issue_closed() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let issue = link_in_tasks(&app, 123);
+        assert_eq!(app.issue_check(&app.todos[issue]), Some(true), "never locked");
+        let ticked = app.toggled(issue).expect("a link can be ticked");
+        assert!(app.update(Message::ToggleDone(issue)).units() > 0, "the core is asked");
+        let _ = app.update(Message::IssueChanged(Ok(stored(&app, ticked))));
+        assert!(app.notice.is_some(), "Issue closed · Undo");
+        let undo = app.undo().expect("Undo");
+        assert!(!undo.completed);
+
+        let pull = link_in_tasks(&app, 131);
+        assert_eq!(app.issue_check(&app.todos[pull]), Some(true), "a link to a pull request is ticked too");
+        let ticked = app.toggled(pull).expect("a link can be ticked");
+        let _ = app.update(Message::IssueChanged(Ok(stored(&app, ticked))));
+        assert!(app.todos[pull].completed && app.notice.is_none(), "a pull request is not closed: no card");
     }
 
     #[test]

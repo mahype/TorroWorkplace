@@ -344,7 +344,8 @@ impl Core {
             // the accounts that have lists, a little while at most, instead of a whole period.
             let owners = pim.filter_list_owners();
             for _ in 0..TOKEN_WAIT_ROUNDS {
-                let mut ready = true;
+                // The links of the task lists (task G.6) are known after the first sync.
+                let mut ready = pim.cache_ready().await;
                 for owner in &owners {
                     ready &= github.api(owner).await.is_some();
                 }
@@ -451,6 +452,13 @@ impl Core {
         {
             return Ok(Response::Error { code: "forbidden".into(), message: crate::pim::NO_GITHUB_WRITE.into() });
         }
+        // Adding a GitHub link reads GitHub, pinning changes a filter list (task G.6): refused
+        // before anyone is asked; `PimService::add_link` checks again for an approved run.
+        if let Request::AddLink { collection, .. } = &request
+            && let Some(refused) = self.pim.add_link_refusal(reach, collection).await
+        {
+            return Ok(refused);
+        }
         let operation = request.operation();
         // The inbox needs to know who asks, not only what it may see: its own entries, its kind.
         let inbox_client = match operation.area() {
@@ -536,7 +544,17 @@ impl Core {
                 (request, facts.item.as_ref().map(EntryPin::of), summary)
             }
             (_, _) => {
-                let summary = crate::approvals::summary(&request, &self.facts(&request).await);
+                let mut facts = self.facts(&request).await;
+                // Ticking a link closes its issue only for a client that may (task G.6); else the
+                // summary must not say it would.
+                let rights = info.as_ref().map(|info| &info.rights);
+                if let (Some(rights), Some(issue)) = (rights, facts.issue.as_deref()) {
+                    let repo = issue.rsplit_once('#').map_or(issue, |(repo, _)| repo);
+                    if !(rights.area(Area::Github).allows(Access::Write) && rights.reaches_repo(repo)) {
+                        facts.issue = None;
+                    }
+                }
+                let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
         };
@@ -767,10 +785,24 @@ impl Core {
                 let api = self.filter_list_api(&collection).await;
                 self.pim.unpin_issue(&collection, &url, api.as_ref()).await
             }
+            // Pinning reads GitHub with the filter list's token, a link task with the first one
+            // there is (task G.6).
+            Request::AddLink { collection, url } => {
+                let api = match self.pim.is_filter_list(&collection).await {
+                    true => self.filter_list_api(&collection).await,
+                    false => link_api(&self.github).await,
+                };
+                self.pim.add_link(&collection, &url, api.as_ref(), reach).await
+            }
             // Ticking an issue of a filter list closes it on GitHub (task G.5): with the list's token.
             Request::SaveTodo { todo } if self.pim.is_filter_list(&todo.collection).await => {
                 let api = self.filter_list_api(&todo.collection).await;
                 self.pim.save_filter_todo(todo, api.as_ref(), reach).await
+            }
+            // A task of a writable list; ticking a link to an issue closes it too (task G.6).
+            Request::SaveTodo { todo } => {
+                let api = link_api(&self.github).await;
+                self.pim.save_link_todo(todo, api.as_ref(), reach).await
             }
             pim @ (Request::ConnectNextcloud { .. }
             | Request::CalendarCollections
@@ -779,7 +811,6 @@ impl Core {
             | Request::Todos
             | Request::SaveEvent { .. }
             | Request::DeleteEvent { .. }
-            | Request::SaveTodo { .. }
             | Request::DeleteTodo { .. }
             | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
             Request::Settings => {
@@ -1289,12 +1320,27 @@ const FILTER_LISTS_EVERY: std::time::Duration = std::time::Duration::from_secs(5
 const TOKEN_WAIT_ROUNDS: u32 = 30;
 const TOKEN_WAIT_STEP: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Fetches the filter lists of every GitHub account the core knows, one account after the other.
+/// Fetches the filter lists of every GitHub account the core knows, one account after the other,
+/// then brings the links in the task lists in step with GitHub (task G.6,
+/// [`PimService::reconcile_links`]).
 async fn refresh_filter_lists(pim: &PimService, github: &GithubAccounts) {
     for account in github.infos().await {
         let api = github.api(&account.id).await;
         pim.refresh_filter_lists(&account.id, api.as_ref()).await;
     }
+    pim.reconcile_links(link_api(github).await.as_ref()).await;
+}
+
+/// What links in task lists are read and closed with (task G.6): the first GitHub account with a
+/// token on this device, in the order of `accounts.json`. A link names no account; with one
+/// GitHub account, the usual case, it is that one.
+async fn link_api(github: &GithubAccounts) -> Option<torro_pim_github::Api> {
+    for account in github.infos().await {
+        if let Some(api) = github.api(&account.id).await {
+            return Some(api);
+        }
+    }
+    None
 }
 
 /// The answer for an account id that is no GitHub account of this core.
@@ -2468,6 +2514,8 @@ mod tests {
         pulls: Vec<Issue>,
         closed: Vec<u64>,
         refuse: Option<&'static str>,
+        /// Pull requests (by number) that are merged (task G.6).
+        merged: Vec<u64>,
     }
 
     /// When the fake GitHub last changed an issue: what it reports as `updatedAt` afterwards.
@@ -2496,6 +2544,39 @@ mod tests {
             };
             let node = serde_json::json!({"__typename": typename, "id": format!("I_{number}")});
             serde_json::json!({"data": {"repository": {"issueOrPullRequest": node}}})
+        }
+
+        /// The answer to a lookup of items by repository and number (`graphql::items_body`): alias
+        /// `i<k>` for the item `o<k>/r<k>#n<k>` among the pinned, found (in their state) and pull
+        /// requests (merged when in `merged`); one GitHub does not have is `null` with `NOT_FOUND`.
+        fn lookup(&self, variables: &serde_json::Value) -> serde_json::Value {
+            let mut data = serde_json::Map::new();
+            let mut errors = Vec::new();
+            for k in 0.. {
+                let (Some(owner), Some(name)) =
+                    (variables[format!("o{k}")].as_str(), variables[format!("r{k}")].as_str())
+                else {
+                    break;
+                };
+                let (repo, number) = (format!("{owner}/{name}"), variables[format!("n{k}")].as_u64());
+                let named = |issue: &&Issue| issue.0.eq_ignore_ascii_case(&repo) && Some(issue.1) == number;
+                let issue = self.pinned.iter().chain(&self.found).find(named).map(|issue| {
+                    let state = if self.closed.contains(&issue.1) { "CLOSED" } else { "OPEN" };
+                    node_as(*issue, "Issue", state, "2026-10-10T08:00:00Z")
+                });
+                let pull = || {
+                    self.pulls.iter().find(named).map(|pull| {
+                        let state = if self.merged.contains(&pull.1) { "MERGED" } else { "OPEN" };
+                        node_as(*pull, "PullRequest", state, "2026-10-10T08:00:00Z")
+                    })
+                };
+                let found = issue.or_else(pull);
+                if found.is_none() {
+                    errors.push(serde_json::json!({"type": "NOT_FOUND", "path": [format!("i{k}")], "message": "none"}));
+                }
+                data.insert(format!("i{k}"), serde_json::json!({ "issueOrPullRequest": found }));
+            }
+            serde_json::json!({ "data": data, "errors": errors })
         }
 
         /// Closes (`done`) or reopens the issue with the node id `id` and answers as GitHub does.
@@ -2544,13 +2625,7 @@ mod tests {
                     "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}})
                 .to_string()
             } else {
-                let data: serde_json::Map<_, _> = world
-                    .pinned
-                    .iter()
-                    .enumerate()
-                    .map(|(k, issue)| (format!("i{k}"), serde_json::json!({"issueOrPullRequest": node(*issue)})))
-                    .collect();
-                serde_json::json!({ "data": data }).to_string()
+                world.lookup(variables).to_string()
             };
             (200, Some("repo"), body)
         })
@@ -4108,5 +4183,271 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
         // The app key has nobody to ask.
         assert_eq!(code(&ask(&core, Some(&app_key), question("Bash", "ls")).await), "unsupported");
+    }
+
+    // ----- Links: GitHub issues in task lists (task G.6) ----------------------------------------
+
+    /// A pull request of the fake GitHub, linked in some tests.
+    const PULL_3: Issue = ("mahype/TorroWorkplace", 3, "Faster sync", None);
+
+    /// A core with a task list service on a fake CalDAV server ([`core_with_tasks`]) and the
+    /// GitHub account `github:mahype` on a fake GitHub with `world`, and what that GitHub is asked.
+    async fn core_with_links(
+        dir: &std::path::Path,
+        world: &Arc<std::sync::Mutex<World>>,
+    ) -> (Core, crate::pim::tests::FakeCalDav, Asked) {
+        let (url, asked) = fake_world(Arc::clone(world)).await;
+        let (core, fake) = core_with_tasks(dir).await;
+        let core = Core {
+            github: Arc::new(service(dir, &MemoryTokens::default(), &url, NO_CLI)),
+            start_control_centre: count_account_page,
+            ..core
+        };
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        (core, fake, asked)
+    }
+
+    /// A link task to `issue` in the list `list`, stored at `<list URL><name>.ics` in version
+    /// `"1"` (the version the fake CalDAV server holds), as a sync leaves it.
+    fn link_task(list: &str, name: &str, (repo, number, title, _): Issue) -> torro_pim::Todo {
+        let url = list.split_once("/http").map(|(_, rest)| format!("http{rest}")).expect("a list id");
+        torro_pim::Todo {
+            uid: name.into(),
+            collection: list.into(),
+            href: Some(format!("{url}{name}.ics")),
+            etag: Some("\"1\"".into()),
+            summary: title.into(),
+            due: Some(torro_pim::EventTime::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 20).expect("a day"))),
+            priority: Some(3),
+            completed: false,
+            parent: None,
+            description: None,
+            url: Some(format!("https://github.com/{repo}/issues/{number}")),
+            categories: Vec::new(),
+            sort_order: Some(5),
+            link: Some(torro_pim::model::Link::github(repo, number)),
+        }
+    }
+
+    /// How many times the fake GitHub was asked for items by repository and number.
+    fn lookups(asked: &Asked) -> usize {
+        asked.lock().expect("asked").iter().filter(|seen| seen.body.contains("i0: repository")).count()
+    }
+
+    /// How many requests the fake GitHub got that contain `part`.
+    fn sent(asked: &Asked, part: &str) -> usize {
+        asked.lock().expect("asked").iter().filter(|seen| seen.body.contains(part)).count()
+    }
+
+    /// The PUTs the fake CalDAV server got.
+    fn puts(fake: &crate::pim::tests::FakeCalDav) -> Vec<String> {
+        fake.lines().into_iter().filter(|line| line.starts_with("PUT ")).collect()
+    }
+
+    fn the_todo(answer: Response) -> torro_pim::Todo {
+        match answer {
+            Response::Todo { todo } => todo,
+            other => panic!("a task, got {other:?}"),
+        }
+    }
+
+    fn github_state(todo: &torro_pim::Todo) -> Option<torro_pim::model::GitHubState> {
+        todo.link.as_ref().and_then(|link| link.github.as_ref()).map(|github| github.state)
+    }
+
+    #[tokio::test]
+    async fn a_pasted_link_becomes_a_task_with_githubs_title_once_per_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let (core, fake, _) = core_with_links(dir.path(), &world).await;
+        let add = |url: &str| Request::AddLink { collection: fake.work.clone(), url: url.into() };
+
+        let added = the_todo(core.handle(add("https://github.com/mahype/TorroWorkplace/issues/1")).await);
+        assert_eq!(added.summary, "Fix the week view", "GitHub's title");
+        assert_eq!(added.collection, fake.work);
+        assert_eq!(added.url.as_deref(), Some("https://github.com/mahype/TorroWorkplace/issues/1"));
+        assert_eq!(added.link.as_ref().map(|l| l.id.as_str()), Some("github:mahype/TorroWorkplace#1"));
+        assert!(!added.completed && added.href.is_some());
+        assert_eq!(github_state(&added), Some(torro_pim::model::GitHubState::Open), "with GitHub's details");
+        assert_eq!(puts(&fake).len(), 1, "written as a new item: {:?}", fake.lines());
+        assert!(puts(&fake)[0].ends_with("If-None-Match *"));
+
+        // The same item again, in another form: the task from before, nothing written.
+        assert_eq!(the_todo(core.handle(add("mahype/TorroWorkplace#1")).await).href, added.href);
+        assert_eq!(puts(&fake).len(), 1);
+
+        assert_eq!(code(&core.handle(add("Buy oat milk")).await), "error");
+        assert_eq!(code(&core.handle(add("mahype/TorroWorkplace#99")).await), "not-found");
+        let nowhere = Request::AddLink { collection: "nextcloud:x/https://elsewhere/".into(), url: "a/b#1".into() };
+        assert_eq!(code(&core.handle(nowhere).await), "not-found");
+        assert_eq!(puts(&fake).len(), 1, "nothing else written");
+    }
+
+    #[tokio::test]
+    async fn a_link_pasted_into_a_filter_list_is_pinned_there_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world =
+            Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pinned: vec![PINNED_7], ..World::default() }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("Bugs", &["is:open repo:mahype/TorroWorkplace"])).await);
+        let pin = || Request::AddLink { collection: list.id.clone(), url: "mahype/TorroWorkplace#7".into() };
+
+        let pinned = the_todo(core.handle(pin()).await);
+        assert_eq!((pinned.uid.as_str(), pinned.collection.as_str()), ("github:mahype/TorroWorkplace#7", &*list.id));
+        assert_eq!(pinned.summary, "Release notes");
+        let source = || async {
+            let Response::Collections { collections } = core.handle(Request::TaskCollections).await else {
+                panic!("lists")
+            };
+            collections.into_iter().find(|c| c.id == list.id).and_then(|c| c.source).expect("the list")
+        };
+        let after = source().await;
+        assert_eq!((after.pinned, after.revision), (vec!["github:mahype/TorroWorkplace#7".to_string()], 2));
+        assert_eq!(todo_ids(&core, None).await, ["github:mahype/TorroWorkplace#1", "github:mahype/TorroWorkplace#7"]);
+        assert_eq!(the_todo(core.handle(pin()).await).uid, pinned.uid);
+        assert_eq!(source().await.revision, 2, "pinned once");
+    }
+
+    #[tokio::test]
+    async fn links_follow_github_in_one_call_and_keep_their_own_date_priority_and_order() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World {
+            found: vec![ISSUE_1, ISSUE_2],
+            pulls: vec![PULL_3],
+            merged: vec![3],
+            ..World::default()
+        }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        let renamed = torro_pim::Todo { summary: "Old title".into(), ..link_task(&fake.work, "one", ISSUE_1) };
+        let done_by_hand = torro_pim::Todo { completed: true, ..link_task(&fake.work, "two", ISSUE_2) };
+        let pull = link_task(&fake.home, "three", PULL_3);
+        let plain = torro_pim::Todo {
+            link: None,
+            url: None,
+            summary: "Water plants".into(),
+            ..link_task(&fake.work, "plain", ISSUE_1)
+        };
+        core.pim.cache_todos(vec![renamed.clone(), done_by_hand.clone(), pull.clone(), plain.clone()]).await;
+
+        refresh_filter_lists(&core.pim, &core.github).await;
+        assert_eq!(lookups(&asked), 1, "all three items in one call");
+        let cached = core.pim.cached_todos().await;
+        let by_uid = |uid: &str| cached.iter().find(|t| t.uid == uid).cloned().expect("cached");
+        let one = by_uid("one");
+        assert_eq!((one.summary.as_str(), one.completed), ("Fix the week view", false), "GitHub's title");
+        assert_eq!((one.due, one.priority, one.sort_order), (renamed.due, renamed.priority, renamed.sort_order));
+        assert!(by_uid("three").completed, "a merged pull request is done");
+        assert_eq!(by_uid("two"), done_by_hand, "never reopened from GitHub");
+        assert_eq!(by_uid("plain"), plain, "a task without a link is left alone");
+        let written = puts(&fake);
+        assert_eq!(written.len(), 2, "only what changed: {written:?}");
+        assert!(written.iter().all(|line| line.ends_with("If-Match \"1\"")), "with the cached etag: {written:?}");
+
+        // The details go out with the tasks.
+        let Response::Todos { todos } = core.handle(Request::Todos).await else { panic!("todos") };
+        let shown = todos.iter().find(|t| t.uid == "three").expect("shown");
+        assert_eq!(github_state(shown), Some(torro_pim::model::GitHubState::Merged));
+
+        // In step now: nothing more is written.
+        refresh_filter_lists(&core.pim, &core.github).await;
+        assert_eq!((lookups(&asked), puts(&fake).len()), (2, 2));
+    }
+
+    #[tokio::test]
+    async fn ticking_a_link_to_an_issue_closes_it_and_unticking_reopens_it_but_a_pull_request_stays() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world =
+            Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pulls: vec![PULL_3], ..World::default() }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        let issue = link_task(&fake.work, "one", ISSUE_1);
+        let pull = link_task(&fake.work, "three", PULL_3);
+        core.pim.cache_todos(vec![issue.clone(), pull.clone()]).await;
+        refresh_filter_lists(&core.pim, &core.github).await;
+
+        let ticked = the_todo(
+            core.handle(Request::SaveTodo { todo: torro_pim::Todo { completed: true, ..issue.clone() } }).await,
+        );
+        assert!(ticked.completed);
+        assert_eq!(github_state(&ticked), Some(torro_pim::model::GitHubState::Closed), "the issue is closed");
+        assert_eq!(world.lock().expect("world").closed, [1]);
+        // "Undo" (the fake CalDAV server keeps version "1"): the task and the issue open again.
+        let undo = torro_pim::Todo { completed: false, ..issue.clone() };
+        let reopened = the_todo(core.handle(Request::SaveTodo { todo: undo }).await);
+        assert_eq!((reopened.completed, github_state(&reopened)), (false, Some(torro_pim::model::GitHubState::Open)));
+        assert!(world.lock().expect("world").closed.is_empty());
+
+        let closing = sent(&asked, "closeIssue(");
+        let pull_done =
+            the_todo(core.handle(Request::SaveTodo { todo: torro_pim::Todo { completed: true, ..pull } }).await);
+        assert!(pull_done.completed, "the task is done");
+        assert_eq!(sent(&asked, "closeIssue("), closing, "a pull request is never closed");
+        assert_eq!(github_state(&pull_done), Some(torro_pim::model::GitHubState::Open));
+    }
+
+    #[tokio::test]
+    async fn a_client_links_only_its_repositories_and_closes_nothing_elsewhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, SECRET_3], ..World::default() }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        // A link a person made to a repository the client may not see, and one it may.
+        let secret = link_task(&fake.work, "secret", SECRET_3);
+        let mine = link_task(&fake.work, "mine", ISSUE_1);
+        core.pim.cache_todos(vec![secret.clone(), mine.clone()]).await;
+        refresh_filter_lists(&core.pim, &core.github).await;
+        let (_, key) = client(&core, repo_limited()).await;
+        let before = asked.lock().expect("asked").len();
+
+        let foreign = Request::AddLink { collection: fake.work.clone(), url: "mahype/secret#3".into() };
+        assert_eq!(code(&ask(&core, Some(&key), foreign).await), "not-found");
+        assert_eq!(asked.lock().expect("asked").len(), before, "GitHub hears nothing of it");
+        let smuggled = torro_pim::Todo { href: None, etag: None, uid: String::new(), ..secret.clone() };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveTodo { todo: smuggled }).await), "not-found");
+        let relinked = torro_pim::Todo { link: secret.link.clone(), ..mine.clone() };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveTodo { todo: relinked }).await), "not-found");
+        assert!(puts(&fake).is_empty(), "nothing written: {:?}", fake.lines());
+
+        // Its list shows the person's link, without what GitHub says about it.
+        let Response::Todos { todos } = ask(&core, Some(&key), Request::Todos).await else { panic!("todos") };
+        let shown = |uid: &str| todos.iter().find(|t| t.uid == uid).cloned().expect("shown");
+        assert_eq!(github_state(&shown("secret")), None);
+        assert_eq!(github_state(&shown("mine")), Some(torro_pim::model::GitHubState::Open));
+
+        // Ticking it is its task's business: the issue stays open.
+        let ticked = ask(&core, Some(&key), Request::SaveTodo { todo: torro_pim::Todo { completed: true, ..secret } });
+        assert!(the_todo(ticked.await).completed);
+        assert_eq!(sent(&asked, "closeIssue("), 0, "nothing closed on GitHub");
+        assert!(world.lock().expect("world").closed.is_empty());
+
+        // Without read access to `github` no link at all.
+        let mut blind = repo_limited();
+        blind.areas.insert(Area::Github, AreaRights { level: Level::NoAccess, admin: false });
+        let (_, blind) = client(&core, blind).await;
+        let mine_again = Request::AddLink { collection: fake.work.clone(), url: "mahype/TorroWorkplace#1".into() };
+        assert_eq!(code(&ask(&core, Some(&blind), mine_again).await), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn the_approval_of_ticking_a_link_says_close_github_issue_only_when_it_would() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let (core, fake, _) = core_with_links(dir.path(), &world).await;
+        let issue = link_task(&fake.work, "one", ISSUE_1);
+        core.pim.cache_todos(vec![issue.clone()]).await;
+        let mut careful = repo_limited();
+        careful.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, careful.clone()).await;
+        let tick =
+            || Request::SaveTodo { todo: torro_pim::Todo { completed: true, summary: "x".into(), ..issue.clone() } };
+        let asked = waits(ask(&core, Some(&key), tick()).await);
+        let args: [(&str, &dyn std::fmt::Display); 2] =
+            [("title", &"Fix the week view"), ("issue", &"mahype/TorroWorkplace#1")];
+        assert_eq!(asked.summary, trf("Close GitHub issue \"{title}\" ({issue})", &args));
+
+        // A client that may not close issues only ticks the task: the summary says that.
+        careful.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
+        let (_, reader) = client(&core, careful).await;
+        let asked = waits(ask(&core, Some(&reader), tick()).await);
+        assert!(!asked.summary.contains("GitHub"), "{}", asked.summary);
     }
 }

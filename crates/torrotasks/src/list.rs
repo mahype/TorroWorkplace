@@ -14,8 +14,9 @@
 //! - **Rows** (40, [`widgets::list_row`]): the leading symbol – a task's round check in its list's
 //!   colour (→ `ToggleDone(index)`), for an issue of a GitHub filter list its check in GitHub's
 //!   colours ([`issue_check`], task G.5: ticking closes the issue; locked with a tooltip when the
-//!   account's token may not write issues), for any other GitHub item (a pull request) its type
-//!   symbol in the colour of its state (no check) –, the priority column (only filled when set; urgent is an
+//!   account's token may not write issues), for a pull request of a filter list its type symbol
+//!   in the colour of its state (no check), for a link in a task list (issue or pull request, task
+//!   G.6) the same check as an issue of a filter list, always tickable –, the priority column (only filled when set; urgent is an
 //!   orange square with "!"), `repo#123` for GitHub items, the title on one line with "…", hints
 //!   (sub-tasks "2/4", notes), and at the right the GitHub labels (two and "+n"), checks, a review
 //!   asked for, where the item comes from (list or repository as a pill) and the due date in
@@ -80,7 +81,8 @@ pub struct ListData<'a> {
     pub read_only: bool,
     /// The GitHub filter lists by id, each with whether ticking one of its issues may close it on
     /// GitHub (task G.5, `PimAccount::may_close_issues` of its account). Their issues get the
-    /// check of [`issue_check`], locked where this is `false`; their pull requests none.
+    /// check of [`issue_check`], locked where this is `false`; their pull requests none. A GitHub
+    /// item in any other list is a link (task G.6) and gets that check, never locked.
     pub issue_lists: HashMap<String, bool>,
 }
 
@@ -731,9 +733,12 @@ fn row_view<'a>(
     if depth > 0 {
         line = line.push(Space::new().width(depth as f32 * space::XL));
     }
-    let issue = github
-        .filter(|details| details.kind == GitHubKind::Issue)
-        .and_then(|_| data.issue_lists.get(&todo.collection).copied());
+    // An issue of a filter list has its check (task G.5); a link in a task list, issue or pull
+    // request, is a task of its own and always has one (task G.6).
+    let issue = match data.issue_lists.get(&todo.collection) {
+        Some(may_close) => github.filter(|details| details.kind == GitHubKind::Issue).map(|_| *may_close),
+        None => github.map(|_| true),
+    };
     line = line
         .push(lead(todo, index, colour_of(data, &todo.collection), issue))
         .push(Space::new().width(space::M))

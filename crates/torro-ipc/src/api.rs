@@ -706,6 +706,7 @@ impl Request {
             Request::DeleteFilterList { .. } => &DELETE_FILTER_LIST,
             Request::PreviewFilter { .. } => &PREVIEW_FILTER,
             Request::UnpinIssue { .. } => &UNPIN_ISSUE,
+            Request::AddLink { .. } => &ADD_LINK,
             Request::Settings => &GET_SETTINGS,
             Request::UpdateSettings { .. } => &UPDATE_SETTINGS,
             Request::SetSetting { .. } => &SET_SETTING,
@@ -786,6 +787,7 @@ pub static CATALOGUE: &[&Command] = &[
     &DELETE_FILTER_LIST,
     &PREVIEW_FILTER,
     &UNPIN_ISSUE,
+    &ADD_LINK,
     &LIST_ACCOUNTS,
     &SYNC,
     &CONNECT_NEXTCLOUD,
@@ -978,8 +980,8 @@ static SAVE_TODO: Command = Command {
                   it to another calendar of the same account; moving to another account fails with \
                   `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
                   `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored. Marking \
-                  a GitHub issue in a filter list done closes it on GitHub (reopening reopens it); pull requests \
-                  are never closed; other fields of a GitHub match cannot be changed (`unsupported`). Closing needs \
+                  a GitHub issue in a filter list done closes it on GitHub (reopening reopens it), and so does \
+                  marking a link to an issue (from add_link) done; pull requests are never closed; other fields of a GitHub match cannot be changed (`unsupported`). Closing needs \
                   write access to `github` (else `forbidden`) and the issue's repository among a key's repositories \
                   (else `not-found`); a token that may not write issues fails with `forbidden`.",
 };
@@ -1064,6 +1066,23 @@ static UNPIN_ISSUE: Command = Command {
     description: "Takes a pinned issue or pull request (its address, `owner/repo#12` or the id from \
                   `source.pinned`) out of a GitHub filter list. It stays in the list while one of the list's \
                   searches finds it; nothing changes on GitHub.",
+};
+
+// A task command (it writes a task, or pins to a filter list), but it reads GitHub with the token:
+// the core asks a client for read access to `github` too (to pin: write access) and for the item's
+// repository among `Rights::github_repos` (task G.6).
+static ADD_LINK: Command = Command {
+    name: "tasks.add_link",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Adds a GitHub issue or pull request (its address, `owner/repo#12` or `github:owner/repo#12`) to a \
+                  task list and returns the task. In a GitHub filter list it is pinned. In a writable list it \
+                  becomes a link: a task with GitHub's title and the address, done when the item is closed or \
+                  merged; the core keeps title and state in step with GitHub, while due date, priority, order and \
+                  sub-tasks stay yours. Marking a link to an issue done with save_todo closes the issue on GitHub \
+                  (pull requests never). Adding the same item to the same list again returns the existing task. \
+                  A key limited to some repositories gets `not-found` for any other.",
 };
 
 static LIST_ACCOUNTS: Command = Command {
@@ -1556,6 +1575,7 @@ mod tests {
             Request::DeleteFilterList { collection: "github:mahype/00ff".into() },
             Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] },
             Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "mahype/TorroWorkplace#7".into() },
+            Request::AddLink { collection: "/tasks/home/".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::Settings,
             Request::UpdateSettings { settings: Settings::default() },
             Request::SetSetting { key: SettingKey::StartAtLogin, value: serde_json::Value::Bool(true) },

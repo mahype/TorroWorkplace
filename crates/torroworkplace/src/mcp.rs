@@ -387,6 +387,8 @@ const IDEMPOTENT: &[&str] = &[
     "tasks.delete_todo",
     "tasks.delete_filter_list",
     "tasks.unpin_issue",
+    // The same item added to the same list again is the task added before (task G.6).
+    "tasks.add_link",
     "accounts.sync",
     "accounts.remove_account",
     "settings.set_setting",
@@ -1031,6 +1033,11 @@ mod tests {
         let unpin =
             request_for("tasks_unpin_issue", args(json!({"collection": "github:mahype/00ff", "url": "a/b#1"})), &Utc);
         assert_eq!(unpin, Ok(Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "a/b#1".into() }));
+        let add = request_for("tasks_add_link", args(json!({"collection": "/tasks/home/", "url": "a/b#1"})), &Utc);
+        assert_eq!(add, Ok(Request::AddLink { collection: "/tasks/home/".into(), url: "a/b#1".into() }));
+        let tool = tools().iter().find(|tool| tool.name == "tasks_add_link").expect("a tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!((hints.read_only_hint, hints.idempotent_hint), (Some(false), Some(true)));
         let tool = tools().iter().find(|tool| tool.name == "tasks_delete_filter_list").expect("a tool");
         let hints = tool.annotations.clone().expect("hints");
         assert_eq!((hints.destructive_hint, hints.open_world_hint), (Some(true), None));

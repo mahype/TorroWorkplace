@@ -164,6 +164,10 @@ impl PimSource for Source {
         delegate!(self, s => s.unpin_issue(collection, item))
     }
 
+    async fn add_link(&self, collection: String, url: String) -> Result<Todo, ProviderError> {
+        delegate!(self, s => s.add_link(collection, url))
+    }
+
     async fn create_filter_list(
         &self,
         account: String,

@@ -317,7 +317,7 @@ K.21 (frei)
 - Abnahme: Tests für beide Texte (schließen/öffnen), Client-`summary` taucht nicht auf, Entzug vor Zustimmung.
 
 ### G.6 Verweise: Issues in eigene Listen holen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.2, P.2, P.3a · **Dateien:** `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torrotasks/src/{app,list,detail}.rs`
 - Link in der Schnelleingabe: in einer Filterliste → anheften; in einer schreibbaren Liste → **Verweis** (VTODO

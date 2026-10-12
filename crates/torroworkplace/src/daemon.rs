@@ -359,6 +359,7 @@ fn describe(request: &Request) -> String {
         Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),
         Request::PreviewFilter { account, .. } => format!("preview filter of {account}"),
         Request::UnpinIssue { collection, .. } => format!("unpin from {collection}"),
+        Request::AddLink { collection, .. } => format!("add link to {collection}"),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
         Request::SetSetting { key, .. } => format!("set {key:?}"),
