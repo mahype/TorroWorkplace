@@ -7,8 +7,9 @@
 //! [`Message`]s.
 //!
 //! The panel is `torro_gui::panel`: beside the list in the wide layout, over it in the medium and
-//! narrow ones (full width in narrow). Mini and strip get their glance with E3.3; until then they
-//! show the narrow layout, as the shell does for every app without a glance.
+//! narrow ones (full width in narrow). Mini and strip show the glance instead (`glance.rs`, E3.3a):
+//! the numbers of "For me" and its top entries, no chrome and no keys; the panel, menus and the
+//! drawer stay in the state and come back with a larger window.
 //!
 //! Entries are asked for on a timer ([`REFRESH`]) and after every change; the core has no
 //! `subscribe` yet (E1.2).
@@ -52,6 +53,7 @@ use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::{InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter};
 
+use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
 use crate::{detail, list};
 
@@ -522,13 +524,14 @@ impl Launch {
 /// The text of the forced error state.
 const DEMO_ERROR: &str = "The server did not answer (demo)";
 
-/// One answer of the source: the entries of a view, the counts for "For me" and "Info", the
-/// sources.
+/// One answer of the source: the entries of a view, the open entries of "For me", the count for
+/// "Info", the sources.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
     pub items: Vec<Item>,
-    /// Open entries in "For me", the number in the sidebar.
-    pub for_me: usize,
+    /// Open entries in "For me", whatever the view: their number is the one in the sidebar, the
+    /// first of them are what the glance shows (mini, strip).
+    pub for_me: Vec<Item>,
     /// Open entries in "Info", the number in the sidebar. Together with `for_me` it is what the
     /// sources count (open entries, both lanes), so the sidebar's numbers add up.
     pub info: usize,
@@ -567,7 +570,8 @@ pub struct App<S> {
     size: Size,
     view: View,
     items: Vec<Item>,
-    for_me: usize,
+    /// The open entries of "For me", waiting ones first ([`Loaded::for_me`]).
+    for_me: Vec<Item>,
     info: usize,
     sources: Vec<SourceInfo>,
     /// Whether entries have been loaded once; until then the list shows loading (or the error).
@@ -611,6 +615,9 @@ pub enum Message {
     Show(View),
     /// From the list: open the entry with this id in the panel.
     Select(String),
+    /// From the glance (mini, strip): the entry of "For me" with this id under the cursor and in
+    /// the panel of "For me", which the window shows once it is larger again.
+    OpenForMe(String),
     /// The panel's ✕, a click beside it, Escape.
     CloseDetail,
     /// From the panel: mark the entry done (`true`) or open again (`false`).
@@ -686,13 +693,13 @@ pub enum Message {
 /// `empty` (the forced empty state) asks nothing and answers an empty inbox.
 pub async fn fetch<S: InboxSource>(inbox: Arc<S>, view: View, empty: bool) -> Result<Loaded, String> {
     if empty {
-        return Ok(Loaded { items: Vec::new(), for_me: 0, info: 0, sources: Vec::new() });
+        return Ok(Loaded { items: Vec::new(), for_me: Vec::new(), info: 0, sources: Vec::new() });
     }
     let failed = |err: torro_inbox::InboxError| err.to_string();
     let items = inbox.list_items(view.filter()).await.map_err(failed)?;
     let for_me = match view {
-        View::ForMe => items.len(),
-        _ => inbox.list_items(View::ForMe.filter()).await.map_err(failed)?.len(),
+        View::ForMe => items.clone(),
+        _ => inbox.list_items(View::ForMe.filter()).await.map_err(failed)?,
     };
     let info = match view {
         View::Info => items.len(),
@@ -721,7 +728,7 @@ impl<S: InboxSource + 'static> App<S> {
                 _ => View::ForMe,
             },
             items: Vec::new(),
-            for_me: 0,
+            for_me: Vec::new(),
             info: 0,
             sources: Vec::new(),
             loaded: false,
@@ -767,12 +774,17 @@ impl<S: InboxSource + 'static> App<S> {
             iced::time::every(REFRESH).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            // Zoom keys work everywhere, the glance included.
             self.zoom.subscription().map(Message::Zoom),
-            iced::event::listen_with(keys::listen),
         ];
-        // Escape closes an open menu, drawer or the panel; nothing listens while none is open.
-        if self.menu.is_some() || self.drawer || self.detail.is_some() {
-            subscriptions.push(widgets::escape().map(|()| Message::Escape));
+        // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
+        // like `e` must not mark an entry done that nobody sees.)
+        if !self.is_glance() {
+            subscriptions.push(iced::event::listen_with(keys::listen));
+            // Escape closes an open menu, drawer or the panel; nothing listens while none is open.
+            if self.menu.is_some() || self.drawer || self.detail.is_some() {
+                subscriptions.push(widgets::escape().map(|()| Message::Escape));
+            }
         }
         if self.hint.is_some() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
@@ -820,6 +832,7 @@ impl<S: InboxSource + 'static> App<S> {
                     self.cursor = Some(id);
                 }
             }
+            Message::OpenForMe(id) => return self.open_for_me(id),
             Message::CloseDetail => self.detail = None,
             Message::SetDone(id, done) => return self.edit(Edit::Done { id, done }),
             Message::Edit(edit) => return self.edit(edit),
@@ -974,6 +987,7 @@ impl<S: InboxSource + 'static> App<S> {
         self.items = loaded.items;
         self.items.sort_by_key(|item| !list::is_waiting(item));
         self.for_me = loaded.for_me;
+        self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
         self.sources = loaded.sources;
         self.loaded = true;
@@ -995,6 +1009,21 @@ impl<S: InboxSource + 'static> App<S> {
             }
         }
         self.open_launched();
+    }
+
+    /// From the glance: the entry `id` of "For me" under the cursor and in the panel, with "For me"
+    /// as the view (loaded anew when another view was chosen). The glance highlights it; a larger
+    /// window shows it in the panel. An id no longer in "For me" does nothing.
+    fn open_for_me(&mut self, id: String) -> Task<Message> {
+        let Some(item) = self.for_me.iter().find(|item| item.id == id).cloned() else { return Task::none() };
+        self.close_menus();
+        self.cursor = Some(id);
+        self.detail = Some(item);
+        if self.view == View::ForMe {
+            return Task::none();
+        }
+        self.view = View::ForMe;
+        self.load()
     }
 
     /// The entry under the cursor, if it is in the list.
@@ -1277,10 +1306,21 @@ impl<S: InboxSource + 'static> App<S> {
         layout::of(self.size)
     }
 
-    /// The window with the zoom badge over it.
+    /// Mini or strip: a display without header, sidebar, menus, panel or keys.
+    fn is_glance(&self) -> bool {
+        matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
+    }
+
+    /// The window with the zoom badge over it; in mini and strip the glance.
     pub fn view(&self) -> Element<'_, Message> {
+        let class = self.class();
+        if self.is_glance() {
+            // The panel, menus, the drawer and the hint stay in the state and come back with a
+            // larger window.
+            return widgets::ctrl_guard(self.zoom.view(self.glance(class)));
+        }
         // Always two layers, so the window keeps its state when the hint comes and goes.
-        let window = stack![self.window(self.class()), self.hint_layer()].width(Fill).height(Fill);
+        let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
         widgets::ctrl_guard(self.zoom.view(window))
     }
 
@@ -1302,8 +1342,39 @@ impl<S: InboxSource + 'static> App<S> {
         container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL).into()
     }
 
-    /// The whole window in the layout of `class`. Mini and strip have no glance before E3.3; the
-    /// shell draws them like the narrow layout.
+    /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
+    /// "For me" (`glance.rs`).
+    fn glance(&self, class: SizeClass) -> Element<'_, Message> {
+        if let Some(unloaded) = self.unloaded() {
+            return unloaded;
+        }
+        let data = GlanceData {
+            items: &self.for_me,
+            // Only an entry open in the panel: a keyboard cursor left over from a larger window is no
+            // reason to single out a row of a display.
+            selected: self.detail.as_ref().map(|item| item.id.as_str()),
+            now: self.now,
+            error: self.error.as_ref().map(|failure| failure.what),
+        };
+        match class {
+            SizeClass::Strip => glance::strip(&data, self.size),
+            _ => glance::mini(&data, self.size),
+        }
+    }
+
+    /// Loading, or the error of the first load, until entries have come once; none afterwards.
+    fn unloaded(&self) -> Option<Element<'_, Message>> {
+        if self.loaded {
+            return None;
+        }
+        Some(match &self.error {
+            Some(failure) => failure_state(failure),
+            None => widgets::loading(),
+        })
+    }
+
+    /// The whole window in the layout of `class` (not mini or strip: [`App::view`] shows the glance
+    /// there; the arms for them only keep the matches whole).
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav) = (Anchor::new(), Anchor::new());
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
@@ -1405,11 +1476,8 @@ impl<S: InboxSource + 'static> App<S> {
     /// and a narrower list would only leave a gap). Loading and the error of a first load stand in
     /// for both.
     fn body(&self, class: SizeClass, row_anchor: &Anchor) -> Element<'_, Message> {
-        if !self.loaded {
-            return match &self.error {
-                Some(failure) => failure_state(failure),
-                None => widgets::loading(),
-            };
+        if let Some(unloaded) = self.unloaded() {
+            return unloaded;
         }
         let data = list::ListData {
             items: &self.items,
@@ -1449,7 +1517,7 @@ impl<S: InboxSource + 'static> App<S> {
         };
         let views = vec![
             // Like a badge: no "0" when nothing waits.
-            entry(View::ForMe, Some(self.for_me).filter(|&n| n > 0)),
+            entry(View::ForMe, Some(self.for_me.len()).filter(|&n| n > 0)),
             entry(View::Info, Some(self.info).filter(|&n| n > 0)),
             entry(View::Snoozed, None),
             entry(View::Done, None),
@@ -1815,7 +1883,7 @@ mod tests {
     fn for_me_shows_urgent_entries_first_and_counts_them() {
         let app = loaded(&[]);
         assert_eq!(ids(&app), ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"]);
-        assert_eq!(app.for_me, 6);
+        assert_eq!(app.for_me.len(), 6);
         assert_eq!(app.count_note(), "6", "only the number: the title already says For me");
         let groups = list::groups(&app.items);
         assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..6)], "waiting entries get a head");
@@ -1829,11 +1897,60 @@ mod tests {
         let _ = app.update(Message::Show(View::Info));
         load(&mut app);
         assert_eq!(ids(&app), ["demo-8", "demo-9", "demo-7"]);
-        assert_eq!(app.for_me, 6, "the sidebar still counts For me");
+        assert_eq!(app.for_me.len(), 6, "the sidebar still counts For me");
         assert_eq!(app.count_note(), "3");
         let _ = app.update(Message::Show(View::Source(SourceRef::suite())));
         load(&mut app);
         assert_eq!(ids(&app), ["demo-3", "demo-5"]);
+    }
+
+    #[test]
+    fn the_glance_has_for_me_in_every_view_waiting_first() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Show(View::Info));
+        load(&mut app);
+        let for_me: Vec<&str> = app.for_me.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(for_me, ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"], "not Info's entries");
+        assert_eq!(glance::waiting(&app.for_me), 3);
+    }
+
+    #[test]
+    fn mini_and_strip_show_the_glance_without_keys_or_escape() {
+        let mut app = loaded(&["--open", "detail"]);
+        assert!(app.detail.is_some());
+        let _ = app.update(Message::Resized(WIDE));
+        let wide = app.subscription().units();
+        for (size, glance) in
+            SIZES.iter().map(|&size| (size, matches!(layout::of(size), SizeClass::Mini | SizeClass::Strip)))
+        {
+            let _ = app.update(Message::Resized(size));
+            assert_eq!(app.is_glance(), glance, "{size:?}");
+            let expected = if glance { wide - 2 } else { wide };
+            assert_eq!(app.subscription().units(), expected, "no keys and no Escape in a glance: {size:?}");
+            let _ = app.view();
+        }
+        assert!(app.detail.is_some(), "the panel waits for a larger window");
+    }
+
+    #[test]
+    fn a_click_in_the_glance_opens_the_entry_in_for_me() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Show(View::Info));
+        load(&mut app);
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert!(app.update(Message::OpenForMe("demo-3".into())).units() > 0, "For me is loaded");
+        assert_eq!(app.view, View::ForMe);
+        assert_eq!(app.cursor.as_deref(), Some("demo-3"), "the glance highlights it");
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-3"));
+        load(&mut app);
+        assert_eq!(app.cursor.as_deref(), Some("demo-3"), "and keeps it once For me is in");
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-3"), "the panel shows it");
+        // Already in For me: nothing to load; an entry no longer there does nothing.
+        assert_eq!(app.update(Message::OpenForMe("demo-1".into())).units(), 0);
+        assert_eq!(app.cursor.as_deref(), Some("demo-1"));
+        let _ = app.update(Message::OpenForMe("demo-8".into()));
+        assert_eq!(app.cursor.as_deref(), Some("demo-1"), "Info's entry is not in the glance");
     }
 
     #[test]
@@ -1889,7 +2006,7 @@ mod tests {
         );
         load(&mut app);
         assert!(!ids(&app).contains(&"demo-6"));
-        assert_eq!(app.for_me, 5);
+        assert_eq!(app.for_me.len(), 5);
         assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-5"), "the row in its place");
         assert_eq!(app.cursor.as_deref(), Some("demo-5"));
         let reopened =
@@ -1953,7 +2070,7 @@ mod tests {
         let launch = Launch::default();
         let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
         load(&mut app);
-        assert!(app.loaded && app.items.is_empty() && app.for_me == 0);
+        assert!(app.loaded && app.items.is_empty() && app.for_me.is_empty());
         assert_eq!(app.nav_entries().0[0].trail(), Trail::None, "no 0 beside For me");
         assert_eq!(list::empty_text(&app.view).0, tr("Nothing for you right now."));
         let _ = app.view();

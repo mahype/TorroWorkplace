@@ -13,6 +13,7 @@
 mod app;
 mod detail;
 mod empty;
+mod glance;
 mod keys;
 mod list;
 
