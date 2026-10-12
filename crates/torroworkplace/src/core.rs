@@ -811,7 +811,11 @@ impl Core {
                 let api = link_api(&self.github).await;
                 self.pim.save_link_todo(todo, api.as_ref(), reach).await
             }
+            // A client never reaches `connect_caldav`: `Rights::allows` refuses every command kept
+            // from agents (`docs/api.md`, "Was nie nach außen geht", 5).
             pim @ (Request::ConnectNextcloud { .. }
+            | Request::DiscoverServices { .. }
+            | Request::ConnectCalDav { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
             | Request::Events { .. }
@@ -1851,6 +1855,54 @@ mod tests {
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
         let app_key = crate::clients::tests::app_key(dir.path());
         assert_eq!(ask(&core, Some(&app_key), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
+    }
+
+    /// Task M7.1: a client key never signs in with a password, not even with the admin switch of
+    /// every area, and is never asked to wait for an approval; it may search for a provider's
+    /// service. Neither the password nor the address reaches the audit log or `approvals.json`.
+    #[tokio::test]
+    async fn only_the_app_key_signs_in_to_caldav_and_clients_may_search() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, rights).await;
+        // A server on the loopback interface that nobody listens at: no test reaches the network.
+        let connect = Request::ConnectCalDav {
+            address: "anna.secret@mailbox.org".into(),
+            server: Some("http://127.0.0.1:1/".into()),
+            login_name: "anna.secret@mailbox.org".into(),
+            password: torro_ipc::Secret::new("hunter2-CORE"),
+            calendars: true,
+            tasks: true,
+        };
+        let refused = ask(&core, Some(&key), connect.clone()).await;
+        assert_eq!(code(&refused), "forbidden");
+        assert!(!format!("{refused:?}").contains("hunter2"));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+
+        let discover = Request::DiscoverServices { address: "anna.secret@gmail.com".into() };
+        let Response::Discovery { provider, urls, unsupported } = ask(&core, Some(&key), discover).await else {
+            panic!("a client may search")
+        };
+        assert_eq!((provider.as_str(), urls.len(), unsupported.is_some()), ("Gmail", 0, true));
+        let nowhere = Request::DiscoverServices { address: "anna@127.0.0.1".into() };
+        assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "error");
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["hunter2", "anna", "secret", "gmail", "mailbox", "127.0.0.1"] {
+            assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
+        }
+        let commands: Vec<String> = audit_lines(dir.path()).into_iter().map(|line| line.command).collect();
+        assert_eq!(commands, ["accounts.connect_caldav", "accounts.discover_services", "accounts.discover_services"]);
+        // The app key gets to the sign-in itself; nobody answers there.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let answer = ask(&core, Some(&app_key), connect).await;
+        assert!(!format!("{answer:?}").contains("hunter2"), "{answer:?}");
+        assert_eq!(code(&answer), "offline");
     }
 
     #[tokio::test]

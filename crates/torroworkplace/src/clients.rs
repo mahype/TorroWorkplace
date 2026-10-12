@@ -1125,6 +1125,29 @@ pub(crate) mod tests {
         }
     }
 
+    /// Task M7.1, rule 5 of "Was nie nach außen geht": a script key with the admin switch of every
+    /// area still cannot hand the core a CalDAV password; the app key can.
+    #[tokio::test]
+    async fn no_client_key_signs_in_with_a_password() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let full = everywhere(Level::Full, true);
+        let (_, key) = clients.add("Backup", "script", full.clone()).await.expect("added");
+        let sign_in = Request::ConnectCalDav {
+            address: "anna@mailbox.org".into(),
+            server: None,
+            login_name: "anna@mailbox.org".into(),
+            password: torro_ipc::Secret::new("hunter2"),
+            calendars: true,
+            tasks: true,
+        };
+        let refused = clients.admit(Some(&key), &sign_in);
+        assert_eq!(refused, Err(Refused::Forbidden { command: "accounts.connect_caldav" }));
+        assert_eq!(clients.admit(Some(&app_key(dir.path())), &sign_in), Ok(Caller::App));
+        let search = Request::DiscoverServices { address: "anna@mailbox.org".into() };
+        assert!(clients.admit(Some(&key), &search).is_ok());
+    }
+
     #[tokio::test]
     async fn a_client_key_runs_what_its_rights_allow() {
         let dir = tempfile::tempdir().expect("temp dir");

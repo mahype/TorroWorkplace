@@ -49,6 +49,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
+use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 
@@ -1360,10 +1361,18 @@ impl App {
         }
     }
 
-    /// The ids of the visible event calendars in the order of the sidebar: the radar's rings.
-    fn calendar_order(&self) -> Vec<String> {
+    /// The visible event calendars in the order of the sidebar, with their names, colours and the
+    /// hosts of their accounts: the radar's rings.
+    fn calendar_order(&self) -> Vec<views::radar::Ring> {
         let visible = self.calendars().into_iter().filter(|(calendar, _, _)| !self.hidden.contains(&calendar.id));
-        visible.map(|(calendar, _, _)| calendar.id.clone()).collect()
+        visible
+            .map(|(calendar, colour, _)| views::radar::Ring {
+                id: calendar.id.clone(),
+                name: calendar.name.clone(),
+                host: account_of(&calendar.id, &self.accounts, |a| a.id.as_str()).map(|a| a.host().to_string()),
+                colour,
+            })
+            .collect()
     }
 
     /// Where the radar's window starts: the start of the anchor's day turned by [`App::turn`].
@@ -1790,6 +1799,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_radar_gets_the_visible_calendars_with_name_colour_and_host() {
+        let mut app = launched(&["--demo"]);
+        let rings = app.calendar_order();
+        let named: Vec<(&str, Option<&str>)> = rings.iter().map(|r| (r.name.as_str(), r.host.as_deref())).collect();
+        assert_eq!(
+            named,
+            [
+                ("Work", Some("work.example.org")),
+                ("Personal", Some("home.example.org")),
+                ("Family", Some("home.example.org"))
+            ]
+        );
+        let work = app.collections.iter().find(|c| c.id == rings[0].id).expect("work");
+        assert_eq!(rings[0].colour, collection_color(work.color.as_deref()));
+        // A hidden calendar has no ring.
+        let _ = app.update(Message::ToggleCollection(rings[1].id.clone()));
+        let names: Vec<String> = app.calendar_order().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["Work", "Family"]);
     }
 
     #[test]

@@ -426,6 +426,9 @@ fn describe(request: &Request) -> String {
         Request::ConnectGithub => "connect github".into(),
         // Never the token.
         Request::SetGithubToken { .. } => "set github token".into(),
+        // Never the address or the password (task M7.1).
+        Request::DiscoverServices { .. } => "discover services".into(),
+        Request::ConnectCalDav { .. } => "connect caldav".into(),
         Request::Sync => "sync".into(),
         Request::CalendarCollections => "calendars".into(),
         Request::TaskCollections => "task lists".into(),

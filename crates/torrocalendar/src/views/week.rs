@@ -6,7 +6,9 @@
 //! 0–24 down the time axis (scrolled so 07:00 is on top). Timed events are tinted blocks with a
 //! bar in their calendar colour (overlapping ones side by side); past ones are faded; gaps of two
 //! hours or more between the events of today and the days to come say "2 h free"; a red line
-//! with its time in the axis marks now. Weekends are set off a little.
+//! with its time in the axis marks now. Weekends are set off a little; in the week, today's
+//! column (header, all-day strip and hours) is washed with a trace of the accent, so the eye
+//! finds it at once.
 //!
 //! Click on an empty slot → `NewEvent { date, time }` (time rounded down to the half hour), on
 //! an all-day row cell → `NewEvent { date, time: None }`, on an event → `OpenEvent(index)`. The
@@ -70,6 +72,11 @@ const MIN_TITLE_LETTERS: usize = 4;
 const PAST_OPACITY: f32 = 0.55;
 /// Weekend columns get this much of the window background over the panel (`.daycols > .weekend`).
 const WEEKEND_SHADE: f32 = 0.35;
+/// Today's column in the week gets this much of the accent over its ground: enough to find it at
+/// a glance, too little to compete with the events or the red of the day circle and now line.
+/// Red shows far less on the near-black panel than on white, so dark mode takes more of it.
+const TODAY_WASH_DARK: f32 = 0.10;
+const TODAY_WASH_LIGHT: f32 = 0.05;
 /// Gaps between events this long or longer show "2 h free" (minutes).
 pub(super) const FREE_MINUTES: f32 = 120.0;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, white on red
@@ -275,6 +282,23 @@ impl Plan {
         self.days.iter().position(|day| *day == self.now.date())
     }
 
+    /// Whether `column` is today in a view of several days: the column that is set off. The day
+    /// view has nothing to set it off from.
+    fn is_marked_today(&self, column: usize) -> bool {
+        self.days.len() > 1 && self.today_column() == Some(column)
+    }
+
+    /// The ground of the day column `column` in the grid: the panel, a little darker (lighter)
+    /// at the weekend, with the accent wash ([`today_wash`]) on today in the week.
+    fn ground(&self, theme: &Theme, column: usize) -> Color {
+        let p = palette(theme);
+        let base = match self.days.get(column) {
+            Some(day) if is_weekend(*day) => mix(p.panel, p.bg, WEEKEND_SHADE),
+            _ => p.panel,
+        };
+        if self.is_marked_today(column) { today_wash(theme, base) } else { base }
+    }
+
     /// The free gaps of `column` worth a note: today from now on, days to come in full, none
     /// on days gone by.
     fn free_gaps(&self, column: usize) -> Vec<(f32, f32)> {
@@ -315,6 +339,12 @@ pub(super) fn title(event: &CalendarEvent) -> String {
     if summary.is_empty() { tr(UNTITLED).to_string() } else { summary.to_string() }
 }
 
+/// `ground` with the trace of the accent that sets today's column off in the week.
+fn today_wash(theme: &Theme, ground: Color) -> Color {
+    let share = if theme.extended_palette().is_dark { TODAY_WASH_DARK } else { TODAY_WASH_LIGHT };
+    mix(ground, palette(theme).accent, share)
+}
+
 fn is_weekend(day: NaiveDate) -> bool {
     matches!(day.weekday(), Weekday::Sat | Weekday::Sun)
 }
@@ -335,13 +365,16 @@ pub(super) fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor
 }
 
 /// Day header (`.dayhead`): "Mon 5" per column, the weekday in `text_3`, the number in `text_2`
-/// (weekends `text_3`); today's weekday in `text` and its number white in a red circle.
+/// (weekends `text_3`); today's weekday in `text` and its number white in a red circle. With
+/// several days, today's cell also gets the column's accent wash, so the band runs from the header
+/// down through the hours.
 ///
 /// With the narrow axis the columns are too slim for both side by side, so the weekday goes
 /// above its number, as in the mock-up's week strip (`.strip`).
 fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, Message> {
     let stacked = axis < size::AXIS;
     let mut header = row![Space::new().width(Length::Fixed(axis))];
+    let several = days.len() > 1;
     for &day in days {
         let is_today = day == today;
         let name =
@@ -363,12 +396,17 @@ fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, M
         } else {
             row![name, number].spacing(space::XS).align_y(Vertical::Center).into()
         };
+        let marked = several && is_today;
         header = header.push(
             container(label)
                 .width(Length::FillPortion(1))
                 .height(size::HEADER)
                 .align_x(Horizontal::Center)
-                .align_y(Vertical::Center),
+                .align_y(Vertical::Center)
+                .style(move |t| container::Style {
+                    background: marked.then(|| Background::Color(today_wash(t, palette(t).panel))),
+                    ..container::Style::default()
+                }),
         );
     }
     header.into()
@@ -498,6 +536,10 @@ impl canvas::Program<Message> for Strip {
         // "Ganztägig", and a strip of chips between the day header and the hours explains itself
         // (the narrow mock-up leaves it out as well).
         fill(&mut frame, Rectangle::new(Point::ORIGIN, bounds.size()), p.panel);
+        if let Some(column) = plan.today_column().filter(|&column| plan.is_marked_today(column)) {
+            let x = x0 + column as f32 * col_w;
+            fill(&mut frame, Rectangle::new(Point::new(x, 0.0), Size::new(col_w, height)), today_wash(theme, p.panel));
+        }
         for column in 0..count {
             let x = x0 + column as f32 * col_w;
             line(&mut frame, Point::new(x, 0.0), Point::new(x, height), p.line);
@@ -572,20 +614,17 @@ impl canvas::Program<Message> for Grid {
         let width = bounds.width;
         let (x0, col_w) = layout::columns(width, count);
         let column_x = |column: usize| x0 + column as f32 * col_w;
-        let weekend = mix(p.panel, p.bg, WEEKEND_SHADE);
-        let under = |column: usize| match plan.days.get(column) {
-            Some(day) if is_weekend(*day) => weekend,
-            _ => p.panel,
-        };
+        let under = |column: usize| plan.ground(theme, column);
         let now_y = plan.today_column().map(|_| layout::y_of(plan.now.time()));
 
         fill(&mut frame, Rectangle::new(Point::ORIGIN, Size::new(width, GRID_HEIGHT)), p.panel);
         for column in 0..count {
-            if under(column) != p.panel {
+            let ground = under(column);
+            if ground != p.panel {
                 fill(
                     &mut frame,
                     Rectangle::new(Point::new(column_x(column), 0.0), Size::new(col_w, GRID_HEIGHT)),
-                    weekend,
+                    ground,
                 );
             }
         }
@@ -949,6 +988,46 @@ mod tests {
             selected: None,
         };
         assert_eq!(Plan::new(&data).empty_note(), None);
+    }
+
+    #[test]
+    fn only_today_in_the_week_is_washed() {
+        let plan = |start: NaiveDate, days: i64, now: NaiveDateTime| {
+            let data = ViewData {
+                items: Vec::new(),
+                start,
+                end: start + Duration::days(days),
+                anchor: start,
+                now,
+                selected: None,
+            };
+            Plan::new(&data)
+        };
+        let dark = theme::theme();
+        let (t, p) = (&dark, Palette::dark());
+        let monday = at(5, 0, 0).date();
+        // Wednesday 7 October: the third column, washed; the weekend keeps its shade.
+        let week = plan(monday, 7, at(7, 14, 20));
+        let washed: Vec<bool> = (0..7).map(|column| week.is_marked_today(column)).collect();
+        assert_eq!(washed, [false, false, true, false, false, false, false]);
+        assert_eq!(week.ground(t, 2), today_wash(t, p.panel));
+        assert_ne!(week.ground(t, 2), p.panel);
+        assert_eq!(week.ground(t, 1), p.panel);
+        assert_eq!(week.ground(t, 5), mix(p.panel, p.bg, WEEKEND_SHADE));
+        // Today on a Sunday: the wash over the weekend shade.
+        let sunday = plan(monday, 7, at(11, 9, 0));
+        assert_eq!(sunday.ground(t, 6), today_wash(t, mix(p.panel, p.bg, WEEKEND_SHADE)));
+        // Another week, and the day view of today: nothing to set off.
+        let next = plan(monday + Duration::days(7), 7, at(7, 14, 20));
+        assert!((0..7).all(|column| !next.is_marked_today(column)));
+        let day = plan(at(7, 0, 0).date(), 1, at(7, 14, 20));
+        assert!(!day.is_marked_today(0));
+        assert_eq!(day.ground(t, 0), p.panel);
+        // Light mode washes too, more gently.
+        let light = theme::light();
+        let white = Palette::light().panel;
+        assert_ne!(week.ground(&light, 2), white);
+        assert_eq!(week.ground(&light, 1), white);
     }
 
     #[test]

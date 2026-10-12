@@ -490,7 +490,7 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
 
 ### K.29 Radar: kräftige Termine mit Titel, Zeiger, Tooltip, Kalendernamen und Mond
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.28, K.30, K.31 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
   `crates/torrocalendar/src/views/radar/layout.rs`, `crates/torrocalendar/src/views/radar/mini.rs`
   (nur die Farbe der Bögen), `crates/torrocalendar/src/app.rs` (nur die Kalendernamen an das Radar)
@@ -538,6 +538,16 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   (Verzögerung, Wechsel des Termins, Verschwinden beim Drücken), Lage am Rand, Kalendername je Ring
   (Lage vor der Kante, gekürzt, nur Punkt bei schmaler Bahn, Tooltip auf leerer Spur); fmt, clippy, test
   (auch `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
+- **Umgesetzt (abweichend):** Füllung in zwei Konstanten `mini::FILL_LIGHT` 0,45 und `FILL_DARK` 0,50
+  (mehr lässt im Dunkeln mittelhelle Farben wie `#7FB2FF` und das Standard-Orange für keine
+  Schriftfarbe 4,5:1); Spur 10 % in der Kalenderfarbe (`TRACK_TINT`), Zeit = Titelfarbe zu 90 % über
+  der Füllung. Text im Bogen beginnt 4 statt 6 hinter dem Balken, `TEXT_MIN` 20, `MIN_TITLE_LETTERS` 3.
+  Der Tooltip liegt auf einem zweiten `Canvas` über der Mitte (Iced zeichnet Text eines Canvas über alle
+  seine Flächen; auf dem Zifferblatt schienen Ziffern durch die Karte); diese obere Ebene nimmt alle
+  Eingaben und lässt den Zeiger in der Mitte zum Knopf „Back to now“ durch. Der Host steht bei
+  gleichnamigen Kalendern im Ring und im Tooltip, sonst nirgends. Pointer: auf macOS über Terminen
+  sichtbar, Ursache beim Nutzer nicht nachgestellt; abgesichert gegen einen hängenden Druck nach
+  Fokusverlust (Bericht). In Mittel tragen überlappende Termine (Bahn < 16) weiter keinen Titel.
 
 ### K.30 Radar: Mini-Radare der nächsten Tage
 - [x] erledigt
@@ -589,6 +599,20 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
 - **API / MCP:** keiner – Anzeige; `label` geht unverändert über `PimAccounts`.
 - **Abnahme:** Tests: `host` (mit `@`, mehrere `@`, ohne, leer), Gruppentitel in beiden Apps mit
   zwei Hosts und mit gleichem Host; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+### K.32 Woche: heutige Spalte hervorheben
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/torrocalendar/src/views/week.rs`
+- Wunsch des Nutzers (2026-10-12): In der Woche soll man sofort sehen, wo heute ist – nicht nur am
+  roten Kreis im Kopf.
+- **Oberfläche:** Mit mehreren Tagen bekommt die Spalte von heute einen Hauch Torro-Rot über ihrem
+  Grund (dunkel 10 %, hell 5 %): im Tageskopf, in der Ganztagsleiste und im Stundenraster, als
+  durchgehendes Band. Fällt heute aufs Wochenende, liegt der Hauch über der Wochenendtönung. Die
+  Tagesansicht (eine Spalte) bleibt ohne. Rot bleibt „Heute“ (Design-Skill, Abschnitt 1).
+- **API / MCP:** keiner – Darstellung.
+- **Abnahme:** Test, welche Spalte getönt wird (Woche mit heute, Wochenende, andere Woche,
+  Tagesansicht, hell und dunkel); fmt, clippy, test (auch `TORRO_LANG=de`) grün; Screenshot Breit
+  hell/dunkel.
 
 ### Spur Kern (Nextcloud)
 

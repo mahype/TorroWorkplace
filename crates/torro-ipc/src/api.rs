@@ -689,6 +689,8 @@ impl Request {
             Request::ConnectNextcloud { .. } => &CONNECT_NEXTCLOUD,
             Request::ConnectGithub => &CONNECT_GITHUB,
             Request::SetGithubToken { .. } => &SET_GITHUB_TOKEN,
+            Request::DiscoverServices { .. } => &DISCOVER_SERVICES,
+            Request::ConnectCalDav { .. } => &CONNECT_CALDAV,
             Request::Sync => &SYNC,
             Request::Accounts => &LIST_ACCOUNTS,
             Request::RemoveAccount { .. } => &REMOVE_ACCOUNT,
@@ -793,6 +795,8 @@ pub static CATALOGUE: &[&Command] = &[
     &CONNECT_NEXTCLOUD,
     &CONNECT_GITHUB,
     &SET_GITHUB_TOKEN,
+    &DISCOVER_SERVICES,
+    &CONNECT_CALDAV,
     &REMOVE_ACCOUNT,
     &GET_SETTINGS,
     &SET_SETTING,
@@ -1096,10 +1100,10 @@ static LIST_ACCOUNTS: Command = Command {
     area: Area::Accounts,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists every connected account (Nextcloud, GitHub) with its id, state (connected, signing in, \
-                  last sync, problem) and its calendars and task lists, whose ids start with the account id; for \
-                  GitHub accounts also the scopes of their token. Passwords and tokens are never part of the \
-                  answer.",
+    description: "Lists every connected account (Nextcloud, CalDAV, GitHub) with its id, kind, state (connected, \
+                  signing in, last sync, problem) and its calendars and task lists, whose ids start with the account \
+                  id; for GitHub accounts also the scopes of their token. Passwords and tokens are never part of \
+                  the answer.",
 };
 
 static SYNC: Command = Command {
@@ -1109,9 +1113,10 @@ static SYNC: Command = Command {
     mcp: Mcp::Tool,
     description: "Fetches calendars, events and tasks from the servers of all accounts now instead of at the next \
                   automatic sync, which runs every five minutes, checks the tokens of the GitHub accounts again and \
-                  fetches their filter lists anew. An account that fails keeps its cached data; the others are synced anyway. If a Nextcloud \
-                  refuses the sign-in and has marked this device for a remote wipe, that account and its cached \
-                  data are removed from this device.",
+                  fetches their filter lists anew. An account that fails keeps its cached data and shows its \
+                  problem (a refused password: \"Password was refused\"); the others are synced anyway. Only for \
+                  Nextcloud accounts: if the server refuses the sign-in and has marked this device for a remote \
+                  wipe, that account and its cached data are removed from this device.",
 };
 
 static CONNECT_NEXTCLOUD: Command = Command {
@@ -1148,14 +1153,42 @@ static SET_GITHUB_TOKEN: Command = Command {
                   token. Only the app key may use it.",
 };
 
+// Read access: it signs in nowhere and only names addresses. The core searches the domain alone,
+// never the part before `@`, and never contacts private networks (`torro_pim_caldav::discover`).
+static DISCOVER_SERVICES: Command = Command {
+    name: "accounts.discover_services",
+    area: Area::Accounts,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Finds the calendar and task service (CalDAV) of a mail provider from an e-mail address or a \
+                  domain, without signing in: only the domain is looked up (DNS SRV, its well-known address, a \
+                  table of known providers). Returns the provider's name and the addresses to sign in at, none when \
+                  nothing was found, or `unsupported` with the reason (Gmail, Outlook.com). Signing in needs the \
+                  password, which only a person enters in Torro Workplace.",
+};
+
+// Never an MCP tool, and for the app key only: it hands the core a password (`docs/api.md`, "Was
+// nie nach außen geht", 5). An agent never takes a password in and passes it on.
+static CONNECT_CALDAV: Command = Command {
+    name: "accounts.connect_caldav",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Signs in to the CalDAV account of a mail provider or another CalDAV server with the password a \
+                  person typed in the control centre: checks it with the server, keeps it in the system keychain, \
+                  adds the account, hides the services not chosen and syncs it. Returns the account and which \
+                  services the server has, never the password. Only the app key may use it.",
+};
+
 static REMOVE_ACCOUNT: Command = Command {
     name: "accounts.remove_account",
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Tool,
-    description: "Removes one account (id from list_accounts) from this device: revokes its app password on the \
-                  server where possible (Nextcloud) and deletes its stored secret and its cached calendars and \
-                  tasks. Other accounts stay. An unknown id fails with `not-found`.",
+    description: "Removes one account (id from list_accounts) from this device: deletes its stored secret and its \
+                  cached calendars and tasks; for a Nextcloud account it also revokes the app password on the \
+                  server where possible (other kinds have none to revoke). Other accounts stay. An unknown id \
+                  fails with `not-found`.",
 };
 
 static GET_SETTINGS: Command = Command {
@@ -1553,6 +1586,15 @@ mod tests {
             Request::ConnectNextcloud { server: "cloud.example.test".into() },
             Request::ConnectGithub,
             Request::SetGithubToken { token: crate::Secret::new("ghp_example") },
+            Request::DiscoverServices { address: "anna@mailbox.org".into() },
+            Request::ConnectCalDav {
+                address: "anna@mailbox.org".into(),
+                server: Some("https://dav.mailbox.org/".into()),
+                login_name: "anna@mailbox.org".into(),
+                password: crate::Secret::new("example"),
+                calendars: true,
+                tasks: true,
+            },
             Request::Sync,
             Request::Accounts,
             Request::RemoveAccount { id: "nextcloud:anna@cloud.example.test".into() },
@@ -1710,9 +1752,15 @@ mod tests {
             assert!(command.tool_name().len() <= 64, "{}", command.name);
             assert!(!command.description.is_empty() && command.description.ends_with('.'), "{}", command.name);
             // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals, quitting the
-            // service and taking secrets in are kept from agents.
+            // service and taking secrets in (point 5: a token, a password) are kept from agents.
             let kept_back = command.area == Area::Clients
-                || matches!(command.name, "system.quit" | "accounts.set_github_token" | "approvals.decide_approval");
+                || matches!(
+                    command.name,
+                    "system.quit"
+                        | "accounts.set_github_token"
+                        | "accounts.connect_caldav"
+                        | "approvals.decide_approval"
+                );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
             if command.area == Area::Clients {
@@ -1868,6 +1916,46 @@ mod tests {
         assert!(!rights.allows(token.operation()));
         assert!(rights.allows(Request::ConnectGithub.operation()), "asking a person to connect is an admin command");
         assert_eq!(Request::ConnectGithub.operation().access, Access::Admin);
+    }
+
+    #[test]
+    fn only_the_app_key_may_sign_in_with_a_password_and_anyone_reading_accounts_may_search() {
+        // Not even full access with the admin switch of every area opens it: the password is a
+        // secret (rule 5 of "Was nie nach außen geht").
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let connect = Request::ConnectCalDav {
+            address: "anna@mailbox.org".into(),
+            server: None,
+            login_name: "anna".into(),
+            password: crate::Secret::new("example"),
+            calendars: true,
+            tasks: true,
+        };
+        assert!(!rights.allows(connect.operation()));
+        assert_eq!(connect.operation().command.mcp, Mcp::Never);
+        assert_eq!(connect.operation().access, Access::Admin);
+
+        let discover = Request::DiscoverServices { address: "anna@mailbox.org".into() };
+        assert_eq!((discover.operation().area(), discover.operation().access), (Area::Accounts, Access::Read));
+        assert!(RightsTemplate::ReadOnly.rights().allows(discover.operation()));
+        let mut none = RightsTemplate::ReadOnly.rights();
+        none.areas.remove(&Area::Accounts);
+        assert!(!none.allows(discover.operation()));
+    }
+
+    #[test]
+    fn the_caldav_password_is_a_write_only_string_in_the_schema() {
+        let schema = CONNECT_CALDAV.input_schema().expect("schema");
+        let password = schema.as_value().pointer("/properties/password").expect("password is a field");
+        assert_eq!(password.get("type"), Some(&serde_json::json!("string")));
+        assert_eq!(password.get("writeOnly"), Some(&serde_json::json!(true)));
+        let required = schema.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+        assert!(!required.contains(&serde_json::json!("server")), "{required:?}");
+        let schema = DISCOVER_SERVICES.input_schema().expect("schema");
+        assert_eq!(schema.get("required"), Some(&serde_json::json!(["address"])));
     }
 
     #[test]

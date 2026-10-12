@@ -381,10 +381,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{span} left", "noch {span}"),
     ("Back to now", "Zurück zu jetzt"),
     ("Collapse night", "Nacht einklappen"),
-    ("Fading out, until {time}", "Blendet aus, bis {time}"),
-    ("Free for {span}", "Frei für {span}"),
-    ("Next {n} hours", "Nächste {n} Stunden"),
-    ("Next {time} · {title}", "Als Nächstes {time} · {title}"),
     ("Nights", "Nächte"),
     ("Nothing planned", "Nichts geplant"),
     ("Radar", "Radar"),
@@ -393,9 +389,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{h} h {m}", "{h} h {m}"),
     ("{n} d", "{n} Tg."),
     ("{weekday} {day}", "{weekday} {day}."),
-    ("Free until {date} at {time}", "Frei bis {date} um {time}"),
-    ("Free until tomorrow {time}", "Frei bis morgen {time}"),
     ("This week", "Diese Woche"),
+    // Calendar: mini radars (K.30)
+    ("Coming days", "Nächste Tage"),
     // Calendar: the night (K.27)
     ("Double-click to set the night", "Doppelklick legt die Nacht fest"),
     ("From", "Von"),
@@ -1265,4 +1261,24 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Added to {list}", "Zu „{list}“ hinzugefügt"),
     ("Drag to a list", "Auf eine Liste ziehen"),
     ("Moved to {list}", "Nach „{list}“ verschoben"),
+    // CalDAV accounts with service discovery (M7.1)
+    ("Enter an e-mail address or a domain name.", "Gib eine E-Mail-Adresse oder einen Domainnamen ein."),
+    ("Enter the password.", "Gib das Passwort ein."),
+    ("Enter the server as an https address.", "Gib den Server als https-Adresse ein."),
+    ("Enter the user name; it cannot contain \"/\".", "Gib den Benutzernamen ein; er darf kein „/“ enthalten."),
+    (
+        "Google calendars need a sign-in through Google, which Torro Workplace does not support yet.",
+        "Google-Kalender brauchen eine Anmeldung über Google, die Torro Workplace noch nicht unterstützt.",
+    ),
+    ("No calendar service answers at this address.", "Unter dieser Adresse antwortet kein Kalenderdienst."),
+    (
+        "No calendar service was found for this address. Enter the server address.",
+        "Für diese Adresse wurde kein Kalenderdienst gefunden. Gib die Serveradresse ein.",
+    ),
+    (
+        "Outlook.com and Microsoft 365 offer no CalDAV, so Torro Workplace cannot show their calendars.",
+        "Outlook.com und Microsoft 365 bieten kein CalDAV, deshalb kann Torro Workplace ihre Kalender nicht zeigen.",
+    ),
+    ("Password was refused", "Passwort wurde abgelehnt"),
+    ("The server cannot be reached.", "Der Server ist nicht erreichbar."),
 ];
