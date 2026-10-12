@@ -184,9 +184,9 @@ impl CalDavClient {
     /// random ones, so no two lists ever share an address. An address that is taken (`405`, `409`)
     /// is left alone and the next suffix tried; when all are taken, [`ProviderError::Other`].
     ///
-    /// [`ProviderError::Auth`] when the server refuses the password (`401`, `403`),
+    /// [`ProviderError::Auth`] only when the server refuses the password (`401`; [`made`]),
     /// [`ProviderError::Offline`] when it cannot be reached, [`ProviderError::Other`] for every
-    /// other refusal (`507` and the like) and an answer without principal or calendar home.
+    /// other refusal (`403`, `507` and the like) and an answer without principal or calendar home.
     pub async fn create_task_list(
         &self,
         name: &str,
@@ -390,11 +390,20 @@ enum Made {
     Taken,
 }
 
+/// What an `MKCALENDAR` refused with `403` tells (task G.9b).
+pub const NO_NEW_LISTS_HERE: &str = "the server does not allow new task lists here (HTTP 403)";
+
 /// The outcome of an `MKCALENDAR` to `url` from its answer's `status`.
+///
+/// Only `401` is [`ProviderError::Auth`]: a `403` here means the user may not create a collection
+/// at this place (a quota, an admin's policy), while the app password itself still works. As
+/// `Auth` it would start the remote wipe check and tell the user to sign in again (task G.9b).
 fn made(status: StatusCode, url: &Url) -> Result<Made, ProviderError> {
     match status {
         status if status.is_success() => Ok(Made::Created),
         StatusCode::METHOD_NOT_ALLOWED | StatusCode::CONFLICT => Ok(Made::Taken),
+        StatusCode::UNAUTHORIZED => Err(ProviderError::Auth),
+        StatusCode::FORBIDDEN => Err(ProviderError::Other(NO_NEW_LISTS_HERE.into())),
         status => Err(status_error(status, "", url)),
     }
 }
@@ -1732,7 +1741,8 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         assert_eq!(made(StatusCode::METHOD_NOT_ALLOWED, &url), Ok(Made::Taken));
         assert_eq!(made(StatusCode::CONFLICT, &url), Ok(Made::Taken));
         assert_eq!(made(StatusCode::UNAUTHORIZED, &url), Err(ProviderError::Auth));
-        assert_eq!(made(StatusCode::FORBIDDEN, &url), Err(ProviderError::Auth));
+        // The app password works, the place does not take a new list: no sign-in problem.
+        assert_eq!(made(StatusCode::FORBIDDEN, &url), Err(ProviderError::Other(NO_NEW_LISTS_HERE.into())));
         let full = made(StatusCode::INSUFFICIENT_STORAGE, &url);
         assert!(matches!(&full, Err(ProviderError::Other(message)) if message.contains("507")), "{full:?}");
     }

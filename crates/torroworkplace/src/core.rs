@@ -440,8 +440,8 @@ impl Core {
             return Ok(refused);
         }
         let reach = Reach::Client(&rights);
-        if let Some(collection) = self.out_of_reach(reach, &request).await {
-            return Ok(no_collection(&collection));
+        if let Some(outside) = self.out_of_reach(reach, &request).await {
+            return Ok(not_reached(&request, &outside));
         }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
         // to `github` as well, refused before a person is asked to approve it. The handler checks
@@ -694,8 +694,8 @@ impl Core {
             return self.inbox_request(request, Some(&info), pin).await;
         }
         let reach = Reach::Client(rights);
-        if let Some(collection) = self.out_of_reach(reach, &request).await {
-            return no_collection(&collection);
+        if let Some(outside) = self.out_of_reach(reach, &request).await {
+            return not_reached(&request, &outside);
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -1395,6 +1395,16 @@ fn version() -> String {
 /// does not exist.
 fn no_collection(collection: &str) -> Response {
     Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") }
+}
+
+/// The answer for `request`, which would reach `outside` ([`Core::out_of_reach`]) beyond what the
+/// client may: the very answer of something that does not exist – for a repository the handler's
+/// `no repository …` (task G.9b), for anything else [`no_collection`].
+fn not_reached(request: &Request, outside: &str) -> Response {
+    match request {
+        Request::DescribeGithubRepo { .. } => crate::pim::no_repo(outside),
+        _ => no_collection(outside),
+    }
 }
 
 /// The task list a `list_order` value names; `None` for a value that does not fit, which the
@@ -3111,6 +3121,15 @@ mod tests {
         let core = core_with_github(dir, &MemoryTokens::default(), &url);
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
         assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        // Connecting refreshes the account's filter lists in the background; a refresh while GitHub
+        // is asked would drop the answer (task G.9b), so the tests start after it.
+        for _ in 0..1000 {
+            if core.pim.has_filter_slot("github:mahype").await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(core.pim.has_filter_slot("github:mahype").await, "the first refresh ran");
         (core, asked)
     }
 
@@ -3182,14 +3201,17 @@ mod tests {
         // The cache holds every repository, but each client sees its own.
         assert_eq!(repos(core.handle(LIST_REPOS()).await).len(), 2);
 
-        // Outside its repositories: `not-found`, and GitHub is not asked.
+        // Outside its repositories: `not-found` with the words of one that does not exist (task
+        // G.9b), and GitHub is not asked.
         let asked_before = asked_for(&asked, "assignableUsers");
-        let answer = ask(&core, Some(&key), describe("mahype/secret")).await;
-        assert_eq!(code(&answer), "not-found");
-        assert!(!format!("{answer:?}").contains("bug"), "{answer:?}");
+        let answer = ask(&core, Some(&key), describe(" mahype/secret ")).await;
+        let none =
+            |repo: &str| Response::Error { code: "not-found".into(), message: format!("no repository {repo:?}") };
+        assert_eq!(answer, none("mahype/secret"));
         assert_eq!(asked_for(&asked, "assignableUsers"), asked_before);
+        assert_eq!(core.handle(describe("mahype/nope")).await, none("mahype/nope"), "the same as GitHub's none");
         // GitHub answers under a name outside them: as if there were none.
-        assert_eq!(code(&ask(&core, Some(&key), describe("mahype/renamed")).await), "not-found");
+        assert_eq!(ask(&core, Some(&key), describe("mahype/renamed")).await, none("mahype/renamed"));
         assert!(matches!(ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await, Response::GithubRepo { .. }));
 
         // Without read access to `github` neither question goes through.
@@ -3205,7 +3227,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let (core, _) = core_with_repos(dir.path(), true).await;
         let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
-        let fixed = Response::Error { code: "error".into(), message: crate::pim::GITHUB_READ_FAILED.into() };
+        let fixed = Response::Error { code: "error".into(), message: torro_pim_github::GITHUB_READ_FAILED.into() };
         assert_eq!(ask(&core, Some(&key), LIST_REPOS()).await, fixed);
         assert_eq!(ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await, fixed);
         for request in [LIST_REPOS(), describe("mahype/TorroWorkplace")] {
