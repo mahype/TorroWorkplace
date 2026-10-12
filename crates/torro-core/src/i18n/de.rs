@@ -797,4 +797,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Remove an unknown inbox rule", "Eine unbekannte Eingangsregel entfernen"),
     ("an unknown inbox entry", "einen unbekannten Eingangseintrag"),
     ("its source", "seiner Quelle"),
+    // Inbox: account problems (E2.1)
+    ("Sign-in to {account} was refused", "Anmeldung bei {account} wurde abgelehnt"),
+    (
+        "The service no longer accepts the sign-in of this device. Sign in again under Accounts.",
+        "Der Dienst akzeptiert die Anmeldung dieses Geräts nicht mehr. Melde dich unter Konten neu an.",
+    ),
+    ("Sign in to {account} again", "Bei {account} neu anmelden"),
+    (
+        "This device has no valid sign-in for the account. Sign in again under Accounts.",
+        "Dieses Gerät hat keine gültige Anmeldung für das Konto. Melde dich unter Konten neu an.",
+    ),
+    ("{account} has not synced for {minutes} minutes", "{account} wurde seit {minutes} Minuten nicht synchronisiert"),
+    (
+        "Calendars and tasks show what was synced last. Check the connection, or open Accounts.",
+        "Kalender und Aufgaben zeigen den zuletzt synchronisierten Stand. Prüfe die Verbindung oder öffne Konten.",
+    ),
 ];
