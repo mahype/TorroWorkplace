@@ -42,7 +42,7 @@ use torro_core::account::Secret;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{self, Palette, palette, space};
-use torro_gui::{style, typo, widgets};
+use torro_gui::{dialog, style, typo, widgets};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::AccountState;
 
@@ -354,7 +354,8 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::Checking => typo::text(typo::BODY, tr("Checking the connection…")).style(theme::text_2).into(),
         Step::Done => typo::text(typo::BODY, done_text(state)).into(),
     };
-    column![header, body, footer(state)].spacing(space::XL).into()
+    // Head and foot stay in the window; the steps scroll between them when it is low (D.12).
+    dialog::frame(header, body, footer(state), space::XL)
 }
 
 /// The line under the title; it names what the current step asks for.

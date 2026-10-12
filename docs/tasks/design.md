@@ -400,6 +400,22 @@ Offen aus D.9: In der Aufgaben-Leiste sind „overdue“ und die Rahmen überfä
 - Aufgaben-Teil erledigt (Commit c787827): Demo-Liste „Tasks“ grün; Doppellinie unter dem ersten
   Gruppenkopf der Aufgaben-Liste und der Kalender-Agenda. Offen: alle anderen Punkte.
 
+### D.12 Dialoge in niedrigen Fenstern
+- [x] erledigt (Sichtprüfung auf macOS in 1126×456, 800×600, 1126×900 und 480×420)
+- **Modell:** Opus · **Dateien:** `crates/torro-gui/Cargo.toml` (Iced-Feature `advanced`),
+  `crates/torro-gui/src/{lib,dialog}.rs`, `crates/torroworkplace/src/ui/{agent_wizard,wizard}.rs`
+- Rückmeldung 2026-10-12: Im Fenster von etwa 460 Höhe zeigt „Connect agent“ nur den Anfang; die
+  Kästchen „Inbox“ und die Knöpfe liegen unter dem Fensterrand, nichts scrollt, das Verbinden lässt
+  sich nicht beenden. Ebenso „Add account“.
+- Neuer Baustein `torro_gui::dialog::frame(header, body, footer)`: Kopf und Fuß stehen fest, der
+  Inhalt dazwischen scrollt, wenn die Höhe nicht reicht. Ist genug Platz, ist der Dialog so hoch
+  wie sein Inhalt (Iceds Spalte kann das nicht: ein schrumpfender `scrollable` nimmt sich den
+  Platz vor dem Fuß).
+- Beide Assistenten der Steuerzentrale nutzen ihn. Funktionen der Suite ändern sich nicht: kein
+  Request, kein MCP-Tool.
+- **Abnahme:** Test des Layouts (Fuß bleibt im Fenster, Inhalt wird gekürzt; mit Platz so hoch
+  wie der Inhalt); Sichtprüfung „Connect agent“ in einem niedrigen Fenster.
+
 Größere Lücken zum Entwurf sind **neue Funktionen** und werden eigens geplant (Oberfläche, API,
 MCP – siehe `docs/api.md`): Eigenschaften-Spalte im Kalender, Timeline-Ansicht, „This week“ mit
 Aufgaben im Kalender, Filter Inbox/Anytime, Unteraufgaben anlegen, Aktivität im Detail.
