@@ -204,6 +204,20 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   `github_repos` (Repos `owner/name` oder ganze Konten `owner`, „All“ oder ausgewählte). Ohne Lesen auf GitHub
   sieht ein Agent keine Filterliste; die Auswahl filtert jeden Treffer.
 
+### A.6b Agents & API: Feinschliff nach der Design-Prüfung
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** A.6, A.7 (gleiche Datei) · **Dateien:** `crates/torroworkplace/src/ui/agents.rs`
+- Aus der Prüfung am 2026-10-12 (kein Muss-Befund):
+  - Verwaltungsbefehle sind laut `api.md` ein **eigener Schalter je Bereich**, unabhängig von der Stufe:
+    Einrückung weg, Untertitel nennt den Bereich („Accounts · each time with your approval“).
+  - Kalender/Listen wie in „Accounts“: Farbe nur als Punkt vor dem Namen, neutraler Schalter rechts.
+  - Leerer Zustand mit Symbol, Titel ohne Punkt, Text passend zum Knopf aus A.7.
+  - Segmente in Breit gleich breit bzw. links verankert, damit die Stufen untereinander stehen.
+  - `when()`: `trf("yesterday {time}", …)` statt Satzbau mit `format!`.
+  - Untertitel unter dem Titel aussagekräftiger („Agent · Used 2 days ago“); Schlüssel und Zeiten tabellarisch.
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne neue Muss-Befunde.
+
 ### A.7 Assistent „Connect agent“
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** A.6 · **Dateien:** `crates/torroworkplace/src/ui/agent_wizard.rs` (neu), `crates/torroworkplace/src/client_setup.rs` (neu)
