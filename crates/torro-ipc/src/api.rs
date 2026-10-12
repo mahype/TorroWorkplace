@@ -979,11 +979,14 @@ static SAVE_TODO: Command = Command {
                   server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
                   it to another calendar of the same account; moving to another account fails with \
                   `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
-                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored. Marking \
-                  a GitHub issue in a filter list done closes it on GitHub (reopening reopens it), and so does \
-                  marking a link to an issue (from add_link) done; pull requests are never closed; other fields of a GitHub match cannot be changed (`unsupported`). Closing needs \
-                  write access to `github` (else `forbidden`) and the issue's repository among a key's repositories \
-                  (else `not-found`); a token that may not write issues fails with `forbidden`.",
+                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored. Setting \
+                  or changing a `link` needs read access to `github` (else `forbidden`) and, for a key limited to \
+                  some repositories, the item's repository (else `not-found`). Marking a GitHub issue in a filter \
+                  list done closes it on GitHub (reopening reopens it); other fields of a GitHub match cannot be \
+                  changed (`unsupported`). That needs write access to `github` (else `forbidden`) and the issue's \
+                  repository among a key's repositories (else `not-found`). Marking a link to an issue (from \
+                  add_link) done closes the issue too; without write access to `github` only the task is marked \
+                  done, without an error. Pull requests are never closed.",
 };
 
 static DELETE_TODO: Command = Command {
@@ -1082,7 +1085,9 @@ static ADD_LINK: Command = Command {
                   merged; the core keeps title and state in step with GitHub, while due date, priority, order and \
                   sub-tasks stay yours. Marking a link to an issue done with save_todo closes the issue on GitHub \
                   (pull requests never). Adding the same item to the same list again returns the existing task. \
-                  A key limited to some repositories gets `not-found` for any other.",
+                  Needs read access to `github`, to pin also write access (else `forbidden`); a key limited to \
+                  some repositories gets `not-found` for any other. An address that names no issue or pull \
+                  request fails with `error`; `not-connected` when no GitHub account has a token on this device.",
 };
 
 static LIST_ACCOUNTS: Command = Command {

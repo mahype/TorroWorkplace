@@ -207,7 +207,11 @@ pub enum Request {
     /// closes (reopens) the issue too, after the task is stored, for a client only with write
     /// access to `github` and the issue's repository in its selection (else only the task
     /// changes). The answer then carries the issue's new state in `link.github`. A client that
-    /// sets or changes a `link` to a repository outside its selection gets `not-found`.
+    /// sets or changes a `link` without read access to `github` gets `forbidden` (the core would
+    /// fill in the item's title from GitHub, task G.6b), one to a repository outside its selection
+    /// `not-found`; both before anyone is asked to approve it. The core brings links in step with
+    /// GitHub only in the user's private lists (their own, writable by nobody else); in other lists
+    /// a link stays as written.
     ///
     /// Marking a GitHub issue in a filter list done closes it on GitHub (reopening reopens it);
     /// pull requests are never closed; other fields of a GitHub match cannot be changed (task
@@ -346,7 +350,8 @@ pub enum Request {
     ///   and sub-tasks alone. Ticking it with `tasks.save_todo` closes an issue on GitHub as well
     ///   (unticking reopens it), never a pull request.
     ///
-    /// Codes: `error` when `url` names no issue or pull request; `not-found` for a list that does
+    /// Codes: `error` when `url` names no issue or pull request (for a client before anyone is
+    /// asked to approve it); `not-found` for a list that does
     /// not exist (or that a client may not see), an item GitHub does not have or the token cannot
     /// reach, and for a client an item outside its repositories (`api::Rights::github_repos`,
     /// GitHub is not asked then); `forbidden` for a client without read access to `github` (to

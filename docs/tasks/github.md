@@ -334,7 +334,7 @@ K.21 (frei)
   Sichtprüfung einer gemischten Liste in „Manual order“.
 
 ### G.6b Verweise absichern (aus der API-Prüfung von G.6)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.6 · **Dateien:** `crates/torroworkplace/src/{pim,core,approvals}.rs`, `crates/torro-ipc/src/{api,lib}.rs`,
   `crates/torro-pim-caldav/src/{client,nextcloud}.rs` (Besitz einer Liste), `crates/torrotasks/src/app.rs` (Rückmeldung), `docs/github.md`
 - **Leselücke (hoch):** Ein Client ohne GitHub-Recht, aber mit `github_repos = All` (Vorlagen), speichert per

@@ -64,6 +64,18 @@ heute einer Nextcloud-Liste. Sie trägt den Link auf das Issue (`URL`) und eine 
   unter einem Verweis gehen auch.
 - Weil der Verweis auf Nextcloud liegt, ist er auch auf dem Handy da (Nextcloud Tasks zeigt den
   Link), ganz ohne Torro.
+- **Abgeglichen wird nur in privaten Listen (G.6b):** Listen, die dem angemeldeten Konto selbst
+  gehören und in die sonst niemand schreiben darf. Sonst könnte jemand, der eine Liste mit mir
+  teilt (oder in eine von mir geteilte schreiben darf), dort ein `X-TORRO-LINK` auf mein privates
+  Issue ablegen und den Titel lesen, den der Kern mit meinem Token hineinschreibt. Der Kern liest
+  dafür beim Abgleich der Sammlungen den Besitzer (`oc:owner-principal` von Nextcloud und
+  `{DAV:}owner` aus RFC 3744, beide müssen der angemeldete Benutzer sein) und die Freigaben
+  (`oc:invite`: keine mit `read-write`; Freigaben nur zum Lesen sind in Ordnung, weil dann nur ich
+  Verweise anlegen kann). Meldet der Server das nicht, gilt die Liste als nicht privat (fail
+  closed). Verweise in anderen Listen bleiben, wie sie geschrieben wurden; nur Abhaken schließt
+  weiter das Issue. Verworfen: „nur Verweise, die diese Suite angelegt hat“ – das bräuchte eine
+  Signatur im VTODO mit einem Schlüssel je Gerät, Verweise vom zweiten Gerät oder aus Nextcloud
+  Tasks würden nie abgeglichen, und eine kopierte Aufgabe trüge die Signatur mit.
 
 ### 3. Planungsliste: gemischt und von Hand sortiert
 
@@ -182,6 +194,16 @@ einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben
   nicht. GitHub-Fehlermeldungen erreichen Clients nur als feste Meldung.
 - `tasks.add_link`, Anheften und Abhaken (Issue schließen) nur bei Repos in der Auswahl; sonst
   `not-found`.
+- **Verweise setzen braucht GitHub-Lesen (G.6b):** Ein Client ohne Leserecht auf `github` darf
+  keinen Verweis anlegen oder ändern, auch nicht über `tasks.save_todo` und auch nicht mit der
+  Auswahl „alle Repos“: Der Abgleich schriebe sonst Titel und Zustand aus GitHub in die Aufgabe, die
+  der Client liest. Antwort `forbidden`, bevor jemand um Freigabe gebeten wird. Einen Verweis, den
+  der Mensch angelegt hat, darf er weiter abhaken (ohne Schreibrecht nur die Aufgabe).
+- **Freigabetexte nennen, was läuft (G.6b):** `tasks.add_link` „Add a link to owner/repo#n to
+  "Liste"“ bzw. „Pin owner/repo#n to filter list "Liste"“ (Liste aus dem Cache, Kennung aus der
+  Adresse); eine unlesbare Adresse wird vorher mit `error` abgelehnt. Abhaken eines Verweises heißt
+  nur dann „Close GitHub issue …“, wenn sich sonst nichts ändert; sonst „Change task … and close
+  GitHub issue owner/repo#n“.
 - Neue Filterlisten kommen nie von selbst in eine Auswahl „nur diese“; Listen-Kennungen werden nie
   wiederverwendet, damit ein alter Eintrag in `clients.json` keine neue Liste freischaltet.
 - Die Reichweitenprüfung im Kern (`out_of_reach`) behandelt jeden Request ausdrücklich, ohne
@@ -207,3 +229,13 @@ einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben
    Schließen auf GitHub eine Freigabe brauchen?
 5. **Auswahl aus GitHub im Formular** (Repos, Labels, Personen als Liste zum Anklicken) braucht
    einen Lese-Request im Bereich `github`. Vorerst nur Textfelder.
+6. **Clients ohne GitHub-Lesen sehen Titel und Zustand von Verweisen, die der Mensch angelegt hat**
+   (G.6b): Der Titel steht in der eigenen Aufgabe, die der Client lesen darf. Das ist gewollt – es
+   sind die Aufgaben des Menschen; nur die Details (`link.github`) bekommt er nicht. Dasselbe gilt
+   für Menschen, mit denen eine Liste nur zum Lesen geteilt ist.
+7. **Mehrere GitHub-Konten:** Verweise in Aufgabenlisten liest und schließt der Kern mit dem ersten
+   Konto, das ein Token hat. Später das Konto im Verweis mitführen.
+8. **Verweise in geteilten Listen** werden nicht abgeglichen (G.6b) und behalten den Titel vom
+   Anlegen. Abhaken schließt dort trotzdem das Issue, wenn der Mensch es abhakt – ein Verweis, den
+   jemand anderes dort abgelegt hat, könnte so ein Issue schließen lassen, das der Mensch nicht
+   meinte. Abhaken dort auf die Aufgabe beschränken?

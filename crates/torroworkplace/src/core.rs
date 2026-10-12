@@ -452,10 +452,17 @@ impl Core {
         {
             return Ok(Response::Error { code: "forbidden".into(), message: crate::pim::NO_GITHUB_WRITE.into() });
         }
-        // Adding a GitHub link reads GitHub, pinning changes a filter list (task G.6): refused
-        // before anyone is asked; `PimService::add_link` checks again for an approved run.
-        if let Request::AddLink { collection, .. } = &request
-            && let Some(refused) = self.pim.add_link_refusal(reach, collection).await
+        // Adding a GitHub link reads GitHub, pinning changes a filter list (task G.6), and so does
+        // setting a link through a save (G.6b): refused before anyone is asked, an address that
+        // names no item too; `PimService::add_link` and `save_link_todo` check again for an
+        // approved run.
+        if let Request::AddLink { collection, url } = &request
+            && let Some(refused) = self.pim.add_link_refusal(reach, collection, url).await
+        {
+            return Ok(refused);
+        }
+        if let Request::SaveTodo { todo } = &request
+            && let Some(refused) = self.pim.link_refusal(reach, todo).await
         {
             return Ok(refused);
         }
@@ -4437,17 +4444,139 @@ mod tests {
         let mut careful = repo_limited();
         careful.confirm = torro_ipc::api::Confirm::OnEveryChange;
         let (_, key) = client(&core, careful.clone()).await;
-        let tick =
-            || Request::SaveTodo { todo: torro_pim::Todo { completed: true, summary: "x".into(), ..issue.clone() } };
+        core.pim.rename_list(&fake.work, "Work").await;
+        let tick = || Request::SaveTodo { todo: torro_pim::Todo { completed: true, ..issue.clone() } };
         let asked = waits(ask(&core, Some(&key), tick()).await);
         let args: [(&str, &dyn std::fmt::Display); 2] =
             [("title", &"Fix the week view"), ("issue", &"mahype/TorroWorkplace#1")];
         assert_eq!(asked.summary, trf("Close GitHub issue \"{title}\" ({issue})", &args));
+
+        // Ticked and renamed: the summary says both (task G.6b).
+        let renamed =
+            Request::SaveTodo { todo: torro_pim::Todo { completed: true, summary: "x".into(), ..issue.clone() } };
+        let asked = waits(ask(&core, Some(&key), renamed).await);
+        let change: [(&str, &dyn std::fmt::Display); 3] =
+            [("title", &"Fix the week view"), ("new", &"x"), ("list", &"Work")];
+        let change = trf("Change task \"{title}\" → \"{new}\" in \"{list}\"", &change);
+        let both: [(&str, &dyn std::fmt::Display); 2] = [("change", &change), ("issue", &"mahype/TorroWorkplace#1")];
+        assert_eq!(asked.summary, trf("{change} and close GitHub issue {issue}", &both));
+        // Due date or position count as a change too.
+        let due = torro_pim::Todo { completed: true, due: None, ..issue.clone() };
+        let asked = waits(ask(&core, Some(&key), Request::SaveTodo { todo: due }).await);
+        assert_ne!(asked.summary, trf("Close GitHub issue \"{title}\" ({issue})", &args));
+        let moved = torro_pim::Todo { completed: true, sort_order: Some(1), ..issue.clone() };
+        let asked = waits(ask(&core, Some(&key), Request::SaveTodo { todo: moved }).await);
+        assert_ne!(asked.summary, trf("Close GitHub issue \"{title}\" ({issue})", &args));
 
         // A client that may not close issues only ticks the task: the summary says that.
         careful.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
         let (_, reader) = client(&core, careful).await;
         let asked = waits(ask(&core, Some(&reader), tick()).await);
         assert!(!asked.summary.contains("GitHub"), "{}", asked.summary);
+    }
+
+    #[tokio::test]
+    async fn the_approval_of_add_link_names_the_item_and_the_list_and_an_unreadable_address_is_refused_first() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        core.pim.rename_list(&fake.work, "Work").await;
+        let mut careful = repo_limited();
+        careful.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, careful.clone()).await;
+        let add = |collection: &str, url: &str| Request::AddLink { collection: collection.into(), url: url.into() };
+        let item: (&str, &dyn std::fmt::Display) = ("item", &"mahype/TorroWorkplace#1");
+        let before = asked.lock().expect("asked").len();
+
+        let address = "https://github.com/mahype/TorroWorkplace/issues/1";
+        let link = waits(ask(&core, Some(&key), add(&fake.work, address)).await);
+        assert_eq!(link.summary, trf("Add a link to {item} to \"{list}\"", &[item, ("list", &"Work")]));
+        assert_eq!(asked.lock().expect("asked").len(), before, "GitHub hears nothing before the approval");
+
+        // In a filter list the item is pinned.
+        let other = tempfile::tempdir().expect("temp dir");
+        let (filters, _) = core_asking(other.path(), &world).await;
+        let bugs = created(filters.handle(create("Bugs", &["is:open repo:mahype/TorroWorkplace"])).await);
+        let (_, pinner) = client(&filters, careful).await;
+        let pin = waits(ask(&filters, Some(&pinner), add(&bugs.id, "github:mahype/TorroWorkplace#1")).await);
+        assert_eq!(pin.summary, trf("Pin {item} to filter list \"{list}\"", &[item, ("list", &"Bugs")]));
+
+        // Something that names no item: refused at once, nobody is asked.
+        let waiting = core.approvals.list(None, Utc::now()).await.expect("list").len();
+        assert_eq!(code(&ask(&core, Some(&key), add(&fake.work, "Buy oat milk")).await), "error");
+        let after = core.approvals.list(None, Utc::now()).await.expect("list").len();
+        assert_eq!(after, waiting, "no approval for it");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_may_not_read_github_sets_no_link_even_with_every_repository() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, SECRET_3], ..World::default() }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        // A plain task of its own, and a link a person made.
+        let plain = torro_pim::Todo {
+            link: None,
+            url: None,
+            summary: "Water plants".into(),
+            ..link_task(&fake.work, "plain", ISSUE_1)
+        };
+        let mine = link_task(&fake.work, "mine", ISSUE_1);
+        core.pim.cache_todos(vec![plain.clone(), mine.clone()]).await;
+        let mut blind = RightsTemplate::FullAccess.rights();
+        blind.github_repos = Selection::All;
+        blind.areas.insert(Area::Github, AreaRights { level: Level::NoAccess, admin: false });
+        let (_, key) = client(&core, blind.clone()).await;
+        let before = asked.lock().expect("asked").len();
+
+        let smuggled = torro_pim::Todo {
+            href: None,
+            etag: None,
+            uid: String::new(),
+            summary: "x".into(),
+            ..link_task(&fake.work, "new", SECRET_3)
+        };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveTodo { todo: smuggled }).await), "forbidden");
+        let relinked = torro_pim::Todo { link: Some(torro_pim::model::Link::github("mahype/secret", 3)), ..plain };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveTodo { todo: relinked.clone() }).await), "forbidden");
+        // Refused before anyone is asked to approve it.
+        blind.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, careful) = client(&core, blind).await;
+        assert_eq!(code(&ask(&core, Some(&careful), Request::SaveTodo { todo: relinked }).await), "forbidden");
+        assert!(puts(&fake).is_empty(), "nothing written: {:?}", fake.lines());
+
+        // Nothing for GitHub to resolve, nothing written into the list.
+        refresh_filter_lists(&core.pim, &core.github).await;
+        assert_eq!(sent(&asked, "secret"), 0, "GitHub hears nothing of it");
+        assert!(asked.lock().expect("asked").len() > before, "the person's link is refreshed");
+        assert!(puts(&fake).is_empty(), "nothing written: {:?}", fake.lines());
+        let Response::Todos { todos } = ask(&core, Some(&key), Request::Todos).await else { panic!("todos") };
+        assert!(todos.iter().all(|todo| todo.summary != "Private plans"));
+
+        // Ticking the link a person made stays its business.
+        let ticked = ask(&core, Some(&key), Request::SaveTodo { todo: torro_pim::Todo { completed: true, ..mine } });
+        assert!(the_todo(ticked.await).completed);
+    }
+
+    #[tokio::test]
+    async fn links_in_a_list_that_others_may_write_to_are_not_resolved() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, SECRET_3], ..World::default() }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        // Someone who may write to `home` planted a link to a private issue there.
+        let planted = torro_pim::Todo { summary: "Planted".into(), ..link_task(&fake.home, "planted", SECRET_3) };
+        let mine = torro_pim::Todo { summary: "Old title".into(), ..link_task(&fake.work, "mine", ISSUE_1) };
+        core.pim.cache_todos(vec![planted.clone(), mine]).await;
+        core.pim.share_list(&fake.home).await;
+
+        refresh_filter_lists(&core.pim, &core.github).await;
+        assert_eq!(sent(&asked, "secret"), 0, "the planted link is not resolved");
+        let written = puts(&fake);
+        assert_eq!(written.len(), 1, "only the own list's link: {written:?}");
+        assert!(written[0].contains("/work/"), "{written:?}");
+        let cached = core.pim.cached_todos().await;
+        assert_eq!(cached.iter().find(|t| t.uid == "planted"), Some(&planted), "left as it was");
+        let Response::Todos { todos } = core.handle(Request::Todos).await else { panic!("todos") };
+        let shown = todos.iter().find(|t| t.uid == "planted").expect("shown");
+        assert_eq!(github_state(shown), None, "no details from GitHub");
     }
 }

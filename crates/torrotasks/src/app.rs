@@ -51,7 +51,8 @@
 //! goes to the core's `add_link` instead of becoming a task titled with it: in a task list a link
 //! task with GitHub's title (and the due date quick add gives there), in a filter list – whose quick
 //! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list…" in the detail of a
-//! filter list's item does the same for the list picked. A link has the issue's check in the list
+//! filter list's item does the same for the list picked; a card then says "Added to {list}" when
+//! that is not the list shown (task G.6b). A link has the issue's check in the list
 //! and the detail; ticking one goes the way of an issue of a filter list, so "Issue closed · Undo"
 //! shows when the core closed the issue too.
 //!
@@ -339,6 +340,9 @@ struct Notice {
     todo: Todo,
     /// When it was closed; the card goes after [`NOTICE_FOR`] ([`Message::NoticeTick`]).
     since: iced::time::Instant,
+    /// The name of the list a GitHub link went to when it is not the one shown (task G.6b): the
+    /// card then says "Added to {list}", without "Undo".
+    added_to: Option<String>,
 }
 
 /// Moves of a list in manual order on their way to the core (task P.3b), sent one at a time: a
@@ -2145,7 +2149,7 @@ impl App {
     /// "Undo": the card goes, and the issue it names is to be reopened – in the version the list
     /// holds if it does (a reload may have brought a newer one), else as the core answered.
     fn undo(&mut self) -> Option<Todo> {
-        let notice = self.notice.take()?;
+        let notice = self.notice.take_if(|notice| notice.added_to.is_none())?;
         let same = |t: &&Todo| t.uid == notice.todo.uid && t.collection == notice.todo.collection;
         let closed = self.todos.iter().find(same).cloned().unwrap_or(notice.todo);
         Some(Todo { completed: false, ..closed })
@@ -2178,8 +2182,11 @@ impl App {
         // core could not close, is only done itself.
         let closed = list::github_of(&saved)
             .is_some_and(|github| github.kind == GitHubKind::Issue && github.state != GitHubState::Open);
-        self.notice =
-            (saved.completed && closed).then(|| Notice { todo: saved.clone(), since: iced::time::Instant::now() });
+        self.notice = (saved.completed && closed).then(|| Notice {
+            todo: saved.clone(),
+            since: iced::time::Instant::now(),
+            added_to: None,
+        });
         let follow_up = match self.detail.as_mut() {
             Some(detail) if same(&detail.original) => detail.stored(&saved),
             _ => detail::Action::None,
@@ -2199,7 +2206,9 @@ impl App {
 
     /// The core's answer to [`App::add_link`]: a new link task in a task list gets the due date and
     /// priority quick add gives there (it has none of its own yet), then the list is loaded again.
-    /// A refusal (no GitHub account, an item GitHub does not have …) is the error line.
+    /// A refusal (no GitHub account, an item GitHub does not have …) is the error line. When the
+    /// link went to another list than the one shown ("Add to list…", or quick add in a smart
+    /// list), a card says where: "Added to {list}" (task G.6b).
     fn link_added(
         &mut self,
         result: Result<Todo, String>,
@@ -2214,6 +2223,11 @@ impl App {
             }
         };
         self.error = None;
+        if !matches!(&self.filter, Filter::List(id) if *id == added.collection) {
+            let name = self.collections.iter().find(|c| c.id == added.collection).map(|c| c.name.clone());
+            let added_to = Some(name.unwrap_or_else(|| tr("List").into()));
+            self.notice = Some(Notice { todo: added.clone(), since: iced::time::Instant::now(), added_to });
+        }
         let planned = Todo { due: added.due.or(due), priority: added.priority.or(priority), ..added.clone() };
         let writable = self.writable_lists().iter().any(|list| list.id == added.collection);
         if writable && planned != added {
@@ -2225,7 +2239,8 @@ impl App {
     /// `window` with the "Issue closed" card at the bottom centre while it shows. Always the same
     /// two layers, so the window keeps its state (scroll, focus) when the card comes and goes.
     fn with_notice<'a>(&'a self, window: Element<'a, Message>) -> Element<'a, Message> {
-        let card: Element<'a, Message> = match self.notice {
+        let card: Element<'a, Message> = match &self.notice {
+            Some(Notice { added_to: Some(list), .. }) => added_card(list),
             Some(_) => notice_card(),
             None => Space::new().into(),
         };
@@ -2467,6 +2482,19 @@ fn notice_card<'a>() -> Element<'a, Message> {
         .padding(Padding { top: space::XS, right: space::XS, bottom: space::XS, left: space::M })
         .style(style::container::menu)
         .into()
+}
+
+/// "Added to {list}" after a GitHub link went to a list not shown (task G.6b): the card of
+/// [`notice_card`] with a check, no action. A long list name is cut with "…".
+fn added_card<'a>(name: &str) -> Element<'a, Message> {
+    let name = typo::ellipsize(name, typo::BODY, size::PROPS);
+    let line = row![
+        list::toned(Icon::Check, icon::SIZE, list::Tone::Ok),
+        typo::text(typo::BODY, trf("Added to {list}", &[("list", &name)])).wrapping(text::Wrapping::None),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    container(line).padding(Padding::from([space::S, space::M])).style(style::container::menu).into()
 }
 
 /// A row of the sidebar and the navigation menu.
@@ -2761,6 +2789,18 @@ mod tests {
         assert_eq!((added.summary.as_str(), added.due), ("Week view: all-day events cover the day names", None));
         let today = Some(EventTime::Date(app.today));
         assert!(app.update(Message::LinkAdded(Ok(added.clone()), today, None)).units() > 0, "saved with its day");
+        // Not the list shown: a card says where it went (task G.6b), with nothing to undo.
+        let name = app.collections.iter().find(|c| c.id == added.collection).map(|c| c.name.clone());
+        assert!(name.is_some());
+        assert_eq!(app.notice.as_ref().and_then(|notice| notice.added_to.clone()), name, "Added to {name:?}");
+        let _ = app.view();
+        assert_eq!(app.update(Message::Undo).units(), 0, "nothing to undo");
+        // In the list shown the new row says enough.
+        app.notice = None;
+        let _ = app.update(Message::SetFilter(Filter::List(added.collection.clone())));
+        let _ = app.update(Message::LinkAdded(Ok(added.clone()), None, None));
+        assert!(app.notice.is_none());
+        let _ = app.update(Message::SetFilter(Filter::Today));
         let refused = Message::LinkAdded(Err("GitHub has no such issue".into()), None, None);
         let _ = app.update(refused);
         assert!(app.error.as_deref().is_some_and(|e| e.contains("GitHub has no such issue")));

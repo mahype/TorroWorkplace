@@ -61,7 +61,12 @@
 //!   changed (closed or merged = done, never back), ETag-guarded, nothing else of it. Ticking a link
 //!   to an issue closes it on GitHub too ([`PimService::save_link_todo`]), under the rights of
 //!   G.5. A client may neither add nor write a link to a repository outside its selection: GitHub
-//!   would otherwise tell it the title through the task.
+//!   would otherwise tell it the title through the task. Nor may a client without read access to
+//!   `github` set or change one at all (task G.6b, [`PimService::link_refusal`]).
+//! - **Only private lists are brought in step** (task G.6b): lists the user owns and nobody else
+//!   may write to, as the server reports owner and sharees ([`Slot::private`]). Someone who may
+//!   write to a list could otherwise place a link to the user's private issue there and read its
+//!   title once the core wrote it in.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -122,6 +127,11 @@ struct Slot {
     trouble: Option<(Trouble, DateTime<Utc>)>,
     /// With ids `<account-id>/<url>`; the events and todos name them the same way.
     collections: Vec<Collection>,
+    /// The ids of the collections in `collections` that are private to the user: theirs and
+    /// writable by nobody else, as the server reports it (task G.6b,
+    /// `CalDavClient::collections_with_privacy`). Only there are links resolved with the GitHub
+    /// token ([`PimService::reconcile_links`]).
+    private: Vec<String>,
     events: Vec<Event>,
     /// The range `events` covers; `None` before the first successful sync.
     window: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -141,6 +151,7 @@ impl Slot {
             problem: None,
             trouble: None,
             collections: Vec::new(),
+            private: Vec::new(),
             events: Vec::new(),
             window: None,
             todos: Vec::new(),
@@ -1126,8 +1137,9 @@ impl PimService {
             return Err(not_connected());
         };
         match result {
-            Ok(Fetched { collections, events, window, todos }) => {
+            Ok(Fetched { collections, private, events, window, todos }) => {
                 slot.collections = collections;
+                slot.private = private;
                 slot.events = events;
                 slot.window = Some(window);
                 slot.todos = todos;
@@ -1444,6 +1456,10 @@ impl PimService {
     /// - `tasks.save_todo` on a GitHub filter list (tasks G.5, G.5b): the item the list holds under
     ///   the `uid`, the one [`PimService::save_filter_todo`] closes or reopens, and for an issue
     ///   (not a pull request) its `owner/repo#n` ([`Facts::issue`]);
+    /// - `tasks.save_todo` on a link to an issue (task G.6): the issue it ticks ([`ticked_issue`])
+    ///   and whether that is all the save changes ([`Facts::ticks_only`], G.6b);
+    /// - `tasks.add_link`: the list's display name and whether it is a filter list, where the item
+    ///   is pinned ([`Facts::pins`], G.6b);
     /// - `tasks.unpin_issue`: the filter list and the pinned item with the same repository and
     ///   number as `url`;
     /// - `settings.set_collection_shown`, `tasks.update_filter_list`, `tasks.delete_filter_list`:
@@ -1462,7 +1478,7 @@ impl PimService {
                 Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
                 None => (None, None),
             };
-            Facts { item, name: name_of(collection), moved_from, issue: None }
+            Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
         };
         match request {
             Request::DeleteEvent { event } => {
@@ -1481,18 +1497,26 @@ impl PimService {
                     let issue = closable_issue(held)?;
                     Some(format!("{}#{}", issue.repo, issue.number))
                 });
+                // Anything but ticking is refused there (`changes_more_than_done`).
                 Facts {
                     item: held.map(|todo| Known { title: todo.summary.clone(), start: None }),
                     issue,
+                    ticks_only: true,
                     ..named(&todo.collection)
                 }
             }
             // Ticking a link to an issue closes or reopens the issue too (task G.6): named like the
-            // tick of a filter list's issue, by the link the cache holds.
+            // tick of a filter list's issue, by the link the cache holds, and with the change of
+            // the task when the save changes more than whether it is done (G.6b).
             Request::SaveTodo { todo } => {
                 let facts = written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, true);
                 let issue = ticked_issue(&state, todo).map(|issue| format!("{}#{}", issue.repo, issue.number));
-                Facts { issue, ..facts }
+                let held = todo.href.as_deref().and_then(|href| cached_todo(&state, href));
+                let ticks_only = held.is_some_and(|held| only_ticks(todo, held));
+                Facts { issue, ticks_only, ..facts }
+            }
+            Request::AddLink { collection, .. } => {
+                Facts { pins: state.filter(collection).is_some(), ..named(collection) }
             }
             Request::MoveTodo { href, .. } => match cached_todo(&state, href) {
                 Some(todo) => {
@@ -1994,6 +2018,9 @@ impl PimService {
 
 /// Why a client may not add a GitHub link (task G.6): the item is read with the GitHub token.
 pub const NO_GITHUB_READ: &str = "adding a GitHub link needs read access to github";
+/// Why a client may not set or change the link of a task (task G.6b): the core fills it in from
+/// GitHub with the token.
+pub const NO_GITHUB_LINK: &str = "linking a task to GitHub needs read access to github";
 /// Why a client may not pin to a filter list: pinning changes the list, as `tasks.unpin_issue` does.
 pub const NO_GITHUB_PIN: &str = "pinning to a GitHub filter list needs write access to github";
 /// The answer to `tasks.add_link` with something that names no issue or pull request.
@@ -2007,11 +2034,16 @@ const NO_GITHUB_ACCOUNT: &str = "no GitHub account is connected on this device: 
 /// checked the reach ([`PimService::out_of_reach`]) and the rights ([`PimService::add_link_refusal`])
 /// before a client's request comes here; the handlers check both again for an approved run.
 impl PimService {
-    /// For a client: why it may not add a link to `collection`, as the answer – `forbidden`
-    /// without read access to `github` ([`NO_GITHUB_READ`]), and for a filter list without write
-    /// access ([`NO_GITHUB_PIN`]). `None` when it may, and always for the suite.
-    pub async fn add_link_refusal(&self, reach: Reach<'_>, collection: &str) -> Option<Response> {
+    /// For a client: why it may not add the link `url` to `collection`, as the answer – `error`
+    /// when `url` names no issue or pull request ([`NOT_A_LINK`], so nobody is asked to approve
+    /// it, task G.6b), `forbidden` without read access to `github` ([`NO_GITHUB_READ`]), and for a
+    /// filter list without write access ([`NO_GITHUB_PIN`]). `None` when it may, and always for
+    /// the suite.
+    pub async fn add_link_refusal(&self, reach: Reach<'_>, collection: &str, url: &str) -> Option<Response> {
         let Reach::Client(rights) = reach else { return None };
+        if address::issue_ref(url).is_none() {
+            return Some(error("error", NOT_A_LINK.into()));
+        }
         let github = rights.area(Area::Github);
         if !github.allows(Access::Read) {
             return Some(error("forbidden", NO_GITHUB_READ.into()));
@@ -2044,7 +2076,7 @@ impl PimService {
         let Some(issue) = address::issue_ref(url) else {
             return error("error", NOT_A_LINK.into());
         };
-        if let Some(refused) = self.add_link_refusal(reach, collection).await {
+        if let Some(refused) = self.add_link_refusal(reach, collection, url).await {
             return refused;
         }
         if !reach.reaches_repo(&issue.repo) {
@@ -2156,20 +2188,33 @@ impl PimService {
     /// read so (a new task, or another link than the cached one at its `href`). Refreshing that
     /// link would write the item's title from GitHub into the task, where the client reads it.
     async fn links_elsewhere(&self, reach: Reach<'_>, todo: &Todo) -> bool {
-        let Some(issue) = linked_issue(todo).filter(|issue| !reach.reaches_repo(&issue.repo)) else {
-            return false;
-        };
-        let state = self.state.read().await;
-        let held = todo.href.as_deref().and_then(|href| cached_todo(&state, href)).and_then(linked_issue);
-        !held.is_some_and(|held| held.same(&issue))
+        new_link(&*self.state.read().await, todo).is_some_and(|issue| !reach.reaches_repo(&issue.repo))
+    }
+
+    /// For a client: why it may not save `todo` – `forbidden` ([`NO_GITHUB_LINK`]) when it sets or
+    /// changes a link ([`new_link`]) without read access to `github`. Refreshing that link would
+    /// write the item's title and state from GitHub into the task, where the client reads it,
+    /// even with every repository in its selection (task G.6b). `None` when it may, for every
+    /// save that keeps the link it read (ticking a link a person made is fine), and always for
+    /// the suite. The core asks before anyone approves; [`PimService::save_link_todo`] again.
+    pub async fn link_refusal(&self, reach: Reach<'_>, todo: &Todo) -> Option<Response> {
+        if reach.reads_github() || new_link(&*self.state.read().await, todo).is_none() {
+            return None;
+        }
+        Some(error("forbidden", NO_GITHUB_LINK.into()))
     }
 
     /// `tasks.save_todo` on a task of a writable list (task G.6): stored as
     /// [`PimService::save_todo`] stores it; when that ticks or unticks a link to an issue
     /// ([`ticked_issue`]) and `reach` may close its issues ([`Reach::closes_issues_of`]), the issue
     /// is then closed as completed or reopened with `api`. GitHub's refusal (or no `api`) is only
-    /// logged: the task is stored, and the answer's `link.github` shows the issue as it is.
+    /// logged: the task is stored, and the answer's `link.github` shows the issue as it is. A
+    /// client that may not set the link is refused first ([`PimService::link_refusal`]), also for
+    /// an approved run.
     pub async fn save_link_todo(&self, todo: Todo, api: Option<&Api>, reach: Reach<'_>) -> Response {
+        if let Some(refused) = self.link_refusal(reach, &todo).await {
+            return refused;
+        }
         let ticked = ticked_issue(&*self.state.read().await, &todo);
         let saved = match self.save_todo(todo).await {
             Ok(saved) => saved,
@@ -2207,13 +2252,18 @@ impl PimService {
     ///   and nothing is reopened from GitHub: a link ticked by hand (a pull request, or without the
     ///   right to close the issue) stays done.
     ///
+    /// Only links in the user's private lists count ([`Slot::private`], task G.6b): in a list
+    /// shared with them, or one they share with someone who may write to it, another person could
+    /// place a link to a private issue and read its title once the core wrote it there. Links
+    /// elsewhere stay as written.
+    ///
     /// Without `api` or without links nothing happens; a failed call keeps what was known. Logs
     /// name links by id only.
     pub async fn reconcile_links(&self, api: Option<&Api>) {
         let refs: Vec<IssueRef> = {
             let state = self.state.read().await;
             let mut refs: Vec<IssueRef> = Vec::new();
-            for issue in state.accounts.iter().flat_map(|slot| &slot.todos).filter_map(linked_issue) {
+            for issue in private_todos(&state).filter_map(linked_issue) {
                 if !refs.iter().any(|known| known.same(&issue)) {
                     refs.push(issue);
                 }
@@ -2231,8 +2281,7 @@ impl PimService {
         let changes: Vec<Todo> = {
             let mut state = self.state.write().await;
             state.links = items.into_iter().map(|item| (link_key(&item.id.link_id()), item)).collect();
-            let todos = state.accounts.iter().flat_map(|slot| &slot.todos);
-            todos.filter_map(|todo| in_step(todo, &state.links)).collect()
+            private_todos(&state).filter_map(|todo| in_step(todo, &state.links)).collect()
         };
         for todo in changes {
             let id = todo.link.as_ref().map(|link| link.id.clone()).unwrap_or_default();
@@ -2258,11 +2307,44 @@ impl PimService {
         }
     }
 
+    /// Makes the list `collection` one that is not private to the user (shared with them, or
+    /// writable by someone they share it with), as a sync would find it (task G.6b).
+    #[cfg(test)]
+    pub async fn share_list(&self, collection: &str) {
+        for slot in &mut self.state.write().await.accounts {
+            slot.private.retain(|id| id != collection);
+        }
+    }
+
+    /// Gives the cached collection `collection` the display name `name`, as a sync would.
+    #[cfg(test)]
+    pub async fn rename_list(&self, collection: &str, name: &str) {
+        let mut state = self.state.write().await;
+        let lists = state.accounts.iter_mut().flat_map(|slot| &mut slot.collections);
+        for list in lists.filter(|list| list.id == collection) {
+            list.name = name.into();
+        }
+    }
+
     /// The tasks cached for the first account, as stored there (without GitHub's details).
     #[cfg(test)]
     pub async fn cached_todos(&self) -> Vec<Todo> {
         self.state.read().await.accounts.first().map(|slot| slot.todos.clone()).unwrap_or_default()
     }
+}
+
+/// The link `todo` sets or changes: the issue it links to, unless the cached task at its `href`
+/// links to the same one (a new task, or another link than the one read, is new).
+fn new_link(state: &State, todo: &Todo) -> Option<IssueRef> {
+    let issue = linked_issue(todo)?;
+    let held = todo.href.as_deref().and_then(|href| cached_todo(state, href)).and_then(linked_issue);
+    (!held.is_some_and(|held| held.same(&issue))).then_some(issue)
+}
+
+/// The cached tasks of all accounts that are in a private list ([`Slot::private`]): the only ones
+/// whose links the core brings in step with GitHub (task G.6b).
+fn private_todos(state: &State) -> impl Iterator<Item = &Todo> {
+    state.accounts.iter().flat_map(|slot| slot.todos.iter().filter(|todo| slot.private.contains(&todo.collection)))
 }
 
 /// The GitHub issue or pull request the task `todo` links to (`link.id`
@@ -2374,6 +2456,12 @@ fn changes_more_than_done(sent: &Todo, shown: &Todo) -> bool {
         || link_id(sent) != link_id(shown)
 }
 
+/// Whether saving `sent` over the stored task `held` changes nothing but whether it is done (task
+/// G.6b): no field [`changes_more_than_done`] compares, the same list and the same manual position.
+fn only_ticks(sent: &Todo, held: &Todo) -> bool {
+    !changes_more_than_done(sent, held) && sent.collection == held.collection && sent.sort_order == held.sort_order
+}
+
 /// The message of a failed close or reopen for `reach`: GitHub's own words for the suite; for a
 /// client the fixed text of its code, [`torro_pim_github::CHANGE_FAILED`] in place of GitHub's
 /// words, which may name repositories it may not see.
@@ -2428,6 +2516,8 @@ fn ids(collections: Vec<Collection>) -> Vec<String> {
 /// What one sync of an account brings, with ids `<account-id>/<url>`.
 struct Fetched {
     collections: Vec<Collection>,
+    /// The ids of the private ones among `collections` ([`Slot::private`]).
+    private: Vec<String>,
     events: Vec<Event>,
     window: (DateTime<Utc>, DateTime<Utc>),
     todos: Vec<Todo>,
@@ -2440,7 +2530,13 @@ async fn fetch_all(client: &CalDavClient, account: &str) -> Result<Fetched, Prov
     let start = today - Span::days(WINDOW_BACK_DAYS);
     let end = today + Span::days(WINDOW_AHEAD_DAYS);
     let window = (start.and_time(chrono::NaiveTime::MIN).and_utc(), end.and_time(chrono::NaiveTime::MIN).and_utc());
-    let mut collections = client.collections().await?;
+    let listed = client.collections_with_privacy().await?;
+    let private: Vec<String> = listed
+        .iter()
+        .filter(|(_, private)| *private)
+        .map(|(collection, _)| collection_id(account, &collection.id))
+        .collect();
+    let mut collections: Vec<Collection> = listed.into_iter().map(|(collection, _)| collection).collect();
     let mut events = Vec::new();
     let mut todos = Vec::new();
     for collection in &mut collections {
@@ -2458,7 +2554,7 @@ async fn fetch_all(client: &CalDavClient, account: &str) -> Result<Fetched, Prov
         }
         collection.id = id;
     }
-    Ok(Fetched { collections, events, window, todos })
+    Ok(Fetched { collections, private, events, window, todos })
 }
 
 /// Nextcloud stores translation keys instead of names for the collections it creates on its
@@ -3050,7 +3146,7 @@ pub(crate) mod tests {
                 item: known("Board meeting", Some(start)),
                 name: Some("Work".into()),
                 moved_from: None,
-                issue: None
+                ..Facts::default()
             }
         );
         // Written another way, the same address: the same item.
@@ -3075,11 +3171,11 @@ pub(crate) mod tests {
                 item: known("Board meeting", Some(start)),
                 name: Some("Home".into()),
                 moved_from: Some("Work".into()),
-                issue: None,
+                ..Facts::default()
             }
         );
         let created = service.facts(&Request::SaveEvent { event: lunch(&home, None) }).await;
-        assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None, issue: None });
+        assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None, ..Facts::default() });
 
         // Tasks, and reordering by the exact href.
         let taxes = format!("{}t.ics", url("home"));
@@ -3087,12 +3183,12 @@ pub(crate) mod tests {
         let facts = service.facts(&Request::DeleteTodo { todo }).await;
         assert_eq!(
             facts,
-            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None, issue: None }
+            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None, ..Facts::default() }
         );
         let reorder = Request::MoveTodo { href: taxes, etag: "1".into(), before: None };
         assert_eq!(
             service.facts(&reorder).await,
-            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None, issue: None }
+            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None, ..Facts::default() }
         );
         let reorder = Request::MoveTodo { href: "/elsewhere.ics".into(), etag: "1".into(), before: None };
         assert_eq!(service.facts(&reorder).await, Facts::default());
@@ -3460,11 +3556,13 @@ pub(crate) mod tests {
         let dav = torro_pim_caldav::CalDavAccount { url: base.into(), username: "anna".into() };
         let client = CalDavClient::new(http, &dav, "secret".into()).expect("client");
         let id = connected.account.id.clone();
-        let collections = [WORK, HOME]
+        let collections: Vec<Collection> = [WORK, HOME]
             .iter()
             .map(|path| of_kind(&collection_id(&id, &format!("{origin}{path}")), torro_pim::CollectionKind::Both))
             .collect();
-        Slot { collections, ..Slot::new(connected, Some(client)) }
+        // Anna's own lists, shared with nobody.
+        let private = collections.iter().map(|c| c.id.clone()).collect();
+        Slot { collections, private, ..Slot::new(connected, Some(client)) }
     }
 
     /// A service connected to the fake server at `base`.

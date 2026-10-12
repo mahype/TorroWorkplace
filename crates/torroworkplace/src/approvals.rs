@@ -256,6 +256,14 @@ pub struct Facts {
     /// GitHub, which the summary says instead of "change task". `None` for everything else
     /// (also pull requests, which are never closed here).
     pub issue: Option<String>,
+    /// With [`Facts::issue`]: the save changes nothing of the task but whether it is done, so the
+    /// summary may say "Close GitHub issue …" alone (task G.6b). `false` (the default) makes it
+    /// name the change of the task as well. Always `true` for a filter list, where nothing more
+    /// can be changed.
+    pub ticks_only: bool,
+    /// For `tasks.add_link`: the list is a GitHub filter list, so the item is pinned there, not
+    /// written as a task (task G.6b).
+    pub pins: bool,
 }
 
 /// An event or task as the core caches it, for [`Facts::item`].
@@ -860,6 +868,17 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 None => trf("Unpin {item} from filter list \"{list}\"", &[("item", &issue), ("list", &list)]),
             }
         }
+        // The item as the core will ask GitHub for it; the core refuses an address that names
+        // none before anyone is asked, so the raw text shows only for an approval stored before.
+        Request::AddLink { collection, url } => {
+            let issue = torro_pim_github::address::issue_ref(url)
+                .map_or_else(|| quote(url), |issue| quote(&format!("{}#{}", issue.repo, issue.number)));
+            let args: [(&str, &dyn std::fmt::Display); 2] = [("item", &issue), ("list", &named(collection))];
+            match facts.pins {
+                true => trf("Pin {item} to filter list \"{list}\"", &args),
+                false => trf("Add a link to {item} to \"{list}\"", &args),
+            }
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
@@ -1059,14 +1078,27 @@ fn todo_saved(todo: &Todo, facts: &Facts) -> String {
         return trf("Create task \"{title}\" in \"{list}\"", &[("title", &new), ("list", &list)]);
     }
     // Ticking an issue of a filter list is the only change that runs there: it closes or reopens
-    // the issue on GitHub, whatever title the client sent (G.5b).
-    if let (Some(issue), Some(item)) = (&facts.issue, &facts.item) {
+    // the issue on GitHub, whatever title the client sent (G.5b). Ticking a link does the same,
+    // and when the save changes more of the task, the summary says that too (G.6b).
+    let Some(issue) = &facts.issue else { return task_changed(todo, facts, &list, &new) };
+    if let (Some(item), true) = (&facts.item, facts.ticks_only) {
         let args: [(&str, &dyn std::fmt::Display); 2] = [("title", &quote(&item.title)), ("issue", &quote(issue))];
         return match todo.completed {
             true => trf("Close GitHub issue \"{title}\" ({issue})", &args),
             false => trf("Reopen GitHub issue \"{title}\" ({issue})", &args),
         };
     }
+    let args: [(&str, &dyn std::fmt::Display); 2] =
+        [("change", &task_changed(todo, facts, &list, &new)), ("issue", &quote(issue))];
+    match todo.completed {
+        true => trf("{change} and close GitHub issue {issue}", &args),
+        false => trf("{change} and reopen GitHub issue {issue}", &args),
+    }
+}
+
+/// The summary of `tasks.save_todo` changing or moving a stored task (`facts.item`), in the list
+/// `list` with the title `new`, both quoted.
+fn task_changed(todo: &Todo, facts: &Facts, list: &str, new: &str) -> String {
     let Some(item) = &facts.item else {
         return match &facts.moved_from {
             Some(from) => {
@@ -1591,6 +1623,7 @@ pub(crate) mod tests {
             item: cached("Crash on start", None),
             name: Some("Open bugs".into()),
             issue: Some("torro/app#12".into()),
+            ticks_only: true,
             ..Facts::default()
         };
         let args: [(&str, &dyn std::fmt::Display); 2] = [("title", &"Crash on start"), ("issue", &"torro/app#12")];
@@ -1601,6 +1634,31 @@ pub(crate) mod tests {
         assert_eq!(
             summary(&issue(false, "What the client says"), &known),
             trf("Reopen GitHub issue \"{title}\" ({issue})", &args)
+        );
+
+        // A link ticked with other changes (task G.6b): the change of the task, then the issue.
+        let more = Facts { ticks_only: false, ..known };
+        let change: [(&str, &dyn std::fmt::Display); 3] =
+            [("title", &"Crash on start"), ("new", &"Renamed"), ("list", &"Open bugs")];
+        let change = trf("Change task \"{title}\" → \"{new}\" in \"{list}\"", &change);
+        let both: [(&str, &dyn std::fmt::Display); 2] = [("change", &change), ("issue", &"torro/app#12")];
+        assert_eq!(summary(&issue(true, "Renamed"), &more), trf("{change} and close GitHub issue {issue}", &both));
+        assert_eq!(summary(&issue(false, "Renamed"), &more), trf("{change} and reopen GitHub issue {issue}", &both));
+    }
+
+    #[test]
+    fn adding_a_link_names_the_item_by_its_address_and_the_list_by_its_name() {
+        let add = |url: &str| Request::AddLink { collection: "nextcloud:a/https://x/work/".into(), url: url.into() };
+        let work = Facts { name: Some("Work".into()), ..Facts::default() };
+        let item: (&str, &dyn std::fmt::Display) = ("item", &"torro/app#12");
+        assert_eq!(
+            summary(&add("https://github.com/torro/app/issues/12"), &work),
+            trf("Add a link to {item} to \"{list}\"", &[item, ("list", &"Work")])
+        );
+        let bugs = Facts { name: Some("Open bugs".into()), pins: true, ..Facts::default() };
+        assert_eq!(
+            summary(&add("github:torro/app#12"), &bugs),
+            trf("Pin {item} to filter list \"{list}\"", &[item, ("list", &"Open bugs")])
         );
     }
 
