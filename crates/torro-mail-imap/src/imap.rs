@@ -492,6 +492,41 @@ impl Session {
         Ok(uids)
     }
 
+    /// The UIDs in the open folder whose headers or text hold every word of `words`
+    /// (`UID SEARCH TEXT …`, one `TEXT` per word, as the server compares: usually a substring
+    /// without regard to case) and that arrived on or after `since` and before `before` (`SINCE`,
+    /// `BEFORE`: the server's internal date, whole days). Ascending. For searching the texts the
+    /// core's store no longer keeps (task M3.1).
+    ///
+    /// Words are sent as IMAP strings (quoted, or as a literal with `CHARSET UTF-8` when one is
+    /// not plain ASCII); control characters are dropped, so no word can end the command. No words
+    /// and no days searches `ALL`. The caller bounds the number of words (`mail.search_messages`
+    /// takes at most 500 characters).
+    pub async fn uid_search_text(
+        &mut self,
+        words: &str,
+        since: Option<NaiveDate>,
+        before: Option<NaiveDate>,
+    ) -> Result<Vec<u32>, ImapError> {
+        self.require_selected()?;
+        let criteria = text_criteria(words, since, before);
+        let mut args = vec![Arg::Raw("UID SEARCH")];
+        args.extend(criteria.iter().map(|part| match part {
+            SearchPart::Raw(raw) => Arg::Raw(raw),
+            SearchPart::Str(text) => Arg::Str(text),
+        }));
+        let data = self.run(&args, "SEARCH").await?;
+        let mut uids: Vec<u32> = data
+            .iter()
+            .filter_map(Response::data)
+            .filter(|tokens| first_is(tokens, "SEARCH"))
+            .flat_map(|tokens| tokens[1..].iter().filter_map(Token::number))
+            .collect();
+        uids.sort_unstable();
+        uids.dedup();
+        Ok(uids)
+    }
+
     /// Headers, flags, date, size and attachment marker of the messages `uids` in the open
     /// folder, in one `UID FETCH` (`BODY.PEEK[HEADER]`, so nothing is marked read). Messages
     /// that no longer exist are missing from the answer.
@@ -1273,6 +1308,40 @@ enum Arg<'a> {
     Literal(&'a [u8]),
 }
 
+/// One piece of the criteria of [`Session::uid_search_text`], owned until the command is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SearchPart {
+    /// A keyword or a date (`TEXT`, `SINCE 1-Jan-2026`).
+    Raw(String),
+    /// A word to search for, sent as an IMAP string.
+    Str(String),
+}
+
+/// The criteria of [`Session::uid_search_text`]: `CHARSET UTF-8` when a word is not plain ASCII,
+/// `TEXT <word>` per word, then `SINCE` and `BEFORE`; `ALL` when that is nothing.
+fn text_criteria(words: &str, since: Option<NaiveDate>, before: Option<NaiveDate>) -> Vec<SearchPart> {
+    let words: Vec<String> = words
+        .split_whitespace()
+        .map(|word| word.chars().filter(|c| !c.is_control()).collect::<String>())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let mut parts = Vec::new();
+    if words.iter().any(|word| !word.is_ascii()) {
+        parts.push(SearchPart::Raw("CHARSET UTF-8".into()));
+    }
+    for word in words {
+        parts.push(SearchPart::Raw("TEXT".into()));
+        parts.push(SearchPart::Str(word));
+    }
+    let day = |day: NaiveDate| day.format("%-d-%b-%Y").to_string();
+    parts.extend(since.map(|since| SearchPart::Raw(format!("SINCE {}", day(since)))));
+    parts.extend(before.map(|before| SearchPart::Raw(format!("BEFORE {}", day(before)))));
+    if parts.is_empty() {
+        parts.push(SearchPart::Raw("ALL".into()));
+    }
+    parts
+}
+
 /// What the server answered to one command.
 #[derive(Debug)]
 struct Reply {
@@ -1620,6 +1689,28 @@ mod tests {
         assert_eq!(literal_size(b"* LIST () \"/\" {5+}\r\n"), Some(5));
         assert_eq!(literal_size(b"* OK done\r\n"), None);
         assert_eq!(literal_size(b"* OK {x}\r\n"), None);
+    }
+
+    #[test]
+    fn text_searches_send_each_word_as_a_string_and_days_as_dates() {
+        let raw = |text: &str| SearchPart::Raw(text.into());
+        let word = |text: &str| SearchPart::Str(text.into());
+        let day = |y, m, d| NaiveDate::from_ymd_opt(y, m, d);
+        assert_eq!(
+            text_criteria("  invoice  2025 ", day(2025, 3, 7), day(2026, 1, 15)),
+            [
+                raw("TEXT"),
+                word("invoice"),
+                raw("TEXT"),
+                word("2025"),
+                raw("SINCE 7-Mar-2025"),
+                raw("BEFORE 15-Jan-2026")
+            ]
+        );
+        assert_eq!(text_criteria("Müller", None, None), [raw("CHARSET UTF-8"), raw("TEXT"), word("Müller")]);
+        assert_eq!(text_criteria("a\u{0}b \u{7}", None, None), [raw("TEXT"), word("ab")], "no control characters");
+        assert_eq!(text_criteria(" ", None, None), [raw("ALL")]);
+        assert_eq!(text_criteria("", None, day(2026, 1, 1)), [raw("BEFORE 1-Jan-2026")]);
     }
 
     #[test]

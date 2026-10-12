@@ -1140,12 +1140,14 @@ impl Core {
                 let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles };
                 self.update_mail_account(&id, change).await
             }
+            // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
+            // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
             | Request::SearchMail { .. }
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
-            | Request::GetMailAttachment { .. }
-            | Request::SetMailFlags { .. }
+            | Request::GetMailAttachment { .. }) => crate::mail::read::answer(&self.mail, reach, request).await,
+            request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
@@ -1895,10 +1897,16 @@ fn no_collection(collection: &str) -> Response {
 /// `Rights::mail_accounts` (task M2.1), the same as for an account that does not exist; `None`
 /// when the request names none or one the client reaches. Checked before approvals and handlers,
 /// and again when an approved request runs. Ids of folders and messages name their account only
-/// through the mail store: M3.1 and M3.2 must resolve every [`Request::message_ids`] and the folder
-/// (`folder`, a `MoveTarget::Folder`) there and check their accounts the same way, here before
-/// `ask_approval` and again in `run_approved`, and upgrade a move into a trash folder to delete
-/// access before the rights are checked.
+/// through the mail store:
+///
+/// - The reading commands (task M3.1, [`crate::mail::read`]) resolve them in their handler, in the
+///   stores of the accounts the caller reaches only (`MailService::stores`): an id of any other
+///   account is `not-found` before anything is read. Reading never waits for an approval, and
+///   `run_approved` ends in `handle_within` too, so that is the same check.
+/// - Commands that can wait for an approval (M3.2, M3.3) must resolve every
+///   [`Request::message_ids`] and the folder (a `MoveTarget::Folder`) the same way before
+///   `ask_approval` and again in `run_approved`, and upgrade a move into a trash folder to delete
+///   access before the rights are checked.
 ///
 /// Changing or removing a mail account (`accounts.update_mail_account`, `accounts.remove_account`
 /// with a `mail:` id, task M2.7) names its account too: a client changes only accounts it reaches,
@@ -5546,7 +5554,7 @@ mod tests {
     /// Rule 5 of "Was nie nach außen geht": no client key signs in to mail, not even with every
     /// admin switch, and nothing waits for an approval; the password shows nowhere. The app key
     /// gets a refused address as `error`, and so a core without a home directory, before any
-    /// server is asked; reading and sending wait for their tasks.
+    /// server is asked; such a core has no mail to read, and sending waits for its task.
     #[tokio::test]
     async fn only_the_app_key_connects_mail_and_mail_waits_for_its_tasks() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5565,9 +5573,9 @@ mod tests {
         let homeless = ask(&core, Some(&app_key), connect_mail("anna@mailbox.org")).await;
         assert_eq!(code(&homeless), "error", "nothing could be stored: {homeless:?}");
         assert!(!format!("{homeless:?}").contains("hunter2"));
-        for request in [Request::MailFolders { account: None }, Request::SendDraft { id: "m:1".into() }] {
-            assert_eq!(code(&ask(&core, Some(&app_key), request).await), "unsupported");
-        }
+        let none = Response::MailFolders { folders: Vec::new() };
+        assert_eq!(ask(&core, Some(&app_key), Request::MailFolders { account: None }).await, none, "reading: M3.1");
+        assert_eq!(code(&ask(&core, Some(&app_key), Request::SendDraft { id: "m:1".into() }).await), "unsupported");
     }
 
     /// `Rights::outbound`: never is `forbidden`, with approval waits even with `confirm: never`,
@@ -5602,7 +5610,9 @@ mod tests {
         let (_, key) = client(&core, rights.clone()).await;
         let folders = |account: &str| Request::MailFolders { account: Some(account.into()) };
         assert_eq!(code(&ask(&core, Some(&key), folders("mail:bob@mailbox.org")).await), "not-found");
-        assert_eq!(code(&ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await), "unsupported");
+        // A granted account passes to the handler, which knows no such account in this core.
+        let unknown = crate::mail::service::MailError::NotFound.response();
+        assert_eq!(ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await, unknown);
 
         // Deleting waits for a person with `confirm: on_delete`, but not over the limit.
         let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
@@ -5715,6 +5725,85 @@ mod tests {
         assert!(!format!("{:?}", core.mail.infos(Reach::Suite).await).contains(MAIL_PASSWORD));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval was asked for");
         nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &listed]);
+    }
+
+    /// Task M3.1: a client reads the mail of its account; the audit log names the account and
+    /// hashed ids, never the words searched, a folder's name or an attachment's file name.
+    #[tokio::test]
+    async fn reading_mail_logs_no_words_folder_names_or_file_names() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let raw = format!(
+            "From: Bernd <bernd@example.com>\r\nTo: anna@example.org\r\nSubject: Bonus\r\nDate: {date}\r\n\
+             Message-ID: <bonus@example.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
+             --b\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n--b\r\nContent-Type: application/pdf\r\n\
+             Content-Disposition: attachment; filename=\"salary-2026.pdf\"\r\n\r\n%PDF\r\n--b--\r\n"
+        );
+        server.add("Archive", &raw, &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = audited(dir.path()).with_mail(mail);
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, key) = client(&core, rights).await;
+
+        let Response::MailFolders { folders } = ask(&core, Some(&key), Request::MailFolders { account: None }).await
+        else {
+            panic!("folders")
+        };
+        let archive = folders.into_iter().find(|folder| folder.name == "Archive").map(|folder| folder.id);
+        let search = Request::SearchMail {
+            account: Some(ANNA_MAIL.into()),
+            folder: archive,
+            query: Some("salary".into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+        };
+        let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
+        let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
+        let Response::MailMessage { message } =
+            ask(&core, Some(&key), Request::GetMail { id: id.clone(), include_body: true }).await
+        else {
+            panic!("a message")
+        };
+        let part = message.attachments.first().map(|attachment| attachment.part.clone()).expect("an attachment");
+        let fetched = ask(&core, Some(&key), Request::GetMailAttachment { id, attachment: part }).await;
+        assert!(matches!(&fetched, Response::MailAttachment { path, .. } if path.ends_with("salary-2026.pdf")));
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["salary", "Archive", "Bonus", ".pdf", "See attached"] {
+            assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
+        }
+        let shown: Vec<(String, String)> =
+            audit_lines(dir.path()).into_iter().map(|line| (line.command, line.result)).collect();
+        let ok = |command: &str| (command.to_string(), "ok".to_string());
+        let read = ["mail.list_folders", "mail.search_messages", "mail.get_message", "mail.get_attachment"];
+        assert_eq!(shown, read.map(ok));
+
+        // A key granted another account gets `not-found` for the same message id, whatever it asks.
+        let mut other = RightsTemplate::ReadOnly.rights();
+        other.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, other).await;
+        let message = messages[0].id.clone();
+        let fetches = server.lines().iter().filter(|line| line.contains("UID FETCH")).count();
+        for request in [
+            Request::GetMail { id: message.clone(), include_body: true },
+            Request::GetMailThread { id: message.clone() },
+            Request::GetMailAttachment { id: message, attachment: "1".into() },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&stranger), request).await), "not-found");
+        }
+        let after = server.lines().iter().filter(|line| line.contains("UID FETCH")).count();
+        assert_eq!(after, fetches, "nothing was fetched for the stranger");
     }
 
     #[tokio::test]
