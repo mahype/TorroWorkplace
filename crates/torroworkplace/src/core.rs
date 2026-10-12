@@ -1374,7 +1374,9 @@ impl Core {
     /// `accounts.list_accounts` promises.
     ///
     /// A mail account that syncs calendars too is listed once (task M2.7): its mail part with the
-    /// collections of its calendar part, the problems of both ([`joined_info`]).
+    /// collections of its calendar part, the problems of both ([`joined_info`]). A client that
+    /// does not reach the mail account sees its calendar part only while its rights show it some
+    /// of that part's calendars or task lists, and then without the mail view (task M2.8).
     async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
         let mut accounts = self.pim.accounts_within(reach).await;
         let mut github = self.github.infos().await;
@@ -1387,6 +1389,16 @@ impl Core {
                 Some(at) => others.push(joined_info(mail, accounts.remove(at))),
                 None => others.push(mail),
             }
+        }
+        // The calendar part of a mail account a client does not reach (task M2.8): listed only
+        // for the calendars and task lists its rights show it, never with the mail view; with
+        // none of them it is as if it did not exist.
+        if let Reach::Client(rights) = reach {
+            accounts.retain(|account| {
+                account.kind != AccountKind::Mail.name()
+                    || rights.reaches_mail_account(&account.id)
+                    || !account.collections.is_empty()
+            });
         }
         others.extend(github);
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
@@ -1439,8 +1451,9 @@ impl Core {
     ///    sender name (`error`); then the stored accounts (`error` without a home directory, before
     ///    any server is asked);
     /// 2. connecting an account that exists keeps its settings, hidden collections and rights:
-    ///    `calendars` and `tasks` count only for a new account, and without `caldav` the stored
-    ///    CalDAV address stays. Calendars or tasks without a CalDAV address are `not-found`;
+    ///    `calendars` and `tasks` count only for a new account, without `caldav` the stored
+    ///    CalDAV address stays and with an empty `sender_name` the stored sender name (task M2.8).
+    ///    Calendars or tasks without a CalDAV address are `not-found`;
     /// 3. IMAP and SMTP ([`MailService::check_sign_in`]), then the CalDAV address when calendars or
     ///    tasks are wanted ([`Core::check_caldav`]); every host must be public. A refusal is `auth`
     ///    and names the server; nothing is stored before all of them took the password;
@@ -1501,9 +1514,15 @@ impl Core {
             let message = tr("No calendar service was found for this address. Enter the server address.");
             return refusal("not-found", message.into());
         }
+        // Connecting again changes only what the request names: "Change password…" sends no
+        // sender name and must not remove the stored one (task M2.8).
+        let sender_name = match sender_name.trim() {
+            "" => existing.and_then(|account| Some(account.mail.as_ref()?.sender_name.clone())).unwrap_or_default(),
+            typed => typed.to_string(),
+        };
         let config = torro_mail::MailAccountConfig {
             address: address.trim().to_string(),
-            sender_name: sender_name.trim().to_string(),
+            sender_name,
             imap,
             smtp,
             caldav: caldav.filter(|_| wants_calendars),
@@ -2084,8 +2103,17 @@ fn folder_roles_refusal(
 /// `accounts.list_accounts` lists (task M2.7): the mail part with the collections of the calendar
 /// part. Its last sync is the older one of both parts (the one that synced, when the other never
 /// did), and its problem says what went wrong in either; two different problems both, named by
-/// their part.
-fn joined_info(mail: AccountInfo, calendars: AccountInfo) -> AccountInfo {
+/// their part. The calendar part's own state goes into the mail view's `calendars` (task M2.8),
+/// next to the mail part's.
+fn joined_info(mut mail: AccountInfo, calendars: AccountInfo) -> AccountInfo {
+    if let Some(view) = &mut mail.mail {
+        view.calendars = Some(match &calendars.state {
+            AccountState::Connected { last_sync, problem, .. } => {
+                torro_ipc::ServiceState { last_sync: *last_sync, problem: problem.clone() }
+            }
+            _ => torro_ipc::ServiceState::default(),
+        });
+    }
     let state = match (mail.state, calendars.state) {
         (
             AccountState::Connected { server, login_name, last_sync, problem },
@@ -6011,6 +6039,88 @@ mod tests {
         assert_eq!(asked.command, "accounts.update_mail_account");
     }
 
+    /// The mail view of `accounts`' entry `ANNA_MAIL` (task M2.8), if it has one.
+    fn anna_view(accounts: &[AccountInfo]) -> Option<torro_ipc::MailView> {
+        accounts.iter().find(|account| account.id == ANNA_MAIL).and_then(|account| account.mail.clone())
+    }
+
+    /// Task M2.8: `accounts.list_accounts` holds what the account's page shows (servers, settings,
+    /// open roles with their folders, the state of mail and calendars), only for keys that reach
+    /// the account, never with the password; connecting again without a sender name keeps it.
+    #[tokio::test]
+    async fn a_mail_account_is_listed_with_what_its_page_shows() {
+        use torro_ipc::{FolderChoice, OpenRoleView};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let connected = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        let listed = || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+            accounts
+        };
+        crate::mail::service::tests::eventually("both parts synced", || async {
+            anna_view(&listed().await).is_some_and(|view| {
+                view.mail.last_sync.is_some() && view.calendars.is_some_and(|state| state.last_sync.is_some())
+            })
+        })
+        .await;
+        core.mail.note_folders_of(ANNA_MAIL, &crate::mail::service::tests::sent_left_open()).await;
+
+        let view = anna_view(&listed().await).expect("a mail view");
+        assert_eq!((view.address.as_str(), view.sender_name.as_str()), ("anna@example.org", "Anna"));
+        assert_eq!((&view.imap, view.smtp.host.as_str(), view.smtp.port), (&server.endpoint, "127.0.0.1", 587));
+        assert!(view.caldav.as_deref().is_some_and(|url| url.starts_with(&dav)), "{:?}", view.caldav);
+        assert_eq!(view.settings.services, torro_mail::Services { mail: true, calendars: true, tasks: true });
+        let choice = |name: &str, path: &str| FolderChoice { name: name.into(), path: path.into() };
+        assert_eq!(
+            view.open_roles,
+            [OpenRoleView {
+                role: torro_mail::Role::Sent,
+                candidates: vec![choice("Sent", "Sent"), choice("Gesendet", "INBOX.Gesendet")]
+            }]
+        );
+        assert_eq!((view.mail.problem, view.calendars.and_then(|state| state.problem)), (None, None));
+
+        // A key sees the view only of a mail account its rights reach.
+        let with_mail = |accounts: Vec<String>| {
+            let mut rights = RightsTemplate::ReadOnly.rights();
+            rights.mail_accounts = Selection::Only(accounts);
+            rights
+        };
+        let mut calendar_reader = with_mail(vec!["mail:bob@example.org".into()]);
+        calendar_reader.calendars = Selection::All;
+        let (_, outsider) = client(&core, calendar_reader).await;
+        let (_, insider) = client(&core, with_mail(vec![ANNA_MAIL.into()])).await;
+        let outside = ask(&core, Some(&outsider), Request::Accounts).await;
+        let Response::Accounts { accounts } = &outside else { panic!("accounts, got {outside:?}") };
+        let part = accounts.iter().find(|account| account.id == ANNA_MAIL).expect("the calendars it may read");
+        assert!(part.mail.is_none() && !part.collections.is_empty(), "{part:?}");
+        let mut nothing = with_mail(vec!["mail:bob@example.org".into()]);
+        (nothing.calendars, nothing.task_lists) = (Selection::Only(vec![]), Selection::Only(vec![]));
+        let (_, stranger) = client(&core, nothing).await;
+        let unseen = ask(&core, Some(&stranger), Request::Accounts).await;
+        let Response::Accounts { accounts } = &unseen else { panic!("accounts, got {unseen:?}") };
+        assert!(accounts.iter().all(|account| account.id != ANNA_MAIL), "as if it did not exist: {accounts:?}");
+        let inside = ask(&core, Some(&insider), Request::Accounts).await;
+        let Response::Accounts { accounts } = &inside else { panic!("accounts, got {inside:?}") };
+        assert!(anna_view(accounts).is_some());
+        nowhere(dir.path(), MAIL_PASSWORD, &[&connected, &outside, &unseen, &inside]);
+
+        // "Change password…" sends no sender name: the stored one stays.
+        let mut again = anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav));
+        if let Request::ConnectMail { sender_name, .. } = &mut again {
+            sender_name.clear();
+        }
+        let answer = core.handle(again).await;
+        let Response::MailConnected { account, .. } = &answer else { panic!("connected, got {answer:?}") };
+        assert_eq!(account.mail.as_ref().map(|view| view.sender_name.as_str()), Some("Anna"));
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(stored[0].mail.as_ref().map(|config| config.sender_name.as_str()), Some("Anna"));
+    }
+
     #[tokio::test]
     async fn a_caldav_account_of_the_same_sign_in_is_taken_over_with_its_choices() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6171,6 +6281,7 @@ mod tests {
             },
             collections,
             scopes: None,
+            mail: None,
         };
         let work = torro_pim::Collection {
             id: format!("{ANNA_MAIL}/https://dav.example.org/work/"),
@@ -6201,6 +6312,26 @@ mod tests {
         );
         let same = joined_info(part(None, Some("refused"), vec![]), part(None, Some("refused"), vec![]));
         assert!(matches!(same.state, AccountState::Connected { problem: Some(p), .. } if p == "refused"));
+
+        // The mail view keeps each part's own state (task M2.8).
+        let server =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let view = torro_ipc::MailView {
+            address: "anna@example.org".into(),
+            sender_name: String::new(),
+            imap: server.clone(),
+            smtp: server,
+            caldav: None,
+            settings: MailSettings::default(),
+            open_roles: Vec::new(),
+            mail: torro_ipc::ServiceState { last_sync: Some(now), problem: None },
+            calendars: None,
+        };
+        let viewed = AccountInfo { mail: Some(view), ..part(Some(now), None, vec![]) };
+        let joined = joined_info(viewed, part(Some(earlier), Some("offline"), vec![])).mail.expect("the view stays");
+        assert_eq!(joined.mail, torro_ipc::ServiceState { last_sync: Some(now), problem: None });
+        let calendars = torro_ipc::ServiceState { last_sync: Some(earlier), problem: Some("offline".into()) };
+        assert_eq!(joined.calendars, Some(calendars));
     }
 
     #[test]

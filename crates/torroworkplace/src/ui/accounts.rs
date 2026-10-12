@@ -689,6 +689,7 @@ mod tests {
             state,
             collections: vec![],
             scopes: None,
+            mail: None,
         }
     }
 

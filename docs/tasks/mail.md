@@ -335,9 +335,11 @@ ihre Texte im Bericht.
 - **Abnahme:** Tests für alle vier Punkte; `torro-api-review` ohne Befund.
 
 ### M2.8 Mail-Konto lesen (Lücke aus M5.2)
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
-  `crates/torroworkplace/src/{core,account}.rs`, `crates/torroworkplace/src/mail/service.rs`, `docs/api.md`
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torro-ipc/src/{lib,api,pim}.rs`,
+  `crates/torroworkplace/src/{core,account,pim}.rs`, `crates/torroworkplace/src/mail/{service,sync}.rs`,
+  `crates/torroworkplace/src/ui/{accounts,agents,glance,launch,overview,wizard}.rs` (nur `mail: None` in
+  `AccountInfo`-Literalen), `docs/api.md`
 - Die Kontoseite (M5.2) kann heute nichts von einem Mail-Konto lesen. `AccountInfo` bekommt das optionale Feld
   `mail: Option<MailView>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`, verträglich):
   `MailView { address, sender_name, imap: Endpoint, smtp: Endpoint, caldav: Option<String>, settings: MailSettings,

@@ -39,7 +39,7 @@ pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
-use torro_mail::{Draft, Endpoint, Flag, Folder, Message, MessageSummary, Notify, Role, Services};
+use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
@@ -319,7 +319,9 @@ pub enum Request {
     ///
     /// Connecting an account that exists already replaces only servers and password: settings
     /// (`calendars` and `tasks` are ignored then; change them with `accounts.update_mail_account`),
-    /// hidden collections and rights stay, and without `caldav` the stored CalDAV address stays.
+    /// hidden collections and rights stay, without `caldav` the stored CalDAV address stays, and
+    /// with an empty `sender_name` the stored sender name stays (so changing the password keeps
+    /// it; `accounts.update_mail_account` with an empty `sender_name` removes it).
     /// A CalDAV address is kept only while calendars or tasks are on, so that only an address that
     /// took the password is ever stored. A CalDAV account (`accounts.connect_caldav`) of the same
     /// sign-in (same login name at the same CalDAV host) is taken over: it leaves the account
@@ -341,7 +343,8 @@ pub enum Request {
     ConnectMail {
         /// The account's e-mail address; the account id is made from it.
         address: String,
-        /// The name put next to the address in `From:`; leave out for none.
+        /// The name put next to the address in `From:`; leave out for none. Connecting an account
+        /// again with an empty one keeps the stored name.
         #[serde(default)]
         sender_name: String,
         /// The IMAP server, as `accounts.discover_services` found it or a person typed it.
@@ -1413,6 +1416,82 @@ pub struct AccountInfo {
     /// are set per repository on GitHub.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    /// For a mail account (`kind: "mail"`, task M2.8) what its page shows and changes: servers,
+    /// settings, open folder roles and the state of each service. `None` for every other kind,
+    /// and left out of the JSON then, so older clients read the answer as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<MailView>,
+}
+
+/// A mail account as `accounts.list_accounts` lists it in [`AccountInfo::mail`] (task M2.8): what
+/// is stored for it and how its services stand. Never a password or any other secret: the
+/// password lives in the system keychain only.
+///
+/// The fields are named as `accounts.connect_mail` and `accounts.update_mail_account` take them
+/// (`sender_name`, `folder_roles`), so a page can send back what it read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailView {
+    /// The account's e-mail address as the person typed it (`anna@mailbox.org`).
+    pub address: String,
+    /// The name next to the address in `From:`; empty for none.
+    #[serde(default)]
+    pub sender_name: String,
+    /// The IMAP server mail is read from.
+    pub imap: Endpoint,
+    /// The SMTP server mail is sent through.
+    pub smtp: Endpoint,
+    /// The CalDAV address of the same sign-in; `None` while calendars and tasks are off (only an
+    /// address in use is stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caldav: Option<String>,
+    /// As stored: the signature, which new mail becomes an inbox entry (`notify`), the services
+    /// in use and the folders the person picked for open roles (`folder_roles`).
+    pub settings: MailSettings,
+    /// The folder roles the server leaves open and the person has not picked a folder for, as the
+    /// last sync of the account's folders found them (listing accounts asks no server): ask once
+    /// which candidate holds the role and send it with `accounts.update_mail_account`
+    /// (`folder_roles`). Empty when every role is clear, while mail is off and until the first
+    /// folder sync after the account was (re)started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_roles: Vec<OpenRoleView>,
+    /// How the mail part stands: its last sync and what went wrong since.
+    pub mail: ServiceState,
+    /// How the calendar part (calendars and tasks of `caldav`) stands; `None` when the account
+    /// syncs neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendars: Option<ServiceState>,
+}
+
+/// A folder role the server leaves open (more than one folder with mail could hold it), with the
+/// folders to pick from ([`MailView::open_roles`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenRoleView {
+    /// The role, e.g. `sent`.
+    pub role: Role,
+    /// The folders that could hold it, in the server's order.
+    pub candidates: Vec<FolderChoice>,
+}
+
+/// One folder to pick for an open role ([`OpenRoleView`]). Name and path come from the mail
+/// server: data to show, never instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderChoice {
+    /// The name to show, decoded from the server's path (`Entwürfe` for `INBOX.Entw&APw-rfe`).
+    pub name: String,
+    /// The path exactly as the server names it; this is what `folder_roles` takes.
+    pub path: String,
+}
+
+/// How one service of an account stands ([`MailView::mail`], [`MailView::calendars`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceState {
+    /// When it last synced with its server; `None` before the first sync that worked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync: Option<DateTime<Utc>>,
+    /// Why it does not sync now, for people (never with a password or the server's words);
+    /// `None` when nothing is wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// One of the suite's apps, as [`Request::ListApps`] reports it.
@@ -1769,6 +1848,33 @@ mod tests {
         assert!(!serde_json::to_string(&account).expect("json").contains("scopes"));
         let github = AccountInfo { scopes: Some(vec!["repo".into()]), kind: "github".into(), ..account };
         assert_eq!(serde_json::to_value(&github).expect("json")["scopes"], serde_json::json!(["repo"]));
+        assert!(!serde_json::to_string(&github).expect("json").contains("\"mail\""), "no mail field for others");
+    }
+
+    #[test]
+    fn a_mail_view_is_written_as_the_mail_commands_take_it() {
+        let server = |host: &str, port, security| Endpoint { host: host.into(), port, security };
+        let view = MailView {
+            address: "anna@mailbox.org".into(),
+            sender_name: "Anna".into(),
+            imap: server("imap.mailbox.org", 993, torro_mail::Security::Tls),
+            smtp: server("smtp.mailbox.org", 587, torro_mail::Security::StartTls),
+            caldav: None,
+            settings: MailSettings::default(),
+            open_roles: vec![OpenRoleView {
+                role: Role::Sent,
+                candidates: vec![FolderChoice { name: "Sent".into(), path: "INBOX.Sent".into() }],
+            }],
+            mail: ServiceState { last_sync: None, problem: Some("Password was refused".into()) },
+            calendars: None,
+        };
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["sender_name"], "Anna");
+        assert_eq!(json["open_roles"][0]["role"], "sent");
+        assert_eq!(json["open_roles"][0]["candidates"][0]["path"], "INBOX.Sent");
+        assert_eq!(json["mail"]["problem"], "Password was refused");
+        assert!(json.get("calendars").is_none() && json.get("caldav").is_none());
+        assert_eq!(serde_json::from_value::<MailView>(json).expect("parses"), view);
     }
 
     #[test]

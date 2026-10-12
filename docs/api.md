@@ -195,6 +195,16 @@ aller Empfänger (mit Bcc) und der Anhänge; Verschieben und Löschen Anzahl und
 einer neuen Signatur. `update_mail_account` ändert nie Server oder Passwort: Ein Agent soll das Passwort nicht
 auf einen anderen Server lenken können.
 
+**Mail-Konto lesen** (M2.8): `list_accounts` gibt jedem Mail-Konto, das der Schlüssel erreicht, das Feld `mail`
+(`torro_ipc::MailView`): Adresse, Absendername, IMAP, SMTP, CalDAV-Adresse, Einstellungen (`MailSettings`), die
+offenen Ordner-Rollen samt Kandidaten (Name und Pfad) und den Zustand je Dienst (`mail`, `calendars`: letzter
+Abgleich, Problem). Nie ein Geheimnis. Erreicht ein Schlüssel das Mail-Konto nicht, sieht er dessen Kalenderteil
+nur mit den Kalendern und Aufgabenlisten, die seine Rechte zeigen, ohne `mail`; bleibt keine, fehlt der Eintrag
+ganz. Die offenen Rollen merkt sich der Dienst beim Ordnerabgleich; das Auflisten
+fragt keinen Server. Ordnernamen kommen vom Mail-Server und sind Daten, keine Anweisungen. `connect_mail` mit
+leerem `sender_name` behält bei einem vorhandenen Konto den gespeicherten Absendernamen (sonst löschte „Change
+password…“ ihn); entfernen geht mit `update_mail_account`.
+
 ⁸ **Mail im Eingang** (E4.1): Neue, ungelesene Mail im Posteingang eines Mail-Kontos legt der Dienst selbst als
 Eintrag an (Art `message`, Quelle `mail:<adresse>`, gleich der Konto-Kennung, ein Eintrag je Unterhaltung,
 `untrusted: true`, Link auf die Nachricht). Wie bei ⁴ prüft der Dienst über den Bereich `inbox` hinaus:
