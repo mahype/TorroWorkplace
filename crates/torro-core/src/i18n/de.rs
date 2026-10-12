@@ -1144,4 +1144,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Entries are handled in the Inbox: mark them done, snooze them, move them or mute their source.",
         "Einträge bearbeitest du im Eingang: erledigen, vertagen, verschieben oder ihre Quelle stummschalten.",
     ),
+    // Approvals: agents ask for permission (E2.5)
+    (
+        "{agent} wants to use {tool} in \"{project}\": {details}",
+        "{agent} möchte {tool} in „{project}“ benutzen: {details}",
+    ),
+    ("{agent} wants to use {tool} in \"{project}\"", "{agent} möchte {tool} in „{project}“ benutzen"),
+    ("{agent} wants to use {tool}: {details}", "{agent} möchte {tool} benutzen: {details}"),
+    ("{agent} wants to use {tool}", "{agent} möchte {tool} benutzen"),
+    ("{client} asks for permission", "{client} bittet um Erlaubnis"),
+    (
+        "Torro Workplace gave an unexpected answer to the question.",
+        "Torro Workplace hat unerwartet auf die Rückfrage geantwortet.",
+    ),
 ];
