@@ -477,7 +477,7 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 - Abnahme: Galerie zeigt alle Zustände hell und dunkel; `scripts/design-check.sh` sauber.
 
 ### G.11 Dialog „GitHub filter list“ neu: Repo zuerst, Werte zum Anklicken
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.8, G.9, G.10 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs`,
   `crates/torro-gui/src/ui_state.rs` (zuletzt gewähltes Repo)
 - Aufbau wie im Entwurf oben. Die Anfrage bleibt die Wahrheit (G.4): das Formular schreibt nur die Wörter, die es

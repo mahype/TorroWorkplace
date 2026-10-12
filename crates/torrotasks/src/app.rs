@@ -60,11 +60,15 @@
 //! New lists (task G.8): one "New list…" under all lists of the sidebar and in the navigation menu
 //! opens the dialog of `new_list.rs`, which asks what to make. A task list it makes itself
 //! (`tasks.create_list`); the app then shows the new list and says "List “{name}” created". For a
-//! GitHub filter list it hands over to the filter list dialog, for the first GitHub account.
+//! GitHub filter list it hands over to the filter list dialog, with all GitHub accounts to choose
+//! from and a back arrow to the choice.
 //!
-//! GitHub filter lists (task G.4): the "…" menu in the head of a filter list has "Edit filter…" and
-//! "Delete list…". The dialog itself is `filter.rs`; the app only opens it, runs its tasks and acts
-//! on its [`filter::Outcome`] (show the saved list, leave a deleted one, reload after a conflict).
+//! GitHub filter lists (tasks G.4, G.11): the "…" menu in the head of a filter list has "Edit
+//! filter…" and "Delete list…". The dialog itself is `filter.rs`; the app only opens it, runs its
+//! tasks and acts on its [`filter::Outcome`] (show the saved list, leave a deleted one, reload after
+//! a conflict, back to the choice). The repository chosen last for a filter list is the app's: read
+//! from `ui.json` at start, preselected in the next new list, written when a list is created or saved
+//! (not in the demo, which stores nothing).
 //!
 //! Manual order (task P.3b): a single writable list can be ordered by hand – Display › Order "Due
 //! date" / "Manual", stored per list in the suite settings (`settings.set_setting` `list_order`,
@@ -177,10 +181,18 @@ pub enum Open {
     /// The first filter list with its first row dragged onto the first writable list of the
     /// sidebar, which shows the ring of a drop target (task G.6c).
     Drop,
-    /// The dialog "New filter list" of the first GitHub account.
+    /// The dialog "New GitHub filter list" of the first GitHub account, as after the choice.
     FilterNew,
+    /// The same with the list of repositories open.
+    FilterRepos,
     /// The dialog "Edit filter list" of the first filter list, shown behind it.
     FilterEdit,
+    /// "Edit filter list" of the first filter list scrolled to its end: name, colour, "GitHub
+    /// search" with the searches.
+    FilterSearch,
+    /// The dialog "Edit filter list" of the first filter list with one search in one repository
+    /// ("Torro bugs" in the demo): its labels chosen as chips.
+    FilterRepo,
     /// The question before deleting the first filter list.
     FilterDelete,
     /// "New list…": the choice between a task list and a GitHub filter list (task G.8).
@@ -199,7 +211,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 23] = [
+    const ALL: [(&'static str, Open); 26] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -215,7 +227,10 @@ impl Open {
         ("drag", Open::Drag),
         ("drop", Open::Drop),
         ("filter-new", Open::FilterNew),
+        ("filter-repos", Open::FilterRepos),
         ("filter-edit", Open::FilterEdit),
+        ("filter-repo", Open::FilterRepo),
+        ("filter-search", Open::FilterSearch),
         ("filter-delete", Open::FilterDelete),
         ("new-list", Open::NewList),
         ("new-task-list", Open::NewTaskList),
@@ -583,6 +598,9 @@ pub struct App {
     filter_dialog: Option<filter::Dialog>,
     /// "New list…", while it is open (task G.8).
     new_list: Option<new_list::Dialog>,
+    /// The repository chosen last for a GitHub filter list (task G.11), for every account: from
+    /// `ui.json`, preselected in a new filter list.
+    last_repo: Option<String>,
     /// "List “{name}” created" after a task list was made.
     created: Option<Created>,
     /// How the task lists are ordered (Display › Order, task P.3b), by list id; a list not named
@@ -659,6 +677,8 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
+    /// The repository chosen last for a filter list, read from `ui.json` at start.
+    LastRepo(Option<String>),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, the detail's editor, the detail.
@@ -834,6 +854,7 @@ impl App {
             notice: None,
             filter_dialog: None,
             new_list: None,
+            last_repo: None,
             created: None,
             list_orders: BTreeMap::new(),
             orders_saving: 0,
@@ -841,8 +862,15 @@ impl App {
             drag: None,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The demo stores nothing and reads no repository of the user's: its pictures stay the same.
+        let last_repo = if app.source.is_demo() {
+            Task::none()
+        } else {
+            ui_state::load_last_repo_task(AppId::TASKS).map(Message::LastRepo)
+        };
         let task = Task::batch([
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
+            last_repo,
             app.fetch_account(),
             app.fetch_appearance(),
             app.fetch_list_orders(),
@@ -1174,9 +1202,10 @@ impl App {
             }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::LastRepo(repo) => self.last_repo = repo,
             Message::CloseMenu => self.close_menus(),
             Message::Escape if self.filter_dialog.is_some() => {
-                return self.update(Message::Filter(filter::Message::Cancel));
+                return self.update(Message::Filter(filter::Message::Escape));
             }
             Message::Escape if self.new_list.is_some() => {
                 return self.update(Message::NewList(new_list::Message::Cancel));
@@ -2105,7 +2134,10 @@ impl App {
                 .find(|c| c.source.as_ref().is_some_and(|s| s.problem.is_some()))
                 .or_else(|| filter_lists().next()),
             Some(Open::Pinned) => filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty())),
-            Some(Open::FilterEdit | Open::FilterDelete) => filter_lists().next(),
+            Some(Open::FilterEdit | Open::FilterSearch | Open::FilterDelete) => filter_lists().next(),
+            Some(Open::FilterRepo) => filter_lists().find(|c| {
+                c.source.as_ref().is_some_and(|s| matches!(s.queries.as_slice(), [q] if filter::repos_of(q).len() == 1))
+            }),
             _ => None,
         }
         .map(|list| list.id.clone());
@@ -2113,13 +2145,22 @@ impl App {
             self.filter = Filter::List(id);
         }
         let dialog = match (self.launch.open, filter_list) {
-            (Some(Open::FilterEdit), Some(id)) => Some(filter::Open::Edit(id)),
+            (Some(Open::FilterEdit | Open::FilterRepo | Open::FilterSearch), Some(id)) => Some(filter::Open::Edit(id)),
             (Some(Open::FilterDelete), Some(id)) => Some(filter::Open::Delete(id)),
-            (Some(Open::FilterNew), _) => self.github_accounts().next().map(|a| filter::Open::New(a.id.clone())),
+            (Some(Open::FilterNew | Open::FilterRepos), _) => {
+                self.github_accounts().next().map(|a| filter::Open::New(a.id.clone()))
+            }
             _ => None,
         };
         if let Some(open) = dialog {
-            return self.open_filter_dialog(open);
+            let opened = self.open_filter_dialog(open);
+            return match self.launch.open {
+                Some(Open::FilterRepos) => {
+                    Task::batch([opened, self.update(Message::Filter(filter::Message::TogglePicker))])
+                }
+                Some(Open::FilterSearch) => Task::batch([opened, operation::snap_to_end(filter::FORM_SCROLL)]),
+                _ => opened,
+            };
         }
         match self.launch.open {
             Some(Open::NewList) => return self.update(Message::OpenNewList),
@@ -2161,27 +2202,35 @@ impl App {
         self.accounts.iter().filter(|a| a.kind == GITHUB_KIND && matches!(a.state, AccountState::Connected { .. }))
     }
 
-    /// Opens the dialog of a filter list (`filter.rs`): a new list of a GitHub account, or "Edit
-    /// filter…" / "Delete list…" of a filter list. Unknown ids open nothing.
+    /// Opens the dialog of a filter list (`filter.rs`) and asks for what it needs: a new list –
+    /// first of the GitHub account `id`, the others as chips, the repository chosen last
+    /// preselected, a back arrow to the choice of "New list…" –, or "Edit filter…" / "Delete
+    /// list…" of a filter list. Unknown ids open nothing.
     fn open_filter_dialog(&mut self, open: filter::Open) -> Task<Message> {
         self.close_menus();
         let owner = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str());
         let list = |id: &str| self.collections.iter().find(|c| c.id == id);
-        let (dialog, focus) = match open {
+        let dialog = match open {
             filter::Open::New(id) => {
-                let account = self.accounts.iter().find(|a| a.id == id);
-                (account.map(|a| filter::Dialog::new_list(a.id.clone(), account_title(a))), true)
+                let accounts = self
+                    .github_accounts()
+                    .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a) })
+                    .collect();
+                let start = filter::Start { accounts, account: id, last_repo: self.last_repo.clone(), back: true };
+                filter::Dialog::new_list(start)
             }
             filter::Open::Edit(id) => {
                 let edit =
                     |(list, a): (&Collection, &PimAccount)| filter::Dialog::edit(list, a.id.clone(), account_title(a));
-                (list(&id).zip(owner(&id)).and_then(edit), false)
+                list(&id).zip(owner(&id)).and_then(edit)
             }
-            filter::Open::Delete(id) => (list(&id).and_then(filter::Dialog::delete), false),
+            filter::Open::Delete(id) => list(&id).and_then(filter::Dialog::delete),
         };
-        let opened = dialog.is_some();
         self.filter_dialog = dialog;
-        if opened && focus { operation::focus(filter::NAME_INPUT) } else { Task::none() }
+        match self.filter_dialog.as_mut() {
+            Some(dialog) => dialog.load(&self.source).map(Message::Filter),
+            None => Task::none(),
+        }
     }
 
     /// Hands `message` to the open filter list dialog and acts on its outcome: a saved list is
@@ -2196,10 +2245,15 @@ impl App {
                 self.filter_dialog = None;
                 task
             }
-            filter::Outcome::Saved(id) => {
+            filter::Outcome::Back => {
                 self.filter_dialog = None;
+                self.new_list = Some(new_list::Dialog::new(self.list_offer()));
+                task
+            }
+            filter::Outcome::Saved(id) => {
+                let remember = self.filter_dialog.take().and_then(|dialog| dialog.repo_to_remember());
                 let show = self.update(Message::SetFilter(Filter::List(id)));
-                Task::batch([task, show, self.load()])
+                Task::batch([task, show, self.load(), self.remember_repo(remember)])
             }
             filter::Outcome::Deleted(id) => {
                 self.filter_dialog = None;
@@ -2209,6 +2263,17 @@ impl App {
             }
             filter::Outcome::Reload => Task::batch([task, self.load()]),
         }
+    }
+
+    /// Keeps `repo` as the repository chosen last for a filter list, for the next new one; stores it
+    /// in `ui.json` (not in the demo, which stores nothing).
+    fn remember_repo(&mut self, repo: Option<String>) -> Task<Message> {
+        let Some(repo) = repo else { return Task::none() };
+        self.last_repo = Some(repo.clone());
+        if self.source.is_demo() {
+            return Task::none();
+        }
+        ui_state::save_last_repo_task(AppId::TASKS, repo)
     }
 
     /// What "New list…" can offer: the connected accounts that hold task lists (every kind but
@@ -2239,7 +2304,8 @@ impl App {
     }
 
     /// Hands `message` to the open "New list…" dialog and acts on its outcome: the filter list
-    /// dialog takes over for the first GitHub account, a new task list is shown and announced.
+    /// dialog takes over (first for the first GitHub account), a new task list is shown and
+    /// announced.
     fn new_list_message(&mut self, message: new_list::Message) -> Task<Message> {
         let Some(dialog) = self.new_list.as_mut() else { return Task::none() };
         let (task, outcome) = dialog.update(message, &self.source);
@@ -2250,7 +2316,6 @@ impl App {
                 self.new_list = None;
                 task
             }
-            // Until G.11 the filter list dialog belongs to one account: the first one.
             new_list::Outcome::GithubFilter => {
                 self.new_list = None;
                 let Some(account) = self.github_accounts().next().map(|a| a.id.clone()) else { return task };
@@ -4136,6 +4201,42 @@ mod tests {
         assert!(app.new_list.is_some());
         let _ = app.update(Message::Escape);
         assert!(app.new_list.is_none(), "Escape closes it");
+    }
+
+    #[test]
+    fn the_filter_dialog_goes_back_to_the_choice_and_remembers_its_repository() {
+        use torro_pim::demo::{GITHUB_ACCOUNT, TORRO_BUGS};
+        let design = "mahype/torro-design";
+        let repos = || {
+            let repos = iced::futures::executor::block_on(
+                DemoSource::new(NaiveDate::default()).list_github_repos(GITHUB_ACCOUNT.into()),
+            );
+            Message::Filter(filter::Message::Repos(GITHUB_ACCOUNT.into(), repos.map_err(|e| e.to_string())))
+        };
+        let mut app = launched_with_accounts(&["--demo", "--open", "new-list"]);
+        let _ = app.update(Message::NewList(new_list::Message::Pick(new_list::Kind::GithubFilter)));
+        let _ = app.update(Message::Filter(filter::Message::Back));
+        assert!(app.filter_dialog.is_none() && app.new_list.is_some(), "back to the choice");
+        let _ = app.update(Message::NewList(new_list::Message::Pick(new_list::Kind::GithubFilter)));
+        let _ = app.update(repos());
+        let _ = app.update(Message::Filter(filter::Message::PickRepo(design.into())));
+        let _ = app.update(Message::Filter(filter::Message::Saved(Ok(TORRO_BUGS.into()))));
+        assert_eq!(app.last_repo.as_deref(), Some(design), "remembered on saving");
+        // The next new list starts there.
+        let _ = app.update(Message::OpenFilterDialog(filter::Open::New(GITHUB_ACCOUNT.into())));
+        let _ = app.update(repos());
+        assert_eq!(app.filter_dialog.as_ref().and_then(filter::Dialog::repo_to_remember).as_deref(), Some(design));
+        // Escape closes the list of repositories before the dialog.
+        let _ = app.update(Message::Filter(filter::Message::TogglePicker));
+        let _ = app.update(Message::Escape);
+        assert!(app.filter_dialog.is_some());
+        let _ = app.update(Message::Escape);
+        assert!(app.filter_dialog.is_none());
+        // The states for pictures: the open list of repositories, a list of one repository.
+        let app = launched_with_accounts(&["--demo", "--open", "filter-repos"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Edit(_))));
+        let app = launched_with_accounts(&["--demo", "--open", "filter-repo"]);
+        assert_eq!(app.filter, Filter::List(TORRO_BUGS.into()));
     }
 
     #[test]
