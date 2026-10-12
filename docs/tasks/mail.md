@@ -269,7 +269,7 @@ ihre Texte im Bericht.
   Passwort in keinem Log und keinem Fehler.
 
 ### M2.5 Mail-Speicher im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.1 · **Dateien:** neu `crates/torroworkplace/src/mail/store.rs` (und
   `mail/mod.rs`)
 - SQLite (WAL, `rusqlite` gibt es schon) je Konto unter `<data>/mail/<konto-hash>.sqlite`, Dateien 0600:

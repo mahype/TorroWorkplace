@@ -34,6 +34,7 @@ mod daemon;
 mod hook;
 mod inbox;
 mod inbox_notify;
+mod mail;
 mod mcp;
 mod notify;
 mod pim;
