@@ -302,6 +302,20 @@ K.21 (frei)
 - Abnahme: Tests mit aufgezeichneten Antworten (schließen, öffnen, PR abgelehnt, fehlendes Token-Recht);
   Rechte: Client ohne das Repo bzw. ohne `github`-Schreiben → `not-found` bzw. `forbidden`.
 
+### G.5b Freigabe sagt „Close GitHub issue“ (aus der API-Prüfung von G.5)
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** G.5 · **Dateien:** `crates/torroworkplace/src/{approvals,pim,core}.rs`, `crates/torro-pim-github/src/graphql.rs`
+- **Fehler (mittel):** Braucht `tasks.save_todo` auf einem Issue einer Filterliste eine Freigabe, zeigt sie heute
+  „Change task "…" in "…"“ (`approvals.rs` `todo_saved`, Facts aus `pim.rs` ~1414) – nicht, dass ein Issue auf
+  GitHub geschlossen bzw. wieder geöffnet wird, und mit dem `summary` aus der Client-Eingabe, obwohl eine
+  Titeländerung dort nie liefe. Die Zusammenfassung muss zeigen, was wirklich passiert: Facts bekommen das
+  Merkmal „GitHub-Issue“ mit `owner/repo#n`; Text „Close GitHub issue "{title}" ({repo}#{n})“ bzw. „Reopen …“,
+  Titel aus dem Cache, ohne Client-`summary`.
+- Test: Freigabe offen → GitHub-Schreibrecht entzogen → zugestimmt ⇒ `forbidden`, an GitHub geht nichts.
+- `graphql.rs` `change_error`: im Doc-Kommentar festhalten, dass nur `errors[0]` gelesen wird.
+- **Oberfläche/API/MCP:** keine neuen Requests. Neue Texte englisch mit `tr()` (Freigaben sieht der Mensch).
+- Abnahme: Tests für beide Texte (schließen/öffnen), Client-`summary` taucht nicht auf, Entzug vor Zustimmung.
+
 ### G.6 Verweise: Issues in eigene Listen holen
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** G.2, P.2, P.3a · **Dateien:** `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
