@@ -1109,4 +1109,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Showing the first 1,000 matches", "Die ersten 1.000 Treffer werden angezeigt"),
     ("Unpin", "Anheften aufheben"),
     ("Unpin failed: {error}", "Anheften aufheben fehlgeschlagen: {error}"),
+    // Notifications: inbox popups and quiet (E3.4)
+    ("Snooze 1 h", "1 Std. vertagen"),
+    ("Open inbox", "Eingang öffnen"),
+    ("{n} new for you", "{n} neu für dich"),
+    ("While you were in “{event}”: {n} for you", "Während „{event}“: {n} für dich"),
+    ("While you were in busy events: {n} for you", "Während deiner Termine: {n} für dich"),
+    ("Open the inbox to see them.", "Im Eingang ansehen."),
 ];
