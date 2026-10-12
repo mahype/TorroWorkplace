@@ -712,6 +712,7 @@ impl Request {
             Request::UpdateClient { .. } => &UPDATE_CLIENT,
             Request::NewClientKey { .. } => &NEW_KEY,
             Request::RemoveClient { .. } => &REMOVE_CLIENT,
+            Request::ClientActivity { .. } => &CLIENT_ACTIVITY,
             Request::ListApprovals => &LIST_APPROVALS,
             Request::ApprovalStatus { .. } => &APPROVAL_STATUS,
             Request::DecideApproval { .. } => &DECIDE_APPROVAL,
@@ -794,6 +795,7 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_CLIENT,
     &NEW_KEY,
     &REMOVE_CLIENT,
+    &CLIENT_ACTIVITY,
     &LIST_APPROVALS,
     &APPROVAL_STATUS,
     &DECIDE_APPROVAL,
@@ -1222,6 +1224,15 @@ static REMOVE_CLIENT: Command = Command {
     description: "Removes a client and its key from this device. The key stops working at once.",
 };
 
+static CLIENT_ACTIVITY: Command = Command {
+    name: "clients.activity",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Lists the latest requests of a client from the audit log, newest first: time, command, the ids it \
+                  named and the result. The log holds no titles, search terms or texts.",
+};
+
 // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). Every key reads its own; deciding
 // is never an MCP tool and only for the app key ("Was nie nach außen geht", 3): an agent must never
 // approve its own commands.
@@ -1498,6 +1509,7 @@ mod tests {
             Request::UpdateClient { id: "3fa9c1d2".into(), rights: RightsTemplate::ReadOnly.rights() },
             Request::NewClientKey { id: "3fa9c1d2".into() },
             Request::RemoveClient { id: "3fa9c1d2".into() },
+            Request::ClientActivity { id: "3fa9c1d2".into() },
             Request::ListApprovals,
             Request::ApprovalStatus { id: "9c1f0a7e3b2d4c58".into() },
             Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true },

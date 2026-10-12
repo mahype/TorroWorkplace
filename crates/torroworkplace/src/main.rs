@@ -19,6 +19,7 @@ use torro_core::AppId;
 mod account;
 mod approvals;
 mod apps;
+mod audit;
 mod cli;
 mod clients;
 mod core;

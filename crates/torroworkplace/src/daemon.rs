@@ -367,6 +367,7 @@ fn describe(request: &Request) -> String {
         Request::UpdateClient { id, .. } => format!("update client {id}"),
         Request::NewClientKey { id } => format!("new key for client {id}"),
         Request::RemoveClient { id } => format!("remove client {id}"),
+        Request::ClientActivity { id } => format!("activity of client {id}"),
         Request::ListApprovals => "approvals".into(),
         Request::ApprovalStatus { id } => format!("approval {id}"),
         Request::DecideApproval { id, allow } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),

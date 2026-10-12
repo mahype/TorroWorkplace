@@ -686,6 +686,7 @@ impl PimService {
             | Request::UpdateClient { .. }
             | Request::NewClientKey { .. }
             | Request::RemoveClient { .. }
+            | Request::ClientActivity { .. }
             | Request::ListApprovals
             | Request::ApprovalStatus { .. }
             | Request::DecideApproval { .. } => return None,

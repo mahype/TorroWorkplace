@@ -189,10 +189,12 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Dienst im Temp-Verzeichnis (`tools/list`, ein Lese-, ein Schreib-Tool, `forbidden`).
 
 ### A.5 Protokoll
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.1 · **Dateien:** `crates/torroworkplace/src/audit.rs` (neu), `crates/torroworkplace/src/core.rs`
 - `audit.jsonl` (0600, ohne Inhalte, Rotation bei 5 MB), „zuletzt benutzt“ je Client,
   `clients.activity { id }`.
+- **Oberfläche:** Karte des Clients (A.6) · **API:** `Request::ClientActivity` · `clients.activity` · Zugriff Admin
+  · **MCP:** Never („Was nie nach außen geht“, 2: `clients.*`).
 
 ### A.6 Steuerzentrale: Agents & API
 - [ ] erledigt

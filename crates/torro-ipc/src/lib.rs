@@ -398,6 +398,12 @@ pub enum Request {
     /// [`Response::Ok`]; an unknown id is `not-found`.
     #[serde(rename = "clients.remove_client")]
     RemoveClient { id: String },
+    /// The latest requests of the client `id` from the core's audit log (`audit.jsonl`, task
+    /// A.5), newest first, at most 50: time, command, the ids it named and its result, never a
+    /// content ([`Response::Activity`]). An unknown id is `not-found`; an unreadable log is
+    /// `error`.
+    #[serde(rename = "clients.activity")]
+    ClientActivity { id: String },
 
     // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). A client command that needs
     // a person's approval is answered with [`Response::Pending`]; the core keeps it in
@@ -667,6 +673,10 @@ pub enum Response {
     Clients {
         clients: Vec<ClientInfo>,
     },
+    /// What one client did lately ([`Request::ClientActivity`]), newest first.
+    Activity {
+        entries: Vec<ActivityEntry>,
+    },
     /// A new client or a new key: the only answer that ever carries a client key, and only to
     /// the app key. Show or store it now; the core cannot tell it again.
     ClientKey {
@@ -826,6 +836,35 @@ pub struct ClientInfo {
     /// was created ([`Request::CreateClient`]). `None` for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentKind>,
+}
+
+/// One line of the core's audit log (`audit.jsonl` in its state directory, task A.5): one request
+/// of a client key, or the run of one it asked a person for. It never holds a content: no titles,
+/// names, search terms, texts, thread keys, summaries, requests or answers (`docs/api.md`,
+/// "Protokoll"). Requests of the app key are not logged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEntry {
+    /// When the core answered.
+    pub time: DateTime<Utc>,
+    /// The client ([`ClientInfo::id`]); `None` for a key the core does not know (`unauthorized`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// The command's catalogue name: `calendar.delete_event`.
+    pub command: String,
+    /// What the command named, each as `kind:value`: `collection:<id>`, `account:<id>`,
+    /// `inbox:<id>`, `approval:<id>`, `client:<id>`, `rule:<id>`, `source:<source>`,
+    /// `setting:<key>`, `app:<binary>`, and `item:<hash>` or `template:<hash>` (16 hex digits of
+    /// a SHA-256) for ids that can carry a readable name (CalDAV hrefs, issue URLs, template ids
+    /// made from the template's name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
+    /// `ok`, `pending` (waits for a person), `denied` (a person said no), or the error code
+    /// (`forbidden`, `not-found` …).
+    pub result: String,
+    /// The approval the request waits for or ran with ([`ApprovalInfo::id`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
 }
 
 /// One approval: a client's command that waits for a person, or did.

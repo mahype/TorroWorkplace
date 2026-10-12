@@ -4,6 +4,8 @@
 //! check first ([`Core::handle_from`]); the tray menu runs inside the core and needs none.
 //! A client's command that needs a person's approval waits as an open approval
 //! ([`crate::approvals`]) and runs when the app key allows it (`approvals.decide_approval`).
+//! Every request of a client key, and every run of one a person allowed, gets a line in the audit
+//! log without any content ([`crate::audit`]).
 
 use std::sync::Arc;
 
@@ -23,6 +25,7 @@ use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::approvals::{Approvals, ApprovalsError, Decision, Facts};
+use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::Inbox;
 use crate::pim::{Definition, PimService, Reach};
@@ -118,6 +121,9 @@ pub struct Core {
     /// The inbox (task E1.2): the user's `inbox.sqlite` ([`Inbox::system`]); tests keep theirs
     /// in a temporary directory. Shared with the routine of the source `suite` (task E2.1).
     inbox: Arc<Inbox>,
+    /// The audit log of the client keys' requests (task A.5): the user's `audit.jsonl`
+    /// ([`Audit::system`]); tests keep theirs in a temporary directory.
+    audit: Arc<Audit>,
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
@@ -143,6 +149,7 @@ impl Core {
             clients,
             approvals: Arc::new(Approvals::system()),
             inbox: Arc::new(Inbox::system()),
+            audit: Arc::new(Audit::system()),
             github: Arc::new(GithubAccounts::system()),
             start_control_centre,
         }
@@ -159,6 +166,13 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_inbox(mut self, inbox: Inbox) -> Core {
         self.inbox = Arc::new(inbox);
+        self
+    }
+
+    /// The core with `audit` instead of the user's, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn with_audit(mut self, audit: Audit) -> Core {
+        self.audit = Arc::new(audit);
         self
     }
 
@@ -234,10 +248,48 @@ impl Core {
     /// applies from the next request on, also in the middle of an agent's session. A request
     /// that already passed runs with the rights it was admitted with. An approved command runs
     /// with the rights and collections of the moment a person allows it ([`Core::run_approved`]).
+    ///
+    /// Every request that does not come with the app key gets a line in the audit log
+    /// ([`crate::audit`]) once it is answered, refused ones too: its client (none for an unknown
+    /// key), command, ids and result. A ping without a valid key is not logged: nothing ran and
+    /// nobody is known.
     pub async fn handle_from(&self, key: Option<&Key>, request: Request) -> Result<Response, Refused> {
-        let Caller::Client { id, rights } = self.clients.admit(key, &request)? else {
-            return Ok(self.handle(request).await);
+        let (client, admitted) = match self.clients.admit(key, &request) {
+            Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
+            Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
+            Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
+            Err(refused) => (self.client_of(key), Err(refused)),
         };
+        let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
+        let answer = match admitted {
+            Ok((id, rights)) => self.handle_client(id, rights, request).await,
+            Err(refused) => Err(refused),
+        };
+        let shown = match &answer {
+            Ok(response) => crate::audit::entry(client, command, ids, response, Utc::now()),
+            Err(refused) => crate::audit::entry(client, command, ids, &refused.response(), Utc::now()),
+        };
+        self.audit.record(&shown);
+        answer
+    }
+
+    /// The id of the client whose `key` was refused a command, for its line in the audit log.
+    /// `system.ping` is open to every client key ([`Clients::admit`]), so admitting it tells whose
+    /// key it is; nothing runs.
+    fn client_of(&self, key: Option<&Key>) -> Option<String> {
+        match self.clients.admit(key, &Request::Ping) {
+            Ok(Caller::Client { id, .. }) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Steps 2 to 4 of [`Core::handle_from`] for the client `id`, admitted with `rights`.
+    async fn handle_client(
+        &self,
+        id: String,
+        rights: torro_ipc::api::Rights,
+        request: Request,
+    ) -> Result<Response, Refused> {
         // Which approvals there are depends on who asks, not on what it may see.
         match &request {
             Request::ListApprovals => return Ok(self.list_approvals(Some(&id)).await),
@@ -348,10 +400,27 @@ impl Core {
         }
         let (client, request) = match decided {
             Ok(Decision::Run { client, request }) => (client, *request),
-            Ok(Decision::Denied(approval)) => return Response::Approval { approval },
+            Ok(Decision::Denied(approval)) => {
+                let denied = torro_ipc::ActivityEntry {
+                    time: Utc::now(),
+                    client: Some(approval.client.clone()),
+                    command: approval.command.clone(),
+                    ids: Vec::new(),
+                    result: "denied".into(),
+                    approval: Some(approval.id.clone()),
+                };
+                self.audit.record(&denied);
+                return Response::Approval { approval };
+            }
             Err(err) => return err.response(),
         };
+        let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
         let response = self.run_approved(&client, request).await;
+        // The run is the client's request, logged with the approval it ran with; the answer
+        // itself stays out of the log (it holds titles).
+        let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
+        ran.approval = Some(id.to_string());
+        self.audit.record(&ran);
         match self.approvals.finish(id, response, Utc::now()).await {
             Ok(approval) => Response::Approval { approval },
             Err(err) => err.response(),
@@ -542,6 +611,7 @@ impl Core {
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => done(self.clients.remove(&id).await),
+            Request::ClientActivity { id } => self.client_activity(id).await,
             // A client's own approvals are answered in `handle_from`, which knows who asks; here a
             // client sees none, and it never decides.
             Request::ListApprovals if client => Response::Approvals { approvals: Vec::new() },
@@ -568,6 +638,20 @@ impl Core {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 Reach::Suite => self.inbox.handle(request, None, Utc::now()),
             },
+        }
+    }
+
+    /// `clients.activity` (app key only): the latest lines of the client `id` in the audit log,
+    /// read on a blocking thread. `not-found` for a client the core does not know.
+    async fn client_activity(&self, id: String) -> Response {
+        if !self.clients.list().iter().any(|info| info.id == id) {
+            return Response::Error { code: "not-found".into(), message: format!("no client {id:?}") };
+        }
+        let audit = Arc::clone(&self.audit);
+        match tokio::task::spawn_blocking(move || audit.recent(&id)).await {
+            Ok(Ok(entries)) => Response::Activity { entries },
+            Ok(Err(err)) => err.response(),
+            Err(err) => Response::Error { code: "error".into(), message: format!("cannot read the audit log: {err}") },
         }
     }
 
@@ -2533,5 +2617,146 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), lane(true)).await), "forbidden");
         assert!(matches!(ask(&core, Some(&key), lane(false)).await, Response::Item { .. }));
         assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+    }
+
+    /// Task A.5: the core with an audit log in `dir/state/audit.jsonl`.
+    fn audited(dir: &std::path::Path) -> Core {
+        core(dir).with_audit(crate::audit::tests::audit_in(dir))
+    }
+
+    /// The lines of the audit log in `dir`, oldest first.
+    fn audit_lines(dir: &std::path::Path) -> Vec<torro_ipc::ActivityEntry> {
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir)).unwrap_or_default();
+        text.lines().map(|line| serde_json::from_str(line).expect("one entry per line")).collect()
+    }
+
+    /// Task A.5: allowed, refused, waiting and approved requests of a client get a line with
+    /// client, command, ids and result; titles, names, search terms, bodies, thread keys,
+    /// summaries and answers never reach the file, and the app key's requests are not logged.
+    #[tokio::test]
+    async fn the_audit_log_has_a_line_per_client_request_and_no_contents() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        core.store
+            .save(&torro_setups::Template {
+                schema_version: torro_setups::SCHEMA_VERSION,
+                id: "secret-plans".into(),
+                name: "Secret plans".into(),
+                wm: "hyprland".into(),
+                created: chrono::Utc::now(),
+                updated: chrono::Utc::now(),
+                source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
+                tree: None,
+                windows: vec![],
+            })
+            .expect("saved");
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (id, key) = client(&core, rights).await;
+
+        // Allowed, with a search term and a body that must not show.
+        let preview = Request::PreviewFilter { account: "github:anna".into(), queries: vec!["secret salary".into()] };
+        assert_eq!(code(&ask(&core, Some(&key), preview).await), "not-found");
+        let post = Request::PostItem {
+            kind: torro_inbox::Kind::Notice,
+            title: "Secret title".into(),
+            body: Some("Secret body".into()),
+            link: None,
+            lane: None,
+            thread_key: Some("secret-thread".into()),
+            agent: None,
+        };
+        let posted = ask(&core, Some(&key), post).await;
+        // Refused: by rights, and for an unknown key.
+        assert_eq!(code(&ask(&core, Some(&key), Request::ListClients).await), "forbidden");
+        let stranger = Key::new("torro_00000000_secret");
+        assert_eq!(code(&ask(&core, Some(&stranger), Request::Accounts).await), "unauthorized");
+        // Waiting, then run once a person allows it; its answer holds the new name.
+        let rename = Request::RenameTemplate { id: "secret-plans".into(), name: "Secret new name".into() };
+        let asked = waits(ask(&core, Some(&key), rename).await);
+        assert!(asked.summary.contains("Secret"), "the summary names the template: {}", asked.summary);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        // The app key's own requests are not logged.
+        ask(&core, Some(&app_key), Request::ListTemplates).await;
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["secret", "Secret", "salary", "Claude Code", "torro_"] {
+            assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
+        }
+        let lines = audit_lines(dir.path());
+        let shown: Vec<_> = lines
+            .iter()
+            .map(|e| (e.client.as_deref(), e.command.as_str(), e.result.as_str(), e.approval.as_deref()))
+            .collect();
+        let (posted, posted_approval) = crate::audit::outcome(&posted);
+        let template = format!("template:{}", crate::audit::hashed("secret-plans"));
+        assert_eq!(
+            shown,
+            vec![
+                (Some(id.as_str()), "tasks.preview_filter", "not-found", None),
+                (Some(id.as_str()), "inbox.post_item", posted.as_str(), posted_approval.as_deref()),
+                (Some(id.as_str()), "clients.list_clients", "forbidden", None),
+                (None, "accounts.list_accounts", "unauthorized", None),
+                (Some(id.as_str()), "workspaces.rename_template", "pending", Some(asked.id.as_str())),
+                (Some(id.as_str()), "workspaces.rename_template", "ok", Some(asked.id.as_str())),
+            ]
+        );
+        assert_eq!(lines[0].ids, vec!["account:github:anna".to_string()]);
+        assert_eq!(lines[1].ids, Vec::<String>::new());
+        assert_eq!((lines[4].ids.clone(), lines[5].ids.clone()), (vec![template.clone()], vec![template]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = crate::audit::tests::file_in(dir.path());
+            assert_eq!(std::fs::metadata(file).expect("exists").permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    /// Task A.5: a denied approval gets a line with its id; nothing ran.
+    #[tokio::test]
+    async fn a_denied_approval_is_logged_as_denied() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        save_template(&core, "dev");
+        let (id, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let asked = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        ask(&core, Some(&app_key), decide(&asked.id, false)).await;
+        let last = audit_lines(dir.path()).pop().expect("a line");
+        assert_eq!(
+            (last.client.as_deref(), last.command.as_str(), last.result.as_str(), last.approval.as_deref()),
+            (Some(id.as_str()), "workspaces.delete_template", "denied", Some(asked.id.as_str()))
+        );
+    }
+
+    /// Task A.5: `clients.activity` answers the app key with one client's lines, newest first;
+    /// a client key gets `forbidden` (agents never manage clients), an unknown id `not-found`.
+    #[tokio::test]
+    async fn the_activity_of_a_client_is_for_the_app_key_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (id, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let (other, other_key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        ask(&core, Some(&key), Request::Ping).await;
+        ask(&core, Some(&other_key), Request::Status).await;
+        ask(&core, Some(&key), Request::GetItem { id: "i1".into() }).await;
+
+        let activity = Request::ClientActivity { id: id.clone() };
+        assert_eq!(code(&ask(&core, Some(&key), activity.clone()).await), "forbidden");
+        let entries = match ask(&core, Some(&app_key), activity).await {
+            Response::Activity { entries } => entries,
+            other => panic!("expected the activity, got {other:?}"),
+        };
+        let commands: Vec<_> = entries.iter().map(|e| e.command.as_str()).collect();
+        // The refused request for the activity is the client's own latest line.
+        assert_eq!(commands, vec!["clients.activity", "inbox.get_item", "system.ping"]);
+        assert_eq!(entries[1].ids, vec!["inbox:i1".to_string()]);
+        assert!(entries.iter().all(|e| e.client.as_deref() == Some(id.as_str())));
+        assert_ne!(id, other);
+        let unknown = Request::ClientActivity { id: "nobody".into() };
+        assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found");
     }
 }
