@@ -708,6 +708,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::ResolveItems { thread_key } => {
             trf("Mark its own inbox entries of thread {thread} as done", &[("thread", &quote(thread_key))])
         }
+        Request::OpenItem { .. } => trf("Show {entry} on the screen", &[("entry", &entry())]),
         Request::SetItemDone { done: true, .. } => trf("Mark {entry} as done", &[("entry", &entry())]),
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
         Request::SnoozeItem { until: Some(until), .. } => trf(

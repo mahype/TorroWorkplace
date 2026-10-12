@@ -240,7 +240,10 @@ impl Inbox {
         let looked_up = self.with(|db| {
             let by_id = |id: &str| vec![text(id)];
             Ok(match request {
-                Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
+                Request::OpenItem { id }
+                | Request::SetItemDone { id, .. }
+                | Request::SnoozeItem { id, .. }
+                | Request::SetItemLane { id, .. } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, rule: None }
                 }
