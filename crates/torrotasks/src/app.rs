@@ -391,7 +391,7 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
 /// field without a submit action) are not taken by a field, so the status of the event alone does
 /// not tell that someone is typing; the fields are asked instead. A new text field in this window
 /// belongs here. (The title and notes editors take every key they get, so they need no entry.)
-const TEXT_FIELDS: [&str; 2] = [QUICK_ADD, detail::DUE_INPUT];
+const TEXT_FIELDS: [&str; 3] = [QUICK_ADD, detail::DUE_INPUT, detail::SUBTASK_INPUT];
 
 /// Whether one of [`TEXT_FIELDS`] has the focus. A field that is not on screen does not answer.
 fn typing() -> Task<bool> {
@@ -1175,6 +1175,21 @@ impl App {
                 }
                 Task::none()
             }
+            // R.3: a new sub-task, "Copy link" and ↑ ↓ in the detail's head.
+            detail::Action::Create(todo) => self.save(todo),
+            detail::Action::CopyLink(url) => iced::clipboard::write(url),
+            detail::Action::Previous => self.show_neighbour(false),
+            detail::Action::Next => self.show_neighbour(true),
+        }
+    }
+
+    /// ↑ ↓ in the detail's head: moves the cursor as the keys do and shows that task in the
+    /// detail; at the first or last row nothing changes.
+    fn show_neighbour(&mut self, forward: bool) -> Task<Message> {
+        let reveal = self.step(forward);
+        match self.cursor_index() {
+            Some(index) if Some(index) != self.selected => Task::batch([reveal, self.select(index)]),
+            _ => reveal,
         }
     }
 

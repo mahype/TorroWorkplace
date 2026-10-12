@@ -563,7 +563,7 @@ R.1 ─┬─ R.2 ─┐
   `redesign-*.png` in Breit (1600 und 1280), Mittel, Schmal, Mini, Leiste, hell und dunkel.
 
 ### R.3 Aufgaben-App: Detail und Eigenschaften
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** R.1 · **Dateien:** `crates/torrotasks/src/detail.rs` (nur kleine, gebündelte
   Verdrahtung in `app.rs`, im Bericht nennen)
 - `detail.rs` liefert drei Ansichten, die R.2 einsetzt: **Hauptspalte**, **Eigenschaften-Spalte** (Breit) und

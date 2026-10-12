@@ -1,60 +1,107 @@
-//! The detail of one task (K.15 in `docs/tasks/kalender-aufgaben.md`, Linear look from T.4 in
-//! `docs/tasks/design.md`, mock-up `docs/prototypes/linear/tasks.html`), shown in the side panel
-//! of `torro_gui::panel` (U.5): beside the list in the wide layout, over it in the medium and
-//! narrow ones.
+//! The detail of one task, in the Linear look of the tasks redesign (R.3 in `docs/tasks/design.md`,
+//! mock-up `docs/prototypes/tasks/redesign.html`). GitHub issues and pull requests (a task with a
+//! [`Link`] the core filled with [`GitHubDetails`]) show their state, repository, labels, checks
+//! and reviews.
 //!
-//! The panel ([`Detail::panel`]): the path "List › Filter" in its head, the title as a large
-//! borderless field (`HEADLINE`, wraps), the notes as a quiet field, the properties as rows
-//! (the same in every size), the subtasks (round check to tick them, a click on the title opens
-//! them) and, fixed in the footer, "Delete task" (`danger`, asks once).
+//! The detail comes in pieces that the app (`app.rs`) places by the size of the window:
 //!
-//! Properties: status (open/done), priority (None, Low = 9, Medium = 5, High = 1; stored values
-//! map to the nearest), due date, list and parent task. A click on a property opens its editor
-//! as a floating menu or card ([`Detail::layer`]); the due card offers Today, Tomorrow, Next week
-//! and No date as chips and a field for any date (`11.10.2026`, `today`, `tomorrow`).
+//! ```text
+//! Fit::Columns (wide, room for three columns)       Fit::Chips (medium) / Fit::Narrow
+//! ┌ head ─────────────────────────────────────────┐ ┌ head ──────────────────────┐
+//! │ ○ Work › Parent              ˄ ˅ … ✕          │ │ ○ Work › Parent  ˄ ˅ … ✕   │ (narrow: ‹ Today  ˄ ˅ …)
+//! ├ main_column ─────────────────┬ properties_col ┤ ├ main_column ───────────────┤
+//! │ ○ Title                      │ Status   ○ Open│ │ ○ Title                    │
+//! │   notes                      │ Priority ▂▄▆ …  │ │   [○ Open][▂ High][📅 …]   │ ← property_chips
+//! │ ˅ Sub-tasks ━━── 2/4         │ Organisation    │ │   notes                    │
+//! │ ˅ Checks / Reviews (PRs)     │ Source          │ │ ˅ Sub-tasks …              │
+//! └──────────────────────────────┴────────────────┘ └────────────────────────────┘
+//! ```
 //!
-//! Tags (`categories`) show as chips and a link (`url`, else the page of a GitHub `link`) as
-//! "Open link", which opens the browser (P.2 in `docs/tasks/github.md`). Both are read-only here
-//! and saved as loaded.
+//! - [`Detail::head`]: 44 high with the path "List › Parent" (only the real hierarchy), ↑ ↓ to the
+//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, Delete task – never for a
+//!   GitHub item) and ✕; in narrow windows "‹ <list view>" instead of path and ✕.
+//! - [`Detail::main_column`]: title with check or GitHub state, for GitHub the line "state ·
+//!   owner/repo#123", the [`Detail::property_chips`] unless the properties column is shown, the
+//!   notes, "Sub-tasks" (always, to add one), and for pull requests "Checks" and "Reviews" (the
+//!   combined state from [`GitHubDetails`]; single checks and reviewers come with G.2).
+//! - [`Detail::properties_column`]: the properties beside the main column (wide), blocks of
+//!   label | value rows: Status, Priority, Due · "Organisation" List, Parent, Labels · "Source"
+//!   Account, Repo, Assignees, Milestone, "Open on GitHub ↗". Values the model does not know yet
+//!   (reminder, repeat) are not shown, and nothing that cannot be set gets a placeholder row.
+//! - [`Detail::layer`]: the open property editor or the "…" menu, floating over the window.
+//! - [`Detail::panel`]: the older side panel of `torro_gui::panel`, built from the same pieces,
+//!   until the app places the pieces itself.
+//!
+//! Editing is as before: a click on a property opens its editor as a floating menu or card (due:
+//! Today, Tomorrow, Next week, No date and a field for any date such as `11.10.2026`, `today`).
+//! Only tasks in a writable list can be edited ([`Detail::lists`]); GitHub filter lists are
+//! read-only, so their items only show.
 //!
 //! Saving works like Linear: there is no Save button. A change of a property is saved at once;
 //! title and notes are saved a moment after typing stops ([`Detail::wants_autosave`]), on Enter
-//! in the title and when the detail is left ([`Detail::leave`]). Every save is the same
-//! [`Action::Save`] the panel always sent (the core's `save_todo`). Only one save is under way at
-//! a time: the server checks the etag, so the next save has to wait for the new one
-//! ([`Detail::stored`]). A title that is empty or a date that cannot be read is not saved; the
-//! hint appears only after a save was asked for (Enter, a property change, leaving).
+//! in the title and when the detail is left ([`Detail::leave`]). Every save is [`Action::Save`]
+//! (the core's `save_todo`). Only one save is under way at a time: the server checks the etag, so
+//! the next save has to wait for the new one ([`Detail::stored`]). A title that is empty or a
+//! date that cannot be read is not saved; the hint appears only after a save was asked for (Enter,
+//! a property change, leaving). A new sub-task is [`Action::Create`].
 
 use std::collections::HashSet;
 
 use chrono::{Days, Local, NaiveDate};
+use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
-use iced::widget::{button, checkbox, column, container, row, rule, scrollable, text_editor, text_input};
+use iced::widget::{button, checkbox, column, container, row, rule, scrollable, stack, svg, text_editor, text_input};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::panel::{self, Panel};
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{datetime, style, typo};
-use torro_pim::model::Link;
+use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
 use torro_pim::{Collection, EventTime, Todo};
 
 use crate::list;
 
 /// The id of the date field in the due card, so opening the card can focus it.
 pub const DUE_INPUT: &str = "detail-due";
+/// The id of the "Add sub-task" field. The app counts it among its text fields, so plain keys
+/// (↑ ↓ Space) typed there do not move through the list.
+pub const SUBTASK_INPUT: &str = "detail-subtask";
 /// The one-pixel lines of the design.
-const LINE: f32 = 1.0;
+const LINE: f32 = size::HAIRLINE;
 /// The parent menu shows at most this many entries and scrolls the rest.
 const PARENT_MENU_ROWS: f32 = 10.0;
+/// Edge of the mark in front of the title (check or GitHub state), and the width of the cell the
+/// marks of the sub-task, check and review rows stand in, so all share one axis (mock-up: 20).
+const TITLE_MARK: f32 = icon::SIZE + space::XS;
+/// Where the text under the title starts: past the title mark and its gap (mock-up `.ind`: 32).
+const INDENT: f32 = TITLE_MARK + space::M;
+/// Space above each section of the main column (Sub-tasks, Checks, Reviews; mock-up: 28).
+const SECTION_GAP: f32 = space::XL + space::XS;
+
+/// How the detail is laid out; the app picks it from the window (`layout::of` and the room left).
+#[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then only the panel uses Chips"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// Wide with room for three columns (list | main | properties): the properties stand in
+    /// [`Detail::properties_column`] beside the main column, which shows no chips.
+    Columns,
+    /// Medium, and wide without room for the properties column: the properties are chips under
+    /// the title ([`Detail::property_chips`]); 32 around the main column.
+    Chips,
+    /// Narrow: the detail replaces the list. Chips as in [`Fit::Chips`], 16 around the main
+    /// column, and the head has "‹ <list view>" instead of the path and ✕.
+    Narrow,
+}
 
 /// The panel's state.
 #[derive(Debug)]
 pub struct Detail {
     /// The task as last stored; the base for the next save (keeps uid, href and etag).
     pub original: Todo,
-    /// The writable task lists, for moving the task.
+    /// The writable task lists, for moving the task. A task whose list is not among them is
+    /// read-only here.
     pub lists: Vec<Collection>,
     /// The other tasks, for the parent menu and the subtasks.
     pub others: Vec<Todo>,
@@ -68,9 +115,9 @@ pub struct Detail {
     /// The date typed into the due card. It can be unfinished or invalid; then the draft keeps
     /// its last valid due and saving is blocked.
     due_text: String,
-    /// The property editor that is open.
+    /// The property editor or menu that is open.
     open: Option<Editor>,
-    /// Set by the first press on Delete; the second press confirms.
+    /// Set by "Delete task" in the "…" menu; the menu then asks once more.
     confirm_delete: bool,
     /// A save is under way; the next one waits for its answer (new etag).
     saving: bool,
@@ -78,15 +125,31 @@ pub struct Detail {
     sent: Option<Todo>,
     /// A save was asked for: from now on problems are shown.
     attempted: bool,
+    /// The title typed into "Add sub-task".
+    new_subtask: String,
+    /// Done sub-tasks are hidden ("Hide completed").
+    hide_done: bool,
+    /// The sections of the main column that are folded away.
+    folded: HashSet<Section>,
 }
 
-/// The property editors that open as a floating layer.
+/// The property editors and the menu that open as a floating layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Editor {
     Priority,
     Due,
     List,
     Parent,
+    /// The "…" menu in the head.
+    More,
+}
+
+/// The sections of the main column that fold with their chevron.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Section {
+    Subtasks,
+    Checks,
+    Reviews,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +162,7 @@ pub enum Message {
     Flush,
     /// Tick or untick the task itself.
     ToggleDone,
-    /// Open a property editor; a second click closes it.
+    /// Open a property editor or the "…" menu; a second click closes it.
     Open(Editor),
     /// Close the open editor (click beside it).
     CloseEditor,
@@ -119,14 +182,29 @@ pub enum Message {
     ToggleSubtask(String),
     /// Open the subtask with this uid in the detail.
     OpenSubtask(String),
+    /// Typing in "Add sub-task".
+    SubtaskEdited(String),
+    /// Enter in "Add sub-task": create it.
+    SubtaskSubmit,
+    /// "Hide completed" / "Show completed" in the sub-tasks.
+    ToggleHideDone,
+    /// Fold or unfold a section of the main column.
+    Fold(Section),
     /// Open the task's link in the browser ([`Detail::link_target`]).
     OpenLink,
+    /// "Copy link" in the "…" menu.
+    CopyLink,
+    /// "Delete task" in the "…" menu: ask once more.
     Delete,
     CancelDelete,
     ConfirmDelete,
-    /// Close the detail.
+    /// ↑ in the head: the task above in the list.
+    Previous,
+    /// ↓ in the head: the task below in the list.
+    Next,
+    /// Close the detail (✕, "‹ Back").
     Close,
-    /// Escape: closes the innermost open thing (editor, delete question, then the detail).
+    /// Escape: closes the innermost open thing (editor or menu, then the detail).
     Escape,
 }
 
@@ -137,6 +215,9 @@ pub enum Action {
     /// Save this task (the core's `save_todo`); report the answer with [`Detail::stored`] or
     /// [`Detail::save_failed`].
     Save(Todo),
+    /// Save this new task (a sub-task: `uid` empty, `parent` this task); nothing to report back,
+    /// the next reload brings it into the detail ([`Detail::refresh`]).
+    Create(Todo),
     Delete(Todo),
     /// Close the detail; the app saves [`Detail::leave`] first.
     Close,
@@ -148,6 +229,12 @@ pub enum Action {
     Focus(&'static str),
     /// Open this `http`/`https` address in the browser.
     OpenUrl(String),
+    /// Put this address on the clipboard.
+    CopyLink(String),
+    /// Show the task above the open one in the list (as ↑ moves the cursor), if there is one.
+    Previous,
+    /// Show the task below the open one in the list (as ↓ moves the cursor), if there is one.
+    Next,
 }
 
 /// The priorities the menu offers. iCalendar has nine levels; the app uses these four.
@@ -183,23 +270,13 @@ impl Priority {
         }
     }
 
-    /// The short name, for chips and the menu.
+    /// The short name, for the menu, the chips and the properties.
     fn label(self) -> &'static str {
         match self {
             Priority::None => tr("No priority"),
             Priority::Low => tr("Low"),
             Priority::Medium => tr("Medium"),
             Priority::High => tr("High"),
-        }
-    }
-
-    /// The long name, for the properties column ("Medium priority").
-    fn long_label(self) -> &'static str {
-        match self {
-            Priority::None => tr("No priority"),
-            Priority::Low => tr("Low priority"),
-            Priority::Medium => tr("Medium priority"),
-            Priority::High => tr("High priority"),
         }
     }
 
@@ -223,6 +300,82 @@ struct Draft {
     notes: String,
 }
 
+/// One property of the task: a row of [`Detail::properties_column`] or a chip of
+/// [`Detail::property_chips`]. Data first, so tests can check which rows show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Prop {
+    Status,
+    Priority,
+    Due,
+    List,
+    Parent,
+    Labels,
+    Account,
+    Repo,
+    Assignees,
+    Milestone,
+    /// "Open on GitHub ↗" or "Open link".
+    OpenLink,
+}
+
+/// An entry of the "…" menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum More {
+    CopyLink,
+    /// "Open on GitHub" for a GitHub link, else "Open link".
+    OpenLink,
+    Delete,
+}
+
+/// How a GitHub state looks: its icon, its word and the colour of the icon.
+#[derive(Debug, Clone, Copy)]
+struct Look {
+    icon: Icon,
+    word: &'static str,
+    colour: fn(&Palette) -> Color,
+}
+
+impl Look {
+    fn new(icon: Icon, word: &'static str, colour: fn(&Palette) -> Color) -> Look {
+        Look { icon, word, colour }
+    }
+}
+
+/// The state of an issue or pull request (design skill, icons): open green, draft neutral,
+/// merged and closed issues violet, closed pull requests red.
+fn state_look(details: &GitHubDetails) -> Look {
+    match (details.kind, details.state) {
+        (GitHubKind::Issue, GitHubState::Open) => Look::new(Icon::CircleDot, tr("Open"), |p| p.ok),
+        (GitHubKind::Issue, _) => Look::new(Icon::CircleCheck, tr("Closed"), |p| p.merged),
+        (GitHubKind::PullRequest, GitHubState::Open) if details.draft => {
+            Look::new(Icon::GitPullRequestDraft, tr("Draft"), |p| p.text_3)
+        }
+        (GitHubKind::PullRequest, GitHubState::Open) => Look::new(Icon::GitPullRequest, tr("Open"), |p| p.ok),
+        (GitHubKind::PullRequest, GitHubState::Merged) => Look::new(Icon::GitMerge, tr("Merged"), |p| p.merged),
+        (GitHubKind::PullRequest, GitHubState::Closed) => {
+            Look::new(Icon::GitPullRequestClosed, tr("Closed"), |p| p.error)
+        }
+    }
+}
+
+/// The combined checks of a pull request.
+fn checks_look(checks: ChecksState) -> Look {
+    match checks {
+        ChecksState::Pending => Look::new(Icon::CircleDotDashed, tr("Checks running"), |p| p.attention),
+        ChecksState::Success => Look::new(Icon::CircleCheck, tr("Checks passed"), |p| p.ok),
+        ChecksState::Failure => Look::new(Icon::CircleX, tr("Checks failed"), |p| p.error),
+    }
+}
+
+/// GitHub's review decision on a pull request.
+fn review_look(review: ReviewState) -> Look {
+    match review {
+        ReviewState::Required => Look::new(Icon::Eye, tr("Review required"), |p| p.attention),
+        ReviewState::Approved => Look::new(Icon::CircleCheck, tr("Approved"), |p| p.ok),
+        ReviewState::ChangesRequested => Look::new(Icon::CircleAlert, tr("Changes requested"), |p| p.attention),
+    }
+}
+
 impl Detail {
     /// The detail of `todo`; `lists` are the writable task lists, `all` every loaded task.
     pub fn new(todo: &Todo, lists: &[Collection], all: &[Todo]) -> Detail {
@@ -241,6 +394,9 @@ impl Detail {
             saving: false,
             sent: None,
             attempted: false,
+            new_subtask: String::new(),
+            hide_done: false,
+            folded: HashSet::new(),
         }
     }
 
@@ -272,14 +428,14 @@ impl Detail {
                     }
                 }
             }
-            Message::CloseEditor => self.open = None,
+            Message::CloseEditor => self.close_editor(),
             Message::PrioritySelected(priority) => {
-                self.open = None;
+                self.close_editor();
                 self.draft.priority = priority;
                 return self.request_save(true);
             }
             Message::ListSelected(id) => {
-                self.open = None;
+                self.close_editor();
                 // A parent in another list cannot stay: the server keeps parents within a list.
                 let parent_fits = self
                     .draft
@@ -293,7 +449,7 @@ impl Detail {
                 return self.request_save(true);
             }
             Message::ParentSelected(parent) => {
-                self.open = None;
+                self.close_editor();
                 self.draft.parent = parent;
                 return self.request_save(true);
             }
@@ -307,7 +463,7 @@ impl Detail {
             }
             Message::DueSubmit => {
                 if due_text_ok(&self.due_text, self.today) {
-                    self.open = None;
+                    self.close_editor();
                 }
                 return self.request_save(true);
             }
@@ -317,22 +473,42 @@ impl Detail {
             Message::DueRemove => return self.pick_due(None),
             Message::ToggleSubtask(uid) => return Action::ToggleDone(uid),
             Message::OpenSubtask(uid) => return Action::Show(uid),
-            Message::OpenLink => return self.link_target().map_or(Action::None, Action::OpenUrl),
-            Message::Delete => {
-                self.open = None;
-                self.confirm_delete = true;
+            Message::SubtaskEdited(title) => self.new_subtask = title,
+            Message::SubtaskSubmit => return self.create_subtask(),
+            Message::ToggleHideDone => self.hide_done = !self.hide_done,
+            Message::Fold(section) => {
+                if !self.folded.remove(&section) {
+                    self.folded.insert(section);
+                }
             }
-            Message::CancelDelete => self.confirm_delete = false,
+            Message::OpenLink => {
+                self.close_editor();
+                return self.link_target().map_or(Action::None, Action::OpenUrl);
+            }
+            Message::CopyLink => {
+                self.close_editor();
+                return self.link_target().map_or(Action::None, Action::CopyLink);
+            }
+            Message::Delete => self.confirm_delete = self.can_delete(),
+            Message::CancelDelete => self.close_editor(),
             Message::ConfirmDelete => {
-                self.confirm_delete = false;
-                return Action::Delete(self.original.clone());
+                self.close_editor();
+                if self.can_delete() {
+                    return Action::Delete(self.original.clone());
+                }
+            }
+            Message::Previous => {
+                self.close_editor();
+                return Action::Previous;
+            }
+            Message::Next => {
+                self.close_editor();
+                return Action::Next;
             }
             Message::Close => return Action::Close,
             Message::Escape => {
                 if self.open.is_some() {
-                    self.open = None;
-                } else if self.confirm_delete {
-                    self.confirm_delete = false;
+                    self.close_editor();
                 } else {
                     return Action::Close;
                 }
@@ -429,10 +605,42 @@ impl Detail {
     }
 
     fn pick_due(&mut self, day: Option<NaiveDate>) -> Action {
-        self.open = None;
+        self.close_editor();
         self.draft.due = day.map(|day| due_with_date(self.draft.due, day));
         self.due_text = due_input(self.draft.due);
         self.request_save(true)
+    }
+
+    /// Closes the open editor or menu, and with it the delete question.
+    fn close_editor(&mut self) {
+        self.open = None;
+        self.confirm_delete = false;
+    }
+
+    /// A new open sub-task with the typed title in this task's list; the field empties for the
+    /// next one. Nothing for an empty title or a task that cannot be edited.
+    fn create_subtask(&mut self) -> Action {
+        let summary = self.new_subtask.trim().to_string();
+        if summary.is_empty() || !self.editable() {
+            return Action::None;
+        }
+        self.new_subtask.clear();
+        Action::Create(Todo {
+            uid: String::new(),
+            collection: self.draft.collection.clone(),
+            href: None,
+            etag: None,
+            summary,
+            due: None,
+            priority: None,
+            completed: false,
+            parent: Some(self.original.uid.clone()),
+            description: None,
+            url: None,
+            categories: Vec::new(),
+            sort_order: None,
+            link: None,
+        })
     }
 
     /// Why the draft cannot be saved yet; `None` when it can.
@@ -455,131 +663,102 @@ impl Detail {
     }
 
     // -----------------------------------------------------------------------------------------
-    // View
+    // What the task is
     // -----------------------------------------------------------------------------------------
 
-    /// The task as a side panel (`torro_gui::panel`): path "List › Filter" (`filter` is the list's
-    /// current filter name, `None` when it is the task's own list), the title field, the notes,
-    /// the properties as rows and the subtasks; "Delete task" in the footer. `anchor` is
-    /// registered by the trigger of the open editor; pass the same one to [`Detail::layer`].
-    /// `wrap` turns this module's messages into the app's, because the panel is built for one
-    /// message type.
-    pub fn panel<'a, M: Clone + 'a>(
-        &'a self,
-        filter: Option<String>,
-        anchor: &Anchor,
-        wrap: fn(Message) -> M,
-    ) -> Panel<'a, M> {
-        let mark = Mark::Ring(self.list_colour());
-        let parts = std::iter::once(self.list_name()).chain(filter);
-        let mut title = column![self.title_field()].spacing(space::S);
-        if let Some(problem) = self.shown(self.title_problem()) {
-            title = title.push(error_text(problem));
+    /// What GitHub reported for the item; `None` for a plain task (or a link not fetched yet).
+    fn github(&self) -> Option<&GitHubDetails> {
+        self.original.link.as_ref()?.github.as_ref()
+    }
+
+    /// `("owner/name", number)` of a GitHub link, fetched or not.
+    fn github_ref(&self) -> Option<(&str, u64)> {
+        self.original.link.as_ref()?.github_ref()
+    }
+
+    /// The task's list among the writable ones; `None` for a read-only list (GitHub filters).
+    fn list(&self) -> Option<&Collection> {
+        self.lists.iter().find(|c| c.id == self.draft.collection)
+    }
+
+    /// The task can be changed: its list is writable.
+    fn editable(&self) -> bool {
+        self.list().is_some()
+    }
+
+    /// Deleting is for tasks only: a GitHub item lives on GitHub (and in a read-only list).
+    fn can_delete(&self) -> bool {
+        self.editable() && self.github().is_none()
+    }
+
+    /// Moving needs another writable list.
+    fn can_move(&self) -> bool {
+        self.editable() && self.lists.len() > 1
+    }
+
+    /// Where the task lives, for the path and the List row: the list's name, else for a GitHub
+    /// item its repository's name (as GitHub shows it, without the owner).
+    fn place_name(&self) -> String {
+        match (self.list(), self.github_ref()) {
+            (Some(list), _) => list.name.clone(),
+            (None, Some((repo, _))) => repo.rsplit_once('/').map_or(repo, |(_, name)| name).to_string(),
+            (None, None) => tr("List").to_string(),
         }
-        let mut body = column![panel::inset(self.notes_field()), self.properties(anchor)].spacing(space::L);
-        if let Some(subtasks) = self.subtasks_view() {
-            body = body.push(subtasks);
+    }
+
+    /// The mark of the place: the list's ring, else the GitHub logo.
+    fn place_mark(&self) -> Mark {
+        match (self.list(), self.github_ref()) {
+            (None, Some(_)) => Mark::Icon(Icon::Github),
+            _ => Mark::Ring(self.list_colour()),
         }
-        let footer = self.footer().into_iter().map(|element| element.map(wrap)).collect();
-        panel::panel(
-            panel::path(Some(mark), parts),
-            Element::from(title).map(wrap),
-            Element::from(body).map(wrap),
-            wrap(Message::Close),
+    }
+
+    fn list_colour(&self) -> Color {
+        widgets::collection_color(self.list().and_then(|c| c.color.as_deref()))
+    }
+
+    /// The parent's title; "Unknown task" for a parent that is not loaded.
+    fn parent_title(&self) -> Option<String> {
+        let uid = self.draft.parent.as_ref()?;
+        Some(
+            self.others
+                .iter()
+                .find(|t| &t.uid == uid)
+                .map_or_else(|| tr("Unknown task").to_string(), |t| t.summary.clone()),
         )
-        .footer(footer)
     }
 
-    /// "Properties" (status, priority, due), "List" and "Parent task" as `prop_section`s: the same
-    /// rows in every size.
-    fn properties<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
-        let priority = self.draft.priority;
-        let status = widgets::prop_row(
-            None,
-            row![self.check(), typo::text(typo::BODY, self.status_label())]
-                .spacing(space::S)
-                .align_y(Alignment::Center),
-            Some(Message::ToggleDone),
-        );
-        let priority_row = self.trigger(
-            Editor::Priority,
-            anchor,
-            widgets::prop_row(
-                None,
-                row![bars_cell(priority.level()), typo::text(typo::BODY, priority.long_label())]
-                    .spacing(space::S)
-                    .align_y(Alignment::Center),
-                Some(Message::Open(Editor::Priority)),
-            ),
-        );
-        let due = self.trigger(
-            Editor::Due,
-            anchor,
-            widgets::prop_row(Some(Mark::Icon(Icon::Calendar)), self.due_value(), Some(Message::Open(Editor::Due))),
-        );
-        let list_row = self.trigger(
-            Editor::List,
-            anchor,
-            widgets::prop_row(
-                Some(Mark::Ring(self.list_colour())),
-                typo::text(typo::BODY, self.list_name()),
-                self.can_move().then_some(Message::Open(Editor::List)),
-            ),
-        );
-        let parent = self.trigger(
-            Editor::Parent,
-            anchor,
-            widgets::prop_row(
-                Some(Mark::Icon(Icon::ListTodo)),
-                self.parent_value(),
-                Some(Message::Open(Editor::Parent)),
-            ),
-        );
-        let mut sections = column![widgets::prop_section(tr("Properties"), vec![status, priority_row, due])];
-        if let Some(tags) = self.tags_view() {
-            sections = sections.push(widgets::prop_section(tr("Tags"), vec![tags]));
+    fn status_word(&self) -> &'static str {
+        match self.github() {
+            Some(details) => state_look(details).word,
+            None if self.draft.completed => tr("Completed"),
+            None => tr("Open"),
         }
-        if let Some(link) = self.link_row() {
-            sections = sections.push(widgets::prop_section(tr("Link"), vec![link]));
-        }
-        sections
-            .push(widgets::prop_section(tr("List"), vec![list_row]))
-            .push(widgets::prop_section(tr("Parent task"), vec![parent]))
-            .spacing(space::L)
-            .into()
     }
 
-    /// The task's tags as chips that wrap, inset like the values of the property rows; `None`
-    /// without tags. Read-only: the detail does not edit tags yet.
-    fn tags_view(&self) -> Option<Element<'_, Message>> {
-        let tags: Vec<Element<'_, Message>> = self
-            .original
-            .categories
-            .iter()
-            .map(|tag| tag.trim())
-            .filter(|tag| !tag.is_empty())
-            .map(|tag| widgets::pill(None, tag.to_owned()))
-            .collect();
-        (!tags.is_empty()).then(|| container(widgets::chip_row(tags)).padding(style::ITEM_PADDING).into())
+    fn due_label(&self) -> Option<String> {
+        self.draft.due.map(|due| list::due_text(due, self.today))
     }
 
-    /// "Open link" with where it leads in `text_3` (`owner/repo#123`, or the address without its
-    /// scheme); `None` when the task has nothing to open.
-    fn link_row(&self) -> Option<Element<'_, Message>> {
-        let target = self.link_target()?;
-        let place = match self.original.link.as_ref().and_then(Link::github_ref) {
-            Some((repo, number)) => format!("{repo}#{number}"),
-            None => target.split_once("://").map_or(target.as_str(), |(_, rest)| rest).to_string(),
+    /// An open task whose day lies before today (shown in the attention colour).
+    fn overdue(&self) -> bool {
+        !self.draft.completed && self.draft.due.is_some_and(|due| due_day(due) < self.today)
+    }
+
+    /// The labels as `(colour, name)`: GitHub's labels with their colours, else the task's tags
+    /// (no colour: a neutral dot). Empty names are left out.
+    fn labels(&self) -> Vec<(String, String)> {
+        let github = self.github().map(|d| &d.labels).filter(|labels| !labels.is_empty());
+        let labels: Vec<(String, String)> = match github {
+            Some(labels) => labels.iter().map(|l| (l.color.clone().unwrap_or_default(), l.name.clone())).collect(),
+            None => self.original.categories.iter().map(|tag| (String::new(), tag.clone())).collect(),
         };
-        let value = row![
-            typo::text(typo::BODY, tr("Open link")).wrapping(Wrapping::None),
-            container(typo::text(typo::META, place).style(theme::text_3).wrapping(Wrapping::None))
-                .width(Fill)
-                .clip(true),
-        ]
-        .spacing(space::S)
-        .align_y(Alignment::Center);
-        Some(widgets::prop_row(Some(Mark::Icon(Icon::ArrowUpRight)), value, Some(Message::OpenLink)))
+        labels
+            .into_iter()
+            .map(|(colour, name)| (colour, name.trim().to_string()))
+            .filter(|(_, name)| !name.is_empty())
+            .collect()
     }
 
     /// The address "Open link" opens: the task's `url`, else the page of its link (a GitHub
@@ -594,16 +773,455 @@ impl Detail {
         own.or_else(|| self.original.link.as_ref().and_then(Link::web_url).as_deref().and_then(web))
     }
 
-    /// The open editor as a floating layer next to `anchor`, or `None`. Hand it to the shell's
-    /// overlay; a click beside it sends [`Message::CloseEditor`].
-    pub fn layer<'a>(&'a self, anchor: &Anchor) -> Option<Element<'a, Message>> {
-        let card = match self.open? {
-            Editor::Priority => self.priority_menu(),
-            Editor::List => self.list_menu(),
-            Editor::Parent => self.parent_menu(),
-            Editor::Due => self.due_card(),
+    /// The blocks of the properties column, top to bottom: an optional title and its rows.
+    /// Rows the task cannot have are left out; a row that is not set stays (with a placeholder)
+    /// only when a click can set it.
+    fn property_blocks(&self, account: bool) -> Vec<(Option<&'static str>, Vec<Prop>)> {
+        let editable = self.editable();
+        let mut first = vec![Prop::Status];
+        if editable || self.draft.priority != Priority::None {
+            first.push(Prop::Priority);
+        }
+        if editable || self.draft.due.is_some() {
+            first.push(Prop::Due);
+        }
+        let mut organisation = vec![Prop::List];
+        if editable || self.draft.parent.is_some() {
+            organisation.push(Prop::Parent);
+        }
+        if !self.labels().is_empty() {
+            organisation.push(Prop::Labels);
+        }
+        let mut source = Vec::new();
+        if account {
+            source.push(Prop::Account);
+        }
+        if self.github_ref().is_some() {
+            source.push(Prop::Repo);
+        }
+        if let Some(details) = self.github() {
+            if !details.assignees.is_empty() {
+                source.push(Prop::Assignees);
+            }
+            if details.milestone.is_some() {
+                source.push(Prop::Milestone);
+            }
+        }
+        if self.link_target().is_some() {
+            source.push(Prop::OpenLink);
+        }
+        let mut blocks = vec![(None, first), (Some(tr("Organisation")), organisation)];
+        if !source.is_empty() {
+            blocks.push((Some(tr("Source")), source));
+        }
+        blocks
+    }
+
+    /// The chips under the title: status (tasks only; a GitHub item shows its state as a pill
+    /// already), priority, due and list – what the properties column starts with.
+    fn chip_props(&self) -> Vec<Prop> {
+        let editable = self.editable();
+        let mut chips = Vec::new();
+        if self.github().is_none() {
+            chips.push(Prop::Status);
+        }
+        if editable || self.draft.priority != Priority::None {
+            chips.push(Prop::Priority);
+        }
+        if editable || self.draft.due.is_some() {
+            chips.push(Prop::Due);
+        }
+        chips.push(Prop::List);
+        chips
+    }
+
+    /// The entries of the "…" menu; empty when there is nothing to do (then there is no "…").
+    fn more_items(&self) -> Vec<More> {
+        let mut items = Vec::new();
+        if self.link_target().is_some() {
+            items.extend([More::CopyLink, More::OpenLink]);
+        }
+        if self.can_delete() {
+            items.push(More::Delete);
+        }
+        items
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Views
+    // -----------------------------------------------------------------------------------------
+
+    /// The head of the detail, 44 high with its 1-px line below (like the window's header bar),
+    /// over the main column and – in [`Fit::Columns`] – the properties column next to it.
+    ///
+    /// Left the path "○ Work › Parent task" (the list, or a GitHub item's repository, then the
+    /// parent if there is one), right ↑ ↓ ([`Action::Previous`] / [`Action::Next`]), "…" (the
+    /// menu floats in [`Detail::layer`]) and ✕ ([`Action::Close`]). In [`Fit::Narrow`] the path
+    /// and ✕ give way to "‹ `back`" (closes, back to the list); `back` is the name of the list
+    /// view the detail was opened from ("Today"). `anchor` is the one passed to
+    /// [`Detail::layer`].
+    ///
+    /// ```ignore
+    /// let anchor = Anchor::new();
+    /// let p = palette(&self.theme());
+    /// let back = self.filter_name(&self.filter);
+    /// let main = d.main_column(fit, p, &anchor).map(Message::Detail);
+    /// let body: Element<_> = if fit == Fit::Columns {
+    ///     let account = torro_pim::account::account_of(&d.original.collection, &self.accounts, |a| a.id.as_str());
+    ///     let props = d.properties_column(account.map(|a| a.label.clone()), &anchor).map(Message::Detail);
+    ///     row![main, rule::vertical(1).style(style::rule), props].into()
+    /// } else {
+    ///     main
+    /// };
+    /// column![d.head(fit, back, &anchor).map(Message::Detail), body]
+    /// // and d.layer(&anchor) into the shell's overlay, as before.
+    /// ```
+    #[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then the panel is used"))]
+    pub fn head<'a>(&'a self, fit: Fit, back: String, anchor: &Anchor) -> Element<'a, Message> {
+        let narrow = fit == Fit::Narrow;
+        let mut bar = if narrow {
+            let back = widgets::text_button(Some(Icon::ChevronLeft), back, style::button::ghost, Some(Message::Close));
+            row![back, blank::horizontal()]
+        } else {
+            row![container(self.path()).width(Fill).clip(true)]
         };
-        Some(widgets::floating(anchor, Placement::Below(Align::Start), card, Message::CloseEditor))
+        bar = bar.extend(self.head_buttons(anchor));
+        if !narrow {
+            bar = bar.push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Close)));
+        }
+        // Padded like the window's header bar (16 left, 12 right; 8 in narrow windows), so the
+        // buttons line up with the ones above the list.
+        let padding = if narrow {
+            Padding::new(0.0).left(space::S).right(space::S)
+        } else {
+            Padding::new(0.0).left(space::L).right(space::M)
+        };
+        let bar = container(bar.spacing(space::S).align_y(Alignment::Center))
+            .width(Fill)
+            .center_y(size::HEADER - LINE)
+            .padding(padding);
+        column![bar, rule::horizontal(LINE).style(style::rule)].into()
+    }
+
+    /// The main column of the detail, filling its room and scrolling: 32 around (16 in
+    /// [`Fit::Narrow`]), the content at most `FORM_MAX` (640) wide and left-aligned.
+    ///
+    /// Top to bottom: the title (check or GitHub state 20, `HEADLINE`, edited in place); for a
+    /// GitHub item the state pill and `owner/repo#123`; the [`Detail::property_chips`] unless
+    /// `fit` is [`Fit::Columns`]; the notes; "Sub-tasks" with progress, "Hide completed" and
+    /// "Add sub-task"; for pull requests "Checks" and "Reviews". `palette` is the current
+    /// theme's (`palette(&self.theme())`), for the coloured state icons in chips and pill.
+    #[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then the panel is used"))]
+    pub fn main_column<'a>(&'a self, fit: Fit, palette: &'static Palette, anchor: &Anchor) -> Element<'a, Message> {
+        let content = column![self.title_block(), self.body(fit, Some(palette), anchor)].max_width(size::FORM_MAX);
+        let around = if fit == Fit::Narrow { space::L } else { space::XXL };
+        scrollable(container(content).width(Fill).padding(around))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
+
+    /// The properties column of the wide layout: `PROPS` (300) wide, full height, scrolling;
+    /// it draws no line of its own, so put one `LINE` between it and the main column.
+    ///
+    /// Blocks separated by lines: Status, Priority, Due · "Organisation": List, Parent, Labels ·
+    /// "Source": Account, Repo, Assignees, Milestone, "Open on GitHub ↗" (or "Open link").
+    /// `account` is the name of the account the task's list belongs to (the sidebar's group
+    /// title, `torro_pim::account::account_of`); `None` leaves the row out. A click on Status,
+    /// Priority, Due, List or Parent edits it; the editors float in [`Detail::layer`] next to
+    /// `anchor`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then the panel is used"))]
+    pub fn properties_column<'a>(&'a self, account: Option<String>, anchor: &Anchor) -> Element<'a, Message> {
+        let mut blocks = column![];
+        for (i, (title, props)) in self.property_blocks(account.is_some()).into_iter().enumerate() {
+            if i > 0 {
+                blocks = blocks.push(rule::horizontal(LINE).style(style::rule));
+            }
+            let mut block = column![];
+            if let Some(title) = title {
+                block = block.push(
+                    container(typo::text(typo::CAPTION, title).style(theme::text_3))
+                        .center_y(size::CONTROL_SM)
+                        .padding(style::ITEM_PADDING),
+                );
+            }
+            block = block.extend(props.into_iter().map(|prop| self.prop_row(prop, account.as_deref(), anchor)));
+            // 8 around the rows, whose own 8 bring their text to 16 from the column's edge.
+            blocks = blocks.push(container(block).width(Fill).padding(space::S));
+        }
+        let content = container(blocks).width(Fill).padding(Padding::new(0.0).bottom(space::XL));
+        container(
+            scrollable(content).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
+        )
+        .width(size::PROPS)
+        .height(Fill)
+        .into()
+    }
+
+    /// The properties as chips that wrap (medium and narrow, and wide without room for the
+    /// properties column): status (tasks only), priority, due, list. A click opens the same
+    /// editor as the properties column. [`Detail::main_column`] already shows them under the
+    /// title when `fit` is not [`Fit::Columns`]; call this only to place them elsewhere.
+    #[cfg_attr(not(test), expect(dead_code, reason = "main_column shows the chips; for placing them elsewhere"))]
+    pub fn property_chips<'a>(&'a self, palette: &'static Palette, anchor: &Anchor) -> Element<'a, Message> {
+        self.chips_view(Some(palette), anchor)
+    }
+
+    /// The open editor or menu as a floating layer next to `anchor`, or `None`. Hand it to the
+    /// shell's overlay; a click beside it sends [`Message::CloseEditor`].
+    pub fn layer<'a>(&'a self, anchor: &Anchor) -> Option<Element<'a, Message>> {
+        let (card, align) = match self.open? {
+            Editor::Priority => (self.priority_menu(), Align::Start),
+            Editor::List => (self.list_menu(), Align::Start),
+            Editor::Parent => (self.parent_menu(), Align::Start),
+            Editor::Due => (self.due_card(), Align::Start),
+            Editor::More => (self.more_menu(), Align::End),
+        };
+        Some(widgets::floating(anchor, Placement::Below(align), card, Message::CloseEditor))
+    }
+
+    /// The task as the older side panel (`torro_gui::panel`), built from the same pieces as
+    /// [`Detail::main_column`] (with chips) and with ↑ ↓ "…" next to its ✕; no footer. The path
+    /// is "List › Parent" as in [`Detail::head`]; `_filter` is no longer shown and only kept so
+    /// callers build unchanged. Without the theme at hand, chips and pill show neutral icons.
+    /// `wrap` turns this module's messages into the app's.
+    pub fn panel<'a, M: Clone + 'a>(
+        &'a self,
+        _filter: Option<String>,
+        anchor: &Anchor,
+        wrap: fn(Message) -> M,
+    ) -> Panel<'a, M> {
+        let actions = self.head_buttons(anchor).into_iter().map(|button| button.map(wrap)).collect();
+        let body = panel::inset(self.body(Fit::Chips, None, anchor));
+        panel::panel(self.path().map(wrap), self.title_block().map(wrap), body.map(wrap), wrap(Message::Close))
+            .actions(actions)
+    }
+
+    /// "○ Work › Parent task": the place and, for a sub-task, its parent.
+    fn path<'a>(&self) -> Element<'a, Message> {
+        let parts = std::iter::once(self.place_name()).chain(self.parent_title());
+        panel::path(Some(self.place_mark()), parts)
+    }
+
+    /// ↑, ↓ and "…" (when its menu has entries).
+    fn head_buttons<'a>(&'a self, anchor: &Anchor) -> Vec<Element<'a, Message>> {
+        let mut buttons = vec![
+            widgets::icon_button(Icon::ChevronUp, tr("Previous task"), Some(Message::Previous)),
+            widgets::icon_button(Icon::ChevronDown, tr("Next task"), Some(Message::Next)),
+        ];
+        if !self.more_items().is_empty() {
+            let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::Open(Editor::More)));
+            buttons.push(self.trigger(Editor::More, anchor, more));
+        }
+        buttons
+    }
+
+    /// The title row: the check (or the GitHub state) 20 on the axis of the first line, then
+    /// the title in `HEADLINE`; the hint for an empty title below it.
+    fn title_block<'a>(&'a self) -> Element<'a, Message> {
+        let mark: Element<'a, Message> = match self.github() {
+            Some(details) => {
+                let look = state_look(details);
+                tinted_icon(look.icon, TITLE_MARK, look.colour)
+            }
+            None => self.check(TITLE_MARK),
+        };
+        let mark = container(mark).center_x(TITLE_MARK).center_y(typo_line(typo::HEADLINE));
+        let title: Element<'a, Message> = if self.editable() {
+            self.title_field()
+        } else {
+            typo::text(typo::HEADLINE, self.draft.summary.clone()).wrapping(Wrapping::WordOrGlyph).into()
+        };
+        let mut block = column![row![mark, container(title).width(Fill)].spacing(space::M)];
+        if let Some(problem) = self.shown(self.title_problem()) {
+            block = block.push(indented(error_text(problem)));
+        }
+        block.spacing(space::XS).into()
+    }
+
+    /// Everything under the title, at the title's left edge. `colours` is the current theme's
+    /// palette for coloured marks; `None` (the panel) shows them neutral.
+    fn body<'a>(&'a self, fit: Fit, colours: Option<&'static Palette>, anchor: &Anchor) -> Element<'a, Message> {
+        let mut body = column![];
+        if let Some(meta) = self.github_meta(colours) {
+            body = body.push(gap(space::S, indented(meta)));
+        }
+        if fit != Fit::Columns {
+            body = body.push(gap(space::L, indented(self.chips_view(colours, anchor))));
+        }
+        if let Some(notes) = self.notes_view() {
+            body = body.push(gap(space::M, notes));
+        }
+        let sections = [self.subtasks_section(), self.checks_section(), self.reviews_section()];
+        body.extend(sections.into_iter().flatten().map(|section| gap(SECTION_GAP, section))).into()
+    }
+
+    /// "◉ Open · owner/repo#123" under a GitHub item's title; `None` for a plain task.
+    fn github_meta<'a>(&'a self, colours: Option<&'static Palette>) -> Option<Element<'a, Message>> {
+        let look = state_look(self.github()?);
+        let mut line =
+            row![widgets::state_pill(look_mark(colours, look), look.word)].spacing(space::S).align_y(Alignment::Center);
+        if let Some((repo, number)) = self.github_ref() {
+            line = line.push(typo::text(typo::META.tabular(), format!("{repo}#{number}")).style(theme::text_3));
+        }
+        Some(line.wrap().vertical_spacing(space::XS).into())
+    }
+
+    fn chips_view<'a>(&'a self, colours: Option<&'static Palette>, anchor: &Anchor) -> Element<'a, Message> {
+        let chips = self.chip_props().into_iter().map(|prop| self.chip(prop, colours, anchor)).collect();
+        widgets::chip_row(chips)
+    }
+
+    /// One property as a chip.
+    fn chip<'a>(&'a self, prop: Prop, colours: Option<&'static Palette>, anchor: &Anchor) -> Element<'a, Message> {
+        let editable = self.editable();
+        let (mark, label, editor) = match prop {
+            Prop::Status => {
+                let mark = if self.draft.completed {
+                    Mark::Tinted(Icon::CircleCheck, self.list_colour())
+                } else {
+                    Mark::Ring(colours.map_or(self.list_colour(), |p| p.text_3))
+                };
+                let on_press = editable.then_some(Message::ToggleDone);
+                return widgets::chip(Some(mark), self.status_word(), on_press);
+            }
+            Prop::Priority => {
+                let label = match self.draft.priority {
+                    Priority::None => tr("Priority"),
+                    set => set.label(),
+                };
+                (Mark::Icon(Icon::SignalHigh), label.to_string(), Editor::Priority)
+            }
+            Prop::Due => {
+                let mark = match colours {
+                    Some(p) if self.overdue() => Mark::Tinted(Icon::Calendar, p.attention_text),
+                    _ => Mark::Icon(Icon::Calendar),
+                };
+                (mark, self.due_label().unwrap_or_else(|| tr("Due date").to_string()), Editor::Due)
+            }
+            Prop::List => {
+                let on_press = self.can_move().then_some(Message::Open(Editor::List));
+                let chip = widgets::chip(Some(self.place_mark()), self.place_name(), on_press);
+                return self.trigger(Editor::List, anchor, chip);
+            }
+            _ => return blank::horizontal().width(0).into(),
+        };
+        let chip = widgets::chip(Some(mark), label, editable.then_some(Message::Open(editor)));
+        self.trigger(editor, anchor, chip)
+    }
+
+    /// One row of the properties column.
+    fn prop_row<'a>(&'a self, prop: Prop, account: Option<&str>, anchor: &Anchor) -> Element<'a, Message> {
+        let editable = self.editable();
+        let open = |editor| editable.then_some(Message::Open(editor));
+        match prop {
+            Prop::Status => {
+                let (mark, on_press) = match self.github() {
+                    Some(details) => {
+                        let look = state_look(details);
+                        (tinted_icon(look.icon, icon::SIZE, look.colour), None)
+                    }
+                    None => (self.check(style::CHECK_SIZE), editable.then_some(Message::ToggleDone)),
+                };
+                let value = row![mark, widgets::prop_value(self.status_word())].spacing(space::S);
+                widgets::prop_line(tr("Status"), None, value.align_y(Alignment::Center), on_press)
+            }
+            Prop::Priority => {
+                let line = match self.draft.priority {
+                    Priority::None => widgets::prop_line(
+                        tr("Priority"),
+                        Some(Mark::Icon(Icon::SignalHigh)),
+                        widgets::prop_placeholder(tr("Add priority")),
+                        open(Editor::Priority),
+                    ),
+                    set => {
+                        let value = row![bars_cell(set.level()), widgets::prop_value(set.label())]
+                            .spacing(space::S)
+                            .align_y(Alignment::Center);
+                        widgets::prop_line(tr("Priority"), None, value, open(Editor::Priority))
+                    }
+                };
+                self.trigger(Editor::Priority, anchor, line)
+            }
+            Prop::Due => {
+                let value: Element<'a, Message> = match self.due_label() {
+                    Some(label) => due_value(label, self.overdue()),
+                    None => widgets::prop_placeholder(tr("Add due date")),
+                };
+                let line = widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), value, open(Editor::Due));
+                self.trigger(Editor::Due, anchor, line)
+            }
+            Prop::List => {
+                let on_press = self.can_move().then_some(Message::Open(Editor::List));
+                let line = widgets::prop_line(
+                    tr("List"),
+                    Some(self.place_mark()),
+                    widgets::prop_value(self.place_name()),
+                    on_press,
+                );
+                self.trigger(Editor::List, anchor, line)
+            }
+            Prop::Parent => {
+                let value = match self.parent_title() {
+                    Some(title) => widgets::prop_value(title),
+                    None => widgets::prop_placeholder(tr("Add parent task")),
+                };
+                let line =
+                    widgets::prop_line(tr("Parent"), Some(Mark::Icon(Icon::ListTree)), value, open(Editor::Parent));
+                self.trigger(Editor::Parent, anchor, line)
+            }
+            Prop::Labels => {
+                let chips =
+                    self.labels().into_iter().map(|(colour, name)| widgets::label_chip(&colour, name)).collect();
+                widgets::prop_line(tr("Labels"), None, widgets::label_chip_row(chips), None)
+            }
+            Prop::Account => {
+                // A GitHub account's lists have ids starting with its id `github:<login>`.
+                let github = self.original.collection.starts_with("github:");
+                let mark = if github { Icon::Github } else { Icon::Cloud };
+                let name = account.unwrap_or_default().to_string();
+                widgets::prop_line(tr("Account"), Some(Mark::Icon(mark)), widgets::prop_value(name), None)
+            }
+            Prop::Repo => {
+                let repo = self.github_ref().map(|(repo, _)| repo.to_string()).unwrap_or_default();
+                widgets::prop_line(tr("Repo"), Some(Mark::Icon(Icon::FolderGit2)), widgets::prop_value(repo), None)
+            }
+            Prop::Assignees => {
+                let names = self.github().map(|d| d.assignees.join(", ")).unwrap_or_default();
+                widgets::prop_line(tr("Assignees"), Some(Mark::Icon(Icon::User)), widgets::prop_value(names), None)
+            }
+            Prop::Milestone => {
+                let name = self.github().and_then(|d| d.milestone.clone()).unwrap_or_default();
+                widgets::prop_line(tr("Milestone"), Some(Mark::Icon(Icon::Milestone)), widgets::prop_value(name), None)
+            }
+            Prop::OpenLink => self.open_link_row(),
+        }
+    }
+
+    /// "Open on GitHub ↗" for a GitHub link, else "Open link" with where it leads; a row without
+    /// a label, as wide as the column.
+    fn open_link_row<'a>(&'a self) -> Element<'a, Message> {
+        let (mark, label, place) = match self.github_ref() {
+            Some(_) => (Icon::Github, tr("Open on GitHub"), None),
+            None => {
+                let target = self.link_target().unwrap_or_default();
+                let place = target.split_once("://").map_or(target.as_str(), |(_, rest)| rest).to_string();
+                (Icon::Link, tr("Open link"), Some(place))
+            }
+        };
+        let mut value =
+            row![typo::text(typo::BODY, label).wrapping(Wrapping::None)].spacing(space::S).align_y(Alignment::Center);
+        value = match place {
+            Some(place) => value.push(
+                container(typo::text(typo::META, place).style(theme::text_3).wrapping(Wrapping::None))
+                    .width(Fill)
+                    .clip(true),
+            ),
+            None => value.push(tinted_icon(Icon::ArrowUpRight, icon::SIZE_SM, |p| p.text_3)),
+        };
+        widgets::prop_row(Some(Mark::Icon(mark)), value, Some(Message::OpenLink))
     }
 
     /// The title as a large borderless field that wraps; Enter saves, Escape leaves the field.
@@ -627,13 +1245,21 @@ impl Detail {
             .line_height(typo::HEADLINE.line_height)
             .padding(Padding::ZERO)
             .wrapping(Wrapping::WordOrGlyph)
-            .style(|t, s| bare_editor(t, s, palette(t).text))
+            .style(|t, s| bare_editor(t, s, palette(t).text, false))
             .into()
     }
 
-    /// The notes as a quiet field in `text_2`, without a frame.
-    fn notes_field(&self) -> Element<'_, Message> {
-        text_editor(&self.notes)
+    /// The notes without a box: a quiet field in `text_2` with a hover surface whose text lines
+    /// up with the title ("Add notes …" while empty). Read-only tasks show their notes as text,
+    /// and nothing when there are none.
+    fn notes_view(&self) -> Option<Element<'_, Message>> {
+        if !self.editable() {
+            let notes = self.draft.notes.trim();
+            return (!notes.is_empty()).then(|| {
+                indented(typo::text(typo::BODY, notes.to_string()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph))
+            });
+        }
+        let field = text_editor(&self.notes)
             .placeholder(tr("Add notes …"))
             .on_action(Message::NotesEdited)
             .key_binding(|press| match press.key.as_ref() {
@@ -644,10 +1270,11 @@ impl Detail {
             .font(typo::BODY.font)
             .size(typo::BODY.size)
             .line_height(typo::BODY.line_height)
-            .padding(Padding::ZERO)
+            .padding(style::INPUT_PADDING)
             .wrapping(Wrapping::WordOrGlyph)
-            .style(|t, s| bare_editor(t, s, palette(t).text_2))
-            .into()
+            .style(|t, s| bare_editor(t, s, palette(t).text_2, true));
+        // The field's own 8 at the left bring its text onto the indent of the title.
+        Some(container(field).padding(Padding::new(0.0).left(INDENT - style::INPUT_PADDING.left)).into())
     }
 
     /// `content` anchored when `editor` is the open one, so its layer floats next to it.
@@ -655,87 +1282,117 @@ impl Detail {
         if self.open == Some(editor) { widgets::anchored(anchor, content) } else { content }
     }
 
-    /// The round check of the task itself, in the list's colour.
-    fn check(&self) -> Element<'_, Message> {
-        checkbox(self.draft.completed)
-            .size(style::CHECK_SIZE)
-            .style(style::task_check(self.list_colour()))
-            .on_toggle(|_| Message::ToggleDone)
+    /// The round check of the task itself, in the list's colour, `edge` wide; it ticks only
+    /// where the task can be edited.
+    fn check(&self, edge: f32) -> Element<'_, Message> {
+        let check = checkbox(self.draft.completed).size(edge).style(style::task_check(self.list_colour()));
+        if self.editable() { check.on_toggle(|_| Message::ToggleDone).into() } else { check.into() }
+    }
+
+    /// The head of a section: chevron and title (one button that folds the section), then
+    /// `extra` (progress, "Hide completed").
+    fn section_head<'a>(
+        &self,
+        section: Section,
+        title: &'static str,
+        extra: Vec<Element<'a, Message>>,
+    ) -> Element<'a, Message> {
+        let chevron = if self.folded.contains(&section) { Icon::ChevronRight } else { Icon::ChevronDown };
+        let label = row![
+            container(tinted_icon(chevron, icon::SIZE_SM, |p| p.text_3)).center_x(TITLE_MARK),
+            typo::text(typo::CAPTION, title).wrapping(Wrapping::None),
+        ]
+        .spacing(space::M)
+        .align_y(Alignment::Center);
+        // Centred in the button, so the title stands on one line with progress and "Hide completed".
+        let fold = button(container(label).center_y(Fill))
+            .padding(Padding::new(0.0).right(space::XS))
+            .height(size::CONTROL_SM)
+            .style(style::button::ghost)
+            .on_press(Message::Fold(section));
+        container(row![container(fold).center_y(Fill)].extend(extra).spacing(space::M).align_y(Alignment::Center))
+            .width(Fill)
+            .height(size::CONTROL)
             .into()
     }
 
-    fn status_label(&self) -> &'static str {
-        if self.draft.completed { tr("Done") } else { tr("Open") }
-    }
-
-    fn due_label(&self) -> String {
-        match self.draft.due {
-            Some(due) => list::due_text(due, self.today),
-            None => tr("No due date").to_string(),
-        }
-    }
-
-    fn due_value(&self) -> Element<'_, Message> {
-        let label = typo::text(typo::BODY.tabular(), self.due_label());
-        if self.draft.due.is_some() { label.into() } else { label.style(theme::text_3).into() }
-    }
-
-    fn parent_value(&self) -> Element<'_, Message> {
-        match self.parent_title() {
-            Some(title) => {
-                container(typo::text(typo::BODY, title).wrapping(Wrapping::None)).width(Fill).clip(true).into()
-            }
-            None => typo::text(typo::BODY, tr("No parent task")).style(theme::text_3).into(),
-        }
-    }
-
-    /// The parent's title; "Unknown task" for a parent that is not loaded.
-    fn parent_title(&self) -> Option<String> {
-        let uid = self.draft.parent.as_ref()?;
-        Some(
-            self.others
-                .iter()
-                .find(|t| &t.uid == uid)
-                .map_or_else(|| tr("Unknown task").to_string(), |t| t.summary.clone()),
-        )
-    }
-
-    fn list(&self) -> Option<&Collection> {
-        self.lists.iter().find(|c| c.id == self.draft.collection)
-    }
-
-    fn list_name(&self) -> String {
-        self.list().map_or_else(|| tr("List").to_string(), |c| c.name.clone())
-    }
-
-    fn list_colour(&self) -> Color {
-        widgets::collection_color(self.list().and_then(|c| c.color.as_deref()))
-    }
-
-    /// Moving needs another writable list.
-    fn can_move(&self) -> bool {
-        self.lists.len() > 1
-    }
-
-    /// "Sub-tasks 1/3" and one row per subtask; `None` without subtasks.
-    fn subtasks_view(&self) -> Option<Element<'_, Message>> {
+    /// "Sub-tasks": progress, the direct sub-tasks (done ones hidden on request) and "Add
+    /// sub-task", which is always there where the task can be edited. `None` for a read-only task
+    /// without sub-tasks.
+    fn subtasks_section(&self) -> Option<Element<'_, Message>> {
         let subtasks = self.subtasks();
-        if subtasks.is_empty() {
+        if subtasks.is_empty() && !self.editable() {
             return None;
         }
         let done = subtasks.iter().filter(|t| t.completed).count();
-        let progress = format!("{done}/{}", subtasks.len());
-        let head = row![
-            typo::text(typo::CAPTION, tr("Sub-tasks")).style(theme::text_3),
-            typo::text(typo::META.tabular(), progress).style(theme::text_3)
-        ]
-        .spacing(space::S)
-        .align_y(Alignment::Center);
+        let mut extra: Vec<Element<'_, Message>> = Vec::new();
+        if !subtasks.is_empty() {
+            extra.push(widgets::progress_bar(done, subtasks.len()));
+            extra.push(
+                typo::text(typo::META.tabular(), format!("{done}/{}", subtasks.len())).style(theme::text_3).into(),
+            );
+        }
+        extra.push(blank::horizontal().into());
+        if done > 0 {
+            let label = if self.hide_done { tr("Show completed") } else { tr("Hide completed") };
+            extra.push(widgets::text_button(None, label, style::button::ghost, Some(Message::ToggleHideDone)));
+        }
+        let mut section = column![self.section_head(Section::Subtasks, tr("Sub-tasks"), extra)];
+        if self.folded.contains(&Section::Subtasks) {
+            return Some(section.into());
+        }
         let colour = self.list_colour();
-        let rows = subtasks.into_iter().map(|task| subtask_row(task, colour));
-        // The title stands where the titles of the property sections stand (8 in from the rows).
-        let head = container(head).padding(Padding { bottom: space::XS, ..style::ITEM_PADDING });
-        Some(column![head].extend(rows).into())
+        let shown = subtasks.into_iter().filter(|t| !(self.hide_done && t.completed));
+        section = section.extend(shown.map(|task| subtask_row(task, colour)));
+        if self.editable() {
+            section = section.push(self.add_subtask_row());
+        }
+        Some(section.into())
+    }
+
+    /// "+ Add sub-task": a field that looks like a row; Enter creates the sub-task.
+    fn add_subtask_row(&self) -> Element<'_, Message> {
+        let field = text_input(tr("Add sub-task"), &self.new_subtask)
+            .id(SUBTASK_INPUT)
+            .on_input(Message::SubtaskEdited)
+            .on_submit(Message::SubtaskSubmit)
+            .padding(Padding::new(0.0).left(INDENT).right(space::S))
+            .font(typo::BODY.font)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .style(bare_input);
+        let plus = container(tinted_icon(Icon::Plus, icon::SIZE_SM, |p| p.text_3)).center_x(TITLE_MARK).center_y(Fill);
+        // The "+" lies over the field, so the whole row is the field (hover, click to type).
+        container(stack![container(field).center_y(Fill), plus]).height(size::CONTROL).into()
+    }
+
+    /// "Checks" of a pull request: the combined state (and merge conflicts); `None` when GitHub
+    /// reports neither.
+    fn checks_section(&self) -> Option<Element<'_, Message>> {
+        let details = self.github().filter(|d| d.kind == GitHubKind::PullRequest)?;
+        let mut rows: Vec<Element<'_, Message>> =
+            details.checks.map(|c| look_row(checks_look(c))).into_iter().collect();
+        if details.conflict {
+            rows.push(look_row(Look::new(Icon::CircleAlert, tr("Merge conflicts"), |p| p.attention)));
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        let mut section = column![self.section_head(Section::Checks, tr("Checks"), Vec::new())];
+        if !self.folded.contains(&Section::Checks) {
+            section = section.extend(rows);
+        }
+        Some(section.into())
+    }
+
+    /// "Reviews" of a pull request: GitHub's review decision; `None` without one.
+    fn reviews_section(&self) -> Option<Element<'_, Message>> {
+        let review = self.github().filter(|d| d.kind == GitHubKind::PullRequest)?.review?;
+        let mut section = column![self.section_head(Section::Reviews, tr("Reviews"), Vec::new())];
+        if !self.folded.contains(&Section::Reviews) {
+            section = section.push(look_row(review_look(review)));
+        }
+        Some(section.into())
     }
 
     /// The direct subtasks, open first, then by title.
@@ -746,17 +1403,39 @@ impl Detail {
         subtasks
     }
 
-    /// The panel's footer: "Delete task" (danger); after the first press the question with Delete
-    /// and Cancel. Escape cancels the question before it closes the panel.
-    fn footer(&self) -> Vec<Element<'_, Message>> {
-        if !self.confirm_delete {
-            return vec![widgets::text_button(None, tr("Delete task"), style::button::danger, Some(Message::Delete))];
+    /// The "…" menu: Copy link and Open on GitHub / Open link, then Delete task; after "Delete
+    /// task" the last part asks once more.
+    fn more_menu(&self) -> Element<'_, Message> {
+        let mut first = Vec::new();
+        let mut sections = Vec::new();
+        for item in self.more_items() {
+            match item {
+                More::CopyLink => first.push(MenuItem::new(Icon::Link, tr("Copy link"), Message::CopyLink)),
+                More::OpenLink => {
+                    let (mark, label) = match self.github_ref() {
+                        Some(_) => (Icon::Github, tr("Open on GitHub")),
+                        None => (Icon::Link, tr("Open link")),
+                    };
+                    first.push(MenuItem::new(mark, label, Message::OpenLink).trail(Trail::Icon(Icon::ArrowUpRight)));
+                }
+                More::Delete if self.confirm_delete => sections.push(MenuSection::titled(
+                    tr("Delete this task?"),
+                    vec![
+                        MenuItem::new(Icon::Trash2, tr("Delete task"), Message::ConfirmDelete),
+                        MenuItem::new(Icon::X, tr("Cancel"), Message::CancelDelete),
+                    ],
+                )),
+                More::Delete => sections.push(MenuSection::new(vec![MenuItem::new(
+                    Icon::Trash2,
+                    tr("Delete task"),
+                    Message::Delete,
+                )])),
+            }
         }
-        vec![
-            typo::text(typo::BODY, tr("Really delete?")).style(theme::text_2).into(),
-            widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete)),
-            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
-        ]
+        if !first.is_empty() {
+            sections.insert(0, MenuSection::new(first));
+        }
+        widgets::menu(sections)
     }
 
     fn priority_menu(&self) -> Element<'_, Message> {
@@ -879,8 +1558,8 @@ impl Detail {
     }
 }
 
-/// One subtask: round check in the list colour, the title (struck through when done) as a button
-/// that opens it; 32 high with a line below.
+/// One subtask, 32 high with a line below: the round check in the list colour on the axis of the
+/// title's check, then the title (struck through when done) as a button that opens it.
 fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
     let uid = task.uid.clone();
     let check = checkbox(task.completed)
@@ -890,35 +1569,101 @@ fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
     let title = button(container(list::title_view(task)).width(Fill).clip(true).center_y(Fill))
         .width(Fill)
         .height(size::CONTROL - LINE)
-        .padding(style::ITEM_PADDING)
+        .padding(Padding::new(0.0).right(space::S))
         .style(style::button::list_row(false))
         .on_press(Message::OpenSubtask(task.uid.clone()));
-    // The check stands on the axis of the property marks (16 from the panel's edge).
-    let line = container(row![check, title].align_y(Alignment::Center)).padding(Padding::ZERO.left(space::S));
+    let line = row![container(check).center_x(TITLE_MARK), title].spacing(space::M).align_y(Alignment::Center);
     column![line, rule::horizontal(LINE).style(style::rule)].into()
 }
 
-/// Escape in a text field: leave it and save what was typed.
+/// A row of the Checks or Reviews section: the state's icon in its colour on the axis of the
+/// title's mark, then its word; 32 high with a line below.
+fn look_row<'a>(look: Look) -> Element<'a, Message> {
+    let line = row![
+        container(tinted_icon(look.icon, icon::SIZE, look.colour)).center_x(TITLE_MARK),
+        typo::text(typo::BODY, look.word).wrapping(Wrapping::None),
+    ]
+    .spacing(space::M)
+    .align_y(Alignment::Center);
+    column![container(line).center_y(size::CONTROL - LINE), rule::horizontal(LINE).style(style::rule)].into()
+}
+
+/// The mark of a GitHub state for a pill or chip: tinted with `colours` (the current palette),
+/// neutral without.
+fn look_mark(colours: Option<&Palette>, look: Look) -> Mark {
+    colours.map_or(Mark::Icon(look.icon), |p| Mark::Tinted(look.icon, (look.colour)(p)))
+}
+
+/// `which`, `edge` wide, in the colour `pick` takes from the current theme.
+fn tinted_icon<'a>(which: Icon, edge: f32, pick: fn(&Palette) -> Color) -> Element<'a, Message> {
+    icon::icon(which, edge).style(move |t, _| svg::Style { color: Some(pick(palette(t))) }).into()
+}
+
+/// A due date in a property row: `BODY` tabular, in the attention colour when overdue.
+fn due_value<'a>(label: String, overdue: bool) -> Element<'a, Message> {
+    let text = typo::text(typo::BODY.tabular(), label).wrapping(Wrapping::None).style(move |t: &Theme| {
+        let p = palette(t);
+        iced::widget::text::Style { color: Some(if overdue { p.attention_text } else { p.text }) }
+    });
+    container(text).width(Fill).clip(true).into()
+}
+
+/// The line height of `level` in pixels, for a cell that centres a mark on a text's first line.
+fn typo_line(level: typo::Level) -> f32 {
+    match level.line_height {
+        iced::widget::text::LineHeight::Absolute(pixels) => pixels.0,
+        iced::widget::text::LineHeight::Relative(factor) => factor * level.size.0,
+    }
+}
+
+/// `content` moved in to the text of the title (past its mark).
+fn indented<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).padding(Padding::new(0.0).left(INDENT)).into()
+}
+
+/// `content` with `top` free above it.
+fn gap<'a>(top: f32, content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content).padding(Padding::new(0.0).top(top)).into()
+}
+
 /// Whether the editor that got `press` has the keyboard focus.
 fn is_focused(press: &text_editor::KeyPress) -> bool {
     matches!(press.status, text_editor::Status::Focused { .. })
 }
 
+/// Escape in a text field: leave it and save what was typed.
 fn leave_field() -> text_editor::Binding<Message> {
     text_editor::Binding::Sequence(vec![text_editor::Binding::Unfocus, text_editor::Binding::Custom(Message::Flush)])
 }
 
-/// A text editor without frame or surface (Linear's title and description): text in `value`,
-/// placeholder `text_3`. Focus shows as the caret; the field sits where its text is.
-fn bare_editor(theme: &Theme, status: text_editor::Status, value: Color) -> text_editor::Style {
+/// A text editor without frame (Linear's title and description): text in `value`, placeholder
+/// `text_3`. With `surface` it shows the hover surface while pointed at or typed in (the notes),
+/// else focus shows only as the caret (the title).
+fn bare_editor(theme: &Theme, status: text_editor::Status, value: Color, surface: bool) -> text_editor::Style {
     let p = palette(theme);
     let base = style::text_editor(theme, status);
     let faded = matches!(status, text_editor::Status::Disabled);
+    let lit = surface && matches!(status, text_editor::Status::Hovered | text_editor::Status::Focused { .. });
     text_editor::Style {
-        background: Background::Color(Color::TRANSPARENT),
-        border: border::rounded(0).width(0).color(Color::TRANSPARENT),
+        background: Background::Color(if lit { p.hover } else { Color::TRANSPARENT }),
+        border: border::rounded(theme::radius::SM).width(0).color(Color::TRANSPARENT),
         placeholder: p.text_3,
         value: if faded { value.scale_alpha(style::DISABLED_ALPHA) } else { value },
+        ..base
+    }
+}
+
+/// A text input that looks like a row ("Add sub-task"): no frame, the hover surface while
+/// pointed at or typed in, placeholder `text_3`.
+fn bare_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let p = palette(theme);
+    let base = style::text_input(theme, status);
+    let lit = matches!(status, text_input::Status::Hovered | text_input::Status::Focused { .. });
+    text_input::Style {
+        background: Background::Color(if lit { p.hover } else { Color::TRANSPARENT }),
+        border: border::rounded(theme::radius::SM).width(0).color(Color::TRANSPARENT),
+        placeholder: p.text_3,
+        value: p.text,
         ..base
     }
 }
@@ -1022,6 +1767,7 @@ mod tests {
     use iced::widget::Space;
     use torro_gui::layout::SizeClass;
     use torro_pim::CollectionKind;
+    use torro_pim::model::GitHubLabel;
 
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")
@@ -1065,13 +1811,46 @@ mod tests {
         vec![list("work", "Work"), list("home", "Home")]
     }
 
-    /// The panel for `task`, with `others` next to it and today fixed to Sunday 11 October 2026.
+    /// The details GitHub reports for a pull request: open, one label, an assignee, a
+    /// milestone, checks running and a review asked for.
+    fn pull_request() -> GitHubDetails {
+        GitHubDetails {
+            kind: GitHubKind::PullRequest,
+            state: GitHubState::Open,
+            labels: vec![GitHubLabel { name: "ui".into(), color: Some("#3B82F6".into()) }],
+            assignees: vec!["anna".into()],
+            milestone: Some("v0.4".into()),
+            milestone_due: None,
+            draft: false,
+            review: Some(ReviewState::Required),
+            checks: Some(ChecksState::Pending),
+            conflict: false,
+        }
+    }
+
+    /// A GitHub item as a GitHub filter list delivers it: in a read-only list, with details.
+    fn github_item(details: GitHubDetails) -> Todo {
+        let link = Link { github: Some(details), ..Link::github("mahype/TorroWorkplace", 131) };
+        Todo {
+            collection: "github:mahype/needs-me".into(),
+            url: Some("https://github.com/mahype/TorroWorkplace/pull/131".into()),
+            link: Some(link),
+            ..todo("p131", "Add workspace templates to the tray menu")
+        }
+    }
+
+    /// The detail of `task`, with `others` next to it and today fixed to Sunday 11 October 2026.
     fn detail(task: &Todo, others: &[Todo]) -> Detail {
         let mut all = others.to_vec();
         all.push(task.clone());
         let mut detail = Detail::new(task, &lists(), &all);
         detail.today = day(11);
         detail
+    }
+
+    /// [`detail`] without other tasks, for tests that name their detail `detail`.
+    fn detail_of(task: &Todo) -> Detail {
+        detail(task, &[])
     }
 
     /// The task an update hands out to be saved, or a panic when it saves nothing.
@@ -1098,6 +1877,19 @@ mod tests {
         detail.update(Message::NotesEdited(text_editor::Action::SelectAll));
         let paste = text_editor::Edit::Paste(Arc::new(notes.to_string()));
         detail.update(Message::NotesEdited(text_editor::Action::Edit(paste)));
+    }
+
+    /// The rows of the properties column, flat, with the title of their block.
+    fn rows(detail: &Detail, account: bool) -> Vec<(Option<&'static str>, Prop)> {
+        detail
+            .property_blocks(account)
+            .into_iter()
+            .flat_map(|(title, props)| props.into_iter().map(move |prop| (title, prop)))
+            .collect()
+    }
+
+    fn props(detail: &Detail) -> Vec<Prop> {
+        rows(detail, false).into_iter().map(|(_, prop)| prop).collect()
     }
 
     #[test]
@@ -1389,30 +2181,61 @@ mod tests {
     }
 
     #[test]
-    fn delete_asks_once_before_deleting() {
+    fn a_new_subtask_goes_into_the_list_below_this_task() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        assert_eq!(detail.update(Message::Delete), Action::None);
-        assert!(detail.confirm_delete);
-        assert_eq!(detail.update(Message::CancelDelete), Action::None);
-        assert!(!detail.confirm_delete);
+        assert_eq!(detail.update(Message::SubtaskSubmit), Action::None, "nothing typed");
+        detail.update(Message::SubtaskEdited("  Read the concept ".into()));
+        match detail.update(Message::SubtaskSubmit) {
+            Action::Create(new) => {
+                assert_eq!(new.summary, "Read the concept");
+                assert_eq!(new.parent.as_deref(), Some("t1"));
+                assert_eq!(new.collection, "work");
+                assert!(new.uid.is_empty() && new.href.is_none() && new.etag.is_none(), "a new task");
+            }
+            other => panic!("expected a new sub-task, got {other:?}"),
+        }
+        assert!(detail.new_subtask.is_empty(), "the field empties for the next one");
+    }
 
+    #[test]
+    fn hide_completed_and_folding_toggle() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        detail.update(Message::ToggleHideDone);
+        assert!(detail.hide_done);
+        detail.update(Message::Fold(Section::Subtasks));
+        assert!(detail.folded.contains(&Section::Subtasks));
+        detail.update(Message::Fold(Section::Subtasks));
+        assert!(!detail.folded.contains(&Section::Subtasks));
+    }
+
+    #[test]
+    fn delete_in_the_menu_asks_once_before_deleting() {
+        let mut detail = detail(&todo("t1", "a"), &[]);
+        detail.update(Message::Open(Editor::More));
+        assert_eq!(detail.update(Message::Delete), Action::None);
+        assert!(detail.confirm_delete && detail.open == Some(Editor::More), "the menu asks");
+        assert_eq!(detail.update(Message::CancelDelete), Action::None);
+        assert!(!detail.confirm_delete && detail.open.is_none());
+
+        detail.update(Message::Open(Editor::More));
         detail.update(Message::Delete);
         match detail.update(Message::ConfirmDelete) {
             Action::Delete(todo) => assert_eq!(todo.uid, "t1"),
             other => panic!("expected a delete, got {other:?}"),
         }
-        assert!(!detail.confirm_delete);
+        assert!(!detail.confirm_delete && detail.open.is_none());
     }
 
     #[test]
-    fn escape_closes_editor_then_question_then_detail() {
+    fn escape_closes_the_menu_and_its_question_then_the_detail() {
         let mut detail = detail(&todo("t1", "a"), &[]);
         assert_eq!(detail.update(Message::Open(Editor::Due)), Action::Focus(DUE_INPUT));
         assert_eq!(detail.update(Message::Escape), Action::None);
         assert_eq!(detail.open, None);
+        detail.update(Message::Open(Editor::More));
         detail.update(Message::Delete);
         assert_eq!(detail.update(Message::Escape), Action::None);
-        assert!(!detail.confirm_delete);
+        assert!(!detail.confirm_delete && detail.open.is_none());
         assert_eq!(detail.update(Message::Escape), Action::Close);
     }
 
@@ -1426,13 +2249,173 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_asks_before_deleting() {
+    fn the_arrows_in_the_head_ask_for_the_neighbours() {
         let mut detail = detail(&todo("t1", "a"), &[]);
-        assert_eq!(detail.footer().len(), 1, "only Delete task");
+        detail.update(Message::Open(Editor::More));
+        assert_eq!(detail.update(Message::Previous), Action::Previous);
+        assert_eq!(detail.open, None, "the menu closes");
+        assert_eq!(detail.update(Message::Next), Action::Next);
+    }
+
+    #[test]
+    fn the_more_menu_offers_what_the_task_has() {
+        assert_eq!(detail_of(&todo("t1", "a")).more_items(), [More::Delete], "a plain task");
+        let linked = Todo { url: Some("https://example.org/a".into()), ..todo("t1", "a") };
+        assert_eq!(detail_of(&linked).more_items(), [More::CopyLink, More::OpenLink, More::Delete]);
+        let read_only = Todo { collection: "elsewhere".into(), ..todo("t1", "a") };
+        assert!(detail_of(&read_only).more_items().is_empty(), "nothing to do: no \"…\"");
+    }
+
+    #[test]
+    fn the_more_menu_never_deletes_a_github_item() {
+        let item = github_item(pull_request());
+        let mut detail = detail_of(&item);
+        assert_eq!(detail.more_items(), [More::CopyLink, More::OpenLink]);
+        detail.update(Message::Open(Editor::More));
         detail.update(Message::Delete);
-        assert_eq!(detail.footer().len(), 3, "the question, Delete and Cancel");
-        detail.update(Message::CancelDelete);
-        assert_eq!(detail.footer().len(), 1);
+        assert!(!detail.confirm_delete);
+        assert_eq!(detail.update(Message::ConfirmDelete), Action::None);
+        // Also not when it sits in a writable list.
+        let in_list = Todo { collection: "work".into(), ..item };
+        assert!(!detail_of(&in_list).more_items().contains(&More::Delete));
+    }
+
+    #[test]
+    fn copy_link_copies_the_web_address_and_closes_the_menu() {
+        let mut detail = detail_of(&github_item(pull_request()));
+        detail.update(Message::Open(Editor::More));
+        let page = "https://github.com/mahype/TorroWorkplace/pull/131";
+        assert_eq!(detail.update(Message::CopyLink), Action::CopyLink(page.into()));
+        assert_eq!(detail.open, None);
+    }
+
+    #[test]
+    fn properties_of_a_plain_task_offer_what_can_be_set() {
+        let detail = detail_of(&todo("t1", "a"));
+        let organisation = Some(tr("Organisation"));
+        assert_eq!(
+            rows(&detail, true),
+            [
+                (None, Prop::Status),
+                (None, Prop::Priority),
+                (None, Prop::Due),
+                (organisation, Prop::List),
+                (organisation, Prop::Parent),
+                (Some(tr("Source")), Prop::Account),
+            ]
+        );
+        assert_eq!(detail.status_word(), tr("Open"));
+        assert_eq!((detail.draft.priority, detail.due_label(), detail.parent_title()), (Priority::None, None, None));
+        assert!(rows(&detail, false).iter().all(|(title, _)| *title != Some(tr("Source"))), "no empty Source block");
+    }
+
+    #[test]
+    fn properties_of_a_task_show_what_is_set() {
+        let task = Todo {
+            completed: true,
+            priority: Some(5),
+            due: Some(EventTime::Date(day(9))),
+            parent: Some("p".into()),
+            categories: vec!["api".into(), " ".into()],
+            url: Some("https://example.org/a".into()),
+            ..todo("t1", "a")
+        };
+        let detail = detail(&task, &[todo("p", "Plan the API release")]);
+        let props = props(&detail);
+        assert!(props.contains(&Prop::Labels) && props.contains(&Prop::OpenLink));
+        assert!(!props.contains(&Prop::Repo), "no GitHub rows for a task");
+        assert_eq!(detail.status_word(), tr("Completed"));
+        assert_eq!(detail.labels(), [(String::new(), "api".to_string())]);
+        assert_eq!(detail.parent_title().as_deref(), Some("Plan the API release"));
+        assert!(!detail.overdue(), "a done task is not overdue");
+        assert_eq!(detail.chip_props(), [Prop::Status, Prop::Priority, Prop::Due, Prop::List]);
+    }
+
+    #[test]
+    fn properties_of_a_github_item_show_its_source() {
+        let detail = detail_of(&github_item(pull_request()));
+        let (organisation, source) = (Some(tr("Organisation")), Some(tr("Source")));
+        assert_eq!(
+            rows(&detail, true),
+            [
+                (None, Prop::Status),
+                (organisation, Prop::List),
+                (organisation, Prop::Labels),
+                (source, Prop::Account),
+                (source, Prop::Repo),
+                (source, Prop::Assignees),
+                (source, Prop::Milestone),
+                (source, Prop::OpenLink),
+            ],
+            "read-only: no placeholder rows for priority, due or parent"
+        );
+        assert_eq!(detail.status_word(), tr("Open"));
+        assert_eq!(detail.labels(), [("#3B82F6".to_string(), "ui".to_string())]);
+        assert_eq!(detail.place_name(), "TorroWorkplace", "the repository stands in for the list");
+        assert_eq!(detail.place_mark(), Mark::Icon(Icon::Github));
+        assert_eq!(detail.chip_props(), [Prop::List], "the state is a pill, nothing else is set");
+    }
+
+    #[test]
+    fn a_github_item_in_a_task_list_can_still_be_planned() {
+        let item =
+            Todo { collection: "work".into(), due: Some(EventTime::Date(day(10))), ..github_item(pull_request()) };
+        let detail = detail_of(&item);
+        let props = props(&detail);
+        assert!(props.contains(&Prop::Priority) && props.contains(&Prop::Parent));
+        assert!(detail.overdue());
+        assert_eq!(detail.place_name(), "Work");
+        assert_eq!(detail.chip_props(), [Prop::Priority, Prop::Due, Prop::List]);
+    }
+
+    #[test]
+    fn github_states_have_words_and_icons() {
+        let pr = |state, draft| GitHubDetails { state, draft, ..pull_request() };
+        let issue = |state| GitHubDetails { kind: GitHubKind::Issue, ..pr(state, false) };
+        let cases = [
+            (pr(GitHubState::Open, false), Icon::GitPullRequest, tr("Open")),
+            (pr(GitHubState::Open, true), Icon::GitPullRequestDraft, tr("Draft")),
+            (pr(GitHubState::Merged, false), Icon::GitMerge, tr("Merged")),
+            (pr(GitHubState::Closed, false), Icon::GitPullRequestClosed, tr("Closed")),
+            (issue(GitHubState::Open), Icon::CircleDot, tr("Open")),
+            (issue(GitHubState::Closed), Icon::CircleCheck, tr("Closed")),
+        ];
+        for (details, icon, word) in cases {
+            let look = state_look(&details);
+            assert_eq!((look.icon, look.word), (icon, word), "{details:?}");
+        }
+        assert_eq!(checks_look(ChecksState::Failure).word, tr("Checks failed"));
+        assert_eq!(review_look(ReviewState::Approved).word, tr("Approved"));
+    }
+
+    #[test]
+    fn checks_and_reviews_only_for_pull_requests_that_have_them() {
+        let pr = detail_of(&github_item(pull_request()));
+        assert!(pr.checks_section().is_some() && pr.reviews_section().is_some());
+        let quiet = detail_of(&github_item(GitHubDetails { review: None, checks: None, ..pull_request() }));
+        assert!(quiet.checks_section().is_none() && quiet.reviews_section().is_none());
+        let issue = detail_of(&github_item(GitHubDetails { kind: GitHubKind::Issue, ..pull_request() }));
+        assert!(issue.checks_section().is_none() && issue.reviews_section().is_none());
+        let task = detail_of(&todo("t1", "a"));
+        assert!(task.checks_section().is_none() && task.subtasks_section().is_some(), "Add sub-task is there");
+        assert!(pr.subtasks_section().is_none(), "a read-only item without sub-tasks has none");
+    }
+
+    #[test]
+    fn every_view_builds_in_every_fit() {
+        let child = Todo { parent: Some("t1".into()), completed: true, ..todo("c", "Child") };
+        let anchor = Anchor::new();
+        for task in [todo("t1", "a"), github_item(pull_request())] {
+            let mut detail = detail(&task, std::slice::from_ref(&child));
+            detail.update(Message::Open(Editor::More));
+            for fit in [Fit::Columns, Fit::Chips, Fit::Narrow] {
+                let _ = detail.head(fit, "Today".into(), &anchor);
+                let _ = detail.main_column(fit, Palette::light(), &anchor);
+            }
+            let _ = detail.properties_column(Some("anna@cloud.example.org".into()), &anchor);
+            let _ = detail.property_chips(Palette::dark(), &anchor);
+            assert!(detail.layer(&anchor).is_some(), "the \"…\" menu floats");
+        }
     }
 
     #[test]
@@ -1457,17 +2440,13 @@ mod tests {
         };
         let mut detail = detail(&own, &[]);
         assert_eq!(detail.update(Message::OpenLink), Action::OpenUrl("https://example.org/a".into()));
-        assert!(detail.link_row().is_some());
 
         let linked = Todo { link: Some(Link::github("mahype/TorroWorkplace", 123)), ..todo("t2", "b") };
         let mut detail = detail_of(&linked);
         let page = "https://github.com/mahype/TorroWorkplace/issues/123";
         assert_eq!(detail.update(Message::OpenLink), Action::OpenUrl(page.into()));
-    }
-
-    /// [`detail`] without other tasks, for tests that name their panel `detail`.
-    fn detail_of(task: &Todo) -> Detail {
-        detail(task, &[])
+        let props = props(&detail);
+        assert!(props.contains(&Prop::Repo) && props.contains(&Prop::OpenLink), "a linked task names its repo");
     }
 
     #[test]
@@ -1477,14 +2456,14 @@ mod tests {
             let task = Todo { url: Some(url.into()), link: Some(other), ..todo("t1", "a") };
             let mut detail = detail_of(&task);
             assert_eq!(detail.link_target(), None, "{url}");
-            assert!(detail.link_row().is_none(), "{url}");
+            assert!(!props(&detail).contains(&Prop::OpenLink), "{url}");
+            assert!(!detail.more_items().contains(&More::CopyLink), "{url}");
             assert_eq!(detail.update(Message::OpenLink), Action::None, "{url}");
         }
-        assert!(detail_of(&todo("t1", "a")).link_row().is_none(), "nothing to open");
     }
 
     #[test]
-    fn tags_show_and_survive_a_save() {
+    fn tags_link_and_order_survive_a_save() {
         let task = Todo {
             categories: vec!["Finance".into(), " ".into()],
             url: Some("https://example.org".into()),
@@ -1493,14 +2472,21 @@ mod tests {
             ..todo("t1", "a")
         };
         let mut detail = detail_of(&task);
-        assert!(detail.tags_view().is_some());
-        assert!(detail_of(&todo("t2", "b")).tags_view().is_none());
         let saved = saves(&mut detail, Message::ToggleDone);
         assert_eq!(
             (saved.categories, saved.url, saved.sort_order, saved.link),
             (task.categories, task.url, task.sort_order, task.link),
             "the detail does not edit them, so they are saved as loaded"
         );
+    }
+
+    #[test]
+    fn a_read_only_task_takes_no_sub_tasks() {
+        let read_only = Todo { collection: "github:mahype/needs-me".into(), ..todo("t1", "a") };
+        let mut detail = detail_of(&read_only);
+        assert!(!detail.editable());
+        detail.update(Message::SubtaskEdited("x".into()));
+        assert_eq!(detail.update(Message::SubtaskSubmit), Action::None);
     }
 
     #[test]
