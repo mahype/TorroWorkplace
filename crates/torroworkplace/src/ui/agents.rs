@@ -4,15 +4,18 @@
 //!
 //! - **List:** one settings group per kind of client (agents, hooks, scripts), a row per client
 //!   with its name, what it is, its rights in words ([`rights_summary`]) and when it was last
-//!   used; the row opens the detail page. Without clients a sentence about connecting one. The
-//!   header's "Connect agent" opens the assistant of task A.7 (`agent_wizard.rs`).
+//!   used; the row opens the detail page. Without clients an empty state that points to the
+//!   header's "Connect agent", which opens the assistant of task A.7 (`agent_wizard.rs`).
 //! - **Detail:** the rights per grantable area as a segmented control that offers only the levels
-//!   that make a difference there ([`levels`], read from the command catalogue), with an admin
-//!   switch below every area that has admin commands ([`has_admin`]); "Ask first" (never, on
-//!   delete, on every change); the selections of calendars, task lists, GitHub repositories and
-//!   inbox sources ("All" or the ticked ones) for each area the client can reach; its latest
-//!   requests from the audit log (command and result, never contents); "Create new key" and
-//!   "Disconnect…", each behind a confirmation. A new key is shown once, with a copy button.
+//!   that make a difference there ([`levels`], read from the command catalogue), each starting in
+//!   the same slot ([`segment_slot`]) so the levels line up; an admin switch of its own after
+//!   every area that has admin commands ([`has_admin`], independent of the level); "Ask first"
+//!   (never, on delete, on every change); the selections of calendars, task lists, GitHub
+//!   repositories and inbox sources ("All" or the switched-on ones, a calendar's colour as a dot as
+//!   on the Accounts page) for each area the client can reach; its latest requests from the audit
+//!   log (command and result, never contents); "Create new key" and "Disconnect…", each behind a
+//!   confirmation that says what goes ([`disconnect_text`]). A new key is shown once, with a copy
+//!   button.
 //! - **Hook clients** (`api::HOOK_CLIENT`) show the agent they report for and their fixed rights,
 //!   read-only: the core narrows a hook's rights to `Rights::hook` whatever is sent, because its key
 //!   sits in files the agent can read itself.
@@ -44,13 +47,13 @@ use chrono::{DateTime, Local, Utc};
 use iced::time::Instant;
 use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, checkbox, column, container, row, svg, text_input, toggler};
+use iced::widget::{Space, center, column, container, row, svg, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Subscription, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Status};
+use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
 use torro_inbox::{AgentKind, SourceKind, SourceRef};
 use torro_ipc::api::{self, Access, Area, AreaRights, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights};
@@ -192,9 +195,9 @@ impl Pick {
     fn footer(self, all: bool) -> &'static str {
         match (self, all) {
             (Pick::Calendars, true) => tr("Includes calendars added later."),
-            (Pick::Calendars, false) => tr("Calendars you don't tick don't exist for this agent."),
+            (Pick::Calendars, false) => tr("Calendars left off don't exist for this agent."),
             (Pick::TaskLists, true) => tr("Includes lists added later, GitHub filter lists too."),
-            (Pick::TaskLists, false) => tr("Lists you don't tick don't exist for this agent."),
+            (Pick::TaskLists, false) => tr("Lists left off don't exist for this agent."),
             (Pick::GithubRepos, true) => tr("Every repository your GitHub token reaches, private ones too."),
             (Pick::GithubRepos, false) => tr(
                 "Matches from other repositories are dropped before the agent sees them. An owner stands for all of its repositories.",
@@ -221,7 +224,7 @@ pub enum Message {
     Confirm(Confirm),
     /// "All" (`true`) or "Selected" of a selection.
     All(Pick, bool),
-    /// A check box of a selection: the id and whether it is ticked now.
+    /// A switch of a selection: the id and whether it is on now.
     Tick(Pick, String, bool),
     /// The text of "Add repository" changed.
     RepoInput(String),
@@ -555,16 +558,10 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
             Message::NewKey,
             Message::CloseDialog,
         ),
-        Dialog::Disconnect => confirm(
-            tr("Disconnect this agent?"),
-            trf(
-                "{name} loses access at once: its key stops working. Connect it again to give it access.",
-                &[("name", name)],
-            ),
-            tr("Disconnect"),
-            Message::Disconnect,
-            Message::CloseDialog,
-        ),
+        Dialog::Disconnect => {
+            let (title, consequence) = disconnect_text(client);
+            confirm(title, consequence, tr("Disconnect"), Message::Disconnect, Message::CloseDialog)
+        }
     })
 }
 
@@ -615,6 +612,40 @@ pub fn active_level(offered: &[Level], stored: Level) -> usize {
     offered.iter().rposition(|&level| level <= stored).unwrap_or(0)
 }
 
+/// The options of "Ask first", in the order the control shows them.
+fn confirm_options() -> [(&'static str, Confirm); 3] {
+    [
+        (tr("Never"), Confirm::Never),
+        (tr("On delete"), Confirm::OnDelete),
+        (tr("On every change"), Confirm::OnEveryChange),
+    ]
+}
+
+/// The estimated width of a segmented control (`widgets::segmented`) with `labels`: each label in
+/// `CAPTION` with the button padding, plus the frame's inset and border. `typo::text_width`
+/// estimates generously, so the control fits.
+fn segmented_width(labels: &[&str]) -> f32 {
+    let padding = style::BUTTON_PADDING.left + style::BUTTON_PADDING.right;
+    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::CAPTION) + padding).sum();
+    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
+}
+
+/// The width of the slot every segmented control of the detail page starts in, left-aligned: as
+/// wide as the widest of them (all four levels, "Ask first", "All · Selected") in the language
+/// shown. So "None" stands under "None" whether an area offers two levels or four, and the page
+/// lines up in every size class without a width of its own.
+pub fn segment_slot() -> f32 {
+    let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(level_label);
+    let confirm = confirm_options().map(|(label, _)| label);
+    let pick = [tr("All"), tr("Selected")];
+    [segmented_width(&levels), segmented_width(&confirm), segmented_width(&pick)].into_iter().fold(0.0, f32::max)
+}
+
+/// `control` (a segmented control) at the left of a slot `slot` wide ([`segment_slot`]).
+fn in_slot<'a>(control: Element<'a, Message>, slot: f32) -> Element<'a, Message> {
+    container(control).width(slot).into()
+}
+
 fn level_label(level: Level) -> &'static str {
     match level {
         Level::NoAccess => tr("None"),
@@ -663,6 +694,12 @@ fn admin_label(area: Area) -> &'static str {
         Area::Inbox => tr("Mute sources and keep rules"),
         _ => tr("Admin commands"),
     }
+}
+
+/// The line under an admin switch: the area it belongs to and that every use waits for approval
+/// ("Accounts · each time with your approval").
+pub fn admin_detail(area: Area) -> String {
+    trf("{area} · each time with your approval", &[("area", &area_label(area))])
 }
 
 fn template_label(template: RightsTemplate) -> &'static str {
@@ -725,6 +762,46 @@ pub fn last_used_text(last_used: Option<DateTime<Utc>>, now: DateTime<Utc>) -> S
     }
 }
 
+/// The line under the name on the detail page: what kind of client it is, what it is where the
+/// name does not say so, and when it was last used ("Agent · Used 2 days ago", "Agent · Codex ·
+/// Never used").
+pub fn about(client: &ClientInfo, now: DateTime<Utc>) -> String {
+    let mut parts = vec![Category::of(client).singular().to_string()];
+    parts.extend(kind_word(client));
+    parts.push(last_used_text(client.last_used, now));
+    parts.join(" · ")
+}
+
+/// Title and consequence of "Disconnect…" for `client`. An agent loses its key and, where
+/// "Connect agent" set them up, its configuration entry and inbox hooks ([`Job::Disconnect`]);
+/// hooks are taken out of the agent's settings; a script only loses its key.
+fn disconnect_text(client: &ClientInfo) -> (&'static str, String) {
+    let name: &dyn std::fmt::Display = &client.name;
+    match Category::of(client) {
+        Category::Agent => (
+            tr("Disconnect this agent?"),
+            trf(
+                "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its inbox hooks are removed too.",
+                &[("name", name)],
+            ),
+        ),
+        Category::Hook => (
+            tr("Disconnect these hooks?"),
+            trf(
+                "{name} stop reporting at once: their key stops working and they are taken out of the agent's settings.",
+                &[("name", name)],
+            ),
+        ),
+        Category::Script => (
+            tr("Disconnect this script?"),
+            trf(
+                "{name} loses access at once: its key stops working. Connect it again to give it access.",
+                &[("name", name)],
+            ),
+        ),
+    }
+}
+
 /// The groups of the list: agents, hooks, scripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Category {
@@ -741,6 +818,15 @@ impl Category {
             HOOK_CLIENT => Category::Hook,
             "script" => Category::Script,
             _ => Category::Agent,
+        }
+    }
+
+    /// One client of the group, for the line under its name on the detail page.
+    fn singular(self) -> &'static str {
+        match self {
+            Category::Agent => tr("Agent"),
+            Category::Hook => tr("Hook"),
+            Category::Script => tr("Script"),
         }
     }
 
@@ -765,8 +851,8 @@ impl Category {
     }
 }
 
-/// A row of a selection: what is ticked by `id`, its name, a line below it and its colour (for
-/// calendars and lists, else the check box is neutral).
+/// A row of a selection: what is switched on by `id`, its name, a line below it and its colour
+/// (for calendars and lists, shown as a dot before the name).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub id: String,
@@ -907,7 +993,7 @@ fn when(time: DateTime<Utc>, now: DateTime<Utc>) -> String {
     let clock = local.format("%H:%M").to_string();
     match (today - local.date_naive()).num_days() {
         0 => clock,
-        1 => format!("{} {clock}", tr("yesterday")),
+        1 => trf("yesterday {time}", &[("time", &clock)]),
         _ => local.format("%Y-%m-%d %H:%M").to_string(),
     }
 }
@@ -937,9 +1023,11 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     let problem = state.problem.as_deref().map(problem_line);
     if data.clients.is_empty() {
-        let empty = widgets::empty_state(
-            tr("No agents connected."),
-            tr("Connect agent sets up Claude Code, Codex, Claude Desktop or Cursor, or creates a key for a script."),
+        let empty = empty_state(
+            tr("No agents connected"),
+            tr(
+                "Choose Connect agent to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
+            ),
         );
         return column![].push(problem).push(empty).spacing(space::L).into();
     }
@@ -953,6 +1041,21 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
         (!rows.is_empty()).then(|| widgets::group(category.title(), rows, Some(category.footer().to_string())))
     });
     column![].push(problem).extend(groups).spacing(space::XL).into()
+}
+
+/// The empty list: the section's icon over what shows up here and how – `widgets::empty_state`
+/// with an icon on top, as the inbox does it (`torroinbox::list`) until torro-gui offers one.
+fn empty_state<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
+    let mark =
+        icon::icon(Icon::Sparkles, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
+    let words = column![
+        typo::text(typo::BODY_STRONG, title).align_x(Alignment::Center),
+        typo::text(typo::BODY, hint).style(theme::text_2).align_x(Alignment::Center)
+    ]
+    .spacing(space::XS)
+    .align_x(Alignment::Center);
+    let content = column![mark, words].spacing(space::M).align_x(Alignment::Center).max_width(size::FORM_MAX / 2.0);
+    center(content).padding(space::XL).into()
 }
 
 /// Why an agent's configuration still holds its entry: an alert icon in the error colour and the
@@ -979,19 +1082,17 @@ fn client_row<'a>(state: &State, client: &'a ClientInfo, now: DateTime<Utc>) -> 
 /// "Disconnect…" at the end.
 fn detail<'a>(state: &'a State, client: &'a ClientInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     let name = typo::text(typo::HEADLINE, client.name.as_str()).wrapping(Wrapping::None);
-    let mut about: Vec<String> = kind_word(client).into_iter().collect();
-    about.push(last_used_text(client.last_used, now));
-    let about = about.join(" · ");
-    let heading = column![container(name).width(Fill).clip(true), typo::text(typo::META, about).style(theme::text_2)]
-        .spacing(space::XS);
+    let about = typo::text(typo::META, about(client, now)).style(theme::text_2);
+    let heading = column![container(name).width(Fill).clip(true), about].spacing(space::XS);
     let mut page = column![heading].spacing(space::XL);
     if client.kind == HOOK_CLIENT {
         page = page.push(hook_group(client));
     } else {
         let rights = shown_rights(state, client);
-        page = page.push(access_group(rights)).push(confirm_group(rights.confirm));
+        let slot = segment_slot();
+        page = page.push(access_group(rights, slot)).push(confirm_group(rights.confirm, slot));
         for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
-            page = page.push(selection_group(state, pick, rights, data));
+            page = page.push(selection_group(state, pick, rights, data, slot));
         }
     }
     let disconnect = widgets::text_button(None, tr("Disconnect…"), style::button::danger, Some(Message::AskDisconnect));
@@ -1003,8 +1104,10 @@ fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
     row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
 }
 
-/// The level of every grantable area, each followed by its admin switch where it has one.
-fn access_group<'a>(rights: &Rights) -> Element<'a, Message> {
+/// The level of every grantable area, each followed by its admin switch where it has one. The
+/// switch is a row of its own, not indented: admin commands are allowed per area whatever the
+/// level (`docs/api.md`, "Rechte"), so its line names the area instead.
+fn access_group<'a>(rights: &Rights, slot: f32) -> Element<'a, Message> {
     let mut rows = Vec::new();
     for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
         let granted = rights.area(area);
@@ -1014,16 +1117,13 @@ fn access_group<'a>(rights: &Rights) -> Element<'a, Message> {
             offered.into_iter().map(|level| (level_label(level), Message::Level(area, level))),
             active,
         );
-        rows.push(setting_row(None, area_label(area), Some(area_detail(area).to_string()), control));
+        rows.push(setting_row(None, area_label(area), Some(area_detail(area).to_string()), in_slot(control, slot)));
         if has_admin(area) {
             let switch = toggler(granted.admin)
                 .size(style::CHECK_SIZE)
                 .style(style::toggler)
                 .on_toggle(move |admin| Message::Admin(area, admin));
-            // Indented under its area, so it reads as part of it.
-            let indent = Space::new().width(space::L);
-            let detail = Some(tr("Each time with your approval").to_string());
-            rows.push(setting_row(Some(indent.into()), admin_label(area), detail, switch));
+            rows.push(setting_row(None, admin_label(area), Some(admin_detail(area)), switch));
         }
     }
     let footer = tr("Write includes reading, Full also deletes and overwrites.");
@@ -1031,28 +1131,31 @@ fn access_group<'a>(rights: &Rights) -> Element<'a, Message> {
 }
 
 /// "Ask first": never, on delete, on every change.
-fn confirm_group<'a>(current: Confirm) -> Element<'a, Message> {
-    let options = [
-        (tr("Never"), Confirm::Never),
-        (tr("On delete"), Confirm::OnDelete),
-        (tr("On every change"), Confirm::OnEveryChange),
-    ];
+fn confirm_group<'a>(current: Confirm, slot: f32) -> Element<'a, Message> {
+    let options = confirm_options();
     let active = options.iter().position(|(_, confirm)| *confirm == current).unwrap_or(0);
     let control = widgets::segmented(options.map(|(label, confirm)| (label, Message::Confirm(confirm))), active);
     let footer = tr("The agent waits until you allow it in Approvals. Admin commands always wait.");
-    widgets::group(tr("Approval"), vec![setting_row(None, tr("Ask first"), None, control)], Some(footer.to_string()))
+    let row = setting_row(None, tr("Ask first"), None, in_slot(control, slot));
+    widgets::group(tr("Approval"), vec![row], Some(footer.to_string()))
 }
 
-/// A selection: "All" or "Selected", and with "Selected" a check box per candidate; for GitHub
+/// A selection: "All" or "Selected", and with "Selected" a switch per candidate; for GitHub
 /// also a field to add a repository or owner.
-fn selection_group<'a>(state: &'a State, pick: Pick, rights: &Rights, data: &'a Data) -> Element<'a, Message> {
+fn selection_group<'a>(
+    state: &'a State,
+    pick: Pick,
+    rights: &Rights,
+    data: &'a Data,
+    slot: f32,
+) -> Element<'a, Message> {
     let selection = pick.of(rights);
     let all = matches!(selection, Selection::All);
     let switch = widgets::segmented(
         [(tr("All"), Message::All(pick, true)), (tr("Selected"), Message::All(pick, false))],
         usize::from(!all),
     );
-    let mut rows = vec![setting_row(None, tr("Access to"), None, switch)];
+    let mut rows = vec![setting_row(None, tr("Access to"), None, in_slot(switch, slot))];
     if !all {
         let offered = candidates(pick, data, selection);
         if offered.is_empty() && pick != Pick::GithubRepos {
@@ -1069,15 +1172,22 @@ fn selection_group<'a>(state: &'a State, pick: Pick, rights: &Rights, data: &'a 
     widgets::group(pick.title(), rows, Some(pick.footer(all).to_string()))
 }
 
-/// A candidate with its check box (in its colour, else neutral); the whole row ticks it.
+/// A candidate as on the Accounts page: a calendar's or list's colour only as a dot before the
+/// name (a calendar the core no longer knows keeps the dot's room, so the names line up), a
+/// neutral switch at the right; the whole row toggles it.
 fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool) -> Element<'a, Message> {
     let Candidate { id, label, detail, color } = candidate;
-    let check_id = id.clone();
-    let check = checkbox(ticked)
+    let switch_id = id.clone();
+    let switch = toggler(ticked)
         .size(style::CHECK_SIZE)
-        .style(move |t: &Theme, status| style::checkbox(color.unwrap_or(palette(t).text))(t, status))
-        .on_toggle(move |on| Message::Tick(pick, check_id.clone(), on));
-    let row = setting_row(Some(check.into()), label, detail, Space::new());
+        .style(style::toggler)
+        .on_toggle(move |on| Message::Tick(pick, switch_id.clone(), on));
+    let dot = match (pick, color) {
+        (_, Some(color)) => Some(color_dot(color, space::S)),
+        (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::S).into()),
+        (Pick::GithubRepos | Pick::InboxSources, None) => None,
+    };
+    let row = setting_row(dot, label, detail, switch);
     pressable(row, Some(Message::Tick(pick, id, !ticked)))
 }
 
@@ -1139,12 +1249,20 @@ fn quiet_group<'a>(title: &'a str, sentence: &'a str) -> Element<'a, Message> {
         .into()
 }
 
+/// A request: the command, below it the time in tabular figures (so the times of the rows line
+/// up), and the result at the right. Laid out like a `setting_row` with a detail, whose detail
+/// cannot be tabular.
 fn activity_row(entry: &ActivityEntry, now: DateTime<Utc>) -> Element<'_, Message> {
     let (status, word) = outcome(&entry.result);
     let result = row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2)]
         .spacing(space::S)
         .align_y(Alignment::Center);
-    setting_row(None, entry.command.as_str(), Some(when(entry.time, now)), result)
+    let lines = column![
+        typo::text(typo::BODY, entry.command.as_str()).wrapping(Wrapping::None),
+        typo::text(typo::META.tabular(), when(entry.time, now)).style(theme::text_2).wrapping(Wrapping::None),
+    ];
+    let text = container(lines).width(Fill).clip(true);
+    row_frame(row![text, result].spacing(space::L).align_y(Alignment::Center), true)
 }
 
 /// The key: where it lives, and "Create new key".
@@ -1158,10 +1276,11 @@ fn key_group<'a>() -> Element<'a, Message> {
 /// The new key, shown this once: the key in a field to select, "Copy" and "Done". A click next to
 /// the dialog does nothing, so a stray click does not lose the key.
 fn key_dialog(issued: &Issued) -> Element<'_, Message> {
+    // Tabular figures: a key is read and compared character by character.
     let field = text_input("", issued.key.expose())
         .size(typo::BODY.size)
         .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .font(typo::BODY.tabular().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
@@ -1595,6 +1714,59 @@ mod tests {
         assert_eq!(when(now, now), now.with_timezone(&Local).format("%H:%M").to_string());
         let old = now - Age::days(9);
         assert_eq!(when(old, now), old.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
+        let yesterday = now - Age::days(1);
+        let clock = yesterday.with_timezone(&Local).format("%H:%M").to_string();
+        assert_eq!(when(yesterday, now), trf("yesterday {time}", &[("time", &clock)]));
+    }
+
+    #[test]
+    fn every_segmented_control_fits_the_common_slot() {
+        let slot = segment_slot();
+        for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
+            let labels: Vec<&str> = levels(area).into_iter().map(level_label).collect();
+            assert!(segmented_width(&labels) <= slot, "{area:?}");
+        }
+        assert!(segmented_width(&confirm_options().map(|(label, _)| label)) <= slot);
+        assert!(segmented_width(&[tr("All"), tr("Selected")]) <= slot);
+        assert!(slot < size::CONTENT_MAX / 2.0, "leaves room for the area's name");
+    }
+
+    #[test]
+    fn the_admin_switch_names_its_area() {
+        let accounts = tr("Accounts");
+        assert_eq!(admin_detail(Area::Accounts), trf("{area} · each time with your approval", &[("area", &accounts)]));
+    }
+
+    #[test]
+    fn the_line_under_the_name_says_what_the_client_is() {
+        let data = data();
+        let now = Utc::now();
+        let never = tr("Never used");
+        assert_eq!(about(&data.clients[0], now), format!("{} · {never}", tr("Agent")));
+        // Named as the suite names hooks in the language shown, so the kind adds nothing.
+        let mut hook = data.clients[1].clone();
+        hook.name = kind_label(&hook);
+        assert_eq!(about(&hook, now), format!("{} · {never}", tr("Hook")));
+        assert_eq!(about(&data.clients[2], now), format!("{} · {never}", tr("Script")));
+        let mut renamed = data.clients[0].clone();
+        renamed.name = "Laptop agent".into();
+        assert_eq!(about(&renamed, now), format!("{} · Claude Code · {never}", tr("Agent")));
+    }
+
+    #[test]
+    fn disconnect_says_what_goes_with_the_client() {
+        let data = data();
+        let titles: Vec<&str> = data.clients.iter().map(|client| disconnect_text(client).0).collect();
+        assert_eq!(
+            titles,
+            [tr("Disconnect this agent?"), tr("Disconnect these hooks?"), tr("Disconnect this script?")]
+        );
+        let name: &dyn std::fmt::Display = &"Claude Code";
+        let agent = trf(
+            "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its inbox hooks are removed too.",
+            &[("name", name)],
+        );
+        assert_eq!(disconnect_text(&data.clients[0]).1, agent);
     }
 
     #[test]
