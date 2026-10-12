@@ -19,6 +19,8 @@ use torro_ipc::{
     AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, IssuedKey, Key, Request, Response,
     Status,
 };
+use torro_mail::{Endpoint, Security};
+use torro_mail_imap::discover::MailUnsupported;
 use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
@@ -35,8 +37,8 @@ pub enum Open {
     WizardGithub,
     /// The add-account dialog at the field for a GitHub token.
     WizardToken,
-    /// The add-account dialog on the mail provider path (task M7.2), at the state the script of
-    /// [`wizard::demo_messages`] leads to; the demo's search answers for a few domains
+    /// The add-account dialog on the mail account path (tasks M7.2, M5.1), at the state the script
+    /// of [`wizard::demo_messages`] leads to; the demo's search answers for a few domains
     /// ([`demo_answer`]).
     WizardMail(wizard::Demo),
     /// "Change password" of the demo's CalDAV account.
@@ -86,17 +88,21 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 33] = [
+    pub const ALL: [(&'static str, Open); 37] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
         ("wizard-mail", Open::WizardMail(wizard::Demo::Address)),
         ("wizard-mail-found", Open::WizardMail(wizard::Demo::Found)),
+        ("wizard-mail-advanced", Open::WizardMail(wizard::Demo::Advanced)),
         ("wizard-mail-unsupported", Open::WizardMail(wizard::Demo::Unsupported)),
+        ("wizard-mail-gmail", Open::WizardMail(wizard::Demo::Gmail)),
         ("wizard-mail-none", Open::WizardMail(wizard::Demo::NotFound)),
         ("wizard-mail-password", Open::WizardMail(wizard::Demo::Password)),
         ("wizard-mail-refused", Open::WizardMail(wizard::Demo::Refused)),
+        ("wizard-mail-refused-smtp", Open::WizardMail(wizard::Demo::RefusedSmtp)),
         ("wizard-mail-services", Open::WizardMail(wizard::Demo::Services)),
+        ("wizard-mail-mail-only", Open::WizardMail(wizard::Demo::MailOnly)),
         ("wizard-mail-done", Open::WizardMail(wizard::Demo::Done)),
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
@@ -487,10 +493,20 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
     let client_of = |id: &str| data.clients.iter().find(|client| client.id == id);
     match request {
         Request::DiscoverServices { address } => Some(demo_discovery(address)),
-        // "wrong" is the password the demo's provider refuses; nothing is stored either way.
+        // "wrong" is the password the demo's provider refuses (for mail its IMAP server), "wrong-smtp"
+        // the one only its SMTP server refuses; nothing is stored either way.
         Request::ConnectCalDav { password, .. } if password.expose() == "wrong" => {
             Some(Response::Error { code: "auth".into(), message: tr("Password was refused").into() })
         }
+        Request::ConnectMail { password, .. } if password.expose() == "wrong" => Some(refused("IMAP")),
+        Request::ConnectMail { password, .. } if password.expose() == "wrong-smtp" => Some(refused("SMTP")),
+        // What the CalDAV address offers is what was asked for, as long as an address was given.
+        Request::ConnectMail { address, imap, calendars, tasks, caldav, .. } => Some(Response::MailConnected {
+            account: mail_account(address, &imap.host, Utc::now()),
+            calendars: *calendars && caldav.is_some(),
+            tasks: *tasks && caldav.is_some(),
+            open_roles: Vec::new(),
+        }),
         Request::ConnectCalDav { login_name, .. } => {
             let account =
                 data.accounts.iter().find(|account| account.kind == "caldav").cloned().map(|mut account| {
@@ -528,32 +544,68 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
     }
 }
 
-/// What the demo's search finds for `address`, like the core's table of providers: mailbox.org and
-/// iCloud are found, Gmail is not supported, any other domain answers nothing.
-fn demo_discovery(address: &str) -> Response {
-    let domain = address.rsplit_once('@').map_or(address, |(_, domain)| domain).trim().to_lowercase();
-    let (provider, urls, unsupported) = match domain.as_str() {
-        "mailbox.org" => ("mailbox.org", vec!["https://dav.mailbox.org/"], None),
-        "icloud.com" => ("iCloud", vec!["https://caldav.icloud.com/"], None),
-        "gmail.com" => (
-            "Gmail",
-            Vec::new(),
-            Some(tr("Google calendars need a sign-in through Google, which Torro Workplace does not support yet.")),
-        ),
-        other => (other, Vec::new(), None),
-    };
-    // Calendars only until the mail account's wizard (task M5.1) shows the mail servers.
-    Response::Discovery {
-        provider: provider.to_string(),
-        urls: urls.into_iter().map(str::to_string).collect(),
-        unsupported: unsupported.map(str::to_string),
-        imap: None,
-        smtp: None,
-        login_hint: None,
-        app_password: false,
-        mail_unsupported: None,
+/// The answer of a server that refuses the password, naming the server like the core does.
+fn refused(server: &'static str) -> Response {
+    Response::Error {
+        code: "auth".into(),
+        message: trf("The {service} server refused the password.", &[("service", &server)]),
     }
 }
+
+/// What the demo's search finds for `address`, like the core's table of providers: mailbox.org and
+/// iCloud have mail, calendars and tasks, work.example.net only mail, Gmail has servers but wants
+/// an app password, Outlook.com is not supported and any other domain answers nothing.
+fn demo_discovery(address: &str) -> Response {
+    let address = address.trim();
+    let domain = address.rsplit_once('@').map_or(address, |(_, domain)| domain).trim().to_lowercase();
+    let server = |host: &str, port, security| Some(Endpoint { host: host.into(), port, security });
+    let mut provider = domain.clone();
+    let mut urls: Vec<String> = Vec::new();
+    let (mut imap, mut smtp, mut login_hint) = (None, None, None);
+    let (mut app_password, mut unsupported, mut mail_unsupported) = (false, None, None);
+    match domain.as_str() {
+        "mailbox.org" => {
+            provider = "mailbox.org".into();
+            urls.push("https://dav.mailbox.org/".into());
+            imap = server("imap.mailbox.org", 993, Security::Tls);
+            smtp = server("smtp.mailbox.org", 465, Security::Tls);
+            login_hint = Some(address.to_string());
+        }
+        "icloud.com" => {
+            provider = "iCloud".into();
+            urls.push("https://caldav.icloud.com/".into());
+            imap = server("imap.mail.me.com", 993, Security::Tls);
+            smtp = server("smtp.mail.me.com", 587, Security::StartTls);
+            login_hint = Some(address.to_string());
+            app_password = true;
+        }
+        "work.example.net" => {
+            imap = server("imap.work.example.net", 993, Security::Tls);
+            smtp = server("smtp.work.example.net", 587, Security::StartTls);
+            login_hint = address.split('@').next().map(str::to_string);
+        }
+        "gmail.com" => {
+            provider = "Gmail".into();
+            imap = server("imap.gmail.com", 993, Security::Tls);
+            smtp = server("smtp.gmail.com", 465, Security::Tls);
+            login_hint = Some(address.to_string());
+            app_password = true;
+            unsupported = Some(tr(CALENDARS_UNSUPPORTED_GOOGLE).to_string());
+            mail_unsupported = Some(tr(MailUnsupported::Google.reason()).to_string());
+        }
+        "outlook.com" => {
+            provider = "Outlook.com".into();
+            mail_unsupported = Some(tr(MailUnsupported::Microsoft.reason()).to_string());
+        }
+        _ => {}
+    }
+    Response::Discovery { provider, urls, unsupported, imap, smtp, login_hint, app_password, mail_unsupported }
+}
+
+/// The core's reason why Google's calendars do not work (`pim.rs`); Gmail answers with it next to
+/// the one for mail.
+const CALENDARS_UNSUPPORTED_GOOGLE: &str =
+    "Google calendars need a sign-in through Google, which Torro Workplace does not support yet.";
 
 /// What a demo client did lately, newest first, as the audit log has it: commands and results,
 /// no contents. A client that was never used has nothing.
@@ -762,21 +814,50 @@ mod tests {
     #[test]
     fn the_demo_searches_like_the_core_table() {
         let found = |address: &str| match demo_discovery(address) {
-            Response::Discovery { provider, urls, unsupported, .. } => (provider, urls, unsupported),
+            Response::Discovery {
+                provider,
+                urls,
+                unsupported,
+                imap,
+                smtp,
+                login_hint,
+                app_password,
+                mail_unsupported,
+            } => (provider, urls, unsupported, imap, smtp, login_hint, app_password, mail_unsupported),
             other => panic!("expected Discovery, got {other:?}"),
         };
-        assert_eq!(found("anna@mailbox.org"), ("mailbox.org".into(), vec!["https://dav.mailbox.org/".into()], None));
-        assert_eq!(found("ANNA@iCloud.com").0, "iCloud");
-        let (provider, urls, unsupported) = found("anna@gmail.com");
-        assert_eq!((provider.as_str(), urls.is_empty()), ("Gmail", true));
-        let why = tr("Google calendars need a sign-in through Google, which Torro Workplace does not support yet.");
-        assert_eq!(unsupported.as_deref(), Some(why));
-        assert_eq!(found("anna@example.org"), ("example.org".into(), vec![], None), "nothing answers");
+        let mailbox = found("anna@mailbox.org");
+        assert_eq!((mailbox.0.as_str(), mailbox.1), ("mailbox.org", vec!["https://dav.mailbox.org/".to_string()]));
+        assert_eq!(
+            (mailbox.3.map(|s| s.host), mailbox.4.map(|s| s.host)),
+            (Some("imap.mailbox.org".into()), Some("smtp.mailbox.org".into()))
+        );
+        assert_eq!((mailbox.5.as_deref(), mailbox.6, mailbox.7), (Some("anna@mailbox.org"), false, None));
+
+        let icloud = found("ANNA@iCloud.com");
+        assert_eq!((icloud.0.as_str(), icloud.6), ("iCloud", true), "an app password");
+
+        let work = found("anna@work.example.net");
+        assert!(work.1.is_empty() && work.3.is_some(), "mail only");
+        assert_eq!(work.5.as_deref(), Some("anna"), "this provider asks for the part before @");
+
+        let gmail = found("anna@gmail.com");
+        assert_eq!((gmail.0.as_str(), gmail.1.is_empty(), gmail.3.is_some(), gmail.6), ("Gmail", true, true, true));
+        assert_eq!(gmail.7.as_deref(), Some(tr(MailUnsupported::Google.reason())));
+        assert!(gmail.2.is_some(), "calendars do not work either");
+
+        let outlook = found("anna@outlook.com");
+        assert!(outlook.3.is_none() && outlook.4.is_none());
+        assert_eq!(outlook.7.as_deref(), Some(tr(MailUnsupported::Microsoft.reason())));
+
+        let nothing = found("anna@example.org");
+        assert_eq!((nothing.0.as_str(), nothing.1.is_empty(), nothing.3, nothing.7), ("example.org", true, None, None));
     }
 
     #[test]
-    fn the_demo_signs_in_with_any_password_but_the_refused_one() {
+    fn the_demo_signs_in_with_any_password_but_the_refused_ones() {
         use torro_core::account::Secret;
+        use torro_mail::{Endpoint, Security};
         let data = demo_data();
         let connect = |password: &str| Request::ConnectCalDav {
             address: "anna@mailbox.org".into(),
@@ -794,6 +875,39 @@ mod tests {
             demo_answer(&connect("anything"), &data),
             Some(Response::Connected { calendars: true, tasks: true, .. })
         ));
+
+        let server = |host: &str| Endpoint { host: host.into(), port: 993, security: Security::Tls };
+        let mail = |password: &str, caldav: Option<&str>| Request::ConnectMail {
+            address: "anna@mailbox.org".into(),
+            sender_name: String::new(),
+            imap: server("imap.mailbox.org"),
+            smtp: server("smtp.mailbox.org"),
+            login_name: "anna@mailbox.org".into(),
+            password: Secret::new(password),
+            calendars: true,
+            tasks: true,
+            caldav: caldav.map(str::to_string),
+        };
+        for (password, server) in [("wrong", "IMAP"), ("wrong-smtp", "SMTP")] {
+            assert!(matches!(
+                demo_answer(&mail(password, None), &data),
+                Some(Response::Error { ref code, ref message })
+                    if code == "auth" && *message == trf("The {service} server refused the password.", &[("service", &server)])
+            ));
+        }
+        match demo_answer(&mail("anything", Some("https://dav.mailbox.org/")), &data) {
+            Some(Response::MailConnected { account, calendars, tasks, open_roles }) => {
+                assert_eq!((account.kind.as_str(), account.label.as_str()), ("mail", "anna@mailbox.org"));
+                assert!(calendars && tasks && open_roles.is_empty());
+            }
+            other => panic!("expected MailConnected, got {other:?}"),
+        }
+        match demo_answer(&mail("anything", None), &data) {
+            Some(Response::MailConnected { calendars, tasks, .. }) => {
+                assert!(!calendars && !tasks, "no CalDAV, none asked")
+            }
+            other => panic!("expected MailConnected, got {other:?}"),
+        }
     }
 
     #[test]
