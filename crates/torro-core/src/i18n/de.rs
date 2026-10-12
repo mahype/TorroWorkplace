@@ -1263,4 +1263,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{change} and close GitHub issue {issue}", "{change} und GitHub-Issue {issue} schließen"),
     ("{change} and reopen GitHub issue {issue}", "{change} und GitHub-Issue {issue} wieder öffnen"),
     ("Added to {list}", "Zu „{list}“ hinzugefügt"),
+    ("Drag to a list", "Auf eine Liste ziehen"),
+    ("Moved to {list}", "Nach „{list}“ verschoben"),
 ];
