@@ -262,7 +262,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   Byte auf stdout; ohne Dienst Exit-Code 0 in unter 500 ms.
 
 ### E2.3 Hooks beim Verbinden eines Agenten einrichten
-- [ ] erledigt
+- [x] erledigt (Gemini CLI kam dabei auch als MCP-Ziel in den Assistenten)
 - **Modell:** Sonnet · **Braucht:** E2.2, A.7 · **Dateien:** `crates/torroworkplace/src/client_setup.rs`,
   `crates/torroworkplace/src/ui/agent_wizard.rs`, `crates/torroworkplace/tests/fixtures/client_setup/*`
 - **Oberfläche:** Im Assistenten „Connect agent“ für Claude Code, Codex und Gemini CLI ein Häkchen

@@ -411,7 +411,9 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             Some(Response::ClientKey { client, key })
         }
         Request::CreateClient { name, kind, template, agent } => {
-            let id = "9d4b7e21";
+            // The hook client "Connect agent" creates after the agent (task E2.3) gets an id of
+            // its own, as it would from the core.
+            let id = if kind == HOOK_CLIENT { "4c7a19e3" } else { "9d4b7e21" };
             let client = ClientInfo {
                 id: id.into(),
                 name: name.clone(),

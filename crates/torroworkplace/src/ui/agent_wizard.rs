@@ -12,12 +12,19 @@
 //!    that areas, calendars, lists, inbox sources and approvals can be narrowed on the agent's page
 //!    afterwards. A script also needs a name: it is its inbox source (`script:<name>`), so it must
 //!    differ from every other script and from `cli` – checked here first (the message shows after
-//!    the first "Create key", `torro-design` 5) and by the core.
+//!    the first "Create key", `torro-design` 5) and by the core. For Claude Code, Codex and Gemini
+//!    CLI a check box "Report to Inbox when waiting or done", ticked at first (task E2.3).
 //! 3. **Connecting:** `clients.create_client`, then for an agent the shell writes its MCP entry with
-//!    the key ([`client_setup::Job::Connect`]). Neither Cancel nor Escape nor a click next to the
-//!    dialog interrupts this: the key exists only in this window's memory.
-//! 4. **Done:** "Restart Claude Code to use Torro Workplace." and where the entry went. The key is
-//!    dropped from memory.
+//!    the key ([`client_setup::Job::Connect`]). With the check box ticked a second client follows,
+//!    of the kind `hook` for this agent ("Claude Code hooks", `clients.create_client` with the
+//!    template "Full access", which the core narrows to `Rights::hook`: report to the inbox, see
+//!    nothing), and the shell writes the agent's hooks with its key ([`client_setup::Job::Hook`]).
+//!    Neither Cancel nor Escape nor a click next to the dialog interrupts this: the keys exist
+//!    only in this window's memory.
+//! 4. **Done:** "Restart Claude Code to use Torro Workplace.", where the entry and the hooks went
+//!    (Codex runs new hooks only once they are trusted in its `/hooks`), or why the hooks could
+//!    not be set up: then the hook client is removed again, and the agent works without them. The
+//!    keys are dropped from memory.
 //!
 //!    **Key:** a script's key, or an agent's key whose entry could not be written (with the
 //!    reason): shown this once with "Copy", the way the agents page shows a new key. A click next
@@ -28,13 +35,14 @@
 //! dialog surface.
 
 use iced::widget::space as blank;
-use iced::widget::{Space, column, row, svg, text, text_input};
+use iced::widget::{Space, checkbox, column, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{style, typo, widgets};
-use torro_ipc::api::RightsTemplate;
+use torro_inbox::AgentKind;
+use torro_ipc::api::{HOOK_CLIENT, RightsTemplate};
 use torro_ipc::{IssuedKey, Request, Response};
 
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
@@ -50,6 +58,10 @@ enum Step {
     Creating,
     /// The shell writes the agent's MCP entry.
     Writing,
+    /// `clients.create_client` for the agent's hook client is on its way.
+    CreatingHooks,
+    /// The shell writes the agent's hooks.
+    WritingHooks,
     Done,
     /// The key is shown once: a script's, or an agent's whose entry could not be written.
     Key,
@@ -81,6 +93,14 @@ pub struct State {
     key: Option<IssuedKey>,
     /// "Copy" was pressed.
     copied: bool,
+    /// The check box "Report to Inbox when waiting or done" was unticked.
+    no_hooks: bool,
+    /// The agent client just created: its hooks are noted with it, so disconnecting it takes them.
+    agent_client: Option<String>,
+    /// The hook client just created, removed again if its hooks cannot be written.
+    hook_client: Option<String>,
+    /// How setting up the hooks went: where they went, or why not. `None`: not set up.
+    hooks: Option<Result<String, String>>,
 }
 
 impl State {
@@ -101,6 +121,8 @@ pub enum Message {
     Choose(Choice),
     Template(RightsTemplate),
     Name(String),
+    /// The check box "Report to Inbox when waiting or done".
+    Hooks(bool),
     /// "Connect" / "Create key", or Enter in the name field.
     Connect,
     CopyKey,
@@ -113,7 +135,7 @@ pub enum Message {
 /// Whether Cancel, Done and Escape may close the dialog now: not while the client is being
 /// created or set up, since its key would be lost.
 pub fn closable(state: &State) -> bool {
-    !matches!(state.step, Step::Creating | Step::Writing)
+    !matches!(state.step, Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks)
 }
 
 /// Whether a click next to the dialog closes it: on the steps that hold nothing to lose.
@@ -147,6 +169,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.name = name;
             Action::None
         }
+        Message::Hooks(on) => {
+            state.no_hooks = !on;
+            Action::None
+        }
         Message::Connect => connect(state, data),
         Message::CopyKey => match state.key.as_ref() {
             Some(key) => {
@@ -155,10 +181,16 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             None => Action::None,
         },
-        Message::Setup(outcome) => {
-            setup(state, outcome);
-            Action::None
-        }
+        Message::Setup(outcome) => setup(state, outcome),
+    }
+}
+
+/// The agent whose hooks are set up after its MCP entry: the chosen client has hooks and the
+/// check box is ticked.
+fn hook_agent(state: &State) -> Option<AgentKind> {
+    match state.choice {
+        Some(Choice::Agent(target)) if !state.no_hooks => target.agent(),
+        _ => None,
     }
 }
 
@@ -209,9 +241,15 @@ pub fn name_problem(name: &str, data: &Data) -> Option<&'static str> {
 /// dialog's (then the shell shows no notice of its own) with what to do next: for an agent's new
 /// key, writing its entry ([`Job::Connect`]). `None` for every other answer.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
-    if state.step != Step::Creating {
-        return None;
+    match state.step {
+        Step::Creating => Some(created(state, result)),
+        Step::CreatingHooks => Some(hook_created(state, result)),
+        _ => None,
     }
+}
+
+/// The answer to the agent's or script's `clients.create_client`.
+fn created(state: &mut State, result: &Result<Response, String>) -> Action {
     match result {
         Ok(Response::ClientKey { client, key }) => {
             let agent = match state.choice {
@@ -221,47 +259,100 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<
             let Some(found) = agent.cloned() else {
                 state.key = Some(key.clone());
                 state.step = Step::Key;
-                return Some(Action::None);
+                return Action::None;
             };
             state.key = Some(key.clone());
+            state.agent_client = Some(client.id.clone());
             state.step = Step::Writing;
-            Some(Action::Setup(Job::Connect {
+            Action::Setup(Job::Connect {
                 target: found.target,
                 method: found.method,
                 client: client.id.clone(),
                 key: key.clone(),
-            }))
+            })
         }
         Ok(_) => {
             state.step = Step::Rights;
             state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").to_string());
-            Some(Action::None)
+            Action::None
         }
         Err(message) => {
             state.step = Step::Rights;
             state.error = Some(message.clone());
-            Some(Action::None)
+            Action::None
         }
     }
 }
 
-/// A job's outcome: detection fills the list; a written entry ends in Done and forgets the key, a
-/// failed one shows the key with the reason.
-fn setup(state: &mut State, outcome: Outcome) {
+/// The answer to the hook client's `clients.create_client`: its key goes straight into the job
+/// that writes the hooks and is not kept. A refusal ends in Done with the reason; the agent is
+/// connected all the same.
+fn hook_created(state: &mut State, result: &Result<Response, String>) -> Action {
+    match (result, hook_agent(state)) {
+        (Ok(Response::ClientKey { client, key }), Some(agent)) => {
+            state.hook_client = Some(client.id.clone());
+            state.step = Step::WritingHooks;
+            Action::Setup(Job::Hook {
+                agent,
+                owner: state.agent_client.clone(),
+                client: client.id.clone(),
+                key: key.clone(),
+            })
+        }
+        (Err(message), _) => {
+            state.hooks = Some(Err(message.clone()));
+            state.step = Step::Done;
+            Action::None
+        }
+        _ => {
+            state.hooks = Some(Err(tr("Torro Workplace did not answer as expected. Try again.").to_string()));
+            state.step = Step::Done;
+            Action::None
+        }
+    }
+}
+
+/// A job's outcome: detection fills the list; a written entry forgets the key and goes on to the
+/// hook client (`clients.create_client`, kind `hook`) when the check box is ticked, else ends in
+/// Done; a failed one shows the key with the reason (no hooks then: the person sets the agent up
+/// by hand). Written hooks end in Done; failed ones too, with the reason, and their hook client
+/// is removed again (`clients.remove_client`), since nothing uses its key.
+fn setup(state: &mut State, outcome: Outcome) -> Action {
     match outcome {
         Outcome::Detected(found) => state.found = Some(found),
         Outcome::Connected(result) if state.step == Step::Writing => match result {
             Ok(()) => {
                 state.key = None;
-                state.step = Step::Done;
+                let Some(agent) = hook_agent(state) else {
+                    state.step = Step::Done;
+                    return Action::None;
+                };
+                state.step = Step::CreatingHooks;
+                return Action::Send(Request::CreateClient {
+                    name: trf("{agent} hooks", &[("agent", &agent.label())]),
+                    kind: HOOK_CLIENT.to_string(),
+                    // The core narrows any template to `Rights::hook`; "Full access" is the one
+                    // that leaves exactly that (write in the inbox, never ask first).
+                    template: RightsTemplate::FullAccess,
+                    agent: Some(agent),
+                });
             }
             Err(message) => {
                 state.error = Some(message);
                 state.step = Step::Key;
             }
         },
-        Outcome::Connected(_) | Outcome::Disconnected(_) => {}
+        Outcome::Hooked(result) if state.step == Step::WritingHooks => {
+            state.step = Step::Done;
+            let failed = result.is_err();
+            state.hooks = Some(result);
+            if let Some(id) = state.hook_client.take().filter(|_| failed) {
+                return Action::Send(Request::RemoveClient { id });
+            }
+        }
+        Outcome::Connected(_) | Outcome::Hooked(_) | Outcome::Disconnected(_) => {}
     }
+    Action::None
 }
 
 // ----- Views --------------------------------------------------------------------------------
@@ -275,7 +366,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let body = match state.step {
         Step::Client => client_step(state),
         Step::Rights => rights_step(state, data),
-        Step::Creating | Step::Writing => {
+        Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks => {
             typo::text(typo::BODY, trf("Connecting {name} …", &[("name", &chosen_name(state))]))
                 .style(theme::text_2)
                 .into()
@@ -302,7 +393,9 @@ fn subtitle(state: &State) -> String {
             Some(Choice::Script) => tr("Name the script and choose what it may do.").to_string(),
             _ => trf("Choose what {name} may do.", &[("name", &name)]),
         },
-        Step::Creating | Step::Writing => tr("Creating a key and adding it to the configuration.").to_string(),
+        Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks => {
+            tr("Creating a key and adding it to the configuration.").to_string()
+        }
         Step::Done => trf("{name} is connected.", &[("name", &name)]),
         Step::Key => tr("Copy the key now.").to_string(),
     }
@@ -384,7 +477,24 @@ fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         .collect();
     let footer =
         tr("Areas, calendars, lists, inbox sources and what needs your approval can be narrowed on its page later.");
-    page.push(widgets::group(tr("Access"), rows, Some(footer.to_string()))).into()
+    page = page.push(widgets::group(tr("Access"), rows, Some(footer.to_string())));
+    match state.choice {
+        Some(Choice::Agent(target)) if target.agent().is_some() => page.push(inbox_group(state)).into(),
+        _ => page.into(),
+    }
+}
+
+/// The check box "Report to Inbox when waiting or done"; the whole row ticks it.
+fn inbox_group(state: &State) -> Element<'_, Message> {
+    let on = !state.no_hooks;
+    let check = checkbox(on)
+        .size(style::CHECK_SIZE)
+        .style(|t: &Theme, status| style::checkbox(palette(t).text)(t, status))
+        .on_toggle(Message::Hooks);
+    let label = tr("Report to Inbox when waiting or done");
+    let detail = tr("A separate key that can only report.");
+    let row = setting_row(Some(check.into()), label, Some(detail.to_string()), Space::new());
+    widgets::group(tr("Inbox"), vec![pressable(row, Some(Message::Hooks(!on)))], None)
 }
 
 fn template_label(template: RightsTemplate) -> &'static str {
@@ -414,13 +524,29 @@ fn done_step(state: &State) -> Element<'_, Message> {
         Some(found) => trf("Added to {file}.", &[("file", &found.place)]),
         None => String::new(),
     };
-    column![
+    let mut lines = column![
         typo::text(typo::BODY, trf("Restart {name} to use Torro Workplace.", &[("name", &name)])),
         typo::text(typo::BODY, written).style(theme::text_2),
-        typo::text(typo::BODY, tr("Disconnect… on its page removes the entry again.")).style(theme::text_2),
     ]
-    .spacing(space::M)
-    .into()
+    .spacing(space::M);
+    match &state.hooks {
+        Some(Ok(file)) => {
+            let added = trf("Hooks added to {file}.", &[("file", file)]);
+            lines = lines.push(typo::text(typo::BODY, added).style(theme::text_2));
+            if state.choice == Some(Choice::Agent(Target::Codex)) {
+                let trust = tr("Codex runs new hooks only after you trust them: type /hooks in Codex.");
+                lines = lines.push(typo::text(typo::BODY, trust).style(theme::text_2));
+            }
+        }
+        Some(Err(error)) => {
+            let problem = trf("Inbox reports could not be set up: {error}", &[("error", error)]);
+            let error_text = |t: &Theme| text::Style { color: Some(palette(t).error_text) };
+            lines = lines.push(typo::text(typo::BODY, problem).style(error_text));
+        }
+        None => {}
+    }
+    let again = tr("Disconnect… on its page removes the entry again.");
+    lines.push(typo::text(typo::BODY, again).style(theme::text_2)).into()
 }
 
 /// The key this once: why it is shown, the key in a field to select, and "Copy".
@@ -485,7 +611,7 @@ fn footer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         }
         (Step::Rights, _) => primary(tr("Connect"), Some(Message::Connect)),
         (Step::Done | Step::Key, _) => primary(tr("Done"), Some(Message::Close)),
-        (Step::Client | Step::Creating | Step::Writing, _) => None,
+        (Step::Client | Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks, _) => None,
     };
     row![error].push(back).push(cancel).push(next).spacing(space::S).align_y(Alignment::Center).into()
 }
@@ -497,6 +623,7 @@ mod tests {
 
     use super::*;
     use crate::client_setup::{Tool, demo};
+    use torro_ipc::api::HOOK_CLIENT;
 
     fn detected() -> State {
         let mut state = State::new();
@@ -528,6 +655,8 @@ mod tests {
         assert_eq!(state.step, Step::Rights);
         assert_eq!(state.template, RightsTemplate::ReadAndWrite, "the default template");
         let _ = update(&mut state, Message::Template(RightsTemplate::ReadOnly), &data);
+        assert!(!state.no_hooks, "reporting to the inbox is ticked at first");
+        let _ = update(&mut state, Message::Hooks(false), &data);
         let action = update(&mut state, Message::Connect, &data);
         assert!(matches!(
             action,
@@ -553,6 +682,91 @@ mod tests {
         assert!(state.key.is_none(), "the key is forgotten once it is in the configuration");
         assert!(closable(&state) && dismissable(&state));
         drop(view(&state, &data));
+    }
+
+    /// Claude Code chosen with the defaults, its client created and its MCP entry written.
+    fn connected_claude() -> State {
+        let data = Data::default();
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::ClaudeCode)), &data);
+        drop(view(&state, &data));
+        let _ = update(&mut state, Message::Connect, &data);
+        let _ = answered(&mut state, &key_answer("n1", "Claude Code", "claude-code"));
+        state
+    }
+
+    #[test]
+    fn with_the_check_box_a_hook_client_follows_and_its_hooks_are_written() {
+        let data = Data::default();
+        let mut state = connected_claude();
+        let action = update(&mut state, Message::Setup(Outcome::Connected(Ok(()))), &data);
+        let expected_name = trf("{agent} hooks", &[("agent", &"Claude Code")]);
+        assert!(matches!(
+            action,
+            Action::Send(Request::CreateClient {
+                ref name,
+                ref kind,
+                template: RightsTemplate::FullAccess,
+                agent: Some(AgentKind::ClaudeCode),
+            }) if *name == expected_name && kind == HOOK_CLIENT
+        ));
+        assert_eq!(state.step, Step::CreatingHooks);
+        assert!(state.key.is_none(), "the agent's key is forgotten once it is in the configuration");
+        assert!(!closable(&state) && !dismissable(&state), "nothing interrupts the hook client");
+
+        let mut hook = key_answer("h1", &expected_name, HOOK_CLIENT);
+        if let Ok(Response::ClientKey { client, .. }) = hook.as_mut() {
+            client.agent = Some(AgentKind::ClaudeCode);
+        }
+        match answered(&mut state, &hook) {
+            Some(Action::Setup(Job::Hook { agent, owner, client, key })) => {
+                assert_eq!((agent, owner.as_deref(), client.as_str()), (AgentKind::ClaudeCode, Some("n1"), "h1"));
+                assert_eq!(key.expose(), "torro_n1_secret");
+            }
+            other => panic!("expected the hooks to be written, got {other:?}"),
+        }
+        assert_eq!(state.step, Step::WritingHooks);
+        assert!(!closable(&state));
+
+        let ok = Outcome::Hooked(Ok("~/.claude/settings.json".into()));
+        assert!(matches!(update(&mut state, Message::Setup(ok), &data), Action::None));
+        assert_eq!(state.step, Step::Done);
+        assert_eq!(state.hooks, Some(Ok("~/.claude/settings.json".into())));
+        assert!(closable(&state) && dismissable(&state));
+        drop(view(&state, &data));
+    }
+
+    #[test]
+    fn failed_hooks_end_in_done_with_the_reason_and_their_client_goes() {
+        let data = Data::default();
+        let mut state = connected_claude();
+        let _ = update(&mut state, Message::Setup(Outcome::Connected(Ok(()))), &data);
+        let _ = answered(&mut state, &key_answer("h1", "Claude Code hooks", HOOK_CLIENT));
+        let failed = Outcome::Hooked(Err("settings.json could not be read".into()));
+        let action = update(&mut state, Message::Setup(failed), &data);
+        assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "h1"));
+        assert_eq!(state.step, Step::Done);
+        assert_eq!(state.hooks, Some(Err("settings.json could not be read".into())));
+        assert!(answered(&mut state, &Ok(Response::Ok)).is_none(), "the removal's answer is not the dialog's");
+        drop(view(&state, &data));
+
+        // The core refuses the hook client: Done with its message, nothing to remove.
+        let mut refused = connected_claude();
+        let _ = update(&mut refused, Message::Setup(Outcome::Connected(Ok(()))), &data);
+        assert!(matches!(answered(&mut refused, &Err("busy".into())), Some(Action::None)));
+        assert_eq!((refused.step, refused.hooks.clone()), (Step::Done, Some(Err("busy".into()))));
+    }
+
+    #[test]
+    fn apps_without_hooks_have_no_check_box() {
+        let data = Data::default();
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::Cursor)), &data);
+        assert_eq!(hook_agent(&state), None);
+        let _ = update(&mut state, Message::Connect, &data);
+        let _ = answered(&mut state, &key_answer("n1", "Cursor", "cursor"));
+        let _ = update(&mut state, Message::Setup(Outcome::Connected(Ok(()))), &data);
+        assert_eq!((state.step, state.hooks.clone()), (Step::Done, None));
     }
 
     #[test]

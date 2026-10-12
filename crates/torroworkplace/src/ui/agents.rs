@@ -25,7 +25,10 @@
 //! "Disconnect…" also takes Torro Workplace out of the agent's configuration when the assistant
 //! put it there: once the core confirmed `clients.remove_client`, the shell runs
 //! [`Job::Disconnect`], which looks up what the assistant noted for that client and does nothing
-//! for any other. A failure shows above the list.
+//! for any other. A failure shows above the list. The agent's inbox hooks go with it (task E2.3):
+//! the job takes them out of the agent's settings and names their hook client, which the page
+//! then removes from the core as well (`clients.remove_client`, one after the other).
+//! Disconnecting a hook client itself takes out only its hooks.
 //!
 //! Requests: `clients.update_client` (every control of the rights), `clients.activity` (opening a
 //! detail page), `clients.new_key`, `clients.remove_client` and, from the assistant,
@@ -57,6 +60,8 @@ use torro_pim::Collection;
 
 use super::accounts::relative_time;
 use super::{Action, Data, Header, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
+#[cfg(test)]
+use crate::client_setup::Released;
 use crate::client_setup::{Job, Outcome};
 
 /// How long after the last change the rights are saved (`docs/settings.md`, "Speichern
@@ -92,6 +97,8 @@ pub struct State {
     removing: Option<String>,
     /// Why taking Torro Workplace out of an agent's configuration failed, shown above the list.
     problem: Option<String>,
+    /// Hook clients of a disconnected agent still to remove from the core.
+    orphans: Vec<String>,
 }
 
 /// Rights the page changed, on their way to the core.
@@ -340,14 +347,36 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::Setup(Job::Detect)
         }
         Message::Wizard(message) => wizard(state, message, data),
-        Message::Setup(Outcome::Disconnected(result)) => {
-            state.problem = result.err();
-            Action::None
-        }
+        Message::Setup(Outcome::Disconnected(result)) => match result {
+            Ok(released) => {
+                state.problem = None;
+                state.orphans.extend(released.hook_clients);
+                remove_orphan(state)
+            }
+            Err(problem) => {
+                state.problem = Some(problem);
+                Action::None
+            }
+        },
         Message::Setup(outcome) => match state.wizard.as_mut() {
             Some(wizard) => agent_wizard::update(wizard, agent_wizard::Message::Setup(outcome), data),
             None => Action::None,
         },
+    }
+}
+
+/// Removes the next hook client of a disconnected agent, the way "Disconnect…" removes a client:
+/// once the core confirms, its hooks are looked up too ([`answered`]), and the next one follows.
+fn remove_orphan(state: &mut State) -> Action {
+    if state.removing.is_some() {
+        return Action::None;
+    }
+    match state.orphans.pop() {
+        Some(id) => {
+            state.removing = Some(id.clone());
+            Action::Send(Request::RemoveClient { id })
+        }
+        None => Action::None,
     }
 }
 
@@ -1433,8 +1462,24 @@ mod tests {
         assert!(state.problem.is_some());
         drop(view(&state, &data));
         drop(view(&state, &Data::default()));
-        let _ = update(&mut state, Message::Setup(Outcome::Disconnected(Ok(None))), &data);
+        let _ = update(&mut state, Message::Setup(Outcome::Disconnected(Ok(Released::default()))), &data);
         assert!(state.problem.is_none());
+    }
+
+    #[test]
+    fn disconnecting_an_agent_removes_its_hook_client_too() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let _ = update(&mut state, Message::Disconnect, &data);
+        assert!(matches!(answered(&mut state, &Ok(Response::Ok)), Some(Action::Setup(Job::Disconnect { .. }))));
+        let released = Released { target: None, hook_clients: vec!["h1".into()] };
+        let action = update(&mut state, Message::Setup(Outcome::Disconnected(Ok(released))), &data);
+        assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "h1"));
+        // The core confirms: h1's own entries are looked up (nothing left), and nothing follows.
+        let next = answered(&mut state, &Ok(Response::Ok));
+        assert!(matches!(next, Some(Action::Setup(Job::Disconnect { ref client })) if client == "h1"));
+        let last = update(&mut state, Message::Setup(Outcome::Disconnected(Ok(Released::default()))), &data);
+        assert!(matches!(last, Action::None));
     }
 
     #[test]
