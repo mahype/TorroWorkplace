@@ -59,11 +59,8 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 ## Offene Punkte (vor der jeweiligen Aufgabe klären)
 
 1. ~~Schnittstelle `Rights`~~ (E1.1): neues Feld `inbox_sources: Selection`, **freigegeben am 2026-10-12.**
-2. **Schnittstelle `Event`** (E3.4): Für „Ruhe bei belegten Terminen“ braucht das Modell Frei/Belegt
-   (`TRANSP`). Fehlt heute. **Freigabe nötig**, sonst startet E3.4 ohne Ruhe und sie kommt nach.
-3. **Sicherheitsteil von E2.5** (Rückfragen beantworten) vor Beginn freigeben; dazu gehört eine
-   Erweiterung von Punkt 3 in „Was nie nach außen geht“ ([api.md](../api.md)) auf Antworten auf
-   Rückfragen.
+2. ~~Schnittstelle `Event`~~ (E3.4): Feld Frei/Belegt (`TRANSP`), **freigegeben am 2026-10-12.**
+3. ~~Sicherheitsteil von E2.5~~: **freigegeben am 2026-10-12.**
 4. ~~A.6 (Agents & API): Auswahl der Inbox-Quellen auf der Detailseite~~, erledigt mit A.6.
 
 ## E1 Kern
@@ -337,24 +334,33 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 
 ### E2.5 Rückfragen von Agenten im Eingang beantworten
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** E2.3, E3.2, A.8, offener Punkt 3 · **Dateien:** werden mit der
-  Freigabe festgelegt (voraussichtlich `hook.rs`, `approvals.rs`, `inbox.rs`, `torro-ipc`, `torroinbox`,
-  `docs/api.md`)
+- **Modell:** Opus · **Braucht:** E2.3b, E3.2, A.8b, E1.2c · Sicherheitsteil freigegeben 2026-10-12 ·
+  **Dateien:** `crates/torroworkplace/src/{hook,approvals,core,inbox,notify,client_setup,audit}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-inbox/src/hook.rs` (+ Fixtures),
+  `crates/torroinbox/src/{app,detail}.rs` (nur falls die Freigabe-Einträge mehr brauchen), `docs/api.md`
 - Claude Code und Codex fragen über den Hook `PermissionRequest` „darf ich?“. Der Hook legt eine
-  Rückfrage an und wartet bis zu 30 s auf die Entscheidung des Menschen im Eingang oder in der
-  Benachrichtigung („Allow“ / „Deny“). Ohne Entscheidung gibt der Hook **keine** Antwort, und der
-  Agent fragt wie gewohnt im Terminal. Nie automatisch erlauben.
-- **API:**
-  - `inbox.ask_question { question, options }` · Write – ein Agent oder Hook stellt dem Menschen eine
-    Frage. MCP `inbox_ask_question`.
-  - `inbox.question_status { id }` · Read – Antwort abholen. MCP `inbox_question_status`.
-  - `inbox.answer_question { id, option }` · Admin · **Never**, nur App-Schlüssel (Erweiterung von
-    Punkt 3 in api.md; in `names_follow_the_rules` unter `kept_back`).
-- **Sicherheitsteil zur Freigabe:** genauer Wortlaut des Befehls ungekürzt sichtbar, Entscheidung an
-  genau diese Rückfrage gebunden, fremder Text als `untrusted` gekennzeichnet, Antwort nur über den
-  App-Schlüssel.
-- **Abnahme:** Tests: Zeitablauf → keine Ausgabe; „Deny“ → Ablehnung im Format des Agenten;
-  Client-Schlüssel kann nicht antworten.
+  Rückfrage an und wartet bis zu 30 s auf die Entscheidung des Menschen im Eingang, in der
+  Steuerzentrale (Freigaben), mit `ctl allow|deny` oder in der Benachrichtigung („Allow“ / „Deny“).
+  Ohne Entscheidung gibt der Hook **keine** Antwort, und der Agent fragt wie gewohnt im Terminal.
+  Nie automatisch erlauben.
+- **Bauweise (Empfehlung):** die Rückfrage ist eine **Freigabe** (A.3) mit eigener Art „Rückfrage eines
+  Agenten“: Sie erscheint damit ohne neue Oberfläche in Inbox (E2.1), Tray, Steuerzentrale, `ctl approvals`
+  und Benachrichtigung; „Erlauben“ führt nichts im Kern aus, sondern beantwortet nur die Rückfrage. Weicht die
+  Umsetzung davon ab (eigene `inbox.ask_question`/`question_status`/`answer_question`), begründen.
+- **API:** ein Befehl zum Fragen (Write, auch für Hook-Clients), einer zum Abholen der Antwort (Read, nur die
+  eigene Rückfrage – Hook-Clients sehen sonst nichts, Regel 4), Entscheiden nur mit dem App-Schlüssel
+  (`approvals.decide_approval` bzw. `Mcp::Never`, Punkt 3 in api.md).
+- **Hook:** `torroworkplace hook claude-code|codex --answer` (o. ä.) für das Ereignis `PermissionRequest`;
+  antwortet im Format des jeweiligen Agenten (offizielle Doku prüfen: Claude Code
+  `hookSpecificOutput.decision.behavior` allow/deny, Codex entsprechend); gibt sonst nichts aus, Exit 0.
+  E2.3 richtet den Hook mit passend langem Timeout (> 30 s) ein; bestehende Einrichtungen werden beim erneuten
+  Verbinden ergänzt.
+- **Sicherheit:** genauer Wortlaut des Werkzeugs und Befehls ungekürzt sichtbar (aber als `untrusted`, ohne
+  Steuer-/Bidi-Zeichen), Entscheidung an genau diese Rückfrage gebunden (Kennung, Ablauf 30 s + Spielraum),
+  Antwort nur über den App-Schlüssel, Hook nimmt nur eine Antwort zur eigenen Rückfrage an; Protokoll ohne Inhalt.
+- **Abnahme:** Tests: Zeitablauf → keine Ausgabe; „Deny“ → Ablehnung im Format des Agenten; „Allow“ →
+  Erlaubnis im Format des Agenten; Client-Schlüssel kann nicht antworten; Hook-Client sieht fremde Rückfragen
+  nicht; `torro-api-review` ohne hohen Befund.
 
 ## E3 App `torroinbox`
 
@@ -442,7 +448,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 
 ### E3.4 Desktop-Benachrichtigungen und Ruhe
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** E1.2, E2.1, offener Punkt 2 · **Dateien:** `crates/torroworkplace/src/{notify,inbox}.rs`,
+- **Modell:** Opus · **Braucht:** E1.2, E2.1 (Feld `TRANSP` freigegeben 2026-10-12) · **Dateien:** `crates/torroworkplace/src/{notify,inbox}.rs`,
   `crates/torro-core/src/settings.rs`, bei Punkt 2 zusätzlich `crates/torro-pim/src/*` und
   `crates/torro-pim-caldav/src/ical.rs` (nennen)
 - Popups nur für „für mich“, Dringendes mit Ton. Knöpfe: „Done“, „Snooze 1 h“, Freigaben „Allow“/„Deny“;
