@@ -215,7 +215,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - Liste mit „Allow“/„Deny“, Zahl am Tray-Icon.
 
 ### A.8b Tray öffnet die Freigaben, Zahl ohne Abfrage
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** A.8, E1.2b · **Dateien:** `crates/torroworkplace/src/{core,daemon}.rs`,
   `crates/torroworkplace/src/tray/linux.rs`
 - „Approvals (n)“ im Tray startet die Steuerzentrale mit `--section approvals` (wie `start_accounts_page`);

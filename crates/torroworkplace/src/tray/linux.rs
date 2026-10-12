@@ -3,23 +3,21 @@
 //! clicks into the same [`Request`]s the socket takes. The icon comes from `icon.rs`.
 //!
 //! What waits for the person ([`Waiting`], task A.8: the open approvals) shows as an entry
-//! "Approvals (2)" at the top of the menu, which opens the control centre, as the tooltip, and as
-//! the item status `NeedsAttention`, which bars use to highlight the icon. A number drawn onto the
-//! icon is left out: the protocol's overlay icon is only another pixmap, so the digits would have to
-//! be rasterised here, and many bars ignore it. The count comes from `approvals.list_approvals`
-//! every few seconds ([`watch_waiting`]), because the snapshot the daemon hands over carries no
-//! approvals and a client's request that opens one does not refresh the menu.
+//! "Approvals (2)" at the top of the menu, which opens the control centre on its approvals, as the
+//! tooltip, and as the item status `NeedsAttention`, which bars use to highlight the icon. A number
+//! drawn onto the icon is left out: the protocol's overlay icon is only another pixmap, so the
+//! digits would have to be rasterised here, and many bars ignore it. The count is part of the
+//! [`Snapshot`] (task A.8b); the daemon hands over a new one whenever an approval is opened,
+//! decided or expires, so the tray never asks the socket itself.
 
 use std::fmt;
-use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_ipc::{ApprovalInfo, Request, Response, client};
+use torro_ipc::Request;
 use torro_pim::AccountState;
 use torro_setups::LoadMode;
 
@@ -47,10 +45,9 @@ impl std::error::Error for TrayError {}
 /// Keeps the icon alive; updating it shows a new snapshot.
 pub type TrayHandle = ksni::Handle<Tray>;
 
-/// The tray: the last snapshot, what waits for the person, and the way back into the daemon.
+/// The tray: the last snapshot and the way back into the daemon.
 pub struct Tray {
     pub snapshot: Snapshot,
-    waiting: Waiting,
     daemon: Arc<Daemon>,
 }
 
@@ -64,61 +61,21 @@ pub struct Waiting {
 }
 
 impl Waiting {
+    /// What waits according to `snapshot`.
+    pub fn of(snapshot: &Snapshot) -> Waiting {
+        Waiting { approvals: snapshot.approvals_waiting }
+    }
+
     /// Everything that waits, as one number.
     pub fn total(self) -> usize {
         self.approvals
     }
 }
 
-/// How often the tray asks the core what waits. The desktop notification announces a new approval
-/// at once; the count is the reminder, so a few seconds late is fine.
-const WAITING_EVERY: Duration = Duration::from_secs(5);
-
-/// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot. The count
-/// of what waits follows by itself ([`watch_waiting`]) until the tray is closed.
+/// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot, and with
+/// it the count of what waits.
 pub async fn spawn(daemon: Arc<Daemon>, snapshot: Snapshot) -> Result<TrayHandle, TrayError> {
-    let handle = Tray { snapshot, waiting: Waiting::default(), daemon }.spawn().await.map_err(TrayError::Spawn)?;
-    if let Some(socket) = torro_ipc::socket_path() {
-        tokio::spawn(watch_waiting(handle.clone(), socket));
-    }
-    Ok(handle)
-}
-
-/// Asks the core at `socket` every [`WAITING_EVERY`] what waits and shows it when it changed. It
-/// goes through the socket with the app key like the control centre, so the core stays the only
-/// one who reads `approvals.json`. A core that does not answer keeps the last count; the loop ends
-/// with the tray.
-async fn watch_waiting(handle: TrayHandle, socket: std::path::PathBuf) {
-    let mut shown = Waiting::default();
-    let mut every = tokio::time::interval(WAITING_EVERY);
-    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        every.tick().await;
-        if handle.is_closed() {
-            return;
-        }
-        let Some(waiting) = fetch_waiting(&socket).await else { continue };
-        if waiting == shown {
-            continue;
-        }
-        if handle.update(|tray| tray.waiting = waiting).await.is_none() {
-            return;
-        }
-        shown = waiting;
-    }
-}
-
-/// What waits, from the core's answer to `approvals.list_approvals`; `None` when it does not answer.
-async fn fetch_waiting(socket: &Path) -> Option<Waiting> {
-    match client::call(socket, &Request::ListApprovals).await {
-        Ok(Response::Approvals { approvals }) => Some(Waiting { approvals: open_approvals(&approvals) }),
-        _ => None,
-    }
-}
-
-/// The approvals still waiting for a person.
-fn open_approvals(approvals: &[ApprovalInfo]) -> usize {
-    approvals.iter().filter(|approval| approval.state.is_pending()).count()
+    Tray { snapshot, daemon }.spawn().await.map_err(TrayError::Spawn)
 }
 
 impl ksni::Tray for Tray {
@@ -135,13 +92,17 @@ impl ksni::Tray for Tray {
 
     /// Bars highlight an item that needs attention; nothing waiting is the normal, active state.
     fn status(&self) -> ksni::Status {
-        item_status(self.waiting)
+        item_status(Waiting::of(&self.snapshot))
     }
 
     /// The name and, when something waits, how much. Never a summary: the description may be
     /// read as markup by the bar, and summaries hold text a client sent.
     fn tool_tip(&self) -> ksni::ToolTip {
-        ksni::ToolTip { title: "Torro Workplace".into(), description: waiting_line(self.waiting), ..Default::default() }
+        ksni::ToolTip {
+            title: "Torro Workplace".into(),
+            description: waiting_line(Waiting::of(&self.snapshot)),
+            ..Default::default()
+        }
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -152,7 +113,7 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        build_menu(&self.snapshot, self.waiting)
+        build_menu(&self.snapshot)
     }
 }
 
@@ -171,19 +132,20 @@ fn waiting_line(waiting: Waiting) -> String {
 }
 
 /// The menu from docs/core.md for one snapshot, with "Approvals (n)" on top while something
-/// waits.
+/// waits ([`Waiting::of`]).
 ///
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
-fn build_menu(snapshot: &Snapshot, waiting: Waiting) -> Vec<MenuItem<Tray>> {
+fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
+    let waiting = Waiting::of(snapshot);
     let mut menu = Vec::new();
     if waiting.total() > 0 {
         menu.push(
             StandardItem {
                 label: trf("Approvals ({n})", &[("n", &waiting.total())]),
-                // The control centre comes to the front, or starts; its sidebar counts the open
-                // approvals too.
-                activate: Box::new(|tray: &mut Tray| tray.daemon.open_app(AppId::WORKPLACE)),
+                // The control centre comes to the front, or starts on its approvals; its sidebar
+                // counts the open approvals too.
+                activate: Box::new(|tray: &mut Tray| tray.daemon.show_approvals()),
                 ..Default::default()
             }
             .into(),
@@ -360,7 +322,7 @@ mod tests {
     fn menu_follows_the_concept() {
         let sub = |label: &str| format!("{label} ▸");
         assert_eq!(
-            labels(&build_menu(&snapshot(), Waiting::default())),
+            labels(&build_menu(&snapshot())),
             [
                 sub(tr("Load template")),
                 tr("Save workspace").to_string(),
@@ -385,7 +347,7 @@ mod tests {
     #[test]
     fn load_here_only_on_an_empty_workspace() {
         let load_items = |snapshot: &Snapshot| {
-            let menu = build_menu(snapshot, Waiting::default());
+            let menu = build_menu(snapshot);
             let MenuItem::SubMenu(load) = &menu[0] else { panic!("load submenu") };
             let MenuItem::SubMenu(template) = &load.submenu[0] else { panic!("template submenu") };
             labels(&template.submenu)
@@ -399,44 +361,28 @@ mod tests {
     #[test]
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
-        let menu = labels(&build_menu(&snapshot, Waiting::default()));
+        let menu = labels(&build_menu(&snapshot));
         assert_eq!(menu[0], format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])));
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 
     #[test]
     fn waiting_approvals_lead_the_menu_and_mark_the_item() {
-        let none = Waiting::default();
+        let none = Waiting::of(&snapshot());
+        assert_eq!(none, Waiting::default());
         assert_eq!((item_status(none), waiting_line(none)), (ksni::Status::Active, String::new()));
-        assert_eq!(labels(&build_menu(&snapshot(), none))[0], format!("{} ▸", tr("Load template")));
+        assert_eq!(labels(&build_menu(&snapshot()))[0], format!("{} ▸", tr("Load template")));
 
-        let two = Waiting { approvals: 2 };
-        let menu = labels(&build_menu(&snapshot(), two));
-        assert_eq!(menu[..2], [trf("Approvals ({n})", &[("n", &2)]), "-".to_string()]);
-        assert_eq!(menu[2], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
+        let waiting = Snapshot { approvals_waiting: 2, ..snapshot() };
+        let two = Waiting::of(&waiting);
+        assert_eq!((two, two.total()), (Waiting { approvals: 2 }, 2), "the count comes from the snapshot");
+        let menu = build_menu(&waiting);
+        assert_eq!(labels(&menu)[..2], [trf("Approvals ({n})", &[("n", &2)]), "-".to_string()]);
+        assert!(matches!(&menu[0], MenuItem::Standard(entry) if entry.enabled), "the entry can be clicked");
+        assert_eq!(labels(&menu)[2], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
         assert_eq!(item_status(two), ksni::Status::NeedsAttention);
         assert_eq!(waiting_line(two), trf("{n} requests wait for your approval", &[("n", &2)]));
         assert_eq!(waiting_line(Waiting { approvals: 1 }), tr("1 request waits for your approval"));
-    }
-
-    #[test]
-    fn only_open_approvals_wait() {
-        use torro_ipc::ApprovalState;
-        let approval = |state: ApprovalState| ApprovalInfo {
-            id: "9c1f0a7e3b2d4c58".into(),
-            client: "claude".into(),
-            client_name: "Claude Code".into(),
-            command: "calendar.delete_event".into(),
-            summary: "Delete event".into(),
-            created: chrono::Utc::now(),
-            expires: chrono::Utc::now(),
-            decided: None,
-            state,
-        };
-        let approvals =
-            [approval(ApprovalState::Pending), approval(ApprovalState::Denied), approval(ApprovalState::Pending)];
-        assert_eq!(open_approvals(&approvals), 2);
-        assert_eq!(open_approvals(&[approval(ApprovalState::Expired)]), 0);
     }
 
     #[test]

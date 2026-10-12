@@ -27,6 +27,7 @@ use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::Inbox;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
+use crate::ui::Section;
 
 /// `name` next to the daemon's binary, else from `PATH`.
 fn sibling(name: &str) -> std::path::PathBuf {
@@ -43,25 +44,43 @@ fn launch_command(app: AppId, program: String) -> Vec<String> {
     if app == AppId::WORKPLACE { vec![program, "ui".into()] } else { vec![program] }
 }
 
-/// Starts the control centre on its accounts page, where a person finishes what a client asked
-/// for (`accounts.connect_github`).
-fn start_accounts_page() -> Result<(), String> {
-    let mut command = launch_command(AppId::WORKPLACE, sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned());
-    command.extend(["--section".to_string(), "accounts".to_string()]);
-    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
+/// The command line that starts the control centre at `program` on `section`
+/// (`torroworkplace ui --section approvals`).
+fn control_centre_command(program: String, section: Section) -> Vec<String> {
+    let mut command = launch_command(AppId::WORKPLACE, program);
+    command.extend(["--section".to_string(), section.arg().to_string()]);
+    command
 }
 
-/// Shows the person the control centre: an open one comes to the front, else one starts on its
-/// accounts page. An open one is never closed and restarted on a client's request, because that
-/// would throw away whatever the person is typing there (a half-pasted token, say).
-async fn show_accounts_page(wm: &impl WindowManager, start: fn() -> Result<(), String>) -> Result<(), String> {
+/// Starts a new control centre on `section`: the accounts page, where a person finishes what a
+/// client asked for (`accounts.connect_github`), or the approvals the tray counts.
+fn start_control_centre(section: Section) -> Result<(), String> {
+    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+    SystemLauncher.spawn(&control_centre_command(program, section)).map(|_| ()).map_err(|err| err.to_string())
+}
+
+/// Shows the person the control centre: an open one comes to the front, else one starts on
+/// `section` through `start`. An open one is never closed and restarted, because that would throw
+/// away whatever the person is typing there (a half-pasted token, say).
+///
+/// An open control centre stays on the page it shows: switching it to `section` would need a
+/// channel into the running app, which it does not have yet.
+async fn show_control_centre(
+    wm: &impl WindowManager,
+    section: Section,
+    start: fn(Section) -> Result<(), String>,
+) -> Result<(), String> {
     // A window manager that cannot list windows has none we could bring forward; start the page.
     let open = wm.windows(None).await.unwrap_or_default();
     match open.iter().find(|w| w.class == AppId::WORKPLACE.window_class) {
         Some(window) => wm.focus_window(&window.id).await.map_err(|err| err.to_string()),
-        None => start(),
+        None => start(section),
     }
 }
+
+/// How long after an approval's `expires` [`Core::approvals_changed`] wakes: the timer runs on the
+/// monotonic clock, the expiry on the wall clock, and the snapshot must find it expired.
+const EXPIRY_SLACK: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// What the tray menu is built from.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -78,6 +97,9 @@ pub struct Snapshot {
     pub problem: Option<String>,
     /// The accounts as one state (`torro_pim::combined_state`), for the status line.
     pub account: Option<AccountState>,
+    /// Approvals still waiting for a person (`ApprovalState::Pending`), for "Approvals (n)". 0 when
+    /// the approvals cannot be read; their own commands report why.
+    pub approvals_waiting: usize,
 }
 
 /// The core's state: window manager, template store, settings, the keys that may talk to it,
@@ -99,9 +121,9 @@ pub struct Core {
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
-    /// Starts the control centre on its accounts page ([`start_accounts_page`]); tests count
-    /// the calls instead.
-    start_accounts: fn() -> Result<(), String>,
+    /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
+    /// calls instead.
+    start_control_centre: fn(Section) -> Result<(), String>,
 }
 
 impl Core {
@@ -122,7 +144,7 @@ impl Core {
             approvals: Arc::new(Approvals::system()),
             inbox: Inbox::system(),
             github: Arc::new(GithubAccounts::system()),
-            start_accounts: start_accounts_page,
+            start_control_centre,
         }
     }
 
@@ -585,12 +607,12 @@ impl Core {
 
     /// `accounts.connect_github`. The control centre (app key, tray) takes over the GitHub CLI's
     /// sign-in. A client never does: the core shows the person the accounts page
-    /// ([`show_accounts_page`]) and answers `opened`.
+    /// ([`show_control_centre`]) and answers `opened`.
     async fn connect_github(&self, client: bool) -> Response {
         if !client {
             return self.refresh_connected(account_answer(self.github.connect_cli().await));
         }
-        match show_accounts_page(&self.backend, self.start_accounts).await {
+        match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
             Ok(()) => Response::Opened,
             Err(message) => Response::Error { code: "error".into(), message },
         }
@@ -653,7 +675,46 @@ impl Core {
             Err(err) => snapshot.problem = Some(err.to_string()),
         }
         snapshot.account = Some(self.pim.account_state().await);
+        snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         snapshot
+    }
+
+    /// The approvals still waiting for a person as of `now`; none when they cannot be read.
+    async fn open_approvals(&self, now: chrono::DateTime<Utc>) -> Vec<torro_ipc::ApprovalInfo> {
+        let all = self.approvals.list(None, now).await.unwrap_or_default();
+        all.into_iter().filter(|approval| approval.state.is_pending()).collect()
+    }
+
+    /// What [`Core::approvals_changed`] waits on; take it once, before the first snapshot, so no
+    /// change in between is missed.
+    pub fn approval_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.approvals.changes()
+    }
+
+    /// Waits until the count of open approvals may have changed: one was opened or decided
+    /// (`changes`, from [`Core::approval_changes`]), or the next open one expired by the clock.
+    /// The daemon then refreshes the tray menu, whose [`Snapshot::approvals_waiting`] counts anew.
+    /// `false` when the approvals are gone (the core is shutting down).
+    pub async fn approvals_changed(&self, changes: &mut tokio::sync::watch::Receiver<()>) -> bool {
+        let now = Utc::now();
+        let next_expiry = self.open_approvals(now).await.iter().map(|approval| approval.expires).min();
+        let expired = async {
+            match next_expiry {
+                // A little after, so the wall clock surely passed it when the snapshot counts.
+                Some(at) => tokio::time::sleep((at - now).to_std().unwrap_or_default() + EXPIRY_SLACK).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            changed = changes.changed() => changed.is_ok(),
+            () = expired => true,
+        }
+    }
+
+    /// Shows the approvals for "Approvals (n)" in the tray: an open control centre comes to the
+    /// front (and stays on its page, [`show_control_centre`]), else one starts on its approvals.
+    pub async fn show_approvals(&self) -> Result<(), String> {
+        show_control_centre(&self.backend, Section::Approvals, self.start_control_centre).await
     }
 
     /// Brings the app's window to the front, or starts the app when it has none.
@@ -1558,7 +1619,7 @@ mod tests {
     /// How often a test core started the control centre's accounts page.
     static ACCOUNT_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-    fn count_account_page() -> Result<(), String> {
+    fn count_account_page(_: Section) -> Result<(), String> {
         ACCOUNT_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
@@ -1568,7 +1629,7 @@ mod tests {
     fn core_with_github(dir: &std::path::Path, tokens: &MemoryTokens, graphql: &str) -> Core {
         Core {
             github: Arc::new(service(dir, tokens, graphql, NO_CLI)),
-            start_accounts: count_account_page,
+            start_control_centre: count_account_page,
             ..core(dir)
         }
     }
@@ -1653,11 +1714,16 @@ mod tests {
         assert_eq!(ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1, "nothing opened yet");
     }
 
-    static FAKE_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    /// The sections test cores and [`show_control_centre`] started a control centre on.
+    static STARTED: std::sync::Mutex<Vec<Section>> = std::sync::Mutex::new(Vec::new());
 
-    fn count_fake_page() -> Result<(), String> {
-        FAKE_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    fn record_start(section: Section) -> Result<(), String> {
+        STARTED.lock().expect("lock").push(section);
         Ok(())
+    }
+
+    fn started(section: Section) -> usize {
+        STARTED.lock().expect("lock").iter().filter(|s| **s == section).count()
     }
 
     #[tokio::test]
@@ -1666,19 +1732,100 @@ mod tests {
         let wm = FakeWm::new("1");
         let other = wm.open_window("foot", None);
         let open = wm.open_window(AppId::WORKPLACE.window_class, None);
-        let before = FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst);
+        let before = started(Section::Accounts);
 
-        assert_eq!(show_accounts_page(&wm, count_fake_page).await, Ok(()));
+        assert_eq!(show_control_centre(&wm, Section::Accounts, record_start).await, Ok(()));
         assert_eq!(wm.calls(), vec![Call::Focus(open.clone())], "only focused, nothing closed");
         assert!(wm.all_windows().iter().any(|w| w.id == open));
         assert!(wm.all_windows().iter().any(|w| w.id == other));
-        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before, "no second control centre");
+        assert_eq!(started(Section::Accounts), before, "no second control centre");
 
         // None open: the page starts.
         let empty = FakeWm::new("1");
-        assert_eq!(show_accounts_page(&empty, count_fake_page).await, Ok(()));
+        assert_eq!(show_control_centre(&empty, Section::Accounts, record_start).await, Ok(()));
         assert!(empty.calls().is_empty());
-        assert_eq!(FAKE_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+        assert_eq!(started(Section::Accounts), before + 1);
+    }
+
+    #[test]
+    fn the_control_centre_starts_on_a_section() {
+        assert_eq!(
+            control_centre_command("/bin/torroworkplace".into(), Section::Approvals),
+            ["/bin/torroworkplace", "ui", "--section", "approvals"]
+        );
+        assert_eq!(
+            control_centre_command("/bin/torroworkplace".into(), Section::Accounts),
+            ["/bin/torroworkplace", "ui", "--section", "accounts"]
+        );
+        // The word is the one the control centre parses.
+        assert_eq!(crate::ui::Section::from_arg(Section::Approvals.arg()), Some(Section::Approvals));
+    }
+
+    #[tokio::test]
+    async fn the_approvals_in_the_tray_start_the_control_centre_on_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The test backend lists no windows, so no control centre is open and one starts.
+        let core = Core { start_control_centre: record_start, ..core(dir.path()) };
+        let before = started(Section::Approvals);
+        assert_eq!(core.show_approvals().await, Ok(()));
+        assert_eq!(started(Section::Approvals), before + 1);
+
+        // An open one only comes to the front.
+        use torro_wm::fake::{Call, FakeWm};
+        let wm = FakeWm::new("1");
+        let open = wm.open_window(AppId::WORKPLACE.window_class, None);
+        assert_eq!(show_control_centre(&wm, Section::Approvals, record_start).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Focus(open)]);
+        assert_eq!(started(Section::Approvals), before + 1);
+    }
+
+    #[tokio::test]
+    async fn the_snapshot_counts_the_open_approvals() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        assert_eq!(core.snapshot().await.approvals_waiting, 0);
+        let now = Utc::now();
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let first = core.approvals.open("c1", "One", delete("a"), "a".into(), now).await.expect("opened");
+        core.approvals.open("c1", "One", delete("b"), "b".into(), now).await.expect("opened");
+        // Expired already: asked for longer ago than an approval waits.
+        let long_ago = now - crate::approvals::LIFETIME - chrono::TimeDelta::seconds(1);
+        core.approvals.open("c2", "Two", delete("c"), "c".into(), long_ago).await.expect("opened");
+        assert_eq!(core.snapshot().await.approvals_waiting, 2);
+
+        core.approvals.decide(&first.id, false, now).await.expect("denied");
+        assert_eq!(core.snapshot().await.approvals_waiting, 1);
+    }
+
+    #[tokio::test]
+    async fn the_tray_hears_of_opened_decided_and_expired_approvals() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut changes = core.approval_changes();
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+
+        // Nothing open, nothing changed: it keeps waiting.
+        let quiet = tokio::time::timeout(Duration::from_millis(50), core.approvals_changed(&mut changes)).await;
+        assert!(quiet.is_err(), "no change, no wake-up");
+
+        let now = Utc::now();
+        let opened = core.approvals.open("c1", "One", delete("a"), "a".into(), now).await.expect("opened");
+        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        assert_eq!(woke.ok(), Some(true), "an opened approval wakes the tray");
+
+        core.approvals.decide(&opened.id, true, now).await.expect("allowed");
+        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        assert_eq!(woke.ok(), Some(true), "a decision wakes the tray");
+
+        // One that expires in a moment wakes it without any change, and is no longer counted then.
+        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::milliseconds(100);
+        core.approvals.open("c1", "One", delete("b"), "b".into(), soon).await.expect("opened");
+        changes.mark_unchanged();
+        assert_eq!(core.snapshot().await.approvals_waiting, 1);
+        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        assert_eq!(woke.ok(), Some(true), "the expiry wakes the tray");
+        assert_eq!(core.snapshot().await.approvals_waiting, 0);
     }
 
     #[tokio::test]

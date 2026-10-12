@@ -214,6 +214,8 @@ pub struct Approvals {
     notify: Notifier,
     /// Also held while the file is written, so the file always holds the newest state.
     state: tokio::sync::Mutex<State>,
+    /// Marked on every opened or decided approval ([`Approvals::changes`]).
+    changed: tokio::sync::watch::Sender<()>,
 }
 
 #[derive(Default)]
@@ -243,7 +245,19 @@ impl Approvals {
     /// Approvals kept in `file`, announced with `notify`. Tests pass a temporary file and a
     /// notifier that shows nothing.
     pub fn new(file: Option<PathBuf>, notify: Notifier) -> Approvals {
-        Approvals { file, notify, state: tokio::sync::Mutex::new(State::default()) }
+        Approvals {
+            file,
+            notify,
+            state: tokio::sync::Mutex::new(State::default()),
+            changed: tokio::sync::watch::channel(()).0,
+        }
+    }
+
+    /// Marked as changed each time an approval is opened or decided, after it was stored; for the
+    /// tray's count (task A.8b). An approval expiring by the clock is not marked: whoever counts
+    /// waits for the next `expires` of the open ones itself.
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changed.subscribe()
     }
 
     /// Opens an approval for `request` of the client `client` (named `client_name`, or shown by
@@ -289,6 +303,7 @@ impl Approvals {
             return Err(err);
         }
         drop(state);
+        self.changed.send_replace(());
         (self.notify.ask)(&info);
         Ok(info)
     }
@@ -362,6 +377,8 @@ impl Approvals {
             state.entries[index].info = before;
             return Err(err);
         }
+        drop(state);
+        self.changed.send_replace(());
         (self.notify.settled)(id);
         Ok(decision)
     }
