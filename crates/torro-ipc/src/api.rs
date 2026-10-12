@@ -1207,7 +1207,8 @@ static LIST_ACCOUNTS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists every connected account (Nextcloud, CalDAV, mail, GitHub) with its id, kind, state (connected, \
                   signing in, last sync, problem) and its calendars and task lists, whose ids start with the account \
-                  id; for GitHub accounts also the scopes of their token. Passwords and tokens are never part of \
+                  id; for GitHub accounts also the scopes of their token. Mail accounts have no collections here, \
+                  and a key sees only the mail accounts its rights reach. Passwords and tokens are never part of \
                   the answer.",
 };
 

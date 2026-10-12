@@ -283,7 +283,7 @@ ihre Texte im Bericht.
   Ordner, Aufräumen alter Anhänge, Entfernen des Kontos; Rechte 0700/0600 auch für `-wal`/`-shm` (Unix).
 
 ### M2.6 Mail-Sync im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.3, M2.5 · **Dateien:** neu `crates/torroworkplace/src/mail/{service,sync}.rs`,
   `crates/torroworkplace/src/{daemon,core,account}.rs`
 - `MailService` je Konto (wie `PimService` nach Konto geschlüsselt): eine IDLE-Verbindung auf dem Posteingang
