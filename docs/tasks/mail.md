@@ -481,7 +481,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten; Senden-Fehler lässt den Entwurf stehen.
 
 ### E4.4 Mini, Leiste, Benachrichtigung für Mail
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E4.2 · **Dateien:** `crates/torroinbox/src/glance.rs`,
   `crates/torroworkplace/src/inbox_notify.rs`
 - **Oberfläche:** Mini/Leiste zeigen ungelesene Mails je Konto und die drei neuesten Absender; Desktop-Benachrichtigung

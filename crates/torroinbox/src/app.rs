@@ -2203,6 +2203,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             // Only an entry open in the panel: a keyboard cursor left over from a larger window is no
             // reason to single out a row of a display.
             selected: self.detail.as_ref().map(|item| item.id.as_str()),
+            folders: &self.folders,
             now: self.now,
             error: self.error.as_ref().map(|failure| failure.what),
         };
