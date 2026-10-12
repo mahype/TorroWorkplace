@@ -19,6 +19,9 @@ jobs:
       - run: cargo fmt --all --check
 
   check:
+    # Paused to save GitHub runner minutes (macOS and Windows bill at a higher rate). fmt stays on.
+    # Re-enable by removing this line; run the three checks locally meanwhile (see CLAUDE.md).
+    if: ${{ false }}
     name: clippy + test (${{ matrix.os }})
     strategy:
       fail-fast: false
