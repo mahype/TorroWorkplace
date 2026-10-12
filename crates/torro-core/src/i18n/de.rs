@@ -739,4 +739,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Approvals ({n})", "Freigaben ({n})"),
     ("1 request waits for your approval", "1 Anfrage wartet auf deine Freigabe"),
     ("{n} requests wait for your approval", "{n} Anfragen warten auf deine Freigabe"),
+    // Command line: notify (E1.3)
+    ("Posted to the inbox ({id}).", "In den Eingang gestellt ({id})."),
+    ("Not posted: this source is muted in the inbox.", "Nicht gestellt: Diese Quelle ist im Eingang stummgeschaltet."),
+    (
+        "Torro Workplace isn't running, so nothing reached the inbox. Start it with `torroworkplace daemon`.",
+        "Torro Workplace läuft nicht, darum ist nichts im Eingang angekommen. Starte es mit `torroworkplace daemon`.",
+    ),
+    ("notify needs a title: --title \"Backup finished\"", "notify braucht einen Titel: --title \"Backup finished\""),
+    (
+        "notify takes no words, only options; put the text in --title \"{word}\"",
+        "notify nimmt keine Wörter, nur Optionen; setze den Text in --title \"{word}\"",
+    ),
+    ("{flag} takes no value", "{flag} nimmt keinen Wert"),
+    ("{flag} needs a value", "{flag} braucht einen Wert"),
+    ("unknown option {option}", "unbekannte Option {option}"),
 ];
