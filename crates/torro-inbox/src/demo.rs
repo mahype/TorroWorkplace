@@ -126,7 +126,7 @@ fn agent(agent: AgentKind, session: &str, project: &str, branch: &str) -> Option
 pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
     let claude = || SourceRef::agent(AgentKind::ClaudeCode.id());
     let codex = || SourceRef::agent(AgentKind::Codex.id());
-    let waiting = |name: AgentKind| trf("{agent} is waiting for your permission", &[("agent", &name.label())]);
+    let waiting = |name: AgentKind| trf("{agent} is waiting for you", &[("agent", &name.label())]);
     let finished = |name: AgentKind| trf("{agent} finished", &[("agent", &name.label())]);
     vec![
         Item {
@@ -310,6 +310,25 @@ impl InboxSource for DemoSource {
         data.tasks.push(DemoTask { list, title: title.trim().to_owned(), due });
         Ok(())
     }
+
+    /// Demo mode runs nothing: deciding closes the approval's entry, as the core does once the
+    /// approval is decided. [`InboxError::Settled`] when its entry is done already,
+    /// [`InboxError::NotFound`] when no entry carries the approval.
+    async fn decide_approval(&self, approval: String, _allow: bool) -> Result<(), InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        let carries = |item: &Item| {
+            item.actions.iter().any(|action| match action {
+                Action::Allow { approval: id } | Action::Deny { approval: id } => *id == approval,
+            })
+        };
+        let item = data.items.iter_mut().find(|item| carries(item)).ok_or(InboxError::NotFound)?;
+        if !item.state.is_open() {
+            return Err(InboxError::Settled);
+        }
+        rules::set_done(item, true, now);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -375,7 +394,7 @@ mod tests {
         let items = sample(now());
         let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
         assert!(titles.contains(&tr("Backup finished")));
-        let waiting = trf("{agent} is waiting for your permission", &[("agent", &"Claude Code")]);
+        let waiting = trf("{agent} is waiting for you", &[("agent", &"Claude Code")]);
         assert!(titles.contains(&waiting.as_str()));
         let approval = items.iter().find(|i| i.kind == Kind::Approval).expect("an approval");
         let labels: Vec<&str> = approval.actions.iter().map(Action::label).collect();
@@ -507,5 +526,16 @@ mod tests {
         let items = demo.list_items(ItemFilter::default()).await.expect("items");
         assert!(items.iter().any(|i| i.id == "demo-6" && i.state.is_open()), "nothing changed");
         assert!(demo.lock().tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn deciding_closes_the_approval_once() {
+        let demo = DemoSource::new(now());
+        assert_eq!(demo.decide_approval(APPROVAL_ID.into(), true).await, Ok(()));
+        let items = demo.list_items(ItemFilter::default()).await.expect("items");
+        let entry = items.iter().find(|item| item.thread_key == format!("approval:{APPROVAL_ID}")).expect("entry");
+        assert!(matches!(entry.state, State::Done { .. }), "decided, the entry is done");
+        assert_eq!(demo.decide_approval(APPROVAL_ID.into(), false).await, Err(InboxError::Settled));
+        assert_eq!(demo.decide_approval("nope".into(), true).await, Err(InboxError::NotFound));
     }
 }

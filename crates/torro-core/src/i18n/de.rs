@@ -556,7 +556,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This entry no longer exists.", "Diesen Eintrag gibt es nicht mehr."),
     ("Too many entries at once. Try again later.", "Zu viele Einträge auf einmal. Versuche es später noch einmal."),
     ("{agent} finished", "{agent} ist fertig"),
-    ("{agent} is waiting for your permission", "{agent} wartet auf deine Erlaubnis"),
+    ("{agent} is waiting for you", "{agent} wartet auf dich"),
     ("212 GB copied, no errors.", "212 GB kopiert, keine Fehler."),
     ("3 of the last 10 runs failed in the same test.", "3 der letzten 10 Läufe sind am selben Test gescheitert."),
     // Inbox app (torroinbox, E3.1)
@@ -578,7 +578,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Reopen", "Wieder öffnen"),
     ("Snoozed until {time}", "Vertagt bis {time}"),
     ("Waiting for you", "Wartet auf dich"),
-    ("Allow and Deny are not available here yet.", "Erlauben und Ablehnen gehen hier noch nicht."),
+    ("This was decided already or has expired.", "Das wurde schon entschieden oder ist abgelaufen."),
+    ("Couldn't decide.", "Die Entscheidung ließ sich nicht senden."),
     ("Nothing for you right now.", "Gerade nichts für dich."),
     (
         "Waiting agents, approvals and account problems show up here.",
