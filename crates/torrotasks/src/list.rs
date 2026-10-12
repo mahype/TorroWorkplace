@@ -105,8 +105,10 @@ pub struct ListData<'a> {
 /// their subtasks and so on. Filter: `Today` = due today or earlier; `Planned` = with a due
 /// date; `All`; `List(id)` = that collection. Completed ones only with `show_completed`.
 /// Order: open before done, then by due date (none last), then priority (1 first, none
-/// last), then title – in [`ListData::manual`] by [`manual_order`] instead; subtasks follow their
-/// parent in the same order. A subtask whose parent is filtered out is shown at depth 0.
+/// last), then title – in [`ListData::manual`] by [`manual_order`] instead, in a GitHub filter list
+/// in the order of its search ([`search_order`], task G.3b); subtasks follow their parent in the
+/// same order. A subtask whose parent is filtered out is shown at depth 0. Parents are told apart
+/// by list and uid: the same issue can be in two lists.
 pub fn arrange(data: &ListData<'_>) -> Vec<(usize, usize)> {
     let todos = data.todos;
     let mut shown: Vec<usize> =
@@ -116,18 +118,20 @@ pub fn arrange(data: &ListData<'_>) -> Vec<(usize, usize)> {
         shown.sort_by(|&a, &b| {
             todos[a].completed.cmp(&todos[b].completed).then_with(|| manual_order(&todos[a], &todos[b]))
         });
+    } else if shows_search_order(data) {
+        shown.sort_by(|&a, &b| search_order(&todos[a], &todos[b]));
     } else {
         shown.sort_by(|&a, &b| compare(&todos[a], &todos[b]));
     }
 
     // Sorting first means the roots and every children list come out in display order.
-    let uids: HashSet<&str> = shown.iter().map(|&i| todos[i].uid.as_str()).collect();
+    let parents = Parents::of(shown.iter().map(|&i| &todos[i]));
     let mut tree = Tree { todos, children: HashMap::new(), visited: vec![false; todos.len()], out: Vec::new() };
     let mut roots = Vec::new();
     for &i in &shown {
-        match todos[i].parent.as_deref() {
-            Some(parent) if uids.contains(parent) => tree.children.entry(parent).or_default().push(i),
-            _ => roots.push(i),
+        match parents.of_task(&todos[i]) {
+            Some(parent) => tree.children.entry(parent).or_default().push(i),
+            None => roots.push(i),
         }
     }
     for root in roots {
@@ -141,11 +145,39 @@ pub fn arrange(data: &ListData<'_>) -> Vec<(usize, usize)> {
     tree.out
 }
 
+/// Which task a subtask hangs under, as (list, uid). The same issue can be in two filter lists, so
+/// the parent is the one in the subtask's own list; a parent that is only in another list still
+/// counts (the first found), so a subtask stays with its parent whatever its list.
+struct Parents<'a> {
+    tasks: HashSet<(&'a str, &'a str)>,
+    first_of_uid: HashMap<&'a str, (&'a str, &'a str)>,
+}
+
+impl<'a> Parents<'a> {
+    /// The parents among `todos`.
+    fn of(todos: impl Iterator<Item = &'a Todo>) -> Parents<'a> {
+        let mut parents = Parents { tasks: HashSet::new(), first_of_uid: HashMap::new() };
+        for todo in todos {
+            let key = (todo.collection.as_str(), todo.uid.as_str());
+            parents.tasks.insert(key);
+            parents.first_of_uid.entry(todo.uid.as_str()).or_insert(key);
+        }
+        parents
+    }
+
+    /// The (list, uid) of the parent of `todo`, if it is among the tasks.
+    fn of_task(&self, todo: &'a Todo) -> Option<(&'a str, &'a str)> {
+        let parent = todo.parent.as_deref()?;
+        let own = (todo.collection.as_str(), parent);
+        if self.tasks.contains(&own) { Some(own) } else { self.first_of_uid.get(parent).copied() }
+    }
+}
+
 /// Walks the parent/child structure depth first.
 struct Tree<'a> {
     todos: &'a [Todo],
-    /// Parent uid → indices of its (shown) subtasks, in display order.
-    children: HashMap<&'a str, Vec<usize>>,
+    /// (List, parent uid) → indices of its (shown) subtasks, in display order.
+    children: HashMap<(&'a str, &'a str), Vec<usize>>,
     visited: Vec<bool>,
     out: Vec<(usize, usize)>,
 }
@@ -158,7 +190,8 @@ impl Tree<'_> {
         self.visited[index] = true;
         self.out.push((index, depth));
         let todos = self.todos;
-        let kids = self.children.get(todos[index].uid.as_str()).cloned().unwrap_or_default();
+        let kids = self.children.get(&(todos[index].collection.as_str(), todos[index].uid.as_str()));
+        let kids = kids.cloned().unwrap_or_default();
         for kid in kids {
             self.push(kid, depth + 1);
         }
@@ -176,6 +209,21 @@ fn is_shown(todo: &Todo, filter: &Filter, show_completed: bool, today: NaiveDate
         Filter::All => true,
         Filter::List(id) => &todo.collection == id,
     }
+}
+
+/// Whether the list shown is a GitHub filter list and so keeps the order of its search.
+fn shows_search_order(data: &ListData<'_>) -> bool {
+    matches!(data.filter, Filter::List(id) if data.issue_lists.contains_key(id))
+}
+
+/// Open before done, then the place GitHub's search put the item at (`sort_order`, set by the core
+/// from the position in its answer; none last), then the uid so that the order is total. The
+/// search's own sort (`sort:updated-desc` …) is the order of a filter list (`docs/github.md`).
+fn search_order(a: &Todo, b: &Todo) -> Ordering {
+    a.completed
+        .cmp(&b.completed)
+        .then_with(|| cmp_none_last(a.sort_order, b.sort_order))
+        .then_with(|| a.uid.cmp(&b.uid))
 }
 
 /// Open before done, then due (none last), priority (none last), title.
@@ -792,11 +840,13 @@ fn colour_of(data: &ListData<'_>, collection: &str) -> Color {
     data.colors.get(collection).copied().unwrap_or_else(|| widgets::collection_color(None))
 }
 
-/// `done` of `total` subtasks per parent uid, counted over every loaded task (filtered out or not).
-fn subtask_counts(todos: &[Todo]) -> HashMap<&str, (usize, usize)> {
-    let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
+/// `done` of `total` subtasks per (list, parent uid), counted over every loaded task (filtered out
+/// or not). The list is part of the key: the same issue can be in two filter lists ([`Parents`]).
+fn subtask_counts(todos: &[Todo]) -> HashMap<(&str, &str), (usize, usize)> {
+    let parents = Parents::of(todos.iter());
+    let mut counts: HashMap<(&str, &str), (usize, usize)> = HashMap::new();
     for todo in todos {
-        if let Some(parent) = todo.parent.as_deref() {
+        if let Some(parent) = parents.of_task(todo) {
             let entry = counts.entry(parent).or_default();
             entry.0 += usize::from(todo.completed);
             entry.1 += 1;
@@ -842,9 +892,9 @@ impl Hint {
 }
 
 /// The hints of `todo`: its sub-tasks, then whether it has notes.
-fn hints_of(todo: &Todo, subtasks: &HashMap<&str, (usize, usize)>) -> Vec<Hint> {
+fn hints_of(todo: &Todo, subtasks: &HashMap<(&str, &str), (usize, usize)>) -> Vec<Hint> {
     let mut hints = Vec::new();
-    if let Some(&(done, total)) = subtasks.get(todo.uid.as_str()) {
+    if let Some(&(done, total)) = subtasks.get(&(todo.collection.as_str(), todo.uid.as_str())) {
         hints.push(Hint::Subtasks(done, total));
     }
     if todo.description.as_deref().is_some_and(|notes| !notes.trim().is_empty()) {
@@ -860,7 +910,7 @@ fn row_view<'a>(
     index: usize,
     depth: usize,
     parts: RowParts,
-    subtasks: &HashMap<&str, (usize, usize)>,
+    subtasks: &HashMap<(&str, &str), (usize, usize)>,
     under_today: bool,
 ) -> Element<'a, Message> {
     let todo = &data.todos[index];
@@ -1715,6 +1765,58 @@ mod tests {
         assert_eq!(Group::Repo("mahype/torro-design".into()).label(&d.names), "mahype/torro-design");
         assert_eq!(Group::Repo(String::new()).label(&d.names), tr("No repository"));
         assert!(!Group::Repo("mahype/torro-design".into()).can_add(), "nothing is added to GitHub here");
+    }
+
+    /// An item of the filter list `list` at `position` in GitHub's answer (`sort_order`), with a
+    /// due date and a title that would order it differently.
+    fn found(list: &str, uid: &str, position: i64, due: Option<EventTime>) -> Todo {
+        Todo { collection: list.into(), sort_order: Some(position), due, ..todo(uid, uid) }
+    }
+
+    #[test]
+    fn a_filter_list_keeps_the_order_of_its_search() {
+        // By due date and title this would be c, a, b: the search says b, c, a.
+        let todos = vec![
+            found("github:bugs", "a", 2, None),
+            found("github:bugs", "c", 1, due(9)),
+            found("github:bugs", "b", 0, None),
+            Todo { completed: true, ..found("github:bugs", "d", 0, None) },
+        ];
+        let filter = Filter::List("github:bugs".into());
+        let lists = HashMap::from([("github:bugs".to_string(), true)]);
+        let d = ListData { issue_lists: lists, ..data(&todos, &filter, true) };
+        let rows: Vec<&str> = arrange(&d).into_iter().map(|(i, _)| todos[i].uid.as_str()).collect();
+        assert_eq!(rows, ["b", "c", "a", "d"], "search order, done last");
+        // The same items in a view that is no filter list keep the usual order.
+        let all = Filter::All;
+        let d = ListData { issue_lists: HashMap::new(), ..data(&todos, &all, true) };
+        let rows: Vec<&str> = arrange(&d).into_iter().map(|(i, _)| todos[i].uid.as_str()).collect();
+        assert_eq!(rows, ["c", "a", "b", "d"], "by due date, then title");
+    }
+
+    #[test]
+    fn subtasks_and_their_counts_belong_to_the_parent_in_their_own_list() {
+        // The same parent issue and its sub-issue are in two filter lists.
+        let item = |list: &str, uid: &str, parent: Option<&str>, position: i64| Todo {
+            parent: parent.map(String::from),
+            ..found(list, uid, position, None)
+        };
+        let todos =
+            vec![item("github:a", "p", None, 0), item("github:b", "p", None, 0), item("github:b", "k", Some("p"), 1)];
+        let filter = Filter::All;
+        let d = data(&todos, &filter, false);
+        let rows: Vec<(&str, &str, usize)> = arrange(&d)
+            .into_iter()
+            .map(|(i, depth)| (todos[i].collection.as_str(), todos[i].uid.as_str(), depth))
+            .collect();
+        assert_eq!(
+            rows,
+            [("github:a", "p", 0), ("github:b", "p", 0), ("github:b", "k", 1)],
+            "the child sits under the parent of its own list"
+        );
+        let counts = subtask_counts(&todos);
+        assert_eq!(hints_of(&todos[0], &counts), []);
+        assert_eq!(hints_of(&todos[1], &counts), [Hint::Subtasks(0, 1)]);
     }
 
     /// A task of the list "work" stored at its own href, with a number for manual order.

@@ -121,6 +121,8 @@ pub enum Icon {
     UserCheck,
     /// A saved search such as "Torro bugs" in the GitHub area.
     Bug,
+    /// Unpin an item from its filter list (task G.3b).
+    PinOff,
 }
 
 impl Icon {
@@ -197,6 +199,7 @@ impl Icon {
         Icon::AlignLeft,
         Icon::UserCheck,
         Icon::Bug,
+        Icon::PinOff,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -283,6 +286,7 @@ impl Icon {
             Icon::AlignLeft => include_bytes!("../assets/icons/align-left.svg"),
             Icon::UserCheck => include_bytes!("../assets/icons/user-check.svg"),
             Icon::Bug => include_bytes!("../assets/icons/bug.svg"),
+            Icon::PinOff => include_bytes!("../assets/icons/pin-off.svg"),
         }
     }
 }

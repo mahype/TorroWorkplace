@@ -2815,6 +2815,56 @@ pub(crate) mod tests {
         service.state.read().await.collections().cloned().collect()
     }
 
+    /// An open issue as GitHub's search lists it.
+    fn found_issue(repo: &str, number: u64) -> item::Item {
+        item::Item {
+            id: IssueRef { repo: repo.into(), number },
+            kind: GitHubKind::Issue,
+            state: GitHubState::Open,
+            title: format!("{repo}#{number}"),
+            body: String::new(),
+            url: format!("https://github.com/{repo}/issues/{number}"),
+            updated_at: "2026-10-01T10:00:00Z".into(),
+            labels: Vec::new(),
+            assignees: Vec::new(),
+            milestone: None,
+            milestone_due: None,
+            parent: None,
+            draft: false,
+            review: None,
+            checks: None,
+            conflict: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_filter_list_hands_out_its_items_in_the_order_of_the_search() {
+        let service = service();
+        let list = FilterList {
+            id: "bugs".into(),
+            name: "Bugs".into(),
+            color: None,
+            queries: vec!["is:open sort:updated-desc".into()],
+            pinned: Vec::new(),
+            revision: 1,
+        };
+        let account = "github:mahype";
+        let mut cache = FilterCache::new(account, list.clone());
+        // Neither by title nor by number: the order GitHub answered in (#9, #2, #30, #5).
+        let items: Vec<_> = [9, 2, 30, 5].into_iter().map(|n| found_issue("mahype/TorroWorkplace", n)).collect();
+        cache.apply(account, &list, Ok(github_api::Fetched { items, truncated: false }));
+        let id = cache.collection.id.clone();
+        service.state.write().await.filter_slot_mut(account).lists.push(cache);
+
+        let Response::Todos { todos } = service.handle_within(Request::Todos, Reach::Suite).await else {
+            panic!("todos")
+        };
+        let shown: Vec<_> = todos.iter().filter(|t| t.collection == id).collect();
+        let numbers: Vec<_> = shown.iter().map(|t| t.uid.rsplit('#').next().unwrap_or_default()).collect();
+        assert_eq!(numbers, ["9", "2", "30", "5"]);
+        assert_eq!(shown.iter().map(|t| t.sort_order).collect::<Vec<_>>(), [Some(0), Some(1), Some(2), Some(3)]);
+    }
+
     #[tokio::test]
     async fn without_account_reads_are_empty_and_writes_fail() {
         let service = service();

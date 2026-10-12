@@ -573,7 +573,7 @@ impl Detail {
     pub fn refresh(&mut self, lists: &[Collection], all: &[Todo]) {
         self.lists = lists.to_vec();
         self.others = others_of(&self.original, all);
-        let loaded = all.iter().find(|t| t.uid == self.original.uid);
+        let loaded = all.iter().find(|t| same_task(t, &self.original));
         if let Some(loaded) = loaded
             && !self.saving
             && !self.changed()
@@ -750,7 +750,7 @@ impl Detail {
         Some(
             self.others
                 .iter()
-                .find(|t| &t.uid == uid)
+                .find(|t| &t.uid == uid && t.collection == self.draft.collection)
                 .map_or_else(|| tr("Unknown task").to_string(), |t| t.summary.clone()),
         )
     }
@@ -1396,10 +1396,15 @@ impl Detail {
         Some(section.into())
     }
 
+    /// `task` is a direct subtask of this one: its parent is this uid, in this list (the same issue
+    /// can be in two filter lists, each with its own sub-issues).
+    fn is_subtask(&self, task: &Todo) -> bool {
+        task.collection == self.original.collection && task.parent.as_deref() == Some(self.original.uid.as_str())
+    }
+
     /// The direct subtasks, open first, then by title.
     fn subtasks(&self) -> Vec<&Todo> {
-        let mut subtasks: Vec<&Todo> =
-            self.others.iter().filter(|t| t.parent.as_deref() == Some(self.original.uid.as_str())).collect();
+        let mut subtasks: Vec<&Todo> = self.others.iter().filter(|t| self.is_subtask(t)).collect();
         subtasks.sort_by_key(|t| (t.completed, t.summary.to_lowercase()));
         subtasks
     }
@@ -1430,7 +1435,7 @@ impl Detail {
                 )])),
                 // The icon set has no pin; X says "take it out" as Cancel does.
                 More::Unpin => {
-                    sections.push(MenuSection::new(vec![MenuItem::new(Icon::X, tr("Unpin"), Message::Unpin)]))
+                    sections.push(MenuSection::new(vec![MenuItem::new(Icon::PinOff, tr("Unpin"), Message::Unpin)]))
                 }
                 More::Delete if self.confirm_delete => sections.push(MenuSection::titled(
                     tr("Delete this task?"),
@@ -1571,7 +1576,8 @@ impl Detail {
         let mut found = HashSet::new();
         let mut stack = vec![self.original.uid.as_str()];
         while let Some(uid) = stack.pop() {
-            for task in self.others.iter().filter(|t| t.parent.as_deref() == Some(uid)) {
+            let below = |t: &&Todo| t.collection == self.original.collection && t.parent.as_deref() == Some(uid);
+            for task in self.others.iter().filter(below) {
                 if found.insert(task.uid.clone()) {
                     stack.push(task.uid.as_str());
                 }
@@ -1703,8 +1709,14 @@ fn error_text<'a>(problem: &'a str) -> Element<'a, Message> {
         .into()
 }
 
+/// `a` and `b` are the same task: the same uid in the same list (an issue in two filter lists is
+/// two tasks).
+fn same_task(a: &Todo, b: &Todo) -> bool {
+    a.uid == b.uid && a.collection == b.collection
+}
+
 fn others_of(todo: &Todo, all: &[Todo]) -> Vec<Todo> {
-    all.iter().filter(|t| t.uid != todo.uid).cloned().collect()
+    all.iter().filter(|t| !same_task(t, todo)).cloned().collect()
 }
 
 fn draft_of(todo: &Todo) -> Draft {
@@ -2113,6 +2125,24 @@ mod tests {
         let other = Todo { summary: "other".into(), ..task };
         detail.refresh(&lists(), &[other]);
         assert_eq!(detail.draft.summary, "renamed", "typed notes are not thrown away");
+    }
+
+    #[test]
+    fn the_same_issue_in_another_list_is_another_task() {
+        // The core gives an issue the same uid in every filter list that finds it (task G.3b).
+        let task = Todo { collection: "github:a".into(), ..todo("p", "parent") };
+        let copy = Todo { collection: "github:b".into(), summary: "parent, other list".into(), ..task.clone() };
+        let sub = |list: &str, uid: &str| Todo { collection: list.into(), parent: Some("p".into()), ..todo(uid, uid) };
+        let all = [copy.clone(), task.clone(), sub("github:a", "ka"), sub("github:b", "kb")];
+        let mut detail = detail(&task, &all);
+        assert_eq!(detail.others.len(), 3, "only itself is left out, not the copy");
+        let subtasks: Vec<&str> = detail.subtasks().iter().map(|t| t.uid.as_str()).collect();
+        assert_eq!(subtasks, ["ka"], "the sub-issues of this list only");
+
+        // A reload never takes the other list's copy for the open task.
+        detail.refresh(&lists(), &all);
+        assert_eq!(detail.draft.summary, "parent");
+        assert_eq!(detail.original.collection, "github:a");
     }
 
     #[test]

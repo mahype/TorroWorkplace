@@ -265,7 +265,7 @@ K.21 (frei)
 - Abnahme: Sichtprüfung `--demo` in allen Größenklassen (`torro-design-review`).
 
 ### G.3b Filterlisten: Kleinigkeiten aus G.3
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.3 · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`, `crates/torro-gui/src/icon.rs`
   (+ `assets/icons/pin-off.svg`), ggf. `crates/torroworkplace/src/pim.rs` (Reihenfolge)
 - **Dasselbe Issue in zwei Filterlisten:** Der Kern nimmt die Link-Kennung als `uid`; die App findet Cursor und

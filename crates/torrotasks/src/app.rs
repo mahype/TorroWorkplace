@@ -357,11 +357,31 @@ struct Moving {
     queued: VecDeque<(String, Option<String>)>,
 }
 
+/// Which task: its list and uid (task G.3b). The uid alone is not enough, since the same issue is
+/// in every filter list that finds it, with the same uid; the cursor, the open detail and a drag
+/// must stay on the copy the user chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Key {
+    collection: String,
+    uid: String,
+}
+
+impl Key {
+    fn of(todo: &Todo) -> Key {
+        Key { collection: todo.collection.clone(), uid: todo.uid.clone() }
+    }
+
+    /// `todo` is the task this names.
+    fn is(&self, todo: &Todo) -> bool {
+        todo.uid == self.uid && todo.collection == self.collection
+    }
+}
+
 /// A row being dragged by its grip (task P.3b).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Drag {
-    /// The uid of the dragged task, so a reload during the drag does not mix up rows.
-    uid: String,
+    /// The dragged task, so a reload during the drag does not mix up rows.
+    key: Key,
     /// Where the marker stands: a place of [`list::drop_places`]; `None` until the pointer moved.
     place: Option<usize>,
 }
@@ -499,9 +519,9 @@ pub struct App {
     quick_add: String,
     /// Index into `todos` of the task open in the detail panel.
     selected: Option<usize>,
-    /// The uid of the task under the keyboard cursor: the highlighted row. A uid, not an index,
-    /// so it survives reloads; clicking a row or opening a task moves it there.
-    cursor: Option<String>,
+    /// The task under the keyboard cursor: the highlighted row. A [`Key`], not an index, so it
+    /// survives reloads; clicking a row or opening a task moves it there.
+    cursor: Option<Key>,
     /// The list's scroll offset and visible height, as last reported; none until it scrolls.
     scroll: Option<(f32, f32)>,
     detail: Option<Detail>,
@@ -868,8 +888,8 @@ impl App {
                     }
                     self.keep_cursor(place);
                     // Keep the detail panel on the same task after a reload.
-                    let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
-                    self.selected = selected_uid.and_then(|uid| self.todos.iter().position(|t| t.uid == uid));
+                    let selected = self.detail.as_ref().map(|d| Key::of(&d.original));
+                    self.selected = selected.and_then(|key| self.todos.iter().position(|t| key.is(t)));
                     let lists = self.writable_lists();
                     let pinned = self.detail.as_ref().is_some_and(|detail| self.is_pinned(&detail.original));
                     let issue_check = self.detail.as_ref().and_then(|detail| self.issue_check(&detail.original));
@@ -1275,14 +1295,14 @@ impl App {
             read_only: self.shown_filter_list().is_some(),
             issue_lists: self.issue_lists(),
             manual: self.manual(),
-            drag: self.drag.as_ref().and_then(|drag| Some((self.uid_index(&drag.uid)?, drag.place))),
+            drag: self.drag.as_ref().and_then(|drag| Some((self.key_index(&drag.key)?, drag.place))),
         }
     }
 
     /// Index into `todos` of the task under the cursor, if it is in the list.
     fn cursor_index(&self) -> Option<usize> {
-        let uid = self.cursor.as_deref()?;
-        self.todos.iter().position(|t| t.uid == uid)
+        let key = self.cursor.as_ref()?;
+        self.key_index(key)
     }
 
     /// Where the cursor row is among the shown rows.
@@ -1296,7 +1316,7 @@ impl App {
     fn keep_cursor(&mut self, place: Option<usize>) {
         let (Some(place), true) = (place, self.cursor_index().is_none()) else { return };
         let order = list::order(&self.list_data());
-        self.cursor = order.get(place.min(order.len().saturating_sub(1))).map(|&i| self.todos[i].uid.clone());
+        self.cursor = order.get(place.min(order.len().saturating_sub(1))).map(|&i| Key::of(&self.todos[i]));
     }
 
     /// Moves the cursor one row down or up, and stops at the first and last row. With no cursor
@@ -1311,9 +1331,9 @@ impl App {
             (Some(place), true) => (place + 1).min(last),
             (Some(place), false) => place.saturating_sub(1),
         };
-        self.cursor = Some(self.todos[order[next]].uid.clone());
+        self.cursor = Some(Key::of(&self.todos[order[next]]));
         let reveal = self.reveal(order[next]);
-        let opened = self.detail.as_ref().is_some_and(|detail| detail.original.uid != self.todos[order[next]].uid);
+        let opened = self.detail.as_ref().is_some_and(|detail| !Key::of(&self.todos[order[next]]).is(&detail.original));
         if opened {
             return Task::batch([self.select(order[next]), reveal]);
         }
@@ -1857,7 +1877,7 @@ impl App {
         let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
         let flush = self.close_detail();
         self.selected = Some(index);
-        self.cursor = Some(todo.uid.clone());
+        self.cursor = Some(Key::of(&todo));
         let mut detail = Detail::new(&todo, &self.writable_lists(), &self.todos).on_day(self.today);
         detail.pinned = self.is_pinned(&todo);
         detail.issue_check = self.issue_check(&todo);
@@ -1893,7 +1913,7 @@ impl App {
                 Some(index) => self.update(Message::ToggleDone(index)),
                 None => Task::none(),
             },
-            detail::Action::Show(uid) => match self.todos.iter().position(|t| t.uid == uid) {
+            detail::Action::Show(uid) => match self.detail_index(&uid) {
                 Some(index) => self.select(index),
                 None => Task::none(),
             },
@@ -2138,8 +2158,8 @@ impl App {
         lists.map(|c| (c.id.clone(), self.may_close(&c.id))).collect()
     }
 
-    /// Index into `todos` of the task `uid`, in the open detail's list first: the same issue can be
-    /// in two filter lists.
+    /// Index into `todos` of the task `uid` the open detail asks for (a subtask or itself), in the
+    /// detail's list first: the same issue can be in two filter lists.
     fn detail_index(&self, uid: &str) -> Option<usize> {
         let list = self.detail.as_ref().map(|detail| detail.original.collection.as_str());
         let in_list = self.todos.iter().position(|t| t.uid == uid && Some(t.collection.as_str()) == list);
@@ -2264,11 +2284,9 @@ impl App {
         self.list_order() == Some(ListOrder::Manual)
     }
 
-    /// Index into `todos` of the task `uid`, in the list shown first (the same item can be in a
-    /// filter list too).
-    fn uid_index(&self, uid: &str) -> Option<usize> {
-        let shown = |t: &Todo| t.uid == uid && matches!(&self.filter, Filter::List(id) if *id == t.collection);
-        self.todos.iter().position(shown).or_else(|| self.todos.iter().position(|t| t.uid == uid))
+    /// Index into `todos` of the task `key` names, if it is loaded.
+    fn key_index(&self, key: &Key) -> Option<usize> {
+        self.todos.iter().position(|t| key.is(t))
     }
 
     /// Display › Order: orders the list shown by `order`, at once in this window, then in the suite
@@ -2305,7 +2323,7 @@ impl App {
         if !self.manual() {
             return Task::none();
         }
-        let Some(index) = self.cursor.as_deref().and_then(|uid| self.uid_index(uid)) else { return Task::none() };
+        let Some(index) = self.cursor_index() else { return Task::none() };
         match list::step_target(&self.list_data(), index, up) {
             Some(before) => self.move_task(index, before),
             None => Task::none(),
@@ -2314,15 +2332,15 @@ impl App {
 
     /// The grip of `todos[index]` was pressed: it becomes the cursor row and is dragged.
     fn start_drag(&mut self, index: usize) {
-        let Some(uid) = self.todos.get(index).map(|t| t.uid.clone()).filter(|_| self.manual()) else { return };
-        self.cursor = Some(uid.clone());
-        self.drag = Some(Drag { uid, place: None });
+        let Some(key) = self.todos.get(index).map(Key::of).filter(|_| self.manual()) else { return };
+        self.cursor = Some(key.clone());
+        self.drag = Some(Drag { key, place: None });
     }
 
     /// The pointer is at `y` in the list's content: the marker goes to the nearest place the
     /// dragged task may go ([`list::drop_places`]).
     fn drag_to(&mut self, y: f32) {
-        let Some(index) = self.drag.as_ref().and_then(|drag| self.uid_index(&drag.uid)) else { return };
+        let Some(index) = self.drag.as_ref().and_then(|drag| self.key_index(&drag.key)) else { return };
         let place = list::nearest_place(&list::drop_places(&self.list_data(), index), y).map(|(place, _)| place);
         if let Some(drag) = self.drag.as_mut() {
             drag.place = place;
@@ -2333,7 +2351,7 @@ impl App {
     /// pointer moved).
     fn drop_dragged(&mut self) -> Task<Message> {
         let Some(drag) = self.drag.take() else { return Task::none() };
-        let (Some(index), Some(place)) = (self.uid_index(&drag.uid), drag.place) else { return Task::none() };
+        let (Some(index), Some(place)) = (self.key_index(&drag.key), drag.place) else { return Task::none() };
         let places = list::drop_places(&self.list_data(), index);
         match places.into_iter().find(|&(at, _)| at == place) {
             Some((_, before)) => self.move_task(index, before),
@@ -2360,7 +2378,7 @@ impl App {
                 shown.sort_order = planned.sort_order;
             }
         }
-        self.cursor = Some(todo.uid.clone());
+        self.cursor = Some(Key::of(&todo));
         let step = (href, before.and_then(|b| b.href));
         let reveal = self.reveal(index);
         if let Some(moving) = self.moving.as_mut() {
@@ -2427,8 +2445,8 @@ impl App {
         }
         let Some(&first) = list::order(&self.list_data()).first() else { return };
         let place = list::drop_places(&self.list_data(), first).get(2).map(|&(place, _)| place);
-        self.cursor = Some(self.todos[first].uid.clone());
-        self.drag = Some(Drag { uid: self.todos[first].uid.clone(), place });
+        self.cursor = Some(Key::of(&self.todos[first]));
+        self.drag = Some(Drag { key: Key::of(&self.todos[first]), place });
     }
 }
 
@@ -2754,6 +2772,71 @@ mod tests {
         assert_eq!(app.update(Message::Undo).units(), 0, "nothing left to undo");
     }
 
+    /// `on_torro_bugs` with the open bug #145 found by "Needs me" as well, that copy first in the
+    /// loaded tasks; the index of the copy in "Torro bugs".
+    fn with_a_copy_in_another_list(app: &mut App, issue: usize) -> usize {
+        let copy = Todo { collection: torro_pim::demo::NEEDS_ME.into(), ..app.todos[issue].clone() };
+        let mut todos = app.todos.clone();
+        todos.insert(0, copy);
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), todos))));
+        app.todos
+            .iter()
+            .position(|t| t.collection == torro_pim::demo::TORRO_BUGS && t.uid == app.todos[issue + 1].uid)
+            .expect("the bug in its own list")
+    }
+
+    #[test]
+    fn the_same_issue_in_two_filter_lists_keeps_cursor_and_detail_on_its_own_copy() {
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        let issue = with_a_copy_in_another_list(&mut app, issue);
+        let own = |app: &App| app.todos[issue].collection.clone();
+        assert!(issue > 0, "the other list's copy comes first");
+
+        let _ = app.select(issue);
+        assert_eq!(app.cursor_index(), Some(issue), "the cursor row is the chosen copy, not the first with its uid");
+        assert_eq!(app.list_data().selected, Some(issue));
+        assert_eq!(app.detail_index(&app.todos[issue].uid), Some(issue));
+
+        // A reload keeps both on that copy.
+        let todos = app.todos.clone();
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), todos))));
+        assert_eq!(app.selected, Some(issue));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.collection.clone()), Some(own(&app)));
+        assert_eq!(app.cursor_index(), Some(issue));
+
+        // The keyboard goes up to the bug above it and back, never through the other list's copy.
+        let before = app.cursor.clone();
+        let _ = app.step(false);
+        assert_ne!(app.cursor, before);
+        assert_eq!(app.detail.as_ref().map(|d| d.original.collection.clone()), Some(own(&app)));
+        let _ = app.step(true);
+        assert_eq!(app.cursor, before);
+        assert_eq!(app.selected, Some(issue));
+    }
+
+    #[test]
+    fn a_filter_list_shows_its_items_in_the_order_of_the_search() {
+        let mut app = launched(&["--demo"]);
+        let id = torro_pim::demo::NEEDS_ME;
+        let _ = app.update(Message::SetFilter(Filter::List(id.into())));
+        // One run of rows: the groups of repositories sit apart from the order inside them.
+        let _ = app.update(Message::SetGroupBy(list::GroupBy::None));
+        let mut expected: Vec<&Todo> = app.todos.iter().filter(|t| t.collection == id).collect();
+        expected.sort_by_key(|t| t.sort_order);
+        let expected: Vec<String> = expected.into_iter().map(|t| t.uid.clone()).collect();
+        assert!(expected.len() > 1, "the sample has several matches");
+        assert_eq!(rows(&app), expected, "not by due date, priority and title");
+
+        // A newer answer from the core with another order is shown as it comes.
+        let mut todos = app.todos.clone();
+        for todo in todos.iter_mut().filter(|t| t.collection == id) {
+            todo.sort_order = todo.sort_order.map(|n| 100 - n);
+        }
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), todos))));
+        let reversed: Vec<String> = expected.into_iter().rev().collect();
+        assert_eq!(rows(&app), reversed);
+    }
+
     #[test]
     fn the_detail_closes_an_issue_like_the_list() {
         let (mut app, issue) = on_torro_bugs(demo_accounts());
@@ -3075,7 +3158,7 @@ mod tests {
     }
 
     fn cursor(app: &App) -> Option<&str> {
-        app.cursor.as_deref()
+        app.cursor.as_ref().map(|key| key.uid.as_str())
     }
 
     #[test]
@@ -3361,7 +3444,7 @@ mod tests {
             assert_eq!(app.filter, Filter::Planned, "{size:?}");
             assert_eq!(app.quick_add, "Buy oat milk");
             assert_eq!(app.detail.as_ref().map(|d| d.original.uid.clone()), open);
-            assert_eq!(app.cursor, open);
+            assert_eq!(app.cursor.as_ref().map(|key| key.uid.clone()), open);
             // Every size builds its view from this state.
             let _ = app.view();
         }
@@ -3755,7 +3838,8 @@ mod tests {
     }
 
     fn put_cursor(app: &mut App, uid: &str) {
-        app.cursor = Some(uid.to_string());
+        app.cursor = app.todos.iter().find(|t| t.uid == uid).map(Key::of);
+        assert!(app.cursor.is_some(), "{uid} is loaded");
     }
 
     #[test]
@@ -3935,7 +4019,7 @@ mod tests {
     fn a_move_reaches_the_demo_source_and_a_stale_one_is_a_conflict() {
         let mut app = manual_app();
         let top = top_rows(&app);
-        let index = |app: &App, uid: &str| app.uid_index(uid).expect("shown");
+        let index = |app: &App, uid: &str| app.todos.iter().position(|t| t.uid == uid).expect("shown");
         let (first, second) = (app.todos[index(&app, &top[0])].clone(), app.todos[index(&app, &top[1])].clone());
         // What the core answers when the first task goes behind the second (the third is in front).
         let third = app.todos[index(&app, &top[2])].clone();
@@ -3956,10 +4040,10 @@ mod tests {
     fn a_row_is_dragged_by_its_grip_to_the_marker() {
         let mut app = manual_app();
         let top = top_rows(&app);
-        let first = app.uid_index(&top[0]).expect("shown");
+        let first = app.todos.iter().position(|t| t.uid == top[0]).expect("shown");
         let idle = app.subscription().units();
         let _ = app.update(Message::DragStart(first));
-        assert_eq!(app.drag, Some(Drag { uid: top[0].clone(), place: None }));
+        assert_eq!(app.drag, Some(Drag { key: Key::of(&app.todos[first]), place: None }));
         assert_eq!(cursor(&app), Some(top[0].as_str()), "the dragged row is the cursor row");
         assert_eq!(app.subscription().units(), idle + 2, "Escape and the release listen while dragging");
         assert_eq!(app.update(Message::DragEnd).units(), 0, "released before it moved: nothing");
