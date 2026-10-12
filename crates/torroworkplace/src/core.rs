@@ -3131,6 +3131,60 @@ mod tests {
         let disguised = torro_pim::Todo { summary: "Something harmless".into(), ..issue.clone() };
         let approval = waits(ask(&core, Some(&key), ticked(&disguised, true)).await);
         assert!(approval.summary.contains("Fix the week view"), "{}", approval.summary);
+        assert!(!approval.summary.contains("Something harmless"), "the client's own text stays out");
+    }
+
+    /// Task G.5b: the person is told that the issue is closed or reopened on GitHub, not that a
+    /// task is changed.
+    #[tokio::test]
+    async fn an_approval_to_tick_an_issue_says_close_or_reopen_on_github() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let mut asking = repo_limited();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, asking).await;
+        let issue = todos_in(&core, Some(&key), &list.id).await.remove(0);
+        let args: [(&str, &dyn std::fmt::Display); 2] =
+            [("title", &"Fix the week view"), ("issue", &"mahype/TorroWorkplace#1")];
+
+        let disguised = torro_pim::Todo { summary: "Something harmless".into(), ..issue.clone() };
+        let closing = waits(ask(&core, Some(&key), ticked(&disguised, true)).await);
+        assert_eq!(closing.summary, trf("Close GitHub issue \"{title}\" ({issue})", &args));
+
+        let closed = saved(core.handle(ticked(&issue, true)).await);
+        let reopening = waits(ask(&core, Some(&key), ticked(&closed, false)).await);
+        assert_eq!(reopening.summary, trf("Reopen GitHub issue \"{title}\" ({issue})", &args));
+    }
+
+    /// Task G.5b: write access to `github` withdrawn while the approval waits: allowing it runs
+    /// nothing, GitHub hears nothing.
+    #[tokio::test]
+    async fn github_write_withdrawn_before_the_approval_is_allowed_refuses_the_close() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let (core, asked) = core_asking(dir.path(), &world).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let mut asking = repo_limited();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (client_id, key) = client(&core, asking.clone()).await;
+        let issue = todos_in(&core, Some(&key), &list.id).await.remove(0);
+        let approval_of = waits(ask(&core, Some(&key), ticked(&issue, true)).await);
+        let before = count(&asked);
+
+        asking.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
+        let narrowed = Request::UpdateClient { id: client_id, rights: asking };
+        assert_eq!(ask(&core, Some(&app_key), narrowed).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&approval_of.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(
+            *response,
+            Response::Error { code: "forbidden".into(), message: crate::pim::NO_GITHUB_WRITE.into() }
+        );
+        assert_eq!(count(&asked), before, "nothing went to GitHub");
+        assert!(world.lock().expect("world").closed.is_empty());
     }
 
     #[tokio::test]

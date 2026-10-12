@@ -166,6 +166,9 @@ pub fn read_set_done(answer: &Value, done: bool) -> Result<Item, Error> {
 /// `FORBIDDEN` and `INSUFFICIENT_SCOPES` are [`Error::Forbidden`] (the token may not write
 /// issues there), `NOT_FOUND` is [`Error::NotFound`], anything else [`Error::Github`] with
 /// GitHub's message.
+///
+/// Only `errors[0]` is read: GitHub answers a change with one error, and the first one decides
+/// what the caller can do about it. Further errors in the same answer are ignored on purpose.
 fn change_error(answer: &Value) -> Option<Error> {
     let error = answer.get("errors")?.as_array()?.first()?;
     let message = error.get("message").and_then(Value::as_str).unwrap_or("unknown error");

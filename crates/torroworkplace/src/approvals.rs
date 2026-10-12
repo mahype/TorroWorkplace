@@ -251,6 +251,11 @@ pub struct Facts {
     /// For a save that moves an item to another collection: the display name of the collection
     /// that holds it now and loses it. `None` when nothing moves.
     pub moved_from: Option<String>,
+    /// For `tasks.save_todo` on an issue of a GitHub filter list: the issue as `owner/repo#n`, as
+    /// the cache holds it under the `uid` (task G.5b). Ticking it closes or reopens the issue on
+    /// GitHub, which the summary says instead of "change task". `None` for everything else
+    /// (also pull requests, which are never closed here).
+    pub issue: Option<String>,
 }
 
 /// An event or task as the core caches it, for [`Facts::item`].
@@ -1053,6 +1058,15 @@ fn todo_saved(todo: &Todo, facts: &Facts) -> String {
     if todo.href.is_none() {
         return trf("Create task \"{title}\" in \"{list}\"", &[("title", &new), ("list", &list)]);
     }
+    // Ticking an issue of a filter list is the only change that runs there: it closes or reopens
+    // the issue on GitHub, whatever title the client sent (G.5b).
+    if let (Some(issue), Some(item)) = (&facts.issue, &facts.item) {
+        let args: [(&str, &dyn std::fmt::Display); 2] = [("title", &quote(&item.title)), ("issue", &quote(issue))];
+        return match todo.completed {
+            true => trf("Close GitHub issue \"{title}\" ({issue})", &args),
+            false => trf("Reopen GitHub issue \"{title}\" ({issue})", &args),
+        };
+    }
     let Some(item) = &facts.item else {
         return match &facts.moved_from {
             Some(from) => {
@@ -1457,7 +1471,7 @@ pub(crate) mod tests {
     }
 
     fn facts(item: Option<Known>, name: &str) -> Facts {
-        Facts { item, name: Some(name.into()), moved_from: None }
+        Facts { item, name: Some(name.into()), ..Facts::default() }
     }
 
     #[test]
@@ -1565,6 +1579,28 @@ pub(crate) mod tests {
                 "Move task \"{title}\" → \"{new}\" from \"{from}\" to \"{list}\"",
                 &[("title", &"File taxes"), ("new", &"File taxes today"), ("from", &"Work"), ("list", &"Home")]
             )
+        );
+    }
+
+    #[test]
+    fn ticking_a_github_issue_says_close_or_reopen_with_the_cached_title() {
+        let issue = |done: bool, summary: &str| Request::SaveTodo {
+            todo: Todo { completed: done, ..todo("github:torro/filter", Some("github:torro/app#12"), summary) },
+        };
+        let known = Facts {
+            item: cached("Crash on start", None),
+            name: Some("Open bugs".into()),
+            issue: Some("torro/app#12".into()),
+            ..Facts::default()
+        };
+        let args: [(&str, &dyn std::fmt::Display); 2] = [("title", &"Crash on start"), ("issue", &"torro/app#12")];
+        assert_eq!(
+            summary(&issue(true, "What the client says"), &known),
+            trf("Close GitHub issue \"{title}\" ({issue})", &args)
+        );
+        assert_eq!(
+            summary(&issue(false, "What the client says"), &known),
+            trf("Reopen GitHub issue \"{title}\" ({issue})", &args)
         );
     }
 

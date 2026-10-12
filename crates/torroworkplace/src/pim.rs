@@ -1379,8 +1379,9 @@ impl PimService {
     ///   write resolves it ([`touched`]), and for a save that moves it the collection losing it
     ///   ([`Facts::moved_from`]); the collection written to by its display name;
     /// - `tasks.move_todo`: the task at `href` and its list, compared as `move_todo` compares;
-    /// - `tasks.save_todo` on a GitHub filter list (task G.5): the item the list holds under the
-    ///   `uid`, the one [`PimService::save_filter_todo`] closes or reopens;
+    /// - `tasks.save_todo` on a GitHub filter list (tasks G.5, G.5b): the item the list holds under
+    ///   the `uid`, the one [`PimService::save_filter_todo`] closes or reopens, and for an issue
+    ///   (not a pull request) its `owner/repo#n` ([`Facts::issue`]);
     /// - `tasks.unpin_issue`: the filter list and the pinned item with the same repository and
     ///   number as `url`;
     /// - `settings.set_collection_shown`, `tasks.update_filter_list`, `tasks.delete_filter_list`:
@@ -1399,7 +1400,7 @@ impl PimService {
                 Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
                 None => (None, None),
             };
-            Facts { item, name: name_of(collection), moved_from }
+            Facts { item, name: name_of(collection), moved_from, issue: None }
         };
         match request {
             Request::DeleteEvent { event } => {
@@ -1413,8 +1414,14 @@ impl PimService {
             }
             Request::SaveTodo { todo } if state.filter(&todo.collection).is_some() => {
                 let held = state.filter(&todo.collection).and_then(|(_, list)| filter_item(list, &todo.uid));
+                // Only an issue that can be ticked: a pull request is refused, so it is not named.
+                let issue = held.filter(|_| todo.href.is_some()).and_then(|held| {
+                    let issue = closable_issue(held)?;
+                    Some(format!("{}#{}", issue.repo, issue.number))
+                });
                 Facts {
                     item: held.map(|todo| Known { title: todo.summary.clone(), start: None }),
+                    issue,
                     ..named(&todo.collection)
                 }
             }
@@ -2648,7 +2655,12 @@ pub(crate) mod tests {
         let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&board)) }).await;
         assert_eq!(
             facts,
-            Facts { item: known("Board meeting", Some(start)), name: Some("Work".into()), moved_from: None }
+            Facts {
+                item: known("Board meeting", Some(start)),
+                name: Some("Work".into()),
+                moved_from: None,
+                issue: None
+            }
         );
         // Written another way, the same address: the same item.
         let same = "/remote.php/dav/calendars/anna/work/e.ics";
@@ -2671,21 +2683,25 @@ pub(crate) mod tests {
             Facts {
                 item: known("Board meeting", Some(start)),
                 name: Some("Home".into()),
-                moved_from: Some("Work".into())
+                moved_from: Some("Work".into()),
+                issue: None,
             }
         );
         let created = service.facts(&Request::SaveEvent { event: lunch(&home, None) }).await;
-        assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None });
+        assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None, issue: None });
 
         // Tasks, and reordering by the exact href.
         let taxes = format!("{}t.ics", url("home"));
         let todo = Todo { summary: "Water plants".into(), ..todo_in(&home, Some(taxes.clone())) };
         let facts = service.facts(&Request::DeleteTodo { todo }).await;
-        assert_eq!(facts, Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None });
+        assert_eq!(
+            facts,
+            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None, issue: None }
+        );
         let reorder = Request::MoveTodo { href: taxes, etag: "1".into(), before: None };
         assert_eq!(
             service.facts(&reorder).await,
-            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None }
+            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None, issue: None }
         );
         let reorder = Request::MoveTodo { href: "/elsewhere.ics".into(), etag: "1".into(), before: None };
         assert_eq!(service.facts(&reorder).await, Facts::default());

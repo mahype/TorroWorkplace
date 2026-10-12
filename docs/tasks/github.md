@@ -303,7 +303,7 @@ K.21 (frei)
   Rechte: Client ohne das Repo bzw. ohne `github`-Schreiben → `not-found` bzw. `forbidden`.
 
 ### G.5b Freigabe sagt „Close GitHub issue“ (aus der API-Prüfung von G.5)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.5 · **Dateien:** `crates/torroworkplace/src/{approvals,pim,core}.rs`, `crates/torro-pim-github/src/graphql.rs`
 - **Fehler (mittel):** Braucht `tasks.save_todo` auf einem Issue einer Filterliste eine Freigabe, zeigt sie heute
   „Change task "…" in "…"“ (`approvals.rs` `todo_saved`, Facts aus `pim.rs` ~1414) – nicht, dass ein Issue auf
