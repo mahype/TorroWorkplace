@@ -655,7 +655,7 @@ pub(crate) mod fake {
                 if !matches!(read, Ok(n) if n > 0) {
                     return;
                 }
-                let text = line.trim_end_matches(['\r', '\n']).to_string();
+                let Some(text) = with_literals(&mut reader, &mut writer, &line).await else { return };
                 let (tag, rest) = text.split_once(' ').unwrap_or((text.as_str(), ""));
                 let (tag, rest) = (tag.to_string(), rest.to_string());
                 let command = rest.split(' ').next().unwrap_or_default().to_ascii_uppercase();
@@ -797,11 +797,10 @@ pub(crate) mod fake {
             let folder = world.folder(path);
             let mut lines = Vec::new();
             if let Some(criteria) = rest.strip_prefix("SEARCH ") {
-                let from = criteria.strip_prefix("UID ").and_then(|set| set.split(':').next()?.parse::<u32>().ok());
                 let uids: Vec<String> = folder
                     .messages
                     .iter()
-                    .filter(|message| from.is_none_or(|from| message.uid >= from))
+                    .filter(|message| matches_search(criteria, message))
                     .map(|message| message.uid.to_string())
                     .collect();
                 lines.push(format!("* SEARCH {}", uids.join(" ")).trim_end().to_string());
@@ -873,6 +872,95 @@ pub(crate) mod fake {
             }
         }
         out
+    }
+
+    // ----- search criteria and literals (task M3.1) -----
+
+    /// The command line `line` without its line end, with every literal (`{n}` at the end of a
+    /// line, as a client sends a word that is not plain ASCII) asked for with `+`, read and put in
+    /// as a quoted string. `None` when the connection broke.
+    async fn with_literals<R, W>(reader: &mut R, writer: &mut W, line: &str) -> Option<String>
+    where
+        R: tokio::io::AsyncBufRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        use tokio::io::AsyncReadExt;
+        let mut text = line.trim_end_matches(['\r', '\n']).to_string();
+        while let Some(open) = text.strip_suffix('}').and_then(|inner| inner.rfind('{')) {
+            let size: usize = text[open + 1..text.len() - 1].parse().ok()?;
+            text.truncate(open);
+            write(writer, "+ go on").await.ok()?;
+            let mut literal = vec![0u8; size];
+            reader.read_exact(&mut literal).await.ok()?;
+            let literal = String::from_utf8_lossy(&literal).replace('\\', "\\\\").replace('"', "\\\"");
+            let mut rest = String::new();
+            reader.read_line(&mut rest).await.ok()?;
+            text = format!("{text}\"{literal}\"{}", rest.trim_end_matches(['\r', '\n']));
+        }
+        Some(text)
+    }
+
+    /// `message` matches the `UID SEARCH` criteria: `ALL`, `UID <set>`, `CHARSET <name>` (taken
+    /// as UTF-8), `TEXT <string>` (anywhere in the raw message, any case), `SINCE`/`BEFORE <day>`.
+    /// The days compare with the `Date:` header, since the fake receives every message now.
+    fn matches_search(criteria: &str, message: &Message) -> bool {
+        let raw = String::from_utf8_lossy(&message.raw);
+        let date = date_of(&raw).unwrap_or(message.received).date_naive();
+        let lower = raw.to_lowercase();
+        let day =
+            |text: Option<String>| text.and_then(|text| chrono::NaiveDate::parse_from_str(&text, "%d-%b-%Y").ok());
+        let mut words = search_words(criteria).into_iter();
+        while let Some(word) = words.next() {
+            let holds = match word.to_ascii_uppercase().as_str() {
+                "ALL" => true,
+                "CHARSET" => words.next().is_some(),
+                "UID" => words.next().is_some_and(|set| in_set(&set, message.uid)),
+                "TEXT" => words.next().is_some_and(|text| lower.contains(&text.to_lowercase())),
+                "SINCE" => day(words.next()).is_some_and(|since| date >= since),
+                "BEFORE" => day(words.next()).is_some_and(|before| date < before),
+                _ => false,
+            };
+            if !holds {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The criteria split into atoms and quoted strings (without quotes and escapes).
+    fn search_words(criteria: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut chars = criteria.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                ' ' => {}
+                '"' => {
+                    let mut word = String::new();
+                    while let Some(c) = chars.next() {
+                        match c {
+                            '\\' => word.extend(chars.next()),
+                            '"' => break,
+                            c => word.push(c),
+                        }
+                    }
+                    words.push(word);
+                }
+                c => {
+                    let mut word = c.to_string();
+                    while let Some(c) = chars.next_if(|c| *c != ' ') {
+                        word.push(c);
+                    }
+                    words.push(word);
+                }
+            }
+        }
+        words
+    }
+
+    /// The `Date:` header of a raw message.
+    fn date_of(raw: &str) -> Option<DateTime<Utc>> {
+        let date = raw.lines().take_while(|line| !line.is_empty()).find_map(|line| line.strip_prefix("Date:"))?;
+        DateTime::parse_from_rfc2822(date.trim()).ok().map(|date| date.with_timezone(&Utc))
     }
 
     async fn write<W: AsyncWrite + Unpin>(writer: &mut W, text: &str) -> std::io::Result<()> {

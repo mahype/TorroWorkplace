@@ -149,7 +149,6 @@ pub struct FolderRef {
 
 /// What a message id resolves to: where the message is on the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code, reason = "used from mail.get_message, task M3.1")]
 pub struct MessageRef {
     /// The message's id (`m:…`).
     pub id: String,
@@ -218,7 +217,6 @@ pub struct Body {
 /// A search over the cache; every field narrows the result (`mail.search_messages`). All `None`
 /// lists everything, newest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
 pub struct SearchQuery {
     /// Only this folder (an id from [`MailStore::folders`]).
     pub folder: Option<String>,
@@ -338,7 +336,6 @@ impl MailStore {
 
     /// All folders, ordered by role (inbox first) and then path. `unread` and `total` are counted
     /// from the stored headers.
-    #[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
     pub fn folders(&self) -> Result<Vec<Folder>, MailStoreError> {
         let mut statement = self.db.prepare(&format!("{FOLDER_SELECT} ORDER BY {FOLDER_ORDER}"))?;
         let rows = statement.query_map([], |row| folder_from_row(&self.account, row))?;
@@ -546,7 +543,6 @@ impl MailStore {
 
     /// Resolves a message id to where it is on the server (`None`: this account does not have it,
     /// or the sync dropped it).
-    #[allow(dead_code, reason = "used from the mail commands, task M3.1")]
     pub fn resolve_message(&self, id: &str) -> Result<Option<MessageRef>, MailStoreError> {
         let sql = "SELECT m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id
                    FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.id = ?1";
@@ -591,7 +587,6 @@ impl MailStore {
     /// A whole message. `text` is `None` while the text is not stored (never fetched, or older
     /// than [`BODY_RETENTION_DAYS`]): the caller fetches it from the server with `BODY.PEEK` and
     /// stores it with [`set_body`](Self::set_body).
-    #[allow(dead_code, reason = "used from mail.get_message, task M3.1")]
     pub fn message(&self, id: &str) -> Result<Option<Message>, MailStoreError> {
         let sql = format!(
             "SELECT {SUMMARY_COLUMNS}, m.cc_json, m.reply_to_json, m.list_id, m.list_unsubscribe, m.precedence,
@@ -632,7 +627,6 @@ impl MailStore {
 
     /// Searches the cache, newest first; `limit` and `offset` page through the result. A search
     /// whose words hold nothing searchable (only punctuation) finds nothing.
-    #[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
     pub fn search(&self, query: &SearchQuery, limit: u32, offset: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
         let mut from = "messages m".to_string();
         let mut conditions: Vec<&str> = Vec::new();
@@ -678,6 +672,18 @@ impl MailStore {
         let sql = format!("SELECT {SUMMARY_COLUMNS} FROM messages m WHERE m.thread_id = ?1 ORDER BY m.date, m.seq");
         let mut statement = self.db.prepare(&sql)?;
         let rows = statement.query_map([thread_id], |row| summary_from_row(&self.account, row))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The newest `limit` messages of a conversation (any folder), oldest first: a thread a sender
+    /// made up to be huge stays bounded (`mail.get_thread`, task M3.1).
+    pub fn thread_newest(&self, thread_id: &str, limit: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
+        let sql = format!(
+            "SELECT * FROM (SELECT {SUMMARY_COLUMNS}, m.seq AS seq_order FROM messages m WHERE m.thread_id = ?1
+             ORDER BY m.date DESC, m.seq DESC LIMIT ?2) ORDER BY date, seq_order"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(params![thread_id, limit], |row| summary_from_row(&self.account, row))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -771,14 +777,12 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
 
 // ----- SQL pieces -----
 
-#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 const FOLDER_SELECT: &str = "SELECT f.id, f.name, f.path, f.role,
         (SELECT count(*) FROM messages m WHERE m.folder_id = f.id AND m.flags & 1 = 0),
         (SELECT count(*) FROM messages m WHERE m.folder_id = f.id)
     FROM folders f";
 
 /// Inbox, drafts, sent, archive, junk, trash, then folders without a role; by path inside each.
-#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 const FOLDER_ORDER: &str =
     "CASE f.role WHEN 'inbox' THEN 0 WHEN 'drafts' THEN 1 WHEN 'sent' THEN 2 WHEN 'archive' THEN 3
         WHEN 'junk' THEN 4 WHEN 'trash' THEN 5 ELSE 6 END, f.path";
@@ -849,7 +853,6 @@ fn refresh_index(db: &Connection, seq: i64) -> Result<(), MailStoreError> {
 
 /// Every word as a quoted prefix term, all required. Words without a letter or digit are left
 /// out (the tokenizer would make an empty phrase of them); `None` when nothing is left.
-#[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
 fn match_expression(text: &str) -> Option<String> {
     let terms: Vec<String> = text
         .split_whitespace()
@@ -861,7 +864,6 @@ fn match_expression(text: &str) -> Option<String> {
 
 // ----- rows -----
 
-#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 fn folder_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<Folder> {
     let role: Option<String> = row.get(3)?;
     Ok(Folder {
@@ -936,7 +938,6 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 fn role_from_name(name: &str) -> Option<Role> {
     [Role::Inbox, Role::Drafts, Role::Sent, Role::Archive, Role::Junk, Role::Trash]
         .into_iter()
@@ -1383,6 +1384,23 @@ mod tests {
         let thread = store.thread("plan").expect("thread");
         assert_eq!(thread.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [first, reply]);
         assert!(store.thread("none").expect("thread").is_empty());
+    }
+
+    #[test]
+    fn a_bounded_thread_keeps_its_newest_messages_oldest_first() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", None);
+        let ids: Vec<String> = [1, 5, 9]
+            .into_iter()
+            .map(|day| {
+                let mut new = message(day, &format!("Day {day}"));
+                new.thread_id = "long".into();
+                add(&store, &inbox, &new)
+            })
+            .collect();
+        let newest = store.thread_newest("long", 2).expect("thread");
+        assert_eq!(newest.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [ids[1].clone(), ids[2].clone()]);
+        assert_eq!(store.thread_newest("long", 100).expect("thread").len(), 3);
     }
 
     #[test]

@@ -352,7 +352,7 @@ ihre Texte im Bericht.
   leerem Absendernamen behält ihn; `torro-api-review` ohne Befund.
 
 ### M3.1 Mail lesen: Befehle und MCP
-- [ ] erledigt
+- [x] erledigt (freigegeben: `Session::uid_search_text` in `imap.rs`, Test-Fake in `mail/sync.rs`, `MailStore::thread_newest` in `store.rs`)
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,mcp}.rs`,
   `crates/torroworkplace/src/mail/{service,read}.rs`
 - Handler für `mail.list_folders`, `mail.search_messages` (Cache mit FTS5; liegt der Zeitraum außerhalb des Caches,

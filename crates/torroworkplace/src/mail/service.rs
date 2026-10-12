@@ -1233,9 +1233,28 @@ impl MailService {
 
     /// The store of `account`, to read the cached mail without a connection (task M3.1).
     /// [`MailError::NotFound`] for an unknown account or one whose mail is off.
-    #[allow(dead_code, reason = "used from the mail commands, tasks M3.1 to M3.3")]
     pub async fn store(&self, account: &str) -> Result<SharedStore, MailError> {
         self.mailbox_of(account).await?.store()
+    }
+
+    /// The stores of the mail accounts `reach` sees, in the order of `accounts.json`, each with
+    /// its account id (task M3.1): for a client only the accounts its rights reach
+    /// (`Rights::reaches_mail_account`), so an id is looked up in these and nowhere else. Accounts
+    /// whose mail is off, or whose store could not be opened, hold no mail and are left out.
+    pub async fn stores(&self, reach: Reach<'_>) -> Vec<(String, SharedStore)> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .filter_map(|entry| Some((entry.mailbox.id().to_string(), entry.mailbox.store().ok()?)))
+            .collect()
+    }
+
+    /// The managed folder for fetched attachments (`mail.get_attachment`, task M3.1); `None`
+    /// without a home directory.
+    pub fn attachments(&self) -> Option<AttachmentCache> {
+        self.dirs.as_ref().map(AttachmentCache::new)
     }
 
     async fn mailbox_of(&self, account: &str) -> Result<Arc<Mailbox>, MailError> {
