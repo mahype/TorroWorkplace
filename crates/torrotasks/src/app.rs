@@ -1598,7 +1598,8 @@ impl App {
     fn properties_column<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
         let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
         let account = account_of(&detail.original.collection, &self.accounts, |a| a.id.as_str());
-        detail.properties_column(account.map(account_title), anchor).map(Message::Detail)
+        let shown = self.shown_accounts();
+        detail.properties_column(account.map(|account| account_title(account, &shown)), anchor).map(Message::Detail)
     }
 
     /// The Display menu: how to group the list, how to order it (a single writable list: "Due
@@ -1840,6 +1841,7 @@ impl App {
         // GitHub accounts whose group ends with "New filter list…"; the others get it after the lists.
         let mut grouped: HashSet<&str> = HashSet::new();
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
+        let shown = self.shown_accounts();
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             // One account: as it always was, a flat list under "Lists".
             Err(lists) => {
@@ -1857,7 +1859,7 @@ impl App {
                     };
                     let unfolded = !self.folded.contains(&account.id);
                     let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
-                    items.push(widgets::sidebar_group_in(mode, account_title(account), toggle));
+                    items.push(widgets::sidebar_group_in(mode, account_title(account, &shown), toggle));
                     // The rail has no title to unfold with, so it shows every list.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
@@ -1898,6 +1900,7 @@ impl App {
         };
         let mut grouped: HashSet<&str> = HashSet::new();
         let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
+        let shown = self.shown_accounts();
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             Err(lists) => {
                 if !lists.is_empty() {
@@ -1906,7 +1909,8 @@ impl App {
             }
             // A menu has no folding: every account is a section named after it.
             Ok(groups) => sections.extend(groups.into_iter().map(|group| {
-                let title = group.account.map_or_else(|| tr("Lists").to_string(), account_title);
+                let title =
+                    group.account.map_or_else(|| tr("Lists").to_string(), |account| account_title(account, &shown));
                 let mut items: Vec<_> = group.items.into_iter().map(item).collect();
                 if let Some(account) = group.account.filter(|a| a.kind == GITHUB_KIND) {
                     items.push(new_filter_list(account));
@@ -2120,20 +2124,32 @@ impl App {
         self.accounts.iter().filter(|a| a.kind == GITHUB_KIND && matches!(a.state, AccountState::Connected { .. }))
     }
 
+    /// The accounts that the sidebar shows with a group of their own (task K.31): those that own
+    /// a list, when two or more do. With one owner the list is flat and no account is shown.
+    /// [`account_title`] compares hosts only among these.
+    fn shown_accounts(&self) -> Vec<&PimAccount> {
+        match shell::account_groups(&self.accounts, self.todo_lists(), |c| c.id.as_str()) {
+            Ok(groups) => groups.iter().filter_map(|group| group.account).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Opens the dialog of a filter list (`filter.rs`): a new list of a GitHub account, or "Edit
     /// filter…" / "Delete list…" of a filter list. Unknown ids open nothing.
     fn open_filter_dialog(&mut self, open: filter::Open) -> Task<Message> {
         self.close_menus();
+        let shown = self.shown_accounts();
         let owner = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str());
         let list = |id: &str| self.collections.iter().find(|c| c.id == id);
         let (dialog, focus) = match open {
             filter::Open::New(id) => {
                 let account = self.accounts.iter().find(|a| a.id == id);
-                (account.map(|a| filter::Dialog::new_list(a.id.clone(), account_title(a))), true)
+                (account.map(|a| filter::Dialog::new_list(a.id.clone(), account_title(a, &shown))), true)
             }
             filter::Open::Edit(id) => {
-                let edit =
-                    |(list, a): (&Collection, &PimAccount)| filter::Dialog::edit(list, a.id.clone(), account_title(a));
+                let edit = |(list, a): (&Collection, &PimAccount)| {
+                    filter::Dialog::edit(list, a.id.clone(), account_title(a, &shown))
+                };
                 (list(&id).zip(owner(&id)).and_then(edit), false)
             }
             filter::Open::Delete(id) => (list(&id).and_then(filter::Dialog::delete), false),
@@ -2733,13 +2749,18 @@ fn filter_list_icon(source: &GitHubFilter) -> Icon {
     }
 }
 
-/// The title of an account's group in the sidebar and the navigation menu: its name, for a GitHub
-/// account "GitHub · login" (the name alone would be a bare login).
-fn account_title(account: &PimAccount) -> String {
+/// The title of an account in the sidebar, the navigation menu, the detail and the filter dialog
+/// (task K.31): its host, `cloud.example.org` for `anna@cloud.example.org`. Only when another
+/// account of `shown` has the same host, the full address, so the two stay apart. A GitHub account
+/// is "GitHub · login" (its label is a bare login, which has no host to show).
+fn account_title(account: &PimAccount, shown: &[&PimAccount]) -> String {
     if account.kind == GITHUB_KIND {
         trf("GitHub · {login}", &[("login", &account.label)])
     } else {
-        account.label.clone()
+        let twin = shown
+            .iter()
+            .any(|other| other.kind != GITHUB_KIND && other.id != account.id && other.host() == account.host());
+        if twin { account.label.clone() } else { account.host().to_string() }
     }
 }
 
@@ -2884,10 +2905,27 @@ mod tests {
             [("Needs me".to_string(), Mark::Icon(Icon::UserCheck)), ("Torro bugs".to_string(), Mark::Icon(Icon::Bug))]
         );
         assert!(lists.iter().filter(|e| !e.list_id().starts_with("github:")).all(|e| matches!(e.mark, Mark::Ring(_))));
-        assert_eq!(account_title(&github_account()), trf("GitHub · {login}", &[("login", &"mahype")]));
-        assert_eq!(account_title(&account("nextcloud:anna@cloud")), "nextcloud:anna@cloud", "others by their name");
+        assert_eq!(account_title(&github_account(), &[]), trf("GitHub · {login}", &[("login", &"mahype")]));
+        assert_eq!(account_title(&account("nextcloud:anna@cloud"), &[]), "cloud", "others by their host");
         let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::TORRO_BUGS.into())));
         assert_eq!(app.filter_mark(&app.filter), Some(Icon::Bug), "the header shows it too");
+    }
+
+    #[test]
+    fn account_titles_are_hosts_unless_two_shown_accounts_share_one() {
+        let anna = account("nextcloud:anna@cloud.example.org");
+        let bob = account("nextcloud:bob@imt.example.org");
+        let twin = account("nextcloud:bob@cloud.example.org");
+        assert_eq!(account_title(&anna, &[&anna, &bob]), "cloud.example.org", "other hosts: the host");
+        assert_eq!(account_title(&anna, &[&anna, &twin]), "nextcloud:anna@cloud.example.org", "same host: address");
+        assert_eq!(account_title(&twin, &[&anna, &twin]), "nextcloud:bob@cloud.example.org", "both get the address");
+        assert_eq!(account_title(&anna, &[&anna]), "cloud.example.org", "an account alone is not its own twin");
+        assert_eq!(account_title(&anna, &[]), "cloud.example.org", "no group shown: the host");
+
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        let work = app.accounts.iter().find(|a| a.id == torro_pim::demo::WORK_ACCOUNT).expect("a demo account");
+        assert_eq!(account_title(work, &app.shown_accounts()), "work.example.org", "the demo spreads over hosts");
     }
 
     /// The demo app on the filter list "Torro bugs" with the accounts `accounts`, and the index of

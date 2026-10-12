@@ -572,7 +572,7 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
 
 ### K.31 Konten in den Seitenleisten nur mit Host
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/torro-pim/src/account.rs` (neue Methode),
   `crates/torrocalendar/src/app.rs` (nur Gruppentitel der Seitenleiste und des Kalendermenüs),
   `crates/torrotasks/src/app.rs` (nur `account_title`)
