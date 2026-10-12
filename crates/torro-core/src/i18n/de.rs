@@ -1157,4 +1157,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Torro Workplace gave an unexpected answer to the question.",
         "Torro Workplace hat unerwartet auf die Rückfrage geantwortet.",
     ),
+    ("Issue closed", "Issue geschlossen"),
+    ("This GitHub token can't close issues", "Dieses GitHub-Token darf keine Issues schließen"),
+    ("Couldn't change the issue: {error}", "Das Issue konnte nicht geändert werden: {error}"),
 ];
