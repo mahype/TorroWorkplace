@@ -540,7 +540,7 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   (auch `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
 
 ### K.30 Radar: Mini-Radare der nächsten Tage
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.25 · **Dateien:** `crates/torrocalendar/src/views/radar/mini.rs`
   (neu), `crates/torrocalendar/src/views/radar.rs` (nur `view`, `list`, `narrow`, `ListAt`,
   `list_view`, `list_row`, `time_width`, `Plan::listed`, `mod mini;`, Tests dazu),

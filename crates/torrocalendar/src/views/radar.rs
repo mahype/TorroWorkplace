@@ -24,12 +24,14 @@
 //!
 //! The middle says only the date and the time. Away from now (another day, or the dial turned) it
 //! shows a clock button, "Back to now". Free time is not named: a stretch without an event is not
-//! necessarily free time. Beside the dial (in the properties column when wide, at the right when
-//! medium, below when narrow) the events of the next nine hours and of the fading quarter are
-//! listed.
+//! necessarily free time.
+//!
+//! Beside the dial (in the properties column when wide, at the right when medium, below when
+//! narrow) "Coming days" shows a mini radar for each of the seven days after the shown one, how
+//! full it is at a glance (task K.30, `radar/mini.rs`).
 //!
 //! Clicks: an arc → `OpenEvent`, free room in the rings → `NewEvent` (rounded down to the quarter
-//! hour), a list row → `OpenEvent`. The dial turns (`Turn`): the mouse wheel over it in quarter
+//! hour), a mini radar → `GoTo` its day. The dial turns (`Turn`): the mouse wheel over it in quarter
 //! hours (not in the narrow layout, where the wheel scrolls the page), and dragging it like a
 //! knob – clockwise is later, a turn is twelve hours, in five-minute steps. A press only becomes
 //! a drag after a few pixels, so a click stays a click.
@@ -37,8 +39,11 @@
 //! The geometry is in `radar/layout.rs`.
 
 mod layout;
+mod mini;
 
 pub use layout::{HOUR_STEP, WHEEL_STEP, clamp_offset};
+/// How many days after the shown one get a mini radar: load the events through the last of them.
+pub use mini::DAYS as COMING_DAYS;
 
 use chrono::{Duration, NaiveDateTime, NaiveTime, Timelike};
 use iced::alignment::Vertical;
@@ -46,10 +51,10 @@ use iced::border::Radius;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Action, Frame, Path, Stroke};
 use iced::widget::scrollable::Direction;
-use iced::widget::text::{Alignment, Wrapping};
-use iced::widget::{button, column, container, responsive, row, rule, scrollable, stack};
+use iced::widget::text::Alignment;
+use iced::widget::{column, container, responsive, row, rule, scrollable, stack};
 use iced::{Color, Element, Event, Length, Padding, Point, Rectangle, Size, Theme, mouse};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::tr;
 use torro_core::settings::Night;
 use torro_gui::datetime::format_time;
 use torro_gui::icon::{self, Icon};
@@ -58,26 +63,26 @@ use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, line_height, text_width};
 use torro_gui::widgets::{self, Anchor};
 
-use layout::{Arc, Dial, END, Hit, Span, VISIBLE, WINDOW, Window, opacity, pieces, split};
+use layout::{Arc, Dial, END, Hit, Span, Window, opacity, pieces, split};
 
 use super::glance;
 use super::timeline::{self, is_double_click};
 use super::{ViewData, short_date};
 use crate::app::Message;
 
-/// Where the radar lists its events.
+/// Where the radar shows its mini radars of the coming days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListAt {
     /// In the properties column of the wide layout ([`list`]); the view itself leaves it out.
     Props,
-    /// At the right of the dial, [`LIST_MEDIUM`] wide (medium layout).
+    /// At the right of the dial, [`LIST_MEDIUM`] wide (medium layout), in two columns.
     Beside,
-    /// Under the dial, the whole page scrolling (narrow layout).
+    /// Under the dial, as many columns as fit, the whole page scrolling (narrow layout).
     Below,
 }
 
-/// Width of the list beside the dial in the medium layout (`radar.html`: 260); the wide layout
-/// uses the properties column.
+/// Width of the mini radars' column beside the dial in the medium layout (`radar.html`: 260); the
+/// wide layout uses the properties column.
 const LIST_MEDIUM: f32 = 260.0;
 /// The dial keeps this much room to the edges of its stage (`radar.html`: 48 in all).
 const STAGE_MARGIN: f32 = space::XL;
@@ -130,16 +135,16 @@ const CHIP: typo::Level =
 const CHIP_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// The large numerals at 3, 6, 9 and 12: 13/500.
 const MAJOR: typo::Level = typo::BODY_STRONG.tabular();
-/// Opacity of the dot of a fading event in the list.
-const DIM_DOT: f32 = 0.55;
 /// While dragging, the pointer this close to the centre does not turn the dial: there the
 /// direction swings at the smallest move.
 const DRAG_DEAD: f32 = space::XL;
 
 /// The radar for the day `data.anchor`, its dial turned `offset` minutes from the start of that
 /// day ([`start`]), a ring for each of `calendars` (the visible ones' collection ids, in the order
-/// of the sidebar) whether or not it has events, its list `at`, `night` behind the rings. The
-/// dial's canvas is anchored at `anchor`, so the night's card can float beside the moon.
+/// of the sidebar) whether or not it has events, the mini radars of the coming days `at` (over
+/// the events of `data`: load them through the seventh day after `data.anchor`), `night` behind
+/// the rings. The dial's canvas is anchored at `anchor`, so the night's card can float beside the
+/// moon.
 pub fn view<'a>(
     data: ViewData<'a>,
     calendars: &[String],
@@ -153,7 +158,9 @@ pub fn view<'a>(
         ListAt::Props => stage(plan, anchor.clone()),
         ListAt::Beside => {
             let width = LIST_MEDIUM - size::HAIRLINE;
-            let list = scrollable(container(list_view(&plan, width - 2.0 * space::S)).padding(Padding {
+            let content = width - 2.0 * space::S;
+            let coming = mini::Coming::new(&data, night).view(content, mini::columns(at, content));
+            let list = scrollable(container(coming).padding(Padding {
                 top: space::L,
                 right: space::S,
                 bottom: space::XL,
@@ -167,7 +174,8 @@ pub fn view<'a>(
         }
         ListAt::Below => {
             let anchor = anchor.clone();
-            responsive(move |bounds| narrow(plan.clone(), bounds, &anchor)).into()
+            let coming = mini::Coming::new(&data, night);
+            responsive(move |bounds| narrow(plan.clone(), &coming, bounds, &anchor)).into()
         }
     }
 }
@@ -189,11 +197,13 @@ pub fn start(data: &ViewData<'_>, offset: i64, night: Night) -> NaiveDateTime {
     layout::day_start(data.anchor, data.now, starts, night) + Duration::minutes(clamp_offset(offset))
 }
 
-/// The list for the properties column of the wide layout: the same as beside the dial.
-pub fn list(data: &ViewData<'_>, calendars: &[String], offset: i64, night: Night) -> Element<'static, Message> {
-    let plan = Plan::new(data, calendars, offset, night);
+/// The mini radars of the seven days after `data.anchor` for the properties column of the wide
+/// layout, in two columns as beside the dial; each opens its day where the radar would with
+/// `night`. Load the events through the seventh day.
+pub fn list(data: &ViewData<'_>, night: Night) -> Element<'static, Message> {
     // The column pads its content by 8 on each side and has a line on the left.
-    list_view(&plan, size::PROPS - size::HAIRLINE - 2.0 * space::S)
+    let width = size::PROPS - size::HAIRLINE - 2.0 * space::S;
+    mini::Coming::new(data, night).view(width, mini::columns(ListAt::Props, width))
 }
 
 /// The dial filling its stage, the middle laid over it.
@@ -210,9 +220,10 @@ fn stage(plan: Plan, anchor: Anchor) -> Element<'static, Message> {
 }
 
 /// Narrow: the dial as large as the window allows – never wider or taller than what is on screen
-/// (at most [`NARROW_DIAL`]), so a low tile shows the whole circle –, the list under it, the whole
-/// page scrolling. The wheel scrolls the page, not the time.
-fn narrow(plan: Plan, bounds: Size, anchor: &Anchor) -> Element<'static, Message> {
+/// (at most [`NARROW_DIAL`]), so a low tile shows the whole circle –, the mini radars of the
+/// `coming` days under it in as many columns as fit, the whole page scrolling. The wheel scrolls
+/// the page, not the time.
+fn narrow(plan: Plan, coming: &mini::Coming, bounds: Size, anchor: &Anchor) -> Element<'static, Message> {
     let width = bounds.width;
     let edge = (width.min(bounds.height) - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
     let dial = Dial::fit(Size::new(width, edge), space::S, plan.rings);
@@ -220,7 +231,8 @@ fn narrow(plan: Plan, bounds: Size, anchor: &Anchor) -> Element<'static, Message
         .width(Length::Fill)
         .height(Length::Fixed(edge));
     let middle = container(middle(&plan, &dial)).center_x(Length::Fill).center_y(Length::Fixed(edge));
-    let list = container(list_view(&plan, width - 2.0 * space::L)).padding(space::L);
+    let content = width - 2.0 * space::L;
+    let list = container(coming.view(content, mini::columns(ListAt::Below, content))).padding(space::L);
     let canvas = widgets::anchored(anchor, canvas);
     scrollable(column![stack![canvas, middle], rule::horizontal(1).style(style::rule), list])
         .direction(Direction::Vertical(style::scrollbar()))
@@ -313,18 +325,6 @@ impl Plan {
     fn is_selected(&self, id: usize) -> bool {
         self.selected.is_some_and(|index| self.entries.get(id).is_some_and(|entry| entry.index == index))
     }
-
-    /// The timed events of the window for the list: those starting in the first nine hours (and
-    /// those running at its start), then those starting in the fading quarter.
-    fn listed(&self) -> (Vec<usize>, Vec<usize>) {
-        let mut sooner = Vec::new();
-        let mut later = Vec::new();
-        for span in &self.spans {
-            let start = self.window.rel(self.entries[span.id].event.start);
-            if start < VISIBLE { sooner.push(span.id) } else { later.push(span.id) }
-        }
-        (sooner, later)
-    }
 }
 
 /// The calendars of `used` (each once) in the order of `calendars` (the sidebar's); ones it does
@@ -358,65 +358,6 @@ fn middle(plan: &Plan, dial: &Dial) -> Element<'static, Message> {
         parts = parts.push(widgets::icon_button(Icon::Clock, tr("Back to now"), Some(Message::Today)));
     }
     container(parts).width(width).center_x(width).into()
-}
-
-/// One line of text, never wrapped (the caller cuts it).
-fn one_line(level: typo::Level, content: String) -> iced::widget::Text<'static> {
-    typo::text(level, content).wrapping(Wrapping::None)
-}
-
-/// The list beside or under the dial, `width` wide: "Next 9 hours" and "Fading out, until 02:20",
-/// a row per event with its time, colour dot and title; a click opens it.
-fn list_view(plan: &Plan, width: f32) -> Element<'static, Message> {
-    let (sooner, later) = plan.listed();
-    let hours = (VISIBLE / 60.0) as u32;
-    let until = format_time(plan.window.at(WINDOW).time());
-    let section = |title: String, ids: Vec<usize>, dim: bool| {
-        let rows: Vec<Element<'static, Message>> = if ids.is_empty() {
-            vec![widgets::prop_row(None, typo::text(typo::BODY, tr("Nothing planned")).style(theme::text_3), None)]
-        } else {
-            ids.into_iter()
-                .filter_map(|id| plan.entries.get(id))
-                .map(|entry| list_row(plan, entry, width, dim))
-                .collect()
-        };
-        widgets::prop_section(title, rows)
-    };
-    column![
-        section(trf("Next {n} hours", &[("n", &hours)]), sooner, false),
-        section(trf("Fading out, until {time}", &[("time", &until)]), later, true),
-    ]
-    .spacing(space::L)
-    .into()
-}
-
-/// The time column of the list: as wide as the widest range.
-fn time_width() -> f32 {
-    text_width("00:00–00:00", typo::META)
-}
-
-/// A row of the list: "14:00–15:00", the colour dot, the title cut to the rest. A fading one
-/// (`dim`) in `text_2` with a paler dot; the event open in the side panel is selected.
-fn list_row(plan: &Plan, entry: &Entry, width: f32, dim: bool) -> Element<'static, Message> {
-    let range = format!("{}–{}", format_time(entry.event.start.time()), format_time(entry.event.end.time()));
-    let room = width - 2.0 * style::ITEM_PADDING.left - time_width() - 2.0 * space::S - space::S;
-    let title = ellipsize(&entry.event.title, typo::BODY, room);
-    let selected = plan.selected == Some(entry.index);
-    let colour = entry.event.color;
-    let content = row![
-        container(typo::text(typo::META.tabular(), range).style(theme::text_3)).width(time_width()),
-        widgets::color_dot(if dim { colour.scale_alpha(DIM_DOT) } else { colour }, space::S),
-        one_line(typo::BODY, title).style(if dim { theme::text_2 } else { theme::text }),
-    ]
-    .spacing(space::S)
-    .align_y(iced::Alignment::Center);
-    button(container(content).center_y(Length::Fill))
-        .width(Length::Fill)
-        .height(size::CONTROL)
-        .padding(style::ITEM_PADDING)
-        .style(style::button::sidebar_item(selected))
-        .on_press(Message::OpenEvent(entry.index))
-        .into()
 }
 
 /// The dial on a canvas.
@@ -994,10 +935,6 @@ mod tests {
         ["family", "personal", "work"].map(String::from).to_vec()
     }
 
-    fn titles(plan: &Plan, ids: &[usize]) -> Vec<String> {
-        ids.iter().map(|id| plan.entries[*id].event.title.clone()).collect()
-    }
-
     #[test]
     fn every_visible_calendar_has_a_ring_in_sidebar_order() {
         let events = events();
@@ -1069,16 +1006,6 @@ mod tests {
         for plan in [&today, &tomorrow, &turned, &empty] {
             let _ = middle(plan, &dial(plan));
         }
-    }
-
-    #[test]
-    fn the_list_splits_at_nine_hours() {
-        let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        let (sooner, later) = plan.listed();
-        assert_eq!(titles(&plan, &sooner), ["API design workshop", "1:1 with Lena", "Run"]);
-        assert_eq!(titles(&plan, &later), ["Late call"], "00:00 lies 9 h 40 min ahead");
-        let _ = list_view(&plan, size::PROPS);
     }
 
     /// The dial of a 1000 × 900 canvas with the demo events.
@@ -1260,7 +1187,13 @@ mod tests {
         for place in [ListAt::Props, ListAt::Beside, ListAt::Below] {
             let _ = view(data(&events), &calendars(), 90, place, Night::DEFAULT, &Anchor::new());
         }
-        let _ = list(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let _ = list(&data(&events), Night::DEFAULT);
+        let _ = narrow(
+            Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT),
+            &mini::Coming::new(&data(&events), Night::DEFAULT),
+            Size::new(480.0, 800.0),
+            &Anchor::new(),
+        );
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
         let _ = middle(&plan, &Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings));
     }
