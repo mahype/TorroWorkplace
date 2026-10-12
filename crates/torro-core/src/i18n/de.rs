@@ -1682,4 +1682,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} unread", "{n} ungelesen"),
     ("{n} new messages from {senders}", "{n} neue Nachrichten von {senders}"),
     ("{names} and {n} more", "{names} und {n} weitere"),
+    // Approval details and adding calendars later (M3.5)
+    ("Attachment: {name}, {size}", "Anhang: {name}, {size}"),
+    (
+        "Calendars and tasks need the calendar address of this account. Switching them on asks for it.",
+        "Kalender und Aufgaben brauchen die Kalenderadresse dieses Kontos. Beim Einschalten wird sie abgefragt.",
+    ),
+    (
+        "Enter the calendar address and the password of {account} to add its calendars.",
+        "Gib die Kalenderadresse und das Passwort von {account} ein, um seine Kalender hinzuzufügen.",
+    ),
+    (
+        "Enter the calendar address and the password of {account} to add its tasks.",
+        "Gib die Kalenderadresse und das Passwort von {account} ein, um seine Aufgaben hinzuzufügen.",
+    ),
+    ("Hide details", "Details ausblenden"),
+    ("Show details", "Details anzeigen"),
+    ("Subject: {subject}", "Betreff: {subject}"),
+    ("To: {recipient}", "An: {recipient}"),
 ];
