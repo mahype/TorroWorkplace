@@ -627,7 +627,7 @@ R.1 ─┬─ R.2 ─┐
   Sichtprüfung auf macOS in Breit, Schmal und Mini, hell und dunkel.
 
 ### U.8 Kurzansichten rechnen mit der Höhe unter dem Titelband (macOS)
-- [x] erledigt (Sichtprüfung Mini auf macOS hell: Kalender, Aufgaben, Inbox ohne abgeschnittene Zeile; Leiste und Filterdialog nicht angesehen)
+- [x] erledigt (Sichtprüfung auf macOS hell: Mini und Leiste von Kalender, Aufgaben, Inbox ohne abgeschnittene Zeile; Dialog für Filterlisten in einem niedrigen Fenster mit gleichem Abstand oben und unten)
 - **Modell:** Opus · **Braucht:** U.6 · **Dateien:** `crates/torro-gui/src/shell.rs`,
   `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`
 - Seit U.6 nimmt das Band auf macOS oben 28 Punkte weg. Die Kurzansichten (Mini, Leiste) und der Dialog
