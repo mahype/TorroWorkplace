@@ -466,7 +466,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung mit `--demo` (zwei Mail-Konten), Breit/Mittel/Schmal, hell/dunkel; Tests der Nachrichten.
 
 ### E4.3 Schreibfenster
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `Cargo.toml` und `torroinbox/Cargo.toml` (`rfd` für die Dateiauswahl, `serde_json` und `tempfile` für Tests), `torro-inbox/src/demo.rs` (Demo-Antworten für `save_draft`/`send_draft`), Schalter „New“ in `torroinbox/src/app.rs`)
 - **Modell:** Sonnet · **Braucht:** M3.3, E4.2 · **Dateien:** neu `crates/torroinbox/src/compose.rs`,
   `crates/torroinbox/src/{main,app}.rs`
 - **Oberfläche:** Eigenes Fenster (`torroinbox --compose [--reply <id>|--forward <id>]`, Fensterklasse

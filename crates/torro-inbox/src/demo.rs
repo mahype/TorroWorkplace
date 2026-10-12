@@ -15,6 +15,12 @@
 //! entry, marking the entry done marks the mail read. The messages are foreign text in the real
 //! app, so their subjects and texts stay as they are (not translated); folder names are the
 //! server's.
+//!
+//! Writing (task E4.3): [`DemoSource::mail_senders`] lists the accounts a message can be written
+//! from (with name and signature), [`DemoSource::save_draft`] keeps a draft in memory and
+//! [`DemoSource::send_draft`] takes it out again; what was saved and sent is kept for the tests
+//! ([`DemoSource::drafts`], [`DemoSource::sent`]). Like the core they refuse an unknown account,
+//! an unknown draft id and a draft without a recipient.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -22,7 +28,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
-use torro_mail::{AttachmentInfo, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
+use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
 
 use crate::item::{Action, AgentInfo, AgentKind, Item, Kind, Lane, Link, Sender, SourceInfo, SourceRef, State};
 use crate::rules;
@@ -41,6 +47,12 @@ struct Data {
     folders: Vec<Folder>,
     /// Every message of both accounts, with its text.
     mail: Vec<Message>,
+    /// The drafts saved from the compose window (task E4.3), in memory only.
+    drafts: Vec<Draft>,
+    /// The drafts that were sent.
+    sent: Vec<Draft>,
+    /// How many drafts were given an id.
+    draft_count: u32,
 }
 
 /// A task the demo made from an entry: the list's id, the title and the due day.
@@ -78,7 +90,16 @@ impl DemoSource {
         let mut items = sample(now);
         let mail = mail_sample(now);
         items.extend(mail_entries(&mail));
-        let data = Data { items, muted: BTreeSet::new(), tasks: Vec::new(), folders: folder_sample(), mail };
+        let data = Data {
+            items,
+            muted: BTreeSet::new(),
+            tasks: Vec::new(),
+            folders: folder_sample(),
+            mail,
+            drafts: Vec::new(),
+            sent: Vec::new(),
+            draft_count: 0,
+        };
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
 
@@ -240,6 +261,18 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
 
 /// The two mail accounts of the demo: work and private, as `mail:<address>`, in the order the core lists them.
 pub const MAIL_ACCOUNTS: [&str; 2] = ["mail:anna@work.example.org", "mail:anna@example.org"];
+
+/// A mail account a message can be written from (`accounts.list_accounts` in the core): the sender
+/// name next to the address and the signature the core puts under new mail, replies and forwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoSender {
+    /// `mail:<address>`.
+    pub account: String,
+    /// The name in `From:`.
+    pub name: String,
+    /// The account's signature; `None` for none.
+    pub signature: Option<String>,
+}
 
 /// The folders with a role of one demo account: `(id suffix, name, role)`, in the order a server
 /// lists them.
@@ -748,6 +781,80 @@ impl DemoSource {
     }
 }
 
+impl DemoSource {
+    /// The accounts a message can be written from, in the order [`MAIL_ACCOUNTS`] lists them: both
+    /// are Anna's, the work one with a signature, the private one without.
+    pub fn mail_senders(&self) -> Vec<DemoSender> {
+        let signature = ["Anna Berg\nProduct, Torro Workplace", ""];
+        MAIL_ACCOUNTS
+            .iter()
+            .zip(signature)
+            .map(|(account, signature)| DemoSender {
+                account: (*account).to_owned(),
+                name: "Anna Berg".to_owned(),
+                signature: (!signature.is_empty()).then(|| signature.to_owned()),
+            })
+            .collect()
+    }
+
+    /// `mail.save_draft`: keeps `draft` and answers it with its id (a new one when it had none).
+    /// [`InboxError::NotFound`] for an account the demo does not have and for an id it did not give
+    /// out, as the core answers for a draft that is not there.
+    pub fn save_draft(&self, draft: Draft) -> Result<Draft, InboxError> {
+        let mut data = self.lock();
+        if !MAIL_ACCOUNTS.contains(&draft.account.as_str()) {
+            return Err(InboxError::NotFound);
+        }
+        match draft.id.clone() {
+            Some(id) => {
+                let old = data.drafts.iter_mut().find(|old| old.id.as_deref() == Some(id.as_str()));
+                *old.ok_or(InboxError::NotFound)? = draft.clone();
+                Ok(draft)
+            }
+            None => {
+                data.draft_count += 1;
+                let saved = Draft { id: Some(format!("m:draft-{}", data.draft_count)), ..draft };
+                data.drafts.push(saved.clone());
+                Ok(saved)
+            }
+        }
+    }
+
+    /// `mail.send_draft`: the draft `id` leaves the drafts and is kept as sent.
+    /// [`InboxError::NotFound`] for an unknown id, [`InboxError::Other`] for a draft without
+    /// recipient (nothing is sent then).
+    pub fn send_draft(&self, id: &str) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let at = data.drafts.iter().position(|draft| draft.id.as_deref() == Some(id)).ok_or(InboxError::NotFound)?;
+        let draft = &data.drafts[at];
+        if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+            return Err(InboxError::Other(tr("The draft has no recipient.").to_owned()));
+        }
+        let sent = data.drafts.remove(at);
+        data.sent.push(sent);
+        Ok(())
+    }
+
+    /// `mail.delete_messages` for a draft: it leaves the drafts. [`InboxError::NotFound`] for an
+    /// unknown id.
+    pub fn discard_draft(&self, id: &str) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let before = data.drafts.len();
+        data.drafts.retain(|draft| draft.id.as_deref() != Some(id));
+        if data.drafts.len() == before { Err(InboxError::NotFound) } else { Ok(()) }
+    }
+
+    /// The drafts saved and not sent, in the order they were first saved.
+    pub fn drafts(&self) -> Vec<Draft> {
+        self.lock().drafts.clone()
+    }
+
+    /// The drafts that were sent, in the order they went.
+    pub fn sent(&self) -> Vec<Draft> {
+        self.lock().sent.clone()
+    }
+}
+
 impl InboxSource for DemoSource {
     async fn list_items(&self, filter: ItemFilter) -> Result<Vec<Item>, InboxError> {
         let now = self.now();
@@ -1175,5 +1282,73 @@ mod tests {
         assert!(matches!(entry.state, State::Done { .. }), "decided, the entry is done");
         assert_eq!(demo.decide_approval(APPROVAL_ID.into(), false).await, Err(InboxError::Settled));
         assert_eq!(demo.decide_approval("nope".into(), true).await, Err(InboxError::NotFound));
+    }
+
+    fn draft(account: &str, to: &[&str]) -> Draft {
+        Draft {
+            id: None,
+            account: account.into(),
+            to: to.iter().map(|to| address("", to)).collect(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Lunch".into(),
+            body: "Shall we?".into(),
+            in_reply_to: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_demo_lists_both_accounts_to_write_from() {
+        let senders = DemoSource::new(now()).mail_senders();
+        let accounts: Vec<&str> = senders.iter().map(|sender| sender.account.as_str()).collect();
+        assert_eq!(accounts, MAIL_ACCOUNTS);
+        assert!(senders[0].signature.is_some() && senders[1].signature.is_none(), "one signature, one without");
+    }
+
+    #[test]
+    fn a_saved_draft_gets_an_id_and_is_replaced_by_it() {
+        let demo = DemoSource::new(now());
+        let first = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
+        assert_eq!(first.id.as_deref(), Some("m:draft-1"));
+        let changed = Draft { subject: "Lunch tomorrow".into(), ..first.clone() };
+        assert_eq!(demo.save_draft(changed).expect("replaced").id, first.id);
+        let kept = demo.drafts();
+        assert_eq!((kept.len(), kept[0].subject.as_str()), (1, "Lunch tomorrow"), "replaced, not added");
+        let second = demo.save_draft(draft(MAIL_ACCOUNTS[0], &[])).expect("a second one");
+        assert_eq!(second.id.as_deref(), Some("m:draft-2"));
+        assert_eq!(demo.drafts().len(), 2);
+    }
+
+    #[test]
+    fn the_demo_refuses_what_the_core_refuses() {
+        let demo = DemoSource::new(now());
+        assert_eq!(
+            demo.save_draft(draft("mail:nobody@example.org", &[])),
+            Err(InboxError::NotFound),
+            "no such account"
+        );
+        let unknown = Draft { id: Some("m:draft-9".into()), ..draft(MAIL_ACCOUNTS[0], &[]) };
+        assert_eq!(demo.save_draft(unknown), Err(InboxError::NotFound), "no such draft");
+        assert_eq!(demo.send_draft("m:draft-9"), Err(InboxError::NotFound));
+        let empty = demo.save_draft(draft(MAIL_ACCOUNTS[0], &[])).expect("saved");
+        let id = empty.id.expect("an id");
+        assert_eq!(demo.send_draft(&id), Err(InboxError::Other(tr("The draft has no recipient.").into())));
+        assert_eq!(demo.drafts().len(), 1, "a refused send keeps the draft");
+        assert_eq!(demo.discard_draft("m:draft-9"), Err(InboxError::NotFound));
+    }
+
+    #[test]
+    fn a_sent_draft_leaves_the_drafts() {
+        let demo = DemoSource::new(now());
+        let saved = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
+        let id = saved.id.expect("an id");
+        demo.send_draft(&id).expect("sent");
+        assert!(demo.drafts().is_empty());
+        assert_eq!(demo.sent().len(), 1);
+        assert_eq!(demo.send_draft(&id), Err(InboxError::NotFound), "never twice");
+        let other = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
+        demo.discard_draft(&other.id.expect("an id")).expect("discarded");
+        assert!(demo.drafts().is_empty() && demo.sent().len() == 1);
     }
 }

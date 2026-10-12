@@ -15,8 +15,13 @@
 //! `agent:claude-code`, `script:backup`) starts on that view. The core opens the app without
 //! arguments (tray, control centre); a workspace template stores the window's whole command line,
 //! so `torroinbox --lane info` comes back as an "Info" window.
+//!
+//! `--compose` starts the compose window instead of the inbox (task E4.3, [`compose`]): its own
+//! window with the class `torro-compose`, started by the panel's Reply, Reply all and Forward and
+//! by "New" ([`mail::compose_command`]).
 
 mod app;
+mod compose;
 mod detail;
 #[cfg(test)]
 mod empty;
@@ -34,6 +39,7 @@ use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
 
 use crate::app::{App, INBOX, Launch};
+use crate::compose::{ComposeSource, Window};
 use crate::mail::MailSource;
 
 fn main() -> ExitCode {
@@ -53,10 +59,11 @@ fn main() -> ExitCode {
     // The suite's settings (appearance, zoom) and "open another app" come from the core; with
     // `--demo` there is none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
-    let result = if launch.demo {
-        run(Arc::new(DemoSource::new(launch.start())), suite, launch)
-    } else {
-        run(Arc::new(InboxClient::default()), suite, launch)
+    let result = match (launch.compose.is_some(), launch.demo) {
+        (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch),
+        (true, false) => compose(Arc::new(InboxClient::default()), suite, launch),
+        (false, true) => run(Arc::new(DemoSource::new(launch.start())), suite, launch),
+        (false, false) => run(Arc::new(InboxClient::default()), suite, launch),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -76,5 +83,17 @@ fn run<S: InboxSource + MailSource + 'static>(inbox: Arc<S>, suite: Source, laun
         .scale_factor(App::scale_factor)
         .subscription(App::subscription)
         .window(torro_gui::window(INBOX))
+        .run()
+}
+
+/// The compose window on `source`: the core's client or the demo source.
+fn compose<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
+    iced::application(move || Window::new(source.clone(), suite.clone(), launch.clone()), Window::update, Window::view)
+        .settings(torro_gui::settings())
+        .title(Window::title)
+        .theme(Window::theme)
+        .scale_factor(Window::scale_factor)
+        .subscription(Window::subscription)
+        .window(compose::window_settings())
         .run()
 }

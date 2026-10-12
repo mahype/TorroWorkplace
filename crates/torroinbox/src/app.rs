@@ -78,6 +78,7 @@ use torro_inbox::{
 use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 
+use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
@@ -576,10 +577,12 @@ impl Open {
 ///   a workspace template stores the window's command line, so the slice comes back with it.
 ///   `--source mail` is a window of mail only (task E4.2): the folders of the mail accounts, starting
 ///   on the first account's inbox ([`View::Mail`]).
-/// - `--compose` (with `--reply <id>`, `--reply-all <id>` or `--forward <id>`) is the compose
-///   window of task E4.3, which the panel's Reply, Reply all and Forward start
-///   ([`mail::compose_command`]). Until that window exists it is refused
-///   ([`LaunchError::NotYet`]), so a click never opens a second inbox instead.
+/// - `--compose` (with `--reply <id>`, `--reply-all <id>` or `--forward <id>`, and `--account <id>`)
+///   is the compose window of task E4.3 ([`compose`]), which the panel's Reply, Reply all and
+///   Forward start ([`mail::compose_command`]) and the "New" button starts without an id. It is a
+///   window of its own and shows no inbox; its `--open` states are [`compose::Open`]'s.
+///   `--reply`, `--reply-all`, `--forward` and `--account` without `--compose` are refused
+///   ([`LaunchError::NeedsCompose`]), so a mistyped command never opens the inbox instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub demo: bool,
@@ -588,6 +591,8 @@ pub struct Launch {
     pub now: Option<NaiveDateTime>,
     /// The view of `--lane` or `--source`; `None` starts on "For me".
     pub view: Option<View>,
+    /// `--compose`: the window writes a message instead of showing the inbox.
+    pub compose: Option<compose::Start>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, like the other apps.
@@ -603,8 +608,8 @@ pub enum LaunchError {
     BadNow(String),
     /// Two flags that each choose the start view, like `--lane` and `--source`.
     Conflict(&'static str, &'static str),
-    /// A window this version does not have yet: `--compose` (task E4.3).
-    NotYet(&'static str),
+    /// `--reply`, `--reply-all`, `--forward` or `--account` without `--compose`.
+    NeedsCompose(&'static str),
 }
 
 impl fmt::Display for LaunchError {
@@ -619,7 +624,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "--now expects YYYY-MM-DDTHH:MM, e.g. 2026-10-12T10:30; got {value:?}")
             }
             LaunchError::Conflict(one, other) => write!(f, "{one} and {other} cannot be used together"),
-            LaunchError::NotYet(flag) => write!(f, "{flag}: this window is not part of this version yet"),
+            LaunchError::NeedsCompose(flag) => write!(f, "{flag} only works together with --compose"),
         }
     }
 }
@@ -627,7 +632,7 @@ impl fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {}
 
 /// The value of `--flag value` or `--flag=value`; `None` when the flag is not there.
-fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a str>, LaunchError> {
+pub(crate) fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a str>, LaunchError> {
     let mut words = args.iter();
     while let Some(word) = words.next() {
         if word == flag {
@@ -644,17 +649,17 @@ impl Launch {
     /// Reads the start parameters from `args` (the words after the program name). Words it does
     /// not know are left alone.
     pub fn parse(args: &[String]) -> Result<Launch, LaunchError> {
-        if args.iter().any(|arg| arg == "--compose") {
-            return Err(LaunchError::NotYet("--compose"));
-        }
         let demo = args.iter().any(|arg| arg == "--demo");
         let unknown = |flag, value: &str, valid: Vec<&str>| LaunchError::UnknownValue {
             flag,
             value: value.to_owned(),
             valid: valid.join(", "),
         };
+        let compose = compose::Start::parse(args, demo)?;
+        // The compose window reads `--open` itself, with states of its own.
         let open = match flag_value(args, "--open")? {
             None => None,
+            Some(_) if compose.is_some() => None,
             Some(_) if !demo => return Err(LaunchError::NeedsDemo("--open")),
             Some(word) => match Open::ALL.iter().find(|(name, _)| *name == word) {
                 Some(&(_, open)) => Some(open),
@@ -676,7 +681,7 @@ impl Launch {
             ),
         };
         let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, view })
+        Ok(Launch { demo, open, appearance, now, view, compose })
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -1292,9 +1297,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
             Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app.to_owned())),
-            // The search is a folder's (task E4.2): the button focuses its field there. The inbox
-            // has nothing to create; elsewhere the buttons only close what is open.
+            // The search is a folder's (task E4.2): the button focuses its field there. "New" writes a
+            // message when there is a mail account to write from (task E4.3); the inbox has nothing
+            // else to create. Elsewhere the buttons only close what is open.
             Message::Switcher(Switcher::Search) if self.view.folder().is_some() => return self.focus_search(),
+            Message::Switcher(Switcher::New) if !self.folders.is_empty() => {
+                self.close_menus();
+                return self.compose_new();
+            }
             Message::Switcher(Switcher::New | Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
             Message::ShowDrawer => {
@@ -1552,6 +1562,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         #[cfg(test)]
         self.sent.push(Sent::Compose(mail::compose_args(kind, id, self.launch.demo)));
         let command = mail::compose_command(kind, id, self.launch.demo);
+        Task::perform(async move { mail::start(command) }, Message::ComposeStarted)
+    }
+
+    /// Starts the compose window for a new message ([`compose::new_command`], task E4.3).
+    fn compose_new(&mut self) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::Compose(compose::new_args(self.launch.demo)));
+        let command = compose::new_command(self.launch.demo);
         Task::perform(async move { mail::start(command) }, Message::ComposeStarted)
     }
 
@@ -4050,9 +4068,46 @@ mod tests {
     }
 
     #[test]
-    fn the_compose_window_is_not_there_yet() {
-        let compose = Launch::parse(&args(&["--compose", "--reply", "m:w1"]));
-        assert_eq!(compose, Err(LaunchError::NotYet("--compose")));
+    fn the_compose_window_reads_what_the_panel_starts_it_with() {
+        for (kind, flag) in
+            [(Compose::Reply, "--reply"), (Compose::ReplyAll, "--reply-all"), (Compose::Forward, "--forward")]
+        {
+            let started = mail::compose_args(kind, "m:w1", true);
+            let launch = Launch::parse(&started).expect("the arguments the panel starts the window with");
+            let compose = launch.compose.expect("a compose window");
+            assert_eq!(compose.kind.message(), Some("m:w1"), "{flag}");
+            assert_eq!((launch.open, launch.view), (None, None), "it shows no inbox");
+        }
+        let new = Launch::parse(&compose::new_args(false)).expect("a new message");
+        assert_eq!(new.compose.map(|start| start.kind), Some(compose::Kind::New));
+        let account = Launch::parse(&args(&["--compose", "--account", "anna@example.org"])).expect("an account");
+        assert_eq!(account.compose.and_then(|start| start.account), Some("mail:anna@example.org".into()));
+    }
+
+    #[test]
+    fn compose_flags_are_refused_where_they_make_no_sense() {
+        let refused = |words: &[&str]| Launch::parse(&args(words)).expect_err("refused");
+        assert_eq!(refused(&["--reply", "m:w1"]), LaunchError::NeedsCompose("--reply"));
+        assert_eq!(refused(&["--account", "anna@example.org"]), LaunchError::NeedsCompose("--account"));
+        assert_eq!(
+            refused(&["--compose", "--reply", "m:w1", "--forward", "m:w2"]),
+            LaunchError::Conflict("--reply", "--forward")
+        );
+        assert_eq!(refused(&["--compose", "--reply"]), LaunchError::MissingValue("--reply"));
+        assert_eq!(refused(&["--compose", "--open", "cc"]), LaunchError::NeedsDemo("--open"));
+        assert!(matches!(refused(&["--compose", "--demo", "--open", "nope"]), LaunchError::UnknownValue { .. }));
+        let demo = Launch::parse(&args(&["--compose", "--demo", "--open", "cc"])).expect("a state of the window");
+        assert_eq!(demo.compose.and_then(|start| start.open), Some(compose::Open::Cc));
+    }
+
+    #[test]
+    fn the_new_button_writes_a_message_when_there_is_a_mail_account() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Switcher(Switcher::New));
+        assert_eq!(app.sent.last(), Some(&Sent::Compose(vec!["--compose".into(), "--demo".into()])));
+        let mut none = demo(&["--demo"]);
+        let _ = none.update(Message::Switcher(Switcher::New));
+        assert!(!none.sent.iter().any(|sent| matches!(sent, Sent::Compose(_))), "no account, no window");
     }
 
     #[test]
