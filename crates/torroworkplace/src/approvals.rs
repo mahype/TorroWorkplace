@@ -495,9 +495,10 @@ impl Approvals {
         }
     }
 
-    /// Marked as changed each time an approval is opened or decided, after it was stored; for the
-    /// tray's count (task A.8b). An approval expiring by the clock is not marked: whoever counts
-    /// waits for the next `expires` of the open ones itself.
+    /// Marked as changed each time an approval is opened or decided, after it was stored, and each
+    /// time one is found expired; for the tray's count (task A.8b). Nobody looks at the approvals
+    /// when one expires by the clock, so whoever counts still waits for the next `expires` of the
+    /// open ones itself; the mark covers an expiry that falls between counting and that wait.
     pub fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changed.subscribe()
     }
@@ -686,7 +687,8 @@ impl Approvals {
     }
 
     /// The state, read from the file on first use, with expired approvals marked and old ones
-    /// dropped as of `now`. Both follow from the time alone, so they need no write of their own.
+    /// dropped as of `now`. Both follow from the time alone, so they need no write of their own;
+    /// an approval found expired is marked as changed ([`Approvals::changes`]).
     async fn state(&self, now: DateTime<Utc>) -> Result<tokio::sync::MutexGuard<'_, State>, ApprovalsError> {
         let mut state = self.state.lock().await;
         if !state.loaded {
@@ -694,7 +696,9 @@ impl Approvals {
             state.entries = blocking(move || read(&file)).await?;
             state.loaded = true;
         }
-        tidy(&mut state.entries, now);
+        if tidy(&mut state.entries, now) {
+            self.changed.send_replace(());
+        }
         Ok(state)
     }
 
@@ -722,15 +726,18 @@ fn visible(entry: &Entry, client: Option<&str>) -> bool {
 }
 
 /// Marks open approvals past their time as expired (decided at that time) and drops the ones
-/// decided longer than [`KEPT`] ago.
-fn tidy(entries: &mut Vec<Entry>, now: DateTime<Utc>) {
+/// decided longer than [`KEPT`] ago. `true` when one expired.
+fn tidy(entries: &mut Vec<Entry>, now: DateTime<Utc>) -> bool {
+    let mut expired = false;
     for entry in entries.iter_mut() {
         if entry.info.state.is_pending() && entry.info.expires <= now {
             entry.info.state = ApprovalState::Expired;
             entry.info.decided = Some(entry.info.expires);
+            expired = true;
         }
     }
     entries.retain(|entry| entry.info.decided.is_none_or(|decided| now - decided < KEPT));
+    expired
 }
 
 /// The approvals in `file`; none when it does not exist. A file that is not ours is moved aside

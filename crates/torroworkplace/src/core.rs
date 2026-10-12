@@ -1252,8 +1252,10 @@ impl Core {
         self.approvals.changes()
     }
 
-    /// Waits until the count of open approvals may have changed: one was opened or decided
-    /// (`changes`, from [`Core::approval_changes`]), or the next open one expired by the clock.
+    /// Waits until the count of open approvals may have changed: one was opened, decided or found
+    /// expired (`changes`, from [`Core::approval_changes`]), or the next open one expired by the
+    /// clock. One that expired after the last count but before this wait looked is found expired
+    /// here, so it wakes at once instead of being missed.
     /// The daemon then refreshes the tray menu, whose snapshot counts anew.
     /// `false` when the approvals are gone (the core is shutting down).
     pub async fn approvals_changed(&self, changes: &mut tokio::sync::watch::Receiver<()>) -> bool {
@@ -2553,6 +2555,25 @@ mod tests {
         assert_eq!(core.snapshot().await.approvals_waiting, 1);
         let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
         assert_eq!(woke.ok(), Some(true), "the expiry wakes the tray");
+        assert_eq!(core.snapshot().await.approvals_waiting, 0);
+    }
+
+    #[tokio::test]
+    async fn an_approval_expiring_before_the_tray_waits_still_wakes_it() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut changes = core.approval_changes();
+
+        // Open (the tray counts it) and already past its time when the tray starts waiting, as when
+        // building the menu took longer than the approval had left.
+        let gone = Utc::now() - crate::approvals::LIFETIME - chrono::TimeDelta::milliseconds(1);
+        let delete = Request::DeleteTemplate { id: "a".into() };
+        core.approvals.open("c1", "One", delete, None, "a".into(), gone).await.expect("opened");
+        changes.mark_unchanged();
+
+        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        assert_eq!(woke.ok(), Some(true), "the missed expiry wakes the tray");
         assert_eq!(core.snapshot().await.approvals_waiting, 0);
     }
 
