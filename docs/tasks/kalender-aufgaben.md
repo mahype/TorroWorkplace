@@ -600,6 +600,20 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
 - **Abnahme:** Tests: `host` (mit `@`, mehrere `@`, ohne, leer), Gruppentitel in beiden Apps mit
   zwei Hosts und mit gleichem Host; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
+### K.32 Woche: heutige Spalte hervorheben
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/torrocalendar/src/views/week.rs`
+- Wunsch des Nutzers (2026-10-12): In der Woche soll man sofort sehen, wo heute ist – nicht nur am
+  roten Kreis im Kopf.
+- **Oberfläche:** Mit mehreren Tagen bekommt die Spalte von heute einen Hauch Torro-Rot über ihrem
+  Grund (dunkel 10 %, hell 5 %): im Tageskopf, in der Ganztagsleiste und im Stundenraster, als
+  durchgehendes Band. Fällt heute aufs Wochenende, liegt der Hauch über der Wochenendtönung. Die
+  Tagesansicht (eine Spalte) bleibt ohne. Rot bleibt „Heute“ (Design-Skill, Abschnitt 1).
+- **API / MCP:** keiner – Darstellung.
+- **Abnahme:** Test, welche Spalte getönt wird (Woche mit heute, Wochenende, andere Woche,
+  Tagesansicht, hell und dunkel); fmt, clippy, test (auch `TORRO_LANG=de`) grün; Screenshot Breit
+  hell/dunkel.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag
