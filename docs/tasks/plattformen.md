@@ -188,6 +188,24 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   nur über inoffizielle Werkzeuge; SSL.com eSigner etwa 310 $/Jahr. Auch mit Signatur warnt SmartScreen, bis die
   Dateien genug Downloads gesammelt haben.
 
+### X.12 Tests schreiben nie den echten Start-beim-Anmelden-Eintrag
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** X.3 · **Dateien:** `crates/torroworkplace/src/settings_service.rs`,
+  `crates/torroworkplace/src/core.rs` (nur Tests), `docs/tasks/plattformen.md`
+- Fund (2026-10-12): Auf dem Mac erscheint nach dem Anmelden kein Tray. Der Test
+  `admin_commands_of_a_client_wait_for_approval_even_with_confirm_never` (`core.rs`) setzt `StartAtLogin` auf
+  `true`; `SettingsStore::change` ruft dann `apply_start_at_login` mit dem echten Home auf. Jeder `cargo test`
+  überschreibt so `~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist` (Linux: XDG-Autostart,
+  Windows: `Run`-Schlüssel) mit dem Pfad des **Test-Programms** (`target/debug/deps/torroworkplace-<hash>`).
+  Beim nächsten Anmelden startet `launchd` die Tests statt des Dienstes, es läuft kein Dienst und kein Tray.
+- Lösung: Ein `SettingsStore` für Tests (`at`, `without_file`) wendet „Start at login“ nie auf das System an.
+  Der Store merkt sich, ob er das darf (privates Feld, `system()` ja, Test-Konstruktoren nein); die
+  Schnittstelle (`system`, `at`, `without_file`, `update`, …) bleibt gleich. Der Hinweis „tests leave that
+  setting alone“ am Konstruktor entfällt bzw. wird richtiggestellt.
+- Abnahme: Test, dass ein `SettingsStore::at` `start_at_login` an- und ausschalten kann, ohne den echten
+  Eintrag anzulegen oder zu ändern (z. B. `HOME`/`XDG_CONFIG_HOME` nicht anfassen, sondern prüfen, dass der
+  Weg zum System gar nicht genommen wird). Der Test in `core.rs` läuft weiter. fmt, clippy, test grün.
+
 ### X.11 Abnahme auf echten Rechnern und Doku
 - [ ] erledigt
 - **Modell:** Sonnet, mit dem Maintainer · **Braucht:** alle oben · **Dateien:** `docs/release.md`, `docs/roadmap.md`,

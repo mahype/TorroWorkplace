@@ -24,6 +24,7 @@ torro-core.workspace = true
 torro-setups.workspace = true
 torro-pim.workspace = true
 torro-inbox.workspace = true
+torro-mail.workspace = true
 chrono.workspace = true
 schemars.workspace = true
 serde.workspace = true

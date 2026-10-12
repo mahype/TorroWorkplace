@@ -426,6 +426,9 @@ fn describe(request: &Request) -> String {
         Request::ConnectGithub => "connect github".into(),
         // Never the token.
         Request::SetGithubToken { .. } => "set github token".into(),
+        // Never the address or the password (task M7.1).
+        Request::DiscoverServices { .. } => "discover services".into(),
+        Request::ConnectCalDav { .. } => "connect caldav".into(),
         Request::Sync => "sync".into(),
         Request::CalendarCollections => "calendars".into(),
         Request::TaskCollections => "task lists".into(),
@@ -482,6 +485,20 @@ fn describe(request: &Request) -> String {
         Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
         Request::ListRules => "inbox rules".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
+        // Never an address, a password, a search, a subject or a folder name (security rule 3 of
+        // task M2.1); message and folder ids would let lines be matched with a mailbox.
+        Request::ConnectMail { .. } => "connect mail".into(),
+        Request::UpdateMailAccount { .. } => "update mail account".into(),
+        Request::MailFolders { .. } => "mail folders".into(),
+        Request::SearchMail { .. } => "search mail".into(),
+        Request::GetMail { .. } => "get mail".into(),
+        Request::GetMailThread { .. } => "get mail thread".into(),
+        Request::GetMailAttachment { .. } => "get mail attachment".into(),
+        Request::SetMailFlags { ids, .. } => format!("set flags of {} messages", ids.len()),
+        Request::MoveMail { ids, .. } => format!("move {} messages", ids.len()),
+        Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
+        Request::SaveDraft { .. } => "save draft".into(),
+        Request::SendDraft { .. } => "send draft".into(),
     }
 }
 

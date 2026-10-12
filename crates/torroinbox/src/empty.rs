@@ -8,8 +8,8 @@ use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 
 /// An inbox without entries and without sources. Listing gives nothing (no task lists either);
-/// changing or opening an entry or making a task of it gives [`InboxError::NotFound`] (there is
-/// none), muting [`InboxError::Offline`] (nothing would keep it).
+/// changing or opening an entry, making a task of it or deciding an approval gives
+/// [`InboxError::NotFound`] (there is none), muting [`InboxError::Offline`] (nothing would keep it).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptySource;
 
@@ -55,6 +55,10 @@ impl InboxSource for EmptySource {
     ) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
     }
+
+    async fn decide_approval(&self, _approval: String, _allow: bool) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +82,6 @@ mod tests {
             block_on(source.create_task_from_item("x".into(), "l".into(), None, None)),
             Err(InboxError::NotFound)
         );
+        assert_eq!(block_on(source.decide_approval("x".into(), true)), Err(InboxError::NotFound));
     }
 }

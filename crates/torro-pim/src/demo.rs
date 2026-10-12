@@ -452,6 +452,25 @@ fn in_milestone(todo: Todo, name: &str, day: NaiveDate) -> Todo {
     })
 }
 
+/// The text of the pinned design issue, in Markdown as GitHub delivers it (with the comment of an
+/// issue template): the panel shows it formatted (task G.12, `--demo --open pinned`).
+const ISSUE_18_BODY: &str = "<!-- What should change, and why? -->
+## Summary
+
+The Iced apps copy the colour tokens by hand. Export them from `tokens.json` so **one file** stays the source.
+
+## Tasks
+
+- [x] List the tokens the apps use
+- [ ] Generate `theme.rs` from `tokens.json`
+- [ ] Check contrast in light and dark
+
+```sh
+cargo run -p torro-design -- export --format rust
+```
+
+> Light and dark must stay in step. See the [token reference](https://example.org/tokens).";
+
 /// The matches of the two filter lists. "Needs me": a pull request waiting for a review, an
 /// issue assigned to me in a milestone, and the pinned issue of the design repository. "Torro
 /// bugs": two open bugs (one in a milestone) and a closed one.
@@ -478,7 +497,10 @@ fn filter_todos(today: NaiveDate) -> Vec<Todo> {
             ),
             mine,
         ),
-        found(NEEDS_ME, DESIGN_REPO, 18, (issue, open), &[enhancement], "Export the colour tokens for Iced"),
+        Todo {
+            description: Some(ISSUE_18_BODY.into()),
+            ..found(NEEDS_ME, DESIGN_REPO, 18, (issue, open), &[enhancement], "Export the colour tokens for Iced")
+        },
         with_details(
             in_milestone(
                 found(

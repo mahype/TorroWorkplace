@@ -12,26 +12,35 @@
 //!
 //! Every visible calendar gets a ring (task K.25), in the order of the sidebar, the first outside,
 //! so the tracks show even on an empty day; fine hour lines run across them like the hour lines of
-//! the grid. Overlapping events share their ring in lanes. Events are tinted arcs with a colour
-//! bar where they start, past ones faded, the one open in the side panel outlined with the focus
-//! ring. Titles run along the arc letter by letter (upright in the bottom half), with the time on
-//! a second line where the lane is wide enough.
+//! the grid. A ring's track is faintly tinted in its calendar's colour, and the ring names its
+//! calendar in the last hour before the edge, where the fade has left it empty: a dot and the name
+//! (task K.29). Overlapping events share their ring in lanes. Events are arcs filled strongly in
+//! their calendar's colour (much stronger than the week grid's tint; [`mini::fill`] for the large
+//! and the mini dials alike) with a colour bar where they start, past ones faded, the one open in
+//! the side panel outlined with the focus ring. Titles run along the arc letter by letter (upright
+//! in the bottom half) in light or dark text, whichever reads on the fill: in `MICRO` in narrow
+//! lanes, in `CAPTION` in wider ones, with the time on a second line where the lane is wide enough.
 //!
 //! The night (the suite's setting, 22:00–06:00 by default, as in the timeline; task K.27) lies
-//! behind the rings as a sector in the night colour, a small moon on the numerals' circle at its
-//! first half hour. A double-click on the moon opens the night's card (`EditNight`); resting on it
-//! says so after a moment. Free time of two hours or more outside the night, from now on, says
-//! "3 h free" along the arc in the innermost ring. All of it fades with the last quarter, piece by
-//! piece like the rest.
+//! behind the rings as a sector in the night colour, a moon on a small round plaque on the
+//! numerals' circle at its first half hour outside the fading quarter. A double-click on the moon
+//! opens the night's card (`EditNight`). The night fades with the last quarter, piece by piece
+//! like the rest.
 //!
-//! The middle says the date and the time, what runs ("40 min left") or how long is free, what
-//! comes next and what lasts all day; with nothing in the window, "Nothing planned" and when the
-//! next event comes ("Free until tomorrow 09:30"); away from now, "Back to now". Beside the dial (in the
-//! properties column when wide, at the right when medium, below when narrow) the events of the
-//! next nine hours and of the fading quarter are listed.
+//! Resting on something for a moment shows a tooltip in the canvas beside the pointer: an event's
+//! title, time and place; the calendar of an empty track; how to set the night on the moon. The
+//! pointer is the hand over events and the moon, the open hand over the rest of the dial.
+//!
+//! The middle says only the date and the time. Away from now (another day, or the dial turned) it
+//! shows a clock button, "Back to now". Free time is not named: a stretch without an event is not
+//! necessarily free time.
+//!
+//! Beside the dial (in the properties column when wide, at the right when medium, below when
+//! narrow) "Coming days" shows a mini radar for each of the seven days after the shown one, how
+//! full it is at a glance (task K.30, `radar/mini.rs`).
 //!
 //! Clicks: an arc → `OpenEvent`, free room in the rings → `NewEvent` (rounded down to the quarter
-//! hour), a list row → `OpenEvent`. The dial turns (`Turn`): the mouse wheel over it in quarter
+//! hour), a mini radar → `GoTo` its day. The dial turns (`Turn`): the mouse wheel over it in quarter
 //! hours (not in the narrow layout, where the wheel scrolls the page), and dragging it like a
 //! knob – clockwise is later, a turn is twelve hours, in five-minute steps. A press only becomes
 //! a drag after a few pixels, so a click stays a click.
@@ -39,47 +48,51 @@
 //! The geometry is in `radar/layout.rs`.
 
 mod layout;
+mod mini;
 
 pub use layout::{HOUR_STEP, WHEEL_STEP, clamp_offset};
+/// How many days after the shown one get a mini radar: load the events through the last of them.
+pub use mini::DAYS as COMING_DAYS;
 
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Duration, NaiveDateTime, NaiveTime, Timelike};
 use iced::alignment::Vertical;
 use iced::border::Radius;
 use iced::time::Instant;
 use iced::widget::canvas::{self, Action, Frame, Path, Stroke};
 use iced::widget::scrollable::Direction;
-use iced::widget::text::{Alignment, Wrapping};
-use iced::widget::{button, column, container, responsive, row, rule, scrollable, stack};
+use iced::widget::text::Alignment;
+use iced::widget::{column, container, responsive, row, rule, scrollable, stack};
 use iced::{Color, Element, Event, Length, Padding, Point, Rectangle, Size, Theme, mouse};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::tr;
 use torro_core::settings::Night;
 use torro_gui::datetime::format_time;
 use torro_gui::icon::{self, Icon};
 use torro_gui::style;
-use torro_gui::theme::{self, Palette, mix, over, palette, radius, size, space};
+use torro_gui::theme::{self, Palette, mix, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, line_height, text_width};
 use torro_gui::widgets::{self, Anchor};
 
-use layout::{Arc, Dial, END, Hit, Span, VISIBLE, WINDOW, Window, opacity, pieces, split};
+use layout::{Arc, Dial, END, Hit, Span, Window, opacity, pieces, split};
 
-use super::glance::{self, span};
+use super::glance;
 use super::timeline::{self, is_double_click};
+use super::week;
 use super::{ViewData, short_date};
 use crate::app::Message;
 
-/// Where the radar lists its events.
+/// Where the radar shows its mini radars of the coming days.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListAt {
     /// In the properties column of the wide layout ([`list`]); the view itself leaves it out.
     Props,
-    /// At the right of the dial, [`LIST_MEDIUM`] wide (medium layout).
+    /// At the right of the dial, [`LIST_MEDIUM`] wide (medium layout), in two columns.
     Beside,
-    /// Under the dial, the whole page scrolling (narrow layout).
+    /// Under the dial, as many columns as fit, the whole page scrolling (narrow layout).
     Below,
 }
 
-/// Width of the list beside the dial in the medium layout (`radar.html`: 260); the wide layout
-/// uses the properties column.
+/// Width of the mini radars' column beside the dial in the medium layout (`radar.html`: 260); the
+/// wide layout uses the properties column.
 const LIST_MEDIUM: f32 = 260.0;
 /// The dial keeps this much room to the edges of its stage (`radar.html`: 48 in all).
 const STAGE_MARGIN: f32 = space::XL;
@@ -90,8 +103,15 @@ const NARROW_DIAL: f32 = 440.0;
 const WEEK_STRIP: f32 = 2.0 * size::CONTROL_SM + 2.0 * space::XS + space::S;
 /// The middle keeps this far from the inner ring on each side (`radar.html`: 16).
 const MIDDLE_INSET: f32 = space::L;
-/// The track of a ring: `text` at 7 % over the panel.
+/// The neutral track of the mini dials' single ring: `text` at 7 % over the panel.
 const TRACK: f32 = 0.07;
+/// The track of a ring of the large dial: its calendar's colour at 10 % over the panel or the
+/// night, so the rings tell their calendars apart while events stand clearly in front and the night
+/// still shows (task K.29, set by screenshot).
+const TRACK_TINT: f32 = 0.10;
+/// The time under an event's title: the title's colour at this share over the fill, a step
+/// quieter than the title and still 4.5:1 on the demo's colours.
+const TIME_SHARE: f32 = 0.9;
 /// Ticks: `text` at 35 % over the panel.
 const TICK: f32 = 0.35;
 /// Length of a full-hour tick and of a half-hour one.
@@ -109,17 +129,21 @@ const BAR_OVERHANG: f32 = 1.0;
 /// The focus ring stands this far off the arc (radial; along the arc in degrees).
 const RING_OFFSET: f32 = 3.0;
 const RING_OFFSET_DEGREES: f32 = 0.8;
-/// Titles only in lanes at least this wide; the time as a second line from [`TWO_LINES`] on.
+/// Titles in lanes at least this wide, in `MICRO`; from [`ONE_LINE`] on in `CAPTION`; the time as
+/// a second line from [`TWO_LINES`] on.
+const MICRO_LANE: f32 = 16.0;
 const ONE_LINE: f32 = 22.0;
 const TWO_LINES: f32 = 40.0;
-/// Text along an arc starts this far after its start (the bar plus 6, as in the week grid) and
-/// keeps this far from its end.
-const TEXT_START: f32 = 9.0;
-const TEXT_END: f32 = 6.0;
-/// Shorter than this a title is not worth starting.
-const TEXT_MIN: f32 = 24.0;
-/// A title cut shorter than this many letters is left out, as in the week grid.
-const MIN_TITLE_LETTERS: usize = 4;
+/// Text along an arc starts this far after its start (the bar plus 4) and keeps this far from its
+/// end. A little tighter than the week grid's 6, so a 45-minute event on the inner ring of a medium
+/// dial still carries its title (task K.29).
+const TEXT_START: f32 = BAR + space::XS;
+const TEXT_END: f32 = space::XS;
+/// Shorter than this a title is not worth starting: three letters and "…" in `MICRO`.
+const TEXT_MIN: f32 = 20.0;
+/// A title cut shorter than this many letters is left out: "Lun…" still hints at the lunch, "Lu…"
+/// says nothing (the tooltip has the whole title).
+const MIN_TITLE_LETTERS: usize = 3;
 /// Past events are faded like in the week grid.
 const PAST_OPACITY: f32 = 0.55;
 /// Steps of the arcs drawn as polygons: one corner per degree at most.
@@ -132,23 +156,40 @@ const CHIP: typo::Level =
 const CHIP_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// The large numerals at 3, 6, 9 and 12: 13/500.
 const MAJOR: typo::Level = typo::BODY_STRONG.tabular();
-/// Opacity of the dot of a fading event in the list.
-const DIM_DOT: f32 = 0.55;
-/// The middle shows at most this many all-day chips.
-const CHIPS: usize = 2;
 /// While dragging, the pointer this close to the centre does not turn the dial: there the
 /// direction swings at the smallest move.
 const DRAG_DEAD: f32 = space::XL;
-/// Free time is named from two hours on, as in the week grid and the timeline.
-const FREE_MINUTES: f32 = 120.0;
+/// The round plaque under the moon (panel with a line around it), so the moon reads on any ground:
+/// 22 across, 3 around the 16 icon.
+const MOON_PLAQUE: f32 = icon::SIZE + 6.0;
+/// A tooltip is at most this wide; longer titles and places are cut with "…".
+const TIP_MAX: f32 = size::PROPS - 2.0 * space::XL;
+/// The dot before the title in a tooltip (radius), as the dots of the calendars in the sidebar.
+const TIP_DOT: f32 = space::XS;
+
+/// A visible calendar as the radar shows its ring.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ring {
+    /// The collection id (`Event::collection` of its events).
+    pub id: String,
+    /// Its name as the sidebar shows it ("Personal").
+    pub name: String,
+    /// The host of its account (`PimAccount::host`, "cloud.imt24.de"), if it has one. The radar
+    /// names it behind the name when two visible calendars share that name.
+    pub host: Option<String>,
+    /// Its colour (`widgets::collection_color`): the dot before the name, the tint of the track.
+    pub colour: Color,
+}
 
 /// The radar for the day `data.anchor`, its dial turned `offset` minutes from the start of that
-/// day ([`start`]), a ring for each of `calendars` (the visible ones' collection ids, in the order
-/// of the sidebar) whether or not it has events, its list `at`, `night` behind the rings. The
-/// dial's canvas is anchored at `anchor`, so the night's card can float beside the moon.
+/// day ([`start`]), a ring for each of `calendars` (the visible ones, in the order of the sidebar)
+/// whether or not it has events, each named in its last hour, the mini radars of the coming days
+/// `at` (over the events of `data`: load them through the seventh day after `data.anchor`),
+/// `night` behind the rings. The dial's canvas is anchored at `anchor`, so the night's card can
+/// float beside the moon.
 pub fn view<'a>(
     data: ViewData<'a>,
-    calendars: &[String],
+    calendars: &[Ring],
     offset: i64,
     at: ListAt,
     night: Night,
@@ -159,7 +200,9 @@ pub fn view<'a>(
         ListAt::Props => stage(plan, anchor.clone()),
         ListAt::Beside => {
             let width = LIST_MEDIUM - size::HAIRLINE;
-            let list = scrollable(container(list_view(&plan, width - 2.0 * space::S)).padding(Padding {
+            let content = width - 2.0 * space::S;
+            let coming = mini::Coming::new(&data, night).view(content, mini::columns(at, content));
+            let list = scrollable(container(coming).padding(Padding {
                 top: space::L,
                 right: space::S,
                 bottom: space::XL,
@@ -173,7 +216,8 @@ pub fn view<'a>(
         }
         ListAt::Below => {
             let anchor = anchor.clone();
-            responsive(move |bounds| narrow(plan.clone(), bounds, &anchor)).into()
+            let coming = mini::Coming::new(&data, night);
+            responsive(move |bounds| narrow(plan.clone(), &coming, bounds, &anchor)).into()
         }
     }
 }
@@ -195,40 +239,51 @@ pub fn start(data: &ViewData<'_>, offset: i64, night: Night) -> NaiveDateTime {
     layout::day_start(data.anchor, data.now, starts, night) + Duration::minutes(clamp_offset(offset))
 }
 
-/// The list for the properties column of the wide layout: the same as beside the dial.
-pub fn list(data: &ViewData<'_>, calendars: &[String], offset: i64, night: Night) -> Element<'static, Message> {
-    let plan = Plan::new(data, calendars, offset, night);
+/// The mini radars of the seven days after `data.anchor` for the properties column of the wide
+/// layout, in two columns as beside the dial; each opens its day where the radar would with
+/// `night`. Load the events through the seventh day.
+pub fn list(data: &ViewData<'_>, night: Night) -> Element<'static, Message> {
     // The column pads its content by 8 on each side and has a line on the left.
-    list_view(&plan, size::PROPS - size::HAIRLINE - 2.0 * space::S)
+    let width = size::PROPS - size::HAIRLINE - 2.0 * space::S;
+    mini::Coming::new(data, night).view(width, mini::columns(ListAt::Props, width))
 }
 
-/// The dial filling its stage, the middle laid over it.
+/// The two canvases of the dial ([`Layer`]) for `plan`, `margin` from the canvas edges, each
+/// `height` high.
+fn canvases(plan: &Plan, margin: f32, wheel: bool, height: Length) -> [Element<'static, Message>; 2] {
+    [Layer::Dial, Layer::Input].map(|layer| {
+        iced::widget::canvas(Radar { plan: plan.clone(), margin, wheel, layer })
+            .width(Length::Fill)
+            .height(height)
+            .into()
+    })
+}
+
+/// The dial filling its stage, the middle laid over it, the input layer over both.
 fn stage(plan: Plan, anchor: Anchor) -> Element<'static, Message> {
     responsive(move |bounds| {
-        let dial = Dial::fit(bounds, STAGE_MARGIN, plan.rings);
-        let canvas = iced::widget::canvas(Radar { plan: plan.clone(), margin: STAGE_MARGIN, wheel: true })
-            .width(Length::Fill)
-            .height(Length::Fill);
+        let dial = Dial::fit(bounds, STAGE_MARGIN, plan.rings.len());
+        let [canvas, input] = canvases(&plan, STAGE_MARGIN, true, Length::Fill);
         let middle = container(middle(&plan, &dial)).center(Length::Fill);
-        stack![widgets::anchored(&anchor, canvas), middle].into()
+        stack![widgets::anchored(&anchor, canvas), middle, input].into()
     })
     .into()
 }
 
 /// Narrow: the dial as large as the window allows – never wider or taller than what is on screen
-/// (at most [`NARROW_DIAL`]), so a low tile shows the whole circle –, the list under it, the whole
-/// page scrolling. The wheel scrolls the page, not the time.
-fn narrow(plan: Plan, bounds: Size, anchor: &Anchor) -> Element<'static, Message> {
+/// (at most [`NARROW_DIAL`]), so a low tile shows the whole circle –, the mini radars of the
+/// `coming` days under it in as many columns as fit, the whole page scrolling. The wheel scrolls
+/// the page, not the time.
+fn narrow(plan: Plan, coming: &mini::Coming, bounds: Size, anchor: &Anchor) -> Element<'static, Message> {
     let width = bounds.width;
     let edge = (width.min(bounds.height) - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
-    let dial = Dial::fit(Size::new(width, edge), space::S, plan.rings);
-    let canvas = iced::widget::canvas(Radar { plan: plan.clone(), margin: space::S, wheel: false })
-        .width(Length::Fill)
-        .height(Length::Fixed(edge));
+    let dial = Dial::fit(Size::new(width, edge), space::S, plan.rings.len());
+    let [canvas, input] = canvases(&plan, space::S, false, Length::Fixed(edge));
     let middle = container(middle(&plan, &dial)).center_x(Length::Fill).center_y(Length::Fixed(edge));
-    let list = container(list_view(&plan, width - 2.0 * space::L)).padding(space::L);
+    let content = width - 2.0 * space::L;
+    let list = container(coming.view(content, mini::columns(ListAt::Below, content))).padding(space::L);
     let canvas = widgets::anchored(anchor, canvas);
-    scrollable(column![stack![canvas, middle], rule::horizontal(1).style(style::rule), list])
+    scrollable(column![stack![canvas, middle, input], rule::horizontal(1).style(style::rule), list])
         .direction(Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Length::Fill)
@@ -265,17 +320,35 @@ struct Plan {
     entries: Vec<Entry>,
     /// The timed entries in the window, in their rings.
     spans: Vec<Span>,
-    rings: usize,
+    /// The rings, the first outside.
+    rings: Vec<RingLabel>,
     /// The nights in the window ([`layout::nights`]).
     nights: Vec<(f32, f32)>,
-    /// The free time of two hours or more from now on ([`layout::free`]).
-    free: Vec<(f32, f32)>,
     /// The app's index of the event open in the side panel.
     selected: Option<usize>,
 }
 
+/// A ring as the radar draws it: what it names its calendar and in which colour.
+#[derive(Debug, Clone, PartialEq)]
+struct RingLabel {
+    /// The calendar's name, "Persönlich · cloud.imt24.de" when another visible calendar has the
+    /// same name ([`ring_label`]); empty for a calendar the sidebar does not know (only the dot).
+    name: String,
+    colour: Color,
+}
+
+/// What ring `calendar` says of itself among the visible `calendars`: its name, followed by the
+/// host of its account when another of them has the same name (two "Persönlich" in two accounts).
+fn ring_label(calendar: &Ring, calendars: &[Ring]) -> String {
+    let twin = calendars.iter().any(|other| other.id != calendar.id && other.name == calendar.name);
+    match calendar.host.as_deref().filter(|host| twin && !host.is_empty()) {
+        Some(host) => format!("{} · {host}", calendar.name),
+        None => calendar.name.clone(),
+    }
+}
+
 impl Plan {
-    fn new(data: &ViewData<'_>, calendars: &[String], offset: i64, night: Night) -> Plan {
+    fn new(data: &ViewData<'_>, calendars: &[Ring], offset: i64, night: Night) -> Plan {
         let window = Window::new(start(data, offset, night));
         let mut entries: Vec<Entry> = data
             .items
@@ -294,7 +367,19 @@ impl Plan {
         // Every visible calendar has its ring, and a calendar the list does not know (an event
         // still loaded from a calendar just removed) gets one while it has events in the window.
         let used = entries.iter().filter(|e| inside(e)).map(|e| e.calendar.as_str());
-        let rings = ring_order(calendars.iter().map(String::as_str).chain(used), calendars);
+        let ids: Vec<String> = calendars.iter().map(|c| c.id.clone()).collect();
+        let rings = ring_order(ids.iter().map(String::as_str).chain(used), &ids);
+        let labels = rings
+            .iter()
+            .map(|id| match calendars.iter().find(|c| &c.id == id) {
+                Some(calendar) => RingLabel { name: ring_label(calendar, calendars), colour: calendar.colour },
+                // Only rings with events in the window are unknown: they take their events' colour.
+                None => RingLabel {
+                    name: String::new(),
+                    colour: entries.iter().find(|e| &e.calendar == id).map_or(Color::BLACK, |e| e.event.color),
+                },
+            })
+            .collect();
         let spans = entries
             .iter()
             .enumerate()
@@ -306,59 +391,20 @@ impl Plan {
             })
             .collect::<Vec<Span>>();
         let nights = layout::nights(&window, night);
-        let free = layout::free(&spans, &nights, window.rel(data.now), FREE_MINUTES);
         Plan {
             window,
             now: data.now,
             looking: data.anchor != data.now.date() || offset != 0,
             entries,
             spans,
-            rings: rings.len(),
+            rings: labels,
             nights,
-            free,
             selected: data.selected,
         }
     }
 
     fn is_selected(&self, id: usize) -> bool {
         self.selected.is_some_and(|index| self.entries.get(id).is_some_and(|entry| entry.index == index))
-    }
-
-    /// The timed event running at the start of the window: of several the one begun last.
-    fn running(&self) -> Option<&Entry> {
-        let at = self.window.start;
-        self.entries
-            .iter()
-            .filter(|e| e.timed() && e.event.start <= at && at < e.event.end)
-            .max_by(|a, b| a.event.start.cmp(&b.event.start).then(b.event.end.cmp(&a.event.end)))
-    }
-
-    /// The first timed event starting after the start of the window.
-    fn next(&self) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.timed() && e.event.start > self.window.start)
-    }
-
-    /// [`Plan::next`] if it starts in the window.
-    fn next_inside(&self) -> Option<&Entry> {
-        self.next().filter(|e| self.window.rel(e.event.start) < END)
-    }
-
-    /// What lasts all day on the day of the window's start.
-    fn all_day(&self) -> Vec<&Entry> {
-        let day = self.window.start.date();
-        self.entries.iter().filter(|e| e.event.all_day && e.event.on(day)).collect()
-    }
-
-    /// The timed events of the window for the list: those starting in the first nine hours (and
-    /// those running at its start), then those starting in the fading quarter.
-    fn listed(&self) -> (Vec<usize>, Vec<usize>) {
-        let mut sooner = Vec::new();
-        let mut later = Vec::new();
-        for span in &self.spans {
-            let start = self.window.rel(self.entries[span.id].event.start);
-            if start < VISIBLE { sooner.push(span.id) } else { later.push(span.id) }
-        }
-        (sooner, later)
     }
 }
 
@@ -376,145 +422,46 @@ fn ring_order<'a>(used: impl Iterator<Item = &'a str>, calendars: &[String]) -> 
     rings
 }
 
-/// The middle of the dial: date, time, what runs or how long is free, what comes next, the
-/// all-day chips and – while looking ahead – "Back to now". Cut to the room inside the rings.
+/// The middle of the dial: the date and the time. Away from now (another day, or the dial turned)
+/// a clock button brings the dial back to now. Cut to the room inside the rings.
 fn middle(plan: &Plan, dial: &Dial) -> Element<'static, Message> {
     let width = (2.0 * dial.inner - 2.0 * MIDDLE_INSET).max(0.0);
     let at = plan.window.start;
-    let mut parts = column![
+    let clock = column![
         typo::text(typo::META, short_date(at.date())).style(theme::text_3),
         typo::text(typo::DISPLAY.tabular(), format_time(at.time())),
     ]
     .spacing(space::XS)
     .align_x(iced::Alignment::Center);
-    let mut detail = column![].spacing(space::XS).align_x(iced::Alignment::Center);
-    if let Some(running) = plan.running() {
-        let left = trf("{span} left", &[("span", &span(layout::minutes_until(at, running.event.end)))]);
-        let title = ellipsize(&running.event.title, typo::BODY_STRONG, width - space::S - space::S);
-        detail = detail
-            .push(
-                row![widgets::color_dot(running.event.color, space::S), one_line(typo::BODY_STRONG, title)]
-                    .spacing(space::S)
-                    .align_y(iced::Alignment::Center),
-            )
-            .push(one_line(typo::META, left).style(theme::text_2));
-    } else if let Some(next) = plan.next_inside() {
-        let free = trf("Free for {span}", &[("span", &span(layout::minutes_until(at, next.event.start)))]);
-        detail =
-            detail.push(one_line(typo::BODY_STRONG, ellipsize(&free, typo::BODY_STRONG, width)).style(theme::text_2));
-    } else {
-        // Nothing in the window: say so, and when the next event comes, wherever it lies.
-        let nothing = ellipsize(tr("Nothing planned"), typo::BODY_STRONG, width);
-        detail = detail.push(one_line(typo::BODY_STRONG, nothing).style(theme::text_2));
-        if let Some(next) = plan.next() {
-            let until = free_until(next.event.start, at.date(), plan.now.date());
-            detail = detail.push(one_line(typo::META, ellipsize(&until, typo::META, width)).style(theme::text_3));
-        }
-    }
-    if let Some(next) = plan.next_inside() {
-        let line = trf(
-            "Next {time} · {title}",
-            &[("time", &format_time(next.event.start.time())), ("title", &next.event.title)],
-        );
-        detail = detail.push(one_line(typo::META, ellipsize(&line, typo::META, width)).style(theme::text_3));
-    }
-    parts = parts.push(detail);
-    let chips: Vec<Element<'static, Message>> = plan
-        .all_day()
-        .into_iter()
-        .take(CHIPS)
-        .map(|entry| widgets::pill(Some(entry.event.color), ellipsize(&entry.event.title, typo::META, width / 2.0)))
-        .collect();
-    if !chips.is_empty() {
-        parts = parts.push(row(chips).spacing(space::XS));
-    }
+    let mut parts = column![clock].spacing(space::S).align_x(iced::Alignment::Center);
     if plan.looking {
-        parts =
-            parts.push(widgets::text_button(None, tr("Back to now"), style::button::secondary, Some(Message::Today)));
+        // The icon button carries its own tooltip, which is also its label for screen readers.
+        parts = parts.push(widgets::icon_button(Icon::Clock, tr("Back to now"), Some(Message::Today)));
     }
-    container(parts.spacing(space::S)).width(width).center_x(width).into()
+    container(parts).width(width).center_x(width).into()
 }
 
-/// When the free time from the window's start on ends, at the start of the next event `next`:
-/// "Free until 09:30" on `day` (the day of the window), "Free until tomorrow 09:30" on the day after
-/// `today`, else "Free until Thu, 15 Oct at 09:30".
-fn free_until(next: NaiveDateTime, day: NaiveDate, today: NaiveDate) -> String {
-    let time = format_time(next.time());
-    if next.date() == day {
-        trf("Free until {time}", &[("time", &time)])
-    } else if next.date() == today + Duration::days(1) {
-        trf("Free until tomorrow {time}", &[("time", &time)])
-    } else {
-        trf("Free until {date} at {time}", &[("date", &short_date(next.date())), ("time", &time)])
-    }
-}
-
-/// One line of text, never wrapped (the caller cuts it).
-fn one_line(level: typo::Level, content: String) -> iced::widget::Text<'static> {
-    typo::text(level, content).wrapping(Wrapping::None)
-}
-
-/// The list beside or under the dial, `width` wide: "Next 9 hours" and "Fading out, until 02:20",
-/// a row per event with its time, colour dot and title; a click opens it.
-fn list_view(plan: &Plan, width: f32) -> Element<'static, Message> {
-    let (sooner, later) = plan.listed();
-    let hours = (VISIBLE / 60.0) as u32;
-    let until = format_time(plan.window.at(WINDOW).time());
-    let section = |title: String, ids: Vec<usize>, dim: bool| {
-        let rows: Vec<Element<'static, Message>> = if ids.is_empty() {
-            vec![widgets::prop_row(None, typo::text(typo::BODY, tr("Nothing planned")).style(theme::text_3), None)]
-        } else {
-            ids.into_iter()
-                .filter_map(|id| plan.entries.get(id))
-                .map(|entry| list_row(plan, entry, width, dim))
-                .collect()
-        };
-        widgets::prop_section(title, rows)
-    };
-    column![
-        section(trf("Next {n} hours", &[("n", &hours)]), sooner, false),
-        section(trf("Fading out, until {time}", &[("time", &until)]), later, true),
-    ]
-    .spacing(space::L)
-    .into()
-}
-
-/// The time column of the list: as wide as the widest range.
-fn time_width() -> f32 {
-    text_width("00:00–00:00", typo::META)
-}
-
-/// A row of the list: "14:00–15:00", the colour dot, the title cut to the rest. A fading one
-/// (`dim`) in `text_2` with a paler dot; the event open in the side panel is selected.
-fn list_row(plan: &Plan, entry: &Entry, width: f32, dim: bool) -> Element<'static, Message> {
-    let range = format!("{}–{}", format_time(entry.event.start.time()), format_time(entry.event.end.time()));
-    let room = width - 2.0 * style::ITEM_PADDING.left - time_width() - 2.0 * space::S - space::S;
-    let title = ellipsize(&entry.event.title, typo::BODY, room);
-    let selected = plan.selected == Some(entry.index);
-    let colour = entry.event.color;
-    let content = row![
-        container(typo::text(typo::META.tabular(), range).style(theme::text_3)).width(time_width()),
-        widgets::color_dot(if dim { colour.scale_alpha(DIM_DOT) } else { colour }, space::S),
-        one_line(typo::BODY, title).style(if dim { theme::text_2 } else { theme::text }),
-    ]
-    .spacing(space::S)
-    .align_y(iced::Alignment::Center);
-    button(container(content).center_y(Length::Fill))
-        .width(Length::Fill)
-        .height(size::CONTROL)
-        .padding(style::ITEM_PADDING)
-        .style(style::button::sidebar_item(selected))
-        .on_press(Message::OpenEvent(entry.index))
-        .into()
-}
-
-/// The dial on a canvas.
+/// The dial on a canvas, in two layers ([`Layer`]).
 struct Radar {
     plan: Plan,
     /// Room to the edges of the canvas.
     margin: f32,
     /// The wheel turns the dial (not in the narrow layout, where it scrolls the page).
     wheel: bool,
+    layer: Layer,
+}
+
+/// The radar is two canvases of the same size, one over the other with the middle between them.
+/// Iced draws the text of a canvas above all of its shapes, so a tooltip drawn on the dial's own
+/// canvas let the numerals and titles under it shine through its card; a canvas of its own in a
+/// layer above the dial covers them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layer {
+    /// Everything of the dial but the tooltips; takes no input.
+    Dial,
+    /// On top: all input (clicks, turning, the pointer, resting) and the tooltips. Where it has
+    /// nothing to do – the middle – it lets the pointer through to the "Back to now" button.
+    Input,
 }
 
 /// What the canvas keeps between events.
@@ -526,8 +473,66 @@ struct Grip {
     press: Option<Press>,
     /// When and where the moon was last pressed, for a double-click.
     moon_press: Option<(Instant, Point)>,
-    /// Since when the pointer rests on the moon with this target, for its tooltip.
-    hover: Option<(Instant, Rectangle)>,
+    /// What the pointer rests on and since when, for its tooltip.
+    rest: Option<Rest>,
+}
+
+/// What a tooltip on the dial is about.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Tip {
+    /// The moon, with its target: "Double-click to set the night" beside it.
+    Moon(Rectangle),
+    /// The event with this id in the plan: its title, time and place.
+    Event(usize),
+    /// The empty track of this ring: its calendar's name.
+    Ring(usize),
+}
+
+/// The pointer resting on something that has a tooltip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rest {
+    tip: Tip,
+    /// Since when it rests there; the tooltip shows from `since + TOOLTIP_DELAY` on.
+    since: Instant,
+    /// Where the pointer is, in the canvas: the tooltip stands beside it.
+    at: Point,
+}
+
+impl Rest {
+    /// The tooltip shows at `now`: the pointer has rested [`timeline::TOOLTIP_DELAY`].
+    fn shown(&self, now: Instant) -> bool {
+        now.checked_duration_since(self.since).is_some_and(|rested| rested >= timeline::TOOLTIP_DELAY)
+    }
+}
+
+/// Keeps `rest` up to date with what the pointer is `over` (and where) at `now`, and asks for the
+/// redraws the tooltip needs. On something new the tooltip shows after the delay – at once when
+/// one was showing already, so moving from one event to the next does not wait again; it follows
+/// the pointer while it shows; it goes when the pointer leaves for a place without one.
+fn track(rest: &mut Option<Rest>, over: Option<(Tip, Point)>, now: Instant) -> Option<Action<Message>> {
+    let showing = rest.is_some_and(|rest| rest.shown(now));
+    match (rest.as_mut(), over) {
+        (Some(was), Some((tip, at))) if was.tip == tip => {
+            let moved = was.at != at;
+            was.at = at;
+            // The moon's tooltip stands beside the moon, not the pointer.
+            (showing && moved && !matches!(tip, Tip::Moon(_))).then(Action::request_redraw)
+        }
+        (_, Some((tip, at))) => {
+            let since = if showing { now.checked_sub(timeline::TOOLTIP_DELAY).unwrap_or(now) } else { now };
+            *rest = Some(Rest { tip, since, at });
+            Some(if showing {
+                Action::request_redraw()
+            } else {
+                Action::request_redraw_at(now + timeline::TOOLTIP_DELAY)
+            })
+        }
+        (Some(_), None) => {
+            *rest = None;
+            showing.then(Action::request_redraw)
+        }
+        (None, None) => None,
+    }
 }
 
 /// A press on the dial outside an event: a click (a new event in free room) until the pointer
@@ -547,7 +552,7 @@ struct Press {
 
 impl Radar {
     fn dial(&self, bounds: Size) -> Dial {
-        Dial::fit(bounds, self.margin, self.plan.rings)
+        Dial::fit(bounds, self.margin, self.plan.rings.len())
     }
 
     /// The moon's target on a canvas of `bounds`, if the window has a moon.
@@ -559,6 +564,20 @@ impl Radar {
         let dial = self.dial(bounds);
         let arcs = layout::arcs(&dial, &self.plan.window, &self.plan.spans);
         layout::hit(&dial, &self.plan.window, &arcs, point)
+    }
+
+    /// What a tooltip at `point` would be about: the moon, an event, or the empty track of a ring.
+    fn tip_at(&self, bounds: Size, point: Point) -> Option<Tip> {
+        if let Some(target) = self.moon(bounds).filter(|target| target.contains(point)) {
+            return Some(Tip::Moon(target));
+        }
+        match self.hit(bounds, point)? {
+            Hit::Event(id) => Some(Tip::Event(id)),
+            Hit::Free(_) => {
+                let dial = self.dial(bounds);
+                layout::ring_at(&dial, dial.polar(point).0).map(Tip::Ring)
+            }
+        }
     }
 
     /// The click on `hit` as a message: open the event, or a new one at the quarter hour.
@@ -577,14 +596,14 @@ impl Radar {
 
     /// The left button goes down at `point`: the second of two quick presses on the moon opens the
     /// night's card; an event opens at once; elsewhere on the dial the press is kept until it turns
-    /// out to be a click or a drag.
+    /// out to be a click or a drag. A tooltip goes away.
     fn press(&self, state: &mut Grip, bounds: Size, point: Point) -> Option<Action<Message>> {
+        let now = Instant::now();
+        let tooltip = state.rest.take().is_some_and(|rest| rest.shown(now));
         let moon = self.moon(bounds).filter(|target| target.contains(point));
         let first = state.moon_press.take();
         if let Some(target) = moon {
-            let now = Instant::now();
             if first.is_some_and(|first| is_double_click(first, (now, point))) {
-                state.hover = None;
                 return Some(Action::publish(Message::EditNight { fold: None, at: Some(target) }).and_capture());
             }
             state.moon_press = Some((now, point));
@@ -596,11 +615,12 @@ impl Radar {
         }
         let dial = self.dial(bounds);
         if dial.outer <= 0.0 || !dial.grabbable(point) {
-            return None;
+            return tooltip.then(Action::request_redraw);
         }
         let (_, angle) = dial.polar(point);
         state.press = Some(Press { origin: point, hit, angle, dragging: false, rest: 0.0 });
-        Some(Action::capture())
+        // Nothing is published that would redraw the canvas: ask for it, so the tooltip goes.
+        Some(if tooltip { Action::request_redraw().and_capture() } else { Action::capture() })
     }
 
     /// The pointer moved to `point` with the button down: past the threshold the press is a drag,
@@ -660,6 +680,9 @@ impl canvas::Program<Message> for Radar {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<Action<Message>> {
+        if self.layer == Layer::Dial {
+            return None;
+        }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 self.press(state, bounds.size(), cursor.position_in(bounds)?)
@@ -671,10 +694,23 @@ impl canvas::Program<Message> for Radar {
             Event::Mouse(mouse::Event::CursorMoved { .. } | mouse::Event::CursorLeft) => {
                 let over = cursor
                     .position_in(bounds)
-                    .and_then(|point| self.moon(bounds.size()).filter(|target| target.contains(point)));
-                timeline::hover(&mut state.hover, over)
+                    .and_then(|point| self.tip_at(bounds.size(), point).map(|tip| (tip, point)));
+                track(&mut state.rest, over, Instant::now())
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => self.release(state),
+            // Without focus the release may never come: a press kept now would turn the dial at
+            // the next move of the pointer, and hide the hand over events behind the closed one.
+            Event::Window(iced::window::Event::Unfocused) => {
+                state.press = None;
+                None
+            }
+            // A redraw asked for at once (the pointer changing from the open hand to the hand, say)
+            // replaces the one asked for when the tooltip is due: ask again after every frame
+            // until it shows.
+            Event::Window(iced::window::Event::RedrawRequested(now)) => {
+                let rest = state.rest.filter(|rest| state.press.is_none() && !rest.shown(*now))?;
+                Some(Action::request_redraw_at(rest.since + timeline::TOOLTIP_DELAY))
+            }
             Event::Mouse(mouse::Event::WheelScrolled { delta }) if self.wheel => {
                 cursor.position_in(bounds)?;
                 let steps = Radar::steps(state, *delta);
@@ -687,20 +723,24 @@ impl canvas::Program<Message> for Radar {
         }
     }
 
-    /// The hand over events, an open hand over the rest of the dial (it can be turned), a closed
-    /// one while it is.
+    /// The hand over events and the moon, an open hand over the rest of the dial (it can be
+    /// turned), a closed one while it is. Elsewhere – the middle, beside the dial – `None`, so the
+    /// layers below answer: the "Back to now" button gets its hand and its hover.
     fn mouse_interaction(&self, state: &Grip, bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
+        if self.layer == Layer::Dial {
+            return mouse::Interaction::None;
+        }
         if state.press.is_some_and(|press| press.dragging) {
             return mouse::Interaction::Grabbing;
         }
-        let Some(point) = cursor.position_in(bounds) else { return mouse::Interaction::Idle };
+        let Some(point) = cursor.position_in(bounds) else { return mouse::Interaction::None };
         if self.moon(bounds.size()).is_some_and(|target| target.contains(point)) {
             return mouse::Interaction::Pointer;
         }
         match self.hit(bounds.size(), point) {
             Some(Hit::Event(_)) => mouse::Interaction::Pointer,
             _ if self.dial(bounds.size()).grabbable(point) => mouse::Interaction::Grab,
-            _ => mouse::Interaction::Idle,
+            _ => mouse::Interaction::None,
         }
     }
 
@@ -714,6 +754,10 @@ impl canvas::Program<Message> for Radar {
     ) -> Vec<canvas::Geometry> {
         let p = palette(theme);
         let mut frame = Frame::new(renderer, bounds.size());
+        if self.layer == Layer::Input {
+            self.draw_tooltip(&mut frame, state, p, bounds.size());
+            return vec![frame.into_geometry()];
+        }
         let dial = self.dial(bounds.size());
         // While a window is resized the canvas can pass through sizes with no room for the rings
         // (zero radii would turn angles into infinities); there is nothing to draw then.
@@ -732,11 +776,11 @@ impl canvas::Program<Message> for Radar {
             }
         }
 
-        // The tracks of the rings, composed over the panel or the night.
-        let (track, night_track) = (mix(p.panel, p.text, TRACK), mix(p.night, p.text, TRACK));
+        // The tracks of the rings, each faintly in its calendar's colour over the panel or the night.
         let stretches = split(0.0, END, &plan.nights);
-        for ring in 0..dial.rings {
+        for (ring, named) in plan.rings.iter().enumerate().take(dial.rings) {
             let (inner, outer) = dial.ring(ring);
+            let (track, night_track) = (ring_track(named.colour, p.panel), ring_track(named.colour, p.night));
             for &(from, to, night) in &stretches {
                 for piece in pieces(from, to) {
                     let colour = faded(if night { night_track } else { track }, piece.opacity);
@@ -794,18 +838,42 @@ impl canvas::Program<Message> for Radar {
             frame.stroke(&path, Stroke::default().with_color(p.focus_ring).with_width(style::FOCUS_RING_WIDTH));
         }
 
-        moon(&mut frame, &dial, plan, p, &faded);
-        free_time(&mut frame, &dial, plan, p, &faded);
-        start_edge(&mut frame, &dial, plan, p);
-        if let Some((_, target)) = state.hover.filter(|(since, _)| since.elapsed() >= timeline::TOOLTIP_DELAY) {
-            timeline::moon_tooltip(&mut frame, p, target, Rectangle::new(Point::ORIGIN, bounds.size()));
+        for (ring, named) in plan.rings.iter().enumerate() {
+            ring_name(&mut frame, &dial, window, ring, named, p);
         }
+        moon(&mut frame, &dial, plan, p, &faded);
+        start_edge(&mut frame, &dial, plan, p);
         vec![frame.into_geometry()]
     }
 }
 
-/// The colours of an event, composed over its ground (the panel, or the night): tinted fill, full
-/// bar, title in `text`, time in `text_2`; one that has ended faded as in the week grid.
+impl Radar {
+    /// The tooltip of what the pointer rests on, on the input layer. None while the button is
+    /// down: a press hides it, a drag turns the dial under it.
+    fn draw_tooltip(&self, frame: &mut Frame, state: &Grip, p: &Palette, bounds: Size) {
+        let Some(rest) = state.rest.filter(|rest| state.press.is_none() && rest.shown(Instant::now())) else {
+            return;
+        };
+        let area = Rectangle::new(Point::ORIGIN, bounds);
+        let card = match rest.tip {
+            Tip::Moon(target) => return timeline::moon_tooltip(frame, p, target, area),
+            Tip::Event(id) => self.plan.entries.get(id).map(event_tip),
+            Tip::Ring(ring) => self.plan.rings.get(ring).filter(|named| !named.name.is_empty()).map(|named| Card {
+                colour: named.colour,
+                title: named.name.clone(),
+                time: None,
+                place: None,
+            }),
+        };
+        if let Some(card) = card {
+            tooltip(frame, p, &card, rest.at, area);
+        }
+    }
+}
+
+/// The colours of an event, composed over its ground (the panel, or the night): the fill in its
+/// calendar's colour ([`event_fill`]), the bar in full colour, title and time in light or dark text,
+/// whichever reads on the fill ([`on_fill`]); one that has ended faded as in the week grid.
 struct Tone {
     fill: Color,
     bar: Color,
@@ -817,10 +885,28 @@ fn tone(p: &Palette, entry: &Entry, now: NaiveDateTime, ground: Color) -> Tone {
     let colour = entry.event.color;
     let past = entry.event.end <= now;
     let fade = |c: Color| if past { mix(ground, c, PAST_OPACITY) } else { c };
-    // The tint lies over the ring's track, not the bare ground: over the panel a dark calendar
-    // colour came out darker than an empty track, so busy time looked weaker than free time.
-    let track = mix(ground, p.text, TRACK);
-    Tone { fill: fade(over(p.tinted(colour), track)), bar: fade(colour), title: fade(p.text), time: fade(p.text_2) }
+    let fill = event_fill(p, colour, ground);
+    let title = on_fill(fill);
+    Tone { fill: fade(fill), bar: fade(colour), title: fade(title), time: fade(mix(fill, title, TIME_SHARE)) }
+}
+
+/// The track of a ring in calendar colour `colour` over `ground` (the panel, or the night).
+fn ring_track(colour: Color, ground: Color) -> Color {
+    mix(ground, colour, TRACK_TINT)
+}
+
+/// An event's fill: its calendar's colour `colour` at [`mini::fill`] over the ring's track, so busy
+/// time stands out clearly from the track around it (and dark calendar colours never come out
+/// weaker than the empty track).
+fn event_fill(p: &Palette, colour: Color, ground: Color) -> Color {
+    mix(ring_track(colour, ground), colour, mini::fill(p))
+}
+
+/// Light or dark text on `fill`: the dark palette's `text` or the light palette's, whichever has
+/// the higher contrast. A fill in a light calendar colour takes dark letters in dark mode too.
+fn on_fill(fill: Color) -> Color {
+    let (light, dark) = (Palette::dark().text, Palette::light().text);
+    if light.relative_contrast(fill) >= dark.relative_contrast(fill) { light } else { dark }
 }
 
 /// The end angle of a fill piece ending `to` minutes into the window, a quarter degree further so
@@ -862,8 +948,20 @@ fn event_arc(
     }
 }
 
-/// The title along the arc, cut with "…", and below it the time where the lane takes two lines.
-/// Each letter takes the opacity of the place it stands on.
+/// The level of an event's title in a lane `width` wide: `MICRO` from [`MICRO_LANE`] on, `CAPTION`
+/// from [`ONE_LINE`] on, none in narrower lanes.
+fn title_level(width: f32) -> Option<typo::Level> {
+    if width >= ONE_LINE {
+        Some(typo::CAPTION)
+    } else if width >= MICRO_LANE {
+        Some(typo::MICRO)
+    } else {
+        None
+    }
+}
+
+/// The title along the arc in [`title_level`], cut with "…", and below it the time where the lane
+/// takes two lines. Each letter takes the opacity of the place it stands on.
 fn arc_text(
     frame: &mut Frame,
     dial: &Dial,
@@ -874,9 +972,7 @@ fn arc_text(
     faded: &dyn Fn(Color, f32) -> Color,
 ) {
     let width = arc.width();
-    if width < ONE_LINE {
-        return;
-    }
+    let Some(level) = title_level(width) else { return };
     let room = arc.length() - TEXT_START - TEXT_END;
     if room < TEXT_MIN {
         return;
@@ -885,11 +981,11 @@ fn arc_text(
     // "Up" for the letters: outwards in the top half, inwards in the bottom half.
     let up = if flipped { -1.0 } else { 1.0 };
     let middle = arc.middle();
-    let Some(title) = arc_title(&entry.event.title, room) else { return };
-    let mut lines = vec![(title, typo::CAPTION, tone.title, 0.0)];
+    let Some(title) = arc_title(&entry.event.title, room, level) else { return };
+    let mut lines = vec![(title, level, tone.title, 0.0)];
     if let Some(time) = arc_time(entry, room).filter(|_| width >= TWO_LINES) {
         // Title over time, the pair centred on the middle of the lane.
-        let (title_h, time_h) = (line_height(typo::CAPTION), line_height(typo::MICRO));
+        let (title_h, time_h) = (line_height(level), line_height(typo::MICRO));
         let half = (title_h + time_h) / 2.0;
         lines[0].3 = half - title_h / 2.0;
         lines.push((time, typo::MICRO, tone.time, time_h / 2.0 - half));
@@ -919,10 +1015,10 @@ fn arc_text(
     }
 }
 
-/// The title for an arc with `room` along it, cut with "…"; `None` when fewer than
-/// [`MIN_TITLE_LETTERS`] of it would be left ("Da…" says nothing; the list has the title).
-fn arc_title(title: &str, room: f32) -> Option<String> {
-    let cut = ellipsize(title, typo::CAPTION, room);
+/// The title in `level` for an arc with `room` along it, cut with "…"; `None` when fewer than
+/// [`MIN_TITLE_LETTERS`] of it would be left ("Da…" says nothing; the tooltip has the title).
+fn arc_title(title: &str, room: f32, level: typo::Level) -> Option<String> {
+    let cut = ellipsize(title, level, room);
     let letters = cut.trim_end_matches(typo::ELLIPSIS).chars().count();
     (!cut.is_empty() && letters >= MIN_TITLE_LETTERS.min(title.chars().count())).then_some(cut)
 }
@@ -935,60 +1031,137 @@ fn arc_time(entry: &Entry, room: f32) -> Option<String> {
     [range, start].into_iter().find(|time| text_width(time, typo::MICRO) <= room)
 }
 
-/// The moon on the numerals' circle at the first half hour of the night ([`layout::moon`]), in
-/// `text_3`, fading with the night.
+/// The colours of the moon: the icon (`text_2`), its plaque (`panel`) and the plaque's rim
+/// (`line`). The icon keeps 3:1 against the plaque in both modes, whatever lies around it.
+fn moon_colours(p: &Palette) -> (Color, Color, Color) {
+    (p.text_2, p.panel, p.line)
+}
+
+/// The moon on the numerals' circle at the first half hour of the night outside the fading quarter
+/// ([`layout::moon`]): the icon at full size on a small round plaque, so it reads on the night and
+/// on the panel alike. Only a moon in the fading quarter fades.
 fn moon(frame: &mut Frame, dial: &Dial, plan: &Plan, p: &Palette, faded: &dyn Fn(Color, f32) -> Color) {
     let Some(rel) = layout::moon(&plan.window, &plan.nights) else { return };
+    let alpha = opacity(rel);
     let at = dial.point(dial.numerals, plan.window.angle(rel));
-    let half = icon::SIZE_SM / 2.0;
-    let bounds = Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(icon::SIZE_SM, icon::SIZE_SM));
-    frame.draw_svg(bounds, &Icon::Moon.tinted(faded(p.text_3, opacity(rel))));
+    let (icon_colour, plaque, rim) = moon_colours(p);
+    let disc = Path::circle(at, MOON_PLAQUE / 2.0);
+    frame.fill(&disc, faded(plaque, alpha));
+    frame.stroke(&disc, Stroke::default().with_color(rim.scale_alpha(alpha)).with_width(size::HAIRLINE));
+    let half = icon::SIZE / 2.0;
+    let bounds = Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(icon::SIZE, icon::SIZE));
+    frame.draw_svg(bounds, &Icon::Moon.tinted(faded(icon_colour, alpha)));
 }
 
-/// "3 h free" in `text_3` along the arc of each free stretch ([`Plan::free`]), centred on it in
-/// the innermost ring, upright in the bottom half like the titles; left out where it does not fit.
-/// The ring is empty there – free means no event in any ring – while just inside the rings the
-/// label ran into the lines of the middle in the medium and narrow layouts.
-fn free_time(frame: &mut Frame, dial: &Dial, plan: &Plan, p: &Palette, faded: &dyn Fn(Color, f32) -> Color) {
-    let level = typo::META;
-    let Some(innermost) = dial.rings.checked_sub(1) else { return };
-    let (inner, outer) = dial.ring(innermost);
-    let radius = (inner + outer) / 2.0;
-    if outer - inner < line_height(level) || radius <= 0.0 {
-        return;
+/// The name of ring `ring` in the last hour before the edge ([`layout::ring_name`]): a dot in the
+/// calendar's colour and the name in `MICRO`, `text_2`, at full opacity (it does not fade with the
+/// quarter it stands in), upright like the titles.
+fn ring_name(frame: &mut Frame, dial: &Dial, window: &Window, ring: usize, named: &RingLabel, p: &Palette) {
+    let Some(place) = layout::ring_name(dial, window, ring, &named.name) else { return };
+    frame.fill(&Path::circle(dial.point(place.radius, place.dot), layout::NAME_DOT), named.colour);
+    let Some(text) = place.text else { return };
+    for glyph in layout::glyphs(&text.text, typo::MICRO, place.radius, text.start, text.flipped) {
+        let at = dial.point(place.radius, glyph.angle);
+        frame.with_save(|frame| {
+            frame.translate(iced::Vector::new(at.x, at.y));
+            frame.rotate(glyph.turn);
+            label(frame, &glyph.letter, Point::ORIGIN, typo::MICRO, p.text_2);
+        });
     }
-    let window = &plan.window;
-    for &(from, to) in &plan.free {
-        let note = free_note(from, to);
-        let width = text_width(&note, level);
-        let room = (window.angle(to) - window.angle(from)).to_radians() * radius;
-        if width + 2.0 * space::S > room {
-            continue;
-        }
-        let middle = window.angle((from + to) / 2.0);
-        let flipped = (90.0..270.0).contains(&middle.rem_euclid(360.0));
-        let half = (width / 2.0 / radius).to_degrees();
-        let start = if flipped { middle + half } else { middle - half };
-        for glyph in layout::glyphs(&note, level, radius, start, flipped) {
-            let alpha = opacity(window.rel_of(glyph.angle));
-            if alpha <= 0.002 {
-                continue;
+}
+
+/// What a tooltip card says: a dot in `colour` and `title`, below it the `time` and the `place`.
+#[derive(Debug, Clone, PartialEq)]
+struct Card {
+    colour: Color,
+    title: String,
+    time: Option<String>,
+    place: Option<String>,
+}
+
+/// The card for an event: its title, "14:00–15:00" and its place, if it has one.
+fn event_tip(entry: &Entry) -> Card {
+    let (start, end) = (format_time(entry.event.start.time()), format_time(entry.event.end.time()));
+    Card {
+        colour: entry.event.color,
+        title: entry.event.title.clone(),
+        time: Some(format!("{start}–{end}")),
+        place: entry.event.location.clone(),
+    }
+}
+
+/// One line of a tooltip card as drawn.
+#[derive(Debug, Clone, PartialEq)]
+struct CardLine {
+    /// The text, cut with "…" to [`TIP_MAX`].
+    text: String,
+    level: typo::Level,
+    /// From the card's inner left edge to the text.
+    indent: f32,
+    /// What stands before the text: the calendar's dot (the title), the pin (the place), nothing.
+    mark: CardMark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CardMark {
+    Dot,
+    Pin,
+    None,
+}
+
+/// The lines of `card` as drawn and the size of the card around them: the title in
+/// `BODY_STRONG` behind the dot; under it, lined up with the title, the time in tabular `META` and
+/// the place in `META` behind its pin.
+fn card_layout(card: &Card) -> (Vec<CardLine>, Size) {
+    let indent = 2.0 * TIP_DOT + space::S;
+    let line = |text: &str, level: typo::Level, indent: f32, mark: CardMark| CardLine {
+        text: ellipsize(text, level, TIP_MAX - indent),
+        level,
+        indent,
+        mark,
+    };
+    let mut lines = vec![line(&card.title, typo::BODY_STRONG, indent, CardMark::Dot)];
+    if let Some(time) = &card.time {
+        lines.push(line(time, typo::META.tabular(), indent, CardMark::None));
+    }
+    if let Some(place) = &card.place {
+        lines.push(line(place, typo::META, indent + icon::SIZE_SM + space::XS, CardMark::Pin));
+    }
+    let width = lines.iter().map(|line| line.indent + text_width(&line.text, line.level)).fold(0.0, f32::max);
+    let height = lines.iter().map(|line| line_height(line.level)).sum::<f32>();
+    (lines, Size::new(width + 2.0 * space::S, height + 2.0 * space::S))
+}
+
+/// The tooltip `card` beside the pointer at `pointer`, never over the edges of `area` (the
+/// canvas): `menu` surface with the `line_strong` rim like the suite's tooltips, the title in
+/// `text`, time and place in `text_2`.
+fn tooltip(frame: &mut Frame, p: &Palette, card: &Card, pointer: Point, area: Rectangle) {
+    let (lines, extent) = card_layout(card);
+    let origin = layout::tip_origin(pointer, extent, area);
+    let surface = Path::rounded_rectangle(origin, extent, Radius::from(radius::SM));
+    frame.fill(&surface, p.menu);
+    frame.stroke(&surface, Stroke::default().with_color(p.line_strong).with_width(size::HAIRLINE));
+    let left = origin.x + space::S;
+    let mut top = origin.y + space::S;
+    for line in &lines {
+        let middle = top + line_height(line.level) / 2.0;
+        let colour = match line.mark {
+            CardMark::Dot => {
+                frame.fill(&Path::circle(Point::new(left + TIP_DOT, middle), TIP_DOT), card.colour);
+                p.text
             }
-            let at = dial.point(radius, glyph.angle);
-            frame.with_save(|frame| {
-                frame.translate(iced::Vector::new(at.x, at.y));
-                frame.rotate(glyph.turn);
-                label(frame, &glyph.letter, Point::ORIGIN, level, faded(p.text_3, alpha));
-            });
-        }
+            CardMark::Pin => {
+                let pin = icon::SIZE_SM;
+                let at = Point::new(left + 2.0 * TIP_DOT + space::S, middle - pin / 2.0);
+                frame.draw_svg(Rectangle::new(at, Size::new(pin, pin)), &Icon::MapPin.tinted(p.text_2));
+                p.text_2
+            }
+            CardMark::None => p.text_2,
+        };
+        let at = Point::new(left + line.indent, middle);
+        week::label(frame, &line.text, at, line.level, colour, Alignment::Left, Vertical::Center);
+        top += line_height(line.level);
     }
-}
-
-/// "3 h free" for the free stretch `from`–`to` (minutes into the window): whole hours, as in the
-/// timeline.
-fn free_note(from: f32, to: f32) -> String {
-    let hours = ((to - from) / 60.0).floor() as i64;
-    trf("{n} h free", &[("n", &hours)])
 }
 
 /// The colours of the start edge, of the chip with its time and of the time: red with white
@@ -1060,6 +1233,7 @@ fn label(frame: &mut Frame, content: &str, at: Point, level: typo::Level, colour
 mod tests {
     use chrono::NaiveDate;
     use iced::widget::canvas::Program;
+    use iced::window::RedrawRequest;
     use torro_pim::{Event as CalendarEvent, EventTime};
 
     use super::super::Item;
@@ -1126,12 +1300,26 @@ mod tests {
         }
     }
 
-    fn calendars() -> Vec<String> {
-        ["family", "personal", "work"].map(String::from).to_vec()
+    /// The demo's calendar colours.
+    const BLUE: Color = Color::from_rgb(0x34 as f32 / 255.0, 0x74 as f32 / 255.0, 0xE6 as f32 / 255.0);
+    const TEAL: Color = Color::from_rgb(0x11 as f32 / 255.0, 0x9C as f32 / 255.0, 0x8E as f32 / 255.0);
+    const RED: Color = Color::from_rgb(0xE0 as f32 / 255.0, 0x48 as f32 / 255.0, 0x5D as f32 / 255.0);
+
+    fn ring(id: &str, name: &str, host: &str, colour: Color) -> Ring {
+        Ring { id: id.into(), name: name.into(), host: Some(host.into()), colour }
     }
 
-    fn titles(plan: &Plan, ids: &[usize]) -> Vec<String> {
-        ids.iter().map(|id| plan.entries[*id].event.title.clone()).collect()
+    /// Family, Personal and Work, as the sidebar lists them.
+    fn calendars() -> Vec<Ring> {
+        vec![
+            ring("family", "Family", "home.example.org", RED),
+            ring("personal", "Personal", "home.example.org", TEAL),
+            ring("work", "Work", "work.example.org", BLUE),
+        ]
+    }
+
+    fn ids() -> Vec<String> {
+        calendars().into_iter().map(|calendar| calendar.id).collect()
     }
 
     #[test]
@@ -1139,7 +1327,7 @@ mod tests {
         let events = events();
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
         // Family has only breakfast (over) and an all-day holiday, and still its ring, the first.
-        assert_eq!(plan.rings, 3);
+        assert_eq!(plan.rings.len(), 3);
         let ring_of = |title: &str| {
             plan.spans.iter().find(|s| plan.entries[s.id].event.title == title).map(|s| s.ring).expect(title)
         };
@@ -1149,7 +1337,7 @@ mod tests {
         assert_eq!(workshop.from, 0.0, "cut to the start of the window");
         // Looking back brings breakfast into the family ring; the rings stay as they are.
         let back = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT);
-        assert_eq!(back.rings, 3);
+        assert_eq!(back.rings.len(), 3);
         assert!(back.looking);
         assert_eq!(back.spans.iter().find(|s| plan.entries[s.id].event.title == "Breakfast").map(|s| s.ring), Some(0));
     }
@@ -1157,98 +1345,83 @@ mod tests {
     #[test]
     fn rings_show_without_any_events() {
         let plan = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
-        assert_eq!((plan.rings, plan.spans.len()), (3, 0));
+        assert_eq!((plan.rings.len(), plan.spans.len()), (3, 0));
         // A hidden calendar is not in the list the app passes: no ring for it.
         let plan = Plan::new(&data(&[]), &calendars()[1..], 0, Night::DEFAULT);
-        assert_eq!(plan.rings, 2);
+        assert_eq!(plan.rings.len(), 2);
         // No calendars at all: a bare dial.
-        assert_eq!(Plan::new(&data(&[]), &[], 0, Night::DEFAULT).rings, 0);
+        assert_eq!(Plan::new(&data(&[]), &[], 0, Night::DEFAULT).rings.len(), 0);
     }
 
     #[test]
     fn unknown_calendars_ring_last() {
-        let order = ring_order(["zeta", "work", "alpha"].into_iter(), &calendars());
+        let order = ring_order(["zeta", "work", "alpha"].into_iter(), &ids());
         assert_eq!(order, ["work", "alpha", "zeta"]);
         // The sidebar's calendars once each, then a used one it does not know.
-        let order = ring_order(["family", "personal", "work", "work", "zeta"].into_iter(), &calendars());
+        let order = ring_order(["family", "personal", "work", "work", "zeta"].into_iter(), &ids());
         assert_eq!(order, ["family", "personal", "work", "zeta"]);
+        // A ring the sidebar does not know has no name, only the dot in its events' colour.
+        let events = [event("zeta", "Stray", local(13, 15, 0), local(13, 16, 0))];
+        let plan = Plan::new(&data_on(&events, 13), &calendars(), 0, Night::DEFAULT);
+        assert_eq!(plan.rings.last().map(|ring| ring.name.as_str()), Some(""));
     }
 
     #[test]
-    fn the_night_and_free_time_come_with_the_window() {
+    fn a_ring_names_the_host_only_when_two_visible_calendars_share_the_name() {
+        let personal = ring("a", "Persönlich", "cloud.imt24.de", TEAL);
+        let other = ring("b", "Persönlich", "nextcloud.rheinschmiede.net", BLUE);
+        let work = ring("c", "Work", "cloud.imt24.de", RED);
+        let all = [personal.clone(), other.clone(), work.clone()];
+        assert_eq!(ring_label(&personal, &all), "Persönlich · cloud.imt24.de");
+        assert_eq!(ring_label(&other, &all), "Persönlich · nextcloud.rheinschmiede.net");
+        assert_eq!(ring_label(&work, &all), "Work", "a name of its own needs no host");
+        assert_eq!(ring_label(&personal, &[personal.clone(), work.clone()]), "Persönlich", "the twin is hidden");
+        let without = Ring { host: None, ..other };
+        assert_eq!(ring_label(&without, &[personal, without.clone()]), "Persönlich", "no account, no host");
+        // The plan carries the names and colours in ring order.
+        let plan = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
+        let named: Vec<(&str, Color)> = plan.rings.iter().map(|ring| (ring.name.as_str(), ring.colour)).collect();
+        assert_eq!(named, [("Family", RED), ("Personal", TEAL), ("Work", BLUE)]);
+    }
+
+    #[test]
+    fn the_night_comes_with_the_window() {
         let events = events();
-        // 14:20: free 15:00–18:30 and 19:30–22:00; the night from 22:00 holds the late call.
+        // 14:20: the night from 22:00 holds the late call.
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
         assert_eq!(plan.nights, [(460.0, END)]);
-        assert_eq!(plan.free, [(40.0, 250.0), (310.0, 460.0)]);
-        assert_eq!(
-            (free_note(40.0, 250.0), free_note(310.0, 460.0)),
-            (trf("{n} h free", &[("n", &3)]), trf("{n} h free", &[("n", &2)]))
-        );
-        // An empty Sunday: no night between 08:00 and 19:54, all of it free.
+        // An empty Sunday: no night between 08:00 and 19:54.
         let sunday = Plan::new(&data_on(&[], 18), &calendars(), 0, Night::DEFAULT);
         assert!(sunday.nights.is_empty());
-        assert_eq!(sunday.free, [(0.0, END)]);
-        // Looking back at last night: what is over is not free.
+        // Looking back at last night: the night until 06:00 lies in the window.
         let back = Plan::new(&data(&events), &calendars(), -12 * 60, Night::DEFAULT);
         assert_eq!(back.window.start, at(13, 2, 20));
         assert_eq!(back.nights, [(0.0, 220.0)], "until 06:00");
-        assert!(back.free.is_empty(), "all of it lies before now");
     }
 
     #[test]
-    fn with_nothing_in_the_window_the_middle_says_when_the_next_event_comes() {
+    fn the_middle_offers_back_to_now_only_away_from_now() {
         let events = events();
-        let today = at(13, 0, 0).date();
-        // Wednesday with only Tuesday's events loaded: nothing runs, nothing comes.
-        let wednesday = Plan::new(&data_on(&events[..4], 14), &calendars(), 0, Night::DEFAULT);
-        assert!(wednesday.next().is_none() && wednesday.running().is_none());
-        let late = [event("work", "Late call", local(15, 9, 30), local(15, 10, 0))];
-        let plan = Plan::new(&data_on(&late, 14), &calendars(), 0, Night::DEFAULT);
-        assert!(plan.next().is_some() && plan.next_inside().is_none(), "the next event lies beyond the window");
-        assert_eq!(free_until(at(14, 9, 30), today, today), trf("Free until tomorrow {time}", &[("time", &"09:30")]));
-        assert_eq!(
-            free_until(at(14, 17, 0), at(14, 0, 0).date(), today),
-            trf("Free until {time}", &[("time", &"17:00")])
-        );
-        let far = free_until(at(15, 9, 30), at(14, 0, 0).date(), today);
-        assert_eq!(
-            far,
-            trf("Free until {date} at {time}", &[("date", &short_date(at(15, 0, 0).date())), ("time", &"09:30")])
-        );
-        // The middle builds in all three cases.
-        for plan in [&wednesday, &plan, &Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT)] {
-            let _ = middle(plan, &Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings));
+        let dial = |plan: &Plan| Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings.len());
+        // Today at 14:20: date and time only, no button.
+        let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        assert!(!today.looking);
+        // Another day, and the dial turned on today: the button is there.
+        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0, Night::DEFAULT);
+        let turned = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT);
+        assert!(tomorrow.looking && turned.looking);
+        // The middle builds in each case, with and without events in the window.
+        let empty = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
+        for plan in [&today, &tomorrow, &turned, &empty] {
+            let _ = middle(plan, &dial(plan));
         }
     }
 
-    #[test]
-    fn the_middle_knows_what_runs_and_what_comes_next() {
-        let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        assert_eq!(plan.running().map(|e| e.event.title.as_str()), Some("API design workshop"));
-        assert_eq!(plan.next().map(|e| e.event.title.as_str()), Some("1:1 with Lena"));
-        let ahead = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT);
-        assert!(ahead.running().is_none(), "15:20: nothing runs");
-        assert_eq!(ahead.next().map(|e| e.event.title.as_str()), Some("Run"));
-        let all_day: Vec<&str> = plan.all_day().iter().map(|e| e.event.title.as_str()).collect();
-        assert_eq!(all_day, ["Holiday"]);
-    }
-
-    #[test]
-    fn the_list_splits_at_nine_hours() {
-        let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        let (sooner, later) = plan.listed();
-        assert_eq!(titles(&plan, &sooner), ["API design workshop", "1:1 with Lena", "Run"]);
-        assert_eq!(titles(&plan, &later), ["Late call"], "00:00 lies 9 h 40 min ahead");
-        let _ = list_view(&plan, size::PROPS);
-    }
-
-    /// The dial of a 1000 × 900 canvas with the demo events.
+    /// The input layer of the dial of a 1000 × 900 canvas with the demo events.
     fn radar() -> Radar {
         let events = events();
-        Radar { plan: Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT), margin: STAGE_MARGIN, wheel: true }
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        Radar { plan, margin: STAGE_MARGIN, wheel: true, layer: Layer::Input }
     }
 
     #[test]
@@ -1325,10 +1498,56 @@ mod tests {
             matches!(message, Some(Message::NewEvent { date, time }) if date == at(13, 0, 0).date() && time == expected),
             "{message:?}"
         );
-        assert_eq!(radar.mouse_interaction(&state, rect, cursor(on_run)), mouse::Interaction::Pointer);
+    }
+
+    #[test]
+    fn the_hand_shows_over_events_and_the_open_hand_over_the_rest_of_the_dial() {
+        let radar = radar();
+        let bounds = Size::new(1000.0, 900.0);
+        let rect = Rectangle::new(Point::ORIGIN, bounds);
+        let dial = radar.dial(bounds);
+        let arcs = layout::arcs(&dial, &radar.plan.window, &radar.plan.spans);
+        let cursor = |point: Point| mouse::Cursor::Available(point);
+        let state = Grip::default();
+        // Every arc, in its middle and near both of its ends.
+        for arc in &arcs {
+            for angle in [arc.from + 0.2, (arc.from + arc.to) / 2.0, arc.to - 0.2] {
+                let at = dial.point(arc.middle(), angle);
+                assert_eq!(radar.mouse_interaction(&state, rect, cursor(at)), mouse::Interaction::Pointer, "{arc:?}");
+            }
+        }
+        // The empty track of a ring and the numerals can be turned.
+        let free = dial.point(dial.ring(0).0 + 1.0, radar.plan.window.angle(410.0));
         assert_eq!(radar.mouse_interaction(&state, rect, cursor(free)), mouse::Interaction::Grab);
-        assert_eq!(radar.mouse_interaction(&state, rect, cursor(dial.center)), mouse::Interaction::Idle);
-        assert_eq!(radar.mouse_interaction(&state, rect, cursor(Point::new(2.0, 2.0))), mouse::Interaction::Idle);
+        let numerals = dial.point(dial.numerals, radar.plan.window.angle(100.0));
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(numerals)), mouse::Interaction::Grab);
+        // The middle and the corners leave the pointer to the layers below: the "Back to now"
+        // button lies in the middle.
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(dial.center)), mouse::Interaction::None);
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(Point::new(2.0, 2.0))), mouse::Interaction::None);
+        assert_eq!(radar.mouse_interaction(&state, rect, mouse::Cursor::Unavailable), mouse::Interaction::None);
+        // The dial's own layer takes no input at all.
+        let dial_layer = Radar { layer: Layer::Dial, ..radar };
+        let on_arc = arcs.first().map(|arc| dial.point(arc.middle(), (arc.from + arc.to) / 2.0)).expect("an arc");
+        assert_eq!(dial_layer.mouse_interaction(&state, rect, cursor(on_arc)), mouse::Interaction::None);
+        let mut grip = Grip::default();
+        assert!(dial_layer.update(&mut grip, &mouse(PRESS), rect, cursor(on_arc)).is_none());
+    }
+
+    #[test]
+    fn a_lost_focus_ends_a_press_so_the_next_move_does_not_turn_the_dial() {
+        let radar = radar();
+        let rect = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 900.0));
+        let dial = radar.dial(rect.size());
+        let on_dial = |angle: f32| mouse::Cursor::Available(dial.point(dial.numerals, angle));
+        let mut state = Grip::default();
+        let _ = radar.update(&mut state, &mouse(PRESS), rect, on_dial(350.0));
+        assert!(state.press.is_some());
+        let _ = radar.update(&mut state, &Event::Window(iced::window::Event::Unfocused), rect, on_dial(350.0));
+        assert_eq!(state.press, None);
+        let moved_on = dial.point(dial.numerals, 20.0);
+        assert!(published(radar.update(&mut state, &moved(moved_on), rect, on_dial(20.0))).is_none(), "no turn");
+        assert_ne!(radar.mouse_interaction(&state, rect, on_dial(20.0)), mouse::Interaction::Grabbing);
     }
 
     #[test]
@@ -1390,7 +1609,7 @@ mod tests {
         let at = mouse::Cursor::Available(moon.center());
         assert_eq!(radar.mouse_interaction(&state, bounds, at), mouse::Interaction::Pointer);
         assert!(radar.update(&mut state, &moved(moon.center()), bounds, at).is_some(), "the tooltip is on its way");
-        assert!(state.hover.is_some());
+        assert!(state.rest.is_some_and(|rest| rest.tip == Tip::Moon(moon)));
         assert!(published(radar.update(&mut state, &mouse(PRESS), bounds, at)).is_none(), "one click: nothing");
         let _ = radar.update(&mut state, &mouse(RELEASE), bounds, at);
         let second = published(radar.update(&mut state, &mouse(PRESS), bounds, at));
@@ -1406,10 +1625,12 @@ mod tests {
 
     #[test]
     fn arc_text_is_cut_but_never_to_nothing_worth_reading() {
-        assert_eq!(arc_title("Run", 100.0).as_deref(), Some("Run"));
-        let cut = arc_title("API design workshop", 90.0).expect("room for a part");
+        assert_eq!(arc_title("Run", 100.0, typo::CAPTION).as_deref(), Some("Run"));
+        let cut = arc_title("API design workshop", 90.0, typo::CAPTION).expect("room for a part");
         assert!(cut.starts_with("API") && cut.ends_with(typo::ELLIPSIS), "{cut}");
-        assert_eq!(arc_title("Daily Standup", 30.0), None, "\"Da…\" says nothing");
+        assert_eq!(arc_title("Daily Standup", 20.0, typo::CAPTION), None, "\"Da…\" says nothing");
+        let micro = arc_title("Daily Standup", 30.0, typo::MICRO).expect("smaller letters, more of them");
+        assert!(micro.starts_with("Dai") && micro.ends_with(typo::ELLIPSIS), "{micro}");
         let events = events();
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
         let run = plan.entries.iter().find(|e| e.event.title == "Run").expect("run");
@@ -1424,8 +1645,210 @@ mod tests {
         for place in [ListAt::Props, ListAt::Beside, ListAt::Below] {
             let _ = view(data(&events), &calendars(), 90, place, Night::DEFAULT, &Anchor::new());
         }
-        let _ = list(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let _ = list(&data(&events), Night::DEFAULT);
+        let _ = narrow(
+            Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT),
+            &mini::Coming::new(&data(&events), Night::DEFAULT),
+            Size::new(480.0, 800.0),
+            &Anchor::new(),
+        );
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        let _ = middle(&plan, &Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings));
+        let _ = middle(&plan, &Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings.len()));
+    }
+
+    /// The demo's calendar colours, the suite's standard ones and the default for calendars
+    /// without a colour (`#7FB2FF`).
+    fn colours(p: &Palette) -> Vec<Color> {
+        let mut all = vec![BLUE, TEAL, RED, torro_gui::widgets::collection_color(None)];
+        all.extend(p.calendar);
+        all
+    }
+
+    #[test]
+    fn titles_read_on_the_strong_fill_of_every_calendar_colour_in_both_modes() {
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            for ground in [p.panel, p.night] {
+                for colour in colours(p) {
+                    let fill = event_fill(p, colour, ground);
+                    let title = on_fill(fill);
+                    let ratio = title.relative_contrast(fill);
+                    assert!(ratio >= 4.5, "{mode}: title {ratio:.2} on {colour:?}");
+                }
+                // On the demo's own colours the time reads too, and busy time stands clearly apart
+                // from the track around it.
+                for colour in [BLUE, TEAL, RED] {
+                    let fill = event_fill(p, colour, ground);
+                    let time = mix(fill, on_fill(fill), TIME_SHARE);
+                    assert!(time.relative_contrast(fill) >= 4.5, "{mode}: time on {colour:?}");
+                    let track = ring_track(colour, ground);
+                    assert!(fill.relative_contrast(track) >= 1.5, "{mode}: fill on track {colour:?}");
+                }
+            }
+        }
+        // Much stronger than the week grid's tint, and the mini dials take the same share.
+        assert!(mini::FILL_DARK > Palette::dark().tint * 2.0 && mini::FILL_LIGHT > Palette::light().tint * 2.0);
+        assert_eq!((mini::fill(Palette::dark()), mini::fill(Palette::light())), (mini::FILL_DARK, mini::FILL_LIGHT));
+    }
+
+    #[test]
+    fn a_past_event_stays_faded_and_its_track_stays_quiet() {
+        let p = Palette::dark();
+        let events = events();
+        let plan = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT);
+        let breakfast = plan.entries.iter().find(|e| e.event.title == "Breakfast").expect("breakfast");
+        let past = tone(p, breakfast, plan.now, p.panel);
+        let fill = event_fill(p, breakfast.event.color, p.panel);
+        assert_eq!(past.fill, mix(p.panel, fill, PAST_OPACITY));
+        // The track is the calendar's colour at a tenth: much closer to the panel than to the fill.
+        let track = ring_track(BLUE, p.panel);
+        assert!(track.relative_contrast(p.panel) < 1.3);
+    }
+
+    #[test]
+    fn the_title_takes_micro_in_narrow_lanes_caption_in_wider_ones_and_none_below() {
+        assert_eq!(title_level(15.9), None);
+        assert_eq!(title_level(16.0), Some(typo::MICRO));
+        assert_eq!(title_level(21.9), Some(typo::MICRO));
+        assert_eq!(title_level(22.0), Some(typo::CAPTION));
+        assert_eq!(title_level(64.0), Some(typo::CAPTION));
+    }
+
+    #[test]
+    fn every_event_of_45_minutes_carries_its_title_in_the_wide_and_the_medium_dial() {
+        // The dial's stage in a wide window (1600 × 1000) and in a medium one (800 × 600).
+        for stage in [Size::new(1050.0, 900.0), Size::new(470.0, 510.0)] {
+            let dial = Dial::fit(stage, STAGE_MARGIN, calendars().len());
+            let window = Window::new(at(13, 14, 20));
+            for ring in 0..dial.rings {
+                for start in [30.0, 200.0, 330.0, 480.0] {
+                    let span = Span { id: 0, ring, from: start, to: start + 45.0, starts: true };
+                    let arc = layout::arcs(&dial, &window, &[span])[0];
+                    let level = title_level(arc.width()).expect("a level for the lane");
+                    let room = arc.length() - TEXT_START - TEXT_END;
+                    assert!(room >= TEXT_MIN, "{stage:?} ring {ring} at {start}: {room}");
+                    for title in ["Lunch with Jana", "Dentist", "Run", "Client presentation"] {
+                        assert!(arc_title(title, room, level).is_some(), "{stage:?} ring {ring} at {start}: {title}");
+                    }
+                }
+            }
+        }
+    }
+
+    fn instant(base: Instant, millis: u64) -> Instant {
+        base + std::time::Duration::from_millis(millis)
+    }
+
+    #[test]
+    fn a_tooltip_shows_after_a_rest_moves_on_at_once_and_goes() {
+        let t0 = Instant::now();
+        let delay = timeline::TOOLTIP_DELAY.as_millis() as u64;
+        let (a, b) = (Point::new(10.0, 10.0), Point::new(14.0, 12.0));
+        let mut rest = None;
+        // Coming onto an event: a redraw is asked for when the delay is over.
+        let action = track(&mut rest, Some((Tip::Event(1), a)), t0);
+        assert!(action.is_some_and(|action| action.into_inner().1 == RedrawRequest::At(t0 + timeline::TOOLTIP_DELAY)));
+        assert!(rest.is_some_and(|rest| !rest.shown(instant(t0, delay - 1)) && rest.shown(instant(t0, delay))));
+        // Moving on the same event before it shows: nothing to redraw, the rest keeps its start.
+        assert!(track(&mut rest, Some((Tip::Event(1), b)), instant(t0, 100)).is_none());
+        assert!(rest.is_some_and(|rest| rest.since == t0 && rest.at == b));
+        // Shown, it follows the pointer.
+        let later = instant(t0, delay + 50);
+        let follow = track(&mut rest, Some((Tip::Event(1), a)), later);
+        assert!(follow.is_some_and(|action| action.into_inner().1 == RedrawRequest::NextFrame));
+        // On to the next event while one shows: the next one shows at once.
+        let _ = track(&mut rest, Some((Tip::Event(2), b)), later);
+        assert!(rest.is_some_and(|rest| rest.tip == Tip::Event(2) && rest.shown(later)));
+        // Off the dial: gone, with a redraw to take it away.
+        let gone = track(&mut rest, None, later);
+        assert!(gone.is_some_and(|action| action.into_inner().1 == RedrawRequest::NextFrame));
+        assert_eq!(rest, None);
+        // Onto another event after that: the delay again.
+        let _ = track(&mut rest, Some((Tip::Event(3), a)), later);
+        assert!(rest.is_some_and(|rest| !rest.shown(later)));
+    }
+
+    #[test]
+    fn every_frame_before_the_tooltip_is_due_asks_for_the_frame_that_shows_it() {
+        let radar = radar();
+        let rect = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 900.0));
+        let now = Instant::now();
+        let at = Point::new(10.0, 10.0);
+        let mut state = Grip { rest: Some(Rest { tip: Tip::Event(0), since: now, at }), ..Grip::default() };
+        let frame = Event::Window(iced::window::Event::RedrawRequested(now));
+        let cursor = mouse::Cursor::Available(at);
+        let action = radar.update(&mut state, &frame, rect, cursor).map(|action| action.into_inner().1);
+        assert_eq!(action, Some(RedrawRequest::At(now + timeline::TOOLTIP_DELAY)));
+        // Once it shows, frames ask for nothing more.
+        let due = Event::Window(iced::window::Event::RedrawRequested(now + timeline::TOOLTIP_DELAY));
+        assert!(radar.update(&mut state, &due, rect, cursor).is_none());
+    }
+
+    #[test]
+    fn a_press_takes_the_tooltip_away_and_the_empty_track_names_its_calendar() {
+        let radar = radar();
+        let rect = Rectangle::new(Point::ORIGIN, Size::new(1000.0, 900.0));
+        let dial = radar.dial(rect.size());
+        let cursor = |point: Point| mouse::Cursor::Available(point);
+        let mut state = Grip::default();
+        // Resting on the empty track of the middle ring (Personal) at 16:00.
+        let (inner, outer) = dial.ring(1);
+        let track_at = dial.point((inner + outer) / 2.0, radar.plan.window.angle(100.0));
+        let _ = radar.update(&mut state, &moved(track_at), rect, cursor(track_at));
+        assert_eq!(state.rest.map(|rest| rest.tip), Some(Tip::Ring(1)));
+        assert_eq!(radar.mouse_interaction(&state, rect, cursor(track_at)), mouse::Interaction::Grab, "still a knob");
+        assert_eq!(radar.plan.rings[1].name, "Personal");
+        // The gap between two rings has no tooltip.
+        let gap = dial.point(inner - layout::RING_GAP / 2.0, radar.plan.window.angle(100.0));
+        assert_eq!(radar.tip_at(rect.size(), gap), None);
+        // On an event: the event.
+        let arcs = layout::arcs(&dial, &radar.plan.window, &radar.plan.spans);
+        let run = arcs.iter().find(|a| radar.plan.entries[a.id].event.title == "Run").expect("run");
+        let on_run = dial.point(run.middle(), (run.from + run.to) / 2.0);
+        assert_eq!(radar.tip_at(rect.size(), on_run), Some(Tip::Event(run.id)));
+        // A press – on an event or on the track – takes the tooltip away.
+        let _ = radar.update(&mut state, &moved(on_run), rect, cursor(on_run));
+        assert!(state.rest.is_some());
+        let _ = radar.update(&mut state, &mouse(PRESS), rect, cursor(on_run));
+        assert_eq!(state.rest, None);
+        let _ = radar.update(&mut state, &moved(track_at), rect, cursor(track_at));
+        let _ = radar.update(&mut state, &mouse(PRESS), rect, cursor(track_at));
+        assert_eq!(state.rest, None);
+        // While the button is down nothing new comes to rest: the move is a drag.
+        let _ = radar.update(&mut state, &moved(on_run), rect, cursor(on_run));
+        assert_eq!(state.rest, None);
+    }
+
+    #[test]
+    fn the_tooltip_card_says_title_time_and_place_and_is_cut_to_its_width() {
+        let events = vec![CalendarEvent {
+            location: Some("Room Rhine, second floor, at the far end of the corridor".into()),
+            ..event("work", "API design workshop with the whole platform team", local(13, 14, 0), local(13, 15, 0))
+        }];
+        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        let card = event_tip(&plan.entries[0]);
+        assert_eq!(card.time.as_deref(), Some("14:00–15:00"));
+        let (lines, extent) = card_layout(&card);
+        let marks: Vec<CardMark> = lines.iter().map(|line| line.mark).collect();
+        assert_eq!(marks, [CardMark::Dot, CardMark::None, CardMark::Pin]);
+        assert!(lines[0].text.ends_with(typo::ELLIPSIS) && lines[2].text.ends_with(typo::ELLIPSIS));
+        assert!(extent.width <= TIP_MAX + 2.0 * space::S + 0.5, "{extent:?}");
+        let height = line_height(typo::BODY_STRONG) + 2.0 * line_height(typo::META) + 2.0 * space::S;
+        assert!((extent.height - height).abs() < 0.01);
+        // Without a place, two lines; the time lines up with the title.
+        let short = Card { place: None, ..card };
+        let (lines, _) = card_layout(&short);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].indent, lines[1].indent);
+    }
+
+    #[test]
+    fn the_moon_reads_on_its_plaque_in_both_modes() {
+        for p in [Palette::dark(), Palette::light()] {
+            let (icon, plaque, _) = moon_colours(p);
+            assert!(icon.relative_contrast(plaque) >= 3.0);
+            // The plaque stands on the panel or the night; either way the moon is the same.
+            assert_eq!(plaque, p.panel);
+        }
+        const { assert!(MOON_PLAQUE <= timeline::MOON_TARGET, "the target covers the plaque") };
     }
 }

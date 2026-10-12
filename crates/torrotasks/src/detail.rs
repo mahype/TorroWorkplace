@@ -60,7 +60,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::panel;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
-use torro_gui::{datetime, style, typo};
+use torro_gui::{datetime, markdown, style, typo};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
 use torro_pim::{Collection, EventTime, Todo};
 
@@ -124,6 +124,9 @@ pub struct Detail {
     title: text_editor::Content,
     /// The notes editor; `draft.notes` mirrors its text.
     notes: text_editor::Content,
+    /// The notes of a GitHub item as Markdown blocks, parsed once per text (task G.12); empty for
+    /// every other task. Shown instead of plain text while the task cannot be edited.
+    text: Vec<markdown::Item>,
     /// The date typed into the due card. It can be unfinished or invalid; then the draft keeps
     /// its last valid due and saving is blocked.
     due_text: String,
@@ -206,6 +209,9 @@ pub enum Message {
     Fold(Section),
     /// Open the task's link in the browser ([`Detail::link_target`]).
     OpenLink,
+    /// A link in the Markdown text of a GitHub item was clicked (task G.12). Foreign text: only an
+    /// `http`/`https` address opens ([`web_url`]).
+    OpenTextLink(String),
     /// "Copy link" in the "…" menu.
     CopyLink,
     /// "Unpin" in the "…" menu of a pinned item ([`Detail::pinned`]).
@@ -384,6 +390,7 @@ impl Detail {
             today: Local::now().date_naive(),
             title: text_editor::Content::with_text(&draft.summary),
             notes: text_editor::Content::with_text(&draft.notes),
+            text: markdown_of(todo, &draft.notes),
             due_text: due_input(draft.due),
             draft,
             open: None,
@@ -489,6 +496,10 @@ impl Detail {
                 self.close_editor();
                 return self.link_target().map_or(Action::None, Action::OpenUrl);
             }
+            Message::OpenTextLink(url) => {
+                self.close_editor();
+                return web_url(&url).map_or(Action::None, Action::OpenUrl);
+            }
             Message::CopyLink => {
                 self.close_editor();
                 return self.link_target().map_or(Action::None, Action::CopyLink);
@@ -589,6 +600,7 @@ impl Detail {
         if draft != self.draft {
             self.title = text_editor::Content::with_text(&draft.summary);
             self.notes = text_editor::Content::with_text(&draft.notes);
+            self.text = markdown_of(todo, &draft.notes);
             self.due_text = due_input(draft.due);
             self.draft = draft;
         }
@@ -791,12 +803,8 @@ impl Detail {
     /// issue). Only `http` and `https` are opened; anything else (`file:`, an app's own scheme)
     /// could start programs, so it is not offered.
     fn link_target(&self) -> Option<String> {
-        let web = |url: &str| {
-            let lower = url.trim().to_ascii_lowercase();
-            (lower.starts_with("https://") || lower.starts_with("http://")).then(|| url.trim().to_string())
-        };
-        let own = self.original.url.as_deref().and_then(web);
-        own.or_else(|| self.original.link.as_ref().and_then(Link::web_url).as_deref().and_then(web))
+        let own = self.original.url.as_deref().and_then(web_url);
+        own.or_else(|| self.original.link.as_ref().and_then(Link::web_url).as_deref().and_then(web_url))
     }
 
     /// The blocks of the properties column, top to bottom: an optional title and its rows.
@@ -1041,7 +1049,7 @@ impl Detail {
         if fit != Fit::Columns {
             body = body.push(gap(space::L, indented(self.chips_view(colours, anchor))));
         }
-        if let Some(notes) = self.notes_view() {
+        if let Some(notes) = self.notes_view(colours) {
             body = body.push(gap(space::M, notes));
         }
         let sections = [self.subtasks_section(), self.checks_section(), self.reviews_section()];
@@ -1252,9 +1260,15 @@ impl Detail {
 
     /// The notes without a box: a quiet field in `text_2` with a hover surface whose text lines
     /// up with the title ("Add notes …" while empty). Read-only tasks show their notes as text,
-    /// and nothing when there are none.
-    fn notes_view(&self) -> Option<Element<'_, Message>> {
+    /// and nothing when there are none; GitHub items show theirs as Markdown (task G.12) when
+    /// `colours` are known.
+    fn notes_view(&self, colours: Option<&'static Palette>) -> Option<Element<'_, Message>> {
         if !self.editable() {
+            if let Some(colours) = colours
+                && !self.text.is_empty()
+            {
+                return Some(indented(markdown::view(&self.text, colours).map(Message::OpenTextLink)));
+            }
             let notes = self.draft.notes.trim();
             return (!notes.is_empty()).then(|| {
                 indented(typo::text(typo::BODY, notes.to_string()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph))
@@ -1717,6 +1731,21 @@ fn same_task(a: &Todo, b: &Todo) -> bool {
 
 fn others_of(todo: &Todo, all: &[Todo]) -> Vec<Todo> {
     all.iter().filter(|t| !same_task(t, todo)).cloned().collect()
+}
+
+/// The Markdown blocks of `notes` for a GitHub item (its text comes from GitHub, written in
+/// Markdown); nothing for every other task, whose notes are plain text.
+fn markdown_of(todo: &Todo, notes: &str) -> Vec<markdown::Item> {
+    match todo.link.as_ref().and_then(Link::github_ref) {
+        Some(_) => markdown::parse(notes),
+        None => Vec::new(),
+    }
+}
+
+/// `url` trimmed when it is an `http`/`https` address, the only kind the detail opens.
+fn web_url(url: &str) -> Option<String> {
+    let lower = url.trim().to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://")).then(|| url.trim().to_string())
 }
 
 fn draft_of(todo: &Todo) -> Draft {
@@ -2540,6 +2569,31 @@ mod tests {
         assert_eq!(detail.update(Message::OpenLink), Action::OpenUrl(page.into()));
         let props = props(&detail);
         assert!(props.contains(&Prop::Repo) && props.contains(&Prop::OpenLink), "a linked task names its repo");
+    }
+
+    #[test]
+    fn github_text_is_markdown_and_own_notes_stay_editable_text() {
+        let body = "## Steps\n\n- [ ] run `cargo test`\n\nSee [the log](https://example.org/log).";
+        let item = Todo { description: Some(body.into()), ..github_item(pull_request()) };
+        let detail = detail_of(&item);
+        assert!(!detail.editable(), "a filter list item only shows");
+        assert_eq!(detail.text.len(), 3, "heading, list and paragraph");
+        assert!(detail.notes_view(Some(Palette::dark())).is_some());
+
+        let own = Todo { description: Some("## not a heading".into()), ..todo("t1", "a") };
+        let detail = detail_of(&own);
+        assert!(detail.editable());
+        assert!(detail.text.is_empty(), "own notes are plain text");
+    }
+
+    #[test]
+    fn a_link_in_the_text_opens_only_web_addresses() {
+        let mut detail = detail_of(&github_item(pull_request()));
+        let log = "https://example.org/log";
+        assert_eq!(detail.update(Message::OpenTextLink(format!(" {log} "))), Action::OpenUrl(log.into()));
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "/mahype/TorroWorkplace/issues/1", ""] {
+            assert_eq!(detail.update(Message::OpenTextLink(url.into())), Action::None, "{url}");
+        }
     }
 
     #[test]

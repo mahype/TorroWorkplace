@@ -51,7 +51,7 @@ use torro_gui::connect;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -59,7 +59,9 @@ use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Place
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::source::TaskList;
-use torro_inbox::{InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter};
+use torro_inbox::{
+    InboxError, InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter,
+};
 
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
@@ -350,6 +352,8 @@ pub enum Sent {
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
+    /// `approvals.decide_approval`: the approval, allowed or not.
+    Decide(String, bool),
     /// The task lists were asked for (the dialog of "Make task" opened).
     Lists,
     /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day.
@@ -717,6 +721,9 @@ pub struct App<S> {
     last_list: Option<String>,
     /// The hint after the last change, with its undo.
     hint: Option<Hint>,
+    /// The approval whose decision is on its way (task E3.8): its Allow and Deny are disabled
+    /// until the core answered, so a second click cannot decide it twice.
+    deciding: Option<String>,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -733,6 +740,8 @@ pub struct App<S> {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     /// The source's answer for the view it was asked for; answers for another view are dropped.
@@ -785,6 +794,14 @@ pub enum Message {
     OpenItem(String),
     /// The source's answer to `inbox.open_item`.
     ItemOpened(Result<(), String>),
+    /// From the panel of an approval: "Allow" (`allow: true`) or "Deny" for the approval with this
+    /// id (task E3.8).
+    Decide {
+        approval: String,
+        allow: bool,
+    },
+    /// The source's answer to deciding, with the decision for the hint.
+    Decided(Result<(), InboxError>, bool),
     /// From the panel or `t`: the dialog that makes a task of the entry with this id.
     AskTask(String),
     /// The task lists for the dialog, or why they could not be read.
@@ -887,6 +904,7 @@ impl<S: InboxSource + 'static> App<S> {
             lists: None,
             last_list: None,
             hint: None,
+            deciding: None,
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -953,6 +971,7 @@ impl<S: InboxSource + 'static> App<S> {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
             Message::Loaded(view, result) => {
                 // An answer for a view the user has left since would show the wrong entries.
@@ -1059,6 +1078,8 @@ impl<S: InboxSource + 'static> App<S> {
             Message::ItemOpened(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the entry."), err));
             }
+            Message::Decide { approval, allow } => return self.decide(approval, allow),
+            Message::Decided(result, allow) => return self.decided(result, allow),
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
@@ -1146,6 +1167,34 @@ impl<S: InboxSource + 'static> App<S> {
         self.sent.push(Sent::Open(item.id.clone()));
         let (inbox, id) = (self.inbox.clone(), item.id.clone());
         Task::perform(async move { inbox.open_item(id).await.map_err(|err| err.to_string()) }, Message::ItemOpened)
+    }
+
+    /// Allows or denies `approval` through the source (`approvals.decide_approval`, task E3.8).
+    /// Nothing while a decision is on its way; the panel's buttons are disabled then anyway.
+    fn decide(&mut self, approval: String, allow: bool) -> Task<Message> {
+        if self.deciding.is_some() {
+            return Task::none();
+        }
+        self.deciding = Some(approval.clone());
+        #[cfg(test)]
+        self.sent.push(Sent::Decide(approval.clone(), allow));
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.decide_approval(approval, allow).await }, move |result| {
+            Message::Decided(result, allow)
+        })
+    }
+
+    /// The source's answer to [`App::decide`]: a hint with the decision, or with why there was
+    /// none, and the list again – the approval's entry is done now, or soon (the core files it).
+    /// An approval decided elsewhere or expired is no failure, only a hint.
+    fn decided(&mut self, result: Result<(), InboxError>, allow: bool) -> Task<Message> {
+        self.deciding = None;
+        match result {
+            Ok(()) => self.note(if allow { tr("Allowed") } else { tr("Denied") }.to_owned()),
+            Err(InboxError::Settled) => self.note(InboxError::Settled.to_string()),
+            Err(err) => self.error = Some(Failure::new(tr("Couldn't decide."), err.to_string())),
+        }
+        self.load()
     }
 
     /// Opens a web page in the browser, for `--demo` only (without it the core opens pages). Only
@@ -1543,6 +1592,11 @@ impl<S: InboxSource + 'static> App<S> {
         layout::of(self.size)
     }
 
+    /// The room under the title band, which the glances fill ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
+    }
+
     /// Mini or strip: a display without header, sidebar, menus, panel or keys.
     fn is_glance(&self) -> bool {
         matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
@@ -1554,11 +1608,31 @@ impl<S: InboxSource + 'static> App<S> {
         if self.is_glance() {
             // The panel, menus, the drawer and the hint stay in the state and come back with a
             // larger window.
-            return widgets::ctrl_guard(self.zoom.view(self.glance(class)));
+            // Before the first load the glance is the loading or error state on the window itself.
+            let surface = if self.loaded { Surface::of(class) } else { Surface::Window };
+            return widgets::ctrl_guard(shell::titlebar(
+                self.zoom.view(self.glance(class)),
+                self.zoom.factor(),
+                surface,
+                self.cover(),
+                Message::DragWindow,
+            ));
         }
         // Always two layers, so the window keeps its state when the hint comes and goes.
         let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
-        widgets::ctrl_guard(self.zoom.view(window))
+        let (surface, cover) = (Surface::of(class), self.cover());
+        let content = self.zoom.view(window);
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: the panel of an entry
+    /// over the list, else the drawer. A glance has neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if self.is_glance() {
+            return Cover::Nothing;
+        }
+        Cover::panel(class, self.detail.is_some()).or(Cover::drawer(class, self.drawer))
     }
 
     /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.
@@ -1594,8 +1668,8 @@ impl<S: InboxSource + 'static> App<S> {
             error: self.error.as_ref().map(|failure| failure.what),
         };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
@@ -1654,6 +1728,7 @@ impl<S: InboxSource + 'static> App<S> {
             let footer = detail::Footer {
                 anchors: anchors.clone(),
                 muted: self.is_muted(&item.source),
+                deciding: self.deciding.is_some(),
                 // The panel fills narrow windows: no room for the words of "Move to …".
                 compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
             };
@@ -2271,6 +2346,24 @@ mod tests {
     }
 
     #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Resized(MEDIUM));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+
+        let mut detail = loaded(&["--open", "detail"]);
+        detail.drawer = true;
+        for (size, expected) in
+            [(MEDIUM, Cover::Panel), (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)), (WIDE, Cover::Nothing)]
+        {
+            let _ = detail.update(Message::Resized(size));
+            assert_eq!(detail.cover(), expected, "{size:?}: the entry's panel lies above the drawer");
+        }
+    }
+
+    #[test]
     fn mini_and_strip_show_the_glance_without_keys_or_escape() {
         let mut app = loaded(&["--open", "detail"]);
         assert!(app.detail.is_some());
@@ -2577,6 +2670,10 @@ mod tests {
             Some(Sent::Open(id)) => {
                 let result = block_on(app.inbox.open_item(id)).map_err(|err| err.to_string());
                 let _ = app.update(Message::ItemOpened(result));
+            }
+            Some(Sent::Decide(approval, allow)) => {
+                let result = block_on(app.inbox.decide_approval(approval, allow));
+                let _ = app.update(Message::Decided(result, allow));
             }
             other => panic!("no call to deliver: {other:?}"),
         }
@@ -2955,6 +3052,57 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
         let _ = app.update(Message::SetDone("demo-6".into(), true));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, Some(_)))), "with undo");
+    }
+
+    // ----- Deciding approvals (E3.8) ----------------------------------------------------------
+
+    /// The approval of the demo, opened in the panel.
+    fn with_approval() -> (App<DemoSource>, String) {
+        let app = loaded(&["--open", "approval"]);
+        let detail = app.detail.as_ref().expect("the approval in the panel");
+        let approval = detail.actions.iter().find_map(|action| match action {
+            torro_inbox::Action::Allow { approval } => Some(approval.clone()),
+            torro_inbox::Action::Deny { .. } => None,
+        });
+        (app, approval.expect("an approval carries Allow"))
+    }
+
+    #[test]
+    fn allow_decides_once_then_the_entry_is_done_with_a_hint() {
+        let (mut app, approval) = with_approval();
+        let entry = app.detail.as_ref().map(|item| item.id.clone()).expect("panel");
+        let _ = app.update(Message::Decide { approval: approval.clone(), allow: true });
+        assert_eq!(app.deciding.as_deref(), Some(approval.as_str()), "the buttons wait for the answer");
+        // A second click before the answer sends nothing.
+        let _ = app.update(Message::Decide { approval: approval.clone(), allow: false });
+        assert_eq!(app.sent, [Sent::Decide(approval.clone(), true)]);
+        deliver(&mut app);
+        assert_eq!(app.deciding, None);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Allowed")));
+        assert!(!ids(&app).contains(&entry.as_str()), "decided, the approval left For me");
+    }
+
+    #[test]
+    fn deny_says_denied_and_a_settled_approval_is_only_a_hint() {
+        let (mut app, approval) = with_approval();
+        let _ = app.update(Message::Decide { approval: approval.clone(), allow: false });
+        deliver(&mut app);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Denied")));
+
+        let _ = app.update(Message::Decide { approval, allow: true });
+        deliver(&mut app);
+        let settled = InboxError::Settled.to_string();
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(settled));
+        assert!(app.error.is_none(), "decided elsewhere or expired is no failure");
+    }
+
+    #[test]
+    fn a_failed_decision_is_an_error_and_frees_the_buttons() {
+        let (mut app, approval) = with_approval();
+        let _ = app.update(Message::Decide { approval, allow: true });
+        let _ = app.update(Message::Decided(Err(InboxError::Offline), true));
+        assert_eq!(app.deciding, None);
+        assert!(app.error.is_some());
     }
 
     // ----- Make task (E3.5) ------------------------------------------------------------------

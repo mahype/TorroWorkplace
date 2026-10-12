@@ -100,7 +100,7 @@ use torro_core::settings::ListOrder;
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -619,6 +619,8 @@ pub struct App {
 // counts one variant as oversized. Boxing them would only add an allocation.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     AccountLoaded(Result<Vec<PimAccount>, String>),
@@ -953,6 +955,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
@@ -1326,6 +1329,12 @@ impl App {
         layout::of(self.size)
     }
 
+    /// The room under the title band, which the glances and the filter dialog fill
+    /// ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
+    }
+
     /// Mini or strip: a display without header, sidebar, menus or dialogs.
     fn is_glance(&self) -> bool {
         matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
@@ -1475,7 +1484,31 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(self.zoom.view(self.content()))
+        let content = self.zoom.view(self.content());
+        let (surface, cover) = (self.surface(), self.cover());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: a filter list dialog,
+    /// else the drawer. The narrow editor fills the window as a view of its own ([`App::window`]);
+    /// signing in and the glance have neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if !self.connected() || self.is_glance() {
+            return Cover::Nothing;
+        }
+        match &self.filter_dialog {
+            Some(dialog) if dialog.is_full(class) => Cover::Filled(Surface::Panel),
+            dialog => Cover::dialog(dialog.is_some()).or(Cover::drawer(class, self.drawer)),
+        }
+    }
+
+    /// The surface at the top of [`App::content`], which the title band takes: the window background
+    /// while signing in and for the glance before the first load ([`App::unloaded`]), else that of
+    /// the layout.
+    fn surface(&self) -> Surface {
+        let connected = matches!(self.account, Some(AccountState::Connected { .. }));
+        if !connected || (self.is_glance() && !self.loaded) { Surface::Window } else { Surface::of(self.class()) }
     }
 
     fn content(&self) -> Element<'_, Message> {
@@ -1508,8 +1541,8 @@ impl App {
         let data =
             GlanceData { todos: &self.todos, colors: self.colors(), today: self.today, error: self.error.as_deref() };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
@@ -1530,10 +1563,10 @@ impl App {
         let list_menu = Anchor::new();
         // In a narrow window the filter list dialog and the form "New task list" are views of their own.
         if let Some(dialog) = self.filter_dialog.as_ref().filter(|dialog| dialog.is_full(class)) {
-            return dialog.view(class, self.size).map(Message::Filter);
+            return dialog.view(class, self.content_size()).map(Message::Filter);
         }
         if let Some(dialog) = self.new_list.as_ref().filter(|dialog| dialog.is_full(class)) {
-            return dialog.view(class, self.size).map(Message::NewList);
+            return dialog.view(class, self.content_size()).map(Message::NewList);
         }
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
@@ -1555,9 +1588,11 @@ impl App {
                 widgets::floating(&list_menu, Placement::Below(Align::End), self.list_menu(), Message::CloseMenu)
             }
         });
-        let dialog = self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.size).map(Message::Filter));
         let dialog =
-            dialog.or_else(|| self.new_list.as_ref().map(|dialog| dialog.view(class, self.size).map(Message::NewList)));
+            self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.content_size()).map(Message::Filter));
+        let dialog = dialog.or_else(|| {
+            self.new_list.as_ref().map(|dialog| dialog.view(class, self.content_size()).map(Message::NewList))
+        });
         // The property editors and the "…" menu of the detail.
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail
@@ -1678,7 +1713,8 @@ impl App {
     fn properties_column<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
         let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
         let account = account_of(&detail.original.collection, &self.accounts, |a| a.id.as_str());
-        detail.properties_column(account.map(account_title), anchor).map(Message::Detail)
+        let shown = self.shown_accounts();
+        detail.properties_column(account.map(|account| account_title(account, &shown)), anchor).map(Message::Detail)
     }
 
     /// The Display menu: how to group the list, how to order it (a single writable list: "Due
@@ -1914,6 +1950,7 @@ impl App {
             }
         };
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
+        let shown = self.shown_accounts();
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             // One account: as it always was, a flat list under "Lists".
             Err(lists) => {
@@ -1931,7 +1968,7 @@ impl App {
                     };
                     let unfolded = !self.folded.contains(&account.id);
                     let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
-                    items.push(widgets::sidebar_group_in(mode, account_title(account), toggle));
+                    items.push(widgets::sidebar_group_in(mode, account_title(account, &shown), toggle));
                     // The rail has no title to unfold with, so it shows every list.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
@@ -1971,6 +2008,7 @@ impl App {
             MenuItem::new(e.mark, e.label, Message::SetFilter(e.filter)).trail(trail).current(e.active)
         };
         let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
+        let shown = self.shown_accounts();
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             Err(lists) => {
                 if !lists.is_empty() {
@@ -1979,7 +2017,8 @@ impl App {
             }
             // A menu has no folding: every account is a section named after it.
             Ok(groups) => sections.extend(groups.into_iter().map(|group| {
-                let title = group.account.map_or_else(|| tr("Lists").to_string(), account_title);
+                let title =
+                    group.account.map_or_else(|| tr("Lists").to_string(), |account| account_title(account, &shown));
                 MenuSection::titled(title, group.items.into_iter().map(item).collect())
             })),
         }
@@ -2202,26 +2241,38 @@ impl App {
         self.accounts.iter().filter(|a| a.kind == GITHUB_KIND && matches!(a.state, AccountState::Connected { .. }))
     }
 
+    /// The accounts that the sidebar shows with a group of their own (task K.31): those that own
+    /// a list, when two or more do. With one owner the list is flat and no account is shown.
+    /// [`account_title`] compares hosts only among these.
+    fn shown_accounts(&self) -> Vec<&PimAccount> {
+        match shell::account_groups(&self.accounts, self.todo_lists(), |c| c.id.as_str()) {
+            Ok(groups) => groups.iter().filter_map(|group| group.account).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Opens the dialog of a filter list (`filter.rs`) and asks for what it needs: a new list –
     /// first of the GitHub account `id`, the others as chips, the repository chosen last
     /// preselected, a back arrow to the choice of "New list…" –, or "Edit filter…" / "Delete
     /// list…" of a filter list. Unknown ids open nothing.
     fn open_filter_dialog(&mut self, open: filter::Open) -> Task<Message> {
         self.close_menus();
+        let shown = self.shown_accounts();
         let owner = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str());
         let list = |id: &str| self.collections.iter().find(|c| c.id == id);
         let dialog = match open {
             filter::Open::New(id) => {
                 let accounts = self
                     .github_accounts()
-                    .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a) })
+                    .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a, &shown) })
                     .collect();
                 let start = filter::Start { accounts, account: id, last_repo: self.last_repo.clone(), back: true };
                 filter::Dialog::new_list(start)
             }
             filter::Open::Edit(id) => {
-                let edit =
-                    |(list, a): (&Collection, &PimAccount)| filter::Dialog::edit(list, a.id.clone(), account_title(a));
+                let edit = |(list, a): (&Collection, &PimAccount)| {
+                    filter::Dialog::edit(list, a.id.clone(), account_title(a, &shown))
+                };
                 list(&id).zip(owner(&id)).and_then(edit)
             }
             filter::Open::Delete(id) => list(&id).and_then(filter::Dialog::delete),
@@ -2280,12 +2331,13 @@ impl App {
     /// GitHub), the one of the list shown first, and whether a GitHub account is there.
     fn list_offer(&self) -> new_list::Offer {
         let connected = |a: &&PimAccount| matches!(a.state, AccountState::Connected { .. });
+        let shown = self.shown_accounts();
         let task_accounts = self
             .accounts
             .iter()
             .filter(connected)
             .filter(|a| a.kind != GITHUB_KIND)
-            .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a) })
+            .map(|a| new_list::AccountChoice { id: a.id.clone(), label: account_title(a, &shown) })
             .collect();
         let preferred = match &self.filter {
             Filter::List(id) => account_of(id, &self.accounts, |a| a.id.as_str()).map(|a| a.id.clone()),
@@ -2911,13 +2963,18 @@ fn filter_list_icon(source: &GitHubFilter) -> Icon {
     }
 }
 
-/// The title of an account's group in the sidebar and the navigation menu: its name, for a GitHub
-/// account "GitHub · login" (the name alone would be a bare login).
-fn account_title(account: &PimAccount) -> String {
+/// The title of an account in the sidebar, the navigation menu, the detail and the filter dialog
+/// (task K.31): its host, `cloud.example.org` for `anna@cloud.example.org`. Only when another
+/// account of `shown` has the same host, the full address, so the two stay apart. A GitHub account
+/// is "GitHub · login" (its label is a bare login, which has no host to show).
+fn account_title(account: &PimAccount, shown: &[&PimAccount]) -> String {
     if account.kind == GITHUB_KIND {
         trf("GitHub · {login}", &[("login", &account.label)])
     } else {
-        account.label.clone()
+        let twin = shown
+            .iter()
+            .any(|other| other.kind != GITHUB_KIND && other.id != account.id && other.host() == account.host());
+        if twin { account.label.clone() } else { account.host().to_string() }
     }
 }
 
@@ -3062,10 +3119,27 @@ mod tests {
             [("Needs me".to_string(), Mark::Icon(Icon::UserCheck)), ("Torro bugs".to_string(), Mark::Icon(Icon::Bug))]
         );
         assert!(lists.iter().filter(|e| !e.list_id().starts_with("github:")).all(|e| matches!(e.mark, Mark::Ring(_))));
-        assert_eq!(account_title(&github_account()), trf("GitHub · {login}", &[("login", &"mahype")]));
-        assert_eq!(account_title(&account("nextcloud:anna@cloud")), "nextcloud:anna@cloud", "others by their name");
+        assert_eq!(account_title(&github_account(), &[]), trf("GitHub · {login}", &[("login", &"mahype")]));
+        assert_eq!(account_title(&account("nextcloud:anna@cloud"), &[]), "cloud", "others by their host");
         let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::TORRO_BUGS.into())));
         assert_eq!(app.filter_mark(&app.filter), Some(Icon::Bug), "the header shows it too");
+    }
+
+    #[test]
+    fn account_titles_are_hosts_unless_two_shown_accounts_share_one() {
+        let anna = account("nextcloud:anna@cloud.example.org");
+        let bob = account("nextcloud:bob@imt.example.org");
+        let twin = account("nextcloud:bob@cloud.example.org");
+        assert_eq!(account_title(&anna, &[&anna, &bob]), "cloud.example.org", "other hosts: the host");
+        assert_eq!(account_title(&anna, &[&anna, &twin]), "nextcloud:anna@cloud.example.org", "same host: address");
+        assert_eq!(account_title(&twin, &[&anna, &twin]), "nextcloud:bob@cloud.example.org", "both get the address");
+        assert_eq!(account_title(&anna, &[&anna]), "cloud.example.org", "an account alone is not its own twin");
+        assert_eq!(account_title(&anna, &[]), "cloud.example.org", "no group shown: the host");
+
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        let work = app.accounts.iter().find(|a| a.id == torro_pim::demo::WORK_ACCOUNT).expect("a demo account");
+        assert_eq!(account_title(work, &app.shown_accounts()), "work.example.org", "the demo spreads over hosts");
     }
 
     /// The demo app on the filter list "Torro bugs" with the accounts `accounts`, and the index of
@@ -3994,6 +4068,28 @@ mod tests {
         connected(&mut app);
         let _ = app.update(Message::Loaded(Ok((collections, todos))));
         app
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(app.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut dialog = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        dialog.drawer = true;
+        for (size, cover) in [
+            (Size::new(1600.0, 1000.0), Cover::Dialog),
+            (Size::new(800.0, 600.0), Cover::Dialog),
+            (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)),
+        ] {
+            let _ = dialog.update(Message::Resized(size));
+            assert_eq!(dialog.cover(), cover, "{size:?}: the dialog, but not the narrow editor's own view");
+        }
     }
 
     #[test]

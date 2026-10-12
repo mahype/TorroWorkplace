@@ -11,6 +11,8 @@ description = "Shared ground for every TorroWorkplace app: app ids, per-OS paths
 workspace = true
 
 [dependencies]
+# The settings of mail accounts in `accounts.json` (task M2.1); a leaf crate of types.
+torro-mail.workspace = true
 keyring.workspace = true
 schemars.workspace = true
 serde.workspace = true

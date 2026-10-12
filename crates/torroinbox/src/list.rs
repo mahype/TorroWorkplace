@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(preview(&item), None);
     }
 
-    const TITLE: &str = "Claude Code is waiting for your permission";
+    const TITLE: &str = "Claude Code is waiting for you";
     const PREVIEW: &str = "Claude needs your permission to use Bash: cargo test --workspace";
 
     #[test]

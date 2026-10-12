@@ -12,25 +12,32 @@
 //! A GitHub account (task G.1) has no calendars or lists yet: its detail page shows what the
 //! token's scopes allow and what is missing ([`github_permissions`]) in place of them.
 //!
-//! Requests: `Sync`, `RemoveAccount { id }`, and `SetCollectionShown { collection, shown }` for
-//! the switches. The pure parts (relative time, status text, whether a collection is shown,
+//! A CalDAV account (a mail provider's, task M7.2) shows "CalDAV" as its kind, the server and user
+//! in the connection group, and "Change password…" there: a dialog over the window asks for the
+//! new password and sends `ConnectCalDav` for the same server and user again (the core then
+//! replaces only the password). A refused password stays in the dialog under its field.
+//!
+//! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` for "Change password…", and
+//! `SetCollectionShown { collection, shown }` for the switches. The pure parts (relative time, status text, whether a collection is shown,
 //! which accounts are listed) are plain functions with unit tests.
 
 use chrono::{DateTime, Utc};
+use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row, toggler};
-use iced::{Element, Fill};
+use iced::widget::{Space, column, container, row, text, toggler};
+use iced::{Alignment, Element, Fill, Theme};
+use torro_core::account::Secret;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_gui::icon::Icon;
 use torro_gui::layout::SizeClass;
-use torro_gui::theme::{self, size, space};
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
 use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
-use super::{Action, Data, Header, chevron, confirm, dialog, pressable, setting_row, wizard};
+use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row, wizard};
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -40,6 +47,17 @@ pub struct State {
     pub selected: Option<String>,
     /// The "Remove this account?" confirmation is open.
     pub confirm_remove: bool,
+    /// The "Change password" dialog of the open CalDAV account.
+    pub password: Option<PasswordChange>,
+}
+
+/// The "Change password" dialog: the new password, what went wrong, and whether the request is on
+/// its way (then the button waits for the answer).
+#[derive(Debug, Default)]
+pub struct PasswordChange {
+    password: Secret,
+    error: Option<String>,
+    sending: bool,
 }
 
 impl State {
@@ -66,13 +84,22 @@ pub enum Message {
     AskRemove,
     CancelRemove,
     Remove,
+    /// "Change password…" on a CalDAV account's page.
+    ChangePassword,
+    /// The new password was typed. A [`Secret`], so that `Debug` of the message shows none.
+    PasswordEdited(Secret),
+    /// "Change password" in the dialog, or Enter in its field.
+    SubmitPassword,
+    ClosePassword,
 }
 
-/// What Escape means on this page right now: close the add-account dialog or the remove
-/// confirmation.
+/// What Escape means on this page right now: close the add-account dialog, the password dialog or
+/// the remove confirmation.
 pub fn escape(state: &State) -> Option<Message> {
     if state.wizard.is_some() {
         Some(Message::Wizard(wizard::Message::Close))
+    } else if state.password.is_some() {
+        Some(Message::ClosePassword)
     } else if state.confirm_remove {
         Some(Message::CancelRemove)
     } else {
@@ -97,11 +124,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Open(id) => {
             state.selected = Some(id);
             state.confirm_remove = false;
+            state.password = None;
             Action::None
         }
         Message::Back => {
             state.selected = None;
             state.confirm_remove = false;
+            state.password = None;
             Action::None
         }
         Message::SyncNow => Action::Send(Request::Sync),
@@ -122,13 +151,78 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 None => Action::None,
             }
         }
+        // Only a CalDAV account that is connected has a password to change.
+        Message::ChangePassword => {
+            state.password = selected(state, data).and_then(caldav_connection).map(|_| PasswordChange::default());
+            Action::None
+        }
+        Message::PasswordEdited(password) => {
+            if let Some(change) = state.password.as_mut() {
+                change.password = password;
+                change.error = None;
+            }
+            Action::None
+        }
+        Message::SubmitPassword => submit_password(state, data),
+        Message::ClosePassword => {
+            state.password = None;
+            Action::None
+        }
     }
 }
 
-/// The answer to a request the shell sent: the add-account dialog takes the answers to its own
-/// requests ([`wizard::answered`]). Returns whether it did; then the shell shows no notice.
+/// The server and user name of a connected CalDAV account: what "Change password…" signs in at
+/// again.
+fn caldav_connection(account: &AccountInfo) -> Option<(&str, &str)> {
+    match &account.state {
+        AccountState::Connected { server, login_name, .. } if account.kind == "caldav" => {
+            Some((server.as_str(), login_name.as_str()))
+        }
+        _ => None,
+    }
+}
+
+/// Sends the new password: `ConnectCalDav` for the account's own server and user, which the core
+/// takes as "replace the password" (the services chosen then are ignored, hidden calendars stay).
+/// The dialog keeps no copy of the password.
+fn submit_password(state: &mut State, data: &Data) -> Action {
+    let Some(account) = selected(state, data) else { return Action::None };
+    let Some((server, login_name)) = caldav_connection(account) else { return Action::None };
+    let Some(change) = state.password.as_mut().filter(|change| !change.sending && !change.password.is_blank()) else {
+        return Action::None;
+    };
+    change.sending = true;
+    change.error = None;
+    Action::Send(Request::ConnectCalDav {
+        address: account.label.clone(),
+        server: Some(server.to_string()),
+        login_name: login_name.to_string(),
+        password: std::mem::take(&mut change.password),
+        calendars: true,
+        tasks: true,
+    })
+}
+
+/// The answer to a request the shell sent: the add-account dialog and the password dialog take the
+/// answers to their own requests ([`wizard::answered`]). Returns whether one did; then the shell
+/// shows no notice.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
-    state.wizard.as_mut().is_some_and(|wizard| wizard::answered(wizard, result))
+    if let Some(wizard) = state.wizard.as_mut() {
+        return wizard::answered(wizard, result);
+    }
+    let Some(change) = state.password.as_mut().filter(|change| change.sending) else { return false };
+    match result {
+        Ok(Response::Connected { .. }) => state.password = None,
+        Ok(Response::Error { message, .. }) | Err(message) => {
+            change.sending = false;
+            change.error = Some(message.clone());
+        }
+        Ok(_) => {
+            change.sending = false;
+            change.error = Some(tr("Torro Workplace did not answer as expected. Try again.").to_string());
+        }
+    }
+    true
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
@@ -139,12 +233,16 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     }
 }
 
-/// The page's dialog over the whole window: the add-account dialog, else the "Remove this
-/// account?" confirmation; `None` while neither is open.
+/// The page's dialog over the whole window: the add-account dialog, else the password dialog,
+/// else the "Remove this account?" confirmation; `None` while none is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if let Some(wizard) = &state.wizard {
         let content = wizard::view(wizard, data).map(Message::Wizard);
         return Some(dialog(content, size::FORM_MAX, Message::Wizard(wizard::Message::Close)));
+    }
+    if let Some(change) = &state.password {
+        let account = selected(state, data)?;
+        return Some(password_dialog(change, account));
     }
     if !state.confirm_remove {
         return None;
@@ -161,6 +259,42 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         Message::Remove,
         Message::CancelRemove,
     ))
+}
+
+/// "Change password": who it is for, the masked field, a refusal under it, "Cancel" and the primary
+/// button right. A click next to the dialog cancels.
+fn password_dialog<'a>(change: &'a PasswordChange, account: &'a AccountInfo) -> Element<'a, Message> {
+    let can_send = !change.sending && !change.password.is_blank();
+    let input = wizard::field("", change.password.expose())
+        .secure(true)
+        .on_input(|password| Message::PasswordEdited(Secret::new(password)))
+        .on_submit_maybe(can_send.then_some(Message::SubmitPassword));
+    let mut body = column![
+        typo::text(typo::TITLE, tr("Change password")),
+        typo::text(typo::BODY, trf("Enter the new password for {account}.", &[("account", &account.label)]))
+            .style(theme::text_2),
+        widgets::group(tr("Password"), vec![row_frame(input, false)], None),
+    ]
+    .spacing(space::L);
+    if let Some(error) = &change.error {
+        body = body.push(
+            typo::text(typo::BODY, error.as_str())
+                .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
+        );
+    }
+    let buttons = row![
+        blank::horizontal(),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::ClosePassword)),
+        widgets::text_button(
+            None,
+            tr("Change password"),
+            style::button::primary,
+            can_send.then_some(Message::SubmitPassword),
+        ),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    dialog(body.push(buttons), widgets::POPOVER_WIDTH, Message::ClosePassword)
 }
 
 /// The header bar of the page: "Add account" on the list; on an account's detail its label with
@@ -203,6 +337,7 @@ fn pending_name(account: &AccountInfo) -> &str {
 pub fn provider_name(kind: &str) -> String {
     match kind {
         "nextcloud" => tr("Nextcloud").to_string(),
+        "caldav" => tr("CalDAV").to_string(),
         "github" => tr("GitHub").to_string(),
         other => other.to_string(),
     }
@@ -330,7 +465,10 @@ fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     // The accounts first, then the sign-ins in progress, so a new row appears below the others.
     let entries: Vec<&AccountInfo> = listed(&data.accounts).chain(pending(&data.accounts)).collect();
     if entries.is_empty() {
-        return empty_state(tr("No accounts yet."), tr("Add your Nextcloud to see calendars and tasks in the apps."));
+        return empty_state(
+            tr("No accounts yet."),
+            tr("Add your Nextcloud or a mail provider to see calendars and tasks in the apps."),
+        );
     }
     let groups = providers(&entries).into_iter().map(|kind| {
         let rows = entries
@@ -440,11 +578,18 @@ fn connection_group<'a>(account: &'a AccountInfo) -> Option<Element<'a, Message>
     };
     let mut rows = vec![value_row(tr("Server"), server)];
     rows.extend(user.map(|user| value_row(tr("User"), user)));
+    if account.kind == "caldav" && user.is_some() {
+        let change =
+            widgets::text_button(None, tr("Change password…"), style::button::secondary, Some(Message::ChangePassword));
+        let stored = tr("Stored in the system keychain").to_string();
+        rows.push(setting_row(None, tr("Password"), Some(stored), change));
+    }
     let stored = match account.kind.as_str() {
-        "github" => tr("Token stored in the system keychain"),
-        _ => tr("App password stored in the system keychain"),
+        "github" => Some(tr("Token stored in the system keychain")),
+        "caldav" => None,
+        _ => Some(tr("App password stored in the system keychain")),
     };
-    let footer = user.map(|_| stored.to_string());
+    let footer = user.and(stored).map(str::to_string);
     Some(widgets::group(tr("Connection"), rows, footer))
 }
 
@@ -522,6 +667,7 @@ fn value_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use chrono::TimeDelta;
+    use torro_core::account::Secret;
 
     use super::*;
 
@@ -788,5 +934,104 @@ mod tests {
                 "{action:?}"
             );
         }
+    }
+
+    // ----- A mail provider's account (task M7.2) -------------------------------------------------
+
+    const CALDAV: &str = "caldav:anna@mailbox.org@dav.mailbox.org";
+
+    fn caldav_data() -> Data {
+        let mut anna = account(
+            CALDAV,
+            AccountState::Connected {
+                server: "https://dav.mailbox.org/".into(),
+                login_name: "anna@mailbox.org".into(),
+                last_sync: None,
+                problem: None,
+            },
+        );
+        anna.kind = "caldav".into();
+        anna.label = "anna@mailbox.org".into();
+        Data { accounts: vec![anna], ..Data::default() }
+    }
+
+    #[test]
+    fn a_caldav_account_is_called_caldav() {
+        assert_eq!(provider_name("caldav"), tr("CalDAV"));
+        let data = caldav_data();
+        let mut state = State::default();
+        drop(view(&state, &data));
+        update(&mut state, Message::Open(CALDAV.into()), &data);
+        drop(view(&state, &data));
+    }
+
+    #[test]
+    fn change_password_asks_first_and_sends_the_same_server_and_user() {
+        let data = caldav_data();
+        let mut state = State::default();
+        update(&mut state, Message::ChangePassword, &data);
+        assert!(state.password.is_none(), "no account open");
+        update(&mut state, Message::Open(CALDAV.into()), &data);
+        update(&mut state, Message::ChangePassword, &data);
+        assert!(state.password.is_some() && overlay(&state, &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::ClosePassword)));
+
+        assert!(matches!(update(&mut state, Message::SubmitPassword, &data), Action::None), "no password yet");
+        update(&mut state, Message::PasswordEdited(Secret::new("  ")), &data);
+        assert!(matches!(update(&mut state, Message::SubmitPassword, &data), Action::None), "blank");
+        update(&mut state, Message::PasswordEdited(Secret::new("new-secret")), &data);
+        let action = update(&mut state, Message::SubmitPassword, &data);
+        match &action {
+            Action::Send(Request::ConnectCalDav { address, server, login_name, password, .. }) => {
+                assert_eq!(address, "anna@mailbox.org");
+                assert_eq!(server.as_deref(), Some("https://dav.mailbox.org/"));
+                assert_eq!(login_name, "anna@mailbox.org");
+                assert_eq!(password.expose(), "new-secret");
+            }
+            other => panic!("expected ConnectCalDav, got {other:?}"),
+        }
+        assert!(!format!("{action:?}").contains("new-secret") && !format!("{state:?}").contains("new-secret"));
+        assert!(
+            matches!(update(&mut state, Message::SubmitPassword, &data), Action::None),
+            "once; the dialog keeps no copy to send twice"
+        );
+    }
+
+    #[test]
+    fn the_password_dialog_takes_its_answer_and_shows_a_refusal() {
+        let data = caldav_data();
+        let mut state = State::default();
+        update(&mut state, Message::Open(CALDAV.into()), &data);
+        update(&mut state, Message::ChangePassword, &data);
+        assert!(!answered(&mut state, &Err("anything".into())), "it waits for nothing yet");
+
+        update(&mut state, Message::PasswordEdited(Secret::new("wrong")), &data);
+        update(&mut state, Message::SubmitPassword, &data);
+        assert!(answered(&mut state, &Err(tr("Password was refused").into())));
+        let change = state.password.as_ref().expect("the dialog stays open");
+        assert_eq!((change.error.as_deref(), change.sending), (Some(tr("Password was refused")), false));
+        drop(overlay(&state, &data));
+
+        update(&mut state, Message::PasswordEdited(Secret::new("right")), &data);
+        assert!(state.password.as_ref().is_some_and(|change| change.error.is_none()), "an edit clears it");
+        update(&mut state, Message::SubmitPassword, &data);
+        let connected = Response::Connected { account: data.accounts[0].clone(), calendars: true, tasks: true };
+        assert!(answered(&mut state, &Ok(connected)));
+        assert!(state.password.is_none(), "done: the dialog closes");
+    }
+
+    #[test]
+    fn only_a_connected_caldav_account_has_a_password_to_change() {
+        let mut data = two_accounts();
+        let mut state = State::default();
+        update(&mut state, Message::Open("nextcloud:anna@work.example.org".into()), &data);
+        update(&mut state, Message::ChangePassword, &data);
+        assert!(state.password.is_none(), "Nextcloud signs in in the browser");
+        data.accounts.extend(caldav_data().accounts);
+        update(&mut state, Message::Open(CALDAV.into()), &data);
+        update(&mut state, Message::ChangePassword, &data);
+        assert!(state.password.is_some());
+        update(&mut state, Message::Back, &data);
+        assert!(state.password.is_none(), "leaving the page closes it");
     }
 }

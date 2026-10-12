@@ -13,11 +13,14 @@
 //!   ([`control_column`]). Where a row's name and line would not fit next to that column (a
 //!   narrow window), each segmented control stands on a line of its own under them instead and the
 //!   switches go to the right edge; an admin switch of its own after
-//!   every area that has admin commands ([`has_admin`], independent of the level); "Ask first"
+//!   every area that has admin commands ([`has_admin`], independent of the level); under "Mail"
+//!   from "Write" on the row "Send on my behalf" (never, ask me each time, always; task M3.4,
+//!   [`Rights::outbound`]), with a warning under it while it says "Always" ([`sends_freely`]), since
+//!   mail can hold instructions to the agent; "Ask first"
 //!   (never, on delete, on every change); the selections of calendars, task lists, GitHub
-//!   repositories and inbox sources ("All" or the switched-on ones, a calendar's colour as a dot as
-//!   on the Accounts page; the suite's own entries are never offered, since the core shows them
-//!   only to the person, task E1.2c) for each area the client can reach; its latest requests from
+//!   repositories, inbox sources and mail accounts ("All" or the switched-on ones, a calendar's
+//!   colour as a dot as on the Accounts page; the suite's own entries are never offered, since the
+//!   core shows them only to the person, task E1.2c) for each area the client can reach; its latest requests from
 //!   the audit
 //!   log (command and result, never contents); "Create new key" and "Disconnect…", each behind a
 //!   confirmation that says what goes ([`disconnect_text`]). A new key is shown once, with a copy
@@ -43,8 +46,8 @@
 //! detail page), `clients.new_key`, `clients.remove_client` and, from the assistant,
 //! `clients.create_client`. The clients come from
 //! `clients.list_clients`, the candidates of the selections from `calendar.list_calendars`,
-//! `tasks.list_lists` (whose GitHub filter lists also name repositories) and `inbox.list_sources`,
-//! all loaded by the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
+//! `tasks.list_lists` (whose GitHub filter lists also name repositories), `inbox.list_sources` and
+//! `accounts.list_accounts` (the accounts of the kind `mail`), all loaded by the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
 //! has it.
 
 use std::time::Duration;
@@ -55,6 +58,7 @@ use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, center, column, container, responsive, row, svg, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Length, Subscription, Theme};
+use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
@@ -63,7 +67,7 @@ use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
 use torro_inbox::{AgentKind, SourceKind, SourceRef};
 use torro_ipc::api::{self, Access, Area, AreaRights, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights};
-use torro_ipc::api::{RightsTemplate, Selection};
+use torro_ipc::api::{Outbound, RightsTemplate, Selection};
 use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
 use torro_pim::Collection;
 
@@ -148,17 +152,19 @@ struct Issued {
     copied: bool,
 }
 
-/// One of the four selections of a client's rights.
+/// One of the five selections of a client's rights.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
     Calendars,
     TaskLists,
     GithubRepos,
     InboxSources,
+    MailAccounts,
 }
 
 impl Pick {
-    pub const ALL: [Pick; 4] = [Pick::Calendars, Pick::TaskLists, Pick::GithubRepos, Pick::InboxSources];
+    pub const ALL: [Pick; 5] =
+        [Pick::Calendars, Pick::TaskLists, Pick::GithubRepos, Pick::InboxSources, Pick::MailAccounts];
 
     /// The area whose level decides whether the selection matters at all.
     pub fn area(self) -> Area {
@@ -167,6 +173,7 @@ impl Pick {
             Pick::TaskLists => Area::Tasks,
             Pick::GithubRepos => Area::Github,
             Pick::InboxSources => Area::Inbox,
+            Pick::MailAccounts => Area::Mail,
         }
     }
 
@@ -176,6 +183,7 @@ impl Pick {
             Pick::TaskLists => &rights.task_lists,
             Pick::GithubRepos => &rights.github_repos,
             Pick::InboxSources => &rights.inbox_sources,
+            Pick::MailAccounts => &rights.mail_accounts,
         }
     }
 
@@ -185,6 +193,7 @@ impl Pick {
             Pick::TaskLists => &mut rights.task_lists,
             Pick::GithubRepos => &mut rights.github_repos,
             Pick::InboxSources => &mut rights.inbox_sources,
+            Pick::MailAccounts => &mut rights.mail_accounts,
         }
     }
 
@@ -194,6 +203,7 @@ impl Pick {
             Pick::TaskLists => tr("Task lists"),
             Pick::GithubRepos => tr("GitHub repositories"),
             Pick::InboxSources => tr("Inbox sources"),
+            Pick::MailAccounts => tr("Mail accounts"),
         }
     }
 
@@ -214,6 +224,8 @@ impl Pick {
             (Pick::InboxSources, false) => tr(
                 "Entries of other sources don't exist for this agent. Approvals and account problems are shown only to you.",
             ),
+            (Pick::MailAccounts, true) => tr("Includes mail accounts added later."),
+            (Pick::MailAccounts, false) => tr("Mail accounts left off don't exist for this agent."),
         }
     }
 }
@@ -230,6 +242,8 @@ pub enum Message {
     Admin(Area, bool),
     /// A segment of "Ask first".
     Confirm(Confirm),
+    /// A segment of "Send on my behalf".
+    Outbound(Outbound),
     /// "All" (`true`) or "Selected" of a selection.
     All(Pick, bool),
     /// A switch of a selection: the id and whether it is on now.
@@ -288,6 +302,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             rights.areas.insert(area, AreaRights { level, admin });
         }),
         Message::Confirm(confirm) => edit(state, data, |rights| rights.confirm = confirm),
+        Message::Outbound(outbound) => edit(state, data, |rights| rights.outbound = outbound),
         Message::All(pick, true) => edit(state, data, |rights| *pick.of_mut(rights) = Selection::All),
         // "Selected" starts with everything known ticked: the agent keeps what it reaches until the
         // person unticks something.
@@ -629,6 +644,23 @@ fn confirm_options() -> [(&'static str, Confirm); 3] {
     ]
 }
 
+/// The options of "Send on my behalf", least allowed first.
+fn outbound_options() -> [(&'static str, Outbound); 3] {
+    [(tr("Never"), Outbound::Never), (tr("Ask me each time"), Outbound::WithApproval), (tr("Always"), Outbound::Free)]
+}
+
+/// Whether the row "Send on my behalf" is shown for `level` of the mail area: sending is a write
+/// (plus the switch of its own), so below "Write" the core refuses it whatever the switch says.
+pub fn can_send(level: Level) -> bool {
+    level >= Level::Write
+}
+
+/// Whether the warning under "Send on my behalf" is due: the client sends without asking. Mail it
+/// reads can hold instructions to it, and with "Always" nobody looks before it sends.
+pub fn sends_freely(rights: &Rights) -> bool {
+    can_send(rights.area(Area::Mail).level) && rights.outbound == Outbound::Free
+}
+
 /// The estimated width of a segmented control (`widgets::segmented`) with `labels`: each label in
 /// `CAPTION` with the button padding, plus the frame's inset and border. `typo::text_width`
 /// estimates generously, so the control fits.
@@ -639,14 +671,18 @@ fn segmented_width(labels: &[&str]) -> f32 {
 }
 
 /// The width of the slot every segmented control of the detail page starts in, left-aligned: as
-/// wide as the widest of them (all four levels, "Ask first", "All · Selected") in the language
+/// wide as the widest of them (all four levels, "Ask first", "Send on my behalf", "All · Selected")
+/// in the language
 /// shown. So "None" stands under "None" whether an area offers two levels or four, and the page
 /// lines up in every size class without a width of its own.
 pub fn segment_slot() -> f32 {
     let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(level_label);
     let confirm = confirm_options().map(|(label, _)| label);
+    let outbound = outbound_options().map(|(label, _)| label);
     let pick = [tr("All"), tr("Selected")];
-    [segmented_width(&levels), segmented_width(&confirm), segmented_width(&pick)].into_iter().fold(0.0, f32::max)
+    [segmented_width(&levels), segmented_width(&confirm), segmented_width(&outbound), segmented_width(&pick)]
+        .into_iter()
+        .fold(0.0, f32::max)
 }
 
 /// `control` at the left of a slot `slot` wide ([`segment_slot`]).
@@ -663,6 +699,8 @@ fn in_slot<'a>(control: Element<'a, Message>, slot: f32) -> Element<'a, Message>
 /// translations.
 pub fn control_column(width: f32) -> Option<f32> {
     let slot = segment_slot();
+    let sending =
+        [typo::text_width(tr("Send on my behalf"), typo::BODY), typo::text_width(outbound_detail(), typo::META)];
     let texts = Area::ALL.into_iter().filter(|area| area.grantable()).flat_map(|area| {
         let admin = has_admin(area).then(|| {
             [typo::text_width(admin_label(area), typo::BODY), typo::text_width(&admin_detail(area), typo::META)]
@@ -671,7 +709,7 @@ pub fn control_column(width: f32) -> Option<f32> {
             .into_iter()
             .chain(admin.into_iter().flatten())
     });
-    let text = texts.fold(0.0, f32::max);
+    let text = texts.chain(sending).fold(0.0, f32::max);
     // A setting row: 16 at both sides and 16 between the text and the control.
     let row = 3.0 * space::L + text + slot;
     (width >= row).then_some(slot)
@@ -729,6 +767,7 @@ fn area_label(area: Area) -> &'static str {
         Area::Tasks => tr("Tasks"),
         Area::Github => tr("GitHub"),
         Area::Inbox => tr("Inbox"),
+        Area::Mail => tr("Mail"),
         Area::Accounts => tr("Accounts"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
@@ -745,6 +784,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Tasks => tr("Task lists and tasks"),
         Area::Github => tr("Issues and pull requests in filter lists"),
         Area::Inbox => tr("Entries of agents and scripts"),
+        Area::Mail => tr("Folders, messages and drafts"),
         Area::Accounts => tr("Connected accounts and sync"),
         Area::Settings => tr("Settings of the suite"),
         Area::Apps => tr("Opening the suite's apps"),
@@ -941,6 +981,7 @@ pub fn candidates(pick: Pick, data: &Data, selection: &Selection) -> Vec<Candida
         Pick::TaskLists => data.task_lists.iter().map(|collection| collection_candidate(collection, data)).collect(),
         Pick::GithubRepos => repo_candidates(data, selection),
         Pick::InboxSources => source_candidates(data, selection),
+        Pick::MailAccounts => mail_candidates(data),
     };
     // Repositories need no such pass: their candidates are made from the selection.
     if let (Selection::Only(ids), false) = (selection, pick == Pick::GithubRepos) {
@@ -1050,6 +1091,17 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
             };
             Candidate::plain(source.key(), source.label(), Some(detail.to_string()))
         })
+        .collect()
+}
+
+/// The mail accounts an agent can be allowed (`accounts.list_accounts`, kind `mail`): the id is
+/// what the core checks a call against ([`Rights::reaches_mail_account`]), the address is what the
+/// person knows it by. A sign-in that is still running has no id and no mail yet.
+fn mail_candidates(data: &Data) -> Vec<Candidate> {
+    data.accounts
+        .iter()
+        .filter(|account| account.kind == AccountKind::Mail.name() && !account.id.is_empty())
+        .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
         .collect()
 }
 
@@ -1197,6 +1249,9 @@ fn access_group<'a>(rights: &Rights, column: Option<f32>) -> Element<'a, Message
             active,
         );
         rows.push(segment_row(area_label(area), Some(area_detail(area).to_string()), control, column));
+        if area == Area::Mail && can_send(granted.level) {
+            rows.extend(outbound_rows(rights, column));
+        }
         if has_admin(area) {
             let switch = toggler(granted.admin)
                 .size(style::CHECK_SIZE)
@@ -1207,6 +1262,29 @@ fn access_group<'a>(rights: &Rights, column: Option<f32>) -> Element<'a, Message
     }
     let footer = tr("Write includes reading, Full also deletes and overwrites.");
     widgets::group(tr("Access"), rows, Some(footer.to_string()))
+}
+
+/// The line under "Send on my behalf": what sending means, so "Never" reads as a real choice.
+fn outbound_detail() -> &'static str {
+    tr("Messages leave your computer and can't be taken back")
+}
+
+/// "Send on my behalf" under the mail area, and while it says "Always" the warning in a row of its
+/// own: a mark in the attention colour and the sentence, which wraps in a narrow window.
+fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Message>> {
+    let options = outbound_options();
+    let active = options.iter().position(|(_, outbound)| *outbound == rights.outbound).unwrap_or(1);
+    let control = widgets::segmented(options.map(|(label, outbound)| (label, Message::Outbound(outbound))), active);
+    let mut rows = vec![segment_row(tr("Send on my behalf"), Some(outbound_detail().to_string()), control, column)];
+    if sends_freely(rights) {
+        let mark = icon::icon(Icon::CircleAlert, icon::SIZE)
+            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
+        let words = typo::text(typo::META, tr("Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first."))
+            .style(theme::text_2);
+        let content = row![mark, words.width(Fill)].spacing(space::M);
+        rows.push(container(content).width(Fill).padding([space::M, space::L]).into());
+    }
+    rows
 }
 
 /// "Ask first": never, on delete, on every change.
@@ -1264,7 +1342,7 @@ fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Opt
     let dot = match (pick, color) {
         (_, Some(color)) => Some(color_dot(color, space::S)),
         (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::S).into()),
-        (Pick::GithubRepos | Pick::InboxSources, None) => None,
+        (Pick::GithubRepos | Pick::InboxSources | Pick::MailAccounts, None) => None,
     };
     let row = setting_row(dot, label, detail, in_column(switch, column));
     pressable(row, Some(Message::Tick(pick, id, !ticked)))
@@ -1393,9 +1471,9 @@ mod tests {
 
     use chrono::Duration as Age;
     use torro_inbox::SourceInfo;
-    use torro_ipc::Key;
-    use torro_pim::CollectionKind;
+    use torro_ipc::{AccountInfo, Key};
     use torro_pim::model::GitHubFilter;
+    use torro_pim::{AccountState, CollectionKind};
 
     use super::*;
 
@@ -1408,6 +1486,17 @@ mod tests {
             last_used: None,
             rights: rights.for_kind(kind),
             agent: (kind == HOOK_CLIENT).then_some(AgentKind::ClaudeCode),
+        }
+    }
+
+    fn account(id: &str, kind: &str, label: &str) -> AccountInfo {
+        AccountInfo {
+            id: id.into(),
+            kind: kind.into(),
+            label: label.into(),
+            state: AccountState::NotConnected,
+            collections: Vec::new(),
+            scopes: None,
         }
     }
 
@@ -1443,6 +1532,12 @@ mod tests {
                 ),
             ],
             sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false }],
+            accounts: vec![
+                account("nextcloud:anna@cloud.example.org", "nextcloud", "anna@cloud.example.org"),
+                account("mail:anna@mailbox.org", "mail", "anna@mailbox.org"),
+                account("", "mail", "signing-in@example.org"),
+                account("mail:anna@work.example.net", "mail", "anna@work.example.net"),
+            ],
             ..Data::default()
         }
     }
@@ -1512,6 +1607,23 @@ mod tests {
                 ],
                 |r| r.github_repos == Selection::Only(vec!["anna/torro".into(), "anna/notes".into()]),
             ),
+            (vec![Message::Outbound(Outbound::Free)], |r| r.outbound == Outbound::Free),
+            (vec![Message::Outbound(Outbound::Never)], |r| r.outbound == Outbound::Never),
+            (vec![Message::Level(Area::Mail, Level::Read)], |r| r.area(Area::Mail).level == Level::Read),
+            (vec![Message::All(Pick::MailAccounts, false)], |r| {
+                r.mail_accounts
+                    == Selection::Only(vec!["mail:anna@mailbox.org".into(), "mail:anna@work.example.net".into()])
+            }),
+            (
+                vec![
+                    Message::All(Pick::MailAccounts, false),
+                    Message::Tick(Pick::MailAccounts, "mail:anna@work.example.net".into(), false),
+                ],
+                |r| r.mail_accounts == Selection::Only(vec!["mail:anna@mailbox.org".into()]),
+            ),
+            (vec![Message::All(Pick::MailAccounts, false), Message::All(Pick::MailAccounts, true)], |r| {
+                r.mail_accounts == Selection::All
+            }),
             (
                 vec![
                     Message::All(Pick::InboxSources, false),
@@ -1535,6 +1647,56 @@ mod tests {
             assert_eq!(id, "c1", "{text}");
             assert!(check(&rights), "{text}: {rights:?}");
         }
+    }
+
+    #[test]
+    fn mail_accounts_are_the_accounts_of_kind_mail_that_are_signed_in() {
+        let data = data();
+        let ids = |selection: &Selection| -> Vec<String> {
+            candidates(Pick::MailAccounts, &data, selection).into_iter().map(|c| c.id).collect()
+        };
+        assert_eq!(ids(&Selection::All), ["mail:anna@mailbox.org", "mail:anna@work.example.net"]);
+        let offered = candidates(Pick::MailAccounts, &data, &Selection::All);
+        assert_eq!(offered[0].label, "anna@mailbox.org", "named by the address");
+        assert!(offered[0].color.is_none());
+        // An account that was removed stays in the list to be unticked.
+        let stale = Selection::Only(vec!["mail:gone@example.org".into()]);
+        let all = candidates(Pick::MailAccounts, &data, &stale);
+        assert_eq!(all.last().map(|c| c.detail.as_deref()), Some(Some(tr("No longer available"))));
+        assert_eq!(Pick::MailAccounts.area(), Area::Mail);
+    }
+
+    #[test]
+    fn sending_is_offered_from_write_and_warned_about_when_free() {
+        assert!(!can_send(Level::NoAccess) && !can_send(Level::Read));
+        assert!(can_send(Level::Write) && can_send(Level::Full));
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        assert_eq!(rights.outbound, Outbound::WithApproval, "templates ask each time");
+        assert!(!sends_freely(&rights));
+        rights.outbound = Outbound::Free;
+        assert!(sends_freely(&rights));
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        assert!(!sends_freely(&rights), "reading only: the row and its warning are gone");
+        // Never, ask each time, always: least allowed first, as the control shows them.
+        let order = outbound_options().map(|(_, outbound)| outbound);
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(outbound_options().map(|(label, _)| label), [tr("Never"), tr("Ask me each time"), tr("Always")]);
+    }
+
+    #[test]
+    fn the_sending_switch_is_saved_with_the_whole_rights_and_hooks_keep_theirs() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let _ = update(&mut state, Message::Outbound(Outbound::Free), &data);
+        assert_eq!(shown_rights(&state, &data.clients[0]).outbound, Outbound::Free, "shown at once");
+        let (_, rights) = saved(&mut state, &data);
+        assert_eq!(rights.outbound, Outbound::Free);
+        assert_eq!(rights.area(Area::Mail).level, Level::Full, "the rest unchanged");
+        drop(view(&state, &data));
+
+        let mut hook = opened("h1", &data);
+        let _ = update(&mut hook, Message::Outbound(Outbound::Free), &data);
+        assert!(hook.draft.is_none(), "a hook never sends mail");
     }
 
     #[test]
@@ -1734,7 +1896,8 @@ mod tests {
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
         let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
-        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &5)]));
+        // GitHub, Inbox, Mail, Accounts, Settings, Apps follow.
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &6)]));
     }
 
     #[test]
@@ -1831,6 +1994,7 @@ mod tests {
             assert!(segmented_width(&labels) <= slot, "{area:?}");
         }
         assert!(segmented_width(&confirm_options().map(|(label, _)| label)) <= slot);
+        assert!(segmented_width(&outbound_options().map(|(label, _)| label)) <= slot);
         assert!(segmented_width(&[tr("All"), tr("Selected")]) <= slot);
         assert!(slot < size::CONTENT_MAX / 2.0, "leaves room for the area's name");
     }

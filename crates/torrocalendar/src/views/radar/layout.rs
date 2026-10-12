@@ -1,8 +1,9 @@
 //! Geometry of the radar, free of Iced widgets so that it can be tested: where the window of a
 //! day starts, time to angle and back within the window, how the last quarter fades out, the
 //! ticks and numerals of the dial, the radii of the rings, the arcs of the events with their
-//! lanes, the nights and the free time in the window, hit-testing, turning the dial by dragging,
-//! and where the letters of a title go along an arc. `radar.rs` draws the result.
+//! lanes, the nights in the window, hit-testing, turning the dial by dragging, where the letters
+//! of a title go along an arc, where each ring names its calendar and where a tooltip goes.
+//! `radar.rs` draws the result.
 //!
 //! Angles are in degrees, 0 at the top (where the 12 stands), growing clockwise, as on a clock.
 //! Times inside the window are minutes after its start ("rel"); the window starts at the start of
@@ -12,7 +13,8 @@
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::{Point, Rectangle, Size};
 use torro_core::settings::Night;
-use torro_gui::typo::{self, text_width};
+use torro_gui::theme::space;
+use torro_gui::typo::{self, ellipsize, text_width};
 
 use crate::views::glance;
 use crate::views::timeline::MOON_TARGET;
@@ -71,6 +73,20 @@ const LANE_GAP: f32 = 2.0;
 const ARC_INSET: f32 = 0.4;
 /// The shortest arc, so an event without length stays visible and clickable (degrees).
 const ARC_MIN: f32 = 1.2;
+/// A ring's name ends this far before the start edge (pixels along its middle)…
+pub const NAME_GAP: f32 = space::S;
+/// …and takes at most the last hour of the window, where the fade has left the ring nearly empty
+/// (minutes).
+pub const NAME_SPAN: f32 = 60.0;
+/// Rings narrower than this show only the dot, no name.
+pub const NAME_MIN_BAND: f32 = 14.0;
+/// The radius of the dot before a ring's name, and the room between dot and name.
+pub const NAME_DOT: f32 = 3.0;
+const NAME_DOT_GAP: f32 = space::XS;
+/// A name cut shorter than this many letters is left out ("Pe…" says nothing; the tooltip has it).
+const NAME_MIN_LETTERS: usize = 3;
+/// A tooltip stands this far right of and below the pointer (or left of and above it at the edges).
+pub const TIP_OFFSET: f32 = space::M;
 
 /// The turn of the dial, `minutes` from the start of the day, kept to [`LOOK_BACK`] …
 /// [`LOOK_AHEAD`].
@@ -421,6 +437,103 @@ pub fn hit(dial: &Dial, window: &Window, arcs: &[Arc], point: Point) -> Option<H
     (dial.rings > 0 && (dial.inner..=dial.outer).contains(&radius)).then_some(Hit::Free(rel))
 }
 
+/// The ring (0 the outermost) whose track lies at `radius` from the centre; `None` in the gap
+/// between two rings, inside the innermost and outside the outermost.
+pub fn ring_at(dial: &Dial, radius: f32) -> Option<usize> {
+    (0..dial.rings).find(|&ring| {
+        let (inner, outer) = dial.ring(ring);
+        (inner..=outer).contains(&radius)
+    })
+}
+
+/// Where a ring names its calendar: a dot in the calendar's colour and, where the ring is wide
+/// enough, the name along the arc. Both lie in the last hour of the window ([`NAME_SPAN`]), where
+/// the fade has left the ring nearly empty, ending [`NAME_GAP`] before the start edge, so the
+/// name turns with the dial.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RingName {
+    /// The radius of the middle of the ring: dot and letters are centred on it.
+    pub radius: f32,
+    /// The direction of the dot's centre (degrees, unwrapped like the window's angles).
+    pub dot: f32,
+    /// The name, `None` when it does not fit: the ring is narrower than [`NAME_MIN_BAND`], or the
+    /// arc has room for fewer than [`NAME_MIN_LETTERS`] of it.
+    pub text: Option<NameText>,
+}
+
+/// A ring's name as [`glyphs`] lays it out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NameText {
+    /// The name in `MICRO`, cut with "…" to the room there is.
+    pub text: String,
+    /// Where its first letter starts (degrees, unwrapped).
+    pub start: f32,
+    /// In the bottom half the name runs anticlockwise with its letters turned over, to stand
+    /// upright; the dot then comes first on the side of the edge.
+    pub flipped: bool,
+}
+
+/// The name `name` of ring `ring` on `dial` for `window` ([`RingName`]); `None` when the dial has
+/// no such ring or no room. An empty name gets the dot alone.
+pub fn ring_name(dial: &Dial, window: &Window, ring: usize, name: &str) -> Option<RingName> {
+    if ring >= dial.rings {
+        return None;
+    }
+    let (inner, outer) = dial.ring(ring);
+    let radius = (inner + outer) / 2.0;
+    if radius.is_nan() || radius <= 0.0 {
+        return None;
+    }
+    let degrees = |pixels: f32| (pixels / radius).to_degrees();
+    let end = window.angle(WINDOW) - degrees(NAME_GAP);
+    let begin = window.angle(WINDOW - NAME_SPAN);
+    // The dot and the room after it, before the first letter.
+    let lead = 2.0 * NAME_DOT + NAME_DOT_GAP;
+    let room = (end - begin).to_radians() * radius - lead;
+    let letters = name.chars().count();
+    let text =
+        (outer - inner >= NAME_MIN_BAND && room > 0.0).then(|| ellipsize(name, typo::MICRO, room)).filter(|cut| {
+            let kept = cut.trim_end_matches(typo::ELLIPSIS).chars().count();
+            !cut.is_empty() && kept >= NAME_MIN_LETTERS.min(letters)
+        });
+    let Some(text) = text else {
+        return Some(RingName { radius, dot: end - degrees(NAME_DOT), text: None });
+    };
+    let block = lead + text_width(&text, typo::MICRO);
+    let middle = (end - degrees(block / 2.0)).rem_euclid(360.0);
+    let flipped = middle > 90.0 && middle < 270.0;
+    let place = if flipped {
+        // Read from the edge side: the dot there, the letters running back from it.
+        RingName {
+            radius,
+            dot: end - degrees(NAME_DOT),
+            text: Some(NameText { text, start: end - degrees(lead), flipped }),
+        }
+    } else {
+        // Read towards the edge: the block ends at `end`.
+        let start = end - degrees(block);
+        RingName {
+            radius,
+            dot: start + degrees(NAME_DOT),
+            text: Some(NameText { text, start: start + degrees(lead), flipped }),
+        }
+    };
+    Some(place)
+}
+
+/// The top-left corner of a tooltip of `size` for the pointer at `pointer`: [`TIP_OFFSET`] right
+/// of and below it; left of it where `area` (the canvas) ends on the right, above it where it ends
+/// at the bottom; never over the edges of `area` when it fits at all.
+pub fn tip_origin(pointer: Point, size: Size, area: Rectangle) -> Point {
+    let right = pointer.x + TIP_OFFSET;
+    let x = if right + size.width <= area.x + area.width { right } else { pointer.x - TIP_OFFSET - size.width };
+    let below = pointer.y + TIP_OFFSET;
+    let y = if below + size.height <= area.y + area.height { below } else { pointer.y - TIP_OFFSET - size.height };
+    let x = x.clamp(area.x, (area.x + area.width - size.width).max(area.x));
+    let y = y.clamp(area.y, (area.y + area.height - size.height).max(area.y));
+    Point::new(x, y)
+}
+
 /// One letter of a text along an arc.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Glyph {
@@ -495,35 +608,22 @@ pub fn split(from: f32, to: f32, nights: &[(f32, f32)]) -> Vec<(f32, f32, bool)>
     out
 }
 
-/// The free time of the window from `from` on (now, or the start of the window): the stretches up
-/// to [`END`] in which no span runs in any ring and that lie outside `nights`, each at least `min`
-/// minutes long. The night is for sleeping, not free time to fill.
-pub fn free(spans: &[Span], nights: &[(f32, f32)], from: f32, min: f32) -> Vec<(f32, f32)> {
-    let mut busy: Vec<(f32, f32)> =
-        spans.iter().map(|span| (span.from, span.to)).chain(nights.iter().copied()).collect();
-    busy.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out = Vec::new();
-    let mut at = from.max(0.0);
-    for (start, end) in busy {
-        if start - at >= min {
-            out.push((at, start));
-        }
-        at = at.max(end);
-    }
-    if END - at >= min {
-        out.push((at, END));
-    }
-    out
-}
-
 /// Where the moon stands on the numerals' circle: at the first half hour of the clock inside a
-/// night of the window (between two numerals, so it never covers one), clear of the time chip at
-/// the start and of the seam at the end. `None` when no half hour of a night is in the window.
+/// night of the window that is not in the fading quarter (between two numerals, so it never covers
+/// one), clear of the time chip at the start and of the seam at the end. Only when the whole night
+/// lies in the fading quarter it stands at the first half hour there and fades with it. `None`
+/// when no half hour of a night is in the window.
 pub fn moon(window: &Window, nights: &[(f32, f32)]) -> Option<f32> {
     let clear = NUMERAL_CLEARANCE..=WINDOW - NUMERAL_CLEARANCE;
     let in_night = |rel: f32| nights.iter().any(|(from, to)| (*from..=*to).contains(&rel));
     // Ticks are every half hour; those that are not full hours are the half hours.
-    window.ticks().into_iter().find(|(rel, full)| !full && clear.contains(rel) && in_night(*rel)).map(|(rel, _)| rel)
+    let halves: Vec<f32> = window
+        .ticks()
+        .into_iter()
+        .filter(|(rel, full)| !full && clear.contains(rel) && in_night(*rel))
+        .map(|(rel, _)| rel)
+        .collect();
+    halves.iter().copied().find(|rel| *rel <= VISIBLE).or_else(|| halves.first().copied())
 }
 
 /// The moon ([`moon`]) as a click target, [`MOON_TARGET`] square around its icon on the numerals'
@@ -533,12 +633,6 @@ pub fn moon_target(dial: &Dial, window: &Window, nights: &[(f32, f32)]) -> Optio
     let at = dial.point(dial.numerals, window.angle(rel));
     let half = MOON_TARGET / 2.0;
     Some(Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(MOON_TARGET, MOON_TARGET)))
-}
-
-/// Whole minutes from `from` to `to`, rounded up ("40 min left" while 39½ are), never below 0.
-pub fn minutes_until(from: NaiveDateTime, to: NaiveDateTime) -> i64 {
-    let seconds = (to - from).num_seconds().max(0);
-    (seconds + 59) / 60
 }
 
 #[cfg(test)]
@@ -808,25 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn free_time_is_two_hours_or_more_and_never_the_night() {
-        let span = |from: f32, to: f32| Span { id: 0, ring: 0, from, to, starts: true };
-        // The demo at 14:20: 1:1 until 15:00, run 18:30–19:30, night from 22:00.
-        let spans = [span(0.0, 40.0), span(10.0, 40.0), span(250.0, 310.0)];
-        let nights = [(460.0, END)];
-        assert_eq!(free(&spans, &nights, 0.0, 120.0), [(40.0, 250.0), (310.0, 460.0)]);
-        // Overlapping events in other rings close the gap just the same.
-        let busy = [span(0.0, 40.0), Span { ring: 2, ..span(100.0, 200.0) }, span(250.0, 310.0)];
-        assert_eq!(free(&busy, &nights, 0.0, 120.0), [(310.0, 460.0)], "60 and 50 minutes are too short");
-        // An empty day: everything up to the end of the window, nothing in a night.
-        assert_eq!(free(&[], &[], 0.0, 120.0), [(0.0, END)]);
-        assert_eq!(free(&[], &[(0.0, 410.0)], 0.0, 120.0), [(410.0, END)], "after the night");
-        assert!(free(&[], &[(0.0, 600.0)], 0.0, 120.0).is_empty(), "less than two hours after it");
-        // From now on: time already gone is not free.
-        assert_eq!(free(&spans, &nights, 100.0, 120.0), [(100.0, 250.0), (310.0, 460.0)]);
-        assert!(free(&spans, &nights, 800.0, 120.0).is_empty(), "the window lies in the past");
-    }
-
-    #[test]
     fn the_moon_stands_at_the_first_half_hour_of_the_night() {
         let window = Window::new(at(13, 14, 20));
         assert_eq!(moon(&window, &nights(&window, Night::DEFAULT)), Some(490.0), "22:30");
@@ -859,9 +934,6 @@ mod tests {
         assert!(nights(&Window::new(at(13, 20, 0)), none).is_empty(), "no night, no sector");
         let window = Window::new(at(13, 20, 0));
         assert_eq!(moon(&window, &nights(&window, none)), None, "and no moon");
-        let free_all = free(&[], &nights(&window, late), 0.0, 120.0);
-        assert_eq!(free_all, [(0.0, 210.0)], "free until 23:30, then the night");
-        assert_eq!(free(&[], &nights(&window, none), 0.0, 120.0), [(0.0, END)], "without a night all is free");
     }
 
     #[test]
@@ -875,6 +947,92 @@ mod tests {
     }
 
     #[test]
+    fn the_moon_stays_out_of_the_fading_quarter_while_the_night_allows() {
+        // 21:00: the night from 22:00 to 06:00 fills the window from 1 h on; 22:30 is in full view.
+        let evening = Window::new(at(13, 21, 0));
+        let rel = moon(&evening, &nights(&evening, Night::DEFAULT)).expect("a moon");
+        assert!(rel <= VISIBLE && evening.at(rel) == at(13, 22, 30));
+        // 11:00: the night begins 11 h in, in the fading quarter: the moon fades with it there.
+        let morning = Window::new(at(13, 11, 0));
+        let rel = moon(&morning, &nights(&morning, Night::DEFAULT)).expect("a moon");
+        assert!(rel > VISIBLE && morning.at(rel) == at(13, 22, 30));
+    }
+
+    #[test]
+    fn a_point_finds_its_ring_but_not_the_gaps_between_them() {
+        let dial = Dial::fit(Size::new(1000.0, 900.0), 24.0, 3);
+        for ring in 0..3 {
+            let (inner, outer) = dial.ring(ring);
+            assert_eq!(ring_at(&dial, (inner + outer) / 2.0), Some(ring));
+        }
+        let (inner, _) = dial.ring(0);
+        assert_eq!(ring_at(&dial, inner - RING_GAP / 2.0), None, "the gap");
+        assert_eq!(ring_at(&dial, dial.outer + 1.0), None, "outside");
+        assert_eq!(ring_at(&dial, dial.inner - 1.0), None, "the middle");
+    }
+
+    #[test]
+    fn a_ring_names_its_calendar_just_before_the_edge() {
+        let dial = Dial::fit(Size::new(1000.0, 900.0), 24.0, 3);
+        // 14:20: the last hour runs from 01:20 to 02:20, top right of the dial.
+        let window = Window::new(at(13, 14, 20));
+        let place = ring_name(&dial, &window, 0, "Work").expect("a ring");
+        let (inner, outer) = dial.ring(0);
+        assert!(close(place.radius, (inner + outer) / 2.0));
+        let text = place.text.as_ref().expect("room for the name");
+        assert_eq!(text.text, "Work");
+        assert!(!text.flipped, "top half: read towards the edge");
+        let edge = window.angle(WINDOW);
+        let gap = (NAME_GAP / place.radius).to_degrees();
+        let end = text.start + (text_width("Work", typo::MICRO) / place.radius).to_degrees();
+        assert!(close(end, edge - gap), "the name ends {NAME_GAP} before the edge: {end} vs {}", edge - gap);
+        assert!(place.dot < text.start, "the dot comes first");
+        assert!(place.dot > window.angle(WINDOW - NAME_SPAN), "within the last hour");
+        // It turns with the dial: half an hour later it stands 15° further.
+        let later = ring_name(&dial, &Window::new(at(13, 14, 50)), 0, "Work").expect("a ring");
+        assert!(close(later.dot, place.dot + 15.0));
+        // A long name is cut; a ring with too little room keeps only the dot.
+        let long = ring_name(&dial, &window, 2, "Family and friends and neighbours of the street").expect("a ring");
+        let cut = long.text.expect("a part of it").text;
+        assert!(cut.ends_with(typo::ELLIPSIS), "{cut}");
+        let narrow = Dial::fit(Size::new(300.0, 300.0), 8.0, 4);
+        assert!(narrow.band < NAME_MIN_BAND);
+        let dot = ring_name(&narrow, &window, 0, "Work").expect("a ring");
+        assert_eq!(dot.text, None);
+        assert!(close(dot.dot, edge - (NAME_GAP / dot.radius).to_degrees() - (NAME_DOT / dot.radius).to_degrees()));
+        // An empty name: the dot alone; no ring: nothing.
+        assert_eq!(ring_name(&dial, &window, 1, "").expect("a ring").text, None);
+        assert_eq!(ring_name(&dial, &window, 3, "Work"), None);
+    }
+
+    #[test]
+    fn in_the_bottom_half_the_name_reads_from_the_edge_and_stands_upright() {
+        let dial = Dial::fit(Size::new(1000.0, 900.0), 24.0, 3);
+        // 08:00: the edge stands at the 8, the last hour from 19:00 to 20:00 at the bottom left.
+        let window = Window::new(at(13, 8, 0));
+        let place = ring_name(&dial, &window, 0, "Work").expect("a ring");
+        let text = place.text.expect("room for the name");
+        assert!(text.flipped);
+        let edge = window.angle(WINDOW) - (NAME_GAP / place.radius).to_degrees();
+        assert!(place.dot < edge && place.dot > text.start, "dot at the edge side, the letters behind it");
+        // The letters run anticlockwise from there and stay in the last hour.
+        let letters = glyphs(&text.text, typo::MICRO, place.radius, text.start, true);
+        assert!(letters.iter().all(|glyph| glyph.angle > window.angle(WINDOW - NAME_SPAN)));
+    }
+
+    #[test]
+    fn a_tooltip_stands_beside_the_pointer_and_never_over_the_edge() {
+        let area = Rectangle::new(Point::ORIGIN, Size::new(400.0, 300.0));
+        let card = Size::new(120.0, 60.0);
+        assert_eq!(tip_origin(Point::new(100.0, 100.0), card, area), Point::new(112.0, 112.0), "right, below");
+        assert_eq!(tip_origin(Point::new(350.0, 100.0), card, area), Point::new(218.0, 112.0), "left at the edge");
+        assert_eq!(tip_origin(Point::new(100.0, 280.0), card, area), Point::new(112.0, 208.0), "above at the bottom");
+        assert_eq!(tip_origin(Point::new(395.0, 295.0), card, area), Point::new(263.0, 223.0), "in the corner");
+        // A card wider than the canvas starts at its left edge.
+        assert_eq!(tip_origin(Point::new(10.0, 10.0), Size::new(500.0, 60.0), area).x, 0.0);
+    }
+
+    #[test]
     fn the_moon_is_a_target_of_its_own() {
         let window = Window::new(at(13, 14, 20));
         let dial = Dial::fit(Size::new(600.0, 600.0), 16.0, 2);
@@ -884,13 +1042,5 @@ mod tests {
         assert!(target.contains(center));
         let morning = Window::new(at(18, 8, 0));
         assert_eq!(moon_target(&dial, &morning, &nights(&morning, Night::DEFAULT)), None);
-    }
-
-    #[test]
-    fn minutes_left_round_up() {
-        assert_eq!(minutes_until(at(13, 14, 20), at(13, 15, 0)), 40);
-        let late = at(13, 14, 20) + Duration::seconds(30);
-        assert_eq!(minutes_until(late, at(13, 15, 0)), 40);
-        assert_eq!(minutes_until(at(13, 15, 0), at(13, 14, 0)), 0);
     }
 }

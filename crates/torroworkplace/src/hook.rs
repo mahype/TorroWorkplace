@@ -28,7 +28,9 @@
 //! ([`torro_inbox::hook::permission_answer`]). Without a decision in time, when the question
 //! expired, and on any error it prints nothing; the agent then asks in its own terminal as
 //! always, and the hook reports what the plain hook would (Codex: "waiting"). It never allows by
-//! itself. For any other event `--answer` changes nothing.
+//! itself. For any other event `--answer` changes nothing. Claude Code's `AskUserQuestion` is no
+//! permission but a choice in its terminal: it is not put as a question, and the hook reports
+//! "waiting" with the questions as text (task E3.8, [`torro_inbox::hook::ASK_TOOL`]).
 //!
 //! The hook must never hold up or change the agent, so:
 //!
@@ -400,7 +402,7 @@ pub fn request_for(intent: HookIntent, pids: Vec<u32>) -> Option<Request> {
         HookIntent::Report { kind, mut agent, thread_key, body } => {
             let name = agent.agent.label();
             let title = match kind {
-                Kind::AgentWaiting => trf("{agent} is waiting for your permission", &[("agent", &name)]),
+                Kind::AgentWaiting => trf("{agent} is waiting for you", &[("agent", &name)]),
                 _ => trf("{agent} finished", &[("agent", &name)]),
             };
             agent.pids = pids;
@@ -649,7 +651,7 @@ mod tests {
 
     fn post(agent: AgentKind, session: &str, kind: Kind, body: &str) -> Option<Request> {
         let title = match kind {
-            Kind::AgentWaiting => trf("{agent} is waiting for your permission", &[("agent", &agent.label())]),
+            Kind::AgentWaiting => trf("{agent} is waiting for you", &[("agent", &agent.label())]),
             _ => trf("{agent} finished", &[("agent", &agent.label())]),
         };
         Some(Request::PostItem {
@@ -940,9 +942,10 @@ mod tests {
         std::fs::write(side.join(".git"), "gitdir: ../repo/.git/worktrees/side\n").expect("link");
         assert_eq!(git_head(&side).as_deref(), Some("ref: refs/heads/feat/side\n"));
 
-        // The whole way: the payload's cwd in the worktree gives the branch.
-        let payload =
-            fixture("claude-code-stop").replace("/home/user/my-project", side.to_str().expect("utf-8 temp path"));
+        // The whole way: the payload's cwd in the worktree gives the branch. Written as JSON, so the
+        // backslashes of a Windows path stay a valid string.
+        let cwd = serde_json::to_string(side.to_str().expect("utf-8 temp path")).expect("json string");
+        let payload = fixture("claude-code-stop").replace("\"/home/user/my-project\"", &cwd);
         let Some(Request::PostItem { agent: Some(agent), .. }) = prepare(AgentKind::ClaudeCode, &payload) else {
             panic!("a stop is a post");
         };
@@ -1013,7 +1016,8 @@ mod tests {
     /// source is checked.)
     #[test]
     fn nothing_here_writes_to_stdout() {
-        let source = include_str!("hook.rs");
+        // A Windows checkout (core.autocrlf) ends lines with CRLF.
+        let source = include_str!("hook.rs").replace("\r\n", "\n");
         let code = source.split("#[cfg(test)]").next().expect("code before the tests");
         let (before, writer) = code.split_once("fn write_decision(").expect("the one writer");
         let after = writer.split_once("\n}\n").expect("its end").1;

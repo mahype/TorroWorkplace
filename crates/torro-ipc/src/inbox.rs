@@ -13,6 +13,9 @@
 //!   the `IpcError` message,
 //! - an unexpected variant → `InboxError::Other("unexpected answer …")`.
 //!
+//! One exception: `approvals.decide_approval` answers `conflict` for an approval that was decided
+//! already or expired, which [`InboxClient::decide_approval`] reports as [`InboxError::Settled`].
+//!
 //! The client checks nothing itself: rights and the security rules of the inbox are the core's.
 
 use std::path::PathBuf;
@@ -41,18 +44,7 @@ impl InboxClient {
     /// Sends `request` and returns the answer, or the error the core reported as an
     /// [`InboxError`]. Callers match the variant they expect.
     async fn ask(&self, request: Request) -> Result<Response, InboxError> {
-        match crate::client::call(&self.socket, &request).await {
-            Ok(Response::Error { code, message }) => Err(match code.as_str() {
-                "not-found" => InboxError::NotFound,
-                "forbidden" => InboxError::Forbidden,
-                "busy" => InboxError::Busy,
-                "unsupported" => InboxError::Unsupported,
-                _ => InboxError::Other(message),
-            }),
-            Ok(response) => Ok(response),
-            Err(IpcError::NotRunning) => Err(InboxError::Offline),
-            Err(err) => Err(InboxError::Other(err.to_string())),
-        }
+        inbox_answer(crate::client::call(&self.socket, &request).await)
     }
 
     /// Sends a request answered with [`Response::Item`].
@@ -61,6 +53,22 @@ impl InboxClient {
             Response::Item { item } => Ok(item),
             other => Err(unexpected(other)),
         }
+    }
+}
+
+/// The core's answer, or the error it reported, as the module documentation maps them.
+fn inbox_answer(answer: Result<Response, IpcError>) -> Result<Response, InboxError> {
+    match answer {
+        Ok(Response::Error { code, message }) => Err(match code.as_str() {
+            "not-found" => InboxError::NotFound,
+            "forbidden" => InboxError::Forbidden,
+            "busy" => InboxError::Busy,
+            "unsupported" => InboxError::Unsupported,
+            _ => InboxError::Other(message),
+        }),
+        Ok(response) => Ok(response),
+        Err(IpcError::NotRunning) => Err(InboxError::Offline),
+        Err(err) => Err(InboxError::Other(err.to_string())),
     }
 }
 
@@ -138,6 +146,22 @@ impl InboxSource for InboxClient {
         let due = due.map(EventTime::Date);
         match self.ask(Request::CreateTaskFromItem { id, collection: list, title, due }).await? {
             Response::Todo { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `approvals.decide_approval` with the app key (task E3.8). The core answers with the
+    /// approval as it stands now, which the app does not need: the entry is done either way, and
+    /// the next list shows it. `conflict` (decided already or expired) is [`InboxError::Settled`].
+    async fn decide_approval(&self, approval: String, allow: bool) -> Result<(), InboxError> {
+        let answer = crate::client::call(&self.socket, &Request::DecideApproval { id: approval, allow }).await;
+        if let Ok(Response::Error { code, .. }) = &answer
+            && code == "conflict"
+        {
+            return Err(InboxError::Settled);
+        }
+        match inbox_answer(answer)? {
+            Response::Approval { .. } => Ok(()),
             other => Err(unexpected(other)),
         }
     }
@@ -384,6 +408,35 @@ mod tests {
         client.create_task_from_item("i1".into(), "work".into(), Some("Fix".into()), day).await.expect("made");
         let gone = client.create_task_from_item("i2".into(), "gone".into(), Some("Fix".into()), day).await;
         assert_eq!(gone, Err(InboxError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn deciding_sends_the_decision_and_a_settled_approval_is_its_own_error() {
+        let core = start(|request| async move {
+            match request {
+                Request::DecideApproval { id, allow: true } if id == "a1" => Response::Approval {
+                    approval: crate::ApprovalInfo {
+                        id,
+                        client: "c1".into(),
+                        client_name: "Claude Code".into(),
+                        command: "approvals.ask_permission".into(),
+                        summary: "Bash: cargo test".into(),
+                        created: at(10),
+                        expires: at(11),
+                        decided: Some(at(10)),
+                        state: crate::ApprovalState::Running,
+                    },
+                },
+                Request::DecideApproval { .. } => {
+                    Response::Error { code: "conflict".into(), message: "decided already or expired".into() }
+                }
+                other => answer(other),
+            }
+        })
+        .await;
+        let client = core.client();
+        assert_eq!(client.decide_approval("a1".into(), true).await, Ok(()));
+        assert_eq!(client.decide_approval("a1".into(), false).await, Err(InboxError::Settled));
     }
 
     #[tokio::test]
