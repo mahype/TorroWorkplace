@@ -179,7 +179,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
 
 ### E1.2c Suite-Einträge nur für den Menschen, Freigaben ohne Austausch (aus der API-Prüfung bis A.7)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E2.1, E2.4, E3.5, A.5, A.7 · **Dateien:** `crates/torroworkplace/src/{inbox,core,approvals,audit,client_setup}.rs`,
   `crates/torro-ipc/src/api.rs`, `docs/api.md`
 - **Hoch (H1):** Die Quelle `suite` (Freigaben anderer Agenten, Kontoprobleme) sieht **kein** Client-Schlüssel,

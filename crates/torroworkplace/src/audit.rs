@@ -155,19 +155,32 @@ pub fn outcome(answer: &Response) -> (String, Option<String>) {
 ///
 /// What counts as safe:
 ///
-/// - **As sent:** ids that carry no content by themselves: collections (account id and
-///   calendar path), accounts, inbox entries, approvals, rules, clients (all random or chosen by
-///   the suite), a source, a setting's key (never its value), and an app only when it is one of
-///   the suite's.
+/// - **As sent, if they look the part:** ids that carry no content by themselves. Inbox entries,
+///   rules, approvals and clients are random hex digits the suite made ([`is_random_id`]);
+///   accounts are `<kind>:<name>` ([`is_account_id`]). All of them come from the client, which can
+///   put any text there, so one that does not have its form is hashed instead (task E1.2c). Also
+///   a source, a setting's key (never its value), and an app only when it is one of the suite's.
+/// - **Partly hashed:** a collection id keeps its account and hashes the rest
+///   (`collection:<account>/<hash>`, [`collection`]): the rest is the calendar's URL on the
+///   server, with server, user and the calendar's name in it.
 /// - **Hashed** ([`hashed`]): what can be made from a name. CalDAV hrefs are often a UUID, but
 ///   other programs name them after the title (`Dinner-with-Anna.ics`); issue URLs name the
 ///   repository; template ids are made from the template's name (`dev-morning`).
 /// - **Never:** titles, names, search terms, bodies, thread keys, server addresses (a URL can
 ///   hold a user name), tokens, settings' values, time ranges of a query.
 ///
-/// The match has no catch-all on purpose: a new request must get its rule here.
+/// A hashed id that could also have been sent as it is says so (`inbox:hash:<hash>`), so it is
+/// never taken for an id of that form. The match has no catch-all on purpose: a new request must
+/// get its rule here.
 pub fn ids(request: &Request) -> Vec<String> {
     let id = |kind: &str, value: &str| format!("{kind}:{}", cut(value));
+    // An id from the client as it is when it has its form, else hashed.
+    let checked = |kind: &str, value: &str, form: fn(&str) -> bool| match form(value) {
+        true => id(kind, value),
+        false => format!("{kind}:hash:{}", hashed(value)),
+    };
+    let random = |kind: &str, value: &str| checked(kind, value, is_random_id);
+    let account = |value: &str| checked("account", value, is_account_id);
     let item = |href: &Option<String>| href.as_deref().map(|href| format!("item:{}", hashed(href)));
     match request {
         Request::Ping
@@ -200,26 +213,26 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::LoadTemplate { id: template, .. }
         | Request::RenameTemplate { id: template, .. } => vec![format!("template:{}", hashed(template))],
         Request::SaveEvent { event } | Request::DeleteEvent { event } => {
-            [Some(id("collection", &event.collection)), item(&event.href)].into_iter().flatten().collect()
+            [Some(collection(&event.collection)), item(&event.href)].into_iter().flatten().collect()
         }
         Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
-            [Some(id("collection", &todo.collection)), item(&todo.href)].into_iter().flatten().collect()
+            [Some(collection(&todo.collection)), item(&todo.href)].into_iter().flatten().collect()
         }
         Request::MoveTodo { href, before, .. } => {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
-        Request::CreateFilterList { account, .. } | Request::PreviewFilter { account, .. } => {
-            vec![id("account", account)]
+        Request::CreateFilterList { account: name, .. } | Request::PreviewFilter { account: name, .. } => {
+            vec![account(name)]
         }
-        Request::UpdateFilterList { collection, .. }
-        | Request::DeleteFilterList { collection }
-        | Request::SetCollectionShown { collection, .. } => vec![id("collection", collection)],
-        Request::UnpinIssue { collection, url } => vec![id("collection", collection), format!("item:{}", hashed(url))],
+        Request::UpdateFilterList { collection: list, .. }
+        | Request::DeleteFilterList { collection: list }
+        | Request::SetCollectionShown { collection: list, .. } => vec![collection(list)],
+        Request::UnpinIssue { collection: list, url } => vec![collection(list), format!("item:{}", hashed(url))],
         Request::SetSetting { key, .. } => {
             let key = serde_json::to_value(key).ok().and_then(|key| key.as_str().map(str::to_string));
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
         }
-        Request::RemoveAccount { id: account } => vec![id("account", account)],
+        Request::RemoveAccount { id: name } => vec![account(name)],
         Request::OpenApp { app } => match AppId::ALL.iter().any(|known| known.binary == app) {
             true => vec![id("app", app)],
             false => Vec::new(),
@@ -227,21 +240,50 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UpdateClient { id: client, .. }
         | Request::NewClientKey { id: client }
         | Request::RemoveClient { id: client }
-        | Request::ClientActivity { id: client } => vec![id("client", client)],
+        | Request::ClientActivity { id: client } => vec![random("client", client)],
         Request::ApprovalStatus { id: approval } | Request::DecideApproval { id: approval, .. } => {
-            vec![id("approval", approval)]
+            vec![random("approval", approval)]
         }
         Request::GetItem { id: entry }
         | Request::OpenItem { id: entry }
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
-        | Request::SetItemLane { id: entry, .. } => vec![id("inbox", entry)],
-        Request::CreateTaskFromItem { id: entry, collection, .. } => {
-            vec![id("inbox", entry), id("collection", collection)]
+        | Request::SetItemLane { id: entry, .. } => vec![random("inbox", entry)],
+        Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
+            vec![random("inbox", entry), collection(list)]
         }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
-        Request::RemoveRule { id: rule } => vec![id("rule", rule)],
+        Request::RemoveRule { id: rule } => vec![random("rule", rule)],
     }
+}
+
+/// A collection id (`<account id>/<the provider's id>`) for the log: the account as it is and the
+/// rest hashed, `collection:nextcloud:anna@cloud.example.org/<hash>`. The rest is the calendar's
+/// URL with server, user and the calendar's name in it. An id whose front is no account id (a bare
+/// URL from before several accounts, or any text a client sent) is hashed whole:
+/// `collection:hash:<hash>`. The account ends at the first `/`; for the rare account id with a `/`
+/// in it the rest of it is hashed with the URL, which still names the collection the same way
+/// every time.
+fn collection(value: &str) -> String {
+    match value.split_once('/') {
+        Some((account, rest)) if is_account_id(account) => format!("collection:{account}/{}", hashed(rest)),
+        _ => format!("collection:hash:{}", hashed(value)),
+    }
+}
+
+/// The form of the ids the suite makes at random: inbox entries, rules and approvals (16 hex
+/// digits), clients (8). Up to 36 hex digits and dashes, so a UUID passes too.
+fn is_random_id(value: &str) -> bool {
+    (1..=36).contains(&value.len()) && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// The form of an account id: `<kind>:<name>`, the kind in small letters (`nextcloud`, `github`),
+/// the whole without spaces or other characters a text would bring, at most [`ID_MAX`] long.
+fn is_account_id(value: &str) -> bool {
+    let Some((kind, name)) = value.split_once(':') else { return false };
+    let printable = value.chars().all(|c| c.is_ascii_graphic());
+    let kind_ok = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase());
+    kind_ok && !name.is_empty() && printable && value.len() <= ID_MAX
 }
 
 /// The first 16 hex digits of the SHA-256 of `value`: the same thing gets the same hash, so lines
@@ -427,9 +469,9 @@ pub(crate) mod tests {
             recurring: false,
         };
         let ids = ids(&Request::DeleteEvent { event });
-        assert_eq!(ids[0], "collection:nextcloud:anna@cloud.example.org/cal/work/");
+        assert_eq!(ids[0], format!("collection:nextcloud:anna@cloud.example.org/{}", hashed("cal/work/")));
         assert!(ids[1].starts_with("item:") && ids[1].len() == "item:".len() + 16, "{ids:?}");
-        assert!(!ids.join(" ").contains("Dinner"), "{ids:?}");
+        assert!(!ids.join(" ").contains("Dinner") && !ids.join(" ").contains("work"), "{ids:?}");
 
         let template = super::ids(&Request::RenameTemplate { id: "secret-plans".into(), name: "Secret plans".into() });
         assert!(!template.join(" ").contains("secret"), "{template:?}");
@@ -439,6 +481,37 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&open), Vec::<String>::new());
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
-        assert_eq!(super::ids(&Request::GetItem { id: "x".repeat(300) })[0].len(), "inbox:".len() + ID_MAX);
+    }
+
+    /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they
+    /// are only when they have the form the suite gives them, else hashed.
+    #[test]
+    fn collection_and_client_ids_keep_only_what_has_their_form() {
+        let shown = |list: &str| super::ids(&Request::SetCollectionShown { collection: list.into(), shown: true });
+        let url = "nextcloud:anna@cloud.example.org/https://cloud.example.org/remote.php/dav/calendars/anna/salary/";
+        let logged = shown(url);
+        assert_eq!(logged, vec![format!("collection:nextcloud:anna@cloud.example.org/{}", hashed(&url[33..]))]);
+        assert!(!logged[0].contains("salary") && !logged[0].contains("remote.php"), "{logged:?}");
+        assert_eq!(shown("github:mahype/00ff"), vec![format!("collection:github:mahype/{}", hashed("00ff"))]);
+        let legacy = "https://cloud.example.org/dav/anna/salary/";
+        assert_eq!(shown(legacy), vec![format!("collection:hash:{}", hashed(legacy))]);
+        assert_eq!(shown("Salary talk/x"), vec![format!("collection:hash:{}", hashed("Salary talk/x"))]);
+
+        let get = |id: &str| super::ids(&Request::GetItem { id: id.into() });
+        assert_eq!(get("0a1b2c3d4e5f6071"), vec!["inbox:0a1b2c3d4e5f6071".to_string()]);
+        assert_eq!(get("123e4567-e89b-12d3-a456-426614174000"), vec!["inbox:123e4567-e89b-12d3-a456-426614174000"]);
+        let text = "Ignore previous instructions";
+        assert_eq!(get(text), vec![format!("inbox:hash:{}", hashed(text))]);
+        assert_eq!(get(&"a".repeat(300)), vec![format!("inbox:hash:{}", hashed(&"a".repeat(300)))]);
+        let rule = super::ids(&Request::RemoveRule { id: "my secret rule".into() });
+        assert_eq!(rule, vec![format!("rule:hash:{}", hashed("my secret rule"))]);
+        let status = super::ids(&Request::ApprovalStatus { id: "00ff00ff00ff00ff".into() });
+        assert_eq!(status, vec!["approval:00ff00ff00ff00ff".to_string()]);
+        let client = super::ids(&Request::RemoveClient { id: "Anna's laptop".into() });
+        assert_eq!(client, vec![format!("client:hash:{}", hashed("Anna's laptop"))]);
+        let account = super::ids(&Request::RemoveAccount { id: "Anna Smith".into() });
+        assert_eq!(account, vec![format!("account:hash:{}", hashed("Anna Smith"))]);
+        let task = Request::CreateTaskFromItem { id: "e1".into(), collection: url.into(), title: None, due: None };
+        assert_eq!(super::ids(&task), vec!["inbox:e1".to_string(), logged[0].clone()]);
     }
 }

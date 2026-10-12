@@ -524,11 +524,20 @@ fn json_text(root: &Map<String, Value>) -> String {
 /// Writes `after` over `file` unless it is what is there already: the previous content first to
 /// the backup next to it, then the new one atomically, both 0600. A link (a dotfiles repository)
 /// is followed, so the link stays a link. A missing folder is created.
+///
+/// A link that leads nowhere is [`SetupError::Unreadable`] and left as it is (task E1.2c): writing
+/// would put a plain file in its place, and the person's dotfiles would silently lose it.
 fn replace(file: &Path, before: Option<&str>, after: &str) -> Result<(), SetupError> {
     if before == Some(after) {
         return Ok(());
     }
-    let target = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let target = match fs::canonicalize(file) {
+        Ok(target) => target,
+        Err(_) if fs::symlink_metadata(file).is_ok_and(|meta| meta.file_type().is_symlink()) => {
+            return Err(SetupError::Unreadable(file.to_path_buf()));
+        }
+        Err(_) => file.to_path_buf(),
+    };
     if let Some(parent) = target.parent().filter(|parent| !parent.as_os_str().is_empty() && !parent.exists()) {
         fs::create_dir_all(parent).map_err(SetupError::io(parent))?;
     }
@@ -1306,6 +1315,23 @@ mod tests {
         add(&Method::Json { file: link.clone(), stdio_type: false }, &server(&env), &Fake::default()).expect("added");
         assert!(fs::symlink_metadata(&link).expect("link").file_type().is_symlink());
         assert_eq!(json(&real)["mcpServers"][SERVER_NAME]["command"], "/opt/torro/torroworkplace");
+    }
+
+    /// Task E1.2c: a link that leads nowhere is refused and stays a link; no plain file takes its
+    /// place.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_link_is_refused_not_replaced() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let gone = dir.path().join("dotfiles/missing.json");
+        let link = env.home.join(".cursor/mcp.json");
+        fs::create_dir_all(link.parent().expect("dir")).expect("dir");
+        std::os::unix::fs::symlink(&gone, &link).expect("link");
+        let method = Method::Json { file: link.clone(), stdio_type: false };
+        assert!(matches!(add(&method, &server(&env), &Fake::default()), Err(SetupError::Unreadable(_))));
+        assert!(fs::symlink_metadata(&link).expect("link").file_type().is_symlink(), "still a link");
+        assert!(!gone.exists(), "nothing written where it points");
     }
 
     #[test]

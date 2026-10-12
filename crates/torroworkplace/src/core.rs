@@ -24,7 +24,7 @@ use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
-use crate::approvals::{Approvals, ApprovalsError, Decision, Facts};
+use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
@@ -162,6 +162,29 @@ fn task_from_entry(
         categories: Vec::new(),
         sort_order: None,
         link: Some(torro_pim::model::Link { id: format!("{INBOX_LINK}{}", entry.id), github: None }),
+    }
+}
+
+/// `request` as it waits for approval (task E1.2c): `inbox.create_task_from_item` without a title
+/// (or a blank one) gets the title of `entry` as the inbox holds it now, the one its summary names,
+/// so a repost cannot rename the task the person allows. Any other request stays as it is.
+fn with_entry_title(request: Request, entry: Option<&torro_inbox::Item>) -> Request {
+    match (request, entry) {
+        (Request::CreateTaskFromItem { id, collection, title, due }, Some(entry))
+            if title.as_deref().is_none_or(|title| title.trim().is_empty()) =>
+        {
+            Request::CreateTaskFromItem { id, collection, title: Some(entry.title.clone()), due }
+        }
+        (request, _) => request,
+    }
+}
+
+/// The answer to an approved `inbox.*` command whose entry changed after the approval was asked
+/// for ([`EntryPin`]): the person allowed something else.
+fn entry_conflict() -> Response {
+    Response::Error {
+        code: "conflict".into(),
+        message: "the inbox entry changed after the approval was asked for; nothing ran, ask again".into(),
     }
 }
 
@@ -434,13 +457,27 @@ impl Core {
         {
             return Ok(refused);
         }
-        if rights.needs_approval(operation.access) {
+        if rights.needs_approval(operation.access) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
             return self.ask_approval(&id, request).await;
         }
         if let Some(info) = inbox_client {
-            return Ok(self.inbox_request(request, Some(&info)).await);
+            return Ok(self.inbox_request(request, Some(&info), None).await);
         }
         Ok(self.handle_within(request, reach).await)
+    }
+
+    /// Whether `request` of the client `client` is `inbox.open_item` on an entry that opens a web
+    /// page (task E1.2c). That always waits for a person, whatever the rights say: an agent could
+    /// post a link and open it on the person's screen itself, and a page can do more than show
+    /// itself. The approval's summary names the page's host. Apps of the suite and the agent's
+    /// window open without asking (unless the rights ask for every change).
+    fn opens_a_web_page(&self, request: &Request, client: Option<&torro_ipc::ClientInfo>) -> bool {
+        match request {
+            Request::OpenItem { id } if client.is_some() => {
+                matches!(self.inbox.opening(id, client, Utc::now()), Ok(Opening::Url(_)))
+            }
+            _ => false,
+        }
     }
 
     /// The client `id` as `clients.list_clients` shows it, with the `rights` it was admitted
@@ -455,20 +492,31 @@ impl Core {
     /// person is asked by notification ([`Approvals::open`]). `busy` when the client has too many
     /// open already; refused with `forbidden` when the approval cannot be stored: the command
     /// never runs without a person's yes.
+    ///
+    /// An `inbox.*` command is pinned to what the person is shown (task E1.2c): the approval keeps
+    /// what its entry looks like now ([`EntryPin`], checked when it runs), and
+    /// `inbox.create_task_from_item` without a title gets the entry's title written into the
+    /// request, so the task is named as the summary says.
     async fn ask_approval(&self, client: &str, request: Request) -> Result<Response, Refused> {
         let command = request.operation().name();
         let name = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.name);
-        let summary = match request.operation().area() {
+        let (request, pin, summary) = match request.operation().area() {
             Area::Inbox => {
                 let mut facts = self.inbox.facts(&request);
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
-                crate::approvals::inbox_summary(&request, &facts)
+                let request = with_entry_title(request, facts.item.as_ref());
+                let summary = crate::approvals::inbox_summary(&request, &facts);
+                (request, facts.item.as_ref().map(EntryPin::of), summary)
             }
-            _ => crate::approvals::summary(&request, &self.facts(&request).await),
+            _ => {
+                let summary = crate::approvals::summary(&request, &self.facts(&request).await);
+                (request, None, summary)
+            }
         };
-        match self.approvals.open(client, &name.unwrap_or_default(), request, summary, Utc::now()).await {
+        let name = name.unwrap_or_default();
+        match self.approvals.open(client, &name, request, pin, summary, Utc::now()).await {
             Ok(approval) => {
                 crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
                 Ok(Response::Pending { approval })
@@ -523,14 +571,15 @@ impl Core {
         if decided.is_ok() {
             crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
         }
-        let (client, request) = match decided {
-            Ok(Decision::Run { client, request }) => (client, *request),
-            Ok(Decision::Denied(approval)) => {
+        let (client, request, pin) = match decided {
+            Ok(Decision::Run { client, request, pin }) => (client, *request, pin),
+            Ok(Decision::Denied { approval, request }) => {
+                // The ids of what was asked for, as the line of the request itself has them.
                 let denied = torro_ipc::ActivityEntry {
                     time: Utc::now(),
                     client: Some(approval.client.clone()),
                     command: approval.command.clone(),
-                    ids: Vec::new(),
+                    ids: crate::audit::ids(&request),
                     result: "denied".into(),
                     approval: Some(approval.id.clone()),
                 };
@@ -540,7 +589,7 @@ impl Core {
             Err(err) => return err.response(),
         };
         let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
-        let response = self.run_approved(&client, request).await;
+        let response = self.run_approved(&client, request, pin).await;
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -555,8 +604,9 @@ impl Core {
     /// Runs an allowed request of the client `client` with its rights and collections of now,
     /// not of when it asked: steps 1 and 2 of [`Core::handle_from`] once more, since a person may
     /// have narrowed the rights, removed the client or hidden a collection meanwhile. The approval
-    /// itself is not asked for again.
-    async fn run_approved(&self, client: &str, request: Request) -> Response {
+    /// itself is not asked for again. An `inbox.*` command with a `pin` runs only on its entry as
+    /// the person was shown it ([`Core::inbox_request`]), else `conflict`.
+    async fn run_approved(&self, client: &str, request: Request, pin: Option<EntryPin>) -> Response {
         let command = request.operation().name();
         let Some(info) = self.clients.list().into_iter().find(|info| info.id == client) else {
             let message = format!("the client that asked for {command} was removed meanwhile");
@@ -567,7 +617,7 @@ impl Core {
             return Refused::Forbidden { command }.response();
         }
         if request.operation().area() == Area::Inbox {
-            return self.inbox_request(request, Some(&info)).await;
+            return self.inbox_request(request, Some(&info), pin).await;
         }
         let reach = Reach::Client(rights);
         if let Some(collection) = self.out_of_reach(reach, &request).await {
@@ -763,7 +813,7 @@ impl Core {
             | Request::ListRules
             | Request::RemoveRule { .. }) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
-                Reach::Suite => self.inbox_request(request, None).await,
+                Reach::Suite => self.inbox_request(request, None, None).await,
             },
         }
     }
@@ -786,14 +836,40 @@ impl Core {
     /// [`Core::handle_from`]. The inbox answers all but `inbox.open_item`, which needs the window
     /// manager, the browser or the apps ([`Core::open_item`]), and `inbox.create_task_from_item`,
     /// which writes a task ([`Core::create_task_from_item`]).
-    async fn inbox_request(&self, request: Request, client: Option<&torro_ipc::ClientInfo>) -> Response {
+    ///
+    /// `pin` comes with an approved command (task E1.2c): its entry must still be as the person
+    /// was shown it ([`EntryPin::holds`]), else the answer is `conflict` and nothing runs. Opening
+    /// and making a task check it on what they read from the entry; the other commands before
+    /// they run, which suffices since they do not read its texts or link.
+    async fn inbox_request(
+        &self,
+        request: Request,
+        client: Option<&torro_ipc::ClientInfo>,
+        pin: Option<EntryPin>,
+    ) -> Response {
         match request {
-            Request::OpenItem { id } => self.open_item(&id, client).await,
+            Request::OpenItem { id } => self.open_item(&id, client, pin).await,
             Request::CreateTaskFromItem { id, collection, title, due } => {
-                self.create_task_from_item(&id, collection, title, due, client).await
+                self.create_task_from_item(&id, collection, title, due, client, pin).await
             }
-            request => self.inbox.handle(request, client, Utc::now()),
+            request => {
+                // What the client may no longer see stays `not-found`, changed or not.
+                if let Some(pin) = pin
+                    && let Some(refused) =
+                        self.inbox.refusal(&request, client).or_else(|| self.entry_changed(&request, pin))
+                {
+                    return refused;
+                }
+                self.inbox.handle(request, client, Utc::now())
+            }
         }
+    }
+
+    /// `conflict` when the inbox entry `request` names no longer holds `pin`; `None` while it does
+    /// or when it is gone (the command then answers `not-found` itself).
+    fn entry_changed(&self, request: &Request, pin: EntryPin) -> Option<Response> {
+        let item = self.inbox.facts(request).item?;
+        (!pin.holds(&item)).then(entry_conflict)
     }
 
     /// For `inbox.create_task_from_item` of a client with `rights` (task E3.5): the answer when
@@ -814,7 +890,8 @@ impl Core {
     }
 
     /// `inbox.create_task_from_item` (task E3.5): makes a task of the entry `id` in `collection`
-    /// for `client` (`None` for the app key) and marks the entry done.
+    /// for `client` (`None` for the app key) and marks the entry done. With a `pin` (an approved
+    /// command, task E1.2c) the entry must still hold it, else `conflict`.
     ///
     /// In this order: the tasks rights and the list once more ([`Core::task_target_refusal`]),
     /// the entry the client may change ([`Inbox::entry_for_task`]: `not-found`, `forbidden` for the
@@ -830,6 +907,7 @@ impl Core {
         title: Option<String>,
         due: Option<torro_pim::EventTime>,
         client: Option<&torro_ipc::ClientInfo>,
+        pin: Option<EntryPin>,
     ) -> Response {
         if let Some(client) = client
             && let Some(refused) = self.task_target_refusal(&collection, &client.rights).await
@@ -840,6 +918,10 @@ impl Core {
             Ok(entry) => entry,
             Err(refused) => return *refused,
         };
+        // The task is made of exactly this entry, so checking it here leaves no gap.
+        if pin.is_some_and(|pin| !pin.holds(&entry)) {
+            return entry_conflict();
+        }
         let todo = task_from_entry(&entry, collection, title, due);
         let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
         let saved = match self.pim.handle_within(Request::SaveTodo { todo }, reach).await {
@@ -868,11 +950,27 @@ impl Core {
     /// ([`Inbox::opening`]); this opens it – the agent's window ([`focus_agent_window`]), the page
     /// in the browser, the app ([`Core::open_app`]) – and then marks a new entry seen
     /// ([`Inbox::opened`]). Nothing is marked when opening failed.
-    async fn open_item(&self, id: &str, client: Option<&torro_ipc::ClientInfo>) -> Response {
+    ///
+    /// With a `pin` (an approved command, task E1.2c) the entry must still hold it, checked after
+    /// the inbox said what to open and before anything opens: a repost only ever raises `count`,
+    /// so an entry that holds the pin then held it when its link was read too.
+    ///
+    /// A client key opens a web page only with a pin, that is once a person allowed it
+    /// ([`Core::opens_a_web_page`] asks). Without one the entry turned into a web page after that
+    /// check (a repost in between): `conflict`, nothing opens, the client asks again.
+    async fn open_item(&self, id: &str, client: Option<&torro_ipc::ClientInfo>, pin: Option<EntryPin>) -> Response {
         let opening = match self.inbox.opening(id, client, Utc::now()) {
             Ok(opening) => opening,
             Err(refused) => return *refused,
         };
+        if let Some(pin) = pin
+            && let Some(changed) = self.entry_changed(&Request::OpenItem { id: id.to_string() }, pin)
+        {
+            return changed;
+        }
+        if client.is_some() && pin.is_none() && matches!(opening, Opening::Url(_)) {
+            return entry_conflict();
+        }
         let failed = |message: String| Box::new(Response::Error { code: "error".into(), message });
         let opened = match opening {
             Opening::Window { pids } => focus_agent_window(&self.backend, &pids).await,
@@ -2153,11 +2251,11 @@ mod tests {
         assert_eq!(core.snapshot().await.approvals_waiting, 0);
         let now = Utc::now();
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
-        let first = core.approvals.open("c1", "One", delete("a"), "a".into(), now).await.expect("opened");
-        core.approvals.open("c1", "One", delete("b"), "b".into(), now).await.expect("opened");
+        let first = core.approvals.open("c1", "One", delete("a"), None, "a".into(), now).await.expect("opened");
+        core.approvals.open("c1", "One", delete("b"), None, "b".into(), now).await.expect("opened");
         // Expired already: asked for longer ago than an approval waits.
         let long_ago = now - crate::approvals::LIFETIME - chrono::TimeDelta::seconds(1);
-        core.approvals.open("c2", "Two", delete("c"), "c".into(), long_ago).await.expect("opened");
+        core.approvals.open("c2", "Two", delete("c"), None, "c".into(), long_ago).await.expect("opened");
         assert_eq!(core.snapshot().await.approvals_waiting, 2);
 
         core.approvals.decide(&first.id, false, now).await.expect("denied");
@@ -2189,7 +2287,7 @@ mod tests {
         assert!(matches!(posted, Response::Posted { id: Some(_) }), "{posted:?}");
         core.inbox.handle(notice("Backup finished", torro_inbox::Lane::Info), None, now);
         let delete = Request::DeleteTemplate { id: "a".into() };
-        let asked = core.approvals.open("c1", "One", delete, "a".into(), now).await.expect("opened");
+        let asked = core.approvals.open("c1", "One", delete, None, "a".into(), now).await.expect("opened");
         crate::inbox::file_approvals(&core.inbox, &core.approvals, now).await;
 
         let snapshot = core.snapshot().await;
@@ -2216,7 +2314,7 @@ mod tests {
         assert!(quiet.is_err(), "no change, no wake-up");
 
         let now = Utc::now();
-        let opened = core.approvals.open("c1", "One", delete("a"), "a".into(), now).await.expect("opened");
+        let opened = core.approvals.open("c1", "One", delete("a"), None, "a".into(), now).await.expect("opened");
         let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
         assert_eq!(woke.ok(), Some(true), "an opened approval wakes the tray");
 
@@ -2226,7 +2324,7 @@ mod tests {
 
         // One that expires in a moment wakes it without any change, and is no longer counted then.
         let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::milliseconds(100);
-        core.approvals.open("c1", "One", delete("b"), "b".into(), soon).await.expect("opened");
+        core.approvals.open("c1", "One", delete("b"), None, "b".into(), soon).await.expect("opened");
         changes.mark_unchanged();
         assert_eq!(core.snapshot().await.approvals_waiting, 1);
         let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
@@ -2875,6 +2973,88 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), open()).await), "unsupported", "seen, but no window");
     }
 
+    /// A notice with a web page that `key` posts in thread `thread`; its id.
+    async fn linked_notice(core: &Core, key: &Key, thread: &str, title: &str, url: &str) -> String {
+        let post = Request::PostItem {
+            kind: torro_inbox::Kind::Notice,
+            title: title.into(),
+            body: None,
+            link: Some(torro_inbox::Link::Url { url: url.into() }),
+            lane: None,
+            thread_key: Some(thread.into()),
+            agent: None,
+        };
+        match ask(core, Some(key), post).await {
+            Response::Posted { id: Some(id) } => id,
+            other => panic!("a post answers with its id: {other:?}"),
+        }
+    }
+
+    /// Task E1.2c (M3): a client opening a web page always waits for the person, whatever its
+    /// rights; the summary names the host, and nothing opens before they allow it.
+    #[tokio::test]
+    async fn a_client_opening_a_web_page_always_waits_for_the_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { open_url: record_url, ..core(dir.path()) };
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let url = "https://e12c-open.example.org/run/1";
+        let id = linked_notice(&core, &key, "run", "Run 1", url).await;
+
+        let asked = waits(ask(&core, Some(&key), Request::OpenItem { id: id.clone() }).await);
+        let wanted = trf(
+            "Open the web page on {host} from {entry}",
+            &[("host", &"e12c-open.example.org"), ("entry", &"\"Run 1\"")],
+        );
+        assert_eq!(asked.summary, wanted);
+        assert!(!OPENED.lock().expect("lock").contains(&url.to_string()), "nothing opened yet");
+        let ran = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(ran_with(&ran), &Response::Ok);
+        assert!(OPENED.lock().expect("lock").contains(&url.to_string()), "opened once allowed");
+        // The app key opens without asking.
+        assert_eq!(ask(&core, Some(&app_key), Request::OpenItem { id }).await, Response::Ok);
+    }
+
+    /// Task E1.2c (M3): an entry that became a web page between the check and the opening (a
+    /// repost on a second connection) does not open without the person: the core opens a web
+    /// page for a client only with the pin of an allowed approval.
+    #[tokio::test]
+    async fn a_web_page_slipped_in_after_the_check_does_not_open() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { open_url: record_url, ..core(dir.path()) };
+        let (client_id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let url = "https://e12c-race.example.org/";
+        let id = linked_notice(&core, &key, "race", "Race", url).await;
+        let info = core.clients.list().into_iter().find(|info| info.id == client_id).expect("the client");
+        // What `handle_client` runs once `opens_a_web_page` let the request through.
+        let answer = core.inbox_request(Request::OpenItem { id: id.clone() }, Some(&info), None).await;
+        assert_eq!(code(&answer), "conflict");
+        assert!(!OPENED.lock().expect("lock").contains(&url.to_string()), "nothing opened");
+        // The app key is never asked.
+        assert_eq!(core.inbox_request(Request::OpenItem { id }, None, None).await, Response::Ok);
+    }
+
+    /// Task E1.2c (M2): what the person allows is the entry as they saw it. A client that
+    /// reposts into the thread while its approval waits gets `conflict`, and nothing opens.
+    #[tokio::test]
+    async fn an_entry_changed_while_its_approval_waits_runs_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { open_url: record_url, ..core(dir.path()) };
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let shown = "https://e12c-harmless.example.org/";
+        let swapped = "https://e12c-swapped.example.org/";
+        let id = linked_notice(&core, &key, "swap", "Docs", shown).await;
+        let asked = waits(ask(&core, Some(&key), Request::OpenItem { id: id.clone() }).await);
+        assert!(asked.summary.contains("e12c-harmless.example.org"), "{}", asked.summary);
+
+        assert_eq!(linked_notice(&core, &key, "swap", "Docs", swapped).await, id, "the same entry");
+        let ran = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(code(ran_with(&ran)), "conflict");
+        let opened = OPENED.lock().expect("lock").clone();
+        assert!(!opened.iter().any(|url| url == shown || url == swapped), "{opened:?}");
+    }
+
     // ----- Making a task of an inbox entry (task E3.5) ---------------------------------------
 
     /// The core of [`core`], but with a calendar service on a fake CalDAV server that takes every
@@ -3063,8 +3243,9 @@ mod tests {
         let Response::Items { items } = ask(&core, Some(&app_key), suite).await else { panic!("items") };
         let approval = items.first().expect("the approval's entry").id.clone();
 
+        // Task E1.2c: the suite's entries do not exist for a client at all.
         let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
-        assert_eq!(code(&ask(&core, Some(&key), make_task(&approval, &fake.work)).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&key), make_task(&approval, &fake.work)).await), "not-found");
         assert_eq!(created_on(&fake), 0);
         assert!(entry(&core, dir.path(), &approval).await.state.is_open(), "the approval still waits");
     }
@@ -3110,6 +3291,42 @@ mod tests {
         assert!(entry(&core, dir.path(), &id).await.state.is_open());
     }
 
+    /// Task E1.2c (M2): a task waiting for approval is made of the entry the person was shown,
+    /// under the title its summary names; a repost meanwhile makes nothing.
+    #[tokio::test]
+    async fn a_task_is_made_of_the_entry_the_person_was_shown() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut asking = RightsTemplate::FullAccess.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (client_id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let id = linked_notice(&core, &key, "deploy", "Deploy failed", "https://ci.example.org/7").await;
+        let second = linked_notice(&core, &key, "deploy-2", "Release notes", "https://ci.example.org/8").await;
+        core.clients.update(&client_id, asking).await.expect("now asking");
+
+        // Unchanged, the task gets the title the summary names.
+        let asked = waits(ask(&core, Some(&key), make_task(&id, &fake.work)).await);
+        assert!(asked.summary.contains("Deploy failed"), "{}", asked.summary);
+        let ran = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let Response::Todo { todo } = ran_with(&ran) else { panic!("a task: {ran:?}") };
+        assert_eq!(todo.summary, "Deploy failed");
+        assert_eq!(created_on(&fake), 1);
+
+        // Reposted into while it waits: `conflict`, no task, the entry as it is.
+        let id = second;
+        let asked = waits(ask(&core, Some(&key), make_task(&id, &fake.work)).await);
+        let mut reposting = RightsTemplate::FullAccess.rights();
+        reposting.confirm = torro_ipc::api::Confirm::Never;
+        core.clients.update(&client_id, reposting).await.expect("posting freely");
+        let reposted = linked_notice(&core, &key, "deploy-2", "Wire 10000 EUR", "https://evil.example/").await;
+        assert_eq!(reposted, id);
+        let ran = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(code(ran_with(&ran)), "conflict");
+        assert_eq!(created_on(&fake), 1, "{:?}", fake.lines());
+        assert!(entry(&core, dir.path(), &id).await.state.is_open());
+    }
+
     #[tokio::test]
     async fn the_inbox_knows_who_asks_on_the_socket() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3152,8 +3369,9 @@ mod tests {
         let core = core(dir.path());
         let app_key = crate::clients::tests::app_key(dir.path());
         let (_, key) = client(&core, inbox_admin()).await;
+        // The suite does not exist for a client (task E1.2c): nothing to ask a person about.
         let suite = Request::MuteSource { source: torro_inbox::SourceRef::suite(), muted: true };
-        assert_eq!(code(&ask(&core, Some(&key), suite).await), "forbidden", "no approval to ask for");
+        assert_eq!(code(&ask(&core, Some(&key), suite).await), "not-found", "no approval to ask for");
         let mut narrow = inbox_admin();
         narrow.inbox_sources = Selection::Only(vec!["agent:claude-code".into()]);
         let (_, narrow_key) = client(&core, narrow).await;
@@ -3343,7 +3561,8 @@ mod tests {
         }
     }
 
-    /// Task A.5: a denied approval gets a line with its id; nothing ran.
+    /// Task A.5: a denied approval gets a line with its id; nothing ran. Task E1.2c: the line
+    /// names the ids of what was asked for, as the request's own line does.
     #[tokio::test]
     async fn a_denied_approval_is_logged_as_denied() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -3358,6 +3577,7 @@ mod tests {
             (last.client.as_deref(), last.command.as_str(), last.result.as_str(), last.approval.as_deref()),
             (Some(id.as_str()), "workspaces.delete_template", "denied", Some(asked.id.as_str()))
         );
+        assert_eq!(last.ids, vec![format!("template:{}", crate::audit::hashed("dev"))]);
     }
 
     /// Task A.5: `clients.activity` answers the app key with one client's lines, newest first;
@@ -3371,7 +3591,7 @@ mod tests {
         let (other, other_key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         ask(&core, Some(&key), Request::Ping).await;
         ask(&core, Some(&other_key), Request::Status).await;
-        ask(&core, Some(&key), Request::GetItem { id: "i1".into() }).await;
+        ask(&core, Some(&key), Request::GetItem { id: "0a1b2c3d4e5f6071".into() }).await;
 
         let activity = Request::ClientActivity { id: id.clone() };
         assert_eq!(code(&ask(&core, Some(&key), activity.clone()).await), "forbidden");
@@ -3382,7 +3602,7 @@ mod tests {
         let commands: Vec<_> = entries.iter().map(|e| e.command.as_str()).collect();
         // The refused request for the activity is the client's own latest line.
         assert_eq!(commands, vec!["clients.activity", "inbox.get_item", "system.ping"]);
-        assert_eq!(entries[1].ids, vec!["inbox:i1".to_string()]);
+        assert_eq!(entries[1].ids, vec!["inbox:0a1b2c3d4e5f6071".to_string()]);
         assert!(entries.iter().all(|e| e.client.as_deref() == Some(id.as_str())));
         assert_ne!(id, other);
         let unknown = Request::ClientActivity { id: "nobody".into() };

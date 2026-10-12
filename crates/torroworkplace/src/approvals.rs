@@ -21,7 +21,10 @@
 //!
 //! The summary says what really runs: titles, dates and names come from the core's own caches,
 //! looked up by the keys the command runs with ([`Facts`]), never from the titles the client sent
-//! along. What is stored is the request itself, with the client's text in it; the file is for the
+//! along. An inbox entry can change under its id (a client reposts in the same thread), so an
+//! approval of an `inbox.*` command keeps what the entry looked like when it was asked for
+//! ([`EntryPin`]); the core refuses to run it when the entry changed meanwhile (task E1.2c).
+//! What is stored is the request itself, with the client's text in it; the file is for the
 //! owner only. Changes are made under one lock and written before they count: an approval that
 //! cannot be written is not opened (the core refuses the command), a decision that cannot be
 //! written is not taken.
@@ -38,7 +41,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
-use torro_inbox::{Item, Lane, Rule, RuleEffect, SourceRef};
+use torro_inbox::{Item, Lane, Link, Rule, RuleEffect, SourceRef};
 use torro_ipc::api::Mcp;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_pim::{Event, EventTime, Todo};
@@ -118,12 +121,44 @@ pub struct Known {
     pub start: Option<EventTime>,
 }
 
-/// One approval in `approvals.json`: what the API shows, and the request that runs when a person
-/// allows it.
+/// What the inbox entry an `inbox.*` command names looked like when the client asked for
+/// approval (task E1.2c): the person allowed what the summary showed of it, not what the client
+/// may have reposted into the same thread since.
+///
+/// A repost replaces title, text and link ([`torro_inbox::rules::merge`]), sets `updated` to the
+/// time of the report and counts one more; nothing else changes these, and `count` only grows. So
+/// an entry that still has both was not reposted into, and whatever the command reads from it is
+/// what the person saw. Waking a snoozed entry moves `updated` as well; such an approval is
+/// refused too, which only means asking again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryPin {
+    /// [`Item::updated`] when the approval was asked for.
+    pub updated: DateTime<Utc>,
+    /// [`Item::count`] when the approval was asked for.
+    pub count: u32,
+}
+
+impl EntryPin {
+    /// The pin of `item` as it is now.
+    pub fn of(item: &Item) -> EntryPin {
+        EntryPin { updated: item.updated, count: item.count }
+    }
+
+    /// `item` is still as it was pinned: neither reposted into nor woken.
+    pub fn holds(&self, item: &Item) -> bool {
+        *self == EntryPin::of(item)
+    }
+}
+
+/// One approval in `approvals.json`: what the API shows, the request that runs when a person
+/// allows it, and for an `inbox.*` command what its entry looked like then ([`EntryPin`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
     info: ApprovalInfo,
     request: Request,
+    /// Missing in approvals stored before task E1.2c, and for every other command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pin: Option<EntryPin>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -202,11 +237,13 @@ impl std::error::Error for ApprovalsError {}
 /// What a person's decision leaves to do.
 #[derive(Debug)]
 pub enum Decision {
-    /// Denied; nothing runs.
-    Denied(ApprovalInfo),
+    /// Denied; nothing runs. `request` is what was asked for, for the audit log's ids.
+    Denied { approval: ApprovalInfo, request: Box<Request> },
     /// Allowed: the approval is [`ApprovalState::Running`]. Run `request` for the client `client`
     /// (rights and collections checked again) and store its answer with [`Approvals::finish`].
-    Run { client: String, request: Box<Request> },
+    /// With a `pin`, the inbox entry the request names must still hold it ([`EntryPin::holds`]),
+    /// else the core answers `conflict` and runs nothing.
+    Run { client: String, request: Box<Request>, pin: Option<EntryPin> },
 }
 
 /// The open and recent approvals of the core.
@@ -264,7 +301,9 @@ impl Approvals {
 
     /// Opens an approval for `request` of the client `client` (named `client_name`, or shown by
     /// its id when the name is empty), stores it and announces it. `summary` says in words what
-    /// would happen ([`summary`]).
+    /// would happen ([`summary`]). For an `inbox.*` command, `pin` is what its entry looked like
+    /// when the summary was written (task E1.2c); it is stored with the approval and handed back
+    /// with the decision ([`Decision::Run`]). Every other command passes `None`.
     ///
     /// Refuses a command kept from agents ([`ApprovalsError::KeptBack`]) before anything is
     /// stored: such a request may carry a secret. A client with [`OPEN_MAX`] open approvals gets
@@ -275,6 +314,7 @@ impl Approvals {
         client: &str,
         client_name: &str,
         request: Request,
+        pin: Option<EntryPin>,
         summary: String,
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
@@ -299,7 +339,7 @@ impl Approvals {
             decided: None,
             state: ApprovalState::Pending,
         };
-        state.entries.push(Entry { info: info.clone(), request });
+        state.entries.push(Entry { info: info.clone(), request, pin });
         if let Err(err) = self.write(&state).await {
             state.entries.pop();
             return Err(err);
@@ -396,9 +436,10 @@ impl Approvals {
         let entry = &mut state.entries[index];
         entry.info.decided = Some(now);
         entry.info.state = if allow { ApprovalState::Running } else { ApprovalState::Denied };
+        let request = Box::new(entry.request.clone());
         let decision = match allow {
-            true => Decision::Run { client: entry.info.client.clone(), request: Box::new(entry.request.clone()) },
-            false => Decision::Denied(entry.info.clone()),
+            true => Decision::Run { client: entry.info.client.clone(), request, pin: entry.pin },
+            false => Decision::Denied { approval: entry.info.clone(), request },
         };
         if let Err(err) = self.write(&state).await {
             state.entries[index].info = before;
@@ -711,16 +752,35 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::ResolveItems { thread_key } => {
             trf("Mark its own inbox entries of thread {thread} as done", &[("thread", &quote(thread_key))])
         }
-        Request::OpenItem { .. } => trf("Show {entry} on the screen", &[("entry", &entry())]),
-        // The title that will be written: the client's, or – left out or blank – the entry's.
-        Request::CreateTaskFromItem { collection, title, .. } => {
+        // What opening does follows the stored link: the page's host, the app, the agent's window.
+        Request::OpenItem { .. } => match facts.item.as_ref().and_then(|item| item.link.as_ref()) {
+            Some(Link::Url { url }) => trf(
+                "Open the web page on {host} from {entry}",
+                &[("host", &quote(&web_host(url).unwrap_or_default())), ("entry", &entry())],
+            ),
+            Some(Link::App { app }) => {
+                let name = AppId::ALL.iter().find(|known| known.binary == app).map_or(app.as_str(), |a| a.display_name);
+                trf("Open {app} from {entry}", &[("app", &quote(name)), ("entry", &entry())])
+            }
+            Some(Link::Window) => trf("Bring the agent window of {entry} to the front", &[("entry", &entry())]),
+            None => trf("Show {entry} on the screen", &[("entry", &entry())]),
+        },
+        // The title that will be written: the client's, or – left out or blank – the entry's. The
+        // core puts the entry's title into the request before it asks (task E1.2c).
+        Request::CreateTaskFromItem { collection, title, due, .. } => {
             let title = title.as_deref().filter(|title| !title.trim().is_empty());
-            let title = title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default();
-            let list = facts.list.as_deref().unwrap_or(collection);
-            trf(
-                "Make a task \"{title}\" in \"{list}\" from {entry}",
-                &[("title", &quote(title)), ("list", &quote(list)), ("entry", &entry())],
-            )
+            let title = quote(title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default());
+            let list = quote(facts.list.as_deref().unwrap_or(collection));
+            match due {
+                Some(due) => trf(
+                    "Make a task \"{title}\" in \"{list}\" due {when} from {entry}",
+                    &[("title", &title), ("list", &list), ("when", &when(due, today)), ("entry", &entry())],
+                ),
+                None => trf(
+                    "Make a task \"{title}\" in \"{list}\" from {entry}",
+                    &[("title", &title), ("list", &list), ("entry", &entry())],
+                ),
+            }
         }
         Request::SetItemDone { done: true, .. } => trf("Mark {entry} as done", &[("entry", &entry())]),
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
@@ -758,6 +818,17 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         },
         other => summary(other, &Facts::default()),
     }
+}
+
+/// The host a web link opens, as the browser reads it: what follows `://` up to the first `/`,
+/// `?`, `#` or backslash (browsers take it for a slash), without a user part (`a@b` opens `b`),
+/// in lower case. `None` for anything but `http`/`https` or without a host.
+fn web_host(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    let rest = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://"))?;
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    (!host.is_empty()).then(|| host.to_string())
 }
 
 /// A source for a summary: its label and its key, `"Codex" (agent:codex)`, both quoted.
@@ -968,7 +1039,8 @@ pub(crate) mod tests {
     async fn an_approval_survives_a_restart_and_expires_after_ten_minutes() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let opened = approvals.open("c1", "Claude Code", delete("dev"), "Delete".into(), at(0)).await.expect("opened");
+        let opened =
+            approvals.open("c1", "Claude Code", delete("dev"), None, "Delete".into(), at(0)).await.expect("opened");
         assert_eq!(opened.state, ApprovalState::Pending);
         assert_eq!(opened.expires, at(10));
 
@@ -995,8 +1067,8 @@ pub(crate) mod tests {
     async fn a_client_sees_only_its_own_approvals_and_the_app_key_all() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let mine = approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
-        let theirs = approvals.open("c2", "Two", delete("b"), "b".into(), at(1)).await.expect("opened");
+        let mine = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        let theirs = approvals.open("c2", "Two", delete("b"), None, "b".into(), at(1)).await.expect("opened");
 
         let ids = |list: Vec<ApprovalInfo>| list.into_iter().map(|info| info.id).collect::<Vec<_>>();
         assert_eq!(ids(approvals.list(Some("c1"), at(2)).await.expect("list")), std::slice::from_ref(&mine.id));
@@ -1008,20 +1080,24 @@ pub(crate) mod tests {
     async fn a_decision_is_taken_once_and_the_outcome_kept() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let first = approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
-        let second = approvals.open("c1", "One", delete("b"), "b".into(), at(0)).await.expect("opened");
+        let first = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        let second = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
 
-        let Ok(Decision::Run { client, request }) = approvals.decide(&first.id, true, at(1)).await else {
+        let Ok(Decision::Run { client, request, pin }) = approvals.decide(&first.id, true, at(1)).await else {
             panic!("allowed runs");
         };
-        assert_eq!((client.as_str(), *request), ("c1", delete("a")));
+        assert_eq!((client.as_str(), *request, pin), ("c1", delete("a"), None));
         assert_eq!(approvals.status(None, &first.id, at(1)).await.expect("kept").state, ApprovalState::Running);
         let done = approvals.finish(&first.id, Response::Ok, at(1)).await.expect("finished");
         assert_eq!(done.state, ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(matches!(approvals.decide(&first.id, false, at(2)).await, Err(ApprovalsError::NotOpen(_))));
 
-        let Ok(Decision::Denied(denied)) = approvals.decide(&second.id, false, at(2)).await else { panic!("denied") };
+        let Ok(Decision::Denied { approval: denied, request }) = approvals.decide(&second.id, false, at(2)).await
+        else {
+            panic!("denied")
+        };
         assert_eq!((denied.state, denied.decided), (ApprovalState::Denied, Some(at(2))));
+        assert_eq!(*request, delete("b"), "what was asked for, for the audit log");
         assert!(matches!(approvals.decide("nope", true, at(2)).await, Err(ApprovalsError::NotFound(_))));
 
         // Outcomes survive a restart too.
@@ -1033,7 +1109,7 @@ pub(crate) mod tests {
     async fn a_command_running_when_the_core_stopped_never_runs_again() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let opened = approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
+        let opened = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         assert!(matches!(approvals.decide(&opened.id, true, at(1)).await, Ok(Decision::Run { .. })));
 
         let restarted = quiet_in(dir.path());
@@ -1051,17 +1127,17 @@ pub(crate) mod tests {
         let approvals = Approvals::new(Some(file_in(dir.path())), notify);
 
         let token = Request::SetGithubToken { token: torro_ipc::Secret::new("ghp_secret") };
-        let refused = approvals.open("c1", "One", token, "x".into(), at(0)).await;
+        let refused = approvals.open("c1", "One", token, None, "x".into(), at(0)).await;
         assert!(matches!(refused, Err(ApprovalsError::KeptBack("accounts.set_github_token"))));
         let decide = Request::DecideApproval { id: "x".into(), allow: true };
         assert!(matches!(
-            approvals.open("c1", "One", decide, "x".into(), at(0)).await,
+            approvals.open("c1", "One", decide, None, "x".into(), at(0)).await,
             Err(ApprovalsError::KeptBack(_))
         ));
         assert!(!file_in(dir.path()).exists(), "nothing stored");
         assert_eq!(*shown.lock().expect("lock"), 0, "nothing announced");
 
-        approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
+        approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         assert_eq!(*shown.lock().expect("lock"), 1, "a new approval is announced once");
         let stored = fs::read_to_string(file_in(dir.path())).expect("stored");
         assert!(!stored.contains("ghp_secret"));
@@ -1072,14 +1148,14 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
         for n in 0..OPEN_MAX {
-            approvals.open("c1", "One", delete(&n.to_string()), "x".into(), at(0)).await.expect("opened");
+            approvals.open("c1", "One", delete(&n.to_string()), None, "x".into(), at(0)).await.expect("opened");
         }
-        let refused = approvals.open("c1", "One", delete("more"), "x".into(), at(0)).await;
+        let refused = approvals.open("c1", "One", delete("more"), None, "x".into(), at(0)).await;
         assert!(matches!(refused, Err(ApprovalsError::TooMany)));
         assert_eq!(ApprovalsError::TooMany.code(), "busy");
-        approvals.open("c2", "Two", delete("other"), "x".into(), at(0)).await.expect("other clients still ask");
+        approvals.open("c2", "Two", delete("other"), None, "x".into(), at(0)).await.expect("other clients still ask");
         // Once they expired it may ask again.
-        approvals.open("c1", "One", delete("later"), "x".into(), at(10)).await.expect("opened after expiry");
+        approvals.open("c1", "One", delete("later"), None, "x".into(), at(10)).await.expect("opened after expiry");
     }
 
     #[tokio::test]
@@ -1088,7 +1164,7 @@ pub(crate) mod tests {
         // A file where the state directory should be: nothing can be written below it.
         fs::write(dir.path().join("state"), "not a directory").expect("blocker");
         let approvals = quiet_in(dir.path());
-        let refused = approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await;
+        let refused = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await;
         assert!(matches!(refused, Err(ApprovalsError::Io { .. })), "{refused:?}");
     }
 
@@ -1100,16 +1176,16 @@ pub(crate) mod tests {
         let approvals = quiet_in(dir.path());
         assert!(approvals.list(None, at(0)).await.expect("list").is_empty());
         assert!(dir.path().join("state").join("approvals.json.damaged").exists());
-        approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
+        approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
     }
 
     #[tokio::test]
     async fn open_approvals_are_asked_about_again_when_the_core_starts() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let early = approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
-        let open = approvals.open("c1", "One", delete("b"), "b".into(), at(5)).await.expect("opened");
-        let decided = approvals.open("c1", "One", delete("c"), "c".into(), at(5)).await.expect("opened");
+        let early = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        let open = approvals.open("c1", "One", delete("b"), None, "b".into(), at(5)).await.expect("opened");
+        let decided = approvals.open("c1", "One", delete("c"), None, "c".into(), at(5)).await.expect("opened");
         approvals.decide(&decided.id, false, at(6)).await.expect("denied");
 
         // A new core asks again about the one still open; `early` expired at minute 10.
@@ -1127,8 +1203,8 @@ pub(crate) mod tests {
     async fn a_decision_takes_the_question_off_the_desktop() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (approvals, seen) = recorded_in(dir.path());
-        let first = approvals.open("c1", "One", delete("a"), "a".into(), at(0)).await.expect("opened");
-        let second = approvals.open("c1", "One", delete("b"), "b".into(), at(0)).await.expect("opened");
+        let first = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
+        let second = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
         assert_eq!(*seen.asked.lock().expect("lock"), [first.id.clone(), second.id.clone()]);
         assert!(seen.settled.lock().expect("lock").is_empty());
 
@@ -1144,9 +1220,9 @@ pub(crate) mod tests {
     async fn a_client_without_a_name_is_shown_by_its_id() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let nameless = approvals.open("c1", " ", delete("a"), "a".into(), at(0)).await.expect("opened");
+        let nameless = approvals.open("c1", " ", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         assert_eq!(nameless.client_name, "c1");
-        let named = approvals.open("c1", "Claude Code", delete("b"), "b".into(), at(0)).await.expect("opened");
+        let named = approvals.open("c1", "Claude Code", delete("b"), None, "b".into(), at(0)).await.expect("opened");
         assert_eq!(named.client_name, "Claude Code");
     }
 
@@ -1526,5 +1602,78 @@ pub(crate) mod tests {
             wanted("", "nextcloud:anna/work", unknown),
             "without facts the id the command runs with"
         );
+    }
+
+    /// Task E1.2c: a task with a due date says so; the date is what will be written.
+    #[test]
+    fn a_task_from_an_entry_names_its_due_date() {
+        let due = EventTime::Date(chrono::NaiveDate::from_ymd_opt(2026, 10, 14).expect("date"));
+        let make = Request::CreateTaskFromItem {
+            id: "e1".into(),
+            collection: "l".into(),
+            title: Some("Fix it".into()),
+            due: Some(due),
+        };
+        let known =
+            InboxFacts { item: Some(inbox_entry("CI red")), list: Some("Work".into()), ..InboxFacts::default() };
+        let today = Local::now().date_naive();
+        assert_eq!(
+            inbox_summary(&make, &known),
+            trf(
+                "Make a task \"{title}\" in \"{list}\" due {when} from {entry}",
+                &[("title", &"Fix it"), ("list", &"Work"), ("when", &when(&due, today)), ("entry", &"\"CI red\"")],
+            )
+        );
+    }
+
+    /// Task E1.2c: opening says what opens, from the link the inbox holds: the page's host (as the
+    /// browser reads it), the app by name, or the agent's window.
+    #[test]
+    fn opening_an_entry_names_the_host_the_app_or_the_agent_window() {
+        let entry = "\"CI red\"";
+        let open = |link: Option<Link>| {
+            let facts = InboxFacts { item: Some(Item { link, ..inbox_entry("CI red") }), ..InboxFacts::default() };
+            inbox_summary(&Request::OpenItem { id: "e1".into() }, &facts)
+        };
+        let page = |host: &str| trf("Open the web page on {host} from {entry}", &[("host", &host), ("entry", &entry)]);
+        let url = |url: &str| Some(Link::Url { url: url.into() });
+        assert_eq!(open(url("https://CI.example.org/run/1?x=y")), page("ci.example.org"));
+        assert_eq!(open(url("https://bank.example@evil.example/login")), page("evil.example"), "a user part");
+        assert_eq!(open(url("http://evil.example\\@bank.example/")), page("evil.example"), "a backslash");
+        assert_eq!(open(url("https://evil.example:8443#@bank.example")), page("evil.example:8443"));
+        assert_eq!(
+            open(Some(Link::App { app: "torrotasks".into() })),
+            trf("Open {app} from {entry}", &[("app", &"Torro Tasks"), ("entry", &entry)])
+        );
+        assert_eq!(
+            open(Some(Link::Window)),
+            trf("Bring the agent window of {entry} to the front", &[("entry", &entry)])
+        );
+        assert_eq!(open(None), trf("Show {entry} on the screen", &[("entry", &entry)]));
+    }
+
+    /// Task E1.2c: an approval keeps what its entry looked like and hands it back when allowed;
+    /// approvals stored before have none.
+    #[tokio::test]
+    async fn an_approval_keeps_the_pin_of_its_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let pin = EntryPin::of(&inbox_entry("CI red"));
+        let open = Request::OpenItem { id: "e1".into() };
+        let asked = approvals.open("c1", "One", open, Some(pin), "x".into(), at(0)).await.expect("opened");
+        let restarted = quiet_in(dir.path());
+        let Ok(Decision::Run { pin: kept, .. }) = restarted.decide(&asked.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!(kept, Some(pin));
+        assert!(pin.holds(&inbox_entry("CI red")));
+        let reposted = Item { count: 2, ..inbox_entry("CI green") };
+        assert!(!pin.holds(&reposted));
+        let old: Entry = serde_json::from_value(serde_json::json!({
+            "info": serde_json::to_value(&asked).expect("json"),
+            "request": { "method": "inbox.open_item", "id": "e1" },
+        }))
+        .expect("an approval from before reads");
+        assert_eq!(old.pin, None);
     }
 }

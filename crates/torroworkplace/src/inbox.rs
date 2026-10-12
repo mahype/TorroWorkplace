@@ -20,6 +20,8 @@
 //!    core files approvals ([`post`] through `api::admit_post`).
 //! 4. Hook clients see nothing: `list_items` and `get_item` answer `not-found` ([`answer`]), and
 //!    every query is limited to the client's `inbox_sources` before it reads a row ([`Scope`]).
+//!    No client key sees the source `suite` (task E1.2c): other clients' approvals and the
+//!    accounts' troubles are the person's, so for a client they do not exist.
 //!
 //! Requests never come from the core itself, so every entry they make is `untrusted`. New threads
 //! are throttled per poster and hour ([`throttle`]); merging into an existing thread and
@@ -72,8 +74,8 @@ use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, Poster};
 use torro_inbox::{
-    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceRef, State,
-    StateFilter,
+    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceKind,
+    SourceRef, State, StateFilter,
 };
 use torro_ipc::api::{self, HOOK_CLIENT, InboxForbidden, Selection};
 use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
@@ -339,10 +341,10 @@ impl Inbox {
     /// nothing else.
     ///
     /// `Err` holds the answer: `not-found` for an unknown entry or one of a source `client` may
-    /// not see (a hook client sees none), `forbidden` when `client` may not change it (security
-    /// rule 1: approvals, account problems and the suite's entries are the person's, so an agent
-    /// cannot turn an approval into a task and mark it done). The app key (`None`) may change
-    /// every entry.
+    /// not see (a hook client sees none, no client the suite's), `forbidden` when `client` may not
+    /// change it (security rule 1: approvals, account problems and the suite's entries are the
+    /// person's, so an agent cannot turn an approval into a task and mark it done). The app key
+    /// (`None`) may change every entry.
     pub fn entry_for_task(
         &self,
         id: &str,
@@ -672,21 +674,30 @@ fn owner(client: Option<&ClientInfo>) -> &str {
 
 /// The sources a caller may see, applied to every query before it reads a row.
 enum Scope {
+    /// Every source: the app key only.
     All,
-    /// These source keys only ([`SourceRef::key`]); empty sees nothing.
+    /// Every source but `suite`: a client whose selection is "all".
+    AllButSuite,
+    /// These source keys only ([`SourceRef::key`]), never `suite`; empty sees nothing.
     Only(Vec<String>),
 }
 
 impl Scope {
-    /// The app key sees all; a client its `inbox_sources`; a hook client nothing, whatever its
-    /// rights say (security rule 4; `Rights::for_kind` keeps them empty anyway).
+    /// The app key sees all; a client its `inbox_sources` without `suite`; a hook client nothing,
+    /// whatever its rights say (security rule 4; `Rights::for_kind` keeps them empty anyway).
+    ///
+    /// The source `suite` is the person's alone (task E1.2c): its entries are other clients'
+    /// approvals, with summaries from the core's caches, and the accounts' troubles. No client
+    /// sees it, not with "all" and not when its selection names it (as
+    /// `api::Rights::reaches_source` says).
     fn of(client: Option<&ClientInfo>) -> Scope {
+        let suite = SourceRef::suite().key();
         match client {
             None => Scope::All,
             Some(client) if client.kind == HOOK_CLIENT => Scope::Only(Vec::new()),
             Some(client) => match &client.rights.inbox_sources {
-                Selection::All => Scope::All,
-                Selection::Only(keys) => Scope::Only(keys.clone()),
+                Selection::All => Scope::AllButSuite,
+                Selection::Only(keys) => Scope::Only(keys.iter().filter(|key| **key != suite).cloned().collect()),
             },
         }
     }
@@ -694,6 +705,7 @@ impl Scope {
     fn sees(&self, source: &SourceRef) -> bool {
         match self {
             Scope::All => true,
+            Scope::AllButSuite => source.kind != SourceKind::Suite,
             Scope::Only(keys) => keys.contains(&source.key()),
         }
     }
@@ -703,6 +715,7 @@ impl Scope {
     fn condition(&self) -> Option<(String, Vec<Value>)> {
         match self {
             Scope::All => Some(("1".into(), Vec::new())),
+            Scope::AllButSuite => Some(("source <> ?".into(), vec![text(SourceRef::suite().key())])),
             Scope::Only(keys) if keys.is_empty() => None,
             Scope::Only(keys) => {
                 let marks = vec!["?"; keys.len()].join(", ");
@@ -788,7 +801,8 @@ fn changeable(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<
 }
 
 /// `client` sees `source` (`not-found`) and may mute it or remove its rules (`forbidden` for
-/// `suite`, security rule 1).
+/// `suite`, security rule 1). No client sees `suite` ([`Scope::of`]), so a client gets
+/// `not-found` for it already; the second check stays for the day a client could see it.
 fn changeable_source(source: &SourceRef, client: Option<&ClientInfo>) -> Result<(), Failure> {
     if !Scope::of(client).sees(source) {
         return Err(Failure::NotFound(format!("no inbox source {:?}", source.key())));
@@ -2107,44 +2121,107 @@ pub(crate) mod tests {
         assert_eq!((entry.agent, entry.link), (None, None), "no session, no window from a non-hook");
     }
 
+    /// A client that names the suite in its selection, besides a script source.
+    fn naming_the_suite() -> ClientInfo {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.inbox_sources = Selection::Only(vec![SourceRef::suite().key(), "script:script aa01".into()]);
+        client("ee05", "codex", rights)
+    }
+
+    /// Task E1.2c: the suite's entries are the person's. No client key sees them, with "all"
+    /// sources or with `suite` named in its selection, so for a client they do not exist.
     #[test]
     fn approvals_and_the_suite_belong_to_the_person() {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         file_from_core(&inbox, &approval(at(8, 0)));
-        let script = script();
         let id = "approval-1".to_string();
+        let mute = Request::MuteSource { source: SourceRef::suite(), muted: true };
+        assert_eq!(inbox.handle(mute.clone(), None, at(8, 0)), Response::Ok);
 
-        assert_eq!(
-            item(inbox.handle(Request::GetItem { id: id.clone() }, Some(&script), at(8, 1))).kind,
-            Kind::Approval
-        );
-        for request in [
-            Request::SetItemDone { id: id.clone(), done: true },
-            Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) },
-            Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false },
-            Request::MuteSource { source: SourceRef::suite(), muted: true },
-        ] {
-            assert_eq!(code(&inbox.handle(request.clone(), Some(&script), at(8, 2))), "forbidden", "{request:?}");
-            assert_eq!(inbox.refusal(&request, Some(&script)).as_ref().map(code), Some("forbidden"));
-            assert_eq!(inbox.refusal(&request, None), None, "the app key is never refused");
+        for client in [script(), naming_the_suite()] {
+            let get = Request::GetItem { id: id.clone() };
+            assert_eq!(code(&inbox.handle(get, Some(&client), at(8, 1))), "not-found");
+            assert_eq!(items(inbox.handle(all(), Some(&client), at(8, 1))), vec![]);
+            let of_suite = Request::ListItems {
+                lane: None,
+                source: Some(SourceRef::suite()),
+                state: None,
+                since: None,
+                limit: None,
+            };
+            assert_eq!(items(inbox.handle(of_suite, Some(&client), at(8, 1))), vec![]);
+            assert_eq!(
+                inbox.handle(Request::ListSources, Some(&client), at(8, 1)),
+                Response::Sources { sources: vec![] }
+            );
+            assert_eq!(inbox.handle(Request::ListRules, Some(&client), at(8, 1)), Response::Rules { rules: vec![] });
+            for request in [
+                Request::SetItemDone { id: id.clone(), done: true },
+                Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) },
+                Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false },
+                mute.clone(),
+            ] {
+                assert_eq!(code(&inbox.handle(request.clone(), Some(&client), at(8, 2))), "not-found", "{request:?}");
+                assert_eq!(inbox.refusal(&request, Some(&client)).as_ref().map(code), Some("not-found"));
+                assert_eq!(inbox.refusal(&request, None), None, "the app key is never refused");
+            }
+            for request in [
+                Request::OpenItem { id: id.clone() },
+                Request::CreateTaskFromItem { id: id.clone(), collection: "l".into(), title: None, due: None },
+            ] {
+                assert_eq!(inbox.refusal(&request, Some(&client)).as_ref().map(code), Some("not-found"));
+            }
+            assert_eq!(code(&inbox.entry_for_task(&id, Some(&client), at(8, 2)).expect_err("hidden")), "not-found");
         }
         assert_eq!(item(inbox.handle(Request::GetItem { id: id.clone() }, None, at(8, 3))).state, State::New);
 
+        // The person changes them.
         assert_eq!(
             item(inbox.handle(Request::SetItemDone { id, done: true }, None, at(8, 4))).state,
             State::Done { at: at(8, 4) }
         );
-        assert_eq!(
-            inbox.handle(Request::MuteSource { source: SourceRef::suite(), muted: true }, None, at(8, 5)),
-            Response::Ok
-        );
-        let Response::Rules { rules } = inbox.handle(Request::ListRules, Some(&script), at(8, 6)) else {
+        let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(8, 6)) else {
             panic!("rules answer with Rules");
         };
         let remove = Request::RemoveRule { id: rules[0].id.clone() };
-        assert_eq!(code(&inbox.handle(remove.clone(), Some(&script), at(8, 7))), "forbidden");
+        assert_eq!(code(&inbox.handle(remove.clone(), Some(&script()), at(8, 7))), "not-found");
         assert_eq!(inbox.handle(remove, None, at(8, 7)), Response::Ok);
+    }
+
+    /// Task E1.2c: one client's approval is no other client's business, nor its own as an entry
+    /// (it reads its approvals with `approvals.list_approvals`).
+    #[tokio::test]
+    async fn no_client_sees_an_approval_entry_of_another_or_its_own() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        let asked = ask(&approvals, "dev", at(8, 0)).await;
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+        let problems = [check("anna", problem(Trouble::SignInRefused, at(8, 0)))];
+        inbox.file_account_problems(&problems, true, at(8, 0)).expect("filed");
+        let entries = suite(&inbox, at(8, 0));
+        assert_eq!(entries.len(), 2, "the app key sees both");
+        posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 1)));
+
+        let other = client("c2", "claude-code", RightsTemplate::ReadAndWrite.rights());
+        let asker = client(&asked.client, "claude-code", RightsTemplate::ReadAndWrite.rights());
+        for client in [other, asker, naming_the_suite()] {
+            let listed = items(inbox.handle(all(), Some(&client), at(8, 2)));
+            assert!(listed.iter().all(|item| item.source != SourceRef::suite()), "{listed:?}");
+            assert_eq!(listed.len(), 1, "the script's notice only: {listed:?}");
+            for entry in &entries {
+                let get = Request::GetItem { id: entry.id.clone() };
+                assert_eq!(code(&inbox.handle(get, Some(&client), at(8, 2))), "not-found");
+            }
+            let Response::Sources { sources } = inbox.handle(Request::ListSources, Some(&client), at(8, 2)) else {
+                panic!("sources answer with Sources");
+            };
+            assert_eq!(sources.iter().map(|s| s.source.key()).collect::<Vec<_>>(), vec!["script:script aa01"]);
+        }
+        let Response::Sources { sources } = inbox.handle(Request::ListSources, None, at(8, 2)) else {
+            panic!("sources answer with Sources");
+        };
+        assert!(sources.iter().any(|info| info.source == SourceRef::suite()), "the person sees the suite");
     }
 
     #[test]
@@ -2549,7 +2626,7 @@ pub(crate) mod tests {
     async fn ask(approvals: &Approvals, template: &str, now: DateTime<Utc>) -> ApprovalInfo {
         let request = Request::DeleteTemplate { id: template.into() };
         let summary = format!("Delete template \"{template}\"");
-        approvals.open("c1", "Claude Code", request, summary, now).await.expect("opened")
+        approvals.open("c1", "Claude Code", request, None, summary, now).await.expect("opened")
     }
 
     fn entry_of<'a>(items: &'a [Item], approval: &ApprovalInfo) -> &'a Item {
@@ -2702,12 +2779,14 @@ pub(crate) mod tests {
         let items = suite(&inbox, at(8, 0));
         assert_eq!(items.len(), 2);
 
-        // A client that sees the suite reads them but changes nothing, nor resolves their threads.
+        // A client finds them nowhere (task E1.2c), changes nothing and resolves none of their threads.
         let script = script();
         for entry in &items {
             let done = Request::SetItemDone { id: entry.id.clone(), done: true };
-            assert_eq!(code(&inbox.handle(done.clone(), Some(&script), at(8, 1))), "forbidden");
-            assert_eq!(inbox.refusal(&done, Some(&script)).as_ref().map(code), Some("forbidden"));
+            assert_eq!(code(&inbox.handle(done.clone(), Some(&script), at(8, 1))), "not-found");
+            assert_eq!(inbox.refusal(&done, Some(&script)).as_ref().map(code), Some("not-found"));
+            // Were it ever seen, rule 1 still refuses.
+            assert!(api::check_item_change(entry, Some(&script)).is_err());
         }
         for thread_key in [format!("approval:{}", asked.id), "account:anna".to_string()] {
             let resolve = Request::ResolveItems { thread_key };
@@ -2788,7 +2867,7 @@ pub(crate) mod tests {
         file_from_core(&inbox, &approval(at(9, 7)));
         wrote();
         let done = Request::SetItemDone { id: "approval-1".into(), done: true };
-        assert_eq!(code(&inbox.handle(done, Some(&script()), at(9, 8))), "forbidden");
+        assert_eq!(code(&inbox.handle(done, Some(&script()), at(9, 8))), "not-found", "no client sees the suite");
         assert!(!wrote(), "a refused change");
 
         let later = at(9, 9) + TimeDelta::days(KEEP_DONE_DAYS + 1);

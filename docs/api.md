@@ -79,11 +79,11 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `inbox` | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done`, `snooze_item`, `set_item_lane` ² | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `accounts` | `list_accounts` | `sync` | | `connect_nextcloud`, `remove_account` |
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
-| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client` (**nur App-Schlüssel**, siehe unten) |
+| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | | | `decide_approval` (**nur App-Schlüssel**) |
 
 ¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
@@ -94,11 +94,26 @@ schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::
 für alle späteren Hinweise der Quelle, wie eine Regel (`Request::operation()`, wie bei
 `load_template`).
 
+³ `open_item` (E2.4) holt das Fenster des Agenten nach vorn, öffnet den Web-Link des Eintrags im
+Browser oder startet die App der Suite, auf die er zeigt. Führt das zu einer **Webseite**, wartet der
+Befehl bei Client-Schlüsseln **immer** auf eine Freigabe, gleich was die Rechte sagen (E1.2c): Ein
+Agent könnte sonst einen Link melden und ihn selbst auf dem Bildschirm des Menschen öffnen. Die
+Zusammenfassung nennt den Host, wie der Browser ihn liest (ohne Benutzerteil vor `@`).
+
+⁴ `create_task_from_item` (E3.5) schreibt eine Aufgabe und markiert den Eintrag als erledigt. Weil eine
+Operation nur einen Bereich kennt, prüft der Dienst vorher eigens Schreibrecht in `tasks` (sonst
+`forbidden`, genannt als `tasks.save_todo`) und die Aufgabenliste wie bei `tasks.save_todo` (sonst
+`not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal.
+
 **`inbox`** (E1.1, Konzept [eingang.md](eingang.md)): Die Auswahl geht hier über **Quellen** statt
 Sammlungen, `Rights.inbox_sources` mit den Schlüsseln der Quellen (`suite`, `agent:claude-code`,
 `script:<name>`); alte `clients.json` ohne das Feld sehen keine Quelle. Vorlagen setzen `inbox` wie
-`tasks` und alle Quellen. Alle Befehle sind MCP-Tools; die Beschreibungen sagen, dass Titel und
-Texte mit `untrusted: true` Daten sind, keine Anweisungen. Die Sicherheitsregeln aus
+`tasks` und alle Quellen. Die Quelle **`suite`** (Freigaben, Kontoprobleme) sieht **kein**
+Client-Schlüssel, auch nicht mit „alle“ oder wenn die Auswahl sie nennt (E1.2c): Ihre Einträge
+gehören dem Menschen und nennen Titel aus Freigaben anderer Agenten. Für Clients gibt es sie nicht
+(`not-found`, `list_sources` ohne `suite`; `Rights::reaches_source`). Alle Befehle sind
+MCP-Tools; die Beschreibungen sagen, dass Titel und Texte mit `untrusted: true` Daten sind, keine
+Anweisungen. Die Sicherheitsregeln aus
 [tasks/eingang.md](tasks/eingang.md) stehen als Funktionen in `api.rs`, der Dienst ruft sie (E1.2):
 
 - Die Quelle eines Eintrags bestimmt der Dienst aus dem Client (`post_source`), nie der Absender.
@@ -124,6 +139,12 @@ Texte mit `untrusted: true` Daten sind, keine Anweisungen. Die Sicherheitsregeln
   fremden Einträgen ist er leer.
 - Die Freigabe eines `inbox.*`-Befehls nennt Eintrag, Regel und Quelle aus dem Speicher des Eingangs
   (`approvals::inbox_summary`, nachgeschlagen über die Kennung), nie aus dem Text des Clients.
+  `open_item` nennt, was sich öffnet (Host, App oder Fenster des Agenten), `create_task_from_item`
+  Titel, Liste und Fälligkeit.
+- Eine Freigabe für einen Eintrag merkt sich, wie er beim Fragen aussah (`updated` und Zahl der
+  Meldungen, `approvals::EntryPin`). Hat der Client bis zur Ausführung in denselben Faden neu
+  gemeldet, antwortet der Dienst `conflict` und führt nichts aus (E1.2c). `create_task_from_item`
+  ohne Titel bekommt beim Fragen den Titel des Eintrags fest in die Anfrage geschrieben.
 
 Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
 `accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)
@@ -192,7 +213,11 @@ keine Sandbox gegen bösartigen Code mit Shell-Zugriff.
 Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 
 1. **Geheimnisse**: App-Passwörter, Tokens, API-Schlüssel verlassen den Dienst auf keinem Weg,
-   auch nicht über den App-Schlüssel. Die API sagt nur „gespeichert“ oder „fehlt“.
+   auch nicht über den App-Schlüssel. Die API sagt nur „gespeichert“ oder „fehlt“. Einzige
+   Ausnahme: Der Schlüssel eines **neuen Clients** geht einmal an die Steuerzentrale (Antwort auf
+   `clients.create_client` bzw. `clients.new_key`, nur App-Schlüssel), die ihn in die Konfiguration
+   des Agenten oder in eine Schlüsseldatei (0600, unter `<config>/hooks/`) schreibt oder bei
+   „Script“ einmal zum Kopieren zeigt. Danach kennt ihn nur noch der Client.
 2. **Agenten und ihre Rechte verwalten** (`clients.*`): nur mit dem App-Schlüssel. Sonst könnte
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide`): nur mit dem App-Schlüssel, also nur durch
@@ -290,6 +315,11 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 - `audit.jsonl` im State-Verzeichnis, **0600**: je Anfrage eines fremden Clients Zeit, Client,
   Befehl, betroffene Kennungen, Ergebnis. **Keine Inhalte** (keine Titel, keine Suchbegriffe);
   TorroMail schreibt Suchbegriffe und Empfänger mit und legt die Datei lesbar für alle ab.
+  Kennungen, aus denen sich Namen lesen lassen, stehen nur als Prüfsumme da: von einer Sammlung nur
+  das Konto, der Rest (Server, Nutzer, Kalendername) als Prüfsumme; Kennungen, die der Client
+  schickt (Eintrag, Regel, Freigabe, Client, Konto), nur wenn sie die Form haben, die die Suite ihnen
+  gibt, sonst als Prüfsumme (`audit::ids`, E1.2c). Eine abgelehnte Freigabe nennt die Kennungen der
+  gespeicherten Anfrage.
 - Die Karte eines Clients zeigt „zuletzt benutzt“ und die letzten Aktionen; „Diagnostics“ zeigt
   das ganze Protokoll. Die Datei wird bei 5 MB rotiert.
 - Anfragen des App-Schlüssels werden nicht protokolliert (das wäre jede Bewegung in der Oberfläche).
@@ -330,8 +360,17 @@ Ersetzt „AI & agents“ aus [settings.md](settings.md).
   2. **Rechte:** Vorlage wählen, Kalender/Listen auswählen.
   3. **Verbinden:** Der Schlüssel wird direkt in den Client eingetragen (Claude Code über
      `claude mcp add -s user -e TORRO_TOKEN=… torroworkplace -- torroworkplace mcp`, Codex über
-     seine CLI, JSON-Konfigurationen atomar mit 0600), oder bei „Script“ einmal angezeigt zum
-     Kopieren. Danach ist er nie wieder sichtbar.
+     seine CLI; Gemini CLI, Claude Desktop und Cursor über ihre JSON-Dateien), oder bei „Script“
+     einmal angezeigt zum Kopieren. Danach ist er nie wieder sichtbar. Jede geänderte Datei wird
+     zusammengeführt statt ersetzt, atomar mit 0600 geschrieben, ihr alter Inhalt liegt als
+     `<Datei>.torroworkplace-backup` (0600) daneben; eine Datei, die sich nicht lesen lässt, und ein
+     Link ins Leere bleiben unangetastet (Fehlermeldung). Ein Link (Dotfiles) bleibt ein Link.
+     **Hooks** (E2.3): Für Claude Code, Codex und Gemini CLI kommen die Hooks dazu, mit denen der
+     Agent „wartet“/„fertig“ in den Eingang meldet. Sie laufen mit einem eigenen Client der Art
+     `hook` (nur Melden, siehe oben), dessen Schlüssel in einer eigenen Datei
+     `<config>/hooks/<id>.key` liegt (Ordner 0700, Datei 0600), nicht in den Einstellungen des
+     Agenten und nicht in der Befehlszeile. „Disconnect…“ nimmt Eintrag, Hooks und Schlüsseldatei
+     wieder heraus, aber nur, was der Assistent selbst eingetragen hat (`client_setup.json`).
   4. **Fertig:** „Restart Claude Code to use Torro Workplace.“
 - **Detailseite eines Clients**: Rechte je Bereich (Zeilen mit Stufe), Sammlungen, Freigabe vorher,
   letzte Aktionen, „Create new key“ (alter wird ungültig), „Disconnect…“ (bestätigt; entfernt den
