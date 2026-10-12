@@ -1377,10 +1377,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first.",
         "E-Mails können Anweisungen an Agenten enthalten. Mit „Immer“ sendet dieser Agent, ohne vorher zu fragen.",
     ),
-    (
-        "Messages leave your computer and can't be taken back",
-        "Gesendete Nachrichten lassen sich nicht zurückholen",
-    ),
+    ("Messages leave your computer and can't be taken back", "Gesendete Nachrichten lassen sich nicht zurückholen"),
     ("Send on my behalf", "In meinem Namen senden"),
     ("Sending mail always asks you first.", "Das Senden von E-Mails fragt immer zuerst bei dir nach."),
+    // Mail service discovery (M2.2)
+    (
+        "Gmail needs a sign-in through Google, which Torro Workplace does not support yet. With 2-Step Verification on, an app password from your Google account works instead.",
+        "Gmail verlangt eine Anmeldung über Google, die Torro Workplace noch nicht unterstützt. Mit aktivierter Bestätigung in zwei Schritten funktioniert stattdessen ein App-Passwort aus deinem Google-Konto.",
+    ),
+    (
+        "Outlook.com and Microsoft 365 need a sign-in through Microsoft, which Torro Workplace does not support yet.",
+        "Outlook.com und Microsoft 365 verlangen eine Anmeldung über Microsoft, die Torro Workplace noch nicht unterstützt.",
+    ),
 ];

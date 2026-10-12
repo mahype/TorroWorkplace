@@ -123,7 +123,8 @@ vollständig in den Kern; gelesen und geschrieben wird im Eingang `torroinbox` (
 Agenten bekommen eigene `mail_*`-Tools in `torroworkplace mcp`. **TorroMail läuft parallel weiter**, es
 gibt keinen gemeinsamen Code: Übernommen wird das Wissen (Dienstsuche, Ordnernamen, Versandregel,
 Vertrags-Fixtures unter `../TorroMail/contracts/` und `../TorroMail/crates/*/tests/`). Bibliotheken:
-`async-imap` (tokio), `mail-parser`, `mail-builder`, `lettre`, alles über rustls.
+`mail-parser`, `mail-builder`, `lettre`, alles über rustls; IMAP als eigene Schicht (M2.3, siehe
+[mail.md](../mail.md), Entscheidung 7).
 
 Ein Mail-Konto ist **eine Anmeldung mit Diensten**: Mail (IMAP + SMTP), dazu auf Wunsch Kalender und
 Aufgaben über CalDAV derselben Anmeldung (M7.1). Ein Passwort im Schlüsselbund.
@@ -201,7 +202,7 @@ ihre Texte im Bericht.
      ersetzen und senden nur eigene Entwürfe; fremde (auch die des Menschen) → `not-found`.
   3. **Protokoll** (`audit::ids`): Konto wie bei Sammlungen, Nachrichten-Kennungen nur als Prüfsumme; nie
      Empfänger, Betreff, Suchbegriff, Dateiname, Ordnername.
-  4. **Keine Geheimnisse in Logs:** Protokoll-Trace von `async-imap`/`lettre` nie einschalten; Konfigurationen
+  4. **Keine Geheimnisse in Logs:** Protokoll-Trace der IMAP-Schicht und von `lettre` nie einschalten; Konfigurationen
      tragen kein `Secret` in `Debug`.
   5. **Dateien:** `<data>/mail/` und `<cache>/mail-attachments/` 0700, alle Dateien darin (auch SQLite `-wal`/
      `-shm` und das SMTP-Journal) 0600.
