@@ -656,7 +656,7 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   Einstellungszeile, hell/dunkel.
 
 ### K.34 Zeitstrahl der Leiste: Titel auch für kurze Termine
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** K.29 · **Dateien:** `crates/torrocalendar/src/views/glance.rs`
 - Befund aus der Sichtprüfung von U.8 (Leiste 1100×220, Demo am 13.10. um 10:30): Termine von
   30 Minuten sind im Zeitstrahl der Leiste nur ein schmaler Block ohne Text – „Daily Standup“ um
@@ -676,6 +676,17 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   darunter zwei kurze Termine direkt hintereinander in derselben Bahn und ein kurzer Termin am Ende
   der Spur; Sichtprüfung `torrocalendar --demo --now 2026-10-13T10:30` in der Leiste hell und
   dunkel.
+- **Umgesetzt:** reine Funktion `title_spots(blocks, readable, track_end) -> Vec<TitleSpot>`
+  (`Inside` / `Beside { x, width }` / `Bare`). Lesbar heißt wie in Woche und Radar: vier Buchstaben
+  und „…“ (`MIN_TITLE_LETTERS`) oder der ganze kürzere Titel (`readable_width`). Daneben beginnt der
+  Text 4 (`space::XS`) rechts vom Block und endet 6 (`TEXT_RIGHT`) vor dem ersten Block, der
+  Höhe mit ihm teilt und weiter rechts reicht, sonst am Ende der Spur (Stunde `last`). Die Uhrzeit
+  steht daneben nur ganz („09:30 – 09:45“), nie gekürzt; der Ort nur im Block. Die Bahnen liegen
+  unter der Zeile mit dem Jetzt-Etikett, Text daneben bleibt in der Höhe seines Blocks – das
+  Etikett wird so nie verdeckt (Test). Sichtprüfung auf macOS (AeroSpace, Fenster schwebend):
+  Leiste 900×220 und 640×220, hell und dunkel – „Daily Standup“ (verblasst, kreuzt die Jetzt-Linie)
+  und „1:1 with Lena“ stehen mit Uhrzeit neben ihrem Block; „Run“ um 18:30 am Ende der Spur bleibt
+  bei 640 Breite ein leerer Block (kein Platz bis zum Spurende).
 
 ### Spur Kern (Nextcloud)
 

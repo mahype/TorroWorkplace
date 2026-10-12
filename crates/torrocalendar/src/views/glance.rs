@@ -8,8 +8,9 @@
 //!   leads instead, its day ("Tomorrow") above its time. A tall tile fills the room left below
 //!   with the days after, each under its name ([`later_days`]).
 //! - **Strip** ([`strip`]): today as a horizontal timeline on a canvas – timed events as tinted
-//!   blocks with their colour bar, all-day ones as chips on the left, the now line in red. It
-//!   spans today's events and now, at least 08:00–18:00.
+//!   blocks with their colour bar (a block too narrow for its title has it beside, on the free
+//!   track: [`title_spots`]), all-day ones as chips on the left, the now line in red. It spans
+//!   today's events and now, at least 08:00–18:00.
 //!
 //! Both are displays, not small apps: no buttons, forms or dialogs (a larger tile is the tiling
 //! manager's job). They are rebuilt only with the app's minute tick and on new data.
@@ -69,6 +70,13 @@ const NOW_LABEL: typo::Level =
 const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 /// Radius of the dot at the top of the now line (7 across).
 const NOW_DOT: f32 = 3.5;
+/// A title is readable with at least this many of its letters before the "…" (all of a shorter
+/// one), as in the week view and the radar: "Da…" says nothing.
+const MIN_TITLE_LETTERS: usize = 4;
+/// Gap between a block and its title beside it on the free track.
+const BESIDE_GAP: f32 = space::XS;
+/// A hundredth of a point against rounding in measured widths ([`readable_width`]).
+const WIDTH_SLACK: f32 = 0.01;
 
 /// An event as the glance sees it: local times, title, place and calendar colour.
 #[derive(Debug, Clone, PartialEq)]
@@ -343,6 +351,71 @@ pub fn lanes(spans: &[(f32, f32)]) -> Vec<(usize, usize)> {
     }
     close(&mut group, lane_ends.len(), &mut out);
     out
+}
+
+/// Where the title of a block in the strip goes (task K.34).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TitleSpot {
+    /// In the block, with the time range and the place below, each cut with "…" to the block.
+    Inside,
+    /// Right of a block too narrow for it, on the free track of its lane: the text starts at `x`
+    /// and is cut with "…" to `width`.
+    Beside { x: f32, width: f32 },
+    /// Neither in nor beside the block is room for a readable title: the bare block.
+    Bare,
+}
+
+/// The width of the shortest readable form of `title` in `CAPTION`: its first
+/// [`MIN_TITLE_LETTERS`] letters and "…", or the whole title when that is not wider. Rounded up
+/// by [`WIDTH_SLACK`]: `ellipsize` adds the letters up one by one, which can come out a hair
+/// wider than this sum, and at exactly this width it must still keep them.
+pub fn readable_width(title: &str) -> f32 {
+    let head: String = title.chars().take(MIN_TITLE_LETTERS).collect();
+    let cut = text_width(head.trim_end(), typo::CAPTION) + text_width(typo::ELLIPSIS, typo::CAPTION);
+    text_width(title, typo::CAPTION).min(cut) + WIDTH_SLACK
+}
+
+/// Where the titles of the strip's blocks go: per rectangle of `blocks` (as drawn, any order)
+/// with the `readable` width of its title ([`readable_width`], same order), on a track that
+/// ends at `track_end`.
+///
+/// - [`TitleSpot::Inside`] while the block holds `readable` between its text insets
+///   (`TEXT_LEFT`, `TEXT_RIGHT`);
+/// - else [`TitleSpot::Beside`]: from `BESIDE_GAP` right of the block up to `TEXT_RIGHT` before
+///   the first block in its way – one that shares some of its height and reaches further right,
+///   in practice the next block of its lane – or up to `track_end`, when that holds `readable`;
+/// - else [`TitleSpot::Bare`].
+///
+/// Text beside a block keeps to the block's own height. The lanes begin below the label row
+/// ([`lanes_top`]), so it may cross the now line but never reaches its time label.
+pub fn title_spots(blocks: &[Rectangle], readable: &[f32], track_end: f32) -> Vec<TitleSpot> {
+    let shares_height = |a: &Rectangle, b: &Rectangle| a.y < b.y + b.height && b.y < a.y + a.height;
+    blocks
+        .iter()
+        .zip(readable)
+        .enumerate()
+        .map(|(i, (block, &needed))| {
+            if block.width - TEXT_LEFT - TEXT_RIGHT >= needed {
+                return TitleSpot::Inside;
+            }
+            let right = block.x + block.width;
+            let free_until = blocks
+                .iter()
+                .enumerate()
+                .filter(|&(j, other)| j != i && other.x + other.width > right && shares_height(block, other))
+                .map(|(_, other)| other.x - TEXT_RIGHT)
+                .fold(track_end, f32::min);
+            let x = right + BESIDE_GAP;
+            let width = free_until - x;
+            if width >= needed { TitleSpot::Beside { x, width } } else { TitleSpot::Bare }
+        })
+        .collect()
+}
+
+/// Where the lanes of the strip's timeline begin: below the row of hour labels and the now
+/// label, set off by `space::XS`.
+fn lanes_top() -> f32 {
+    line_height(NOW_LABEL) + space::XS
 }
 
 /// Every how many hours the strip labels its axis, so labels `px_per_hour` apart do not crowd.
@@ -645,6 +718,28 @@ impl Timeline {
         let total = (self.last - self.first).max(1) as f32 * 60.0;
         space::L + (minutes - from) / total * (width - 2.0 * space::L).max(0.0)
     }
+
+    /// The block of each entry, in the order of `entries`, on a canvas `width` × `height`:
+    /// from its start to its end (at least `MIN_BLOCK`, `GAP` short of the next), in its lane
+    /// ([`lanes`]) below [`lanes_top`].
+    fn blocks(&self, width: f32, height: f32) -> Vec<Rectangle> {
+        let today = self.now.date();
+        let top = lanes_top();
+        let spans: Vec<(f32, f32)> = self.entries.iter().map(|e| minutes_today(e, today)).collect();
+        spans
+            .iter()
+            .zip(lanes(&spans))
+            .map(|(&(start, end), (lane, count))| {
+                let x0 = self.x_of(start, width);
+                let x1 = self.x_of(end, width).max(x0 + MIN_BLOCK);
+                let lane_height = ((height - top) - (count - 1) as f32 * GAP) / count as f32;
+                Rectangle::new(
+                    Point::new(x0, top + lane as f32 * (lane_height + GAP)),
+                    Size::new((x1 - x0 - GAP).max(MIN_BLOCK), lane_height),
+                )
+            })
+            .collect()
+    }
 }
 
 impl canvas::Program<Message> for Timeline {
@@ -661,9 +756,8 @@ impl canvas::Program<Message> for Timeline {
         let p = palette(theme);
         let mut frame = Frame::new(renderer, bounds.size());
         let (width, height) = (bounds.width, bounds.height);
-        let today = self.now.date();
         let label_row = line_height(NOW_LABEL);
-        let top = label_row + space::XS;
+        let top = lanes_top();
         let now_minutes = self.now.num_seconds_from_midnight() as f32 / 60.0;
         let now_x = self.x_of(now_minutes, width);
 
@@ -680,17 +774,12 @@ impl canvas::Program<Message> for Timeline {
             }
         }
 
-        let spans: Vec<(f32, f32)> = self.entries.iter().map(|e| minutes_today(e, today)).collect();
-        for ((entry, &(start, end)), (lane, count)) in self.entries.iter().zip(&spans).zip(lanes(&spans)) {
-            let x0 = self.x_of(start, width);
-            let x1 = self.x_of(end, width).max(x0 + MIN_BLOCK);
-            let lane_height = ((height - top) - (count - 1) as f32 * GAP) / count as f32;
-            let rect = Rectangle::new(
-                Point::new(x0, top + lane as f32 * (lane_height + GAP)),
-                Size::new((x1 - x0 - GAP).max(MIN_BLOCK), lane_height),
-            );
+        let blocks = self.blocks(width, height);
+        let readable: Vec<f32> = self.entries.iter().map(|e| readable_width(&e.title)).collect();
+        let spots = title_spots(&blocks, &readable, self.x_of(self.last as f32 * 60.0, width));
+        for ((entry, &rect), spot) in self.entries.iter().zip(&blocks).zip(spots) {
             let tone = Tone::of(p, entry.color, entry.end <= self.now);
-            block(&mut frame, rect, entry, &tone);
+            block(&mut frame, rect, entry, &tone, spot);
         }
 
         now_line(&mut frame, p, now_x, top, height, width, self.now.time());
@@ -721,31 +810,49 @@ impl Tone {
     }
 }
 
-/// An event block: rounded `radius::XS`, the bar on the left, title, time range and place from
-/// the top, each cut with "…" to the block's width and left out when there is no height for it.
-fn block(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone) {
+/// An event block: rounded `radius::XS`, the bar on the left, and its text where `spot` says
+/// ([`title_spots`]): inside title, time range and place from the top, each cut with "…" to the
+/// block's width; beside the title and, when a line more fits, the time range; or none.
+fn block(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, spot: TitleSpot) {
     frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::XS)), tone.bar);
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     frame.fill(
         &Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, Radius::new(0.0).right(radius::XS)),
         tone.fill,
     );
-    let room = rect.width - TEXT_LEFT - TEXT_RIGHT;
     let range = format!("{} – {}", format_time(entry.start.time()), format_time(entry.end.time()));
-    let lines = [
-        (entry.title.as_str(), typo::CAPTION, tone.title),
-        (range.as_str(), typo::MICRO, tone.time),
-        (entry.location.as_deref().unwrap_or_default(), typo::META, tone.place),
-    ];
-    let clip = Rectangle { width: (rect.width - TEXT_RIGHT).max(0.0), ..rect };
+    match spot {
+        TitleSpot::Inside => {
+            let lines = [
+                (entry.title.as_str(), typo::CAPTION, tone.title),
+                (range.as_str(), typo::MICRO, tone.time),
+                (entry.location.as_deref().unwrap_or_default(), typo::META, tone.place),
+            ];
+            let clip = Rectangle { width: (rect.width - TEXT_RIGHT).max(0.0), ..rect };
+            text_lines(frame, clip, rect.x + TEXT_LEFT, rect.width - TEXT_LEFT - TEXT_RIGHT, &lines);
+        }
+        TitleSpot::Beside { x, width } => {
+            // Without a fill behind it a cut time ("09:30 – 1…") would read as a wrong one: the
+            // range comes whole or not at all. The place stays in the block's larger views.
+            let range = if text_width(&range, typo::MICRO) <= width { range.as_str() } else { "" };
+            let lines = [(entry.title.as_str(), typo::CAPTION, tone.title), (range, typo::MICRO, tone.time)];
+            text_lines(frame, Rectangle { x, width, ..rect }, x, width, &lines);
+        }
+        TitleSpot::Bare => {}
+    }
+}
+
+/// Lines of text from the top of `clip` at `x`, each cut with "…" to `room`; stops at the first
+/// empty line or the first that has no height left in `clip`.
+fn text_lines(frame: &mut Frame, clip: Rectangle, x: f32, room: f32, lines: &[(&str, typo::Level, Color)]) {
     frame.with_clip(clip, |frame| {
-        let mut y = rect.y + TEXT_TOP;
-        for (content, level, color) in lines {
-            if content.is_empty() || y + line_height(level) > rect.y + rect.height {
+        let mut y = clip.y + TEXT_TOP;
+        for &(content, level, color) in lines {
+            if content.is_empty() || y + line_height(level) > clip.y + clip.height {
                 break;
             }
             let text = ellipsize(content, level, room);
-            label(frame, &text, Point::new(rect.x + TEXT_LEFT, y), level, color, TextAlign::Left, Vertical::Top);
+            label(frame, &text, Point::new(x, y), level, color, TextAlign::Left, Vertical::Top);
             y += line_height(level);
         }
     });
@@ -1015,6 +1122,109 @@ mod tests {
         // A third event during both takes a third lane; one after the first reuses lane 0.
         let spans = [(540.0, 600.0), (540.0, 660.0), (550.0, 560.0), (600.0, 630.0)];
         assert_eq!(lanes(&spans), vec![(0, 3), (1, 3), (2, 3), (0, 3)]);
+    }
+
+    /// A block in the lanes from `x` to `right`, `y` to `bottom`.
+    fn rect(x: f32, right: f32, y: f32, bottom: f32) -> Rectangle {
+        Rectangle::new(Point::new(x, y), Size::new(right - x, bottom - y))
+    }
+
+    #[test]
+    fn a_readable_title_needs_four_letters_or_all_of_a_short_one() {
+        let cut = text_width("Dail", typo::CAPTION) + text_width(typo::ELLIPSIS, typo::CAPTION);
+        assert_eq!(readable_width("Daily Standup"), cut + WIDTH_SLACK);
+        assert_eq!(readable_width("Gym"), text_width("Gym", typo::CAPTION) + WIDTH_SLACK);
+        // Five letters are narrower whole than four and "…".
+        assert_eq!(readable_width("Lunch"), text_width("Lunch", typo::CAPTION) + WIDTH_SLACK);
+        // A cut after a space keeps no trailing space, as `ellipsize` does: "1:1…".
+        let space = text_width("1:1", typo::CAPTION) + text_width(typo::ELLIPSIS, typo::CAPTION);
+        assert_eq!(readable_width("1:1 with Lena"), space + WIDTH_SLACK);
+        // At exactly that width the title is cut where the rule says.
+        assert_eq!(ellipsize("Daily Standup", typo::CAPTION, readable_width("Daily Standup")), "Dail…");
+        assert_eq!(ellipsize("1:1 with Lena", typo::CAPTION, readable_width("1:1 with Lena")), "1:1…");
+        assert_eq!(ellipsize("Lunch", typo::CAPTION, readable_width("Lunch")), "Lunch");
+    }
+
+    #[test]
+    fn a_wide_block_keeps_its_title_inside() {
+        let blocks = [rect(100.0, 300.0, 20.0, 170.0)];
+        assert_eq!(title_spots(&blocks, &[40.0], 800.0), [TitleSpot::Inside]);
+        // Exactly the readable width between the insets is enough.
+        let snug = [rect(100.0, 100.0 + TEXT_LEFT + TEXT_RIGHT + 40.0, 20.0, 170.0)];
+        assert_eq!(title_spots(&snug, &[40.0], 800.0), [TitleSpot::Inside]);
+    }
+
+    #[test]
+    fn a_narrow_block_puts_its_title_beside_up_to_the_next_block_of_its_lane() {
+        // 30 minutes in a 900 × 190 strip are about 25 points: no room inside.
+        let blocks = [rect(100.0, 125.0, 20.0, 170.0), rect(400.0, 500.0, 20.0, 170.0)];
+        let spots = title_spots(&blocks, &[40.0, 40.0], 800.0);
+        let x = 125.0 + BESIDE_GAP;
+        assert_eq!(spots[0], TitleSpot::Beside { x, width: 400.0 - TEXT_RIGHT - x });
+        assert_eq!(spots[1], TitleSpot::Inside);
+    }
+
+    #[test]
+    fn with_no_readable_room_beside_either_the_block_stays_bare() {
+        let blocks = [rect(100.0, 125.0, 20.0, 170.0), rect(150.0, 400.0, 20.0, 170.0)];
+        assert_eq!(title_spots(&blocks, &[40.0, 40.0], 800.0), [TitleSpot::Bare, TitleSpot::Inside]);
+    }
+
+    #[test]
+    fn of_two_short_events_back_to_back_only_the_second_has_room_beside() {
+        // 09:30–10:00 and 10:00–10:30 in one lane, `GAP` apart; then the track is free.
+        let blocks = [rect(100.0, 123.0, 20.0, 170.0), rect(125.0, 148.0, 20.0, 170.0)];
+        let spots = title_spots(&blocks, &[40.0, 40.0], 800.0);
+        assert_eq!(spots[0], TitleSpot::Bare, "the second block follows right after the first");
+        let x = 148.0 + BESIDE_GAP;
+        assert_eq!(spots[1], TitleSpot::Beside { x, width: 800.0 - x }, "up to the end of the track");
+    }
+
+    #[test]
+    fn a_short_event_at_the_end_of_the_track_has_only_the_rest_of_it() {
+        let last = [rect(770.0, 795.0, 20.0, 170.0)];
+        assert_eq!(title_spots(&last, &[40.0], 800.0), [TitleSpot::Bare]);
+        // An hour earlier the rest of the track holds a cut title.
+        let earlier = [rect(720.0, 745.0, 20.0, 170.0)];
+        let x = 745.0 + BESIDE_GAP;
+        assert_eq!(title_spots(&earlier, &[40.0], 800.0), [TitleSpot::Beside { x, width: 800.0 - x }]);
+    }
+
+    #[test]
+    fn only_blocks_sharing_the_height_stand_in_the_way() {
+        // Lane 0 of two above lane 1 with a long block beside it; then a block over the full
+        // height, which ends the free track of both lanes.
+        let blocks = [rect(100.0, 125.0, 20.0, 94.0), rect(110.0, 300.0, 96.0, 170.0), rect(500.0, 600.0, 20.0, 170.0)];
+        let spots = title_spots(&blocks, &[40.0, 40.0, 40.0], 800.0);
+        let x = 125.0 + BESIDE_GAP;
+        assert_eq!(spots[0], TitleSpot::Beside { x, width: 500.0 - TEXT_RIGHT - x });
+        assert_eq!(spots[1..], [TitleSpot::Inside, TitleSpot::Inside]);
+    }
+
+    #[test]
+    fn titles_beside_never_reach_the_label_row_of_the_now_line() {
+        // The demo strip at 900 × 190 (the timeline beside the info column): text keeps to the
+        // height of its block, and every block lies below the row of the now label.
+        let timeline = Timeline {
+            entries: sorted(vec![
+                timed("Daily Standup", at(9, 30), at(10, 0)),
+                timed("Design review", at(11, 0), at(12, 30)),
+                timed("1:1 with Lena", at(14, 30), at(15, 0)),
+            ]),
+            now: at(10, 30),
+            first: 8,
+            last: 18,
+        };
+        let (width, height) = (640.0, 174.0);
+        let blocks = timeline.blocks(width, height);
+        assert!(blocks.iter().all(|b| b.y >= line_height(NOW_LABEL)));
+        let readable: Vec<f32> = timeline.entries.iter().map(|e| readable_width(&e.title)).collect();
+        let spots = title_spots(&blocks, &readable, timeline.x_of(18.0 * 60.0, width));
+        assert!(matches!(spots[0], TitleSpot::Beside { .. }), "the standup is too narrow for its title");
+        assert_eq!(spots[1], TitleSpot::Inside);
+        let TitleSpot::Beside { width: room, .. } = spots[0] else { return };
+        assert!(room < blocks[1].x - blocks[0].x, "it ends before the review");
+        assert!(matches!(spots[2], TitleSpot::Beside { .. }));
     }
 
     #[test]
