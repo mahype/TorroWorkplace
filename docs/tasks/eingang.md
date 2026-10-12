@@ -276,7 +276,8 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   zweimal einrichten = einmal, Entfernen sauber), kein echtes Home-Verzeichnis.
 
 ### E2.3b Hook-Schlüssel aus einer Datei statt aus der Befehlszeile
-- [ ] erledigt
+- [x] erledigt (Datei `<config>/hooks/<hook-client-id>.key`, Befehl `'<exe>' hook <agent> --key-file '<datei>'`;
+  Eigentümer-Prüfung nur unter Linux über `/proc/self/status`, sonst nur die Rechte)
 - **Modell:** Opus · **Braucht:** E2.3 · **Dateien:** `crates/torroworkplace/src/{hook,client_setup}.rs`,
   `crates/torroworkplace/tests/fixtures/client_setup/*`
 - Heute steht der Hook-Schlüssel in der Hook-Befehlszeile (`TORRO_TOKEN='…' torroworkplace hook …`) und damit

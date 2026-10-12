@@ -15,19 +15,23 @@
 //!   kept next to it as `<file>.torroworkplace-backup` (0600 too). A file that cannot be read is an
 //!   error and is never overwritten. Writing the same entry again changes nothing.
 //! - **Hooks** ([`connect_hooks`]): for Claude Code, Codex and Gemini CLI ([`Target::agent`]) the
-//!   events of the table in task E2.2 run `torroworkplace hook <agent>` with the key of a separate
-//!   client of the kind `hook` ([`hook_command`]). They go into `~/.claude/settings.json`,
-//!   `~/.codex/hooks.json` and `~/.gemini/settings.json` ([`hook_file`]), with the same care as
-//!   the MCP entry: merged, atomic, 0600, backup. Ours are the handlers whose command runs
-//!   `torroworkplace … hook <agent>` ([`is_our_hook`]); every other hook stays untouched, and
-//!   writing again first takes ours out, so a second run (with a new key, say) leaves one set.
-//!   The mode becomes 0600 even when the file was 0644 before: it holds a key from now on, and
-//!   the agent reads it as the same user anyway.
+//!   events of the table in task E2.2 run `torroworkplace hook <agent> --key-file <file>`
+//!   ([`hook_command`]) with the key of a separate client of the kind `hook`. The key itself is in
+//!   a file of its own (task E2.3b, [`hook_key_file`]): `<config>/hooks/<hook client id>.key` in
+//!   the core's config directory, the directory 0700, the file 0600, written before the hooks and
+//!   deleted when they are taken out. So the key is neither in the agent's settings nor, while a
+//!   hook runs, in a command line others can see with `ps`. The hooks go into
+//!   `~/.claude/settings.json`, `~/.codex/hooks.json` and `~/.gemini/settings.json`
+//!   ([`hook_file`]), with the same care as the MCP entry: merged, atomic, 0600, backup. Ours are
+//!   the handlers whose command runs `torroworkplace … hook <agent>`, with or without
+//!   `--key-file` ([`is_our_hook`]); every other hook stays untouched, and writing again first
+//!   takes ours out, so a second run leaves one set. That also replaces entries of an older
+//!   version, which carried the key as `TORRO_TOKEN='…'` in the command.
 //! - **Disconnect** ([`disconnect`], [`unhook`]): removes the entry again, but only for a client
 //!   the wizard set up. Which one that was is noted in `client_setup.json` in the core's config
 //!   directory (0600, never a key): one [`Record`] per target with the client's id and the way it
 //!   was written, one [`HookRecord`] per agent with the hook client, the agent client it was set
-//!   up with and the file. A target holds one `torroworkplace` entry, so connecting a second
+//!   up with, the settings file and the key file. A target holds one `torroworkplace` entry, so connecting a second
 //!   client there takes the record over; disconnecting the first one then leaves the entry of the
 //!   second alone. Deriving the target from the client's kind alone would remove the newer
 //!   client's entry. Disconnecting an agent client also takes out its hooks and names their hook
@@ -39,10 +43,10 @@
 //!
 //! The key is never logged and never part of an error. The command line of `claude mcp add` and
 //! `codex mcp add` carries it for the moment the command runs (that is how both CLIs take it); the
-//! same user can read the file it ends up in anyway. A hook's command carries its key the same
-//! way: the agent hands the command to a shell, which sets `TORRO_TOKEN` and starts the hook, so
-//! for that moment the key is in the shell's command line too (security rule 4 in
-//! `docs/tasks/eingang.md`: a hook key may only report to the inbox).
+//! same user can read the file it ends up in anyway. A hook's command carries only the path of
+//! its key file; the hook reads the key from there and refuses a file others could read (task
+//! E2.3b, `hook.rs`). A hook key may only report to the inbox anyway (security rule 4 in
+//! `docs/tasks/eingang.md`).
 //!
 //! Every path comes from an [`Env`], so tests point it at a temporary directory, and every command
 //! runs through a [`Runner`], so tests never start the real `claude` or `codex`.
@@ -62,6 +66,7 @@ use torro_inbox::AgentKind;
 use torro_ipc::IssuedKey;
 
 use crate::clients::{create_private_dir, write_private};
+use crate::hook::KEY_FILE_ARG;
 
 /// The name the server is registered under in every client.
 pub const SERVER_NAME: &str = "torroworkplace";
@@ -674,30 +679,70 @@ fn hook_events(agent: AgentKind) -> &'static [&'static str] {
     }
 }
 
-/// The command a hook runs: `TORRO_TOKEN='<key>' '<program>' hook <agent>`. All three agents hand
-/// a hook's command to a shell; on Windows that is PowerShell (Claude Code is told so with
+/// The directory below [`Env::config_dir`] that holds the hook keys (task E2.3b), 0700.
+pub const HOOK_KEY_DIR: &str = "hooks";
+
+/// Where the key of the hook client `client` lives: `<config>/hooks/<client>.key`, one file per
+/// hook client, so replacing a hook client never overwrites the key another set of hooks still
+/// reads. Client ids are short hex strings; anything but ASCII letters, digits, `-` and `_` is
+/// replaced by `_` all the same, so an id can never lead out of the directory.
+pub fn hook_key_file(env: &Env, client: &str) -> PathBuf {
+    let name: String =
+        client.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+    env.config_dir.join(HOOK_KEY_DIR).join(format!("{name}.key"))
+}
+
+/// Writes `key` into `file` ([`hook_key_file`]): the directory 0700, the file 0600, atomically,
+/// with a trailing newline (the hook trims it).
+fn write_hook_key(file: &Path, key: &str) -> Result<(), SetupError> {
+    if let Some(dir) = file.parent() {
+        create_private_dir(dir).map_err(SetupError::io(dir))?;
+    }
+    write_private(file, format!("{key}\n").as_bytes())
+        .map_err(|_| SetupError::Io { path: file.to_path_buf(), err: io::Error::other("the key could not be written") })
+}
+
+/// Deletes a hook's key file; one that is gone already is fine.
+fn delete_hook_key(file: &Path) -> Result<(), SetupError> {
+    match fs::remove_file(file) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(SetupError::io(file)(err)),
+        _ => Ok(()),
+    }
+}
+
+/// The command a hook runs: `'<program>' hook <agent> --key-file '<key file>'`. All three agents
+/// hand a hook's command to a shell; on Windows that is PowerShell (Claude Code is told so with
 /// `"shell": "powershell"`, see [`hook_handler`]), so there it reads
-/// `$env:TORRO_TOKEN='<key>'; & '<program>' hook <agent>`. Both quote with single quotes, so
-/// nothing in the key or the path is expanded.
-pub fn hook_command(program: &Path, key: &str, agent: AgentKind) -> String {
-    if cfg!(windows) { powershell_command(program, key, agent) } else { posix_command(program, key, agent) }
+/// `& '<program>' hook <agent> --key-file '<key file>'`. Both quote with single quotes, so
+/// nothing in the paths is expanded. The key itself is never part of the command.
+pub fn hook_command(program: &Path, key_file: &Path, agent: AgentKind) -> String {
+    if cfg!(windows) { powershell_command(program, key_file, agent) } else { posix_command(program, key_file, agent) }
 }
 
-fn posix_command(program: &Path, key: &str, agent: AgentKind) -> String {
-    let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
-    format!("{TOKEN_VARIABLE}={} {} hook {}", quote(key), quote(&program.display().to_string()), agent.id())
+fn posix_command(program: &Path, key_file: &Path, agent: AgentKind) -> String {
+    let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
+    format!("{} hook {} {KEY_FILE_ARG} {}", quote(program), agent.id(), quote(key_file))
 }
 
-fn powershell_command(program: &Path, key: &str, agent: AgentKind) -> String {
-    let quote = |text: &str| format!("'{}'", text.replace('\'', "''"));
-    format!("$env:{TOKEN_VARIABLE}={}; & {} hook {}", quote(key), quote(&program.display().to_string()), agent.id())
+fn powershell_command(program: &Path, key_file: &Path, agent: AgentKind) -> String {
+    let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
+    format!("& {} hook {} {KEY_FILE_ARG} {}", quote(program), agent.id(), quote(key_file))
 }
 
-/// Whether `command` is one of ours for `agent`: it ends in `hook <agent>` and names a
-/// `torroworkplace` program (the wizard's, or one set up by hand as task E2.2 describes, which
-/// would otherwise report everything twice).
+/// Whether `command` is one of ours for `agent`: it names a `torroworkplace` program and runs
+/// `hook <agent>` either at its end (an older wizard's entry with `TORRO_TOKEN='…'` in front, or
+/// one set up by hand as task E2.2 describes, which would otherwise report everything twice) or
+/// followed by `--key-file <file>` and nothing else (the current form, [`hook_command`]).
 pub fn is_our_hook(command: &str, agent: AgentKind) -> bool {
-    command.trim_end().ends_with(&format!(" hook {}", agent.id())) && command.to_lowercase().contains(SERVER_NAME)
+    if !command.to_lowercase().contains(SERVER_NAME) {
+        return false;
+    }
+    let call = format!(" hook {}", agent.id());
+    command.match_indices(&call).any(|(at, _)| {
+        let rest = command[at + call.len()..].trim();
+        rest.is_empty()
+            || rest.strip_prefix(KEY_FILE_ARG).is_some_and(|file| file.starts_with(' ') && !file.trim().is_empty())
+    })
 }
 
 /// One handler of ours for `event`. Gemini CLI counts milliseconds and names its hooks (the name
@@ -806,6 +851,10 @@ pub struct HookRecord {
     pub agent: AgentKind,
     /// Where the hooks are ([`hook_file`] when they were written).
     pub file: PathBuf,
+    /// The file with the hook client's key ([`hook_key_file`], task E2.3b), deleted with the
+    /// hooks. `None` in records of an older version, whose hooks carried the key in the command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -871,10 +920,12 @@ pub fn connect(
     })
 }
 
-/// Sets up the hooks of `agent` for the hook client `client` with its `key` (task E2.3): notes
-/// them first, with `owner`, the agent client they were set up with, then writes them into
-/// [`hook_file`] ([`add_hooks`]). The note takes over an older one of the same agent (the file
-/// holds one set of ours). If writing fails, the note goes again.
+/// Sets up the hooks of `agent` for the hook client `client` with its `key` (tasks E2.3, E2.3b):
+/// notes them first, with `owner`, the agent client they were set up with, then writes the key
+/// into its own file ([`hook_key_file`]) and the hooks that name that file into [`hook_file`]
+/// ([`add_hooks`]). The note takes over an older one of the same agent (the file holds one set
+/// of ours), and that older note's key file is deleted once the new hooks are in. If writing
+/// fails, the note goes again and so does a key file written just now.
 pub fn connect_hooks(
     env: &Env,
     agent: AgentKind,
@@ -885,24 +936,40 @@ pub fn connect_hooks(
     let mut records = load_records(env)?;
     let previous = records.clone();
     let file = hook_file(env, agent);
-    records.hooks.retain(|record| record.agent != agent);
+    let key_file = hook_key_file(env, client);
+    let (replaced, kept): (Vec<HookRecord>, Vec<HookRecord>) =
+        records.hooks.into_iter().partition(|record| record.agent == agent);
+    records.hooks = kept;
     records.hooks.push(HookRecord {
         client: client.to_string(),
         owner: owner.map(str::to_string),
         agent,
         file: file.clone(),
+        key_file: Some(key_file.clone()),
     });
     save_records(env, &records)?;
-    add_hooks(&file, agent, &hook_command(&env.program, key.expose(), agent)).inspect_err(|_| {
+    let existed = key_file.exists();
+    let written = write_hook_key(&key_file, key.expose())
+        .and_then(|()| add_hooks(&file, agent, &hook_command(&env.program, &key_file, agent)));
+    if let Err(err) = written {
+        if !existed {
+            let _ = delete_hook_key(&key_file);
+        }
         let _ = save_records(env, &previous);
-    })
+        return Err(err);
+    }
+    // The older hooks are replaced in the file, so nothing reads their keys any more.
+    for old in replaced.iter().filter_map(|record| record.key_file.as_ref()).filter(|old| **old != key_file) {
+        let _ = delete_hook_key(old);
+    }
+    Ok(())
 }
 
 /// Takes out the hooks noted for `client`, whether it is the hook client itself or the agent
-/// client they were set up with ([`remove_hooks`]), and their notes. Returns the hook clients
-/// that were set up with `client` as their agent: they report for an agent that is gone, so the
-/// caller removes them from the core too. `client` itself is never in it; nothing noted is an
-/// empty list. A note stays when its hooks could not be taken out.
+/// client they were set up with ([`remove_hooks`]), deletes their key files and their notes.
+/// Returns the hook clients that were set up with `client` as their agent: they report for an
+/// agent that is gone, so the caller removes them from the core too. `client` itself is never in
+/// it; nothing noted is an empty list. A note stays when its hooks could not be taken out.
 pub fn unhook(env: &Env, client: &str) -> Result<Vec<String>, SetupError> {
     let mut records = load_records(env)?;
     let mine = |record: &HookRecord| record.client == client || record.owner.as_deref() == Some(client);
@@ -913,6 +980,9 @@ pub fn unhook(env: &Env, client: &str) -> Result<Vec<String>, SetupError> {
     }
     for record in &gone {
         remove_hooks(&record.file, record.agent)?;
+        if let Some(key_file) = &record.key_file {
+            delete_hook_key(key_file)?;
+        }
     }
     save_records(env, &records)?;
     Ok(gone.into_iter().map(|record| record.client).filter(|hook| hook != client).collect())
@@ -1392,8 +1462,9 @@ mod tests {
 
     const OTHER_KEY: &str = "torro_h2_fedcba9876543210";
 
-    fn command(env: &Env, key: &str, agent: AgentKind) -> String {
-        hook_command(&env.program, key, agent)
+    /// Our hook command for the hook client `client`, naming its key file.
+    fn command(env: &Env, client: &str, agent: AgentKind) -> String {
+        hook_command(&env.program, &hook_key_file(env, client), agent)
     }
 
     /// The handlers in `file` that are ours for `agent`, per event, as (event, handler).
@@ -1430,7 +1501,7 @@ mod tests {
             let before: Value = serde_json::from_str(&original).expect("fixture json");
             write(&file, &original);
 
-            add_hooks(&file, agent, &command(&env, KEY, agent)).expect("added");
+            add_hooks(&file, agent, &command(&env, "h1", agent)).expect("added");
             let found = ours(&file, agent);
             let events: Vec<&str> = found.iter().map(|(event, _)| event.as_str()).collect();
             let mut expected = hook_events(agent).to_vec();
@@ -1440,7 +1511,7 @@ mod tests {
             assert_eq!(sorted, expected, "{agent:?}: one handler per event of the table");
             for (event, handler) in &found {
                 assert_eq!(handler["type"], "command");
-                assert_eq!(handler["command"], command(&env, KEY, agent).as_str());
+                assert_eq!(handler["command"], command(&env, "h1", agent).as_str());
                 let timeout = match (agent, event.as_str()) {
                     (AgentKind::Gemini, _) => 5000,
                     (AgentKind::Codex, "SessionEnd") => 3,
@@ -1469,17 +1540,15 @@ mod tests {
             // Twice is once: the same text, not even a new backup.
             let text = fs::read_to_string(&file).expect("file");
             fs::write(&backup, "marker").expect("marker");
-            add_hooks(&file, agent, &command(&env, KEY, agent)).expect("again");
+            add_hooks(&file, agent, &command(&env, "h1", agent)).expect("again");
             assert_eq!(fs::read_to_string(&file).expect("file"), text, "{agent:?}: written once");
             assert_eq!(fs::read_to_string(&backup).expect("backup"), "marker");
 
-            // A new key replaces ours, still one per event.
-            add_hooks(&file, agent, &command(&env, OTHER_KEY, agent)).expect("new key");
+            // A new hook client replaces ours, still one per event.
+            add_hooks(&file, agent, &command(&env, "h2", agent)).expect("a new hook client");
             let found = ours(&file, agent);
             assert_eq!(found.len(), hook_events(agent).len());
-            assert!(
-                found.iter().all(|(_, handler)| handler["command"].as_str().is_some_and(|c| c.contains(OTHER_KEY)))
-            );
+            assert!(found.iter().all(|(_, handler)| handler["command"].as_str().is_some_and(|c| c.contains("h2.key"))));
 
             remove_hooks(&file, agent).expect("removed");
             assert_eq!(json(&file), before, "{agent:?}: only ours went");
@@ -1495,35 +1564,63 @@ mod tests {
         let env = env(&dir);
         // Gemini CLI's settings might hold Claude Code's hook of ours by mistake; it stays.
         let file = hook_file(&env, AgentKind::Gemini);
-        add_hooks(&file, AgentKind::ClaudeCode, &command(&env, KEY, AgentKind::ClaudeCode)).expect("claude's");
-        add_hooks(&file, AgentKind::Gemini, &command(&env, KEY, AgentKind::Gemini)).expect("gemini's");
+        add_hooks(&file, AgentKind::ClaudeCode, &command(&env, "h1", AgentKind::ClaudeCode)).expect("claude's");
+        add_hooks(&file, AgentKind::Gemini, &command(&env, "h1", AgentKind::Gemini)).expect("gemini's");
         remove_hooks(&file, AgentKind::Gemini).expect("removed");
         assert!(ours(&file, AgentKind::Gemini).is_empty());
         assert_eq!(ours(&file, AgentKind::ClaudeCode).len(), 5, "the other agent's hooks stay");
 
+        // Entries of an older version (key in the command) and hand-made ones are ours too, so
+        // connecting again replaces them.
         assert!(is_our_hook("TORRO_TOKEN=torro_x torroworkplace hook claude-code", AgentKind::ClaudeCode));
         assert!(is_our_hook("$env:TORRO_TOKEN='k'; & 'C:\\Torro\\TorroWorkplace.exe' hook codex ", AgentKind::Codex));
+        assert!(is_our_hook("'/opt/torroworkplace' hook gemini --key-file '/c/hooks/h1.key'", AgentKind::Gemini));
         assert!(!is_our_hook("TORRO_TOKEN=k torroworkplace hook claude-code", AgentKind::Codex));
+        assert!(!is_our_hook("torroworkplace hook codex --key-file /k", AgentKind::Gemini), "another agent");
         assert!(!is_our_hook("~/.claude/hooks/hook claude-code", AgentKind::ClaudeCode), "not our program");
         assert!(!is_our_hook("torroworkplace hook claude-code --debug", AgentKind::ClaudeCode));
+        assert!(!is_our_hook("torroworkplace hook claude-code --key-file", AgentKind::ClaudeCode), "no file");
+        assert!(!is_our_hook("torroworkplace hook codexx --key-file /k", AgentKind::Codex));
     }
 
     #[test]
-    fn hook_commands_quote_the_key_and_the_path() {
+    fn hook_commands_quote_the_paths_and_hold_no_key() {
         let program = Path::new("/home/an'na/my tools/torroworkplace");
+        let key_file = Path::new("/home/an'na/.config/torroworkplace/hooks/h1.key");
         assert_eq!(
-            posix_command(program, KEY, AgentKind::ClaudeCode),
-            format!("TORRO_TOKEN='{KEY}' '/home/an'\\''na/my tools/torroworkplace' hook claude-code")
+            posix_command(program, key_file, AgentKind::ClaudeCode),
+            "'/home/an'\\''na/my tools/torroworkplace' hook claude-code --key-file \
+             '/home/an'\\''na/.config/torroworkplace/hooks/h1.key'"
         );
         let windows = Path::new("C:\\Users\\O'Brien\\torroworkplace.exe");
+        let windows_key = Path::new("C:\\Users\\O'Brien\\AppData\\Roaming\\torroworkplace\\hooks\\h1.key");
         assert_eq!(
-            powershell_command(windows, KEY, AgentKind::Gemini),
-            format!("$env:TORRO_TOKEN='{KEY}'; & 'C:\\Users\\O''Brien\\torroworkplace.exe' hook gemini")
+            powershell_command(windows, windows_key, AgentKind::Gemini),
+            "& 'C:\\Users\\O''Brien\\torroworkplace.exe' hook gemini --key-file \
+             'C:\\Users\\O''Brien\\AppData\\Roaming\\torroworkplace\\hooks\\h1.key'"
         );
         for agent in AgentKind::ALL {
-            assert!(is_our_hook(&posix_command(program, KEY, agent), agent));
-            assert!(is_our_hook(&powershell_command(windows, KEY, agent), agent));
+            let posix = posix_command(program, key_file, agent);
+            assert!(is_our_hook(&posix, agent));
+            assert!(is_our_hook(&powershell_command(windows, windows_key, agent), agent));
+            assert!(!posix.contains(TOKEN_VARIABLE), "no key, no variable");
         }
+        // The hook reads its command line back: program, `hook`, agent, `--key-file`, file.
+        let args = ["claude-code", KEY_FILE_ARG, "/c/hooks/h1.key"].map(String::from);
+        assert_eq!(
+            crate::hook::parse_args(&args).and_then(|args| args.key_file),
+            Some(PathBuf::from("/c/hooks/h1.key"))
+        );
+    }
+
+    #[test]
+    fn a_key_file_name_stays_in_its_directory() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let hooks = env.config_dir.join(HOOK_KEY_DIR);
+        assert_eq!(hook_key_file(&env, "3fa9c2d1"), hooks.join("3fa9c2d1.key"));
+        assert_eq!(hook_key_file(&env, "../../x"), hooks.join("______x.key"));
+        assert_eq!(hook_key_file(&env, "a/b\\c"), hooks.join("a_b_c.key"));
     }
 
     #[test]
@@ -1533,20 +1630,20 @@ mod tests {
         let file = hook_file(&env, AgentKind::Codex);
         remove_hooks(&file, AgentKind::Codex).expect("nothing to remove");
         assert!(!file.exists(), "removing writes nothing");
-        add_hooks(&file, AgentKind::Codex, &command(&env, KEY, AgentKind::Codex)).expect("created with its folder");
+        add_hooks(&file, AgentKind::Codex, &command(&env, "h1", AgentKind::Codex)).expect("created with its folder");
         assert_eq!(ours(&file, AgentKind::Codex).len(), 5);
         remove_hooks(&file, AgentKind::Codex).expect("removed");
         assert_eq!(json(&file), json!({}), "the `hooks` we created went with ours");
 
         for odd in ["{\"hooks\": []}", "{\"hooks\": {\"Stop\": {}}}", "[1]"] {
             write(&file, odd);
-            let added = add_hooks(&file, AgentKind::Codex, &command(&env, KEY, AgentKind::Codex));
+            let added = add_hooks(&file, AgentKind::Codex, &command(&env, "h1", AgentKind::Codex));
             assert!(matches!(added, Err(SetupError::Unreadable(_))), "{odd}");
             assert_eq!(fs::read_to_string(&file).expect("file"), odd, "never overwritten");
         }
         // An empty list someone left there stays.
         write(&file, "{\"hooks\": {\"PreToolUse\": []}}");
-        add_hooks(&file, AgentKind::Codex, &command(&env, KEY, AgentKind::Codex)).expect("added");
+        add_hooks(&file, AgentKind::Codex, &command(&env, "h1", AgentKind::Codex)).expect("added");
         remove_hooks(&file, AgentKind::Codex).expect("removed");
         assert_eq!(json(&file), json!({"hooks": {"PreToolUse": []}}));
     }
@@ -1565,6 +1662,7 @@ mod tests {
         connect_hooks(&env, AgentKind::Gemini, Some("a1"), "h1", &hook_key).expect("hooks");
         assert!(json(&file)["mcpServers"].get(SERVER_NAME).is_some(), "both share the file");
         assert_eq!(ours(&file, AgentKind::Gemini).len(), 4);
+        let key_file = env.config_dir.join("hooks/h1.key");
         let noted = hook_records(&env).expect("records");
         assert_eq!(
             noted,
@@ -1572,17 +1670,30 @@ mod tests {
                 client: "h1".into(),
                 owner: Some("a1".into()),
                 agent: AgentKind::Gemini,
-                file: file.clone()
+                file: file.clone(),
+                key_file: Some(key_file.clone()),
             }]
         );
         let record_text = fs::read_to_string(env.config_dir.join(RECORD_FILE)).expect("record");
         assert!(!record_text.contains(KEY) && !record_text.contains(OTHER_KEY), "the record holds no key");
+
+        // The hook key is in its own private file; the settings only name it (task E2.3b).
+        assert_eq!(fs::read_to_string(&key_file).expect("key file"), format!("{OTHER_KEY}\n"));
+        #[cfg(unix)]
+        assert_eq!((mode(&key_file), mode(key_file.parent().expect("dir"))), (0o600, 0o700));
+        let settings = fs::read_to_string(&file).expect("settings");
+        assert!(!settings.contains(OTHER_KEY), "the hook key is not in the agent's settings");
+        for (_, handler) in ours(&file, AgentKind::Gemini) {
+            assert_eq!(handler["command"], command(&env, "h1", AgentKind::Gemini).as_str());
+        }
+        assert_eq!(crate::hook::read_key_file(&key_file).expect("the hook accepts it").expose(), OTHER_KEY);
 
         let released = run(Job::Disconnect { client: "a1".into() }, Some(&env), &fake);
         let expected = Released { target: Some(Target::Gemini), hook_clients: vec!["h1".into()] };
         assert_eq!(released, Outcome::Disconnected(Ok(expected)));
         let before: Value = serde_json::from_str(&original).expect("fixture json");
         assert_eq!(json(&file), before, "MCP entry and hooks gone, everything else as it was");
+        assert!(!key_file.exists(), "disconnecting deletes the key file");
         assert!(records(&env).expect("records").is_empty() && hook_records(&env).expect("hooks").is_empty());
         // The agents page then removes h1 from the core, which disconnects it: nothing left.
         assert_eq!(
@@ -1600,17 +1711,55 @@ mod tests {
         connect(&env, Target::ClaudeCode, &claude, "a1", &key(), &fake).expect("mcp entry");
         connect_hooks(&env, AgentKind::ClaudeCode, Some("a1"), "h1", &key()).expect("hooks");
         // Setting up again takes the note over: the older hook client is not named any more.
+        let (h1_key, h2_key) = (hook_key_file(&env, "h1"), hook_key_file(&env, "h2"));
+        assert!(h1_key.exists());
         connect_hooks(&env, AgentKind::ClaudeCode, Some("a1"), "h2", &key()).expect("again");
         assert_eq!(hook_records(&env).expect("hooks").len(), 1);
         let settings = hook_file(&env, AgentKind::ClaudeCode);
         assert_eq!(ours(&settings, AgentKind::ClaudeCode).len(), 5, "one set");
+        assert!(!h1_key.exists() && h2_key.exists(), "the replaced hooks' key file goes");
 
         assert_eq!(unhook(&env, "h1").expect("not noted"), Vec::<String>::new());
         assert_eq!(ours(&settings, AgentKind::ClaudeCode).len(), 5, "h2's hooks stay");
         let released = run(Job::Disconnect { client: "h2".into() }, Some(&env), &fake);
         assert_eq!(released, Outcome::Disconnected(Ok(Released::default())), "a hook client names no other");
         assert!(ours(&settings, AgentKind::ClaudeCode).is_empty());
+        assert!(!h2_key.exists(), "its key file went with the hooks");
         assert!(json(&env.home.join(".claude.json"))["mcpServers"].get(SERVER_NAME).is_some(), "the agent stays");
+    }
+
+    /// Hooks an older version wrote, with the key in the command and a record without a key file:
+    /// connecting again replaces them, and disconnecting an old record still works.
+    #[test]
+    fn hooks_with_the_key_in_the_command_are_replaced() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let file = hook_file(&env, AgentKind::ClaudeCode);
+        write(&file, &fixture("claude_settings_old_hooks.json"));
+        let old_record = format!(
+            "{{\"written\": [], \"hooks\": [{{\"client\": \"h0\", \"owner\": \"a1\", \"agent\": \"claude-code\", \"file\": {}}}]}}",
+            json!(file)
+        );
+        write(&env.config_dir.join(RECORD_FILE), &old_record);
+        assert_eq!(hook_records(&env).expect("an old record reads")[0].key_file, None);
+
+        connect_hooks(&env, AgentKind::ClaudeCode, Some("a1"), "h1", &key()).expect("connected again");
+        let text = fs::read_to_string(&file).expect("settings");
+        assert!(!text.contains("torro_old_0000aaaa") && !text.contains(TOKEN_VARIABLE), "the old entries are gone");
+        assert!(!text.contains(KEY), "no key in the settings");
+        let found = ours(&file, AgentKind::ClaudeCode);
+        assert_eq!(found.len(), 5, "one set, in the new form");
+        assert!(found.iter().all(|(_, handler)| handler["command"] == command(&env, "h1", AgentKind::ClaudeCode)));
+        let written = json(&file);
+        assert_eq!(written["hooks"]["Notification"][0]["matcher"], "idle_prompt", "the foreign hook stays");
+        assert_eq!(written["model"], "opus");
+        assert_eq!(hook_records(&env).expect("records").len(), 1, "the new note took over");
+
+        // An old record (no key file) is still taken out cleanly.
+        write(&file, &fixture("claude_settings_old_hooks.json"));
+        write(&env.config_dir.join(RECORD_FILE), &old_record);
+        assert_eq!(unhook(&env, "a1").expect("unhooked"), vec!["h0".to_string()]);
+        assert!(!fs::read_to_string(&file).expect("settings").contains("torro_old_0000aaaa"));
     }
 
     #[test]
@@ -1621,6 +1770,7 @@ mod tests {
         write(&file, "{\"hooks\": []}");
         assert!(connect_hooks(&env, AgentKind::Codex, None, "h1", &key()).is_err());
         assert!(hook_records(&env).expect("hooks").is_empty());
+        assert!(!hook_key_file(&env, "h1").exists(), "no key file is left behind");
 
         fs::remove_file(&file).expect("removed");
         let job = Job::Hook { agent: AgentKind::Codex, owner: Some("a1".into()), client: "h1".into(), key: key() };

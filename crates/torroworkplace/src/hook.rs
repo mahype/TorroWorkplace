@@ -5,8 +5,19 @@
 //! payload's `cwd` for the branch ([`git_head`], no process is started), lets
 //! [`torro_inbox::hook::interpret`] decide what it means, adds the chain of parent processes on
 //! Linux ([`parent_pids`], for jumping to the agent's window in E2.4) and sends one request with
-//! the hook client's key from `TORRO_TOKEN`: `inbox.post_item` for "waiting" and "done",
-//! `inbox.resolve_items` when the session goes on or ends.
+//! the hook client's key: `inbox.post_item` for "waiting" and "done", `inbox.resolve_items` when
+//! the session goes on or ends.
+//!
+//! **Where the key comes from** (task E2.3b): `torroworkplace hook <agent> --key-file <file>`
+//! reads it from a file ([`read_key_file`]); that is what the "Connect agent" wizard writes, so
+//! the key is neither in the agent's configuration nor in the command line `ps` shows. The file
+//! must be private: on Unix nobody but its owner may have any access to it (mode `0600` or
+//! stricter), and on Linux it must belong to the user the hook runs as (the effective uid from
+//! `/proc/self/status`; std has no `getuid` without `unsafe`, and other Unix systems have no
+//! `/proc`, so there only the mode is checked, which already keeps every other user out). A
+//! file that is missing, unreadable, too open, too long ([`KEY_FILE_MAX`]) or blank means
+//! nothing is reported. With `--key-file` the file is the only source; without it the key comes
+//! from `TORRO_TOKEN`, for hooks set up by hand.
 //!
 //! The hook must never hold up or change the agent, so:
 //!
@@ -16,7 +27,7 @@
 //! - **exit code 0, always**, also on bad arguments and on a panic (the panic hook is silenced).
 //! - **at most [`BUDGET`] (500 ms) for connecting and the answer**; stdin gets [`STDIN_WAIT`].
 //! - **a core that is not running is left alone**: nothing is started, nothing is reported.
-//!   Without `TORRO_TOKEN` nothing is sent either.
+//!   Without a key (no usable key file, no `TORRO_TOKEN`) nothing is sent either.
 //! - **quiet stderr.** With exit code 0 Claude Code keeps a hook's stderr out of the
 //!   conversation (it shows stderr as a hook error for other codes and hands it to the model for
 //!   code 2); Codex and Gemini CLI may log or show it. As that is not certain for every agent and
@@ -25,7 +36,7 @@
 //!   line (no or an unknown agent) always gives one line, because that is a setup mistake the
 //!   person who set the hook up needs to see.
 //!
-//! The client behind `TORRO_TOKEN` should be of the kind `hook` (security rule 3 in
+//! The client behind the key should be of the kind `hook` (security rule 3 in
 //! `docs/tasks/eingang.md`); other clients' "waiting" and "done" become plain notices. Until the
 //! "Connect agent" wizard sets hooks up (E2.3), such a client is created by hand:
 //! `torroworkplace ctl clients add "Claude Code hooks" --kind hook`.
@@ -61,6 +72,35 @@ const SMALL_FILE_MAX: u64 = 4096;
 /// The most parent processes collected; deeper chains are cut, nearest kept.
 const PARENTS_MAX: usize = 32;
 
+/// The option that names the file holding the hook client's key (task E2.3b).
+pub const KEY_FILE_ARG: &str = "--key-file";
+
+/// The most bytes a key file may hold. A key is about 50 characters; a longer file is not a key
+/// file, and reading it whole would only cost time.
+pub const KEY_FILE_MAX: u64 = 512;
+
+/// What the command line of `hook` asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookArgs {
+    /// The agent the payload comes from.
+    pub agent: AgentKind,
+    /// The file with the key (`--key-file`); `None`: the key comes from `TORRO_TOKEN`.
+    pub key_file: Option<PathBuf>,
+}
+
+/// Why a key file gave no key. Never holds the key or a part of it.
+#[derive(Debug)]
+pub enum KeyFileError {
+    /// The file is missing or cannot be opened or read.
+    Unreadable(io::Error),
+    /// Group or others have some access to the file (Unix); `mode` is its permission bits.
+    TooOpen { mode: u32 },
+    /// The file belongs to another user (Linux).
+    NotOwner,
+    /// Not a regular file, longer than [`KEY_FILE_MAX`], not UTF-8 or blank.
+    NoKey,
+}
+
 /// What a hook call did when nothing went wrong.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -73,8 +113,10 @@ pub enum Outcome {
 /// Why a hook call reported nothing. Only shown with [`DEBUG_VAR`]; the agent never learns.
 #[derive(Debug)]
 pub enum HookError {
-    /// `TORRO_TOKEN` is missing or blank.
+    /// `TORRO_TOKEN` is missing or blank (and no key file was named).
     NoToken,
+    /// The key file named with [`KEY_FILE_ARG`] gave no key; nothing was sent.
+    KeyFile { file: PathBuf, reason: KeyFileError },
     /// No state directory, so no socket to look for.
     NoSocket,
     /// The async runtime could not start.
@@ -91,6 +133,7 @@ impl std::fmt::Display for HookError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HookError::NoToken => f.write_str(tr("TORRO_TOKEN is not set, so nothing was reported.")),
+            HookError::KeyFile { file, reason } => f.write_str(&key_file_message(file, reason)),
             HookError::NoSocket => f.write_str(tr("No state directory, so no core to report to.")),
             HookError::Runtime(err) => write!(f, "{err}"),
             HookError::Ipc(err) => write!(f, "{err}"),
@@ -102,9 +145,29 @@ impl std::fmt::Display for HookError {
 
 impl std::error::Error for HookError {}
 
-/// Entry point from `main`: `args` are the arguments after `hook`, exactly one agent id
-/// (`claude-code`, `codex`, `gemini`). Reads stdin, reports and returns [`ExitCode::SUCCESS`]
-/// whatever happens; see the module docs for what goes to stderr.
+/// The debug line for a key file that gave no key; names the file, never its content.
+fn key_file_message(file: &Path, reason: &KeyFileError) -> String {
+    let file = file.display();
+    match reason {
+        KeyFileError::Unreadable(err) => trf(
+            "The key file {file} could not be read ({error}), so nothing was reported.",
+            &[("file", &file), ("error", err)],
+        ),
+        KeyFileError::TooOpen { mode } => trf(
+            "The key file {file} is open to other users (mode {mode}), so it was not used. Make it private with chmod 600.",
+            &[("file", &file), ("mode", &format!("{mode:o}"))],
+        ),
+        KeyFileError::NotOwner => {
+            trf("The key file {file} belongs to another user, so it was not used.", &[("file", &file)])
+        }
+        KeyFileError::NoKey => trf("The key file {file} holds no key, so nothing was reported.", &[("file", &file)]),
+    }
+}
+
+/// Entry point from `main`: `args` are the arguments after `hook`, one agent id (`claude-code`,
+/// `codex`, `gemini`), optionally followed by `--key-file <file>` ([`parse_args`]). Reads stdin,
+/// reports and returns [`ExitCode::SUCCESS`] whatever happens; see the module docs for what goes
+/// to stderr.
 pub fn from_args(args: &[String]) -> ExitCode {
     // A panic must not turn into exit code 101 and a backtrace in the agent's terminal.
     std::panic::set_hook(Box::new(|_| {}));
@@ -115,7 +178,7 @@ pub fn from_args(args: &[String]) -> ExitCode {
 /// The body of [`from_args`], which may write to stderr but never to stdout.
 fn report_from_args(args: &[String]) {
     let mut stderr = io::stderr();
-    let Some(agent) = parse_agent(args) else {
+    let Some(args) = parse_args(args) else {
         let _ = writeln!(
             stderr,
             "{}: {}",
@@ -125,20 +188,98 @@ fn report_from_args(args: &[String]) {
         return;
     };
     let payload = read_stdin();
-    let token = crate::cli::token_from(std::env::var(crate::mcp::TOKEN_VAR).ok());
-    let result = run(agent, payload.as_deref(), torro_ipc::socket_path().as_deref(), token.as_ref());
+    let result = key_for(&args, std::env::var(crate::mcp::TOKEN_VAR).ok())
+        .and_then(|token| run(args.agent, payload.as_deref(), torro_ipc::socket_path().as_deref(), token.as_ref()));
     let debug = std::env::var(DEBUG_VAR).is_ok_and(|value| !value.trim().is_empty());
     if let (Err(err), true) = (result, debug) {
         let _ = writeln!(stderr, "{} hook: {}", crate::APP.binary, one_line(&err.to_string()));
     }
 }
 
-/// The agent named by the only argument; `None` for none, more than one or an unknown id.
-pub fn parse_agent(args: &[String]) -> Option<AgentKind> {
-    match args {
-        [id] => AgentKind::from_id(id),
-        _ => None,
+/// The command line after `hook`: `<agent>` or `<agent> --key-file <file>`, nothing else (an
+/// unknown option is a setup mistake, and guessing could send with the wrong key). `None` for
+/// any other shape, an unknown agent or an empty file name.
+pub fn parse_args(args: &[String]) -> Option<HookArgs> {
+    let (id, key_file) = match args {
+        [id] => (id, None),
+        [id, flag, file] if flag == KEY_FILE_ARG && !file.is_empty() => (id, Some(PathBuf::from(file))),
+        _ => return None,
+    };
+    Some(HookArgs { agent: AgentKind::from_id(id)?, key_file })
+}
+
+/// The key to send with: from the key file when the command line names one ([`read_key_file`];
+/// `TORRO_TOKEN` is then not looked at, so a broken file never falls back to another key), else
+/// from `env_token`, the content of `TORRO_TOKEN` (`None` when it is missing or blank; [`run`]
+/// then sends nothing).
+pub fn key_for(args: &HookArgs, env_token: Option<String>) -> Result<Option<Key>, HookError> {
+    match &args.key_file {
+        Some(file) => read_key_file(file).map(Some).map_err(|reason| HookError::KeyFile { file: file.clone(), reason }),
+        None => Ok(crate::cli::token_from(env_token)),
     }
+}
+
+/// The key in `file`, trimmed. Refused before the content is read when the file is not a regular
+/// file, when group or others have any access to it (Unix) or when it belongs to another user
+/// (Linux, see the module docs); content longer than [`KEY_FILE_MAX`], not UTF-8 or blank is
+/// [`KeyFileError::NoKey`]. The checks look at the opened file, so it cannot be swapped between
+/// checking and reading.
+pub fn read_key_file(file: &Path) -> Result<Key, KeyFileError> {
+    // Looked at before opening too: opening a named pipe would wait for a writer.
+    if !std::fs::metadata(file).map_err(KeyFileError::Unreadable)?.is_file() {
+        return Err(KeyFileError::NoKey);
+    }
+    let opened = std::fs::File::open(file).map_err(KeyFileError::Unreadable)?;
+    let metadata = opened.metadata().map_err(KeyFileError::Unreadable)?;
+    if !metadata.is_file() {
+        return Err(KeyFileError::NoKey);
+    }
+    check_private(&metadata)?;
+    let text = read_bounded(opened, KEY_FILE_MAX).ok_or(KeyFileError::NoKey)?;
+    crate::cli::token_from(Some(text)).ok_or(KeyFileError::NoKey)
+}
+
+/// Unix: nobody but the owner has any access, and on Linux the owner is this process's user.
+#[cfg(unix)]
+fn check_private(metadata: &std::fs::Metadata) -> Result<(), KeyFileError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(KeyFileError::TooOpen { mode });
+    }
+    match effective_uid() {
+        Some(uid) if uid != metadata.uid() => Err(KeyFileError::NotOwner),
+        _ => Ok(()),
+    }
+}
+
+/// Windows keeps files in the profile private to the user; there is no mode to check.
+#[cfg(not(unix))]
+fn check_private(_metadata: &std::fs::Metadata) -> Result<(), KeyFileError> {
+    Ok(())
+}
+
+/// The effective uid of this process from `/proc/self/status` on Linux; `None` on other systems
+/// or when it cannot be read (the owner is then not checked; the mode check still keeps others
+/// out).
+#[cfg(unix)]
+fn effective_uid() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        read_small(Path::new("/proc/self/status")).and_then(|status| effective_uid_in(&status))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// The effective uid in the text of `/proc/<pid>/status`: the second number of its `Uid:` line
+/// (real, effective, saved, file system).
+#[cfg(target_os = "linux")]
+fn effective_uid_in(status: &str) -> Option<u32> {
+    let line = status.lines().find_map(|line| line.strip_prefix("Uid:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// Reports the hook payload `payload` of `agent` to the core at `socket` with `token`.
@@ -450,14 +591,120 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_comes_from_the_one_argument() {
+    fn the_agent_comes_from_the_first_argument() {
         let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_agent(&args(&["claude-code"])), Some(AgentKind::ClaudeCode));
-        assert_eq!(parse_agent(&args(&["codex"])), Some(AgentKind::Codex));
-        assert_eq!(parse_agent(&args(&["gemini"])), Some(AgentKind::Gemini));
-        for bad in [&[][..], &["claude"], &["codex", "extra"]] {
-            assert_eq!(parse_agent(&args(bad)), None, "{bad:?}");
+        let agent = |words: &[&str]| parse_args(&args(words)).map(|parsed| parsed.agent);
+        assert_eq!(agent(&["claude-code"]), Some(AgentKind::ClaudeCode));
+        assert_eq!(agent(&["codex"]), Some(AgentKind::Codex));
+        assert_eq!(agent(&["gemini"]), Some(AgentKind::Gemini));
+        for bad in [
+            &[][..],
+            &["claude"],
+            &["codex", "extra"],
+            &["codex", "--key-file"],
+            &["codex", "--key-file", ""],
+            &["codex", "--token", "/k"],
+            &["nobody", "--key-file", "/k"],
+            &["codex", "--key-file", "/k", "extra"],
+        ] {
+            assert_eq!(parse_args(&args(bad)), None, "{bad:?}");
         }
+        assert_eq!(
+            parse_args(&args(&["gemini", "--key-file", "/home/an na/k.key"])),
+            Some(HookArgs { agent: AgentKind::Gemini, key_file: Some(PathBuf::from("/home/an na/k.key")) })
+        );
+        assert_eq!(parse_args(&args(&["codex"])), Some(HookArgs { agent: AgentKind::Codex, key_file: None }));
+    }
+
+    /// A key file like the wizard writes it: `text` with mode `mode` (Unix).
+    fn key_file(dir: &Path, text: &str, mode: u32) -> PathBuf {
+        let file = dir.join("hook.key");
+        std::fs::write(&file, text).expect("key file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        file
+    }
+
+    fn with_file(file: &Path) -> HookArgs {
+        HookArgs { agent: AgentKind::ClaudeCode, key_file: Some(file.to_path_buf()) }
+    }
+
+    #[test]
+    fn the_key_comes_from_a_private_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = key_file(dir.path(), "torro_h1_secret\n", 0o600);
+        let exposed = |key: Option<Key>| key.map(|key| key.expose().to_string());
+        assert_eq!(exposed(read_key_file(&file).ok()).as_deref(), Some("torro_h1_secret"), "trimmed");
+        // The file wins over TORRO_TOKEN; without a file the variable is used.
+        let key = key_for(&with_file(&file), Some("torro_env".into())).expect("read");
+        assert_eq!(exposed(key).as_deref(), Some("torro_h1_secret"));
+        let plain = HookArgs { agent: AgentKind::ClaudeCode, key_file: None };
+        assert_eq!(exposed(key_for(&plain, Some(" torro_env ".into())).expect("env")).as_deref(), Some("torro_env"));
+        assert!(key_for(&plain, None).expect("none").is_none());
+        #[cfg(unix)]
+        assert!(read_key_file(&key_file(dir.path(), "torro_h1_secret", 0o400)).is_ok(), "read-only is private too");
+    }
+
+    #[test]
+    fn a_missing_long_or_blank_key_file_gives_no_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("gone.key");
+        assert!(matches!(read_key_file(&missing), Err(KeyFileError::Unreadable(_))));
+        // A broken file never falls back to TORRO_TOKEN.
+        let refused = key_for(&with_file(&missing), Some("torro_env".into()));
+        assert!(matches!(refused, Err(HookError::KeyFile { reason: KeyFileError::Unreadable(_), .. })));
+        for text in ["", "  \n", &"k".repeat(KEY_FILE_MAX as usize + 1)] {
+            let file = key_file(dir.path(), text, 0o600);
+            assert!(matches!(read_key_file(&file), Err(KeyFileError::NoKey)), "{} bytes", text.len());
+        }
+        assert!(matches!(read_key_file(dir.path()), Err(KeyFileError::NoKey)), "a directory is no key file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_others_can_open_is_not_used() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for mode in [0o644, 0o640, 0o604, 0o620, 0o602, 0o610, 0o666] {
+            let file = key_file(dir.path(), "torro_h1_secret", mode);
+            let refused = read_key_file(&file);
+            assert!(matches!(refused, Err(KeyFileError::TooOpen { mode: m }) if m == mode), "{mode:o}");
+            // The debug line names the file and the mode, never the key.
+            let err = key_for(&with_file(&file), None).expect_err("refused");
+            let line = err.to_string();
+            assert!(line.contains(&format!("{mode:o}")) && !line.contains("secret"), "{line}");
+        }
+    }
+
+    /// The owner check: the uid comes from `/proc/self/status`, and a file this process created is
+    /// its own. (A file of another user cannot be made without root.)
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_owner_is_the_user_the_hook_runs_as() {
+        use std::os::unix::fs::MetadataExt;
+        let status = "Name:\ttorroworkplace\nUid:\t1000\t1001\t1000\t1000\nGid:\t100\t100\t100\t100\n";
+        assert_eq!(effective_uid_in(status), Some(1001), "the effective uid");
+        assert_eq!(effective_uid_in("Name:\tx\n"), None);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = key_file(dir.path(), "torro_h1_secret", 0o600);
+        let owner = std::fs::metadata(&file).expect("metadata").uid();
+        assert_eq!(effective_uid(), Some(owner));
+    }
+
+    #[test]
+    fn without_a_usable_key_file_nothing_is_sent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // A socket that would answer is not even needed: the hook stops before connecting.
+        let payload = fixture("claude-code-stop");
+        let started = Instant::now();
+        let result = key_for(&with_file(&dir.path().join("gone.key")), None)
+            .and_then(|key| run(AgentKind::ClaudeCode, Some(&payload), None, key.as_ref()));
+        assert!(matches!(result, Err(HookError::KeyFile { .. })), "{result:?}");
+        assert!(started.elapsed() < BUDGET);
     }
 
     #[test]
@@ -651,6 +898,25 @@ mod tests {
         assert_eq!((agent.session.as_str(), agent.project.as_deref()), ("abc123", Some("my-project")));
         #[cfg(target_os = "linux")]
         assert!(!agent.pids.is_empty(), "the parent chain is sent");
+
+        // The same report with the key from a private file, as the wizard sets it up (E2.3b).
+        let file = key_file(dir.path(), &format!("{}\n", hook_key.expose()), 0o600);
+        let from_file = {
+            let socket = socket.clone();
+            tokio::task::spawn_blocking(move || {
+                let key = key_for(&with_file(&file), None)?;
+                run(
+                    AgentKind::ClaudeCode,
+                    Some(&fixture("claude-code-notification-permission")),
+                    Some(&socket),
+                    key.as_ref(),
+                )
+            })
+            .await
+            .expect("ran")
+        };
+        assert!(matches!(&from_file, Ok(Outcome::Sent(_))), "{from_file:?}");
+        assert_eq!(entries().await.len(), 1, "same session, same entry");
 
         let resolved = hook("claude-code-post-tool-use").await;
         assert!(matches!(&resolved, Ok(Outcome::Sent(answer)) if **answer == Response::Ok), "{resolved:?}");
