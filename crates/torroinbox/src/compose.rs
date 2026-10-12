@@ -1973,7 +1973,8 @@ mod tests {
         assert!(opened.body.starts_with("\n\n"), "the cursor has room above the quote");
         assert!(opened.body.contains(&attribution(&message)), "{}", opened.body);
         assert!(opened.body.contains("\n> Hi Anna,\n>\n> the numbers for Q4 are in."), "{}", opened.body);
-        assert!(attribution(&message).starts_with(tr("On ")), "the sentence is the translation's");
+        let start = tr("On {date}, {who} wrote:").split('{').next().unwrap_or_default();
+        assert!(attribution(&message).starts_with(start), "the sentence is the translation's");
     }
 
     #[test]
