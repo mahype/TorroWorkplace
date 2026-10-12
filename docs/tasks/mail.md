@@ -317,6 +317,23 @@ ihre Texte im Bericht.
   übernommen (Auswahlen umgeschrieben), Entfernen löscht Speicher und Geheimnis; das
   Passwort erscheint nirgends (Antwort, `Debug`, Fehler, Protokoll, `approvals.json`).
 
+### M2.7b Konten absichern (aus den Berichten von M2.6/M2.7)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,clients,account}.rs`,
+  `crates/torroworkplace/src/mail/service.rs`, `crates/torro-mail-imap/src/imap.rs` (nur additiv),
+  `crates/torro-pim-caldav/src/client.rs` (nur additiv)
+- **Rechte vergessen beim Entfernen:** `accounts.remove_account` nimmt die Kennung des Kontos (und seiner
+  Sammlungen) aus allen Auswahlen in `clients.json` (`mail_accounts`, `calendars`, `task_lists`, `inbox_sources`),
+  atomar. Sonst bekommt ein Agent beim erneuten Verbinden derselben Adresse seinen Zugang still zurück.
+- **Geprüfte Adresse festhalten (DNS-Rebinding):** Prüfung „öffentlicher Host“ und Verbindung lösen heute getrennt
+  auf (Dienstsuche, `connect_caldav`, `connect_mail`, Mail-Sync). Verbinden mit der geprüften IP, Hostname nur für
+  SNI und Zertifikat (`Session::connect_to(addr, &Endpoint, …)`; für reqwest `resolve`).
+- **Ordner-Rollen Ende-zu-Ende:** Fake-IMAP mit STATUS und zwei Kandidaten; `connect_mail` meldet die offene Rolle,
+  `update_mail_account { folder_roles }` setzt sie.
+- **Wettlauf** `update_mail_account` (Kalender an) gegen `connect_caldav`: unter einer Sperre entscheiden.
+- **Oberfläche/API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests für alle vier Punkte; `torro-api-review` ohne Befund.
+
 ### M3.1 Mail lesen: Befehle und MCP
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,mcp}.rs`,

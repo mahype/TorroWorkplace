@@ -1406,4 +1406,32 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Diesen Ordner oder diese Nachricht gibt es auf dem Mail-Server nicht.",
     ),
     ("The mail server is not on the public internet.", "Der Mail-Server ist nicht im öffentlichen Internet."),
+    // Connect mail accounts (M2.7)
+    (
+        "A calendar account of the same sign-in syncs these calendars already. Connect the mail account again to take it over.",
+        "Ein Kalenderkonto mit derselben Anmeldung gleicht diese Kalender schon ab. Verbinde das Mail-Konto erneut, um es zu übernehmen.",
+    ),
+    ("Enter the {service} server and its port.", "Gib den {service}-Server und seinen Port ein."),
+    ("Mail: {mail} · Calendars and tasks: {calendars}", "Mail: {mail} · Kalender und Aufgaben: {calendars}"),
+    (
+        "No home directory, so the account cannot be stored.",
+        "Kein Home-Verzeichnis, darum kann das Konto nicht gespeichert werden.",
+    ),
+    (
+        "Only a role the server left open can be set, and only to one of its folders.",
+        "Nur eine Rolle, die der Server offen gelassen hat, kann festgelegt werden, und nur auf einen ihrer Ordner.",
+    ),
+    (
+        "The mail account {account} syncs these calendars already.",
+        "Das Mail-Konto {account} gleicht diese Kalender schon ab.",
+    ),
+    ("The {service} server answered unexpectedly.", "Der {service}-Server hat unerwartet geantwortet."),
+    ("The {service} server cannot be reached.", "Der {service}-Server ist nicht erreichbar."),
+    ("The {service} server is not on the public internet.", "Der {service}-Server ist nicht im öffentlichen Internet."),
+    ("The {service} server offers no secure sign-in.", "Der {service}-Server bietet keine sichere Anmeldung."),
+    ("The {service} server refused the password.", "Der {service}-Server hat das Passwort abgelehnt."),
+    (
+        "This account has no calendar address. Connect it again with one.",
+        "Dieses Konto hat keine Kalenderadresse. Verbinde es erneut mit einer.",
+    ),
 ];
