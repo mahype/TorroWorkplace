@@ -8,13 +8,17 @@
 //!
 //! `ctl clients` connects agents and scripts before the control centre can (A.6): `add` prints
 //! the new key once, `new-key` a replacement; neither can be shown again.
+//!
+//! `ctl approvals` lists what agents wait for and `ctl allow|deny <id>` decides, with the app key
+//! like the control centre (A.3b): a way to decide on systems without notification buttons and
+//! before the control centre has its approvals page (A.8).
 
 use std::fmt;
 use std::process::ExitCode;
 
 use torro_core::i18n::{tr, trf};
 use torro_ipc::api::{Rights, RightsTemplate};
-use torro_ipc::{ClientInfo, Request, Response, socket_path};
+use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, Request, Response, socket_path};
 use torro_setups::{LoadMode, TemplateSummary};
 
 const USAGE: &str = "usage:
@@ -29,6 +33,9 @@ const USAGE: &str = "usage:
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
   torroworkplace ctl clients new-key <id> [--json]
+  torroworkplace ctl approvals [--json]
+  torroworkplace ctl allow <id> [--json]
+  torroworkplace ctl deny <id> [--json]
   torroworkplace ctl quit [--json]";
 
 /// The kind of a client added without `--kind`.
@@ -153,10 +160,28 @@ fn ctl_request(words: &[&str], options: &Options) -> Result<Request, UsageError>
         ["setups"] => Err(UsageError::new("ctl setups needs a subcommand: list, save, update, delete or load")),
         ["clients", verb, args @ ..] => clients_request(verb, args, options),
         ["clients"] => Err(UsageError::new(tr("ctl clients needs a subcommand: list, add, remove or new-key"))),
+        ["approvals"] => Ok(Request::ListApprovals),
+        ["approvals", ..] => Err(UsageError::new(tr("ctl approvals takes no arguments"))),
+        [verb @ ("allow" | "deny"), args @ ..] => decide_request(verb, args),
         ["quit"] => Ok(Request::Quit),
         ["quit", ..] => Err(UsageError::new("ctl quit takes no arguments")),
         [] => Err(UsageError::new("ctl needs a group, e.g. `ctl setups list`")),
-        [other, ..] => Err(UsageError::new(format!("unknown ctl group {other:?}; try setups, clients or quit"))),
+        [other, ..] => Err(UsageError::new(trf(
+            "unknown ctl group {group}; try setups, clients, approvals, allow, deny or quit",
+            &[("group", &format!("{other:?}"))],
+        ))),
+    }
+}
+
+/// `ctl allow <id>` and `ctl deny <id>`: a person's decision on an open approval.
+fn decide_request(verb: &str, args: &[&str]) -> Result<Request, UsageError> {
+    match args {
+        [id] => Ok(Request::DecideApproval { id: id.to_string(), allow: verb == "allow" }),
+        [] => Err(UsageError::new(trf(
+            "ctl {verb} needs the id of an approval; `ctl approvals` lists them",
+            &[("verb", &verb)],
+        ))),
+        _ => Err(UsageError::new(trf("too many arguments for ctl {verb}", &[("verb", &verb)]))),
     }
 }
 
@@ -316,6 +341,13 @@ pub fn render(response: &Response) -> String {
             trf("Key for {name} ({id}). It is shown only this once:", &[("name", &client.name), ("id", &client.id)]),
             key.expose(),
         ),
+        Response::Approvals { approvals } => {
+            if approvals.is_empty() {
+                return tr("No commands wait for approval.").to_string();
+            }
+            approvals.iter().map(approval_line).collect::<Vec<_>>().join("\n")
+        }
+        Response::Approval { approval } => approval_line(approval),
         Response::Ok => "ok".to_string(),
         Response::Error { message, .. } => message.clone(),
         // Calendar and task answers are for the apps; show them as JSON.
@@ -343,6 +375,27 @@ fn client_line(client: &ClientInfo) -> String {
         None => tr("never used").to_string(),
     };
     format!("{}  {}  {}  {}  {last_used}", client.id, client.name, client.kind, rights_word(&client.rights))
+}
+
+/// `id  state  client: summary`; the id is what `ctl allow` and `ctl deny` take. The summary is
+/// the core's ([`crate::approvals::summary`]), already one line without control characters.
+fn approval_line(approval: &ApprovalInfo) -> String {
+    let local = |time: chrono::DateTime<chrono::Utc>| time.with_timezone(&chrono::Local).format("%H:%M").to_string();
+    let state = match &approval.state {
+        ApprovalState::Pending => trf("waiting until {time}", &[("time", &local(approval.expires))]),
+        ApprovalState::Running => tr("running").to_string(),
+        ApprovalState::Done { response } => match response.as_ref() {
+            Response::Error { message, .. } => {
+                // A terminal would act on escape sequences; the message may quote a client's ids.
+                let message: String = message.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                trf("ran and failed: {message}", &[("message", &message)])
+            }
+            _ => tr("done").to_string(),
+        },
+        ApprovalState::Denied => tr("denied").to_string(),
+        ApprovalState::Expired => tr("expired").to_string(),
+    };
+    format!("{}  {state}  {}: {}", approval.id, approval.client_name, approval.summary)
 }
 
 /// The template the rights match, or that they were changed afterwards.
@@ -569,6 +622,141 @@ mod tests {
         assert!(render(&status).contains("workspace: -"));
         let loaded = Response::Loaded { restored: 2, failed: vec![("kitty".into(), "gone".into())] };
         assert_eq!(render(&loaded), "restored 2 windows\nfailed kitty: gone");
+    }
+
+    #[test]
+    fn approvals_are_listed_allowed_and_denied() {
+        assert_eq!(request(&["ctl", "approvals"]), Request::ListApprovals);
+        assert_eq!(request(&["ctl", "allow", "9c1f"]), Request::DecideApproval { id: "9c1f".into(), allow: true });
+        assert_eq!(request(&["ctl", "deny", "9c1f"]), Request::DecideApproval { id: "9c1f".into(), allow: false });
+        assert!(parse_strs(&["ctl", "approvals", "list"]).is_err());
+        assert!(parse_strs(&["ctl", "allow"]).is_err());
+        assert!(parse_strs(&["ctl", "deny", "a", "b"]).is_err());
+        assert!(parse_strs(&["ctl", "allow", "a", "--mode", "add"]).is_err());
+        assert!(parse_strs(&["ctl", "approvals", "--json"]).expect("json").json);
+    }
+
+    fn approval(state: ApprovalState) -> ApprovalInfo {
+        let at = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "a1b2c3d4".into(),
+            client_name: "Claude Code".into(),
+            command: "workspaces.delete_template".into(),
+            summary: "Delete template \"Dev\"".into(),
+            created: at,
+            expires: at,
+            decided: None,
+            state,
+        }
+    }
+
+    #[test]
+    fn approvals_render_one_per_line_with_their_state() {
+        assert_eq!(render(&Response::Approvals { approvals: vec![] }), tr("No commands wait for approval."));
+        assert_eq!(
+            render(&Response::Approval { approval: approval(ApprovalState::Denied) }),
+            format!("9c1f0a7e3b2d4c58  {}  Claude Code: Delete template \"Dev\"", tr("denied"))
+        );
+        let failed = Response::Error { code: "not-found".into(), message: "no template\u{1b}[2J \"dev\"".into() };
+        let line =
+            render(&Response::Approval { approval: approval(ApprovalState::Done { response: Box::new(failed) }) });
+        assert!(line.contains(&trf("ran and failed: {message}", &[("message", &"no template [2J \"dev\"")])), "{line}");
+        let pending = render(&Response::Approvals { approvals: vec![approval(ApprovalState::Pending)] });
+        let until = DateTime::<Utc>::from_timestamp(0, 0).unwrap().with_timezone(&chrono::Local).format("%H:%M");
+        assert!(pending.contains(&trf("waiting until {time}", &[("time", &until)])), "{pending}");
+    }
+
+    /// `ctl approvals`, `ctl allow` and `ctl deny` against a core in a temporary directory: the
+    /// app key is read next to its socket, as `run` reads it next to the user's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ctl_decides_approvals_with_the_app_key() {
+        use std::sync::Arc;
+
+        use torro_setups::storage::Store;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = crate::clients::tests::open_in(dir.path());
+        let (_, agent) = clients.add("Agent", "script", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
+        let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
+        let store = Store::at(dir.path().to_path_buf());
+        for id in ["dev", "review"] {
+            let now = Utc::now();
+            store
+                .save(&torro_setups::Template {
+                    schema_version: torro_setups::SCHEMA_VERSION,
+                    id: id.into(),
+                    name: format!("Template {id}"),
+                    wm: "hyprland".into(),
+                    created: now,
+                    updated: now,
+                    source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
+                    tree: None,
+                    windows: vec![],
+                })
+                .expect("saved");
+        }
+        let core = Arc::new(
+            crate::core::Core::new(
+                torro_wm::Backend::Unsupported { name: "test".into() },
+                store,
+                Arc::new(crate::pim::PimService::with_settings(settings)),
+                clients,
+            )
+            .with_approvals(crate::approvals::tests::quiet_in(dir.path())),
+        );
+        // Next to `state/app.key`, where `torro_ipc::client::call` looks for the app key.
+        let socket = dir.path().join("state").join("core.sock");
+        let path = socket.clone();
+        tokio::spawn(async move {
+            torro_ipc::server::serve_with_key(&path, move |key, request| {
+                let core = Arc::clone(&core);
+                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+            })
+            .await
+        });
+        let ask = |args: &[&str]| {
+            let (socket, args) = (socket.clone(), args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
+            async move {
+                let command = parse(&args).expect("parses");
+                for _ in 0..100 {
+                    if let Ok(response) = torro_ipc::client::call(&socket, &command.request).await {
+                        return response;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                panic!("the test core does not answer");
+            }
+        };
+        assert_eq!(render(&ask(&["ctl", "approvals"]).await), tr("No commands wait for approval."));
+
+        // The agent wants two templates deleted; both wait for a person.
+        let mut ids = Vec::new();
+        for id in ["dev", "review"] {
+            let delete = Request::DeleteTemplate { id: id.into() };
+            match torro_ipc::client::call_with_key(&socket, Some(&agent), &delete).await.expect("answered") {
+                Response::Pending { approval } => ids.push(approval.id),
+                other => panic!("expected pending, got {other:?}"),
+            }
+        }
+        let listed = render(&ask(&["ctl", "approvals"]).await);
+        assert_eq!(listed.lines().count(), 2, "{listed}");
+        assert!(listed.contains("Template dev") && listed.contains(&ids[0]), "{listed}");
+
+        let allow = ["ctl", "allow", ids[0].as_str()];
+        let allowed = ask(&allow).await;
+        assert!(
+            matches!(&allowed, Response::Approval { approval } if matches!(approval.state, ApprovalState::Done { .. })),
+            "{allowed:?}"
+        );
+        assert!(render(&allowed).contains(tr("done")));
+        let denied = ask(&["ctl", "deny", ids[1].as_str()]).await;
+        assert!(render(&denied).contains(tr("denied")), "{denied:?}");
+        assert!(Store::at(dir.path().to_path_buf()).load("dev").is_err(), "allowed, so deleted");
+        assert!(Store::at(dir.path().to_path_buf()).load("review").is_ok(), "denied, so kept");
+        // Decided once: a second decision is refused.
+        assert!(matches!(ask(&allow).await, Response::Error { ref code, .. } if code == "conflict"));
     }
 
     #[test]

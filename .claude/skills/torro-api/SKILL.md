@@ -39,7 +39,10 @@ Oberfläche und Tool danach parallel entstehen können.
      für Agenten, also konkret und ohne Marketing. Kein `tr()`: Agenten lesen Englisch.
 4. **Handler** im Kern (`crates/torroworkplace/src/core.rs` bzw. dem Fachmodul), Fehler mit festen
    Codes: `not-found`, `conflict`, `offline`, `auth`, `busy`, `unsupported`, `not-connected`,
-   `workspace-not-empty`, `unauthorized`, `forbidden`, `pending`, `error`. `message` ist für Menschen.
+   `workspace-not-empty`, `unauthorized`, `forbidden`, `error`. `message` ist für Menschen.
+   `pending` ist **kein** Fehlercode, sondern eine eigene Antwort (`Response::Pending`,
+   `result: "pending"` mit der Freigabe), wenn ein Befehl auf einen Menschen wartet; nur das
+   MCP-Tool meldet es nach 60 s Warten als Tool-Fehler mit Code `pending` und Kennung.
 5. **MCP-Tool** in `crates/torroworkplace/src/mcp.rs`: bildet auf genau **einen** Request ab.
    Bequeme Eingaben sind erlaubt (Titel/Beginn/Ende statt eines ganzen `Event`). Kein eigener
    Datenzugriff, keine eigene Rechteprüfung.
@@ -54,6 +57,9 @@ Oberfläche und Tool danach parallel entstehen können.
 - Sammlungen, die ein Client nicht sehen darf, verhalten sich wie nicht vorhanden (`not-found`);
   gefiltert wird vor dem Lesen.
 - Eine Freigabe gibt dem Agenten nie einen Code, mit dem er selbst bestätigen könnte.
+- Die Zusammenfassung einer Freigabe zeigt, was wirklich läuft: Titel, Beginn und Namen aus dem
+  Cache des Kerns, nachgeschlagen über `href` bzw. Kennung (`approvals::Facts`), nie aus dem Text
+  des Clients. Neue Befehle mit `href` oder Kennung bekommen dort ihre Nachschlage-Regel.
 - Protokoll ohne Inhalte (keine Titel, Suchbegriffe, Texte), Dateien 0600.
 - Schlüssel nur als SHA-256 auf der Platte; Klartext nur im Schlüsselbund und beim Client.
 
@@ -69,5 +75,6 @@ Oberfläche und Tool danach parallel entstehen können.
 
 ## Versionen
 
-Neue Befehle und neue optionale Felder sind verträglich. Umbenennen, Entfernen, neue
-Pflichtfelder brechen: nicht ohne Rückfrage, dann `v: 2`.
+Neue Befehle, neue optionale Felder und neue Antwortarten (`result`) sind verträglich; Clients
+müssen unbekannte `result`-Werte tolerieren. Umbenennen, Entfernen, neue Pflichtfelder brechen:
+nicht ohne Rückfrage, dann `v: 2`.

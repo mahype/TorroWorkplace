@@ -154,7 +154,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Admin-Befehl eines Agenten wartet auch bei „Freigabe vorher: Nie“.
 
 ### A.3b Freigaben absichern (aus der API-Prüfung von A.3)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/{approvals,pim,core,notify,main}.rs`,
   `crates/torroworkplace/src/cli.rs` (nur `ctl approvals`), `crates/torro-ipc/src/api.rs` (nur Katalogbeschreibung),
   `docs/api.md`, `.claude/skills/torro-api/SKILL.md`

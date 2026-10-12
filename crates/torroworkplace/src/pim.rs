@@ -69,6 +69,7 @@ use torro_pim_github::{Api, FilterList, address, item, scope};
 use torro_core::i18n::{tr, trf};
 
 use crate::account::{self, Connected, Stored};
+use crate::approvals::{Facts, Known};
 use crate::notify;
 use crate::settings_service::SettingsStore;
 
@@ -723,6 +724,15 @@ impl PimService {
         }
     }
 
+    /// Puts `events` into the cache of the first account as a sync would, for the core's handler
+    /// tests; [`PimService::cache_collections`] first.
+    #[cfg(test)]
+    pub async fn cache_events(&self, events: Vec<Event>) {
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.events = events;
+        }
+    }
+
     /// Stores the account [`tests::ANNA`] as a sign-in would, without network or keychain, for
     /// the core's handler tests. Does nothing when it is there already.
     #[cfg(test)]
@@ -1292,6 +1302,126 @@ impl PimService {
             Some(_) => Ok(()),
         }
     }
+}
+
+/// What approvals show (task A.3b).
+impl PimService {
+    /// What the cache holds about the event, task or collection `request` names, for the summary
+    /// of an approval ([`crate::approvals::summary`]). Looked up by the keys the command runs
+    /// with, never by the titles the client sent along:
+    ///
+    /// - writes of events and tasks with an `href`: the item at that `href`, resolved as the
+    ///   write resolves it ([`touched`]), and for a save that moves it the collection losing it
+    ///   ([`Facts::moved_from`]); the collection written to by its display name;
+    /// - `tasks.move_todo`: the task at `href` and its list, compared as `move_todo` compares;
+    /// - `tasks.unpin_issue`: the filter list and the pinned item with the same repository and
+    ///   number as `url`;
+    /// - `settings.set_collection_shown`, `tasks.update_filter_list`, `tasks.delete_filter_list`:
+    ///   the collection's display name.
+    ///
+    /// Empty for every other request. An event outside the cached window (3 months back, 12
+    /// ahead), or cached in another version than the request's `etag`, is not held, so its
+    /// summary says "unknown event".
+    pub async fn facts(&self, request: &Request) -> Facts {
+        let state = self.state.read().await;
+        let name_of = |id: &str| state.collections().find(|c| c.id == id).map(|c| c.name.clone());
+        let named = |id: &str| Facts { name: name_of(id), ..Facts::default() };
+        let written = |collection: &str, href: Option<&str>, etag: Option<&str>, role: Role, save: bool| {
+            let touched = href.and_then(|href| touched(&state, collection, href, etag, role, save));
+            let (item, moved_from) = match touched {
+                Some((holder, item)) => (item, (holder != collection).then(|| name_of(&holder).unwrap_or(holder))),
+                None => (None, None),
+            };
+            Facts { item, name: name_of(collection), moved_from }
+        };
+        match request {
+            Request::DeleteEvent { event } => {
+                written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, false)
+            }
+            Request::SaveEvent { event } => {
+                written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, true)
+            }
+            Request::DeleteTodo { todo } => {
+                written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, false)
+            }
+            Request::SaveTodo { todo } => {
+                written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, true)
+            }
+            Request::MoveTodo { href, .. } => match cached_todo(&state, href) {
+                Some(todo) => {
+                    Facts { item: Some(Known { title: todo.summary.clone(), start: None }), ..named(&todo.collection) }
+                }
+                None => Facts::default(),
+            },
+            Request::UnpinIssue { collection, url } => {
+                // Only an item the list really pins, as `unpin_issue` matches it; a search match
+                // that is not pinned would make the command fail, so it is not named.
+                let pinned = address::issue_ref(url).and_then(|issue| {
+                    let (_, list) = state.filter(collection)?;
+                    let same = |id: &str| address::issue_ref(id).is_some_and(|i| i.same(&issue));
+                    list.list.pinned.iter().any(|id| same(id)).then_some(())?;
+                    list.todos.iter().find(|todo| same(&todo.uid))
+                });
+                Facts {
+                    item: pinned.map(|todo| Known { title: todo.summary.clone(), start: None }),
+                    ..named(collection)
+                }
+            }
+            Request::SetCollectionShown { collection, .. }
+            | Request::UpdateFilterList { collection, .. }
+            | Request::DeleteFilterList { collection } => named(collection),
+            _ => Facts::default(),
+        }
+    }
+}
+
+/// Where a write of an item to `collection` with `href` lands, resolved as the write resolves it
+/// ([`item_url`]): the collection that holds the item and the item as cached there.
+///
+/// That is `collection` itself when `href` is an item directly in it. For a save (`save`) of an
+/// `href` elsewhere it is the collection of the same account holding it, from which
+/// [`PimService::save_event`] and [`PimService::save_todo`] move it ([`PimService::holder_of`]).
+/// `None` when nothing holds it: the write then fails without touching anything.
+///
+/// The item is `None` when the holder's cache has nothing at that address, or has it in another
+/// version than `etag`, the one the write will be checked against: the server may hold a newer
+/// version than the cache (a client can read one past the cached window), and the summary must
+/// not name the old title for it. Of a series the first occurrence.
+fn touched(
+    state: &State,
+    collection: &str,
+    href: &str,
+    etag: Option<&str>,
+    role: Role,
+    save: bool,
+) -> Option<(String, Option<Known>)> {
+    let slot = state.owner(collection)?;
+    let at = |id: &str| slot.url(id).and_then(|url| item_url(url, href)).map(|target| (id.to_string(), target));
+    let (holder, target) = match at(collection) {
+        Some(found) => found,
+        None if save => slot.collections.iter().find_map(|c| at(&c.id))?,
+        None => return None,
+    };
+    let is_target = |item_collection: &str, item_href: Option<&str>, item_etag: Option<&str>| {
+        item_collection == holder
+            && item_etag == etag
+            && item_href.zip(slot.url(item_collection)).and_then(|(href, url)| item_url(url, href)).as_ref()
+                == Some(&target)
+    };
+    let item = match role {
+        Role::Calendar => slot
+            .events
+            .iter()
+            .filter(|e| is_target(&e.collection, e.href.as_deref(), e.etag.as_deref()))
+            .min_by_key(|e| e.start)
+            .map(|e| Known { title: e.summary.clone(), start: Some(e.start) }),
+        Role::TaskList => slot
+            .todos
+            .iter()
+            .find(|t| is_target(&t.collection, t.href.as_deref(), t.etag.as_deref()))
+            .map(|t| Known { title: t.summary.clone(), start: None }),
+    };
+    Some((holder, item))
 }
 
 /// A request refused before anything changed: an API error code and a message for people.
@@ -2262,6 +2392,82 @@ pub(crate) mod tests {
         let moved_out = Event { href: Some(outside), ..event(Utc::now(), 1) };
         let response = service.handle_within(Request::SaveEvent { event: moved_out }, Reach::Suite).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "error"), "{response:?}");
+    }
+
+    #[tokio::test]
+    async fn approvals_learn_the_cached_item_at_the_href_not_the_title_the_client_sends() {
+        let service = filled_service(SettingsStore::without_file()).await;
+        let start = {
+            let mut state = service.state.write().await;
+            let slot = &mut state.accounts[0];
+            for (collection, name) in slot.collections.iter_mut().zip(["Work", "Home"]) {
+                collection.name = name.into();
+            }
+            slot.events[0].summary = "Board meeting".into();
+            slot.todos[1].summary = "File taxes".into();
+            slot.events[0].start
+        };
+        let (work, home) = (cal("work"), cal("home"));
+        let board = format!("{}e.ics", url("work"));
+        let lunch = |collection: &str, href: Option<&str>| Event {
+            collection: collection.into(),
+            href: href.map(str::to_string),
+            summary: "Lunch".into(),
+            ..event(Utc::now(), 1)
+        };
+        let known = |title: &str, start| Some(Known { title: title.into(), start });
+
+        // Deleting: the item at the href, whatever the client calls it.
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&board)) }).await;
+        assert_eq!(
+            facts,
+            Facts { item: known("Board meeting", Some(start)), name: Some("Work".into()), moved_from: None }
+        );
+        // Written another way, the same address: the same item.
+        let same = "/remote.php/dav/calendars/anna/work/e.ics";
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(same)) }).await;
+        assert_eq!(facts.item, known("Board meeting", Some(start)));
+        // A version the cache does not hold (the server may have a newer one): unknown.
+        let newer = Event { etag: Some("\"2\"".into()), ..lunch(&work, Some(&board)) };
+        assert_eq!(service.facts(&Request::DeleteEvent { event: newer }).await.item, None);
+        // Nothing cached there, or not an item of the calendar: unknown.
+        let missing = format!("{}gone.ics", url("work"));
+        assert_eq!(service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&missing)) }).await.item, None);
+        let outside = format!("{}../home/e.ics", url("work"));
+        let facts = service.facts(&Request::DeleteEvent { event: lunch(&work, Some(&outside)) }).await;
+        assert_eq!((facts.item, facts.moved_from), (None, None), "a delete never follows an href elsewhere");
+
+        // Saving into `home` with work's href moves it: the item comes from work, which loses it.
+        let facts = service.facts(&Request::SaveEvent { event: lunch(&home, Some(&board)) }).await;
+        assert_eq!(
+            facts,
+            Facts {
+                item: known("Board meeting", Some(start)),
+                name: Some("Home".into()),
+                moved_from: Some("Work".into())
+            }
+        );
+        let created = service.facts(&Request::SaveEvent { event: lunch(&home, None) }).await;
+        assert_eq!(created, Facts { item: None, name: Some("Home".into()), moved_from: None });
+
+        // Tasks, and reordering by the exact href.
+        let taxes = format!("{}t.ics", url("home"));
+        let todo = Todo { summary: "Water plants".into(), ..todo_in(&home, Some(taxes.clone())) };
+        let facts = service.facts(&Request::DeleteTodo { todo }).await;
+        assert_eq!(facts, Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None });
+        let reorder = Request::MoveTodo { href: taxes, etag: "1".into(), before: None };
+        assert_eq!(
+            service.facts(&reorder).await,
+            Facts { item: known("File taxes", None), name: Some("Home".into()), moved_from: None }
+        );
+        let reorder = Request::MoveTodo { href: "/elsewhere.ics".into(), etag: "1".into(), before: None };
+        assert_eq!(service.facts(&reorder).await, Facts::default());
+
+        // Collections by name; an unknown one has none.
+        let hide = |collection: &str| Request::SetCollectionShown { collection: collection.into(), shown: false };
+        assert_eq!(service.facts(&hide(&work)).await.name, Some("Work".into()));
+        assert_eq!(service.facts(&hide("nowhere")).await.name, None);
+        assert_eq!(service.facts(&Request::Sync).await, Facts::default());
     }
 
     #[tokio::test]

@@ -21,7 +21,7 @@ use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
-use crate::approvals::{Approvals, ApprovalsError, Decision};
+use crate::approvals::{Approvals, ApprovalsError, Decision, Facts};
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
@@ -90,7 +90,7 @@ pub struct Core {
     clients: Clients,
     /// Client commands that wait for a person (task A.3): the user's `approvals.json`
     /// ([`Approvals::system`]); tests keep theirs in a temporary directory.
-    approvals: Approvals,
+    approvals: Arc<Approvals>,
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
@@ -114,7 +114,7 @@ impl Core {
             pim,
             settings,
             clients,
-            approvals: Approvals::system(),
+            approvals: Arc::new(Approvals::system()),
             github: Arc::new(GithubAccounts::system()),
             start_accounts: start_accounts_page,
         }
@@ -123,14 +123,21 @@ impl Core {
     /// The core with `approvals` instead of the user's, for tests in other modules.
     #[cfg(test)]
     pub(crate) fn with_approvals(mut self, approvals: Approvals) -> Core {
-        self.approvals = approvals;
+        self.approvals = Arc::new(approvals);
         self
     }
 
-    /// Starts the background work [`Core::new`] leaves out: loads the GitHub accounts and checks
-    /// their tokens, then refreshes their filter lists now and every five minutes (task G.2).
-    /// The daemon calls it once, next to `PimService::start`.
+    /// Starts the background work [`Core::new`] leaves out: asks the person again about the
+    /// approvals still open (their notifications went with the core before, task A.3b), loads the
+    /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
+    /// five minutes (task G.2). The daemon calls it once, next to `PimService::start`.
     pub fn start(&self) {
+        let approvals = Arc::clone(&self.approvals);
+        tokio::spawn(async move {
+            if let Err(err) = approvals.announce_open(Utc::now()).await {
+                eprintln!("torroworkplace: cannot ask about the open approvals again: {err}");
+            }
+        });
         self.github.start();
         let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
         tokio::spawn(async move {
@@ -205,7 +212,7 @@ impl Core {
     async fn ask_approval(&self, client: &str, request: Request) -> Result<Response, Refused> {
         let command = request.operation().name();
         let name = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.name);
-        let summary = crate::approvals::summary(&request);
+        let summary = crate::approvals::summary(&request, &self.facts(&request).await);
         match self.approvals.open(client, &name.unwrap_or_default(), request, summary, Utc::now()).await {
             Ok(approval) => Ok(Response::Pending { approval }),
             Err(err @ ApprovalsError::TooMany) => Ok(err.response()),
@@ -213,6 +220,26 @@ impl Core {
                 eprintln!("torroworkplace: cannot ask for approval of {command}: {err}");
                 Err(Refused::NeedsApproval { command })
             }
+        }
+    }
+
+    /// What the core holds about the things `request` names, for its approval's summary
+    /// ([`Facts`]): the template's name from the store, the account's label, and for calendars,
+    /// tasks and filter lists what the calendar service caches ([`PimService::facts`]). Looked up
+    /// by the ids the command runs with, after the client's reach was checked.
+    async fn facts(&self, request: &Request) -> Facts {
+        match request {
+            Request::DeleteTemplate { id }
+            | Request::UpdateTemplate { id }
+            | Request::LoadTemplate { id, .. }
+            | Request::RenameTemplate { id, .. } => {
+                Facts { name: self.store.load(id).ok().map(|template| template.name), ..Facts::default() }
+            }
+            Request::RemoveAccount { id } => {
+                let accounts = self.accounts_within(Reach::Suite).await;
+                Facts { name: accounts.into_iter().find(|a| a.id == *id).map(|a| a.label), ..Facts::default() }
+            }
+            request => self.pim.facts(request).await,
         }
     }
 
@@ -936,12 +963,46 @@ mod tests {
         let asked = waits(ask(&core, Some(&key), delete()).await);
         assert_eq!((asked.client.as_str(), asked.command.as_str()), (id.as_str(), "workspaces.delete_template"));
         assert_eq!(asked.client_name, "Claude Code");
-        assert_eq!(asked.summary, crate::approvals::summary(&delete()));
+        let facts = Facts { name: Some("dev".into()), ..Facts::default() };
+        assert_eq!(asked.summary, crate::approvals::summary(&delete(), &facts));
         assert_eq!(asked.expires - asked.created, crate::approvals::LIFETIME);
         assert!(core.store.load("dev").is_ok(), "nothing ran yet");
 
         let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         assert_eq!(ask(&core, Some(&key), delete()).await, Response::Ok, "runs without asking");
+    }
+
+    /// The API review of A.3: a client sent the href of an important event with the title "Lunch",
+    /// and the person was asked to delete "Lunch". The summary now comes from the core's cache.
+    #[tokio::test]
+    async fn the_summary_shows_the_event_that_would_be_deleted_not_the_title_the_client_sends() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let work = id("/cal/work/");
+        core.pim.cache_collections(vec![torro_pim::Collection { name: "Work".into(), ..calendar(&work) }]).await;
+        let board = "https://cloud.example.org/cal/work/board.ics";
+        core.pim
+            .cache_events(vec![torro_pim::Event {
+                summary: "Board meeting".into(),
+                etag: Some("1".into()),
+                ..event_in(&work, Some(board))
+            }])
+            .await;
+        let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+
+        let claimed =
+            torro_pim::Event { summary: "Lunch".into(), etag: Some("1".into()), ..event_in(&work, Some(board)) };
+        let asked = waits(ask(&core, Some(&key), Request::DeleteEvent { event: claimed.clone() }).await);
+        assert!(asked.summary.contains("Board meeting") && asked.summary.contains("Work"), "{}", asked.summary);
+        assert!(!asked.summary.contains("Lunch"), "{}", asked.summary);
+
+        // An href the core does not hold is an unknown event, still not "Lunch".
+        let unknown = torro_pim::Event { href: Some("https://cloud.example.org/cal/work/x.ics".into()), ..claimed };
+        let asked = waits(ask(&core, Some(&key), Request::DeleteEvent { event: unknown }).await);
+        assert_eq!(
+            asked.summary,
+            torro_core::i18n::trf("Delete an unknown event from \"{calendar}\"", &[("calendar", &"Work")])
+        );
     }
 
     #[tokio::test]

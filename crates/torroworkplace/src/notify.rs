@@ -3,7 +3,14 @@
 //! ever blocking the daemon.
 //!
 //! And the question to the person when an agent's command waits for approval ([`ask`]): the
-//! summary with "Allow" and "Deny" (task A.3).
+//! summary with "Allow" and "Deny" (task A.3), closed again once the approval is decided or
+//! expires (task A.3b).
+//!
+//! On Linux the answer comes back as the D-Bus signal `ActionInvoked` for the notification's id.
+//! The signal is not checked for its sender: any program of the same user on the session bus
+//! could send it, as it could read the app key next to the socket. The threat model of approvals
+//! is an agent talking to the API or MCP, not code that already runs as the user (`docs/api.md`,
+//! "Freigaben").
 
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{ApprovalInfo, Response};
@@ -65,58 +72,88 @@ pub fn question(approval: &ApprovalInfo) -> (String, String) {
     (trf("{client} asks for approval", &[("client", &approval.client_name)]), approval.summary.clone())
 }
 
-/// Asks the person about `approval` on a thread of its own and calls `decide` with their answer:
-/// `true` for "Allow", `false` for "Deny". Closing the notification, or clicking it anywhere else,
-/// decides nothing; the approval then waits in the control centre until it expires, and so does
-/// the notification.
+/// Asks the person about `approval` and calls `decide` with their answer: `true` for "Allow",
+/// `false` for "Deny". Closing the notification, or clicking it anywhere else, decides nothing;
+/// the approval then waits in the control centre until it expires.
+///
+/// The question goes away by itself when `settled` fires (the approval was decided elsewhere:
+/// control centre, `ctl allow|deny`) or its sender is dropped, and when the approval expires,
+/// whichever comes first; nothing waits for it longer than that. It runs as a task on the core's
+/// runtime and never blocks the caller; without a runtime nothing is shown.
 ///
 /// Linux and the BSDs show the buttons. macOS and Windows show the question without them (their
 /// notifications need an app bundle or identity for buttons), so the person decides in the control
 /// centre there.
-pub fn ask(approval: &ApprovalInfo, decide: impl FnOnce(bool) + Send + 'static) {
+pub fn ask(
+    approval: &ApprovalInfo,
+    settled: tokio::sync::oneshot::Receiver<()>,
+    decide: impl FnOnce(bool) + Send + 'static,
+) {
     let (summary, body) = question(approval);
     let lasts = (approval.expires - chrono::Utc::now()).to_std().unwrap_or_default();
-    std::thread::spawn(move || {
-        if let Err(err) = send_question(&summary, &body, lasts, decide) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        eprintln!("torroworkplace: cannot show notification: no runtime to wait for the answer on");
+        return;
+    };
+    runtime.spawn(async move {
+        if let Err(err) = send_question(summary, body, lasts, settled, decide).await {
             eprintln!("torroworkplace: cannot show notification: {err}");
         }
     });
 }
 
+/// Shows the question and waits for the first of: an answer, `settled`, or `lasts` running out.
+/// In the last two cases it closes the notification, so no question about a decided or expired
+/// approval stays on the desktop (some servers keep notifications with actions until clicked).
 #[cfg(all(unix, not(target_os = "macos")))]
-fn send_question(
-    summary: &str,
-    body: &str,
+async fn send_question(
+    summary: String,
+    body: String,
     lasts: std::time::Duration,
+    settled: tokio::sync::oneshot::Receiver<()>,
     decide: impl FnOnce(bool),
 ) -> notify_rust::error::Result<()> {
     let millis = u32::try_from(lasts.as_millis()).unwrap_or(u32::MAX);
-    notify_rust::Notification::new()
+    let handle = notify_rust::Notification::new()
         .appname(APP_NAME)
         // The summary is plain text by the specification; only the body may carry markup.
-        .summary(summary)
-        .body(&plain(body))
+        .summary(&summary)
+        .body(&plain(&body))
         .action("allow", tr("Allow"))
         .action("deny", tr("Deny"))
         .timeout(notify_rust::Timeout::Milliseconds(millis))
-        .show()?
-        .wait_for_action(|action| match action {
-            "allow" => decide(true),
-            "deny" => decide(false),
-            // "default" (a click on the notification itself) and "__closed" decide nothing.
-            _ => {}
-        });
+        .show_async()
+        .await?;
+    let answered = handle.wait_for_action_async(|response| {
+        // A click on the notification itself ("default") and closing it decide nothing.
+        if let notify_rust::NotificationResponse::Action(action) = response {
+            match action.as_str() {
+                "allow" => decide(true),
+                "deny" => decide(false),
+                _ => {}
+            }
+        }
+    });
+    tokio::select! {
+        () = answered => {}
+        _ = settled => handle.close_async().await,
+        () = tokio::time::sleep(lasts) => handle.close_async().await,
+    }
     Ok(())
 }
 
 #[cfg(not(all(unix, not(target_os = "macos"))))]
-fn send_question(
-    summary: &str,
-    body: &str,
+async fn send_question(
+    summary: String,
+    body: String,
     _lasts: std::time::Duration,
+    _settled: tokio::sync::oneshot::Receiver<()>,
     _decide: impl FnOnce(bool),
 ) -> notify_rust::error::Result<()> {
-    send(summary, body)
+    // Showing may block on these systems; the core's runtime must not wait for it.
+    tokio::task::spawn_blocking(move || send(&summary, &body))
+        .await
+        .unwrap_or_else(|err| Err(notify_rust::error::Error::from(err.to_string().as_str())))
 }
 
 /// `text` for a notification server that may read markup in the body (`<b>`, `<a href>`): `&`,

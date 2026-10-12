@@ -234,18 +234,40 @@ freigeben. Das machen wir anders:
 1. Ein Agent ruft z. B. `calendar_delete_event` auf; sein Client verlangt Freigabe beim Löschen.
 2. Der Dienst legt eine **offene Freigabe** an (`approvals.json` im State-Verzeichnis, übersteht
    einen Neustart, läuft nach 10 Minuten ab) und antwortet `pending` mit Kennung und Zusammenfassung
-   („Delete event "Team meeting" on Tue, 14 Oct“).
+   („Delete event "Team meeting" on Tue, 14 Oct 09:00 from "Work"“).
+   **Die Zusammenfassung zeigt, was wirklich ausgeführt wird** (A.3b): Ausgeführt wird über `href`
+   bzw. Kennungen, also kommen Titel, Beginn und Sammlung aus dem Cache des Dienstes, nachgeschlagen
+   über das aufgelöste `href`, nie aus dem Titel, den der Client mitschickt. Hält der Cache den
+   Eintrag nicht, heißt er ehrlich „unknown event“ bzw. „unknown task“. Änderungen zeigen
+   „"alt" → "neu"“ (Titel, Beginn), Verschieben die Sammlung, die den Eintrag verliert. Sammlungen,
+   Filterlisten, Vorlagen und Konten erscheinen mit Anzeigenamen; kennt der Dienst sie nicht, mit
+   der Kennung, die dann auch nichts findet. Jeder Text wird vorher entschärft: eine Zeile, keine
+   unsichtbaren Format-Zeichen (Unicode Cf: Zero-Width, Bidi-Steuerung), keine Anführungszeichen,
+   keine Platzhalter, höchstens 60 Zeichen.
 3. Der Mensch sieht sie als **Benachrichtigung mit „Allow“/„Deny“**, als Zahl am Tray-Icon und im
-   Abschnitt „Approvals“ der Steuerzentrale. Nur der App-Schlüssel kann entscheiden.
+   Abschnitt „Approvals“ der Steuerzentrale; bis dahin und auf Systemen ohne Knöpfe in
+   Benachrichtigungen mit `torroworkplace ctl approvals` und `ctl allow|deny <id>`. Nur der
+   App-Schlüssel kann entscheiden. Nach einer Entscheidung, gleich auf welchem Weg, schließt die
+   Benachrichtigung; spätestens beim Ablauf auch. Startet der Dienst neu, fragt er zu den noch
+   offenen Freigaben erneut nach. Fehler beim Lesen oder Schreiben von `approvals.json` nennen
+   gegenüber Clients keinen Pfad (der steht nur im Log).
 4. Das MCP-Tool wartet bis zu 60 Sekunden auf die Entscheidung und gibt dann das Ergebnis zurück.
-   Dauert es länger, antwortet es „waiting for approval“ mit der Kennung; der Agent fragt später
-   mit `approvals_approval_status` nach.
+   Dauert es länger, antwortet es mit einem **Tool-Fehler** (`isError`) mit dem Code `pending`, dem
+   Text „waiting for approval“ und der Freigabe samt Kennung; der Agent fragt später mit
+   `approvals_approval_status` nach. Über die API ist `pending` dagegen kein Fehler, sondern eine
+   eigene Antwort (`result: "pending"`).
 5. Bei „Allow“ prüft der Dienst Rechte und Reichweite des Clients **zum Zeitpunkt der
    Entscheidung** erneut und führt den Befehl dann aus; die Antwort steht danach in der Freigabe.
    Entschiedene und abgelaufene Freigaben bleiben einen Tag lesbar. Ein Client kann höchstens zehn
    Freigaben gleichzeitig offen haben (sonst `busy`), damit er den Menschen nicht mit
    Benachrichtigungen überschüttet. Befehle aus „Was nie nach außen geht“ werden nie zu einer
    Freigabe.
+
+**Grenze des Modells:** Freigaben schützen vor einem Agenten, der über API oder MCP spricht, nicht
+vor Code, der schon als derselbe Nutzer läuft. Ein solches Programm könnte den App-Schlüssel neben
+dem Socket lesen; ebenso wird das D-Bus-Signal `ActionInvoked`, mit dem die Benachrichtigung
+„Allow“ meldet, nicht nach Absender gefiltert. Eine Sandbox gegen Programme desselben Nutzers ist
+nicht Ziel.
 
 Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](app-catalog.md).
 
@@ -276,7 +298,12 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 
 - `v: 1` im Umschlag. Neue Befehle und neue optionale Felder ändern die Version nicht. Umbenennen,
   Entfernen oder Pflichtfelder ergeben `v: 2`; der Dienst beantwortet dann eine Zeit lang beide.
-- MCP-Toolnamen sind stabil wie API-Namen.
+- **Neue Antwortarten sind verträglich**: Clients müssen unbekannte Werte von `result` tolerieren
+  (als „nicht verstanden“ behandeln, nicht abstürzen). So kam `pending` (A.3) dazu, ohne `v` zu
+  ändern: Ein Befehl, der auf eine Freigabe wartet, antwortet nicht mit `error`, sondern mit
+  `result: "pending"` und der Freigabe. `pending` ist darum auch kein Fehlercode.
+- MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
+  Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 
 ## Steuerzentrale: Abschnitt „Agents & API“
 

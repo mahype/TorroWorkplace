@@ -1233,8 +1233,9 @@ static APPROVAL_STATUS: Command = Command {
     mcp: Mcp::Tool,
     description: "Tells whether a command that answered `pending` still waits for a person (`pending`), was \
                   denied, expired after ten minutes, or ran (`done`, with the command's answer in `response`). \
-                  Pass the id of the pending answer. Only a person can approve; ask them to decide in Torro \
-                  Workplace.",
+                  Pass the id of the pending answer. MCP tools already wait up to 60 seconds for the decision \
+                  themselves, so ask only after a tool answered `pending`, and not in a tight loop. Only a person \
+                  can approve; ask them to decide in Torro Workplace.",
 };
 
 static DECIDE_APPROVAL: Command = Command {
