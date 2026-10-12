@@ -1094,4 +1094,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Entries of other sources don't exist for this agent. Approvals and account problems are shown only to you.",
         "Einträge anderer Quellen gibt es für diesen Agenten nicht. Freigaben und Kontoprobleme siehst nur du.",
     ),
+    // Approvals: open and task summaries (E1.2c)
+    ("Open the web page on {host} from {entry}", "Webseite auf {host} aus {entry} öffnen"),
+    ("Open {app} from {entry}", "{app} aus {entry} öffnen"),
+    ("Bring the agent window of {entry} to the front", "Fenster des Agenten von {entry} nach vorn holen"),
+    (
+        "Make a task \"{title}\" in \"{list}\" due {when} from {entry}",
+        "Aufgabe „{title}“ in „{list}“ fällig {when} aus {entry} anlegen",
+    ),
 ];
