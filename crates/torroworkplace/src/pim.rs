@@ -916,6 +916,20 @@ impl PimService {
             | Request::MuteSource { .. }
             | Request::ListRules
             | Request::RemoveRule { .. } => return None,
+            // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
+            // task M2.1).
+            Request::ConnectMail { .. }
+            | Request::UpdateMailAccount { .. }
+            | Request::MailFolders { .. }
+            | Request::SearchMail { .. }
+            | Request::GetMail { .. }
+            | Request::GetMailThread { .. }
+            | Request::GetMailAttachment { .. }
+            | Request::SetMailFlags { .. }
+            | Request::MoveMail { .. }
+            | Request::DeleteMail { .. }
+            | Request::SaveDraft { .. }
+            | Request::SendDraft { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

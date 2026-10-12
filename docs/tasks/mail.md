@@ -141,7 +141,7 @@ M7.1 ── M2.1 ─┬─ M2.2 ────────────────
 ihre Texte im Bericht.
 
 ### M2.1 Gerüst: Typen, Konto, Rechte, Requests, Katalog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M7.1 · **Dateien:** neu `crates/torro-mail/` (Typen ohne Ein-/Ausgabe) und
   `crates/torro-mail-imap/` (nur Gerüst: `lib.rs` mit leeren Modulen `discover`, `imap`, `folders`, `smtp`,
   `mime`, damit M2.2–M2.4 parallel laufen), Wurzel-`Cargo.toml` (alle Abhängigkeiten für M2 schon hier),

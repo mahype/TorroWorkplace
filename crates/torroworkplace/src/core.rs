@@ -432,6 +432,12 @@ impl Core {
             Request::ApprovalStatus { id: approval } => return Ok(self.approval_status(Some(&id), approval).await),
             _ => {}
         }
+        // Mail limits and accounts first (task M2.1): nobody is asked to approve what is refused
+        // anyway, and an account the client may not see looks like none.
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request).or_else(|| mail_out_of_reach(&rights, &request))
+        {
+            return Ok(refused);
+        }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
         // the tasks rights and the list come first (task E3.5).
         if let Request::CreateTaskFromItem { collection, .. } = &request
@@ -483,8 +489,8 @@ impl Core {
         }
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
-        if question || rights.needs_approval(operation.access) || self.opens_a_web_page(&request, inbox_client.as_ref())
-        {
+        // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
+        if question || rights.needs_approval_of(operation) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
             return self.ask_approval(&id, request).await;
         }
         if let Some(info) = inbox_client {
@@ -608,7 +614,7 @@ impl Core {
             | Request::RenameTemplate { id, .. } => {
                 Facts { name: self.store.load(id).ok().map(|template| template.name), ..Facts::default() }
             }
-            Request::RemoveAccount { id } => {
+            Request::RemoveAccount { id } | Request::UpdateMailAccount { id, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *id).map(|a| a.label), ..Facts::default() }
             }
@@ -694,6 +700,9 @@ impl Core {
         let reach = Reach::Client(rights);
         if let Some(collection) = self.out_of_reach(reach, &request).await {
             return no_collection(&collection);
+        }
+        if let Some(refused) = mail_out_of_reach(rights, &request) {
+            return refused;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -915,6 +924,18 @@ impl Core {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 Reach::Suite => self.inbox_request(request, None, None).await,
             },
+            request @ (Request::ConnectMail { .. }
+            | Request::UpdateMailAccount { .. }
+            | Request::MailFolders { .. }
+            | Request::SearchMail { .. }
+            | Request::GetMail { .. }
+            | Request::GetMailThread { .. }
+            | Request::GetMailAttachment { .. }
+            | Request::SetMailFlags { .. }
+            | Request::MoveMail { .. }
+            | Request::DeleteMail { .. }
+            | Request::SaveDraft { .. }
+            | Request::SendDraft { .. }) => mail_not_yet(&request),
         }
     }
 
@@ -1367,6 +1388,35 @@ fn version() -> String {
 /// does not exist.
 fn no_collection(collection: &str) -> Response {
     Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") }
+}
+
+/// The `not-found` for a mail request of a client that names an account outside its
+/// `Rights::mail_accounts` (task M2.1), the same as for an account that does not exist; `None`
+/// when the request names none or one the client reaches. Checked before approvals and handlers,
+/// and again when an approved request runs. Ids of folders and messages name their account only
+/// through the mail store: M3.1 and M3.2 must resolve every [`Request::message_ids`] and the folder
+/// (`folder`, a `MoveTarget::Folder`) there and check their accounts the same way, here before
+/// `ask_approval` and again in `run_approved`, and upgrade a move into a trash folder to delete
+/// access before the rights are checked.
+fn mail_out_of_reach(rights: &torro_ipc::api::Rights, request: &Request) -> Option<Response> {
+    let account = request.mail_account().filter(|account| !rights.reaches_mail_account(account))?;
+    Some(Response::Error { code: "not-found".into(), message: format!("no mail account {account:?}") })
+}
+
+/// The answer to a mail request until its task carries it out (M2.7 connecting and settings, M3.1
+/// reading, M3.2 changing, M3.3 sending): the limits and the address are checked as they will be
+/// then ([`torro_ipc::mail::limit_refusal`], [`torro_mail::account_id`]), then `unsupported`.
+fn mail_not_yet(request: &Request) -> Response {
+    if let Some(refused) = torro_ipc::mail::limit_refusal(request) {
+        return refused;
+    }
+    if let Request::ConnectMail { address, .. } = request
+        && let Err(invalid) = torro_mail::account_id(address)
+    {
+        return Response::Error { code: "error".into(), message: invalid.to_string() };
+    }
+    let message = format!("{} is not available yet", request.operation().name());
+    Response::Error { code: "unsupported".into(), message }
 }
 
 /// The task list a `list_order` value names; `None` for a value that does not fit, which the
@@ -4661,5 +4711,105 @@ mod tests {
         assert!(world.lock().expect("world").closed.is_empty());
         assert_ne!(github_state(&ticked), Some(torro_pim::model::GitHubState::Closed), "the answer says so");
         assert_eq!(puts(&fake).len(), 1, "only the task is written: {:?}", fake.lines());
+    }
+
+    // Mail (task M2.1): the requests exist, the rights hold, the handlers wait for their tasks.
+
+    fn connect_mail(address: &str) -> Request {
+        let server =
+            |host: &str| torro_mail::Endpoint { host: host.into(), port: 993, security: torro_mail::Security::Tls };
+        Request::ConnectMail {
+            address: address.into(),
+            sender_name: String::new(),
+            imap: server("imap.mailbox.org"),
+            smtp: server("smtp.mailbox.org"),
+            login_name: "anna@mailbox.org".into(),
+            password: torro_ipc::Secret::new("hunter2-MAIL"),
+            calendars: false,
+            tasks: false,
+            caldav: None,
+        }
+    }
+
+    fn every_admin_switch() -> Rights {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        rights
+    }
+
+    /// Rule 5 of "Was nie nach außen geht": no client key signs in to mail, not even with every
+    /// admin switch, and nothing waits for an approval; the password shows nowhere. The app key
+    /// gets a refused address as `error` and anything else as `unsupported` until task M2.7.
+    #[tokio::test]
+    async fn only_the_app_key_connects_mail_and_mail_waits_for_its_tasks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let (_, key) = client(&core, every_admin_switch()).await;
+        let refused = ask(&core, Some(&key), connect_mail("anna@mailbox.org")).await;
+        assert_eq!(code(&refused), "forbidden");
+        assert!(!format!("{refused:?}").contains("hunter2"));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("hunter2") && !log.contains("anna"), "{log}");
+
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let slash = ask(&core, Some(&app_key), connect_mail("anna/x@mailbox.org")).await;
+        assert_eq!(code(&slash), "error", "{slash:?}");
+        let later = ask(&core, Some(&app_key), connect_mail("anna@mailbox.org")).await;
+        assert_eq!(code(&later), "unsupported");
+        assert!(!format!("{later:?}").contains("hunter2"));
+        for request in [Request::MailFolders { account: None }, Request::SendDraft { id: "m:1".into() }] {
+            assert_eq!(code(&ask(&core, Some(&app_key), request).await), "unsupported");
+        }
+    }
+
+    /// `Rights::outbound`: never is `forbidden`, with approval waits even with `confirm: never`,
+    /// free runs (here into `unsupported`) unless `confirm` asks for every change.
+    #[tokio::test]
+    async fn sending_waits_or_is_refused_as_outbound_says() {
+        use torro_ipc::api::{Confirm, Outbound};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let send = || Request::SendDraft { id: "m:1".into() };
+        let with = |outbound, confirm| Rights { outbound, confirm, ..RightsTemplate::FullAccess.rights() };
+
+        let (_, never) = client(&core, with(Outbound::Never, Confirm::Never)).await;
+        assert_eq!(code(&ask(&core, Some(&never), send()).await), "forbidden");
+        let (_, asking) = client(&core, with(Outbound::WithApproval, Confirm::Never)).await;
+        let asked = waits(ask(&core, Some(&asking), send()).await);
+        assert_eq!(asked.command, "mail.send_draft");
+        let (_, free) = client(&core, with(Outbound::Free, Confirm::Never)).await;
+        assert_eq!(code(&ask(&core, Some(&free), send()).await), "unsupported", "runs at once");
+        let (_, careful) = client(&core, with(Outbound::Free, Confirm::OnEveryChange)).await;
+        waits(ask(&core, Some(&careful), send()).await);
+    }
+
+    /// An account outside a client's `mail_accounts` is `not-found` before anything else, limits
+    /// are `error` before anyone is asked, and moving to the trash is deleting.
+    #[tokio::test]
+    async fn mail_calls_keep_to_the_granted_accounts_limits_and_levels() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let folders = |account: &str| Request::MailFolders { account: Some(account.into()) };
+        assert_eq!(code(&ask(&core, Some(&key), folders("mail:bob@mailbox.org")).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await), "unsupported");
+
+        // Deleting waits for a person with `confirm: on_delete`, but not over the limit.
+        let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
+        let delete = |n| Request::DeleteMail { ids: ids(n), permanent: false };
+        assert_eq!(code(&ask(&core, Some(&key), delete(101)).await), "error");
+        waits(ask(&core, Some(&key), delete(1)).await);
+        let to_trash =
+            Request::MoveMail { ids: ids(1), to: torro_ipc::mail::MoveTarget::Role(torro_ipc::mail::MoveRole::Trash) };
+        waits(ask(&core, Some(&key), to_trash.clone()).await);
+
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Write, admin: false });
+        let (_, writer) = client(&core, rights).await;
+        assert_eq!(code(&ask(&core, Some(&writer), to_trash).await), "forbidden", "the trash needs full");
     }
 }
