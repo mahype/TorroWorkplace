@@ -333,6 +333,35 @@ K.21 (frei)
   und PR; Rechte: Link auf ein Repo außerhalb der Auswahl → `not-found`, Verweis darauf schließt nichts;
   Sichtprüfung einer gemischten Liste in „Manual order“.
 
+### G.6b Verweise absichern (aus der API-Prüfung von G.6)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.6 · **Dateien:** `crates/torroworkplace/src/{pim,core,approvals}.rs`, `crates/torro-ipc/src/{api,lib}.rs`,
+  `crates/torro-pim-caldav/src/{client,nextcloud}.rs` (Besitz einer Liste), `crates/torrotasks/src/app.rs` (Rückmeldung), `docs/github.md`
+- **Leselücke (hoch):** Ein Client ohne GitHub-Recht, aber mit `github_repos = All` (Vorlagen), speichert per
+  `tasks.save_todo` eine Aufgabe mit fremdem `link`; `reconcile_links` schreibt mit dem vollen Token Titel und Zustand
+  hinein, der Client liest sie über `list_todos` (`pim.rs` ~689, `links_elsewhere` ~2150 prüft nur `reaches_repo`).
+  Fix: Jeder neu gesetzte oder geänderte Link wird abgewiesen, wenn der Client GitHub nicht lesen darf (wie bei
+  `add_link`); Test mit `Level::NoAccess` + `Selection::All`.
+- **Geteilte Nextcloud-Listen:** Wer eine mit mir geteilte Liste beschreiben kann, könnte dort ein `X-TORRO-LINK`
+  ablegen und so Titel meiner privaten Issues auslesen. Der Abgleich löst Verweise nur in Listen auf, die dem Konto
+  selbst gehören (Nextcloud: Besitzer der Sammlung = angemeldeter Benutzer; geteilte Listen nicht), oder in denen
+  der Verweis von dieser Suite angelegt wurde – Weg festlegen und begründen. In `docs/github.md` festhalten.
+- **Freigabe für `tasks.add_link`** (`approvals.rs` ~865, heute „Run tasks.add_link“): eigener Text wie bei
+  `UnpinIssue` – „Pin {item} to filter list "{list}"“ bzw. „Add a link to {item} to "{list}"“, Liste aus dem Cache,
+  `owner/repo#n` aus `address::issue_ref`, kein Client-Text. Unlesbare `url` schon vor der Freigabe mit `error` ablehnen.
+- **Freigabe beim Abhaken eines Verweises** (`approvals.rs` ~1063): Die Kurzform „Close GitHub issue …“ nur, wenn sich
+  außer `completed` nichts ändert; sonst „Close GitHub issue … and change task …“ mit den übrigen Änderungen.
+- **Katalogtexte:** `tasks.add_link` nennt die nötigen Rechte (GitHub lesen; zum Anheften GitHub schreiben, sonst
+  `forbidden`) und `not-connected`; `tasks.save_todo`: bei Verweisen ohne Schreibrecht wird nur die Aufgabe abgehakt,
+  ohne Fehler; Zeile ≤ 120 Zeichen.
+- **App:** kurze Rückmeldung nach „Add to list…“ („Added to {list}“).
+- **`docs/github.md`, Offene Punkte:** Clients ohne GitHub-Lesen sehen Titel/Zustand von Verweisen, die der Mensch
+  angelegt hat (eigene Aufgaben, bewusst); bei mehreren GitHub-Konten nimmt der Kern das erste mit Token
+  (später: Konto im Link mitführen).
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Tests für die Leselücke (an GitHub geht nichts, nichts wird in die Liste geschrieben), geteilte Liste wird
+  nicht abgeglichen, beide Freigabetexte (inkl. Abhaken mit weiteren Änderungen), `error` vor Freigabe.
+
 ## K Kalender
 
 ### K.21 Fällige Aufgaben im Kalender
