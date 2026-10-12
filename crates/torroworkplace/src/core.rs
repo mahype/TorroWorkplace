@@ -801,11 +801,11 @@ impl Core {
             // What the filter list dialog offers to pick (task G.9), read with the account's token.
             Request::ListGithubRepos { account } => match self.account_api(&account).await {
                 Ok(api) => self.pim.list_github_repos(&account, &api, reach).await,
-                Err(refused) => refused,
+                Err(refused) => *refused,
             },
             Request::DescribeGithubRepo { account, repo } => match self.account_api(&account).await {
                 Ok(api) => self.pim.describe_github_repo(&account, &repo, &api, reach).await,
-                Err(refused) => refused,
+                Err(refused) => *refused,
             },
             Request::UnpinIssue { collection, url } => {
                 let api = self.filter_list_api(&collection).await;
@@ -1118,13 +1118,15 @@ impl Core {
     /// The GitHub access of the GitHub account `account`; the answer when there is none:
     /// `not-found` for an account the core does not know, `not-connected` for one without a token
     /// on this device.
-    async fn account_api(&self, account: &str) -> Result<torro_pim_github::Api, Response> {
+    async fn account_api(&self, account: &str) -> Result<torro_pim_github::Api, Box<Response>> {
         if !self.github.knows(account).await {
-            return Err(no_github_account(account));
+            return Err(Box::new(no_github_account(account)));
         }
-        self.github.api(account).await.ok_or_else(|| Response::Error {
-            code: "not-connected".into(),
-            message: format!("{account} has no token on this device: sign in to GitHub again"),
+        self.github.api(account).await.ok_or_else(|| {
+            Box::new(Response::Error {
+                code: "not-connected".into(),
+                message: format!("{account} has no token on this device: sign in to GitHub again"),
+            })
         })
     }
 
@@ -2486,7 +2488,8 @@ mod tests {
         assert_eq!(woke.ok(), Some(true), "a decision wakes the tray");
 
         // One that expires in a moment wakes it without any change, and is no longer counted then.
-        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::milliseconds(100);
+        // Two seconds, not less: under a loaded test run a shorter margin is gone before the check.
+        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::seconds(2);
         core.approvals.open("c1", "One", delete("b"), None, "b".into(), soon).await.expect("opened");
         changes.mark_unchanged();
         assert_eq!(core.snapshot().await.approvals_waiting, 1);
