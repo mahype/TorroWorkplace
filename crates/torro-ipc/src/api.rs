@@ -1336,8 +1336,10 @@ static REMOVE_ACCOUNT: Command = Command {
     mcp: Mcp::Tool,
     description: "Removes one account (id from list_accounts) from this device: deletes its stored secret and its \
                   cached calendars, tasks and mail; for a Nextcloud account it also revokes the app password on the \
-                  server where possible (other kinds have none to revoke). Other accounts stay. An unknown id \
-                  fails with `not-found`.",
+                  server where possible (other kinds have none to revoke). Every client's access to the account \
+                  (its mail, inbox entries, calendars and task lists) is withdrawn and does not come back when the \
+                  account is connected again. Other accounts stay. An unknown id fails with `not-found` and \
+                  changes nothing.",
 };
 
 static GET_SETTINGS: Command = Command {

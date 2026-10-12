@@ -80,7 +80,9 @@
 //!   switched on ([`Slot::services`]). The core puts it in place when the account is connected or
 //!   its services change ([`PimService::put_mail_account`]), taking over the CalDAV account of the
 //!   same sign-in in the same step, so the same collections are never synced twice. Its health
-//!   goes into the mail account's one check ([`PimService::calendar_health`]).
+//!   goes into the mail account's one check ([`PimService::calendar_health`]). Like the mail
+//!   sync it connects to public addresses only, checked on every connection ([`public_http`],
+//!   task M2.7b).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -635,6 +637,11 @@ impl TokenStore for NoKeychain {
 #[derive(Debug)]
 pub struct PimService {
     http: Option<reqwest::Client>,
+    /// The HTTP client of the calendar part of mail accounts (task M2.7b, [`public_http`]): it
+    /// resolves every name anew, refuses it unless all its addresses are public and connects to
+    /// exactly those, as the mail sync does for IMAP. Its CalDAV address was checked the same way
+    /// when the account was connected.
+    public_http: Option<reqwest::Client>,
     state: RwLock<State>,
     /// One sync of an account at a time.
     syncing: Mutex<()>,
@@ -668,14 +675,32 @@ impl PimService {
                 None
             }
         };
+        let public_http = match public_http() {
+            Ok(http) => Some(http),
+            Err(err) => {
+                eprintln!("torroworkplace: no HTTP client for the calendars of mail accounts: {err}");
+                None
+            }
+        };
         PimService {
             http,
+            public_http,
             state: RwLock::new(State::default()),
             syncing: Mutex::new(()),
             settings,
             filters_file: None,
             filters_writing: Mutex::new(()),
             sign_in: SignIn::offline(),
+        }
+    }
+
+    /// The HTTP client for the calendars of `account`: for a mail account's calendar part the one
+    /// that connects to public addresses only ([`PimService::public_http`]), else the shared one
+    /// (a Nextcloud or a typed CalDAV server may be in the person's own network).
+    fn http_for(&self, account: &torro_core::Account) -> Option<&reqwest::Client> {
+        match account.kind {
+            AccountKind::Mail => self.public_http.as_ref(),
+            _ => self.http.as_ref(),
         }
     }
 
@@ -731,7 +756,8 @@ impl PimService {
                             eprintln!("torroworkplace: ignoring a stored account: its id is reserved for agent keys");
                             continue;
                         }
-                        state.accounts.push(Slot::loaded(stored, service.http.as_ref()));
+                        let http = service.http_for(stored.account());
+                        state.accounts.push(Slot::loaded(stored, http));
                     }
                 }
                 Err(err) => eprintln!("torroworkplace: cannot read the accounts: {err}"),
@@ -1267,17 +1293,6 @@ impl PimService {
         self.state.read().await.slot(id).filter(|slot| slot.is_mail()).map(|slot| slot.check(now).health)
     }
 
-    /// Signs in to the CalDAV address `url` as `login` with `password` and reports what it offers
-    /// ([`CalDavClient::services`]), to check the calendar part of a mail account before anything
-    /// is stored (task M2.7). Stores, caches and logs nothing. Errors as
-    /// [`CalDavClient::services`]: `Auth` for a refused password, `Offline`, `Other` when no CalDAV
-    /// answers there (also without an HTTP client or for an address that is no URL).
-    pub async fn caldav_services(&self, url: &str, login: &str, password: &Secret) -> Result<Services, ProviderError> {
-        let http = self.http.clone().ok_or_else(|| ProviderError::Other("no HTTP client".into()))?;
-        let dav = CalDavAccount { url: url.to_string(), username: login.to_string() };
-        CalDavClient::new(http, &dav, password.clone())?.services().await
-    }
-
     /// Brings the calendar part of the mail account `account` in line after it was connected or
     /// its services changed (task M2.7); `password` is the account's one password. In one step:
     ///
@@ -1302,8 +1317,8 @@ impl PimService {
         let syncs = account::syncs_calendars(&account);
         let same_sign_in = account::caldav_sign_in(&account);
         let connected = Connected { account, app_password: password };
-        let client =
-            if syncs { self.http.as_ref().and_then(|http| account::caldav(http, &connected).ok()) } else { None };
+        let http = self.http_for(&connected.account);
+        let client = if syncs { http.and_then(|http| account::caldav(http, &connected).ok()) } else { None };
         {
             let mut state = self.state.write().await;
             let beside = same_sign_in.filter(|caldav| syncs && Some(caldav.as_str()) != replaces);
@@ -1440,7 +1455,9 @@ impl PimService {
     /// in the account list ([`account::store`]); adds the account, or gives the one with the same
     /// id the new password and server while its hidden collections stay; and syncs it in the
     /// background. A new account hides the collections of the services not in `wanted` at its
-    /// first sync ([`chosen`]).
+    /// first sync ([`chosen`]). An address discovery found is signed in to only at the public
+    /// addresses its host resolves to then ([`pinned_public`], task M2.7b); a typed `server` as it
+    /// is.
     ///
     /// Answered with [`Response::Connected`]. Codes: `auth` (the server refused the password; no
     /// other address is tried then), `not-found`, `unsupported`, `offline`, `error`. No answer,
@@ -1467,12 +1484,24 @@ impl PimService {
             Ok(found) => found,
             Err(answer) => return *answer,
         };
+        // A typed server is the person's choice and may be in their own network; an address
+        // discovery found is signed in to only where it still resolves publicly, at exactly the
+        // addresses checked (task M2.7b, [`pinned_public`]).
+        let typed = server.is_some_and(|server| !server.trim().is_empty());
         let mut failure = ("not-found", tr("No calendar service answers at this address."));
         let mut signed_in = None;
         for url in candidates {
             let dav = CalDavAccount { url: url.clone(), username: login.to_string() };
             let Ok(client) = CalDavClient::new(http.clone(), &dav, password.clone()) else { continue };
-            match client.services().await {
+            let checking = match typed {
+                true => Ok(client.clone()),
+                false => pinned_public(&dav, password.clone(), discover::is_public).await,
+            };
+            let checked = match checking {
+                Ok(checking) => checking.services().await,
+                Err(err) => Err(err),
+            };
+            match checked {
                 Ok(services) => {
                     signed_in = Some((url, client, services));
                     break;
@@ -3053,6 +3082,48 @@ fn chosen(wanted: Services, kind: CollectionKind) -> bool {
     (wanted.calendars && kind.has_events()) || (wanted.tasks && kind.has_todos())
 }
 
+/// The HTTP client of the calendar part of mail accounts (task M2.7b): no proxy, and its DNS is
+/// discovery's guard ([`discover::GuardedDns`] with [`discover::is_public`]): a name resolves only
+/// when every address is on the public internet, and reqwest connects to exactly what it
+/// returned, so checking and connecting can never see different addresses. (An address written
+/// as an IP literal is not resolved; a mail account's CalDAV address was refused at connecting if
+/// it was a private one.)
+fn public_http() -> Result<reqwest::Client, String> {
+    let guarded = discover::GuardedDns::new(Arc::new(discover::SystemResolver::new()), discover::is_public);
+    reqwest::Client::builder()
+        .user_agent("Torro Workplace")
+        .no_proxy()
+        .dns_resolver(Arc::new(guarded))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|err| err.to_string())
+}
+
+/// A client for signing in at the found CalDAV address of `dav` (task M2.7b): its host is resolved
+/// once, every address must pass `allowed` ([`discover::is_public`] in the core), and the sign-in
+/// goes to those addresses only ([`CalDavClient::pinned`]), so a name that answers differently
+/// than it did for discovery (DNS rebinding) never gets the password. `Offline` when the name
+/// cannot be resolved, `Other` for an address that is no URL or a host with no allowed address.
+async fn pinned_public(
+    dav: &CalDavAccount,
+    password: Secret,
+    allowed: fn(std::net::IpAddr) -> bool,
+) -> Result<CalDavClient, ProviderError> {
+    let url = reqwest::Url::parse(&dav.url).map_err(|err| ProviderError::Other(err.to_string()))?;
+    let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default()) else {
+        return Err(ProviderError::Other(format!("{} names no server", dav.url)));
+    };
+    // `Url` writes an IPv6 host in brackets; the resolver wants it without.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let found: Vec<std::net::SocketAddr> =
+        tokio::net::lookup_host((host, port)).await.map_err(|_| ProviderError::Offline)?.collect();
+    if found.is_empty() || !found.iter().all(|address| allowed(address.ip())) {
+        return Err(ProviderError::Other(format!("{host} is not on the public internet")));
+    }
+    CalDavClient::pinned(dav, password, &found)
+}
+
 /// The host of `url` (`https://dav.example.org/x/` → `dav.example.org`), else `url` itself.
 fn host_of(url: &str) -> String {
     reqwest::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_else(|| url.into())
@@ -4374,6 +4445,21 @@ pub(crate) mod tests {
         }
     }
 
+    /// Task M2.7b: a CalDAV address discovery found is signed in to only where its host resolves
+    /// publicly, and then at exactly those addresses, under the host's name.
+    #[tokio::test]
+    async fn a_found_caldav_address_is_signed_in_to_at_its_checked_addresses_only() {
+        let (base, record) = fake_server(split_server).await;
+        let dav = CalDavAccount { url: base.replace("127.0.0.1", "localhost"), username: "anna".into() };
+        let refused = pinned_public(&dav, Secret::new(PASSWORD), discover::is_public).await;
+        assert!(matches!(refused, Err(ProviderError::Other(_))), "localhost is this computer");
+        assert!(record.lock().expect("record").is_empty(), "nothing was asked");
+
+        let client = pinned_public(&dav, Secret::new(PASSWORD), |ip| ip.is_loopback()).await.expect("a client");
+        assert_eq!(client.services().await.expect("signed in"), Services { calendars: true, tasks: true });
+        assert!(!record.lock().expect("record").is_empty(), "the server at the checked address was asked");
+    }
+
     #[tokio::test]
     async fn a_sign_in_without_a_usable_address_or_login_stores_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -4457,6 +4543,25 @@ pub(crate) mod tests {
         assert!(!account::syncs_calendars(&mail));
         service.put_mail_account(mail.clone(), Secret::new(PASSWORD), None).await.expect("put");
         assert!(service.state.read().await.accounts.is_empty(), "calendars off: no slot, no cache");
+    }
+
+    /// Task M2.7b: the calendar part of a mail account resolves its server anew for every
+    /// connection and goes nowhere when the name points into the local network (`localhost` here),
+    /// unlike a Nextcloud or a typed CalDAV server, which may be at home.
+    #[tokio::test]
+    async fn the_calendars_of_a_mail_account_are_fetched_from_public_addresses_only() {
+        let (dav, record) = fake_server(split_server).await;
+        let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
+        let on = torro_mail::Services { mail: true, calendars: true, tasks: true };
+        let mail = mail_with_calendars(&dav.replace("127.0.0.1", "localhost"), on);
+        service.put_mail_account(mail.clone(), Secret::new(PASSWORD), None).await.expect("put");
+        assert!(service.sync_account(&mail.id).await.is_err(), "refused");
+        assert!(record.lock().expect("record").is_empty(), "nothing was sent: {:?}", lines(&record));
+        assert!(!format!("{:?}", service.state.read().await.accounts[0].problem).contains(PASSWORD));
+
+        let caldav = torro_core::Account::caldav(&dav.replace("127.0.0.1", "localhost"), "anna", "example.org");
+        service.pretend_connected(caldav.clone(), PASSWORD).await;
+        service.sync_account(&caldav.id).await.expect("a CalDAV account may be at home");
     }
 
     #[test]

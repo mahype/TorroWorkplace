@@ -22,6 +22,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -300,11 +301,47 @@ impl Session {
         trust: &Trust,
     ) -> Result<Session, ImapError> {
         let config = tls_config(trust)?;
-        let server_name = ServerName::try_from(endpoint.host.clone())
-            .map_err(|_| ImapError::Protocol(format!("{:?} is not a host name", endpoint.host)))?;
+        let server_name = server_name(endpoint)?;
         let address = (endpoint.host.as_str(), endpoint.port);
         let tcp = timed(CONNECT_TIMEOUT, TcpStream::connect(address)).await?;
-        let (wire, greeting) = match endpoint.security {
+        Session::secure(tcp, config, server_name, endpoint.security, login, password).await
+    }
+
+    /// [`Session::connect`] to one of `addresses` instead of whatever `endpoint`'s host resolves to
+    /// now (task M2.7b): the core checks the host's addresses (public internet only) and connects
+    /// to exactly those, so a name that answers differently the second time (DNS rebinding) never
+    /// reaches another machine. The host name of `endpoint` is still what TLS checks the
+    /// certificate against and sends as SNI; its port is not used (each address has its own).
+    ///
+    /// The addresses are tried in order until one takes the connection. No address at all is
+    /// [`ImapError::Offline`]; every other error as for [`Session::connect`].
+    pub async fn connect_to(
+        addresses: &[SocketAddr],
+        endpoint: &Endpoint,
+        login: &str,
+        password: &Secret,
+        trust: &Trust,
+    ) -> Result<Session, ImapError> {
+        let config = tls_config(trust)?;
+        let server_name = server_name(endpoint)?;
+        if addresses.is_empty() {
+            return Err(ImapError::Offline("no address to connect to".into()));
+        }
+        let tcp = timed(CONNECT_TIMEOUT, TcpStream::connect(addresses)).await?;
+        Session::secure(tcp, config, server_name, endpoint.security, login, password).await
+    }
+
+    /// Secures the connection `tcp` as `security` asks (TLS from the first byte or STARTTLS, the
+    /// certificate checked for `server_name`) and signs in.
+    async fn secure(
+        tcp: TcpStream,
+        config: Arc<ClientConfig>,
+        server_name: ServerName<'static>,
+        security: Security,
+        login: &str,
+        password: &Secret,
+    ) -> Result<Session, ImapError> {
+        let (wire, greeting) = match security {
             Security::Tls => {
                 let mut wire = Wire::new(handshake(config, server_name, tcp).await?, 1);
                 let greeting = wire.greeting().await?;
@@ -755,6 +792,12 @@ impl Session {
         }
         Ok(())
     }
+}
+
+/// The name TLS checks the certificate of `endpoint` against (and sends as SNI).
+fn server_name(endpoint: &Endpoint) -> Result<ServerName<'static>, ImapError> {
+    ServerName::try_from(endpoint.host.clone())
+        .map_err(|_| ImapError::Protocol(format!("{:?} is not a host name", endpoint.host)))
 }
 
 /// The TLS settings for `trust`, always with the aws-lc-rs provider and rustls' safe defaults.
