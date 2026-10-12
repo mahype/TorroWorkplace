@@ -7,11 +7,19 @@
 
 use std::fmt;
 
-use chrono::{Duration, Local, Utc};
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, Duration, Local, Utc};
 use torro_core::AppId;
 use torro_core::i18n::trf;
 use torro_core::settings::Settings;
-use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ApprovalState, Response, Status};
+use torro_inbox::{AgentKind, SourceInfo, SourceRef};
+use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Rights, RightsTemplate, Selection};
+use torro_ipc::{
+    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, IssuedKey, Key, Request, Response,
+    Status,
+};
+use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
@@ -44,10 +52,22 @@ pub enum Open {
     RenameTemplate,
     /// The approvals page without any approvals: its empty state.
     ApprovalsEmpty,
+    /// The detail page of the demo agent with its own rights (levels, admin switch, selections).
+    AgentDetail,
+    /// The detail page of the demo script.
+    ScriptDetail,
+    /// The detail page of the demo hook client: fixed rights, read-only.
+    HookDetail,
+    /// The dialog with a new key of the demo agent, shown once.
+    NewKey,
+    /// The "Disconnect this agent?" confirmation.
+    Disconnect,
+    /// The agents page without any clients: its empty state.
+    AgentsEmpty,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 12] = [
+    pub const ALL: [(&'static str, Open); 18] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -60,16 +80,22 @@ impl Open {
         ("delete-template", Open::DeleteTemplate),
         ("rename-template", Open::RenameTemplate),
         ("approvals-empty", Open::ApprovalsEmpty),
+        ("agent-detail", Open::AgentDetail),
+        ("script-detail", Open::ScriptDetail),
+        ("hook-detail", Open::HookDetail),
+        ("new-key", Open::NewKey),
+        ("disconnect", Open::Disconnect),
+        ("agents-empty", Open::AgentsEmpty),
     ];
 }
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|approvals|general`: the page to start on. The states of
-///   `--open` that belong to a page choose that page themselves.
-/// - `--demo`: sample accounts, templates, settings, apps and approvals in memory instead of the
-///   service.
-///   Nothing is sent and nothing is stored.
+/// - `--section overview|accounts|workspaces|apps|agents|approvals|general`: the page to start on.
+///   The states of `--open` that belong to a page choose that page themselves.
+/// - `--demo`: sample accounts, templates, settings, apps, agents and approvals in memory instead
+///   of the service. Nothing is sent and nothing is stored; [`demo_answer`] answers the few
+///   requests whose answer is a state of its own.
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
@@ -161,8 +187,10 @@ impl Launch {
 
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
 /// a second one that cannot reach its server (so the problem rows show), a GitHub account, three
-/// templates, the suite's apps, settings with one list hidden, and approvals: two open, one done,
-/// one failed, one denied, one expired ([`demo_approvals`]). Times are relative to now.
+/// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
+/// one failed, one denied, one expired ([`demo_approvals`]), and four clients with the calendars,
+/// lists (one a GitHub filter list) and inbox sources their selections choose from
+/// ([`demo_clients`]). Times are relative to now.
 pub fn demo_data() -> Data {
     let now = Utc::now();
     let (mut sample, _, _) = torro_pim::demo::sample(Local::now().date_naive());
@@ -250,7 +278,47 @@ pub fn demo_data() -> Data {
             installed: true,
         })
         .collect();
+    let calendars: Vec<Collection> = accounts
+        .iter()
+        .flat_map(|account| &account.collections)
+        .filter(|collection| collection.kind.has_events())
+        .cloned()
+        .collect();
+    let mut task_lists: Vec<Collection> = accounts
+        .iter()
+        .flat_map(|account| &account.collections)
+        .filter(|collection| collection.kind.has_todos())
+        .cloned()
+        .collect();
+    task_lists.push(Collection {
+        id: "github:anna-dev/1".into(),
+        name: "Torro bugs".into(),
+        kind: CollectionKind::Todos,
+        color: Some("#D96CA8".into()),
+        writable: false,
+        source: Some(GitHubFilter {
+            queries: vec![
+                "is:open is:issue repo:anna-dev/torro-workplace label:bug".into(),
+                "is:open is:pr org:acme review-requested:@me".into(),
+            ],
+            pinned: Vec::new(),
+            revision: 1,
+            truncated: false,
+            problem: None,
+        }),
+    });
+    let first_calendar = calendars.first().map(|calendar| calendar.id.clone());
+    let sources = vec![
+        SourceInfo { source: SourceRef::suite(), open: 2, muted: false },
+        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false },
+        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false },
+        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true },
+    ];
     Data {
+        clients: demo_clients(now, first_calendar),
+        calendars,
+        task_lists,
+        sources,
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -264,6 +332,104 @@ pub fn demo_data() -> Data {
         apps: Some(apps),
         approvals: demo_approvals(now),
         error: None,
+    }
+}
+
+/// The demo's clients: Claude Code with the default template, Codex with rights of its own
+/// (fewer areas, an admin switch, chosen calendars, repositories and sources, asking before every
+/// change), the hooks of Claude Code and a script that has never been used.
+fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<ClientInfo> {
+    let client = |id: &str, name: &str, kind: &str, rights: Rights, last_used: Option<DateTime<Utc>>| ClientInfo {
+        id: id.into(),
+        name: name.into(),
+        kind: kind.into(),
+        created: now - Duration::days(20),
+        last_used,
+        rights,
+        agent: (kind == HOOK_CLIENT).then_some(AgentKind::ClaudeCode),
+    };
+    let mut codex = RightsTemplate::ReadAndWrite.rights();
+    let set = |rights: &mut Rights, area, level, admin| {
+        rights.areas.insert(area, AreaRights { level, admin });
+    };
+    set(&mut codex, Area::Calendar, Level::Read, false);
+    set(&mut codex, Area::Accounts, Level::NoAccess, false);
+    set(&mut codex, Area::Settings, Level::NoAccess, false);
+    set(&mut codex, Area::Inbox, Level::Write, true);
+    codex.calendars = Selection::Only(first_calendar.into_iter().collect());
+    codex.github_repos = Selection::Only(vec!["anna-dev/torro-workplace".into(), "acme".into()]);
+    codex.inbox_sources = Selection::Only(vec!["agent:codex".into(), "script:backup".into()]);
+    codex.confirm = Confirm::OnEveryChange;
+    let backup = Rights {
+        areas: BTreeMap::from([(Area::Inbox, AreaRights { level: Level::Write, admin: false })]),
+        calendars: Selection::Only(Vec::new()),
+        task_lists: Selection::Only(Vec::new()),
+        github_repos: Selection::Only(Vec::new()),
+        inbox_sources: Selection::Only(vec!["script:backup".into()]),
+        confirm: Confirm::Never,
+    };
+    vec![
+        client(
+            "3fa9c1d2",
+            "Claude Code",
+            "claude-code",
+            RightsTemplate::ReadAndWrite.rights(),
+            Some(now - Duration::minutes(5)),
+        ),
+        client("7b2e4f10", "Codex", "codex", codex, Some(now - Duration::days(2))),
+        client("c41d9e06", "Claude Code hooks", HOOK_CLIENT, Rights::hook(), Some(now - Duration::minutes(1))),
+        client("e8a07b35", "backup", "script", backup, None),
+    ]
+}
+
+/// The sample answer `--demo` gives to a request whose answer is a state of its own: an agent's
+/// activity and a new key (a made-up one, never a working key). Every other request gets none
+/// and is dropped, so the demo changes nothing.
+pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
+    let client_of = |id: &str| data.clients.iter().find(|client| client.id == id);
+    match request {
+        Request::ClientActivity { id } => {
+            let client = client_of(id)?;
+            Some(Response::Activity { entries: demo_activity(client, Utc::now()) })
+        }
+        Request::NewClientKey { id } => {
+            let client = client_of(id)?.clone();
+            let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "5f2c9a1e7b3d4086".repeat(4))));
+            Some(Response::ClientKey { client, key })
+        }
+        _ => None,
+    }
+}
+
+/// What a demo client did lately, newest first, as the audit log has it: commands and results,
+/// no contents. A client that was never used has nothing.
+fn demo_activity(client: &ClientInfo, now: DateTime<Utc>) -> Vec<ActivityEntry> {
+    let entry = |age: Duration, command: &str, result: &str| ActivityEntry {
+        time: now - age,
+        client: Some(client.id.clone()),
+        command: command.into(),
+        ids: Vec::new(),
+        result: result.into(),
+        approval: (result == "pending" || result == "denied").then(|| "9c1f0a7e3b2d4c58".into()),
+    };
+    if client.last_used.is_none() {
+        return Vec::new();
+    }
+    match client.kind.as_str() {
+        HOOK_CLIENT => vec![
+            entry(Duration::minutes(1), "inbox.post_item", "ok"),
+            entry(Duration::minutes(14), "inbox.resolve_items", "ok"),
+            entry(Duration::minutes(15), "inbox.post_item", "ok"),
+        ],
+        _ => vec![
+            entry(Duration::minutes(5), "calendar.list_events", "ok"),
+            entry(Duration::minutes(7), "calendar.delete_event", "pending"),
+            entry(Duration::minutes(40), "tasks.save_todo", "ok"),
+            entry(Duration::hours(3), "workspaces.delete_template", "denied"),
+            entry(Duration::days(1), "accounts.remove_account", "forbidden"),
+            entry(Duration::days(1) + Duration::hours(2), "tasks.save_todo", "conflict"),
+            entry(Duration::days(4), "calendar.list_calendars", "ok"),
+        ],
     }
 }
 
@@ -392,7 +558,7 @@ mod tests {
         }
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
-            err.to_string().ends_with("valid values: overview, accounts, workspaces, apps, approvals, general"),
+            err.to_string().ends_with("valid values: overview, accounts, workspaces, apps, agents, approvals, general"),
             "{err}"
         );
         let err = Launch::parse(&args(&["--appearance", "sepia"])).expect_err("unknown appearance");

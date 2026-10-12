@@ -197,7 +197,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   · **MCP:** Never („Was nie nach außen geht“, 2: `clients.*`).
 
 ### A.6 Steuerzentrale: Agents & API
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.2, A.5 · **Dateien:** `crates/torroworkplace/src/ui/agents.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`
 - Karten, Detailseite mit Rechten je Bereich und Sammlungen, „Create new key“, „Disconnect…“.
 - Seit G.2 ([github.md](../github.md), „Rechte für Agenten“): Bereich **GitHub** mit Stufe und der Auswahl

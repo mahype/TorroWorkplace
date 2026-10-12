@@ -1,0 +1,1438 @@
+//! Agents & API (task A.6 in `docs/tasks/api-mcp.md`, concept in `docs/api.md`, "Rechte" and
+//! "Steuerzentrale: Abschnitt „Agents & API“"): the agents, hooks and scripts that may use the API,
+//! and what each of them may do.
+//!
+//! - **List:** one settings group per kind of client (agents, hooks, scripts), a row per client
+//!   with its name, what it is, its rights in words ([`rights_summary`]) and when it was last
+//!   used; the row opens the detail page. Without clients a sentence about connecting one (the
+//!   "Connect agent" assistant comes with task A.7).
+//! - **Detail:** the rights per grantable area as a segmented control that offers only the levels
+//!   that make a difference there ([`levels`], read from the command catalogue), with an admin
+//!   switch below every area that has admin commands ([`has_admin`]); "Ask first" (never, on
+//!   delete, on every change); the selections of calendars, task lists, GitHub repositories and
+//!   inbox sources ("All" or the ticked ones) for each area the client can reach; its latest
+//!   requests from the audit log (command and result, never contents); "Create new key" and
+//!   "Disconnect…", each behind a confirmation. A new key is shown once, with a copy button.
+//! - **Hook clients** (`api::HOOK_CLIENT`) show the agent they report for and their fixed rights,
+//!   read-only: the core narrows a hook's rights to `Rights::hook` whatever is sent, because its key
+//!   sits in files the agent can read itself.
+//!
+//! Every change edits a draft of the client's rights, which the page shows at once; [`SAVE_DELAY`]
+//! after the last change (`docs/settings.md`: autosave after 500 ms) it goes out as
+//! `clients.update_client` with the whole rights. The draft stays on screen until the core answered
+//! and the reload after it arrived ([`answered`], [`loaded`]), so no control jumps back for a moment.
+//!
+//! Requests: `clients.update_client` (every control of the rights), `clients.activity` (opening a
+//! detail page), `clients.new_key` and `clients.remove_client`. The clients come from
+//! `clients.list_clients`, the candidates of the selections from `calendar.list_calendars`,
+//! `tasks.list_lists` (whose GitHub filter lists also name repositories) and `inbox.list_sources`,
+//! all loaded by the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
+//! has it.
+
+use std::time::Duration;
+
+use chrono::{DateTime, Local, Utc};
+use iced::time::Instant;
+use iced::widget::space as blank;
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, checkbox, column, container, row, text_input, toggler};
+use iced::{Alignment, Color, Element, Fill, Subscription, Theme};
+use torro_core::i18n::{tr, trf};
+use torro_gui::icon::Icon;
+use torro_gui::layout::SizeClass;
+use torro_gui::theme::{self, palette, size, space};
+use torro_gui::widgets::{self, Status};
+use torro_gui::{style, typo};
+use torro_inbox::{AgentKind, SourceKind, SourceRef};
+use torro_ipc::api::{self, Access, Area, AreaRights, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights};
+use torro_ipc::api::{RightsTemplate, Selection};
+use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
+use torro_pim::Collection;
+
+use super::accounts::relative_time;
+use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row};
+
+/// How long after the last change the rights are saved (`docs/settings.md`, "Speichern
+/// automatisch").
+pub const SAVE_DELAY: Duration = Duration::from_millis(500);
+
+/// How often the page looks whether a draft is due while one waits; nothing ticks otherwise.
+const TICK: Duration = Duration::from_millis(100);
+
+/// The latest requests the detail page shows; the core keeps 50.
+const ACTIVITY_SHOWN: usize = 10;
+
+/// Page state.
+#[derive(Debug, Default)]
+pub struct State {
+    /// The client whose detail page is open (its `ClientInfo::id`); `None` shows the list.
+    pub selected: Option<String>,
+    /// Rights changed on the page and not yet in [`Data::clients`].
+    draft: Option<Draft>,
+    /// The client whose activity was asked for and not answered yet.
+    asked: Option<String>,
+    /// The latest requests of a client, as `clients.activity` answered for it.
+    activity: Option<(String, Vec<ActivityEntry>)>,
+    /// The confirmation that is open.
+    dialog: Option<Dialog>,
+    /// A key the core just handed out, shown once until "Done".
+    issued: Option<Issued>,
+    /// What is typed into "Add repository".
+    repo_input: String,
+}
+
+/// Rights the page changed, on their way to the core.
+#[derive(Debug)]
+struct Draft {
+    id: String,
+    rights: Rights,
+    phase: Phase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// Changed at this instant; saved [`SAVE_DELAY`] later unless changed again.
+    Waiting(Instant),
+    /// `clients.update_client` is on its way.
+    Sending,
+    /// The core took it; the draft goes once the reload shows the stored rights.
+    Answered,
+}
+
+/// The confirmations of the detail page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialog {
+    /// "Create a new key?": the old key stops working.
+    NewKey,
+    /// "Disconnect this agent?"
+    Disconnect,
+}
+
+/// A key just handed out by `clients.new_key`. It lives only in this window's memory and only
+/// until "Done": the core cannot tell it again.
+#[derive(Debug)]
+struct Issued {
+    /// The client's name, for the dialog title.
+    name: String,
+    key: IssuedKey,
+    /// "Copy" was pressed; the button says "Copied".
+    copied: bool,
+}
+
+/// One of the four selections of a client's rights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    Calendars,
+    TaskLists,
+    GithubRepos,
+    InboxSources,
+}
+
+impl Pick {
+    pub const ALL: [Pick; 4] = [Pick::Calendars, Pick::TaskLists, Pick::GithubRepos, Pick::InboxSources];
+
+    /// The area whose level decides whether the selection matters at all.
+    pub fn area(self) -> Area {
+        match self {
+            Pick::Calendars => Area::Calendar,
+            Pick::TaskLists => Area::Tasks,
+            Pick::GithubRepos => Area::Github,
+            Pick::InboxSources => Area::Inbox,
+        }
+    }
+
+    pub fn of(self, rights: &Rights) -> &Selection {
+        match self {
+            Pick::Calendars => &rights.calendars,
+            Pick::TaskLists => &rights.task_lists,
+            Pick::GithubRepos => &rights.github_repos,
+            Pick::InboxSources => &rights.inbox_sources,
+        }
+    }
+
+    fn of_mut(self, rights: &mut Rights) -> &mut Selection {
+        match self {
+            Pick::Calendars => &mut rights.calendars,
+            Pick::TaskLists => &mut rights.task_lists,
+            Pick::GithubRepos => &mut rights.github_repos,
+            Pick::InboxSources => &mut rights.inbox_sources,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Pick::Calendars => tr("Calendars"),
+            Pick::TaskLists => tr("Task lists"),
+            Pick::GithubRepos => tr("GitHub repositories"),
+            Pick::InboxSources => tr("Inbox sources"),
+        }
+    }
+
+    /// The sentence under the group: what "All" includes, or what happens to the rest.
+    fn footer(self, all: bool) -> &'static str {
+        match (self, all) {
+            (Pick::Calendars, true) => tr("Includes calendars added later."),
+            (Pick::Calendars, false) => tr("Calendars you don't tick don't exist for this agent."),
+            (Pick::TaskLists, true) => tr("Includes lists added later, GitHub filter lists too."),
+            (Pick::TaskLists, false) => tr("Lists you don't tick don't exist for this agent."),
+            (Pick::GithubRepos, true) => tr("Every repository your GitHub token reaches, private ones too."),
+            (Pick::GithubRepos, false) => tr(
+                "Matches from other repositories are dropped before the agent sees them. An owner stands for all of its repositories.",
+            ),
+            (Pick::InboxSources, true) => tr("Includes the suite's own entries: your approvals and account problems."),
+            (Pick::InboxSources, false) => {
+                tr("Entries of other sources don't exist for this agent. It always reports under its own source.")
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// Opens the detail page of a client.
+    Open(String),
+    /// Back from a detail page to the list.
+    Back,
+    /// A segment of an area's level.
+    Level(Area, Level),
+    /// The admin switch of an area.
+    Admin(Area, bool),
+    /// A segment of "Ask first".
+    Confirm(Confirm),
+    /// "All" (`true`) or "Selected" of a selection.
+    All(Pick, bool),
+    /// A check box of a selection: the id and whether it is ticked now.
+    Tick(Pick, String, bool),
+    /// The text of "Add repository" changed.
+    RepoInput(String),
+    /// "Add" next to it, or Enter in it.
+    AddRepo,
+    /// The clock while a draft waits ([`subscription`]).
+    Clock(Instant),
+    /// "Create new key", then its confirmation.
+    AskNewKey,
+    NewKey,
+    /// "Copy" in the dialog with the new key.
+    CopyKey,
+    /// "Done" (or Escape) in the dialog with the new key: the key is gone for good.
+    CloseKey,
+    /// Typing into the key's field or a click next to its dialog: nothing happens, so the key
+    /// stays readable and is not lost by a stray click.
+    KeepKey,
+    /// "Disconnect…", then its confirmation.
+    AskDisconnect,
+    Disconnect,
+    /// "Cancel" or Escape in a confirmation.
+    CloseDialog,
+}
+
+pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
+    match message {
+        Message::Open(id) => {
+            state.selected = Some(id.clone());
+            state.dialog = None;
+            state.repo_input.clear();
+            state.activity = None;
+            state.asked = Some(id.clone());
+            Action::Send(Request::ClientActivity { id })
+        }
+        Message::Back => {
+            state.selected = None;
+            state.dialog = None;
+            // Leaving the page is a good moment to save; the clock would do it a moment later.
+            save_now(state)
+        }
+        Message::Level(area, level) => edit(state, data, |rights| {
+            let admin = rights.area(area).admin;
+            rights.areas.insert(area, AreaRights { level, admin });
+        }),
+        Message::Admin(area, admin) => edit(state, data, |rights| {
+            let level = rights.area(area).level;
+            rights.areas.insert(area, AreaRights { level, admin });
+        }),
+        Message::Confirm(confirm) => edit(state, data, |rights| rights.confirm = confirm),
+        Message::All(pick, true) => edit(state, data, |rights| *pick.of_mut(rights) = Selection::All),
+        // "Selected" starts with everything known ticked: the agent keeps what it reaches until the
+        // person unticks something.
+        Message::All(pick, false) => {
+            let Some(rights) = selected_client(state, data).map(|client| shown_rights(state, client)) else {
+                return Action::None;
+            };
+            if matches!(pick.of(rights), Selection::Only(_)) {
+                return Action::None;
+            }
+            let ids = candidates(pick, data, pick.of(rights)).into_iter().map(|candidate| candidate.id).collect();
+            edit(state, data, |rights| *pick.of_mut(rights) = Selection::Only(ids))
+        }
+        Message::Tick(pick, id, on) => edit(state, data, |rights| tick(pick.of_mut(rights), id, on)),
+        Message::RepoInput(text) => {
+            state.repo_input = text;
+            Action::None
+        }
+        Message::AddRepo => {
+            let Some(repo) = valid_repo(&state.repo_input) else { return Action::None };
+            state.repo_input.clear();
+            edit(state, data, |rights| tick(&mut rights.github_repos, repo, true))
+        }
+        Message::Clock(now) => match &state.draft {
+            Some(Draft { phase: Phase::Waiting(since), .. }) if now.saturating_duration_since(*since) >= SAVE_DELAY => {
+                save_now(state)
+            }
+            _ => Action::None,
+        },
+        Message::AskNewKey => ask(state, data, Dialog::NewKey),
+        Message::NewKey => {
+            state.dialog = None;
+            match selected_client(state, data) {
+                Some(client) => Action::Send(Request::NewClientKey { id: client.id.clone() }),
+                None => Action::None,
+            }
+        }
+        Message::CopyKey => match state.issued.as_mut() {
+            Some(issued) => {
+                issued.copied = true;
+                Action::Copy(issued.key.expose().to_owned())
+            }
+            None => Action::None,
+        },
+        Message::CloseKey => {
+            state.issued = None;
+            Action::None
+        }
+        Message::KeepKey => Action::None,
+        Message::AskDisconnect => ask(state, data, Dialog::Disconnect),
+        Message::Disconnect => {
+            state.dialog = None;
+            let Some(id) = state.selected.take() else { return Action::None };
+            // Its rights need not be saved any more.
+            if state.draft.as_ref().is_some_and(|draft| draft.id == id) {
+                state.draft = None;
+            }
+            Action::Send(Request::RemoveClient { id })
+        }
+        Message::CloseDialog => {
+            state.dialog = None;
+            Action::None
+        }
+    }
+}
+
+/// Opens `dialog` for the client on the detail page; without one there is nothing to confirm.
+fn ask(state: &mut State, data: &Data, dialog: Dialog) -> Action {
+    state.dialog = selected_client(state, data).map(|_| dialog);
+    Action::None
+}
+
+/// Changes the rights of the client on the detail page with `change` and waits [`SAVE_DELAY`]
+/// before saving. A hook client's rights are fixed: nothing changes.
+fn edit(state: &mut State, data: &Data, change: impl FnOnce(&mut Rights)) -> Action {
+    let Some(client) = selected_client(state, data) else { return Action::None };
+    if client.kind == HOOK_CLIENT {
+        return Action::None;
+    }
+    let mut rights = shown_rights(state, client).clone();
+    change(&mut rights);
+    state.draft = Some(Draft { id: client.id.clone(), rights, phase: Phase::Waiting(Instant::now()) });
+    Action::None
+}
+
+/// Sends a waiting draft now: `clients.update_client` with the whole rights.
+fn save_now(state: &mut State) -> Action {
+    match state.draft.as_mut() {
+        Some(draft) if matches!(draft.phase, Phase::Waiting(_)) => {
+            draft.phase = Phase::Sending;
+            Action::Send(Request::UpdateClient { id: draft.id.clone(), rights: draft.rights.clone() })
+        }
+        _ => Action::None,
+    }
+}
+
+/// Ticks (`on`) or unticks `id` in `selection`. In "All" nothing is ticked off, so nothing changes.
+fn tick(selection: &mut Selection, id: String, on: bool) {
+    let Selection::Only(ids) = selection else { return };
+    let present = ids.contains(&id);
+    if on && !present {
+        ids.push(id);
+    } else if !on {
+        ids.retain(|selected| *selected != id);
+    }
+}
+
+/// The answer to a request the shell sent (it calls this for every answer, then reloads):
+///
+/// - `ok` while the draft is on its way: saved, it goes with the next reload ([`loaded`]); an error
+///   then drops it, so the page shows what the core holds and the shell shows the error.
+/// - the activity asked for when the detail page opened,
+/// - a new key ([`Response::ClientKey`]): shown once.
+pub fn answered(state: &mut State, result: &Result<Response, String>) {
+    if state.draft.as_ref().is_some_and(|draft| draft.phase == Phase::Sending) {
+        match result {
+            Ok(Response::Ok) => {
+                if let Some(draft) = state.draft.as_mut() {
+                    draft.phase = Phase::Answered;
+                }
+            }
+            Err(_) => state.draft = None,
+            Ok(_) => {}
+        }
+    }
+    match result {
+        Ok(Response::Activity { entries }) => {
+            if let Some(id) = state.asked.take() {
+                state.activity = Some((id, entries.clone()));
+            }
+        }
+        Ok(Response::ClientKey { client, key }) => {
+            state.issued = Some(Issued { name: client.name.clone(), key: key.clone(), copied: false });
+        }
+        _ => {}
+    }
+}
+
+/// The shell loaded [`Data`] anew: a saved draft is in it now.
+pub fn loaded(state: &mut State) {
+    if state.draft.as_ref().is_some_and(|draft| draft.phase == Phase::Answered) {
+        state.draft = None;
+    }
+}
+
+/// The clock that saves a waiting draft; none while nothing waits, so the page costs nothing at
+/// rest.
+pub fn subscription(state: &State) -> Subscription<Message> {
+    match state.draft {
+        Some(Draft { phase: Phase::Waiting(_), .. }) => iced::time::every(TICK).map(Message::Clock),
+        _ => Subscription::none(),
+    }
+}
+
+/// What Escape means on this page right now: close the key dialog or the confirmation.
+pub fn escape(state: &State) -> Option<Message> {
+    if state.issued.is_some() {
+        Some(Message::CloseKey)
+    } else if state.dialog.is_some() {
+        Some(Message::CloseDialog)
+    } else {
+        None
+    }
+}
+
+/// The header bar: on a detail page the client's name with a back button to the list. The list
+/// has no actions yet; "Connect agent" comes with its assistant (task A.7).
+pub fn header<'a>(state: &'a State, data: &'a Data, _class: SizeClass) -> Header<'a, Message> {
+    match selected_client(state, data) {
+        Some(client) => Header { sub_page: Some((client.name.clone(), Message::Back)), actions: Vec::new() },
+        None => Header::default(),
+    }
+}
+
+/// The page's dialog over the whole window: the new key, else a confirmation.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(issued) = &state.issued {
+        return Some(key_dialog(issued));
+    }
+    let client = selected_client(state, data)?;
+    let name: &dyn std::fmt::Display = &client.name;
+    Some(match state.dialog? {
+        Dialog::NewKey => confirm(
+            tr("Create a new key?"),
+            trf(
+                "The current key of {name} stops working at once. Put the new key into its configuration.",
+                &[("name", name)],
+            ),
+            tr("Create new key"),
+            Message::NewKey,
+            Message::CloseDialog,
+        ),
+        Dialog::Disconnect => confirm(
+            tr("Disconnect this agent?"),
+            trf(
+                "{name} loses access at once: its key stops working. Connect it again to give it access.",
+                &[("name", name)],
+            ),
+            tr("Disconnect"),
+            Message::Disconnect,
+            Message::CloseDialog,
+        ),
+    })
+}
+
+// ----- Pure parts (unit-tested) -------------------------------------------------------------
+
+/// The client whose detail page is open, if it is still listed.
+fn selected_client<'a>(state: &State, data: &'a Data) -> Option<&'a ClientInfo> {
+    let id = state.selected.as_deref()?;
+    data.clients.iter().find(|client| client.id == id)
+}
+
+/// The rights the page shows for `client`: its draft while there is one, else what the core holds.
+fn shown_rights<'a>(state: &'a State, client: &'a ClientInfo) -> &'a Rights {
+    match &state.draft {
+        Some(draft) if draft.id == client.id => &draft.rights,
+        _ => &client.rights,
+    }
+}
+
+/// Whether `area` has a command agents may use ([`Mcp::Tool`]) that needs `access`. Commands kept
+/// from agents ([`Mcp::Never`]) are refused whatever the rights say, so they count for nothing.
+fn has_command(area: Area, access: Access) -> bool {
+    CATALOGUE.iter().any(|command| command.area == area && command.mcp == Mcp::Tool && command.access == access)
+}
+
+/// The levels worth offering in `area`, least first: always "None" and "Read", "Write" when the
+/// area has commands that change something, "Full" when it has some that delete or overwrite.
+/// So "Settings", whose changes are all admin commands, offers just "None" and "Read".
+pub fn levels(area: Area) -> Vec<Level> {
+    let mut levels = vec![Level::NoAccess, Level::Read];
+    if has_command(area, Access::Write) {
+        levels.push(Level::Write);
+    }
+    if has_command(area, Access::Delete) {
+        levels.push(Level::Full);
+    }
+    levels
+}
+
+/// Whether `area` has admin commands agents may be allowed, so its admin switch is shown.
+pub fn has_admin(area: Area) -> bool {
+    has_command(area, Access::Admin)
+}
+
+/// The segment that shows `stored`: the highest offered level it reaches. A template gives "Full"
+/// everywhere, which in an area without deleting commands allows what "Write" allows.
+pub fn active_level(offered: &[Level], stored: Level) -> usize {
+    offered.iter().rposition(|&level| level <= stored).unwrap_or(0)
+}
+
+fn level_label(level: Level) -> &'static str {
+    match level {
+        Level::NoAccess => tr("None"),
+        Level::Read => tr("Read"),
+        Level::Write => tr("Write"),
+        Level::Full => tr("Full"),
+    }
+}
+
+fn area_label(area: Area) -> &'static str {
+    match area {
+        Area::System => tr("System"),
+        Area::Workspaces => tr("Workspaces"),
+        Area::Calendar => tr("Calendar"),
+        Area::Tasks => tr("Tasks"),
+        Area::Github => tr("GitHub"),
+        Area::Inbox => tr("Inbox"),
+        Area::Accounts => tr("Accounts"),
+        Area::Settings => tr("Settings"),
+        Area::Apps => tr("Apps"),
+        Area::Clients => tr("Agents & API"),
+        Area::Approvals => tr("Approvals"),
+    }
+}
+
+/// What an area holds, under its name.
+fn area_detail(area: Area) -> &'static str {
+    match area {
+        Area::Workspaces => tr("Templates of your windows"),
+        Area::Calendar => tr("Calendars and events"),
+        Area::Tasks => tr("Task lists and tasks"),
+        Area::Github => tr("Issues and pull requests in filter lists"),
+        Area::Inbox => tr("Entries of the suite, agents and scripts"),
+        Area::Accounts => tr("Connected accounts and sync"),
+        Area::Settings => tr("Settings of the suite"),
+        Area::Apps => tr("Opening the suite's apps"),
+        Area::System | Area::Clients | Area::Approvals => "",
+    }
+}
+
+/// What the admin switch of an area allows.
+fn admin_label(area: Area) -> &'static str {
+    match area {
+        Area::Accounts => tr("Connect and remove accounts"),
+        Area::Settings => tr("Change settings"),
+        Area::Inbox => tr("Mute sources and keep rules"),
+        _ => tr("Admin commands"),
+    }
+}
+
+fn template_label(template: RightsTemplate) -> &'static str {
+    match template {
+        RightsTemplate::ReadOnly => tr("Read only"),
+        RightsTemplate::ReadAndWrite => tr("Read and write"),
+        RightsTemplate::FullAccess => tr("Full access"),
+    }
+}
+
+/// A client's rights in a few words for the list: the template they equal ("Read and write"),
+/// else "Custom: Calendar, Tasks, Inbox" (at most three areas, then "+2"); "No access" without
+/// any area; for a hook what it can do at all.
+pub fn rights_summary(rights: &Rights, kind: &str) -> String {
+    if kind == HOOK_CLIENT {
+        return tr("Reports to the inbox").to_string();
+    }
+    if let Some(template) = rights.template() {
+        return template_label(template).to_string();
+    }
+    let areas: Vec<&str> = Area::ALL
+        .into_iter()
+        .filter(|&area| area.grantable() && rights.area(area).level != Level::NoAccess)
+        .map(area_label)
+        .collect();
+    let shown = areas[..areas.len().min(3)].join(", ");
+    match areas.len() {
+        0 => tr("No access").to_string(),
+        1..=3 => trf("Custom: {areas}", &[("areas", &shown)]),
+        n => trf("Custom: {areas} +{n}", &[("areas", &shown), ("n", &(n - 3))]),
+    }
+}
+
+/// "Claude Code", "Script", "Claude Code hooks": what a client is.
+pub fn kind_label(client: &ClientInfo) -> String {
+    match client.kind.as_str() {
+        "claude-desktop" => "Claude Desktop".to_string(),
+        "cursor" => "Cursor".to_string(),
+        "script" => tr("Script").to_string(),
+        HOOK_CLIENT => match client.agent {
+            Some(agent) => trf("{agent} hooks", &[("agent", &agent.label())]),
+            None => tr("Hooks").to_string(),
+        },
+        kind => AgentKind::from_id(kind).map_or_else(|| kind.to_string(), |agent| agent.label().to_string()),
+    }
+}
+
+/// What a client is, for the line under its name; `None` where that says nothing new: a script
+/// sits in the group "Scripts", and "Claude Code" needs no "Claude Code" below it.
+fn kind_word(client: &ClientInfo) -> Option<String> {
+    let kind = kind_label(client);
+    (Category::of(client) != Category::Script && kind != client.name).then_some(kind)
+}
+
+/// "Used 5 min ago", or "Never used".
+pub fn last_used_text(last_used: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
+    match last_used {
+        Some(at) => trf("Used {when}", &[("when", &relative_time(at, now))]),
+        None => tr("Never used").to_string(),
+    }
+}
+
+/// The groups of the list: agents, hooks, scripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Category {
+    Agent,
+    Hook,
+    Script,
+}
+
+impl Category {
+    const ALL: [Category; 3] = [Category::Agent, Category::Hook, Category::Script];
+
+    fn of(client: &ClientInfo) -> Category {
+        match client.kind.as_str() {
+            HOOK_CLIENT => Category::Hook,
+            "script" => Category::Script,
+            _ => Category::Agent,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Category::Agent => tr("Agents"),
+            Category::Hook => tr("Hooks"),
+            Category::Script => tr("Scripts"),
+        }
+    }
+
+    fn footer(self) -> &'static str {
+        match self {
+            Category::Agent => {
+                tr("Coding agents and apps that use Torro Workplace through MCP, each with its own key.")
+            }
+            Category::Hook => {
+                tr("Hooks report to the inbox what an agent waits for or has finished. They see nothing.")
+            }
+            Category::Script => tr("Scripts and other programs that use the API with their own key."),
+        }
+    }
+}
+
+/// A row of a selection: what is ticked by `id`, its name, a line below it and its colour (for
+/// calendars and lists, else the check box is neutral).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub id: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub color: Option<Color>,
+}
+
+impl Candidate {
+    fn plain(id: String, label: String, detail: Option<String>) -> Candidate {
+        Candidate { id, label, detail, color: None }
+    }
+}
+
+/// What a selection offers: everything the core knows of its kind, then what `selection` names
+/// that the core no longer knows (marked, so it can be unticked).
+pub fn candidates(pick: Pick, data: &Data, selection: &Selection) -> Vec<Candidate> {
+    let mut known = match pick {
+        Pick::Calendars => data.calendars.iter().map(|collection| collection_candidate(collection, data)).collect(),
+        Pick::TaskLists => data.task_lists.iter().map(|collection| collection_candidate(collection, data)).collect(),
+        Pick::GithubRepos => repo_candidates(data, selection),
+        Pick::InboxSources => source_candidates(data, selection),
+    };
+    // Repositories need no such pass: their candidates are made from the selection.
+    if let (Selection::Only(ids), false) = (selection, pick == Pick::GithubRepos) {
+        let gone: Vec<Candidate> = ids
+            .iter()
+            .filter(|id| !known.iter().any(|candidate: &Candidate| candidate.id == **id))
+            .map(|id| Candidate::plain(id.clone(), id.clone(), Some(tr("No longer available").to_string())))
+            .collect();
+        known.extend(gone);
+    }
+    known
+}
+
+/// A calendar or list: its colour, and the account it belongs to (a GitHub filter list says so).
+fn collection_candidate(collection: &Collection, data: &Data) -> Candidate {
+    let account = data
+        .accounts
+        .iter()
+        .find(|account| account.collections.iter().any(|known| known.id == collection.id))
+        .map(|account| account.label.clone());
+    let detail = match collection.source {
+        Some(_) => Some(tr("GitHub filter list").to_string()),
+        None => account,
+    };
+    Candidate {
+        id: collection.id.clone(),
+        label: collection.name.clone(),
+        detail,
+        color: Some(widgets::collection_color(collection.color.as_deref())),
+    }
+}
+
+/// The repositories and owners the GitHub filter lists search (`repo:owner/name`, `org:owner`,
+/// `user:owner`) and those `selection` names, each once whatever its case (as the selection
+/// spells it), in alphabetical order. There is no list of all repositories; others are typed in ("Add repository").
+fn repo_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
+    // The selection's spelling first, so its names show ticked.
+    let mut names: Vec<String> = match selection {
+        Selection::Only(selected) => selected.clone(),
+        Selection::All => Vec::new(),
+    };
+    for name in repos_in(&data.task_lists) {
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+        .into_iter()
+        .map(|name| {
+            let detail = (!name.contains('/')).then(|| tr("All repositories of this owner").to_string());
+            Candidate::plain(name.clone(), name, detail)
+        })
+        .collect()
+}
+
+/// The repositories and owners named in the searches of the GitHub filter lists among
+/// `collections`, each once whatever its case. Excluding ones (`-repo:`) are not offered.
+pub fn repos_in(collections: &[Collection]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let queries = collections.iter().filter_map(|collection| collection.source.as_ref()).flat_map(|f| &f.queries);
+    for word in queries.flat_map(|query| query.split_whitespace()) {
+        let name = ["repo:", "org:", "user:"].iter().find_map(|prefix| word.strip_prefix(prefix));
+        let Some(name) = name.map(|name| name.trim_matches('"')).filter(|name| !name.is_empty()) else { continue };
+        if !names.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// `owner/name` or `owner` as typed into "Add repository", trimmed; `None` for anything else
+/// (spaces, more than one `/`, an empty part, characters GitHub does not allow in names).
+pub fn valid_repo(input: &str) -> Option<String> {
+    let input = input.trim();
+    let part = |part: &str| {
+        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    let valid = match input.split_once('/') {
+        Some((owner, name)) => part(owner) && part(name),
+        None => part(input),
+    };
+    valid.then(|| input.to_string())
+}
+
+/// The inbox sources an agent can be allowed: the suite, the sources with entries or muted
+/// (`inbox.list_sources`), the source of every connected client (where its reports would land,
+/// [`api::post_source`]) and those `selection` names; each once, the suite first, then agents,
+/// then scripts.
+fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
+    let mut sources = vec![SourceRef::suite()];
+    sources.extend(data.sources.iter().map(|info| info.source.clone()));
+    sources.extend(data.clients.iter().filter_map(|client| api::post_source(Some(client), None).ok()));
+    if let Selection::Only(keys) = selection {
+        sources.extend(keys.iter().filter_map(|key| key.parse::<SourceRef>().ok()));
+    }
+    sources.sort();
+    sources.dedup();
+    sources
+        .into_iter()
+        .map(|source| {
+            let detail = match source.kind {
+                SourceKind::Suite => tr("Approvals and account problems"),
+                SourceKind::Agent => tr("Agent"),
+                SourceKind::Script => tr("Script"),
+            };
+            Candidate::plain(source.key(), source.label(), Some(detail.to_string()))
+        })
+        .collect()
+}
+
+/// When a request was: "14:05" today, "yesterday 14:05", else "2026-10-09 14:05" (no month names,
+/// so it reads the same in every language).
+fn when(time: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let (local, today) = (time.with_timezone(&Local), now.with_timezone(&Local).date_naive());
+    let clock = local.format("%H:%M").to_string();
+    match (today - local.date_naive()).num_days() {
+        0 => clock,
+        1 => format!("{} {clock}", tr("yesterday")),
+        _ => local.format("%Y-%m-%d %H:%M").to_string(),
+    }
+}
+
+/// The result of a request from the audit log as status and word.
+pub fn outcome(result: &str) -> (Status, String) {
+    match result {
+        "ok" => (Status::Ok, tr("Done").to_string()),
+        "pending" => (Status::Attention, tr("Waiting").to_string()),
+        "denied" => (Status::Inactive, tr("Denied").to_string()),
+        "forbidden" => (Status::Error, tr("Not allowed").to_string()),
+        "not-found" => (Status::Error, tr("Not found").to_string()),
+        code => (Status::Error, trf("Failed: {code}", &[("code", &code)])),
+    }
+}
+
+// ----- Views --------------------------------------------------------------------------------
+
+pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let now = Utc::now();
+    match selected_client(state, data) {
+        Some(client) => detail(state, client, data, now),
+        None => list(state, data, now),
+    }
+}
+
+fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+    if data.clients.is_empty() {
+        return widgets::empty_state(
+            tr("No agents connected."),
+            tr(
+                "Connect agent will set up Claude Code, Codex or a script here. Until then, run “torroworkplace ctl clients add” in a terminal.",
+            ),
+        );
+    }
+    let groups = Category::ALL.into_iter().filter_map(|category| {
+        let rows: Vec<Element<'a, Message>> = data
+            .clients
+            .iter()
+            .filter(|client| Category::of(client) == category)
+            .map(|client| client_row(state, client, now))
+            .collect();
+        (!rows.is_empty()).then(|| widgets::group(category.title(), rows, Some(category.footer().to_string())))
+    });
+    column(groups).spacing(space::XL).into()
+}
+
+/// A client in the list: name, then what it is, its rights in words and when it was last used;
+/// the row opens the detail page.
+fn client_row<'a>(state: &State, client: &'a ClientInfo, now: DateTime<Utc>) -> Element<'a, Message> {
+    let mut parts: Vec<String> = kind_word(client).into_iter().collect();
+    parts.push(rights_summary(shown_rights(state, client), &client.kind));
+    parts.push(last_used_text(client.last_used, now));
+    let row = setting_row(None, client.name.as_str(), Some(parts.join(" · ")), chevron());
+    pressable(row, Some(Message::Open(client.id.clone())))
+}
+
+/// The detail page: name, the rights (or a hook's fixed ones), the recent activity, the key and
+/// "Disconnect…" at the end.
+fn detail<'a>(state: &'a State, client: &'a ClientInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+    let name = typo::text(typo::HEADLINE, client.name.as_str()).wrapping(Wrapping::None);
+    let mut about: Vec<String> = kind_word(client).into_iter().collect();
+    about.push(last_used_text(client.last_used, now));
+    let about = about.join(" · ");
+    let heading = column![container(name).width(Fill).clip(true), typo::text(typo::META, about).style(theme::text_2)]
+        .spacing(space::XS);
+    let mut page = column![heading].spacing(space::XL);
+    if client.kind == HOOK_CLIENT {
+        page = page.push(hook_group(client));
+    } else {
+        let rights = shown_rights(state, client);
+        page = page.push(access_group(rights)).push(confirm_group(rights.confirm));
+        for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
+            page = page.push(selection_group(state, pick, rights, data));
+        }
+    }
+    let disconnect = widgets::text_button(None, tr("Disconnect…"), style::button::danger, Some(Message::AskDisconnect));
+    page.push(activity_group(state, client, now)).push(key_group()).push(on_axis(disconnect)).into()
+}
+
+/// A text button moved left by its own padding, so its label stands on the page's content axis.
+fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
+}
+
+/// The level of every grantable area, each followed by its admin switch where it has one.
+fn access_group<'a>(rights: &Rights) -> Element<'a, Message> {
+    let mut rows = Vec::new();
+    for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
+        let granted = rights.area(area);
+        let offered = levels(area);
+        let active = active_level(&offered, granted.level);
+        let control = widgets::segmented(
+            offered.into_iter().map(|level| (level_label(level), Message::Level(area, level))),
+            active,
+        );
+        rows.push(setting_row(None, area_label(area), Some(area_detail(area).to_string()), control));
+        if has_admin(area) {
+            let switch = toggler(granted.admin)
+                .size(style::CHECK_SIZE)
+                .style(style::toggler)
+                .on_toggle(move |admin| Message::Admin(area, admin));
+            // Indented under its area, so it reads as part of it.
+            let indent = Space::new().width(space::L);
+            let detail = Some(tr("Each time with your approval").to_string());
+            rows.push(setting_row(Some(indent.into()), admin_label(area), detail, switch));
+        }
+    }
+    let footer = tr("Write includes reading, Full also deletes and overwrites.");
+    widgets::group(tr("Access"), rows, Some(footer.to_string()))
+}
+
+/// "Ask first": never, on delete, on every change.
+fn confirm_group<'a>(current: Confirm) -> Element<'a, Message> {
+    let options = [
+        (tr("Never"), Confirm::Never),
+        (tr("On delete"), Confirm::OnDelete),
+        (tr("On every change"), Confirm::OnEveryChange),
+    ];
+    let active = options.iter().position(|(_, confirm)| *confirm == current).unwrap_or(0);
+    let control = widgets::segmented(options.map(|(label, confirm)| (label, Message::Confirm(confirm))), active);
+    let footer = tr("The agent waits until you allow it in Approvals. Admin commands always wait.");
+    widgets::group(tr("Approval"), vec![setting_row(None, tr("Ask first"), None, control)], Some(footer.to_string()))
+}
+
+/// A selection: "All" or "Selected", and with "Selected" a check box per candidate; for GitHub
+/// also a field to add a repository or owner.
+fn selection_group<'a>(state: &'a State, pick: Pick, rights: &Rights, data: &'a Data) -> Element<'a, Message> {
+    let selection = pick.of(rights);
+    let all = matches!(selection, Selection::All);
+    let switch = widgets::segmented(
+        [(tr("All"), Message::All(pick, true)), (tr("Selected"), Message::All(pick, false))],
+        usize::from(!all),
+    );
+    let mut rows = vec![setting_row(None, tr("Access to"), None, switch)];
+    if !all {
+        let offered = candidates(pick, data, selection);
+        if offered.is_empty() && pick != Pick::GithubRepos {
+            rows.push(row_frame(typo::text(typo::BODY, tr("Nothing to choose from yet.")).style(theme::text_3), false));
+        }
+        rows.extend(offered.into_iter().map(|candidate| {
+            let ticked = selection.contains(&candidate.id);
+            candidate_row(pick, candidate, ticked)
+        }));
+        if pick == Pick::GithubRepos {
+            rows.push(add_repo_row(&state.repo_input));
+        }
+    }
+    widgets::group(pick.title(), rows, Some(pick.footer(all).to_string()))
+}
+
+/// A candidate with its check box (in its colour, else neutral); the whole row ticks it.
+fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool) -> Element<'a, Message> {
+    let Candidate { id, label, detail, color } = candidate;
+    let check_id = id.clone();
+    let check = checkbox(ticked)
+        .size(style::CHECK_SIZE)
+        .style(move |t: &Theme, status| style::checkbox(color.unwrap_or(palette(t).text))(t, status))
+        .on_toggle(move |on| Message::Tick(pick, check_id.clone(), on));
+    let row = setting_row(Some(check.into()), label, detail, Space::new());
+    pressable(row, Some(Message::Tick(pick, id, !ticked)))
+}
+
+/// "owner/name or owner" and "Add"; Enter adds too. Disabled until the text is a valid name.
+fn add_repo_row(input: &str) -> Element<'_, Message> {
+    let add = valid_repo(input).map(|_| Message::AddRepo);
+    let field = text_input(tr("owner/name or owner"), input)
+        .size(typo::BODY.size)
+        .line_height(typo::BODY.line_height)
+        .font(typo::BODY.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+        .on_input(Message::RepoInput)
+        .on_submit_maybe(add.clone());
+    let button = widgets::text_button(Some(Icon::Plus), tr("Add"), style::button::secondary, add);
+    row_frame(row![field, button].spacing(space::S).align_y(Alignment::Center), false)
+}
+
+/// A hook client: the agent it reports for and its fixed rights, read-only, with the reason.
+fn hook_group<'a>(client: &'a ClientInfo) -> Element<'a, Message> {
+    let agent = client.agent.map_or(tr("No agent"), |agent| agent.label());
+    let value = |text: &'a str| typo::text(typo::BODY, text).style(theme::text_2).wrapping(Wrapping::None);
+    let rows = vec![
+        setting_row(None, tr("Reports for"), None, value(agent)),
+        setting_row(
+            None,
+            area_label(Area::Inbox),
+            Some(tr("Reports and resolves its own entries, sees none").to_string()),
+            value(level_label(Level::Write)),
+        ),
+    ];
+    let footer = tr(
+        "A hook's key sits in files the agent can read itself, so it may only report to the inbox and sees nothing else. These rights can't be changed.",
+    );
+    widgets::group(tr("Access"), rows, Some(footer.to_string()))
+}
+
+/// The latest requests: command, time and result. The log holds no contents, so neither does
+/// the page.
+fn activity_group<'a>(state: &'a State, client: &ClientInfo, now: DateTime<Utc>) -> Element<'a, Message> {
+    let title = tr("Recent activity");
+    let entries = match &state.activity {
+        Some((id, entries)) if *id == client.id => entries,
+        _ => return quiet_group(title, tr("Loading …")),
+    };
+    if entries.is_empty() {
+        return quiet_group(title, tr("No requests yet."));
+    }
+    let rows = entries.iter().take(ACTIVITY_SHOWN).map(|entry| activity_row(entry, now)).collect();
+    let footer = tr("Only the command and its result are logged, never what it contained.");
+    widgets::group(title, rows, Some(footer.to_string()))
+}
+
+/// A group title with a quiet sentence instead of rows (an empty group would be a bare frame).
+fn quiet_group<'a>(title: &'a str, sentence: &'a str) -> Element<'a, Message> {
+    column![widgets::section_title(title), typo::text(typo::META, sentence).style(theme::text_3)]
+        .spacing(space::S)
+        .into()
+}
+
+fn activity_row(entry: &ActivityEntry, now: DateTime<Utc>) -> Element<'_, Message> {
+    let (status, word) = outcome(&entry.result);
+    let result = row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2)]
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+    setting_row(None, entry.command.as_str(), Some(when(entry.time, now)), result)
+}
+
+/// The key: where it lives, and "Create new key".
+fn key_group<'a>() -> Element<'a, Message> {
+    let create = widgets::text_button(None, tr("Create new key"), style::button::secondary, Some(Message::AskNewKey));
+    let detail = Some(tr("Only the agent's configuration holds it").to_string());
+    let footer = tr("A new key replaces the old one at once.");
+    widgets::group(tr("Key"), vec![setting_row(None, tr("API key"), detail, create)], Some(footer.to_string()))
+}
+
+/// The new key, shown this once: the key in a field to select, "Copy" and "Done". A click next to
+/// the dialog does nothing, so a stray click does not lose the key.
+fn key_dialog(issued: &Issued) -> Element<'_, Message> {
+    let field = text_input("", issued.key.expose())
+        .size(typo::BODY.size)
+        .line_height(typo::BODY.line_height)
+        .font(typo::BODY.font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+        // Without an edit handler the field cannot take focus, so the key could not be selected.
+        // Edits change nothing: the field always shows the key.
+        .on_input(|_| Message::KeepKey);
+    let copy = match issued.copied {
+        true => widgets::text_button(Some(Icon::Check), tr("Copied"), style::button::secondary, Some(Message::CopyKey)),
+        false => widgets::text_button(Some(Icon::Copy), tr("Copy"), style::button::secondary, Some(Message::CopyKey)),
+    };
+    let done = widgets::text_button(None, tr("Done"), style::button::primary, Some(Message::CloseKey));
+    let content = column![
+        typo::text(typo::TITLE, trf("New key for {name}", &[("name", &issued.name)])),
+        typo::text(
+            typo::BODY,
+            tr("Copy it into the agent's configuration now. It is shown only this once; Torro Workplace keeps only a fingerprint of it.")
+        )
+        .style(theme::text_2),
+        row![field, copy].spacing(space::S).align_y(Alignment::Center),
+        row![blank::horizontal(), done],
+    ]
+    .spacing(space::L);
+    dialog(content, size::FORM_MAX, Message::KeepKey)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use chrono::Duration as Age;
+    use torro_inbox::SourceInfo;
+    use torro_ipc::Key;
+    use torro_pim::CollectionKind;
+    use torro_pim::model::GitHubFilter;
+
+    use super::*;
+
+    fn client(id: &str, name: &str, kind: &str, rights: Rights) -> ClientInfo {
+        ClientInfo {
+            id: id.into(),
+            name: name.into(),
+            kind: kind.into(),
+            created: Utc::now(),
+            last_used: None,
+            rights: rights.for_kind(kind),
+            agent: (kind == HOOK_CLIENT).then_some(AgentKind::ClaudeCode),
+        }
+    }
+
+    fn collection(id: &str, name: &str, kind: CollectionKind, queries: &[&str]) -> Collection {
+        let source = (!queries.is_empty()).then(|| GitHubFilter {
+            queries: queries.iter().map(|query| query.to_string()).collect(),
+            pinned: Vec::new(),
+            revision: 1,
+            truncated: false,
+            problem: None,
+        });
+        Collection { id: id.into(), name: name.into(), kind, color: Some("#5B8CFF".into()), writable: true, source }
+    }
+
+    fn data() -> Data {
+        Data {
+            clients: vec![
+                client("c1", "Claude Code", "claude-code", RightsTemplate::ReadAndWrite.rights()),
+                client("h1", "Claude Code hooks", HOOK_CLIENT, Rights::hook()),
+                client("s1", "backup", "script", RightsTemplate::ReadOnly.rights()),
+            ],
+            calendars: vec![
+                collection("acc/work", "Work", CollectionKind::Events, &[]),
+                collection("acc/home", "Home", CollectionKind::Events, &[]),
+            ],
+            task_lists: vec![
+                collection("acc/todo", "Todo", CollectionKind::Todos, &[]),
+                collection(
+                    "github:anna/1",
+                    "Bugs",
+                    CollectionKind::Todos,
+                    &["is:open repo:anna/torro label:bug -repo:anna/old", "org:acme is:pr"],
+                ),
+            ],
+            sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false }],
+            ..Data::default()
+        }
+    }
+
+    /// The state with the detail page of `id` open.
+    fn opened(id: &str, data: &Data) -> State {
+        let mut state = State::default();
+        let action = update(&mut state, Message::Open(id.into()), data);
+        assert!(matches!(action, Action::Send(Request::ClientActivity { id: ref asked }) if asked == id));
+        state
+    }
+
+    /// Runs the clock past the delay and returns the request it sends.
+    fn saved(state: &mut State, data: &Data) -> (String, Rights) {
+        let later = Instant::now() + SAVE_DELAY + TICK;
+        match update(state, Message::Clock(later), data) {
+            Action::Send(Request::UpdateClient { id, rights }) => (id, rights),
+            other => panic!("expected clients.update_client, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_change_is_saved_once_after_the_delay_with_the_whole_rights() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        assert!(matches!(update(&mut state, Message::Level(Area::Calendar, Level::Read), &data), Action::None));
+        assert!(matches!(update(&mut state, Message::Confirm(Confirm::Never), &data), Action::None));
+        assert!(
+            matches!(update(&mut state, Message::Clock(Instant::now()), &data), Action::None),
+            "nothing before the delay"
+        );
+        let (id, rights) = saved(&mut state, &data);
+        assert_eq!(id, "c1");
+        assert_eq!(rights.area(Area::Calendar), AreaRights { level: Level::Read, admin: false });
+        assert_eq!(rights.confirm, Confirm::Never, "both changes in one request");
+        assert_eq!(rights.area(Area::Tasks).level, Level::Full, "the rest unchanged");
+        let later = Instant::now() + SAVE_DELAY + TICK;
+        assert!(matches!(update(&mut state, Message::Clock(later), &data), Action::None), "sent once");
+    }
+
+    /// What the saved rights must show after a row of messages.
+    type Check = fn(&Rights) -> bool;
+
+    #[test]
+    fn every_control_ends_in_update_client() {
+        let data = data();
+        let cases: Vec<(Vec<Message>, Check)> = vec![
+            (vec![Message::Admin(Area::Accounts, true)], |r| r.area(Area::Accounts).admin),
+            (vec![Message::Level(Area::Github, Level::NoAccess)], |r| r.area(Area::Github).level == Level::NoAccess),
+            (vec![Message::Confirm(Confirm::OnEveryChange)], |r| r.confirm == Confirm::OnEveryChange),
+            (vec![Message::All(Pick::Calendars, false)], |r| {
+                r.calendars == Selection::Only(vec!["acc/work".into(), "acc/home".into()])
+            }),
+            (
+                vec![Message::All(Pick::Calendars, false), Message::Tick(Pick::Calendars, "acc/home".into(), false)],
+                |r| r.calendars == Selection::Only(vec!["acc/work".into()]),
+            ),
+            (vec![Message::All(Pick::TaskLists, false), Message::All(Pick::TaskLists, true)], |r| {
+                r.task_lists == Selection::All
+            }),
+            (
+                vec![
+                    Message::All(Pick::GithubRepos, false),
+                    Message::Tick(Pick::GithubRepos, "acme".into(), false),
+                    Message::RepoInput(" anna/notes ".into()),
+                    Message::AddRepo,
+                ],
+                |r| r.github_repos == Selection::Only(vec!["anna/torro".into(), "anna/notes".into()]),
+            ),
+            (
+                vec![Message::All(Pick::InboxSources, false), Message::Tick(Pick::InboxSources, "suite".into(), false)],
+                |r| {
+                    let Selection::Only(keys) = &r.inbox_sources else { return false };
+                    !keys.contains(&"suite".to_string()) && keys.contains(&"agent:claude-code".to_string())
+                },
+            ),
+        ];
+        for (messages, check) in cases {
+            let mut state = opened("c1", &data);
+            let text = format!("{messages:?}");
+            for message in messages {
+                assert!(matches!(update(&mut state, message, &data), Action::None), "{text}: waits");
+            }
+            let (id, rights) = saved(&mut state, &data);
+            assert_eq!(id, "c1", "{text}");
+            assert!(check(&rights), "{text}: {rights:?}");
+        }
+    }
+
+    #[test]
+    fn back_saves_at_once_and_the_draft_shows_until_the_reload() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let _ = update(&mut state, Message::Level(Area::Apps, Level::Read), &data);
+        let client = &data.clients[0];
+        assert_eq!(shown_rights(&state, client).area(Area::Apps).level, Level::Read, "shown at once");
+        let action = update(&mut state, Message::Back, &data);
+        assert!(matches!(action, Action::Send(Request::UpdateClient { ref id, .. }) if id == "c1"));
+        answered(&mut state, &Ok(Response::Ok));
+        assert_eq!(shown_rights(&state, client).area(Area::Apps).level, Level::Read, "until the reload");
+        loaded(&mut state);
+        assert_eq!(shown_rights(&state, client).area(Area::Apps).level, Level::Full, "then what the core holds");
+    }
+
+    #[test]
+    fn a_failed_save_drops_the_draft() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let _ = update(&mut state, Message::Level(Area::Apps, Level::Read), &data);
+        let _ = saved(&mut state, &data);
+        answered(&mut state, &Err("forbidden".into()));
+        assert_eq!(shown_rights(&state, &data.clients[0]).area(Area::Apps).level, Level::Full);
+    }
+
+    #[test]
+    fn the_clock_runs_only_while_a_change_waits() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        assert_eq!(subscription(&state).units(), 0);
+        let _ = update(&mut state, Message::Confirm(Confirm::Never), &data);
+        assert_eq!(subscription(&state).units(), 1);
+        let _ = saved(&mut state, &data);
+        assert_eq!(subscription(&state).units(), 0);
+    }
+
+    #[test]
+    fn hook_rights_cannot_be_changed() {
+        let data = data();
+        let mut state = opened("h1", &data);
+        for message in [
+            Message::Level(Area::Calendar, Level::Full),
+            Message::Admin(Area::Accounts, true),
+            Message::All(Pick::InboxSources, true),
+        ] {
+            let _ = update(&mut state, message, &data);
+        }
+        assert!(state.draft.is_none());
+        assert_eq!(subscription(&state).units(), 0);
+    }
+
+    #[test]
+    fn a_new_key_is_confirmed_shown_once_and_copied() {
+        let data = data();
+        let mut state = opened("s1", &data);
+        assert!(matches!(update(&mut state, Message::AskNewKey, &data), Action::None));
+        assert_eq!(state.dialog, Some(Dialog::NewKey));
+        assert!(matches!(escape(&state), Some(Message::CloseDialog)));
+        let action = update(&mut state, Message::NewKey, &data);
+        assert!(matches!(action, Action::Send(Request::NewClientKey { ref id }) if id == "s1"));
+        assert_eq!(state.dialog, None);
+
+        let key = IssuedKey::new(Key::new("torro_s1_00ff"));
+        answered(&mut state, &Ok(Response::ClientKey { client: data.clients[2].clone(), key }));
+        assert!(overlay(&state, &data).is_some(), "the key dialog");
+        assert!(matches!(update(&mut state, Message::KeepKey, &data), Action::None));
+        assert!(state.issued.is_some(), "a click next to it keeps the key");
+        let copy = update(&mut state, Message::CopyKey, &data);
+        assert!(matches!(copy, Action::Copy(ref text) if text == "torro_s1_00ff"));
+        assert!(state.issued.as_ref().is_some_and(|issued| issued.copied));
+        assert!(matches!(escape(&state), Some(Message::CloseKey)));
+        let _ = update(&mut state, Message::CloseKey, &data);
+        assert!(state.issued.is_none() && overlay(&state, &data).is_none(), "gone for good");
+    }
+
+    #[test]
+    fn disconnect_is_confirmed_and_removes_the_client() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let _ = update(&mut state, Message::Level(Area::Apps, Level::Read), &data);
+        let _ = update(&mut state, Message::AskDisconnect, &data);
+        assert_eq!(state.dialog, Some(Dialog::Disconnect));
+        assert!(overlay(&state, &data).is_some());
+        let action = update(&mut state, Message::Disconnect, &data);
+        assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "c1"));
+        assert!(state.selected.is_none() && state.draft.is_none(), "back to the list, nothing left to save");
+
+        let mut cancelled = opened("c1", &data);
+        let _ = update(&mut cancelled, Message::AskDisconnect, &data);
+        let _ = update(&mut cancelled, Message::CloseDialog, &data);
+        assert!(cancelled.dialog.is_none() && cancelled.selected.is_some());
+    }
+
+    #[test]
+    fn the_activity_belongs_to_the_client_it_was_asked_for() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let entry = ActivityEntry {
+            time: Utc::now(),
+            client: Some("c1".into()),
+            command: "calendar.list_events".into(),
+            ids: Vec::new(),
+            result: "ok".into(),
+            approval: None,
+        };
+        answered(&mut state, &Ok(Response::Activity { entries: vec![entry] }));
+        assert!(matches!(&state.activity, Some((id, entries)) if id == "c1" && entries.len() == 1));
+        let _ = update(&mut state, Message::Back, &data);
+        let _ = update(&mut state, Message::Open("s1".into()), &data);
+        assert!(state.activity.is_none(), "another client's activity is not shown");
+    }
+
+    #[test]
+    fn levels_offer_only_what_makes_a_difference() {
+        let all = vec![Level::NoAccess, Level::Read, Level::Write, Level::Full];
+        assert_eq!(levels(Area::Calendar), all);
+        assert_eq!(levels(Area::Workspaces), all);
+        assert_eq!(levels(Area::Settings), vec![Level::NoAccess, Level::Read], "its changes are admin commands");
+        assert!(has_admin(Area::Accounts) && has_admin(Area::Settings));
+        assert!(!has_admin(Area::Calendar));
+        assert_eq!(active_level(&[Level::NoAccess, Level::Read], Level::Full), 1, "Full shows as the highest offered");
+        assert_eq!(active_level(&all, Level::Write), 2);
+        assert_eq!(active_level(&all, Level::NoAccess), 0);
+    }
+
+    #[test]
+    fn the_summary_names_the_template_or_the_areas() {
+        assert_eq!(rights_summary(&RightsTemplate::ReadOnly.rights(), "codex"), tr("Read only"));
+        assert_eq!(rights_summary(&RightsTemplate::FullAccess.rights(), "script"), tr("Full access"));
+        assert_eq!(rights_summary(&Rights::hook(), HOOK_CLIENT), tr("Reports to the inbox"));
+        let mut rights = Rights::hook();
+        rights.areas = BTreeMap::new();
+        assert_eq!(rights_summary(&rights, "script"), tr("No access"));
+        rights.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Write, admin: false });
+        let areas = format!("{}, {}", tr("Calendar"), tr("Inbox"));
+        assert_eq!(rights_summary(&rights, "codex"), trf("Custom: {areas}", &[("areas", &areas)]));
+        let mut wide = RightsTemplate::ReadOnly.rights();
+        wide.confirm = Confirm::Never;
+        let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &5)]));
+    }
+
+    #[test]
+    fn kinds_and_last_use_in_words() {
+        let data = data();
+        assert_eq!(kind_label(&data.clients[0]), "Claude Code");
+        assert_eq!(kind_label(&data.clients[1]), trf("{agent} hooks", &[("agent", &"Claude Code")]));
+        assert_eq!(kind_label(&data.clients[2]), tr("Script"));
+        assert_eq!(kind_word(&data.clients[0]), None, "the name says it already");
+        assert_eq!(kind_word(&data.clients[2]), None, "scripts have a group of their own");
+        let mut renamed = data.clients[0].clone();
+        renamed.name = "Laptop agent".into();
+        assert_eq!(kind_word(&renamed).as_deref(), Some("Claude Code"));
+        let now = Utc::now();
+        assert_eq!(last_used_text(None, now), tr("Never used"));
+        let minutes = trf("{n} min ago", &[("n", &5)]);
+        assert_eq!(last_used_text(Some(now - Age::minutes(5)), now), trf("Used {when}", &[("when", &minutes)]));
+    }
+
+    #[test]
+    fn repositories_come_from_the_filter_lists_and_can_be_typed() {
+        let data = data();
+        assert_eq!(repos_in(&data.task_lists), ["anna/torro", "acme"], "-repo: is not offered");
+        let selection = Selection::Only(vec!["ANNA/torro".into(), "zed/tool".into()]);
+        let ids: Vec<String> = candidates(Pick::GithubRepos, &data, &selection).into_iter().map(|c| c.id).collect();
+        assert_eq!(ids, ["acme", "ANNA/torro", "zed/tool"], "each once as the selection spells it, sorted");
+        assert_eq!(valid_repo(" anna/notes "), Some("anna/notes".into()));
+        assert_eq!(valid_repo("acme"), Some("acme".into()));
+        for bad in ["", "a/b/c", "/x", "x/", "two words", "a;b"] {
+            assert_eq!(valid_repo(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn sources_include_the_suite_every_client_and_the_selection() {
+        let data = data();
+        let selection = Selection::Only(vec!["script:gone".into()]);
+        let keys: Vec<String> = candidates(Pick::InboxSources, &data, &selection).into_iter().map(|c| c.id).collect();
+        assert_eq!(keys, ["suite", "agent:claude-code", "script:backup", "script:gone", "script:nightly"]);
+    }
+
+    #[test]
+    fn selected_ids_the_core_no_longer_knows_stay_to_be_unticked() {
+        let data = data();
+        let selection = Selection::Only(vec!["acc/work".into(), "acc/old".into()]);
+        let offered = candidates(Pick::Calendars, &data, &selection);
+        assert_eq!(offered.len(), 3);
+        assert_eq!(offered[2].detail.as_deref(), Some(tr("No longer available")));
+        assert!(offered[0].color.is_some(), "calendars keep their colour");
+    }
+
+    #[test]
+    fn outcomes_are_words_with_a_status() {
+        assert_eq!(outcome("ok"), (Status::Ok, tr("Done").to_string()));
+        assert_eq!(outcome("pending").0, Status::Attention);
+        assert_eq!(outcome("denied").0, Status::Inactive);
+        assert_eq!(outcome("conflict"), (Status::Error, trf("Failed: {code}", &[("code", &"conflict")])));
+    }
+
+    #[test]
+    fn times_read_the_same_in_every_language() {
+        let now = Utc::now();
+        assert_eq!(when(now, now), now.with_timezone(&Local).format("%H:%M").to_string());
+        let old = now - Age::days(9);
+        assert_eq!(when(old, now), old.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string());
+    }
+
+    #[test]
+    fn the_page_builds_in_every_state() {
+        let data = data();
+        let mut state = State::default();
+        drop(view(&state, &data));
+        drop(view(&state, &Data::default()));
+        for id in ["c1", "h1", "s1"] {
+            state = opened(id, &data);
+            drop(view(&state, &data));
+            for pick in Pick::ALL {
+                let _ = update(&mut state, Message::All(pick, false), &data);
+            }
+            drop(view(&state, &data));
+            let _ = update(&mut state, Message::AskDisconnect, &data);
+            assert!(overlay(&state, &data).is_some());
+        }
+    }
+}

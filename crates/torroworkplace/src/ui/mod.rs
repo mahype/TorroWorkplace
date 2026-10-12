@@ -1,5 +1,5 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
-//! whole suite (accounts, workspaces, apps, approvals, general settings). Concept: `docs/settings.md`,
+//! whole suite (accounts, workspaces, apps, agents, approvals, general settings). Concept: `docs/settings.md`,
 //! tasks: `docs/tasks/steuerzentrale.md`.
 //!
 //! A separate Iced process (app id `torro-workplace`) that talks to the daemon over the
@@ -36,6 +36,7 @@
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 
 mod accounts;
+mod agents;
 mod approvals;
 mod apps;
 mod general;
@@ -63,7 +64,9 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
-use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, Request, Response, Status, client};
+use torro_inbox::SourceInfo;
+use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, Status, client};
+use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
 pub use launch::{Launch, Open};
@@ -75,17 +78,20 @@ pub enum Section {
     Accounts,
     Workspaces,
     Apps,
+    /// The agents, hooks and scripts that use the API, and their rights (task A.6).
+    Agents,
     /// What agents wait for and what was decided (task A.8).
     Approvals,
     General,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Overview,
         Section::Accounts,
         Section::Workspaces,
         Section::Apps,
+        Section::Agents,
         Section::Approvals,
         Section::General,
     ];
@@ -102,6 +108,7 @@ impl Section {
             Section::Accounts => tr("Accounts"),
             Section::Workspaces => tr("Workspaces"),
             Section::Apps => tr("Apps"),
+            Section::Agents => tr("Agents & API"),
             Section::Approvals => tr("Approvals"),
             Section::General => tr("General"),
         }
@@ -114,6 +121,8 @@ impl Section {
             Section::Accounts => Icon::Cloud,
             Section::Workspaces => Icon::Layers,
             Section::Apps => Icon::AppWindow,
+            // The suite has no robot icon; the sparkles stand for AI agents.
+            Section::Agents => Icon::Sparkles,
             // A person who confirms: the agent asks, the person decides.
             Section::Approvals => Icon::UserCheck,
             Section::General => Icon::Settings,
@@ -127,6 +136,7 @@ impl Section {
             Section::Accounts => "accounts",
             Section::Workspaces => "workspaces",
             Section::Apps => "apps",
+            Section::Agents => "agents",
             Section::Approvals => "approvals",
             Section::General => "general",
         }
@@ -149,6 +159,16 @@ pub struct Data {
     pub apps: Option<Vec<AppInfo>>,
     /// The approvals of the last day (`approvals.list_approvals`), open and decided, newest first.
     pub approvals: Vec<ApprovalInfo>,
+    /// The agents, hooks and scripts with their rights (`clients.list_clients`), never with keys.
+    pub clients: Vec<ClientInfo>,
+    /// Every calendar (`calendar.list_calendars`; the app key sees hidden ones too), for the
+    /// agents' selections.
+    pub calendars: Vec<Collection>,
+    /// Every task list, GitHub filter lists included (`tasks.list_lists`), for the agents'
+    /// selections.
+    pub task_lists: Vec<Collection>,
+    /// The inbox sources with entries or muted (`inbox.list_sources`), for the agents' selections.
+    pub sources: Vec<SourceInfo>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -170,6 +190,8 @@ pub enum Action {
     /// Zoom every window of the suite one step (General › Zoom). Goes through the window's own
     /// zoom, so it applies at once and, with `--demo`, stays in the process.
     Zoom(zoom::Step),
+    /// Put this text on the clipboard (a new key, task A.6).
+    Copy(String),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -244,6 +266,7 @@ pub struct Ui {
     accounts: accounts::State,
     workspaces: workspaces::State,
     apps: apps::State,
+    agents: agents::State,
     approvals: approvals::State,
     general: general::State,
 }
@@ -284,6 +307,7 @@ pub enum Message {
     Accounts(accounts::Message),
     Workspaces(workspaces::Message),
     Apps(apps::Message),
+    Agents(agents::Message),
     Approvals(approvals::Message),
     General(general::Message),
 }
@@ -325,6 +349,7 @@ impl Ui {
             accounts: accounts::State::default(),
             workspaces: workspaces::State::default(),
             apps: apps::State::default(),
+            agents: agents::State::default(),
             approvals: approvals::State::default(),
             general: general::State::default(),
         };
@@ -410,6 +435,28 @@ impl Ui {
                 self.data.approvals.clear();
                 vec![Message::Select(Section::Approvals)]
             }
+            Open::AgentDetail | Open::ScriptDetail | Open::HookDetail | Open::NewKey | Open::Disconnect => {
+                let kind = match open {
+                    Open::ScriptDetail => "script",
+                    Open::HookDetail => torro_ipc::api::HOOK_CLIENT,
+                    // The agent with its own rights shows the most: levels, admin, selections.
+                    _ => "codex",
+                };
+                let client = self.data.clients.iter().find(|client| client.kind == kind).map(|c| c.id.clone());
+                let mut messages = vec![Message::Select(Section::Agents)];
+                messages.extend(client.map(|id| Message::Agents(agents::Message::Open(id))));
+                match open {
+                    Open::NewKey => messages.push(Message::Agents(agents::Message::NewKey)),
+                    Open::Disconnect => messages.push(Message::Agents(agents::Message::AskDisconnect)),
+                    _ => {}
+                }
+                messages
+            }
+            // No clients, so the page shows its empty state.
+            Open::AgentsEmpty => {
+                self.data.clients.clear();
+                vec![Message::Select(Section::Agents)]
+            }
         };
         for message in messages {
             let _ = self.update(message);
@@ -435,6 +482,8 @@ impl Ui {
             iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             self.zoom.subscription().map(Message::Zoom),
+            // Ticks only while a change of an agent's rights waits to be saved.
+            agents::subscription(&self.agents).map(Message::Agents),
         ];
         // The demo has nothing to reload.
         if !self.launch.demo {
@@ -491,6 +540,7 @@ impl Ui {
                     self.appearance = self.data.settings.appearance;
                 }
                 self.data.settings.zoom = self.zoom.level();
+                agents::loaded(&mut self.agents);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
@@ -501,6 +551,7 @@ impl Ui {
                 // The add-account dialog shows the outcome of its own requests itself.
                 let in_dialog = accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
+                agents::answered(&mut self.agents, &result);
                 self.notice = if in_dialog { None } else { result.err() };
                 return self.reload();
             }
@@ -520,6 +571,7 @@ impl Ui {
                 let page = match self.section {
                     Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
+                    Section::Agents => agents::escape(&self.agents).map(Message::Agents),
                     _ => None,
                 };
                 return match page {
@@ -531,6 +583,7 @@ impl Ui {
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
+            Message::Agents(m) => agents::update(&mut self.agents, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
         };
@@ -575,9 +628,15 @@ impl Ui {
     fn perform(&mut self, action: Action) -> Task<Message> {
         match action {
             Action::None => Task::none(),
-            // The demo is closed off: no request reaches the service, no page opens, so nothing
-            // is stored and nothing starts.
-            Action::Send(_) | Action::OpenUrl(_) if self.launch.demo => Task::none(),
+            // The demo is closed off: no request reaches the service, no page opens and nothing
+            // reaches the clipboard, so nothing is stored and nothing starts. A few requests get a
+            // sample answer from the process itself (an agent's activity, a new key), so their
+            // states can be shown.
+            Action::Send(request) if self.launch.demo => match launch::demo_answer(&request, &self.data) {
+                Some(response) => self.update(Message::Sent(Ok(response))),
+                None => Task::none(),
+            },
+            Action::OpenUrl(_) | Action::Copy(_) if self.launch.demo => Task::none(),
             Action::Send(request) => send(request),
             Action::OpenUrl(url) => {
                 if let Err(err) = webbrowser::open(&url) {
@@ -590,6 +649,7 @@ impl Ui {
                 Task::none()
             }
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
+            Action::Copy(text) => iced::clipboard::write(text),
         }
     }
 
@@ -658,6 +718,7 @@ impl Ui {
         let count = match section {
             Section::Accounts => accounts::listed(&self.data.accounts).count(),
             Section::Workspaces => self.data.templates.len(),
+            Section::Agents => self.data.clients.len(),
             Section::Approvals => approvals::pending(&self.data.approvals).count(),
             _ => 0,
         };
@@ -711,6 +772,7 @@ impl Ui {
     fn page_header(&self, class: SizeClass) -> Header<'_, Message> {
         match self.section {
             Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
+            Section::Agents => agents::header(&self.agents, &self.data, class).map(Message::Agents),
             _ => Header::default(),
         }
     }
@@ -722,6 +784,7 @@ impl Ui {
             Section::Workspaces => {
                 workspaces::overlay(&self.workspaces, &self.data).map(|e| e.map(Message::Workspaces))
             }
+            Section::Agents => agents::overlay(&self.agents, &self.data).map(|e| e.map(Message::Agents)),
             _ => None,
         }
     }
@@ -771,6 +834,7 @@ impl Ui {
             Section::Accounts => accounts::view(&self.accounts, &self.data).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
             Section::Apps => apps::view(&self.apps, &self.data).map(Message::Apps),
+            Section::Agents => agents::view(&self.agents, &self.data).map(Message::Agents),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
@@ -949,6 +1013,20 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Approvals { approvals }) = client::call(&socket, &Request::ListApprovals).await {
                 data.approvals = approvals;
+            }
+            if let Ok(Response::Clients { clients }) = client::call(&socket, &Request::ListClients).await {
+                data.clients = clients;
+            }
+            if let Ok(Response::Collections { collections }) =
+                client::call(&socket, &Request::CalendarCollections).await
+            {
+                data.calendars = collections;
+            }
+            if let Ok(Response::Collections { collections }) = client::call(&socket, &Request::TaskCollections).await {
+                data.task_lists = collections;
+            }
+            if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
+                data.sources = sources;
             }
             data
         },
@@ -1172,6 +1250,53 @@ mod tests {
         let empty = started(&["--demo", "--open", "approvals-empty"]);
         assert_eq!((empty.section, empty.data.approvals.len()), (Section::Approvals, 0));
         assert_eq!(empty.trail(Section::Approvals), Trail::None);
+    }
+
+    #[test]
+    fn the_agents_section_opens_details_and_answers_in_the_demo() {
+        let demo = started(&["--demo", "--section", "agents"]);
+        assert_eq!(demo.section, Section::Agents);
+        assert_eq!(demo.trail(Section::Agents), Trail::Count(demo.data.clients.len()));
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = demo.window(class);
+        }
+
+        let detail = started(&["--demo", "--open", "agent-detail"]);
+        let codex = detail.data.clients.iter().find(|client| client.kind == "codex").map(|client| client.id.clone());
+        assert_eq!(detail.agents.selected, codex);
+        assert!(detail.page_overlay().is_none());
+        for (state, kind) in [("script-detail", "script"), ("hook-detail", torro_ipc::api::HOOK_CLIENT)] {
+            let ui = started(&["--demo", "--open", state]);
+            let selected = ui.data.clients.iter().find(|client| Some(&client.id) == ui.agents.selected.as_ref());
+            assert_eq!(selected.map(|client| client.kind.as_str()), Some(kind), "{state}");
+        }
+
+        let mut key = started(&["--demo", "--open", "new-key"]);
+        assert!(key.page_overlay().is_some(), "the demo answers clients.new_key with a made-up key");
+        let _ = key.update(Message::Escape);
+        assert!(key.page_overlay().is_none(), "Escape closes it and the key is gone");
+
+        let mut disconnect = started(&["--demo", "--open", "disconnect"]);
+        assert!(disconnect.page_overlay().is_some());
+        let _ = disconnect.update(Message::Escape);
+        assert!(disconnect.page_overlay().is_none() && disconnect.agents.selected.is_some());
+
+        let empty = started(&["--demo", "--open", "agents-empty"]);
+        assert_eq!((empty.section, empty.data.clients.len()), (Section::Agents, 0));
+        assert_eq!(empty.trail(Section::Agents), Trail::None);
+    }
+
+    #[test]
+    fn agents_requests_go_to_the_core_outside_the_demo() {
+        let mut real = ui(Section::Agents);
+        let id = "3fa9c1d2".to_string();
+        assert_eq!(real.update(Message::Agents(agents::Message::Open(id.clone()))).units(), 1, "clients.activity");
+        assert_eq!(real.perform(Action::Copy("torro_x".into())).units(), 1, "the clipboard");
+        let mut demo = started(&["--demo"]);
+        assert_eq!(demo.perform(Action::Copy("torro_x".into())).units(), 0, "the demo leaves the clipboard alone");
+        let removed = demo.update(Message::Agents(agents::Message::Open(id)));
+        assert_eq!(removed.units(), 0);
+        assert_eq!(demo.data.clients.len(), 4, "the demo changes nothing");
     }
 
     #[test]
