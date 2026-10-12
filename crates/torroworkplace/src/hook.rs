@@ -19,13 +19,27 @@
 //! nothing is reported. With `--key-file` the file is the only source; without it the key comes
 //! from `TORRO_TOKEN`, for hooks set up by hand.
 //!
+//! **Answering permission requests** (task E2.5): `torroworkplace hook claude-code|codex --answer
+//! --key-file <file>` is what the wizard sets up for the event `PermissionRequest`. It puts the
+//! request to the person as a question (`approvals.ask_permission`, [`answer`]), looks every
+//! [`ANSWER_POLL`] whether the person decided (`approvals.approval_status` of exactly that
+//! question, the only approval its key can read), for at most [`ANSWER_WAIT`], and prints the
+//! agent's decision JSON once the person allowed or denied it
+//! ([`torro_inbox::hook::permission_answer`]). Without a decision in time, when the question
+//! expired, and on any error it prints nothing; the agent then asks in its own terminal as
+//! always, and the hook reports what the plain hook would (Codex: "waiting"). It never allows by
+//! itself. For any other event `--answer` changes nothing.
+//!
 //! The hook must never hold up or change the agent, so:
 //!
-//! - **nothing on stdout.** Claude Code reads a hook's stdout (as JSON with decisions, or as
-//!   context for the model on `UserPromptSubmit`), Codex and Gemini CLI parse it too. Nothing in
-//!   this file writes there; `nothing_here_writes_to_stdout` checks the source.
+//! - **nothing on stdout**, except the decision of a person just described. Claude Code reads a
+//!   hook's stdout (as JSON with decisions, or as context for the model on `UserPromptSubmit`),
+//!   Codex and Gemini CLI parse it too. Only [`write_decision`] writes there;
+//!   `nothing_here_writes_to_stdout` checks the source.
 //! - **exit code 0, always**, also on bad arguments and on a panic (the panic hook is silenced).
-//! - **at most [`BUDGET`] (500 ms) for connecting and the answer**; stdin gets [`STDIN_WAIT`].
+//! - **at most [`BUDGET`] (500 ms) for connecting and the answer** of each call; stdin gets
+//!   [`STDIN_WAIT`]. Only a question waits longer for the person, [`ANSWER_WAIT`] at most, and the
+//!   wizard gives that hook a timeout to match.
 //! - **a core that is not running is left alone**: nothing is started, nothing is reported.
 //!   Without a key (no usable key file, no `TORRO_TOKEN`) nothing is sent either.
 //! - **quiet stderr.** With exit code 0 Claude Code keeps a hook's stderr out of the
@@ -48,9 +62,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use torro_core::i18n::{tr, trf};
-use torro_inbox::hook::{HookIntent, interpret};
+use torro_inbox::hook::{HookIntent, PermissionQuestion, interpret, permission_answer, permission_question};
 use torro_inbox::{AgentKind, Kind};
-use torro_ipc::{IpcError, Key, Request, Response};
+use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response};
 
 /// The largest payload read from stdin. A larger one is dropped whole rather than cut, because a
 /// cut JSON object cannot be read anyway.
@@ -79,6 +93,19 @@ pub const KEY_FILE_ARG: &str = "--key-file";
 /// file, and reading it whole would only cost time.
 pub const KEY_FILE_MAX: u64 = 512;
 
+/// The option that makes the hook answer `PermissionRequest` with the person's decision (task
+/// E2.5).
+pub const ANSWER_ARG: &str = "--answer";
+
+/// How long the hook waits for the person's decision on a question at most: the 30 seconds of
+/// task E2.5, and a little more than the question lives
+/// ([`crate::approvals::QUESTION_LIFETIME`]), so the hook sees it expire rather than giving up
+/// just before. The wizard's timeout for this hook is longer still.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(34);
+
+/// How often the hook looks whether the person decided.
+pub const ANSWER_POLL: Duration = Duration::from_millis(500);
+
 /// What the command line of `hook` asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookArgs {
@@ -86,6 +113,8 @@ pub struct HookArgs {
     pub agent: AgentKind,
     /// The file with the key (`--key-file`); `None`: the key comes from `TORRO_TOKEN`.
     pub key_file: Option<PathBuf>,
+    /// `--answer`: put a `PermissionRequest` to the person and print their decision (task E2.5).
+    pub answer: bool,
 }
 
 /// Why a key file gave no key. Never holds the key or a part of it.
@@ -127,6 +156,9 @@ pub enum HookError {
     TimedOut,
     /// The core answered with an error (unknown key, throttle, …).
     Refused { code: String, message: String },
+    /// The core answered a question or its status with something else than a question of this
+    /// hook (an older core, say); nothing is printed.
+    Unexpected,
 }
 
 impl std::fmt::Display for HookError {
@@ -139,6 +171,7 @@ impl std::fmt::Display for HookError {
             HookError::Ipc(err) => write!(f, "{err}"),
             HookError::TimedOut => f.write_str(tr("Torro Workplace did not answer in time, so nothing was reported.")),
             HookError::Refused { code, message } => write!(f, "{code}: {message}"),
+            HookError::Unexpected => f.write_str(tr("Torro Workplace gave an unexpected answer to the question.")),
         }
     }
 }
@@ -165,9 +198,9 @@ fn key_file_message(file: &Path, reason: &KeyFileError) -> String {
 }
 
 /// Entry point from `main`: `args` are the arguments after `hook`, one agent id (`claude-code`,
-/// `codex`, `gemini`), optionally followed by `--key-file <file>` ([`parse_args`]). Reads stdin,
-/// reports and returns [`ExitCode::SUCCESS`] whatever happens; see the module docs for what goes
-/// to stderr.
+/// `codex`, `gemini`), optionally followed by `--key-file <file>` and `--answer` ([`parse_args`]).
+/// Reads stdin, reports (with `--answer` asks first) and returns [`ExitCode::SUCCESS`] whatever
+/// happens; see the module docs for what goes to stdout and stderr.
 pub fn from_args(args: &[String]) -> ExitCode {
     // A panic must not turn into exit code 101 and a backtrace in the agent's terminal.
     std::panic::set_hook(Box::new(|_| {}));
@@ -188,24 +221,63 @@ fn report_from_args(args: &[String]) {
         return;
     };
     let payload = read_stdin();
-    let result = key_for(&args, std::env::var(crate::mcp::TOKEN_VAR).ok())
-        .and_then(|token| run(args.agent, payload.as_deref(), torro_ipc::socket_path().as_deref(), token.as_ref()));
     let debug = std::env::var(DEBUG_VAR).is_ok_and(|value| !value.trim().is_empty());
-    if let (Err(err), true) = (result, debug) {
-        let _ = writeln!(stderr, "{} hook: {}", crate::APP.binary, one_line(&err.to_string()));
+    let mut note = |err: &HookError| {
+        if debug {
+            let _ = writeln!(stderr, "{} hook: {}", crate::APP.binary, one_line(&err.to_string()));
+        }
+    };
+    let token = match key_for(&args, std::env::var(crate::mcp::TOKEN_VAR).ok()) {
+        Ok(token) => token,
+        Err(err) => return note(&err),
+    };
+    let socket = torro_ipc::socket_path();
+    if args.answer
+        && let (Some(payload), Some(token)) = (payload.as_deref(), token.as_ref())
+        && let Some(question) = permission_question(args.agent, payload)
+    {
+        match answer(args.agent, &question, socket.as_deref(), token, ANSWER_WAIT) {
+            Ok(Some(decision)) => return write_decision(&decision),
+            Ok(None) => {}
+            Err(err) => note(&err),
+        }
+        // No decision: the agent asks in its own terminal now, and the hook reports as without
+        // `--answer` (Codex: "waiting").
+    }
+    if let Err(err) = run(args.agent, payload.as_deref(), socket.as_deref(), token.as_ref()) {
+        note(&err);
     }
 }
 
-/// The command line after `hook`: `<agent>` or `<agent> --key-file <file>`, nothing else (an
-/// unknown option is a setup mistake, and guessing could send with the wrong key). `None` for
-/// any other shape, an unknown agent or an empty file name.
+/// The one place that writes to stdout: the decision of a person for the agent ([`answer`]), one
+/// line. A failed write is ignored; the agent then asks in its own terminal.
+fn write_decision(decision: &str) {
+    let mut out = io::stdout().lock();
+    let _ = writeln!(out, "{decision}");
+    let _ = out.flush();
+}
+
+/// The command line after `hook`: `<agent>`, then optionally `--key-file <file>` and `--answer`
+/// in any order, each once, nothing else (an unknown option is a setup mistake, and guessing
+/// could send with the wrong key). `None` for any other shape, an unknown agent or an empty file
+/// name.
 pub fn parse_args(args: &[String]) -> Option<HookArgs> {
-    let (id, key_file) = match args {
-        [id] => (id, None),
-        [id, flag, file] if flag == KEY_FILE_ARG && !file.is_empty() => (id, Some(PathBuf::from(file))),
-        _ => return None,
-    };
-    Some(HookArgs { agent: AgentKind::from_id(id)?, key_file })
+    let (id, mut rest) = args.split_first()?;
+    let mut parsed = HookArgs { agent: AgentKind::from_id(id)?, key_file: None, answer: false };
+    while let Some((flag, after)) = rest.split_first() {
+        rest = match (flag.as_str(), after) {
+            (ANSWER_ARG, after) if !parsed.answer => {
+                parsed.answer = true;
+                after
+            }
+            (KEY_FILE_ARG, [file, after @ ..]) if parsed.key_file.is_none() && !file.is_empty() => {
+                parsed.key_file = Some(PathBuf::from(file));
+                after
+            }
+            _ => return None,
+        };
+    }
+    Some(parsed)
 }
 
 /// The key to send with: from the key file when the command line names one ([`read_key_file`];
@@ -349,11 +421,107 @@ pub fn request_for(intent: HookIntent, pids: Vec<u32>) -> Option<Request> {
 /// Sends `request` with `key` to the core at `socket`; connecting and the answer share [`BUDGET`].
 fn send(socket: &Path, key: &Key, request: &Request) -> Result<Response, HookError> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(HookError::Runtime)?;
+    runtime.block_on(call(socket, key, request))
+}
+
+/// One call to the core within [`BUDGET`], on the caller's runtime.
+async fn call(socket: &Path, key: &Key, request: &Request) -> Result<Response, HookError> {
     let call = torro_ipc::client::call_with_key(socket, Some(key), request);
-    runtime
-        .block_on(async { tokio::time::timeout(BUDGET, call).await })
-        .map_err(|_| HookError::TimedOut)?
-        .map_err(HookError::Ipc)
+    tokio::time::timeout(BUDGET, call).await.map_err(|_| HookError::TimedOut)?.map_err(HookError::Ipc)
+}
+
+/// Puts `question` of `agent` to the person through the core at `socket` with `token` and waits
+/// up to `wait` for the decision (task E2.5). `Ok(Some(json))` is what to print for the agent
+/// once the person allowed or denied ([`permission_answer`]); `Ok(None)` when nobody decided in
+/// time, the question expired, or it cannot be answered (Gemini CLI, a question the core could
+/// not settle); `Err` when the core refused the question or could not be reached.
+///
+/// Reads only the approval the core answered the question with, by its id: the hook takes no
+/// other approval's decision for its own ([`decision_of`]). Each call has [`BUDGET`]; between
+/// looks it sleeps [`ANSWER_POLL`].
+pub fn answer(
+    agent: AgentKind,
+    question: &PermissionQuestion,
+    socket: Option<&Path>,
+    token: &Key,
+    wait: Duration,
+) -> Result<Option<String>, HookError> {
+    if permission_answer(agent, true).is_none() {
+        return Ok(None);
+    }
+    let socket = socket.ok_or(HookError::NoSocket)?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(HookError::Runtime)?;
+    let allowed = runtime.block_on(ask_and_wait(question, socket, token, wait))?;
+    Ok(allowed.and_then(|allow| permission_answer(agent, allow)))
+}
+
+/// The question and the looks of [`answer`]: `Some(true)` allowed, `Some(false)` denied, `None`
+/// no decision.
+async fn ask_and_wait(
+    question: &PermissionQuestion,
+    socket: &Path,
+    token: &Key,
+    wait: Duration,
+) -> Result<Option<bool>, HookError> {
+    let deadline = tokio::time::Instant::now() + wait;
+    let ask = Request::AskPermission {
+        tool: question.tool.clone(),
+        details: question.details.clone(),
+        project: question.project.clone(),
+    };
+    let asked = match call(socket, token, &ask).await? {
+        Response::Pending { approval } if crate::approvals::is_question(&approval) => approval,
+        Response::Error { code, message } => return Err(HookError::Refused { code, message }),
+        _ => return Err(HookError::Unexpected),
+    };
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(ANSWER_POLL.min(deadline - now)).await;
+        let status = Request::ApprovalStatus { id: asked.id.clone() };
+        match call(socket, token, &status).await? {
+            Response::Approval { approval } => match decision_of(&approval, &asked.id) {
+                Decided::Waiting => {}
+                Decided::Allowed => return Ok(Some(true)),
+                Decided::Denied => return Ok(Some(false)),
+                Decided::Never => return Ok(None),
+            },
+            Response::Error { code, message } => return Err(HookError::Refused { code, message }),
+            _ => return Err(HookError::Unexpected),
+        }
+    }
+}
+
+/// Where a question stands for the hook, from its approval ([`decision_of`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decided {
+    /// Nobody decided yet: look again.
+    Waiting,
+    /// The person allowed it, and the core settled it (`done` with `ok`).
+    Allowed,
+    /// The person denied it.
+    Denied,
+    /// It will never be decided: expired, settled with an error (the hook client was removed
+    /// meanwhile, say), or not this hook's question.
+    Never,
+}
+
+/// Where the question `id` stands by `approval`, as the core answered `approvals.approval_status`.
+/// Only an approval with exactly this id that is a question counts; anything else is
+/// [`Decided::Never`]. Allowed means settled with `ok`: `running` (allowed, not stored yet) is
+/// still [`Decided::Waiting`], and `done` with an error is no permission.
+pub fn decision_of(approval: &ApprovalInfo, id: &str) -> Decided {
+    if approval.id != id || !crate::approvals::is_question(approval) {
+        return Decided::Never;
+    }
+    match &approval.state {
+        ApprovalState::Pending | ApprovalState::Running => Decided::Waiting,
+        ApprovalState::Done { response } if **response == Response::Ok => Decided::Allowed,
+        ApprovalState::Denied => Decided::Denied,
+        ApprovalState::Done { .. } | ApprovalState::Expired => Decided::Never,
+    }
 }
 
 /// Stdin as text, read on a thread so a pipe left open costs at most [`STDIN_WAIT`]; the thread
@@ -611,9 +779,41 @@ mod tests {
         }
         assert_eq!(
             parse_args(&args(&["gemini", "--key-file", "/home/an na/k.key"])),
-            Some(HookArgs { agent: AgentKind::Gemini, key_file: Some(PathBuf::from("/home/an na/k.key")) })
+            Some(HookArgs {
+                agent: AgentKind::Gemini,
+                key_file: Some(PathBuf::from("/home/an na/k.key")),
+                answer: false
+            })
         );
-        assert_eq!(parse_args(&args(&["codex"])), Some(HookArgs { agent: AgentKind::Codex, key_file: None }));
+        assert_eq!(
+            parse_args(&args(&["codex"])),
+            Some(HookArgs { agent: AgentKind::Codex, key_file: None, answer: false })
+        );
+    }
+
+    #[test]
+    fn answer_comes_with_or_without_a_key_file_once() {
+        let args = |words: &[&str]| words.iter().map(|word| word.to_string()).collect::<Vec<_>>();
+        let file = Some(PathBuf::from("/c/hooks/h1.key"));
+        let answering = HookArgs { agent: AgentKind::ClaudeCode, key_file: file.clone(), answer: true };
+        assert_eq!(
+            parse_args(&args(&["claude-code", "--key-file", "/c/hooks/h1.key", "--answer"])),
+            Some(answering.clone())
+        );
+        assert_eq!(parse_args(&args(&["claude-code", "--answer", "--key-file", "/c/hooks/h1.key"])), Some(answering));
+        assert_eq!(
+            parse_args(&args(&["codex", "--answer"])),
+            Some(HookArgs { agent: AgentKind::Codex, key_file: None, answer: true })
+        );
+        for bad in [
+            &["codex", "--answer", "--answer"][..],
+            &["codex", "--key-file", "/a", "--key-file", "/b"],
+            &["codex", "--answer", "--key-file"],
+            &["codex", "--answer=yes"],
+            &["--answer", "codex"],
+        ] {
+            assert_eq!(parse_args(&args(bad)), None, "{bad:?}");
+        }
     }
 
     /// A key file like the wizard writes it: `text` with mode `mode` (Unix).
@@ -631,7 +831,7 @@ mod tests {
     }
 
     fn with_file(file: &Path) -> HookArgs {
-        HookArgs { agent: AgentKind::ClaudeCode, key_file: Some(file.to_path_buf()) }
+        HookArgs { agent: AgentKind::ClaudeCode, key_file: Some(file.to_path_buf()), answer: false }
     }
 
     #[test]
@@ -643,7 +843,7 @@ mod tests {
         // The file wins over TORRO_TOKEN; without a file the variable is used.
         let key = key_for(&with_file(&file), Some("torro_env".into())).expect("read");
         assert_eq!(exposed(key).as_deref(), Some("torro_h1_secret"));
-        let plain = HookArgs { agent: AgentKind::ClaudeCode, key_file: None };
+        let plain = HookArgs { agent: AgentKind::ClaudeCode, key_file: None, answer: false };
         assert_eq!(exposed(key_for(&plain, Some(" torro_env ".into())).expect("env")).as_deref(), Some("torro_env"));
         assert!(key_for(&plain, None).expect("none").is_none());
         #[cfg(unix)]
@@ -804,18 +1004,71 @@ mod tests {
         assert!(started.elapsed() < BUDGET + Duration::from_millis(250), "{:?}", started.elapsed());
     }
 
-    /// The hook writes nothing to stdout: no print macro and no stdout handle in this file outside
-    /// the tests. (stdout of a test cannot be captured without `unsafe`, so the source is checked.)
+    /// The hook writes nothing to stdout but a person's decision: no print macro and no stdout
+    /// handle in this file outside the tests and [`write_decision`], which is called once, with
+    /// what [`answer`] returns. (stdout of a test cannot be captured without `unsafe`, so the
+    /// source is checked.)
     #[test]
     fn nothing_here_writes_to_stdout() {
         let source = include_str!("hook.rs");
         let code = source.split("#[cfg(test)]").next().expect("code before the tests");
+        let (before, writer) = code.split_once("fn write_decision(").expect("the one writer");
+        let after = writer.split_once("\n}\n").expect("its end").1;
         let forbidden = ["print!(", "println!(", "stdout()", "io::stdout", "dbg!("];
         for word in forbidden {
-            let in_code =
-                code.lines().filter(|line| !line.trim_start().starts_with("//")).any(|line| line.contains(word));
+            let in_code = [before, after]
+                .iter()
+                .flat_map(|part| part.lines())
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .any(|line| line.contains(word));
             assert!(!in_code, "{word} in hook.rs");
         }
+        let calls: Vec<&str> = [before, after]
+            .iter()
+            .flat_map(|part| part.lines())
+            .filter(|line| !line.trim_start().starts_with("//") && line.contains("write_decision("))
+            .collect();
+        assert_eq!(calls, ["            Ok(Some(decision)) => return write_decision(&decision),"]);
+    }
+
+    /// An approval as the core answers `approvals.approval_status`.
+    fn approval_in(state: ApprovalState, command: &str) -> ApprovalInfo {
+        let now = chrono::Utc::now();
+        ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "h1".into(),
+            client_name: "Claude Code hooks".into(),
+            command: command.into(),
+            summary: "Claude Code wants to use Bash: ls".into(),
+            created: now,
+            expires: now + crate::approvals::QUESTION_LIFETIME,
+            decided: None,
+            state,
+        }
+    }
+
+    #[test]
+    fn only_the_own_question_settled_by_a_person_is_a_decision() {
+        let question = crate::approvals::QUESTION_COMMAND;
+        let id = "9c1f0a7e3b2d4c58";
+        let done = |response| ApprovalState::Done { response: Box::new(response) };
+        let cases = [
+            (approval_in(ApprovalState::Pending, question), Decided::Waiting),
+            (approval_in(ApprovalState::Running, question), Decided::Waiting),
+            (approval_in(done(Response::Ok), question), Decided::Allowed),
+            (approval_in(ApprovalState::Denied, question), Decided::Denied),
+            (approval_in(ApprovalState::Expired, question), Decided::Never),
+            (
+                approval_in(done(Response::Error { code: "forbidden".into(), message: "x".into() }), question),
+                Decided::Never,
+            ),
+            // Another command's approval, even allowed, answers no question.
+            (approval_in(done(Response::Ok), "workspaces.delete_template"), Decided::Never),
+        ];
+        for (approval, expected) in cases {
+            assert_eq!(decision_of(&approval, id), expected, "{:?} {}", approval.state, approval.command);
+        }
+        assert_eq!(decision_of(&approval_in(done(Response::Ok), question), "another"), Decided::Never);
     }
 
     /// The hook against a core in a temporary directory, with a hook client's key: waiting is an
@@ -823,46 +1076,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_hook_client_reports_and_resolves() {
-        use std::sync::Arc;
-
         use torro_inbox::{Lane, SourceRef, State};
-        use torro_ipc::api::Rights;
-        use torro_setups::storage::Store;
 
         let dir = tempfile::tempdir().expect("temp dir");
-        let clients = crate::clients::tests::open_in(dir.path());
-        // A hook client is bound to one agent (task E1.2b); this one reports for Claude Code.
-        let (_, hook_key) = clients
-            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
-            .await
-            .expect("added");
-        let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
-        let core = Arc::new(
-            crate::core::Core::new(
-                torro_wm::Backend::Unsupported { name: "test".into() },
-                Store::at(dir.path().to_path_buf()),
-                Arc::new(crate::pim::PimService::with_settings(settings)),
-                clients,
-            )
-            .with_approvals(crate::approvals::tests::quiet_in(dir.path()))
-            .with_inbox(crate::inbox::tests::inbox_in(dir.path())),
-        );
-        let socket = dir.path().join("state").join("core.sock");
-        let path = socket.clone();
-        tokio::spawn(async move {
-            torro_ipc::server::serve_with_key(&path, move |key, request| {
-                let core = Arc::clone(&core);
-                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
-            })
-            .await
-        });
-        for _ in 0..100 {
-            if torro_ipc::client::call(&socket, &Request::Ping).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
+        let (socket, hook_key) = core_on_socket(dir.path(), AgentKind::ClaudeCode).await;
         let hook = |name: &'static str| {
             let (socket, key) = (socket.clone(), hook_key.clone());
             async move {
@@ -939,5 +1156,144 @@ mod tests {
         .await
         .expect("ran");
         assert!(matches!(refused, Err(HookError::Refused { .. })), "{refused:?}");
+    }
+
+    /// A core in `dir` serving its socket (`dir/state/core.sock`, the app key next to it) with a
+    /// hook client of `agent`; returns the socket and the hook client's key. Nothing of the
+    /// user's: approvals, inbox and clients all live in `dir`, and no notification is shown.
+    #[cfg(unix)]
+    async fn core_on_socket(dir: &Path, agent: AgentKind) -> (PathBuf, Key) {
+        use std::sync::Arc;
+
+        use torro_ipc::api::Rights;
+        use torro_setups::storage::Store;
+
+        let clients = crate::clients::tests::open_in(dir);
+        // A hook client is bound to one agent (task E1.2b).
+        let name = format!("{} hooks", agent.label());
+        let (_, hook_key) = clients.add_client(&name, "hook", Some(agent), Rights::hook()).await.expect("added");
+        let settings = crate::settings_service::SettingsStore::at(dir.join("config").join("settings.json"));
+        let core = Arc::new(
+            crate::core::Core::new(
+                torro_wm::Backend::Unsupported { name: "test".into() },
+                Store::at(dir.to_path_buf()),
+                Arc::new(crate::pim::PimService::with_settings(settings)),
+                clients,
+            )
+            .with_approvals(crate::approvals::tests::quiet_in(dir))
+            .with_inbox(crate::inbox::tests::inbox_in(dir)),
+        );
+        let socket = dir.join("state").join("core.sock");
+        let path = socket.clone();
+        tokio::spawn(async move {
+            torro_ipc::server::serve_with_key(&path, move |key, request| {
+                let core = Arc::clone(&core);
+                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+            })
+            .await
+        });
+        for _ in 0..100 {
+            if torro_ipc::client::call(&socket, &Request::Ping).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        (socket, hook_key)
+    }
+
+    /// The open questions as the app key lists them.
+    #[cfg(unix)]
+    async fn open_questions(socket: &Path) -> Vec<ApprovalInfo> {
+        match torro_ipc::client::call(socket, &Request::ListApprovals).await {
+            Ok(Response::Approvals { approvals }) => approvals.into_iter().filter(|a| a.state.is_pending()).collect(),
+            other => panic!("the app key lists the approvals: {other:?}"),
+        }
+    }
+
+    /// Task E2.5 against a core: the hook asks, the person decides with the app key (as the
+    /// inbox, the control centre, the notification and `ctl` do), and the hook hands the agent
+    /// exactly the agent's decision JSON. Without a decision it hands over nothing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_permission_request_is_answered_with_the_persons_decision() {
+        for (agent, fixture_name) in
+            [(AgentKind::ClaudeCode, "claude-code-permission-request"), (AgentKind::Codex, "codex-permission-request")]
+        {
+            for allow in [true, false] {
+                let dir = tempfile::tempdir().expect("temp dir");
+                let (socket, key) = core_on_socket(dir.path(), agent).await;
+                let question = permission_question(agent, &fixture(fixture_name)).expect("a question");
+                let hook = {
+                    let (socket, key, question) = (socket.clone(), key.clone(), question.clone());
+                    tokio::task::spawn_blocking(move || answer(agent, &question, Some(&socket), &key, ANSWER_WAIT))
+                };
+                // The person sees the question with the whole command, and decides.
+                let mut open = Vec::new();
+                for _ in 0..100 {
+                    open = open_questions(&socket).await;
+                    if !open.is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let [asked] = open.as_slice() else { panic!("one question: {open:?}") };
+                assert!(crate::approvals::is_question(asked));
+                assert!(asked.summary.contains(&question.details), "{}", asked.summary);
+                assert!(asked.summary.starts_with(agent.label()), "{}", asked.summary);
+                let decide = Request::DecideApproval { id: asked.id.clone(), allow };
+                let decided = torro_ipc::client::call(&socket, &decide).await.expect("decided");
+                assert!(matches!(decided, Response::Approval { .. }), "{decided:?}");
+
+                let printed = hook.await.expect("ran").expect("answered");
+                assert_eq!(printed, permission_answer(agent, allow), "{agent:?} allow={allow}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn without_a_decision_the_hook_hands_over_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (socket, key) = core_on_socket(dir.path(), AgentKind::ClaudeCode).await;
+        let question =
+            permission_question(AgentKind::ClaudeCode, &fixture("claude-code-permission-request")).expect("question");
+        let started = Instant::now();
+        let waited = Duration::from_millis(1200);
+        let printed = {
+            let socket = socket.clone();
+            tokio::task::spawn_blocking(move || answer(AgentKind::ClaudeCode, &question, Some(&socket), &key, waited))
+                .await
+                .expect("ran")
+        };
+        assert!(matches!(printed, Ok(None)), "{printed:?}");
+        assert!(started.elapsed() < waited + BUDGET, "{:?}", started.elapsed());
+        assert_eq!(open_questions(&socket).await.len(), 1, "the question stays until it expires; nobody allowed it");
+
+        // Gemini CLI takes no answer: nothing is asked.
+        let gemini = PermissionQuestion { tool: "Bash".into(), details: "ls".into(), project: None };
+        let nobody = Key::new("torro_00000000_nope");
+        assert!(matches!(answer(AgentKind::Gemini, &gemini, None, &nobody, Duration::ZERO), Ok(None)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_overlong_question_is_refused_by_the_core() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (socket, key) = core_on_socket(dir.path(), AgentKind::Codex).await;
+        let long = PermissionQuestion {
+            tool: "Bash".into(),
+            details: "x".repeat(crate::approvals::QUESTION_DETAILS_MAX + 1),
+            project: None,
+        };
+        let refused = {
+            let socket = socket.clone();
+            tokio::task::spawn_blocking(move || {
+                answer(AgentKind::Codex, &long, Some(&socket), &key, Duration::from_secs(1))
+            })
+            .await
+            .expect("ran")
+        };
+        assert!(matches!(&refused, Err(HookError::Refused { code, .. }) if code == "error"), "{refused:?}");
+        assert!(open_questions(&socket).await.is_empty(), "nothing was put to the person");
     }
 }

@@ -1489,11 +1489,23 @@ fn approval_matter(approval: &ApprovalInfo) -> Matter {
         kind: Kind::Approval,
         // Built by the core and made harmless (`approvals::summary`), but it quotes the client.
         title: approval.summary.clone(),
-        body: Some(trf("{client} asks for approval", &[("client", &approval.client_name)])),
+        body: Some(approval_body(approval)),
         link: None,
         actions: vec![Action::Allow { approval: approval.id.clone() }, Action::Deny { approval: approval.id.clone() }],
         untrusted: true,
         since: approval.created,
+    }
+}
+
+/// The body of an approval's entry: who asks. A question of an agent (task E2.5) whose summary is
+/// too long for a title shows the whole summary here instead, so the person reads every character
+/// of the command before allowing it (the title is cut with "…" at [`TITLE_MAX`]).
+fn approval_body(approval: &ApprovalInfo) -> String {
+    let client = [("client", &approval.client_name as &dyn fmt::Display)];
+    match crate::approvals::is_question(approval) {
+        true if approval.summary.chars().count() > TITLE_MAX => approval.summary.clone(),
+        true => trf("{client} asks for permission", &client),
+        false => trf("{client} asks for approval", &client),
     }
 }
 
@@ -2920,5 +2932,32 @@ pub(crate) mod tests {
 
         let woken = inbox.for_me(at(12, 1), 1).expect("read");
         assert_eq!((woken.open, woken.newest[0].title.as_str()), (8, "Later"), "woken entries count again");
+    }
+
+    /// Task E2.5: a question of an agent reads "asks for permission"; one too long for a title has
+    /// its whole text in the body, so no character of the command is hidden behind "…".
+    #[test]
+    fn a_question_entry_shows_the_whole_question() {
+        let at = Utc::now();
+        let mut question = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "h1".into(),
+            client_name: "Codex hooks".into(),
+            command: crate::approvals::QUESTION_COMMAND.into(),
+            summary: "Codex wants to use Bash: ls".into(),
+            created: at,
+            expires: at + crate::approvals::QUESTION_LIFETIME,
+            decided: None,
+            state: torro_ipc::ApprovalState::Pending,
+        };
+        let short = approval_matter(&question);
+        assert_eq!((short.kind, short.title.as_str()), (Kind::Approval, "Codex wants to use Bash: ls"));
+        assert_eq!(short.body, Some(trf("{client} asks for permission", &[("client", &"Codex hooks")])));
+
+        question.summary = format!("Codex wants to use Bash: {}", "a".repeat(TITLE_MAX));
+        let long = approval_matter(&question).into_item("e1".into(), at);
+        assert!(long.title.ends_with('…'), "{}", long.title);
+        assert_eq!(long.body.as_deref(), Some(question.summary.as_str()), "the whole question");
+        assert!(long.urgent && long.untrusted);
     }
 }

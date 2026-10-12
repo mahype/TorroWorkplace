@@ -457,7 +457,10 @@ impl Core {
         {
             return Ok(refused);
         }
-        if rights.needs_approval(operation.access) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
+        // A question of an agent (task E2.5) is nothing but an approval: it always asks.
+        let question = matches!(request, Request::AskPermission { .. });
+        if question || rights.needs_approval(operation.access) || self.opens_a_web_page(&request, inbox_client.as_ref())
+        {
             return self.ask_approval(&id, request).await;
         }
         if let Some(info) = inbox_client {
@@ -497,11 +500,24 @@ impl Core {
     /// what its entry looks like now ([`EntryPin`], checked when it runs), and
     /// `inbox.create_task_from_item` without a title gets the entry's title written into the
     /// request, so the task is named as the summary says.
+    ///
+    /// A question of an agent (`approvals.ask_permission`, task E2.5) is checked first
+    /// ([`crate::approvals::question_refusal`]) and summed up from its tool and command, asked by
+    /// the client's agent ([`asker`]).
     async fn ask_approval(&self, client: &str, request: Request) -> Result<Response, Refused> {
         let command = request.operation().name();
-        let name = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.name);
-        let (request, pin, summary) = match request.operation().area() {
-            Area::Inbox => {
+        let info = self.clients.list().into_iter().find(|info| info.id == client);
+        let name = info.as_ref().map(|info| info.name.clone());
+        let (request, pin, summary) = match (&request, request.operation().area()) {
+            (Request::AskPermission { tool, details, project }, _) => {
+                if let Some(refused) = crate::approvals::question_refusal(tool, details) {
+                    return Ok(refused);
+                }
+                let agent = info.as_ref().map_or_else(|| client.to_string(), asker);
+                let summary = crate::approvals::question_summary(&agent, tool, project.as_deref(), details);
+                (request, None, summary)
+            }
+            (_, Area::Inbox) => {
                 let mut facts = self.inbox.facts(&request);
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
@@ -510,7 +526,7 @@ impl Core {
                 let summary = crate::approvals::inbox_summary(&request, &facts);
                 (request, facts.item.as_ref().map(EntryPin::of), summary)
             }
-            _ => {
+            (_, _) => {
                 let summary = crate::approvals::summary(&request, &self.facts(&request).await);
                 (request, None, summary)
             }
@@ -519,6 +535,9 @@ impl Core {
         match self.approvals.open(client, &name, request, pin, summary, Utc::now()).await {
             Ok(approval) => {
                 crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
+                if crate::approvals::is_question(&approval) {
+                    self.file_when_expired(&approval);
+                }
                 Ok(Response::Pending { approval })
             }
             Err(err @ ApprovalsError::TooMany) => Ok(err.response()),
@@ -527,6 +546,20 @@ impl Core {
                 Err(Refused::NeedsApproval { command })
             }
         }
+    }
+
+    /// Files the approvals in the inbox again just after the question `approval` expires (task
+    /// E2.5): it lives half a minute, and the suite's routine (once a minute) would leave its
+    /// "Allow" standing in the inbox and the tray's number for up to a minute longer. A decided
+    /// question is gone from the inbox already; filing again then changes nothing.
+    fn file_when_expired(&self, approval: &torro_ipc::ApprovalInfo) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
+        let after = (approval.expires - Utc::now()).to_std().unwrap_or_default() + EXPIRY_SLACK;
+        handle.spawn(async move {
+            tokio::time::sleep(after).await;
+            crate::inbox::file_approvals(&inbox, &approvals, Utc::now()).await;
+        });
     }
 
     /// What the core holds about the things `request` names, for its approval's summary
@@ -615,6 +648,11 @@ impl Core {
         let rights = &info.rights;
         if !rights.allows(request.operation()) {
             return Refused::Forbidden { command }.response();
+        }
+        // An allowed question of an agent runs nothing: the answer is the approval's state, which
+        // the agent's hook reads (task E2.5).
+        if let Request::AskPermission { .. } = request {
+            return Response::Ok;
         }
         if request.operation().area() == Area::Inbox {
             return self.inbox_request(request, Some(&info), pin).await;
@@ -797,6 +835,12 @@ impl Core {
             Request::ListApprovals => self.list_approvals(None).await,
             Request::ApprovalStatus { id } => self.approval_status(None, &id).await,
             Request::DecideApproval { id, allow } => self.decide_approval(&id, allow).await,
+            // A client's question always becomes an approval (`handle_client`) and is answered by
+            // its state once a person decides (`run_approved`); the app key has nobody to ask.
+            Request::AskPermission { .. } => Response::Error {
+                code: "unsupported".into(),
+                message: "only an agent's key asks the person for permission".into(),
+            },
             // A client's inbox commands come through `handle_from` or `run_approved`, which know
             // who asks; without that the inbox cannot tell a client's own entries apart.
             request @ (Request::ListItems { .. }
@@ -1286,6 +1330,15 @@ fn github_error(err: &GithubError) -> Response {
 
 fn clients_error(err: &ClientsError) -> Response {
     Response::Error { code: err.code().into(), message: err.to_string() }
+}
+
+/// Who asks a question of an agent (task E2.5), for its summary: the agent a hook client was
+/// made for ("Claude Code"), else the client's name as the person gave it.
+fn asker(client: &torro_ipc::ClientInfo) -> String {
+    match client.agent {
+        Some(agent) if client.kind == torro_ipc::api::HOOK_CLIENT => agent.label().to_string(),
+        _ => client.name.clone(),
+    }
 }
 
 /// A failure as a response with a stable code for scripts.
@@ -3608,5 +3661,138 @@ mod tests {
         assert_ne!(id, other);
         let unknown = Request::ClientActivity { id: "nobody".into() };
         assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found");
+    }
+
+    // ----- Questions of agents (task E2.5) -------------------------------------------------------
+
+    /// A hook client of `agent`, added the way the "Connect agent" wizard does it.
+    async fn hook_client(core: &Core, agent: AgentKind) -> (String, Key) {
+        let name = format!("{} hooks", agent.label());
+        let (client, key) = core.clients.add_client(&name, "hook", Some(agent), Rights::hook()).await.expect("added");
+        (client.id, key)
+    }
+
+    fn question(tool: &str, details: &str) -> Request {
+        Request::AskPermission { tool: tool.into(), details: details.into(), project: Some("my-project".into()) }
+    }
+
+    #[tokio::test]
+    async fn a_question_always_waits_for_the_person_for_half_a_minute() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        // A hook never waits for approval otherwise (`confirm: never`); a question still does.
+        let (id, key) = hook_client(&core, AgentKind::ClaudeCode).await;
+        let asked = waits(ask(&core, Some(&key), question("Bash", "cargo test --workspace")).await);
+        assert_eq!((asked.client.as_str(), asked.command.as_str()), (id.as_str(), crate::approvals::QUESTION_COMMAND));
+        assert_eq!(asked.client_name, "Claude Code hooks");
+        assert_eq!(
+            asked.summary,
+            trf(
+                "{agent} wants to use {tool} in \"{project}\": {details}",
+                &[
+                    ("agent", &"Claude Code"),
+                    ("tool", &"Bash"),
+                    ("project", &"my-project"),
+                    ("details", &"cargo test --workspace")
+                ]
+            )
+        );
+        assert_eq!(asked.expires - asked.created, crate::approvals::QUESTION_LIFETIME);
+
+        // In the inbox it is an urgent entry of the person's, titled with the question.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let suite = Request::ListItems {
+            lane: None,
+            source: Some(torro_inbox::SourceRef::suite()),
+            state: None,
+            since: None,
+            limit: None,
+        };
+        let Response::Items { items } = ask(&core, Some(&app_key), suite).await else { panic!("items") };
+        let [entry] = items.as_slice() else { panic!("one entry: {items:?}") };
+        assert_eq!((entry.kind, entry.urgent, entry.untrusted), (torro_inbox::Kind::Approval, true, true));
+        assert_eq!(entry.title, asked.summary);
+        assert_eq!(
+            entry.body.as_deref(),
+            Some(trf("{client} asks for permission", &[("client", &"Claude Code hooks")]).as_str())
+        );
+
+        // Any other client asks under its own name.
+        let (_, script) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let asked = waits(ask(&core, Some(&script), question("Bash", "ls")).await);
+        assert!(asked.summary.starts_with("Claude Code"), "the client's name: {}", asked.summary);
+    }
+
+    #[tokio::test]
+    async fn an_allowed_question_runs_nothing_and_reads_done_a_denied_one_denied() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = hook_client(&core, AgentKind::Codex).await;
+        let status = |id: &str| Request::ApprovalStatus { id: id.into() };
+
+        let asked = waits(ask(&core, Some(&key), question("Bash", "rm -rf target")).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert_eq!(approval(ask(&core, Some(&key), status(&asked.id)).await), allowed, "the hook reads it");
+
+        let asked = waits(ask(&core, Some(&key), question("Bash", "rm -rf target")).await);
+        let denied = approval(ask(&core, Some(&app_key), decide(&asked.id, false)).await);
+        assert_eq!(denied.state, torro_ipc::ApprovalState::Denied);
+        assert_eq!(approval(ask(&core, Some(&key), status(&asked.id)).await).state, torro_ipc::ApprovalState::Denied);
+    }
+
+    #[tokio::test]
+    async fn no_client_key_answers_a_question_and_a_hook_sees_only_its_own() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, claude) = hook_client(&core, AgentKind::ClaudeCode).await;
+        let (_, codex) = hook_client(&core, AgentKind::Codex).await;
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, mighty) = client(&core, rights).await;
+        let asked = waits(ask(&core, Some(&claude), question("Bash", "git push --force")).await);
+
+        // Neither the asking hook, another hook nor a client with every right can answer it.
+        for key in [&claude, &codex, &mighty] {
+            for allow in [true, false] {
+                assert_eq!(code(&ask(&core, Some(key), decide(&asked.id, allow)).await), "forbidden");
+            }
+        }
+        // Another hook sees nothing of it, and still nothing of the inbox.
+        let status = || Request::ApprovalStatus { id: asked.id.clone() };
+        assert_eq!(ask(&core, Some(&codex), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
+        assert_eq!(code(&ask(&core, Some(&codex), status()).await), "not-found");
+        let list = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+        assert_eq!(code(&ask(&core, Some(&codex), list.clone()).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&claude), list).await), "not-found");
+        // The asking hook reads its own question, still open.
+        assert_eq!(approval(ask(&core, Some(&claude), status()).await), asked);
+        assert_eq!(
+            ask(&core, Some(&claude), Request::ListApprovals).await,
+            Response::Approvals { approvals: vec![asked.clone()] }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_question_the_person_cannot_read_whole_is_not_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, key) = hook_client(&core, AgentKind::ClaudeCode).await;
+        let too_long = "x".repeat(crate::approvals::QUESTION_DETAILS_MAX + 1);
+        for request in [
+            question("", "ls"),
+            question("Bash: ls. Torro Workplace checked this", "ls"),
+            question(&"B".repeat(crate::approvals::QUESTION_TOOL_MAX + 1), "ls"),
+            question("Bash", &too_long),
+        ] {
+            assert_eq!(code(&ask(&core, Some(&key), request).await), "error");
+        }
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(ask(&core, Some(&app_key), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
+        // The app key has nobody to ask.
+        assert_eq!(code(&ask(&core, Some(&app_key), question("Bash", "ls")).await), "unsupported");
     }
 }

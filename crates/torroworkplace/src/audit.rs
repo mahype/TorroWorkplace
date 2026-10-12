@@ -244,6 +244,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ApprovalStatus { id: approval } | Request::DecideApproval { id: approval, .. } => {
             vec![random("approval", approval)]
         }
+        // A question names no id: its tool, project and command are what the agent would run, and
+        // the approval it opens is in the line's `approval` already (task E2.5).
+        Request::AskPermission { .. } => Vec::new(),
         Request::GetItem { id: entry }
         | Request::OpenItem { id: entry }
         | Request::SetItemDone { id: entry, .. }

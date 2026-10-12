@@ -27,6 +27,9 @@
 //!   `--key-file` ([`is_our_hook`]); every other hook stays untouched, and writing again first
 //!   takes ours out, so a second run leaves one set. That also replaces entries of an older
 //!   version, which carried the key as `TORRO_TOKEN='…'` in the command.
+//!   Claude Code's and Codex's `PermissionRequest` hook runs with `--answer` and a longer timeout
+//!   ([`ANSWER_TIMEOUT_SECS`]): it puts the request to the person and hands the agent their
+//!   decision (task E2.5). Connecting again updates an older set up the same way.
 //! - **Disconnect** ([`disconnect`], [`unhook`]): removes the entry again, but only for a client
 //!   the wizard set up. Which one that was is noted in `client_setup.json` in the core's config
 //!   directory (0600, never a key): one [`Record`] per target with the client's id and the way it
@@ -663,6 +666,17 @@ fn without_our_table(text: &str) -> String {
 const HOOK_TIMEOUT_SECS: u64 = 5;
 /// Codex gives `SessionEnd` hooks 1 s by default and allows at most 3.
 const CODEX_SESSION_END_SECS: u64 = 3;
+/// How long the answering hook for `PermissionRequest` may take (task E2.5): it waits for the
+/// person up to [`crate::hook::ANSWER_WAIT`] (34 s), plus room for starting and its last calls.
+/// Both agents take this (Claude Code's default is 600 s; Codex names no limit but for
+/// `SessionEnd` and `Interrupt`). Should the agent still cut it off, it asks in its terminal.
+pub const ANSWER_TIMEOUT_SECS: u64 = 40;
+
+/// Whether the hook of `agent` answers `event` with the person's decision (`--answer`, task E2.5):
+/// `PermissionRequest` of Claude Code and Codex. Gemini CLI has no hook that takes an answer.
+fn answers(agent: AgentKind, event: &str) -> bool {
+    event == "PermissionRequest" && matches!(agent, AgentKind::ClaudeCode | AgentKind::Codex)
+}
 
 /// The file the hooks of `agent` go into, below the home directory: the user settings of Claude
 /// Code and Gemini CLI, Codex's own hooks file.
@@ -679,10 +693,13 @@ fn hook_file_in_home(agent: AgentKind) -> &'static str {
 }
 
 /// The events the hook of `agent` listens to, in the order they are written: the ones the table
-/// in task E2.2 gives a meaning.
+/// in task E2.2 gives a meaning, and Claude Code's `PermissionRequest`, which only the answering
+/// hook takes (task E2.5).
 fn hook_events(agent: AgentKind) -> &'static [&'static str] {
     match agent {
-        AgentKind::ClaudeCode => &["Notification", "Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd"],
+        AgentKind::ClaudeCode => {
+            &["Notification", "Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd", "PermissionRequest"]
+        }
         AgentKind::Codex => &["PermissionRequest", "Stop", "UserPromptSubmit", "PostToolUse", "SessionEnd"],
         AgentKind::Gemini => &["Notification", "AfterAgent", "BeforeAgent", "SessionEnd"],
     }
@@ -755,8 +772,21 @@ pub fn is_our_hook(command: &str, agent: AgentKind) -> bool {
 }
 
 /// One handler of ours for `event`. Gemini CLI counts milliseconds and names its hooks (the name
-/// is what `/hooks disable` takes); the others count seconds.
+/// is what `/hooks disable` takes); the others count seconds. The answering hook ([`answers`])
+/// runs `command` with `--answer` and gets [`ANSWER_TIMEOUT_SECS`]; [`is_our_hook`] still knows
+/// it, so connecting again replaces it like the others.
 fn hook_handler(agent: AgentKind, event: &str, command: &str) -> Value {
+    if answers(agent, event) {
+        let mut handler = json!({
+            "type": "command",
+            "command": format!("{command} {}", crate::hook::ANSWER_ARG),
+            "timeout": ANSWER_TIMEOUT_SECS,
+        });
+        if agent == AgentKind::ClaudeCode && cfg!(windows) {
+            handler["shell"] = json!("powershell");
+        }
+        return handler;
+    }
     let mut handler = json!({ "type": "command", "command": command });
     match agent {
         AgentKind::ClaudeCode => {
@@ -1537,10 +1567,17 @@ mod tests {
             assert_eq!(sorted, expected, "{agent:?}: one handler per event of the table");
             for (event, handler) in &found {
                 assert_eq!(handler["type"], "command");
-                assert_eq!(handler["command"], command(&env, "h1", agent).as_str());
+                // The permission request is answered (task E2.5); every other event only reported.
+                let plain = command(&env, "h1", agent);
+                let expected_command = match (agent, event.as_str()) {
+                    (AgentKind::ClaudeCode | AgentKind::Codex, "PermissionRequest") => format!("{plain} --answer"),
+                    _ => plain,
+                };
+                assert_eq!(handler["command"], expected_command.as_str(), "{agent:?} {event}");
                 let timeout = match (agent, event.as_str()) {
                     (AgentKind::Gemini, _) => 5000,
                     (AgentKind::Codex, "SessionEnd") => 3,
+                    (_, "PermissionRequest") => 40,
                     _ => 5,
                 };
                 assert_eq!(handler["timeout"], timeout, "{agent:?} {event}");
@@ -1594,7 +1631,8 @@ mod tests {
         add_hooks(&file, AgentKind::Gemini, &command(&env, "h1", AgentKind::Gemini)).expect("gemini's");
         remove_hooks(&file, AgentKind::Gemini).expect("removed");
         assert!(ours(&file, AgentKind::Gemini).is_empty());
-        assert_eq!(ours(&file, AgentKind::ClaudeCode).len(), 5, "the other agent's hooks stay");
+        let claude_events = hook_events(AgentKind::ClaudeCode).len();
+        assert_eq!(ours(&file, AgentKind::ClaudeCode).len(), claude_events, "the other agent's hooks stay");
 
         // Entries of an older version (key in the command) and hand-made ones are ours too, so
         // connecting again replaces them.
@@ -1742,11 +1780,12 @@ mod tests {
         connect_hooks(&env, AgentKind::ClaudeCode, Some("a1"), "h2", &key()).expect("again");
         assert_eq!(hook_records(&env).expect("hooks").len(), 1);
         let settings = hook_file(&env, AgentKind::ClaudeCode);
-        assert_eq!(ours(&settings, AgentKind::ClaudeCode).len(), 5, "one set");
+        let claude_events = hook_events(AgentKind::ClaudeCode).len();
+        assert_eq!(ours(&settings, AgentKind::ClaudeCode).len(), claude_events, "one set");
         assert!(!h1_key.exists() && h2_key.exists(), "the replaced hooks' key file goes");
 
         assert_eq!(unhook(&env, "h1").expect("not noted"), Vec::<String>::new());
-        assert_eq!(ours(&settings, AgentKind::ClaudeCode).len(), 5, "h2's hooks stay");
+        assert_eq!(ours(&settings, AgentKind::ClaudeCode).len(), claude_events, "h2's hooks stay");
         let released = run(Job::Disconnect { client: "h2".into() }, Some(&env), &fake);
         assert_eq!(released, Outcome::Disconnected(Ok(Released::default())), "a hook client names no other");
         assert!(ours(&settings, AgentKind::ClaudeCode).is_empty());
@@ -1774,8 +1813,12 @@ mod tests {
         assert!(!text.contains("torro_old_0000aaaa") && !text.contains(TOKEN_VARIABLE), "the old entries are gone");
         assert!(!text.contains(KEY), "no key in the settings");
         let found = ours(&file, AgentKind::ClaudeCode);
-        assert_eq!(found.len(), 5, "one set, in the new form");
-        assert!(found.iter().all(|(_, handler)| handler["command"] == command(&env, "h1", AgentKind::ClaudeCode)));
+        assert_eq!(found.len(), hook_events(AgentKind::ClaudeCode).len(), "one set, in the new form");
+        let plain = command(&env, "h1", AgentKind::ClaudeCode);
+        for (event, handler) in &found {
+            let expected = if event == "PermissionRequest" { format!("{plain} --answer") } else { plain.clone() };
+            assert_eq!(handler["command"], expected.as_str(), "{event}");
+        }
         let written = json(&file);
         assert_eq!(written["hooks"]["Notification"][0]["matcher"], "idle_prompt", "the foreign hook stays");
         assert_eq!(written["model"], "opus");
@@ -1818,5 +1861,56 @@ mod tests {
         assert_eq!(Target::Gemini.agent(), Some(AgentKind::Gemini));
         assert_eq!(Target::Gemini.kind(), AgentKind::Gemini.id(), "the client kind is the agent's id");
         assert_eq!(Target::Cursor.agent(), None);
+    }
+
+    /// Task E2.5: a set up from before (Codex's `PermissionRequest` only observed, Claude Code
+    /// without one) becomes the answering one when the agent is connected again, and connecting
+    /// once more changes nothing.
+    #[test]
+    fn connecting_again_makes_the_permission_hook_answer_and_stays_put() {
+        for agent in [AgentKind::ClaudeCode, AgentKind::Codex] {
+            let dir = TempDir::new().expect("tmp");
+            let env = env(&dir);
+            let file = hook_file(&env, agent);
+            let plain = command(&env, "h1", agent);
+            // What the wizard wrote before E2.5: every event with the plain command and 5 s.
+            let events: Vec<&str> = hook_events(agent)
+                .iter()
+                .copied()
+                .filter(|e| agent == AgentKind::Codex || *e != "PermissionRequest")
+                .collect();
+            let old: Map<String, Value> = events
+                .iter()
+                .map(|event| {
+                    (
+                        (*event).to_string(),
+                        json!([{ "hooks": [{ "type": "command", "command": plain, "timeout": 5 }] }]),
+                    )
+                })
+                .collect();
+            write(&file, &json_text(&Map::from_iter([("hooks".to_string(), Value::Object(old))])));
+
+            add_hooks(&file, agent, &plain).expect("connected again");
+            let found = ours(&file, agent);
+            assert_eq!(found.len(), hook_events(agent).len(), "{agent:?}: one set");
+            let asking: Vec<&Value> =
+                found.iter().filter(|(event, _)| event == "PermissionRequest").map(|(_, handler)| handler).collect();
+            let [handler] = asking.as_slice() else { panic!("{agent:?}: one permission hook: {found:?}") };
+            assert_eq!(handler["command"], format!("{plain} {}", crate::hook::ANSWER_ARG).as_str());
+            assert_eq!(handler["timeout"], ANSWER_TIMEOUT_SECS);
+            assert!(is_our_hook(handler["command"].as_str().expect("command"), agent), "still ours");
+            assert!(ANSWER_TIMEOUT_SECS > crate::hook::ANSWER_WAIT.as_secs() + 1, "the hook is never cut off waiting");
+
+            // The answering command parses back as the hook reads it.
+            let words: Vec<String> =
+                vec![agent.id().into(), KEY_FILE_ARG.into(), "/c/hooks/h1.key".into(), crate::hook::ANSWER_ARG.into()];
+            assert!(crate::hook::parse_args(&words).is_some_and(|args| args.answer));
+
+            let text = fs::read_to_string(&file).expect("settings");
+            add_hooks(&file, agent, &plain).expect("once more");
+            assert_eq!(fs::read_to_string(&file).expect("settings"), text, "{agent:?}: nothing changes");
+            remove_hooks(&file, agent).expect("removed");
+            assert!(ours(&file, agent).is_empty(), "{agent:?}: the answering hook goes too");
+        }
     }
 }

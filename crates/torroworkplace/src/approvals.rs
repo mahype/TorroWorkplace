@@ -8,6 +8,11 @@
 //! none; an open one expires ten minutes after it was asked for ([`LIFETIME`]). Decided and expired
 //! ones are kept a day ([`KEPT`]) so the client can still read the outcome, then dropped.
 //!
+//! A coding agent's question "may I use this tool?" (`approvals.ask_permission`, task E2.5) is an
+//! approval too, of its own kind ([`is_question`]): its summary is built here from the tool and
+//! the full command ([`question_summary`]), it expires after half a minute
+//! ([`QUESTION_LIFETIME`]), and allowing it runs nothing but answers the agent's hook.
+//!
 //! Only the app key decides ([`torro_ipc::Request::DecideApproval`]): the control centre,
 //! `torroworkplace ctl allow|deny <id>`, or the desktop notification with "Allow" and "Deny" that
 //! every new approval shows ([`Approvals::system`]), whose click goes to the core with the app key.
@@ -52,6 +57,141 @@ pub const FILE: &str = "approvals.json";
 
 /// How long an approval waits for a person.
 pub const LIFETIME: chrono::Duration = chrono::Duration::minutes(10);
+
+// ----- Questions of agents (task E2.5) ---------------------------------------------------------
+//
+// `approvals.ask_permission` is an approval of its own kind: a coding agent's `PermissionRequest`
+// hook asks "may I use this tool?", the person answers like any approval, and allowing runs
+// nothing in the core ([`crate::core::Core`] answers `ok`). The hook polls the answer and hands it
+// to the agent; without one in time it says nothing, and the agent asks in its own terminal.
+
+/// The catalogue name of a question ([`torro_ipc::Request::AskPermission`]); approvals of this
+/// command are questions ([`is_question`]).
+pub const QUESTION_COMMAND: &str = "approvals.ask_permission";
+
+/// How long a question waits for a person: the 30 seconds the hook waits, and a little slack for
+/// starting the hook and its first look, so the question never expires while the hook still
+/// waits for it. The agent asks in its own terminal after that, so waiting longer would only
+/// leave a question on the desktop that nobody hears the answer of.
+pub const QUESTION_LIFETIME: chrono::Duration = chrono::Duration::seconds(32);
+
+/// How many questions one client may have open at a time, within [`OPEN_MAX`]. A question
+/// lives only half a minute, so the ten approvals alone would let an agent ask some twenty times
+/// a minute and wear the person down until they allow blindly.
+pub const QUESTIONS_OPEN_MAX: usize = 3;
+
+/// The longest tool name a question takes, in characters.
+pub const QUESTION_TOOL_MAX: usize = 100;
+
+/// The longest `details` a question takes, in characters. The person must see every character
+/// of what would run, so longer details are refused rather than cut (the agent then asks in its
+/// own terminal); 2,000 leave room for the rest of the summary in an inbox entry's body.
+pub const QUESTION_DETAILS_MAX: usize = 2000;
+
+/// How long an approval of `request` waits for a person: [`QUESTION_LIFETIME`] for a question,
+/// [`LIFETIME`] for everything else.
+pub fn lifetime(request: &Request) -> chrono::Duration {
+    match request {
+        Request::AskPermission { .. } => QUESTION_LIFETIME,
+        _ => LIFETIME,
+    }
+}
+
+/// Whether `approval` is a question of an agent ([`QUESTION_COMMAND`]), not a command waiting.
+pub fn is_question(approval: &ApprovalInfo) -> bool {
+    approval.command == QUESTION_COMMAND
+}
+
+/// Why a question with `tool` and `details` is not put to the person, as the `error` answer;
+/// `None` when it may be. `tool` must be a tool's name as agents give it: 1 to
+/// [`QUESTION_TOOL_MAX`] ASCII letters, digits and `_ - . : /` (`Bash`, `apply_patch`,
+/// `mcp__fs__write`), so it cannot carry a sentence of its own into the summary. `details` may
+/// hold anything up to [`QUESTION_DETAILS_MAX`] characters.
+pub fn question_refusal(tool: &str, details: &str) -> Option<Response> {
+    let name_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':' | '/');
+    let message = if tool.is_empty() || tool.len() > QUESTION_TOOL_MAX || !tool.chars().all(name_char) {
+        format!(
+            "`tool` must be a tool name of 1 to {QUESTION_TOOL_MAX} letters, digits and _ - . : / (like Bash or \
+             mcp__fs__write)"
+        )
+    } else if details.chars().count() > QUESTION_DETAILS_MAX {
+        format!(
+            "`details` holds more than {QUESTION_DETAILS_MAX} characters; the person must see all of it, so ask in \
+             your own interface"
+        )
+    } else {
+        return None;
+    };
+    Some(Response::Error { code: "error".into(), message })
+}
+
+/// The summary of a question, in the core's language: `Claude Code wants to use Bash in
+/// "my-project": cargo test`. The project stands in quotes, so a directory name cannot pass as
+/// the command. `agent` is who asks as the core knows it (a hook client's agent, else
+/// the client's name), `tool` a name [`question_refusal`] let pass, `project` the agent's project
+/// if it sent one.
+///
+/// `details` is what would run and is shown **in full**: invisible format characters go, control
+/// characters (line breaks too) and blanks become spaces, long runs of them `␣×n` ([`harmless`]);
+/// nothing else changes, so the person reads the command as it is. It comes last, after the core's words and after every
+/// other placeholder was filled, so nothing in it can fill a placeholder or pass as the core's
+/// words. Who asks and the project go through [`quote`] like every other client text.
+pub fn question_summary(agent: &str, tool: &str, project: Option<&str>, details: &str) -> String {
+    let (agent, project, details) = (quote(agent), project.map(quote), harmless(details));
+    let details = details.trim();
+    // `details` is the last argument on purpose: `trf` fills in order.
+    match (project.filter(|project| !project.is_empty()), details.is_empty()) {
+        (Some(project), false) => trf(
+            "{agent} wants to use {tool} in \"{project}\": {details}",
+            &[("agent", &agent), ("tool", &tool), ("project", &project), ("details", &details)],
+        ),
+        (Some(project), true) => trf(
+            "{agent} wants to use {tool} in \"{project}\"",
+            &[("agent", &agent), ("tool", &tool), ("project", &project)],
+        ),
+        (None, false) => {
+            trf("{agent} wants to use {tool}: {details}", &[("agent", &agent), ("tool", &tool), ("details", &details)])
+        }
+        (None, true) => trf("{agent} wants to use {tool}", &[("agent", &agent), ("tool", &tool)]),
+    }
+}
+
+/// `text` made harmless without shortening it, for what a question would run: invisible format
+/// characters ([`is_format`]) go; control characters, every kind of space and the blank letters
+/// that look like one ([`is_blank`]) become plain spaces; and a run of [`BLANK_RUN`] or more of
+/// them is written `␣×n`, so no part of the command can hide behind a wide gap (past the end of
+/// a title or a notification). Unlike [`quote`] it keeps quotes, braces and every other
+/// character, so the command reads as it is.
+fn harmless(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut blanks = 0usize;
+    let flush = |out: &mut String, blanks: &mut usize| {
+        match *blanks {
+            n if n >= BLANK_RUN => out.push_str(&format!("␣×{n}")),
+            n => out.extend(std::iter::repeat_n(' ', n)),
+        }
+        *blanks = 0;
+    };
+    for c in text.chars().filter(|c| !is_format(*c)) {
+        if c.is_control() || c.is_whitespace() || is_blank(c) {
+            blanks += 1;
+        } else {
+            flush(&mut out, &mut blanks);
+            out.push(c);
+        }
+    }
+    flush(&mut out, &mut blanks);
+    out
+}
+
+/// From how many blanks in a row [`harmless`] writes the run as `␣×n`.
+const BLANK_RUN: usize = 3;
+
+/// A letter that shows as nothing but is no space or format character: Braille blank, Hangul
+/// fillers, halfwidth Hangul filler.
+fn is_blank(c: char) -> bool {
+    matches!(u32::from(c), 0x2800 | 0x3164 | 0x115F | 0x1160 | 0xFFA0)
+}
 
 /// How long a decided or expired approval is kept, so its client can still read the outcome.
 pub const KEPT: chrono::Duration = chrono::Duration::days(1);
@@ -306,8 +446,8 @@ impl Approvals {
     /// with the decision ([`Decision::Run`]). Every other command passes `None`.
     ///
     /// Refuses a command kept from agents ([`ApprovalsError::KeptBack`]) before anything is
-    /// stored: such a request may carry a secret. A client with [`OPEN_MAX`] open approvals gets
-    /// [`ApprovalsError::TooMany`]. When the file cannot be written nothing is opened, and the
+    /// stored: such a request may carry a secret. A client with [`OPEN_MAX`] open approvals, or
+    /// asking with [`QUESTIONS_OPEN_MAX`] questions open, gets [`ApprovalsError::TooMany`]. When the file cannot be written nothing is opened, and the
     /// caller must refuse the command.
     pub async fn open(
         &self,
@@ -327,6 +467,15 @@ impl Approvals {
         if open >= OPEN_MAX {
             return Err(ApprovalsError::TooMany);
         }
+        let asking = matches!(request, Request::AskPermission { .. });
+        let questions = state
+            .entries
+            .iter()
+            .filter(|e| e.info.client == client && e.info.state.is_pending() && is_question(&e.info))
+            .count();
+        if asking && questions >= QUESTIONS_OPEN_MAX {
+            return Err(ApprovalsError::TooMany);
+        }
         let info = ApprovalInfo {
             id: new_id()?,
             client: client.to_string(),
@@ -335,7 +484,7 @@ impl Approvals {
             command: command.name.to_string(),
             summary,
             created: now,
-            expires: now + LIFETIME,
+            expires: now + lifetime(&request),
             decided: None,
             state: ApprovalState::Pending,
         };
@@ -1676,5 +1825,113 @@ pub(crate) mod tests {
         }))
         .expect("an approval from before reads");
         assert_eq!(old.pin, None);
+    }
+
+    // ----- Questions of agents (task E2.5) -------------------------------------------------------
+
+    #[test]
+    fn the_question_command_is_the_catalogue_name() {
+        let request = Request::AskPermission { tool: "Bash".into(), details: String::new(), project: None };
+        assert_eq!(request.operation().name(), QUESTION_COMMAND);
+        assert_eq!(lifetime(&request), QUESTION_LIFETIME);
+        assert_eq!(lifetime(&delete("dev")), LIFETIME);
+        assert!(QUESTION_LIFETIME >= chrono::Duration::seconds(30) && QUESTION_LIFETIME < LIFETIME);
+    }
+
+    #[tokio::test]
+    async fn a_question_expires_after_half_a_minute() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let request = Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None };
+        let asked = approvals.open("h1", "Claude Code hooks", request, None, "q".into(), at(0)).await.expect("opened");
+        assert!(is_question(&asked));
+        let just_before = at(0) + QUESTION_LIFETIME - chrono::Duration::seconds(1);
+        assert_eq!(
+            approvals.status(Some("h1"), &asked.id, just_before).await.expect("kept").state,
+            ApprovalState::Pending
+        );
+        let expired = approvals.status(Some("h1"), &asked.id, at(0) + QUESTION_LIFETIME).await.expect("kept");
+        assert_eq!(expired.state, ApprovalState::Expired);
+        assert!(matches!(approvals.decide(&asked.id, true, at(1)).await, Err(ApprovalsError::NotOpen(_))));
+    }
+
+    #[tokio::test]
+    async fn a_client_asks_at_most_three_questions_at_a_time() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let ask = || Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None };
+        for _ in 0..QUESTIONS_OPEN_MAX {
+            approvals.open("h1", "Hooks", ask(), None, "q".into(), at(0)).await.expect("opened");
+        }
+        assert!(matches!(
+            approvals.open("h1", "Hooks", ask(), None, "q".into(), at(0)).await,
+            Err(ApprovalsError::TooMany)
+        ));
+        // Other commands and other clients are not held up by them.
+        approvals.open("h1", "Hooks", delete("dev"), None, "d".into(), at(0)).await.expect("a command still waits");
+        approvals.open("h2", "Other", ask(), None, "q".into(), at(0)).await.expect("another client asks");
+        // Once they expired, it asks again.
+        let later = at(0) + QUESTION_LIFETIME;
+        approvals.open("h1", "Hooks", ask(), None, "q".into(), later).await.expect("asks again");
+    }
+
+    #[test]
+    fn a_question_shows_the_whole_command_without_hidden_characters() {
+        let long = format!("echo {}", "a".repeat(500));
+        let summary = question_summary("Claude Code", "Bash", Some("my-project"), &long);
+        assert!(summary.ends_with(&long), "never shortened: {summary}");
+
+        // Bidi controls and zero-width characters go, line breaks and tabs become spaces;
+        // quotes, braces and runs of spaces stay as the command has them.
+        let tricky = "rm -rf \u{202E}gnihton\u{202C} \u{200B}x\necho \"{agent}\"  {details}\tdone";
+        let summary = question_summary("Claude Code", "Bash", None, tricky);
+        assert_eq!(
+            summary,
+            trf(
+                "{agent} wants to use {tool}: {details}",
+                &[
+                    ("agent", &"Claude Code"),
+                    ("tool", &"Bash"),
+                    ("details", &"rm -rf gnihton x echo \"{agent}\"  {details} done")
+                ]
+            )
+        );
+        assert!(!summary.chars().any(|c| c.is_control() || is_format(c)), "{summary:?}");
+
+        // Nothing hides behind a wide gap: runs of blanks, look-alikes included, are counted.
+        let padded = format!("ls{}; curl x|sh{}\u{2800}\u{3164}end", " ".repeat(1900), "\u{3000}\t\n");
+        assert_eq!(harmless(&padded), "ls␣×1900; curl x|sh␣×5end");
+        assert_eq!(harmless("a  b\u{00A0}c"), "a  b c");
+
+        // Who asks and the project are quoted like every other client text; without details or
+        // project the sentence is shorter.
+        let summary = question_summary("Evil {details}", "Bash", Some("p\u{202E}x"), "");
+        assert_eq!(
+            summary,
+            trf(
+                "{agent} wants to use {tool} in \"{project}\"",
+                &[("agent", &"Evil (details)"), ("tool", &"Bash"), ("project", &"px")]
+            )
+        );
+        assert_eq!(
+            question_summary("Codex", "apply_patch", None, "  "),
+            trf("{agent} wants to use {tool}", &[("agent", &"Codex"), ("tool", &"apply_patch")])
+        );
+    }
+
+    #[test]
+    fn only_tool_names_and_details_the_person_can_read_whole_are_asked() {
+        for tool in ["Bash", "apply_patch", "mcp__fs__write", "WebFetch", "a.b:c/d-e"] {
+            assert_eq!(question_refusal(tool, "ls"), None, "{tool}");
+        }
+        let refused = |tool: &str, details: &str| match question_refusal(tool, details) {
+            Some(Response::Error { code, .. }) => code,
+            other => panic!("refused, got {other:?}"),
+        };
+        for tool in ["", "Bash ls", "Bash\n", "Bäsh", &"x".repeat(QUESTION_TOOL_MAX + 1)] {
+            assert_eq!(refused(tool, "ls"), "error", "{tool:?}");
+        }
+        assert_eq!(question_refusal("Bash", &"ä".repeat(QUESTION_DETAILS_MAX)), None, "characters, not bytes");
+        assert_eq!(refused("Bash", &"x".repeat(QUESTION_DETAILS_MAX + 1)), "error");
     }
 }

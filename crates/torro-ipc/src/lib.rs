@@ -432,6 +432,38 @@ pub enum Request {
         /// `true` runs the command, `false` drops it.
         allow: bool,
     },
+    /// Asks the person whether the caller may use a tool, as a coding agent's `PermissionRequest`
+    /// hook does (task E2.5): "Claude Code wants to use Bash in my-project: cargo test". The
+    /// question is an approval of its own kind: it always waits for the person, whatever the
+    /// client's rights say, and is answered with [`Response::Pending`] at once. It expires after
+    /// about half a minute (30 s and a little slack), not ten minutes, because the agent asks in
+    /// its own terminal after that.
+    ///
+    /// The person answers like any approval: in the inbox, the control centre, the notification
+    /// or with `ctl allow|deny`, all with the app key. Allowing runs nothing in Torro Workplace; it
+    /// only answers the question. Read the answer with `approvals.approval_status`: `done` with an
+    /// `ok` response is "allowed", `denied` is "denied", `expired` is "nobody answered". A client
+    /// reads only its own questions, a hook client too (and nothing else).
+    ///
+    /// The core writes the question itself: who asks is the client's agent (a hook client's agent
+    /// or the client's name), then `tool`, `project` and `details`, made harmless (no control or
+    /// invisible format characters) but never shortened, so the person sees exactly what would
+    /// run. Errors: `error` for a `tool` that is no tool name (1 to 100 ASCII letters, digits and
+    /// `_ - . : /`) or overlong
+    /// `details` (over 2,000 characters; the agent then asks in its own terminal), `busy` when
+    /// the client has ten approvals or three questions open.
+    #[serde(rename = "approvals.ask_permission")]
+    AskPermission {
+        /// The tool the agent wants to use, as the agent names it: `Bash`, `apply_patch`,
+        /// `mcp__fs__write`.
+        tool: String,
+        /// What exactly the tool would do, in full: the shell command, or the tool's input as JSON.
+        #[serde(default)]
+        details: String,
+        /// The project the agent works in: the last part of its working directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
 
     // The inbox (`docs/eingang.md`, tasks E1.1 and E1.2): one place for everything that wants the
     // user's attention. The wire format is `torro_inbox`'s. The security rules of
@@ -941,7 +973,8 @@ pub struct ApprovalInfo {
     pub command: String,
     pub summary: String,
     pub created: DateTime<Utc>,
-    /// Ten minutes after `created`; an approval still open then expires.
+    /// Ten minutes after `created` (a question of `approvals.ask_permission`: about half a
+    /// minute); an approval still open then expires.
     pub expires: DateTime<Utc>,
     /// When a person decided it or it expired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -964,7 +997,7 @@ pub enum ApprovalState {
     Done { response: Box<Response> },
     /// A person said no; the command did not run.
     Denied,
-    /// Nobody decided within ten minutes; the command did not run.
+    /// Nobody decided in time (ten minutes, a question half a minute); the command did not run.
     Expired,
 }
 

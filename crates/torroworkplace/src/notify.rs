@@ -68,8 +68,16 @@ pub fn show(summary: String, body: String) {
 
 /// The title and body of the question for `approval`: who asks, and what would happen. Both hold
 /// text the client chose (its name, the titles in the summary): [`ask`] shows them as plain text.
+///
+/// A question of an agent (task E2.5) says "asks for permission": allowing it runs nothing, it
+/// only answers the agent.
 pub fn question(approval: &ApprovalInfo) -> (String, String) {
-    (trf("{client} asks for approval", &[("client", &approval.client_name)]), approval.summary.clone())
+    let client = [("client", &approval.client_name as &dyn std::fmt::Display)];
+    let title = match crate::approvals::is_question(approval) {
+        true => trf("{client} asks for permission", &client),
+        false => trf("{client} asks for approval", &client),
+    };
+    (title, approval.summary.clone())
 }
 
 /// Asks the person about `approval` and calls `decide` with their answer: `true` for "Allow",
@@ -275,5 +283,24 @@ mod tests {
     #[ignore = "shows a real desktop notification"]
     fn shows_a_real_notification() {
         send(tr("Template saved"), "Test · 0 windows").expect("notification shown");
+    }
+
+    #[test]
+    fn a_question_of_an_agent_asks_for_permission() {
+        let at = chrono::Utc::now();
+        let approval = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "h1".into(),
+            client_name: "Claude Code hooks".into(),
+            command: crate::approvals::QUESTION_COMMAND.into(),
+            summary: "Claude Code wants to use Bash: ls".into(),
+            created: at,
+            expires: at,
+            decided: None,
+            state: torro_ipc::ApprovalState::Pending,
+        };
+        let (title, body) = question(&approval);
+        assert_eq!(title, trf("{client} asks for permission", &[("client", &"Claude Code hooks")]));
+        assert_eq!(body, approval.summary);
     }
 }

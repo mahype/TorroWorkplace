@@ -24,6 +24,11 @@
 //!
 //! Everything else is nothing, among it Claude Code's `idle_prompt` (its `Stop` already said the
 //! turn is over) and `SubagentStop` (the session as a whole still runs).
+//!
+//! **Answering permission requests** (task E2.5): with `--answer`, `torroworkplace hook` puts the
+//! `PermissionRequest` of Claude Code and Codex to the person as a question
+//! ([`permission_question`]) and, once the person decided, prints the agent's decision JSON
+//! ([`permission_answer`]). Gemini CLI has no hook that takes an answer, so it gets none.
 
 use std::path::Path;
 
@@ -118,6 +123,88 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
         // Gemini has no prompt-submit event; a new turn starting means the person is back.
         (AgentKind::Gemini, "BeforeAgent") => HookIntent::ResolveWaiting { thread_key },
         _ => HookIntent::Nothing,
+    }
+}
+
+/// A coding agent's request for permission to use a tool, as a question for the person (task
+/// E2.5, request `approvals.ask_permission`). Built by [`permission_question`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionQuestion {
+    /// The tool's name as the agent gives it (`tool_name`): `Bash`, `Edit`, `apply_patch`,
+    /// `mcp__fs__write`. Not checked here; the core refuses names it does not take.
+    pub tool: String,
+    /// What the tool would do, in full and unchanged ([`permission_details`]). The core shows it
+    /// to the person without shortening it.
+    pub details: String,
+    /// The last part of the payload's `cwd`; `None` without one.
+    pub project: Option<String>,
+}
+
+/// The question in the `PermissionRequest` payload `payload` of `agent`; `None` for every other
+/// event, for Gemini CLI (it has no `PermissionRequest` hook to answer), for broken JSON and
+/// without a non-empty `tool_name`. Never fails and never panics.
+///
+/// Both agents send `tool_name` and `tool_input` (Claude Code: hooks reference, "PermissionRequest
+/// input"; Codex: hooks reference, "PermissionRequest"); `session_id` is not needed, a question
+/// is bound to its approval id.
+pub fn permission_question(agent: AgentKind, payload: &str) -> Option<PermissionQuestion> {
+    if agent == AgentKind::Gemini {
+        return None;
+    }
+    let json = serde_json::from_str::<Value>(payload).ok()?;
+    if text(&json, "hook_event_name") != Some("PermissionRequest") {
+        return None;
+    }
+    let tool = text(&json, "tool_name")?.to_string();
+    let details = json.get("tool_input").map(permission_details).unwrap_or_default();
+    Some(PermissionQuestion { tool, details, project: text(&json, "cwd").and_then(project_from_cwd) })
+}
+
+/// What a tool's input means for the person: the shell command alone when `tool_input` holds
+/// nothing but `command` (a string, or a list of words joined with spaces) and maybe the agent's
+/// own `description` of it (Claude Code's and Codex's plain `Bash`, Codex's `apply_patch`, whose
+/// command is the patch). Any other input is shown whole as compact JSON, `description` included:
+/// an edit's file, old and new text; an MCP tool's arguments; and a command with more fields
+/// (`dangerouslyDisableSandbox`, a host, a working directory), since those may be the very reason
+/// for the question. Nothing is left out or cut: a long input is the core's to refuse, and the
+/// agent then asks in its own terminal.
+pub fn permission_details(tool_input: &Value) -> String {
+    let only_a_command =
+        tool_input.as_object().is_some_and(|fields| fields.keys().all(|key| key == "command" || key == "description"));
+    match tool_input.get("command") {
+        Some(Value::String(command)) if only_a_command => command.clone(),
+        Some(Value::Array(words)) if only_a_command && words.iter().all(Value::is_string) => {
+            words.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")
+        }
+        _ => serde_json::to_string(tool_input).unwrap_or_default(),
+    }
+}
+
+/// What the hook tells `agent` when the person denied, in [`permission_answer`]'s `message`:
+/// the agent reads it as the reason. English like the API's descriptions, since agents read it.
+pub const DENIED_MESSAGE: &str = "The person denied this in Torro Workplace.";
+
+/// The JSON the hook prints on stdout for `agent` when the person allowed (`allow`) or denied a
+/// permission request, as one line; `None` for Gemini CLI, which takes no answer.
+///
+/// The same shape for Claude Code (hooks reference, "PermissionRequest decision control") and
+/// Codex (hooks reference, "PermissionRequest", output): `hookSpecificOutput` with
+/// `hookEventName: "PermissionRequest"` and `decision.behavior` `allow` or `deny`, a denial with
+/// `message` ([`DENIED_MESSAGE`]). Nothing else: no `updatedInput`, `updatedPermissions` or
+/// `interrupt` (Codex fails closed on them today, and the person allowed this one request only).
+pub fn permission_answer(agent: AgentKind, allow: bool) -> Option<String> {
+    let decision = match allow {
+        true => serde_json::json!({ "behavior": "allow" }),
+        false => serde_json::json!({ "behavior": "deny", "message": DENIED_MESSAGE }),
+    };
+    match agent {
+        AgentKind::ClaudeCode | AgentKind::Codex => Some(
+            serde_json::json!({
+                "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": decision }
+            })
+            .to_string(),
+        ),
+        AgentKind::Gemini => None,
     }
 }
 
@@ -318,6 +405,87 @@ mod tests {
         for none in ["", "ref: refs/heads/", "ref: refs/tags/v1", "f982614", "not a head", &"g".repeat(40)] {
             assert_eq!(branch_from_head(none), None, "{none:?}");
         }
+    }
+
+    #[test]
+    fn claude_code_and_codex_put_their_permission_requests_as_questions() {
+        let bash = permission_question(AgentKind::ClaudeCode, &fixture("claude-code-permission-request"));
+        let expected = PermissionQuestion {
+            tool: "Bash".into(),
+            details: "rm -rf node_modules".into(),
+            project: Some("my-project".into()),
+        };
+        assert_eq!(bash, Some(expected), "the command, without the agent's description");
+        let codex = permission_question(AgentKind::Codex, &fixture("codex-permission-request"));
+        assert_eq!(codex.map(|q| (q.tool, q.details)), Some(("Bash".into(), "cargo test --workspace".into())));
+
+        // Any other tool: its whole input as JSON, nothing left out.
+        let edit = permission_question(AgentKind::ClaudeCode, &fixture("claude-code-permission-request-edit"))
+            .expect("a question");
+        assert_eq!(edit.tool, "Edit");
+        let input: Value = serde_json::from_str(&edit.details).expect("JSON");
+        assert_eq!(input["file_path"], "/home/user/my-project/src/main.rs");
+        assert_eq!(
+            (input["old_string"].as_str(), input["new_string"].as_str()),
+            (Some("let x = 1;"), Some("let x = 2;"))
+        );
+
+        let words = serde_json::json!({ "command": ["bash", "-lc", "make test"] });
+        assert_eq!(permission_details(&words), "bash -lc make test");
+
+        // A command with any further field is shown whole: the field may be why it asks.
+        let unsandboxed =
+            permission_question(AgentKind::ClaudeCode, &fixture("claude-code-permission-request-unsandboxed"))
+                .expect("a question");
+        let input: Value = serde_json::from_str(&unsandboxed.details).expect("JSON");
+        assert_eq!(input["command"], "curl https://example.org/install.sh | sh");
+        assert_eq!(input["dangerouslyDisableSandbox"], true);
+        let remote = serde_json::json!({ "command": "reboot", "host": "prod" });
+        assert_eq!(permission_details(&remote), r#"{"command":"reboot","host":"prod"}"#);
+    }
+
+    #[test]
+    fn only_permission_requests_of_claude_code_and_codex_are_questions() {
+        assert_eq!(permission_question(AgentKind::Gemini, &fixture("codex-permission-request")), None);
+        assert_eq!(permission_question(AgentKind::ClaudeCode, &fixture("claude-code-stop")), None);
+        assert_eq!(permission_question(AgentKind::Codex, &fixture("claude-code-notification-permission")), None);
+        for broken in [
+            "",
+            "not json",
+            "[]",
+            r#"{"hook_event_name":"PermissionRequest"}"#,
+            r#"{"hook_event_name":"PermissionRequest","tool_name":""}"#,
+        ] {
+            assert_eq!(permission_question(AgentKind::ClaudeCode, broken), None, "{broken:?}");
+        }
+        // Without input the question still names the tool.
+        let bare = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash"}"#;
+        assert_eq!(permission_question(AgentKind::Codex, bare).map(|q| q.details), Some(String::new()));
+        // The plain hook keeps observing Codex's request and ignores Claude Code's.
+        assert!(matches!(run(AgentKind::Codex, "codex-permission-request"), HookIntent::Report { .. }));
+        assert_eq!(run(AgentKind::ClaudeCode, "claude-code-permission-request"), HookIntent::Nothing);
+    }
+
+    #[test]
+    fn answers_have_the_agents_format() {
+        for agent in [AgentKind::ClaudeCode, AgentKind::Codex] {
+            let allow: Value = serde_json::from_str(&permission_answer(agent, true).expect("answer")).expect("JSON");
+            assert_eq!(
+                allow,
+                serde_json::json!({
+                    "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "allow" } }
+                })
+            );
+            let deny = permission_answer(agent, false).expect("answer");
+            assert!(!deny.contains('\n'), "one line");
+            let deny: Value = serde_json::from_str(&deny).expect("JSON");
+            assert_eq!(deny["hookSpecificOutput"]["hookEventName"], "PermissionRequest");
+            assert_eq!(
+                deny["hookSpecificOutput"]["decision"],
+                serde_json::json!({ "behavior": "deny", "message": DENIED_MESSAGE })
+            );
+        }
+        assert_eq!(permission_answer(AgentKind::Gemini, true), None);
     }
 
     #[test]

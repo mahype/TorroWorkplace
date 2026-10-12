@@ -689,7 +689,8 @@ impl PimService {
             | Request::ClientActivity { .. }
             | Request::ListApprovals
             | Request::ApprovalStatus { .. }
-            | Request::DecideApproval { .. } => return None,
+            | Request::DecideApproval { .. }
+            | Request::AskPermission { .. } => return None,
             // The core checks the task list itself, before the entry and before anything else
             // (`Core::task_target_refusal`, task E3.5).
             Request::CreateTaskFromItem { .. } => return None,

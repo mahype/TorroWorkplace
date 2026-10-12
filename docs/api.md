@@ -84,7 +84,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
-| `approvals` | `list_approvals`, `approval_status` | | | `decide_approval` (**nur App-Schlüssel**) |
+| `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
 ¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
 schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::operation()`).
@@ -104,6 +104,31 @@ Zusammenfassung nennt den Host, wie der Browser ihn liest (ohne Benutzerteil vor
 Operation nur einen Bereich kennt, prüft der Dienst vorher eigens Schreibrecht in `tasks` (sonst
 `forbidden`, genannt als `tasks.save_todo`) und die Aufgabenliste wie bei `tasks.save_todo` (sonst
 `not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal.
+
+⁵ `ask_permission { tool, details, project? }` (E2.5) stellt dem Menschen eine Rückfrage „darf der
+Agent dieses Werkzeug benutzen?“, wie sie der Hook `PermissionRequest` von Claude Code und Codex
+stellt. Sie ist eine **Freigabe eigener Art** (siehe „Freigaben“): Sie wartet immer auf den Menschen,
+gleich was die Rechte sagen, läuft aber schon nach **32 Sekunden** ab (30 s Wartezeit des Hooks und
+etwas Spielraum) statt nach zehn Minuten. „Allow“ führt im Dienst nichts aus, sondern beantwortet nur
+die Rückfrage (Zustand `done` mit `ok`, sonst `denied` bzw. `expired`). Jeder Schlüssel darf fragen,
+auch ein Hook-Client; er liest mit `approval_status` nur seine **eigenen** Rückfragen, sonst weiterhin
+nichts (Regel 4). Die Zusammenfassung baut der Dienst: „Claude Code wants to use Bash in
+"my-project": cargo test“, Fragender bei Hook-Clients der Agent, sonst der Name des Clients, das
+Projekt in Anführungszeichen. `details` (der genaue Befehl) erscheint **ungekürzt**, nur ohne Steuer-
+und unsichtbare Format-Zeichen (Bidi, Zero-Width); Leerraum und leer aussehende Zeichen werden zu
+Leerzeichen, ab drei in Folge als `␣×n`, damit sich nichts hinter einer Lücke versteckt. Der Hook
+schickt nur bei reinem `command` (und `description`) den Befehl allein, sonst das ganze `tool_input`
+als JSON, damit kein Feld wie `dangerouslyDisableSandbox` verloren geht. Werkzeugnamen sind auf
+Buchstaben, Ziffern und `_ - . : /` beschränkt (höchstens 100 Zeichen), damit sie keinen eigenen Satz
+in die Frage tragen; mehr als 2.000 Zeichen `details` lehnt der Dienst mit `error` ab, statt zu
+kürzen, und der Agent fragt dann selbst. Ein Client hat höchstens drei Rückfragen gleichzeitig offen
+(sonst `busy`), damit er den Menschen nicht im Halbminutentakt zermürbt. Der volle Befehl liegt wie
+jede Freigabe einen Tag in `approvals.json` und als erledigter Eintrag im Eingang. Als Eintrag im Eingang ist die Rückfrage
+dringend; passt sie nicht in den Titel, steht sie ganz im Text. Das Protokoll nennt keine Kennungen
+und keinen Inhalt, nur die Freigabe. Den Hook richtet der Assistent ein
+(`torroworkplace hook claude-code|codex --key-file <datei> --answer`, Timeout 40 s); ohne
+Entscheidung gibt er nichts aus, und der Agent fragt wie gewohnt im Terminal. Gemini CLI hat keinen
+Hook, der eine Antwort annimmt.
 
 **`inbox`** (E1.1, Konzept [eingang.md](eingang.md)): Die Auswahl geht hier über **Quellen** statt
 Sammlungen, `Rights.inbox_sources` mit den Schlüsseln der Quellen (`suite`, `agent:claude-code`,
@@ -151,8 +176,9 @@ Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur 
 ermittelt künftig der Dienst, nicht mehr die Steuerzentrale.
 
 `approvals` hat wie `system` keine Stufe in den Rechten: Jeder gültige Schlüssel liest seine
-**eigenen** Freigaben (ein Agent muss erfahren können, wie sein Befehl ausging), der App-Schlüssel
-alle. Entscheiden kann nur der App-Schlüssel.
+**eigenen** Freigaben (ein Agent muss erfahren können, wie sein Befehl ausging) und darf eine
+Rückfrage stellen (`ask_permission`), der App-Schlüssel liest alle. Entscheiden kann nur der
+App-Schlüssel.
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine
@@ -301,6 +327,11 @@ freigeben. Das machen wir anders:
    Freigaben gleichzeitig offen haben (sonst `busy`), damit er den Menschen nicht mit
    Benachrichtigungen überschüttet. Befehle aus „Was nie nach außen geht“ werden nie zu einer
    Freigabe.
+6. **Rückfragen von Agenten** (`approvals.ask_permission`, E2.5) sind Freigaben, deren „Allow“ nichts
+   ausführt: Sie beantworten die Frage eines Hooks, der genau diese Freigabe (ihre Kennung) abfragt
+   und nur deren Antwort annimmt. Sie laufen nach 32 Sekunden ab, zählen zu den zehn offenen
+   Freigaben eines Clients und erscheinen wie jede Freigabe in Benachrichtigung („… asks for
+   permission“), Tray, Steuerzentrale, `ctl approvals` und Eingang.
 
 **Grenze des Modells:** Freigaben schützen vor einem Agenten, der über API oder MCP spricht, nicht
 vor Code, der schon als derselbe Nutzer läuft. Ein solches Programm könnte den App-Schlüssel neben

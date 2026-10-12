@@ -721,6 +721,7 @@ impl Request {
             Request::ListApprovals => &LIST_APPROVALS,
             Request::ApprovalStatus { .. } => &APPROVAL_STATUS,
             Request::DecideApproval { .. } => &DECIDE_APPROVAL,
+            Request::AskPermission { .. } => &ASK_PERMISSION,
             Request::ListItems { .. } => &LIST_ITEMS,
             Request::GetItem { .. } => &GET_ITEM,
             Request::OpenItem { .. } => &OPEN_ITEM,
@@ -806,6 +807,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_APPROVALS,
     &APPROVAL_STATUS,
     &DECIDE_APPROVAL,
+    &ASK_PERMISSION,
     &LIST_ITEMS,
     &GET_ITEM,
     &OPEN_ITEM,
@@ -1253,7 +1255,8 @@ static LIST_APPROVALS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists this key's commands that wait for a person's approval, and those decided or expired within \
-                  the last day with their outcome, newest first. An approval expires after ten minutes.",
+                  the last day with their outcome, newest first. An approval expires after ten minutes, a question \
+                  of `approvals.ask_permission` after about 30 seconds.",
 };
 
 static APPROVAL_STATUS: Command = Command {
@@ -1262,7 +1265,7 @@ static APPROVAL_STATUS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Tells whether a command that answered `pending` still waits for a person (`pending`), was \
-                  denied, expired after ten minutes, or ran (`done`, with the command's answer in `response`). \
+                  denied, expired (after ten minutes; a question after about 30 seconds), or ran (`done`, with the command's answer in `response`). \
                   Pass the id of the pending answer. MCP tools already wait up to 60 seconds for the decision \
                   themselves, so ask only after a tool answered `pending`, and not in a tight loop. Only a person \
                   can approve; ask them to decide in Torro Workplace.",
@@ -1275,6 +1278,21 @@ static DECIDE_APPROVAL: Command = Command {
     mcp: Mcp::Never,
     description: "Allows or denies a command that waits for a person's approval. Allowed, it runs now with the \
                   client's rights of this moment and the approval keeps its answer. Only the app key may use it.",
+};
+
+// Asking the person a yes/no question about a tool (task E2.5). Every key may ask, hook keys
+// too: like a command waiting for approval, the question only reaches the person, and allowing
+// runs nothing in the suite. It counts towards the ten open approvals of a client, and at most
+// three questions of a client wait at a time.
+static ASK_PERMISSION: Command = Command {
+    name: "approvals.ask_permission",
+    area: Area::Approvals,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Asks the person whether you may use a tool, e.g. before running a shell command: Torro Workplace \
+                  shows \"<you> wants to use <tool>: <details>\" with Allow and Deny. Allowing runs nothing in \
+                  Torro Workplace; it only answers you (`ok`), denying is `forbidden`. The question expires after \
+                  about 30 seconds; then ask the person in your own interface. Send the exact command in `details`.",
 };
 
 // The inbox (`docs/eingang.md`). Every description that returns entries says that their text can
@@ -1554,6 +1572,11 @@ mod tests {
             Request::ListApprovals,
             Request::ApprovalStatus { id: "9c1f0a7e3b2d4c58".into() },
             Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true },
+            Request::AskPermission {
+                tool: "Bash".into(),
+                details: "cargo test --workspace".into(),
+                project: Some("my-project".into()),
+            },
             Request::ListItems {
                 lane: Some(Lane::ForMe),
                 source: None,

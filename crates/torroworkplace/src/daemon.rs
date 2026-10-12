@@ -379,6 +379,8 @@ fn describe(request: &Request) -> String {
         Request::ListApprovals => "approvals".into(),
         Request::ApprovalStatus { id } => format!("approval {id}"),
         Request::DecideApproval { id, allow } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
+        // Never the tool or the command: they are what the agent would run.
+        Request::AskPermission { .. } => "ask for permission".into(),
         // Ids only, never a title, a body or a thread key (security rule 7 of the inbox).
         Request::ListItems { .. } => "inbox items".into(),
         Request::GetItem { id } => format!("inbox item {id}"),

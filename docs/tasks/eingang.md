@@ -333,7 +333,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   `file:`-Link → `unsupported`; `window` an einem Nicht-Hook-Eintrag wird ignoriert.
 
 ### E2.5 Rückfragen von Agenten im Eingang beantworten
-- [ ] erledigt
+- [x] erledigt (Freigabe der Art `approvals.ask_permission`, Ablauf 32 s, höchstens drei offen je Client; Hook `--answer`, Timeout 40 s; offen: MCP-Ablauftext „ten minutes“ in `mcp.rs`, lange Rückfragen in der Benachrichtigung mit „Allow“, ob Claude Code seinen Dialog erst nach dem Hook zeigt)
 - **Modell:** Opus · **Braucht:** E2.3b, E3.2, A.8b, E1.2c · Sicherheitsteil freigegeben 2026-10-12 ·
   **Dateien:** `crates/torroworkplace/src/{hook,approvals,core,inbox,notify,client_setup,audit}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-inbox/src/hook.rs` (+ Fixtures),
