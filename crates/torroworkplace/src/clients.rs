@@ -199,6 +199,16 @@ fn has_legacy_selection(rights: &Rights) -> bool {
     })
 }
 
+/// The mail selection names something that is no mail account id as the core makes it
+/// (`mail:<address>`, [`torro_mail::is_account_id`], task M2.1): [`Rights::reaches_mail_account`]
+/// would never match it, so the person would believe they granted something they did not.
+fn has_bad_mail_selection(rights: &Rights) -> bool {
+    match &rights.mail_accounts {
+        Selection::All => false,
+        Selection::Only(ids) => ids.iter().any(|id| !torro_mail::is_account_id(id)),
+    }
+}
+
 /// The GitHub selection names something that is no repository (`owner/name`) or owner
 /// (`owner`): a URL, a path, an empty name (task G.2). [`Rights::reaches_repo`] would never match
 /// it, so the person would believe they granted something they did not.
@@ -520,8 +530,9 @@ impl Clients {
     /// A selection that names a collection by a bare URL, as before several accounts existed, is
     /// refused ([`ClientsError::Invalid`]) and nothing changes (task M1.4): old selections were
     /// rewritten once when the core started, and a bare URL now would reach no collection. So is
-    /// a GitHub selection with anything but `owner/name` and `owner` in it (task G.2). A hook
-    /// client keeps at most [`Rights::hook`] ([`Rights::for_kind`], task E1.1).
+    /// a GitHub selection with anything but `owner/name` and `owner` in it (task G.2), and a mail
+    /// selection with anything but mail account ids (task M2.1). A hook client keeps at most
+    /// [`Rights::hook`] ([`Rights::for_kind`], task E1.1).
     pub async fn update(&self, id: &str, rights: Rights) -> Result<(), ClientsError> {
         if has_legacy_selection(&rights) {
             return Err(ClientsError::Invalid(
@@ -531,6 +542,11 @@ impl Clients {
         if has_bad_repo_selection(&rights) {
             return Err(ClientsError::Invalid(
                 "a GitHub selection names repositories as owner/name and owners as owner, nothing else",
+            ));
+        }
+        if has_bad_mail_selection(&rights) {
+            return Err(ClientsError::Invalid(
+                "a mail selection names accounts by their ids from accounts.list_accounts (mail:<address>)",
             ));
         }
         let _changing = self.shared.changing.lock().await;
@@ -1370,6 +1386,77 @@ pub(crate) mod tests {
         assert_eq!(rights.github_repos, Selection::All, "the rest stays as stored");
         assert!(!rights.allows(Request::ListSources.operation()), "no inbox area yet");
         assert!(!rights.inbox_sources.contains("agent:claude-code"));
+    }
+
+    /// Task M2.1: a `clients.json` from before mail opens no mail account, and sending would wait
+    /// for a person.
+    #[test]
+    fn a_clients_file_from_before_mail_loads_without_mail_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = clients_file(dir.path());
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let old = format!(
+            r#"{{"clients":[{{"id":"a1b2c3d4","name":"Claude Code","kind":"claude-code","keySha256":"{}",
+            "created":"2026-10-11T08:00:00Z","rights":{{"areas":{{"tasks":{{"level":"full","admin":false}}}},
+            "calendars":"all","taskLists":"all","githubRepos":"all","inboxSources":"all","confirm":"never"}}}}]}}"#,
+            "1".repeat(64)
+        );
+        fs::write(&file, old).expect("write");
+        let clients = open_in(dir.path());
+        let listed = clients.list();
+        assert_eq!(listed.len(), 1, "an older file is not damaged");
+        let rights = &listed[0].rights;
+        assert_eq!(rights.mail_accounts, Selection::Only(vec![]));
+        assert_eq!(rights.outbound, torro_ipc::api::Outbound::WithApproval);
+        assert_eq!(rights.area(Area::Mail), AreaRights::NONE);
+        assert!(!rights.allows(Request::MailFolders { account: None }.operation()), "no mail area yet");
+        assert!(!rights.reaches_mail_account("mail:anna@mailbox.org"));
+        assert_eq!(rights.inbox_sources, Selection::All, "the rest stays as stored");
+    }
+
+    /// Task M2.1, rule 5 of "Was nie nach außen geht": a script key with the admin switch of every
+    /// area still cannot hand the core a mail password; `outbound: never` keeps it from sending.
+    #[tokio::test]
+    async fn no_client_key_connects_mail_and_never_means_no_sending() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let full = everywhere(Level::Full, true);
+        let (client, key) = clients.add("Backup", "script", full.clone()).await.expect("added");
+        let server =
+            |host: &str| torro_mail::Endpoint { host: host.into(), port: 993, security: torro_mail::Security::Tls };
+        let connect = Request::ConnectMail {
+            address: "anna@mailbox.org".into(),
+            sender_name: String::new(),
+            imap: server("imap.mailbox.org"),
+            smtp: server("smtp.mailbox.org"),
+            login_name: "anna@mailbox.org".into(),
+            password: torro_ipc::Secret::new("hunter2"),
+            calendars: false,
+            tasks: false,
+            caldav: None,
+        };
+        assert_eq!(clients.admit(Some(&key), &connect), Err(Refused::Forbidden { command: "accounts.connect_mail" }));
+        assert_eq!(clients.admit(Some(&app_key(dir.path())), &connect), Ok(Caller::App));
+
+        let send = Request::SendDraft { id: "m:1".into() };
+        assert!(clients.admit(Some(&key), &send).is_ok(), "with approval by default");
+        let never = Rights { outbound: torro_ipc::api::Outbound::Never, ..full };
+        clients.update(&client.id, never).await.expect("updated");
+        assert_eq!(clients.admit(Some(&key), &send), Err(Refused::Forbidden { command: "mail.send_draft" }));
+    }
+
+    #[tokio::test]
+    async fn a_mail_selection_names_mail_accounts_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (client, _) = clients.add("Script", "script", read_only()).await.expect("added");
+        for bad in ["anna@mailbox.org", "caldav:anna@mailbox.org", "mail:anna@Mailbox.org", "mail:x/y@z.org"] {
+            let rights = Rights { mail_accounts: Selection::Only(vec![bad.into()]), ..read_only() };
+            assert!(matches!(clients.update(&client.id, rights).await, Err(ClientsError::Invalid(_))), "{bad}");
+        }
+        let good = Rights { mail_accounts: Selection::Only(vec!["mail:anna@mailbox.org".into()]), ..read_only() };
+        clients.update(&client.id, good.clone()).await.expect("a mail account id");
+        assert_eq!(clients.list()[0].rights, good);
     }
 
     #[tokio::test]

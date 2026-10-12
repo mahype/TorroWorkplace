@@ -312,6 +312,9 @@ pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavCli
     let account = &connected.account;
     let url = match account.kind {
         AccountKind::CalDav => account.server.clone(),
+        // The CalDAV address of the same sign-in (task M2.1); a mail-only account has none, which
+        // no client accepts. Mail accounts join the calendar sync with task M2.7.
+        AccountKind::Mail => account.mail.as_ref().and_then(|mail| mail.caldav.clone()).unwrap_or_default(),
         AccountKind::Nextcloud | AccountKind::GitHub => nextcloud::dav_url(&account.server),
     };
     let dav = CalDavAccount { url, username: account.login_name.clone() };

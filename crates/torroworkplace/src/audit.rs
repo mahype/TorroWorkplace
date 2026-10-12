@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_ipc::mail::MoveTarget;
 use torro_ipc::{ActivityEntry, Request, Response};
 
 /// The log's name in the state directory.
@@ -262,6 +263,33 @@ pub fn ids(request: &Request) -> Vec<String> {
         }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
+        // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
+        // subject, a recipient, a file or a folder name. The account as for collections; message,
+        // draft and folder ids only hashed, so lines can be matched but not with a mailbox.
+        Request::ConnectMail { .. } => Vec::new(),
+        Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
+        mail @ (Request::MailFolders { .. }
+        | Request::SearchMail { .. }
+        | Request::GetMail { .. }
+        | Request::GetMailThread { .. }
+        | Request::GetMailAttachment { .. }
+        | Request::SetMailFlags { .. }
+        | Request::MoveMail { .. }
+        | Request::DeleteMail { .. }
+        | Request::SaveDraft { .. }
+        | Request::SendDraft { .. }) => {
+            let folder = match mail {
+                Request::SearchMail { folder: Some(folder), .. }
+                | Request::MoveMail { to: MoveTarget::Folder(folder), .. } => Some(folder),
+                _ => None,
+            };
+            mail.mail_account()
+                .map(account)
+                .into_iter()
+                .chain(folder.map(|folder| format!("folder:{}", hashed(folder))))
+                .chain(mail.message_ids().into_iter().map(|message| format!("message:{}", hashed(message))))
+                .collect()
+        }
     }
 }
 
@@ -522,5 +550,55 @@ pub(crate) mod tests {
         assert_eq!(account, vec![format!("account:hash:{}", hashed("Anna Smith"))]);
         let task = Request::CreateTaskFromItem { id: "e1".into(), collection: url.into(), title: None, due: None };
         assert_eq!(super::ids(&task), vec!["inbox:e1".to_string(), logged[0].clone()]);
+    }
+
+    /// Security rule 3 of task M2.1: the account as it is, messages and folders only hashed, never
+    /// a search, a subject, a recipient, a file or a folder name.
+    #[test]
+    fn mail_requests_log_the_account_and_hashes_only() {
+        let search = Request::SearchMail {
+            account: Some("mail:anna@mailbox.org".into()),
+            folder: Some("f:0a1b".into()),
+            query: Some("salary negotiation".into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 20,
+            cursor: None,
+        };
+        let logged = super::ids(&search);
+        assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string(), format!("folder:{}", hashed("f:0a1b"))]);
+        let draft = torro_mail::Draft {
+            id: None,
+            account: "mail:anna@mailbox.org".into(),
+            to: vec![torro_mail::MailAddress { name: Some("Bob".into()), address: "bob@example.org".into() }],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Secret plans".into(),
+            body: "…".into(),
+            in_reply_to: Some("m:7".into()),
+            attachments: vec![torro_mail::DraftAttachment::File { path: "/home/anna/contract.pdf".into() }],
+        };
+        let logged = super::ids(&Request::SaveDraft { draft });
+        assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string(), format!("message:{}", hashed("m:7"))]);
+        let line = logged.join(" ");
+        for secret in ["bob", "Secret", "contract", "salary"] {
+            assert!(!line.contains(secret), "{line}");
+        }
+        let to = torro_ipc::mail::MoveTarget::Folder("f:9".into());
+        let moved = super::ids(&Request::MoveMail { ids: vec!["m:1".into(), "m:2".into()], to });
+        let expected = [format!("folder:{}", hashed("f:9")), format!("message:{}", hashed("m:1"))];
+        assert_eq!(moved[..2], expected, "{moved:?}");
+        assert_eq!(moved.len(), 3);
+        let update = Request::UpdateMailAccount {
+            id: "mail:anna@mailbox.org".into(),
+            sender_name: Some("Anna Example".into()),
+            signature: None,
+            notify: None,
+            services: None,
+            folder_roles: None,
+        };
+        assert_eq!(super::ids(&update), vec!["account:mail:anna@mailbox.org".to_string()]);
     }
 }

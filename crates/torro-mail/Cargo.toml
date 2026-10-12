@@ -1,0 +1,21 @@
+[package]
+name = "torro-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Mail types of TorroWorkplace without I/O: accounts, folders, messages, drafts."
+
+[lints]
+workspace = true
+
+# A leaf: no crate of the suite below it, so `torro-core` can keep a mail account's settings in
+# `accounts.json` with these types.
+[dependencies]
+chrono.workspace = true
+schemars.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

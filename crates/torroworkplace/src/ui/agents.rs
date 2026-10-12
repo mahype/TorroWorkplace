@@ -729,6 +729,7 @@ fn area_label(area: Area) -> &'static str {
         Area::Tasks => tr("Tasks"),
         Area::Github => tr("GitHub"),
         Area::Inbox => tr("Inbox"),
+        Area::Mail => tr("Mail"),
         Area::Accounts => tr("Accounts"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
@@ -745,6 +746,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Tasks => tr("Task lists and tasks"),
         Area::Github => tr("Issues and pull requests in filter lists"),
         Area::Inbox => tr("Entries of agents and scripts"),
+        Area::Mail => tr("Folders, messages and drafts"),
         Area::Accounts => tr("Connected accounts and sync"),
         Area::Settings => tr("Settings of the suite"),
         Area::Apps => tr("Opening the suite's apps"),
@@ -1734,7 +1736,8 @@ mod tests {
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
         let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
-        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &5)]));
+        // GitHub, Inbox, Mail, Accounts, Settings, Apps follow.
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &6)]));
     }
 
     #[test]

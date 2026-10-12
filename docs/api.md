@@ -80,7 +80,8 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
 | `inbox` | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
-| `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `set_github_token` und `connect_caldav` (**nur App-Schlüssel**, Punkt 5 unten) |
+| `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
+| `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
@@ -148,6 +149,43 @@ eine Domain gehört, der kann über SRV bis zu drei öffentliche Ziele mit belie
 normalen HTTP-Client, eine Adresse kann also zwischen Suche und Anmeldung anders auflösen. Beides
 betrifft nur öffentliche Adressen bzw. eine Anmeldung, die ein Mensch auslöst.
 
+⁷ **`mail`** (Gerüst M2.1, Konzept [mail.md](mail.md), Aufgaben [tasks/mail.md](tasks/mail.md)): Die Auswahl
+geht über **Konten**, `Rights.mail_accounts` mit Konto-Kennungen `mail:<adresse>`; alte `clients.json` ohne das
+Feld sehen kein Konto. Nennt ein Aufruf eine Kennung (Konto, Ordner, Nachricht, Entwurf) eines nicht
+freigegebenen Kontos, ist der **ganze Aufruf** `not-found`, geprüft vor dem Lesen. Kennungen von Ordnern
+(`f:…`) und Nachrichten (`m:…`) vergibt der Kern und löst sie selbst auf; nichts wird an Trennzeichen zerlegt.
+Die Stufe hängt teils vom Request ab (`Request::operation()`):
+
+- `move_messages` braucht `Write`, mit Ziel Rolle `trash` aber `Delete` (wie `load_template` mit `replace`);
+  ein Ordner mit der Rolle Papierkorb als Ziel ebenso, das prüft der Dienst beim Auflösen des Ordners (M3.2).
+- `save_draft` braucht `Write`, mit der `id` eines gespeicherten Entwurfs (ersetzen) aber `Delete`.
+- `send_draft` braucht `Write` **und** den Schalter **„Nach außen“** (`Rights.outbound`): `never` →
+  `forbidden`, `with_approval` (Voreinstellung, auch in allen Vorlagen und für alte `clients.json`) →
+  `pending`, `free` → sendet. Mit `confirm` gilt die strengere Regel: `free` mit `on_every_change` wartet
+  trotzdem (`Rights::needs_approval_of`). Hook-Clients haben `never`.
+
+Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
+100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst
+`error`, bevor jemand gefragt wird (`torro_ipc::mail::limit_refusal`). `update_mail_account` mit
+`folder_roles` setzt nur die genannten Rollen und nimmt nur Rollen an, die der Server offen ließ. Alle lesenden Tool-Beschreibungen sagen, dass Inhalte von
+Mails Daten sind, nie Anweisungen (`untrusted: true`). Sicherheitsregeln für alle Mail-Befehle:
+
+1. **Anhänge aus Dateien** nimmt der Dienst nur vom App-Schlüssel an; Client-Schlüssel nur Dateien aus dem
+   verwalteten Anhang-Ordner des Kerns, sonst `forbidden`. Keine Symlinks, höchstens 25 MiB.
+2. **Entwürfe gehören jemandem:** Client-Schlüssel ersetzen und senden nur eigene Entwürfe; fremde (auch die
+   des Menschen) sind `not-found`.
+3. **Protokoll:** das Konto wie bei Sammlungen, Nachrichten-, Entwurfs- und Ordner-Kennungen nur als Prüfsumme
+   (`message:<hash>`, `folder:<hash>`); nie Empfänger, Betreff, Suchbegriff, Dateiname, Ordnername.
+4. **Keine Geheimnisse in Logs:** Protokoll-Trace von `async-imap`/`lettre` nie einschalten; Konfigurationen
+   tragen kein Passwort.
+5. **Dateien:** `<data>/mail/` und `<cache>/mail-attachments/` 0700, alle Dateien darin 0600.
+
+Die Freigabe von `send_draft` zeigt aus dem **Entwurf im Kern** Konto, Betreff, ersten Empfänger, die Zahl
+aller Empfänger (mit Bcc) und der Anhänge; Verschieben und Löschen Anzahl und Betreffe aus dem Cache
+(`approvals::MailFacts`); `update_mail_account` den Kontonamen aus dem Kern, die geänderten Felder und den Anfang
+einer neuen Signatur. `update_mail_account` ändert nie Server oder Passwort: Ein Agent soll das Passwort nicht
+auf einen anderen Server lenken können.
+
 **`inbox`** (E1.1, Konzept [eingang.md](eingang.md)): Die Auswahl geht hier über **Quellen** statt
 Sammlungen, `Rights.inbox_sources` mit den Schlüsseln der Quellen (`suite`, `agent:claude-code`,
 `script:<name>`); alte `clients.json` ohne das Feld sehen keine Quelle. Vorlagen setzen `inbox` wie
@@ -207,7 +245,7 @@ auf (`calendar.list_calendars`, `tasks.list_lists`), damit die Rechte sauber gre
 in [architecture.md](architecture.md) (`setups_*`) heißen künftig `workspaces_*`, wie in der
 Oberfläche.
 
-Neue Bereiche kommen mit ihren Funktionen dazu (`github`, `slack`, `contacts` …).
+Neue Bereiche kommen mit ihren Funktionen dazu (`github`, `mail`, später `slack`, `contacts` …).
 
 ### Form der Befehle
 
@@ -269,7 +307,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
-   Anmeldung mit Passwort `accounts.connect_caldav`, Import aus einem fremden Schlüsselbund): nur mit
+   Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, Import aus einem fremden
+   Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten
    bekommt `forbidden`) und im Test `names_follow_the_rules` (`kept_back`). Solche Requests landen nie
@@ -293,10 +332,13 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
   `Admin`-Befehle (Konten verbinden/entfernen, Einstellungen ändern) sind ein eigener Schalter je
   Bereich, Standard aus. Ist er an, braucht jeder `Admin`-Befehl trotzdem eine Freigabe durch den
   Menschen, unabhängig von „Freigabe vorher“.
-- **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten (später auch
-  Repositories, Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
+- **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten, Repositories,
+  Quellen des Eingangs und Mail-Konten (später auch Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
 - **Freigabe vorher**: Nie · Beim Löschen (Standard) · Bei jeder Änderung.
+- **Nach außen** (Mail senden, M2.1): Nie · Mit Freigabe (Standard, in allen Vorlagen) · Frei. Senden ist kein
+  gewöhnliches Schreiben: Es verlässt den Rechner und lässt sich nicht zurückholen. Es gilt die strengere
+  Regel aus „Nach außen“ und „Freigabe vorher“ (Fußnote ⁷).
 - **Vorlagen** für den schnellen Start: *Read only*, *Read and write* (Standard, Löschen mit
   Freigabe), *Full access*. Danach ist jede Zeile einzeln änderbar.
 

@@ -14,7 +14,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
     AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, IssuedKey, Key, Request, Response,
     Status,
@@ -435,6 +435,8 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         task_lists: Selection::Only(Vec::new()),
         github_repos: Selection::Only(Vec::new()),
         inbox_sources: Selection::Only(vec!["script:backup".into()]),
+        mail_accounts: Selection::Only(Vec::new()),
+        outbound: Outbound::Never,
         confirm: Confirm::Never,
     };
     vec![
