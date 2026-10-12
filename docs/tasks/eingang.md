@@ -156,6 +156,29 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   `not-found`, Client löst fremden Vorgang auf → keine Wirkung, Drossel → `busy`, Datei 0600; ist A.5
   schon da: `title`, `body`, `thread_key` stehen nicht in `audit.jsonl`.
 
+### E1.2b Inbox absichern (aus der API-Prüfung von E1.1/E1.2)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E1.2 · **Dateien:** `crates/torroworkplace/src/{inbox,approvals,core,clients}.rs`,
+  `crates/torro-ipc/src/{api,lib}.rs`, `docs/api.md`
+- **Hoch:** Freigaben für `inbox.mute_source` (stumm/laut), `inbox.remove_rule` und `inbox.set_item_lane`
+  mit `remember` bekommen eigene Zusammenfassungen (Quelle mit Namen, Spur, die Regel aus dem Speicher
+  nachgeschlagen); ebenso `post_item` mit zitiertem Titel, wenn es auf Freigabe wartet.
+- **Hoch:** Ein Hook-Client gehört zu genau einem Agenten (beim Anlegen festgelegt, z. B. über ein Feld oder
+  den Namen); Meldungen landen unter diesem Agenten, ein anderes `agent.agent` wird abgelehnt. So hilft
+  Stummschalten zuverlässig.
+- **Hoch:** Längen für alle Felder: `thread_key` ≤ 200 Bytes und URL ≤ 2000 (sonst `error`), Agenten-Felder
+  kürzen, höchstens 16 `pids`; Test.
+- **Mittel:** Nur `http`/`https`-Links speichern (andere verwerfen), `app` nur bekannte Apps; `thread_key`
+  fremder Einträge nicht herausgeben (oder dokumentieren); Speicherfehler ohne Pfad an Clients; fehlende
+  Tests (eingeschränkte Rechte über `run_approved`, `set_item_lane{remember}` ohne Admin, `-shm`-Rechte,
+  `ListRules`/`ListSources` eines Hooks).
+- **Niedrig:** Filter (Spur, Zustand, seit, Anzahl) in SQL statt im Speicher; `user_version` aus
+  `SCHEMA_VERSION`; vorhandenes State-Verzeichnis auf 0700; Quellnamen eindeutig (`script:<name>` darf nicht
+  mit `script:cli` oder einem anderen Client gleichen Namens zusammenfallen); Katalogbeschreibung von
+  `post_item` nennt Grenzen, verworfene Felder und `id: null` = stumm.
+- **API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
+
 ### E1.3 MCP, `torroworkplace notify` und Client für die App
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** E1.2, E3.1 · **Dateien:** `crates/torroworkplace/src/{mcp,cli}.rs`,

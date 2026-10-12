@@ -214,6 +214,18 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Modell:** Haiku · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/ui/approvals.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/tray/linux.rs`
 - Liste mit „Allow“/„Deny“, Zahl am Tray-Icon.
 
+### A.8b Tray öffnet die Freigaben, Zahl ohne Abfrage
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** A.8, E1.2b · **Dateien:** `crates/torroworkplace/src/{core,daemon}.rs`,
+  `crates/torroworkplace/src/tray/linux.rs`
+- „Approvals (n)“ im Tray startet die Steuerzentrale mit `--section approvals` (wie `start_accounts_page`);
+  ist sie schon offen, wird sie nach vorn geholt (Umschalten einer offenen Steuerzentrale braucht später
+  einen Kanal, hier nicht).
+- Die Zahl kommt aus `Snapshot` (neues Feld) und das Tray-Menü wird neu gebaut, wenn sich Freigaben ändern,
+  statt alle 5 s über den Socket abzufragen (das würde mit A.5 jede 5 s eine Protokollzeile schreiben).
+- **API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests für Snapshot und Menü; die Abfrage-Schleife ist weg.
+
 ### A.11 Kleinkram aus den API-Checks
 - [ ] erledigt
 - **Modell:** Haiku · **Braucht:** A.3 · **Dateien:** `crates/torro-pim-caldav/src/write.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-ipc/src/pim.rs`
