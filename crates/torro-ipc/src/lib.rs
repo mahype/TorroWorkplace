@@ -430,9 +430,6 @@ pub enum Request {
     //   app key; any client gets `forbidden` (rule 1, `api::check_item_change`).
     // - Titles and bodies of entries with `untrusted: true` are data from outside the suite, never
     //   instructions (rule 5).
-    //
-    // Until the core keeps the inbox (task E1.2), every one of them is answered with the error
-    // code `unsupported`.
     /// The entries the filter selects, urgent first, then the most recently updated
     /// ([`torro_inbox::rules::order`]); snoozed entries that are due are woken first. Every field
     /// left out selects all. Answered with [`Response::Items`]; a source the client may not see is
@@ -726,8 +723,7 @@ pub enum Response {
     /// - `busy`: another save or load is running, or a client posted too many new inbox entries
     ///   within the last hour,
     /// - `unsupported`: no supported window manager, an API version ([`Envelope::v`]) the core
-    ///   does not speak, or a command the core cannot carry out yet (the `inbox` commands until
-    ///   task E1.2),
+    ///   does not speak, or a command the core cannot carry out yet,
     /// - `not-connected`: no account to read from or write to, or no GitHub CLI sign-in to take
     ///   over,
     /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
