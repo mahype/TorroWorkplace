@@ -23,7 +23,11 @@
 //!
 //! Requests never come from the core itself, so every entry they make is `untrusted`. New threads
 //! are throttled per poster and hour ([`throttle`]); merging into an existing thread and
-//! resolving never are.
+//! resolving never are. What a post may carry is limited ([`THREAD_KEY_MAX`], [`URL_MAX`],
+//! [`AGENT_FIELD_MAX`], [`PIDS_MAX`]), and only links that are safe to open are kept (security
+//! rule 6). A client sees the `thread_key` of its own entries only ([`Stored::shown_to`]).
+//!
+//! Failures of the file reach clients without paths or details; those go to the core's log.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -40,16 +44,22 @@ use torro_core::AppId;
 use torro_core::i18n::trf;
 use torro_core::paths::AppPaths;
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, Poster};
-use torro_inbox::{AgentInfo, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceRef, State};
+use torro_inbox::{
+    AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceRef, State,
+    StateFilter,
+};
 use torro_ipc::api::{self, HOOK_CLIENT, InboxForbidden, Selection};
 use torro_ipc::{ClientInfo, Request, Response};
+
+use crate::approvals::InboxFacts;
 
 /// The file in the core's state directory.
 pub const FILE: &str = "inbox.sqlite";
 
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
-/// written by a newer version and is left alone.
-pub const SCHEMA_VERSION: i64 = 1;
+/// written by a newer version and is left alone; an older one is brought up to date
+/// ([`migrate`]).
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -63,22 +73,37 @@ pub const POSTS_PER_HOUR: u32 = 30;
 /// New threads one hook client may open per hour: every session of an agent is a thread.
 pub const HOOK_POSTS_PER_HOUR: u32 = 120;
 
+/// The longest `thread_key`, in bytes; a longer one is `error`, since cutting it would merge
+/// matters that differ only at the end.
+pub const THREAD_KEY_MAX: usize = 200;
+
+/// The longest URL of a link, in bytes; a longer one is `error`.
+pub const URL_MAX: usize = 2000;
+
+/// The longest `session`, `project` and `branch` of an agent, in bytes; longer ones are cut at a
+/// character boundary, without "…", so the same text always gives the same cut.
+pub const AGENT_FIELD_MAX: usize = 200;
+
+/// The most process ids of an agent kept, nearest first; the window is found among the first
+/// few anyway (E2.4).
+pub const PIDS_MAX: usize = 16;
+
 /// The owner of the entries the app key posts (`torroworkplace notify`). Client ids are hex
 /// digits, so this never meets one.
 const APP_OWNER: &str = "app";
 
-/// Tables and indexes of [`SCHEMA_VERSION`] 1.
+/// Tables and indexes of schema version 1.
 ///
 /// - `items`: one row per entry. `owner` is who posted it (a client id or [`APP_OWNER`]) and,
 ///   with `thread_key`, unique: the namespace of thread keys (security rule 2). `source` is
 ///   [`SourceRef::key`], `state` one of `new`, `seen`, `done`, `snoozed` with `state_at` the time
 ///   it was done or until when it is snoozed. `received` counts new threads for the throttle.
-///   `data` is the whole [`Item`] as JSON and the only column read back.
+///   `data` is the whole [`Item`] as JSON and the only column read back besides `owner`.
 /// - `rules`: one row per lasting rule, at most one mute and one lane per source; `effect` is
 ///   `muted` or `lane`, `data` the [`Rule`] as JSON.
 ///
 /// Times are RFC 3339 in UTC with microseconds and `Z`, so they compare as text.
-const SCHEMA: &str = "
+const SCHEMA_V1: &str = "
 CREATE TABLE items (
     id TEXT PRIMARY KEY,
     owner TEXT NOT NULL,
@@ -100,7 +125,16 @@ CREATE TABLE rules (
     data TEXT NOT NULL,
     UNIQUE (source, effect)
 );
-PRAGMA user_version = 1;
+";
+
+/// From schema version 1 to 2: the columns `inbox.list_items` filters and sorts by in SQL, as
+/// [`ItemFilter`] and [`rules::order`] do in memory. `lane` is `for_me` or `info`, `urgent` 0 or
+/// 1, `updated` a time like the others. Filled from `data` for rows of version 1 ([`backfill`]).
+const SCHEMA_V2: &str = "
+ALTER TABLE items ADD COLUMN lane TEXT NOT NULL DEFAULT 'info';
+ALTER TABLE items ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN updated TEXT NOT NULL DEFAULT '';
+CREATE INDEX items_by_order ON items (urgent, updated);
 ";
 
 /// The inbox: `inbox.sqlite`, opened on first use.
@@ -149,9 +183,10 @@ impl Inbox {
     pub fn refusal(&self, request: &Request, client: Option<&ClientInfo>) -> Option<Response> {
         let client = client?;
         let checked = self.with(|db| match request {
-            Request::PostItem { kind, .. } => {
-                api::admit_post(*kind, Some(client)).map(drop).map_err(Failure::Forbidden)
-            }
+            Request::PostItem { kind, agent, .. } => api::admit_post(*kind, Some(client))
+                .and_then(|_| api::post_source(Some(client), agent.as_ref()))
+                .map(drop)
+                .map_err(Failure::Forbidden),
             Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
                 changeable(db, id, Some(client)).map(drop)
             }
@@ -160,6 +195,30 @@ impl Inbox {
             _ => Ok(()),
         });
         checked.err().map(Failure::response)
+    }
+
+    /// What the inbox holds about the entry or rule `request` names, for the summary of its
+    /// approval ([`crate::approvals::inbox_summary`]): looked up by the id the command runs with.
+    /// Call it only after [`Inbox::refusal`] let the request on, so nothing is named the client
+    /// cannot see. Empty for other requests, and when the file cannot be read (logged).
+    pub fn facts(&self, request: &Request) -> InboxFacts {
+        let looked_up = self.with(|db| {
+            let by_id = |id: &str| vec![text(id)];
+            Ok(match request {
+                Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
+                    let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
+                    InboxFacts { item, rule: None }
+                }
+                Request::RemoveRule { id } => {
+                    InboxFacts { item: None, rule: read_rules(db, &Scope::All, "id = ?", by_id(id))?.pop() }
+                }
+                _ => InboxFacts::default(),
+            })
+        });
+        looked_up.unwrap_or_else(|failure| {
+            eprintln!("torroworkplace: inbox: cannot look up an approval's entry: {failure}");
+            InboxFacts::default()
+        })
     }
 
     /// The daemon's routine at `now`: wakes snoozed entries that are due and, with `clean_up`,
@@ -249,9 +308,10 @@ enum Failure {
     Forbidden(InboxForbidden),
     /// `busy`: too many new threads in the last hour.
     Busy(String),
-    /// `error`: the request itself does not fit (an empty title).
+    /// `error`: the request itself does not fit (an empty title, a limit).
     Invalid(String),
-    /// `error`: the file could not be used.
+    /// `error`: the file could not be used. The client is told so without the details, which
+    /// may name paths of the user's home; those go to the log.
     Store(StoreError),
 }
 
@@ -262,7 +322,10 @@ impl Failure {
             Failure::NotFound(message) => ("not-found", message),
             Failure::Busy(message) => ("busy", message),
             Failure::Invalid(message) => ("error", message),
-            Failure::Store(err) => ("error", err.to_string()),
+            Failure::Store(err) => {
+                eprintln!("torroworkplace: inbox: {err}");
+                ("error", "the inbox could not be read or written; the log of Torro Workplace says why".into())
+            }
         };
         Response::Error { code: code.into(), message }
     }
@@ -318,7 +381,7 @@ fn answer(
         }
         Request::GetItem { id } => {
             wake_due(db, now)?;
-            Ok(Response::Item { item: visible_item(db, &id, client)? })
+            Ok(Response::Item { item: visible_item(db, &id, client)?.shown_to(client) })
         }
         Request::ListSources => {
             wake_due(db, now)?;
@@ -333,19 +396,21 @@ fn answer(
             Ok(Response::Ok)
         }
         Request::SetItemDone { id, done } => {
-            Ok(Response::Item { item: change(db, &id, client, |item| rules::set_done(item, done, now))? })
+            let stored = change(db, &id, client, |item| rules::set_done(item, done, now))?;
+            Ok(Response::Item { item: stored.shown_to(client) })
         }
         Request::SnoozeItem { id, until } => {
-            Ok(Response::Item { item: change(db, &id, client, |item| rules::snooze(item, until))? })
+            let stored = change(db, &id, client, |item| rules::snooze(item, until))?;
+            Ok(Response::Item { item: stored.shown_to(client) })
         }
         Request::SetItemLane { id, lane, remember } => {
             let tx = db.transaction()?;
-            let item = change(&tx, &id, client, |item| rules::set_lane(item, lane))?;
+            let stored = change(&tx, &id, client, |item| rules::set_lane(item, lane))?;
             if remember {
-                remember_lane(&tx, &item.source, lane, now)?;
+                remember_lane(&tx, &stored.item.source, lane, now)?;
             }
             tx.commit()?;
-            Ok(Response::Item { item })
+            Ok(Response::Item { item: stored.shown_to(client) })
         }
         Request::MuteSource { source, muted } => {
             changeable_source(&source, client)?;
@@ -413,30 +478,62 @@ impl Scope {
     }
 }
 
+/// An entry as stored, with who posted it ([`owner`]).
+struct Stored {
+    owner: String,
+    item: Item,
+}
+
+impl Stored {
+    /// The entry as `client` may see it: the `thread_key` of another poster's entry is empty, so
+    /// nobody learns the keys of others (the app key, `None`, sees them all).
+    fn shown_to(self, client: Option<&ClientInfo>) -> Item {
+        let mut item = self.item;
+        if client.is_some_and(|client| client.id != self.owner) {
+            item.thread_key.clear();
+        }
+        item
+    }
+}
+
 /// The rows of `table` (`items` or `rules`) in `scope` that meet `condition` (with `?` for
-/// `values`), as the JSON in their `data` column.
-fn read<T: serde::de::DeserializeOwned>(
+/// `values`), as `columns` gives them to `row`; `tail` follows the condition (order, limit).
+fn read<T>(
     db: &Connection,
     table: &str,
+    columns: &str,
     scope: &Scope,
-    condition: &str,
-    values: Vec<Value>,
+    (condition, values): (&str, Vec<Value>),
+    tail: &str,
+    row: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Vec<T>, Failure> {
     let Some((visible, mut all)) = scope.condition() else {
         return Ok(Vec::new());
     };
     all.extend(values);
-    let mut statement = db.prepare(&format!("SELECT data FROM {table} WHERE {visible} AND ({condition})"))?;
-    let rows = statement.query_map(params_from_iter(all), |row| row.get::<_, String>(0))?;
-    rows.map(|data| Ok(serde_json::from_str(&data?)?)).collect()
+    let sql = format!("SELECT {columns} FROM {table} WHERE {visible} AND ({condition}){tail}");
+    let mut statement = db.prepare(&sql)?;
+    let rows = statement.query_map(params_from_iter(all), row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<T>>>()?)
 }
 
-fn read_items(db: &Connection, scope: &Scope, condition: &str, values: Vec<Value>) -> Result<Vec<Item>, Failure> {
-    read(db, "items", scope, condition, values)
+/// The entries in `scope` that meet `condition`, with their owners; `tail` as in [`read`].
+fn read_items(
+    db: &Connection,
+    scope: &Scope,
+    condition: &str,
+    values: Vec<Value>,
+    tail: &str,
+) -> Result<Vec<Stored>, Failure> {
+    let rows = read(db, "items", "owner, data", scope, (condition, values), tail, |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.into_iter().map(|(owner, data)| Ok(Stored { owner, item: serde_json::from_str(&data)? })).collect()
 }
 
 fn read_rules(db: &Connection, scope: &Scope, condition: &str, values: Vec<Value>) -> Result<Vec<Rule>, Failure> {
-    read(db, "rules", scope, condition, values)
+    let rows = read(db, "rules", "data", scope, (condition, values), "", |row| row.get::<_, String>(0))?;
+    rows.iter().map(|data| Ok(serde_json::from_str(data)?)).collect()
 }
 
 fn text(value: impl Into<String>) -> Value {
@@ -444,16 +541,16 @@ fn text(value: impl Into<String>) -> Value {
 }
 
 /// The entry `id` if `client` sees its source, else `not-found`.
-fn visible_item(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<Item, Failure> {
-    read_items(db, &Scope::of(client), "id = ?", vec![text(id)])?.pop().ok_or_else(|| no_item(id))
+fn visible_item(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<Stored, Failure> {
+    read_items(db, &Scope::of(client), "id = ?", vec![text(id)], "")?.pop().ok_or_else(|| no_item(id))
 }
 
 /// The entry `id` if `client` sees it (`not-found`) and may change it (`forbidden`, security
 /// rule 1).
-fn changeable(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<Item, Failure> {
-    let item = visible_item(db, id, client)?;
-    api::check_item_change(&item, client).map_err(Failure::Forbidden)?;
-    Ok(item)
+fn changeable(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Result<Stored, Failure> {
+    let stored = visible_item(db, id, client)?;
+    api::check_item_change(&stored.item, client).map_err(Failure::Forbidden)?;
+    Ok(stored)
 }
 
 /// `client` sees `source` (`not-found`) and may mute it or remove its rules (`forbidden` for
@@ -473,15 +570,50 @@ fn removable_rule(db: &Connection, id: &str, client: Option<&ClientInfo>) -> Res
     Ok(rule)
 }
 
-/// The entries `client` sees that `filter` selects, sorted and cut ([`ItemFilter::apply`]).
+/// The entries `client` sees that `filter` selects, sorted and cut as [`ItemFilter::apply`]
+/// does, but in SQL: with thousands of entries only those asked for are read.
 fn list_items(db: &Connection, filter: &ItemFilter, client: Option<&ClientInfo>) -> Result<Vec<Item>, Failure> {
     let scope = Scope::of(client);
-    let items = match &filter.source {
-        Some(source) if !scope.sees(source) => Vec::new(),
-        Some(source) => read_items(db, &scope, "source = ?", vec![text(source.key())])?,
-        None => read_items(db, &scope, "1", Vec::new())?,
-    };
-    Ok(filter.apply(items))
+    let mut conditions = vec!["1"];
+    let mut values = Vec::new();
+    if let Some(source) = &filter.source {
+        if !scope.sees(source) {
+            return Ok(Vec::new());
+        }
+        conditions.push("source = ?");
+        values.push(text(source.key()));
+    }
+    if let Some(lane) = filter.lane {
+        conditions.push("lane = ?");
+        values.push(text(lane_column(lane)));
+    }
+    if let Some(state) = filter.state {
+        conditions.push(match state {
+            StateFilter::Open => "state IN ('new', 'seen')",
+            StateFilter::Snoozed => "state = 'snoozed'",
+            StateFilter::Done => "state = 'done'",
+        });
+    }
+    if let Some(since) = filter.since {
+        conditions.push("updated >= ?");
+        values.push(text(stamp(since)));
+    }
+    // The order of `rules::order`: urgent first, then the most recently updated, then by id.
+    let mut tail = String::from(" ORDER BY urgent DESC, updated DESC, id");
+    if let Some(limit) = filter.limit {
+        tail.push_str(" LIMIT ?");
+        values.push(Value::Integer(i64::from(limit)));
+    }
+    let rows = read_items(db, &scope, &conditions.join(" AND "), values, &tail)?;
+    Ok(rows.into_iter().map(|stored| stored.shown_to(client)).collect())
+}
+
+/// The `lane` column of `lane`, as serde writes it.
+fn lane_column(lane: Lane) -> &'static str {
+    match lane {
+        Lane::ForMe => "for_me",
+        Lane::Info => "info",
+    }
 }
 
 /// Every source `client` sees that has entries or is muted, with its open entries, in the order
@@ -537,14 +669,22 @@ fn post(
     now: DateTime<Utc>,
 ) -> Result<Option<String>, Failure> {
     let kind = api::admit_post(post.kind, client).map_err(Failure::Forbidden)?;
+    // A hook reports for its own agent only (`forbidden` otherwise), so muting holds.
+    let source = api::post_source(client, post.agent.as_ref()).map_err(Failure::Forbidden)?;
     let given = post.title.trim();
     if given.is_empty() {
         return Err(Failure::Invalid("a report needs a title".into()));
     }
+    let thread_key = checked_thread_key(post.thread_key)?;
+    if let Some(Link::Url { url }) = &post.link
+        && url.len() > URL_MAX
+    {
+        return Err(Failure::Invalid(format!("a link has at most {URL_MAX} bytes")));
+    }
     let poster = api::inbox_poster(client);
     // Only hooks know an agent session, and only their entries may jump to its window (E2.4).
-    let agent = post.agent.filter(|_| poster == Poster::Hook);
-    let source = api::post_source(client, agent.as_ref());
+    let agent = post.agent.filter(|_| poster == Poster::Hook).map(capped_agent);
+    let own_agent = client.and_then(|client| client.agent).filter(|_| poster == Poster::Hook);
     let rules = read_rules(db, &Scope::All, "source = ?", vec![text(source.key())])?;
     if rules.iter().any(|rule| rule.effect == RuleEffect::Muted) {
         return Ok(None);
@@ -555,11 +695,8 @@ fn post(
         RuleEffect::Muted => None,
     });
     let (lane, urgent) = rules::placement(kind, remembered.or(post.lane));
-    let agent_kind = matches!(kind, Kind::AgentWaiting | Kind::AgentDone);
-    let title = agent_title(kind, agent.as_ref()).unwrap_or_else(|| given.to_string());
+    let title = agent_title(kind, own_agent).unwrap_or_else(|| given.to_string());
     let body = post.body.as_deref().map(str::trim).filter(|body| !body.is_empty()).map(|body| cap(body, BODY_MAX));
-    let link = post.link.filter(|link| *link != Link::Window || agent_kind);
-    let thread_key = post.thread_key.filter(|key| !key.is_empty());
     let owner = owner(client);
 
     let tx = db.transaction()?;
@@ -571,7 +708,7 @@ fn post(
         Some(existing) => existing.id.clone(),
         None => new_id()?,
     };
-    let incoming = Item {
+    let mut incoming = Item {
         id: id.clone(),
         source,
         thread_key: thread_key.unwrap_or_else(|| format!("item:{id}")),
@@ -586,11 +723,16 @@ fn post(
         updated: now,
         count: 1,
         state: State::New,
-        link,
+        link: post.link,
         actions: Vec::new(),
         // Requests never come from the core: whatever they carry is foreign text (rule 5).
         untrusted: true,
     };
+    // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
+    // window of a hook's agent); anything else is dropped, not refused.
+    if !rules::may_open(&incoming, is_app_of_the_suite) {
+        incoming.link = None;
+    }
     match existing {
         Some(existing) => update_item(&tx, &rules::merge(existing, incoming))?,
         None => {
@@ -602,10 +744,45 @@ fn post(
     Ok(Some(id))
 }
 
+/// The `thread_key` of a post: `None` when left out or empty, `error` when longer than
+/// [`THREAD_KEY_MAX`] bytes.
+fn checked_thread_key(thread_key: Option<String>) -> Result<Option<String>, Failure> {
+    match thread_key {
+        Some(key) if key.len() > THREAD_KEY_MAX => {
+            Err(Failure::Invalid(format!("a thread_key has at most {THREAD_KEY_MAX} bytes")))
+        }
+        key => Ok(key.filter(|key| !key.is_empty())),
+    }
+}
+
+/// `agent` with its texts cut to [`AGENT_FIELD_MAX`] bytes and at most [`PIDS_MAX`] pids.
+fn capped_agent(mut agent: AgentInfo) -> AgentInfo {
+    agent.session = cap_bytes(&agent.session, AGENT_FIELD_MAX);
+    agent.project = agent.project.map(|project| cap_bytes(&project, AGENT_FIELD_MAX));
+    agent.branch = agent.branch.map(|branch| cap_bytes(&branch, AGENT_FIELD_MAX));
+    agent.pids.truncate(PIDS_MAX);
+    agent
+}
+
+/// `text` cut to at most `max` bytes at a character boundary.
+fn cap_bytes(text: &str, max: usize) -> String {
+    let mut end = max.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// `app` is the binary of an app of the suite ([`AppId::ALL`]), so a link may open it.
+fn is_app_of_the_suite(app: &str) -> bool {
+    AppId::ALL.iter().any(|known| known.binary == app)
+}
+
 /// The title the core writes itself for an agent's state (`agent_waiting`, `agent_done`), in the
-/// core's language; `None` for other kinds or without an agent.
-fn agent_title(kind: Kind, agent: Option<&AgentInfo>) -> Option<String> {
-    let name = agent?.agent.label();
+/// core's language: about `agent`, the agent the hook client was made for. `None` for other
+/// kinds or without an agent.
+fn agent_title(kind: Kind, agent: Option<AgentKind>) -> Option<String> {
+    let name = agent?.label();
     match kind {
         Kind::AgentWaiting => Some(trf("{agent} is waiting for your permission", &[("agent", &name)])),
         Kind::AgentDone => Some(trf("{agent} finished", &[("agent", &name)])),
@@ -651,6 +828,7 @@ fn resolve(
     client: Option<&ClientInfo>,
     now: DateTime<Utc>,
 ) -> Result<(), Failure> {
+    checked_thread_key(Some(thread_key.to_string()))?;
     let tx = db.transaction()?;
     if let Some(mut item) = read_owned(&tx, owner(client), thread_key)?
         && !matches!(item.state, State::Done { .. })
@@ -668,11 +846,11 @@ fn change(
     id: &str,
     client: Option<&ClientInfo>,
     apply: impl FnOnce(&mut Item),
-) -> Result<Item, Failure> {
-    let mut item = changeable(db, id, client)?;
-    apply(&mut item);
-    update_item(db, &item)?;
-    Ok(item)
+) -> Result<Stored, Failure> {
+    let mut stored = changeable(db, id, client)?;
+    apply(&mut stored.item);
+    update_item(db, &stored.item)?;
+    Ok(stored)
 }
 
 /// Keeps `lane` for later notices of `source`, replacing a lane remembered before.
@@ -717,8 +895,8 @@ fn read_owned(db: &Connection, owner: &str, thread_key: &str) -> Result<Option<I
 fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure> {
     let (state, state_at) = state_columns(&item.state);
     db.execute(
-        "INSERT INTO items (id, owner, thread_key, source, state, state_at, received, data)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO items (id, owner, thread_key, source, state, state_at, received, data, lane, urgent, updated)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             item.id,
             owner,
@@ -727,7 +905,10 @@ fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure>
             state,
             state_at,
             stamp(item.received),
-            serde_json::to_string(item)?
+            serde_json::to_string(item)?,
+            lane_column(item.lane),
+            item.urgent,
+            stamp(item.updated)
         ],
     )?;
     Ok(())
@@ -735,24 +916,32 @@ fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure>
 
 /// Stores the changed `item` over its row. Owner, thread key, source and `received` never change
 /// after it was created ([`rules::merge`] keeps them).
-fn update_item(db: &Connection, item: &Item) -> Result<(), Failure> {
+fn update_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
     let (state, state_at) = state_columns(&item.state);
     db.execute(
-        "UPDATE items SET state = ?2, state_at = ?3, data = ?4 WHERE id = ?1",
-        params![item.id, state, state_at, serde_json::to_string(item)?],
+        "UPDATE items SET state = ?2, state_at = ?3, data = ?4, lane = ?5, urgent = ?6, updated = ?7 WHERE id = ?1",
+        params![
+            item.id,
+            state,
+            state_at,
+            serde_json::to_string(item)?,
+            lane_column(item.lane),
+            item.urgent,
+            stamp(item.updated)
+        ],
     )?;
     Ok(())
 }
 
 /// Wakes every snoozed entry due at `now` ([`rules::wake`]); returns how many.
 fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
-    let due = read_items(db, &Scope::All, "state = 'snoozed' AND state_at <= ?", vec![text(stamp(now))])?;
+    let due = read_items(db, &Scope::All, "state = 'snoozed' AND state_at <= ?", vec![text(stamp(now))], "")?;
     if due.is_empty() {
         return Ok(0);
     }
     let tx = db.transaction()?;
     let mut woken = 0;
-    for mut item in due {
+    for Stored { mut item, .. } in due {
         if rules::wake(&mut item, now) {
             update_item(&tx, &item)?;
             woken += 1;
@@ -805,7 +994,7 @@ fn open(file: &Path) -> Result<Connection, StoreError> {
     let _mode: String = db.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     migrate(&mut db)?;
     // SQLite gives its side files the mode of the database; tighten them anyway, in case the
-    // database was looser before this version opened it.
+    // database was looser before this version opened it. The directory was made 0700 above.
     for side in ["-wal", "-shm"] {
         let mut path = file.as_os_str().to_owned();
         path.push(side);
@@ -817,20 +1006,38 @@ fn open(file: &Path) -> Result<Connection, StoreError> {
     Ok(db)
 }
 
-/// Creates the tables in a new file; a file of [`SCHEMA_VERSION`] stays as it is, a newer one is
-/// refused.
+/// Creates the tables in a new file and brings an older one up to [`SCHEMA_VERSION`], step by
+/// step in one transaction; a file of this version stays as it is, a newer one is refused.
 fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    match version {
-        0 => {
-            let tx = db.transaction()?;
-            tx.execute_batch(SCHEMA)?;
-            tx.commit()?;
-            Ok(())
-        }
-        SCHEMA_VERSION => Ok(()),
-        newer => Err(StoreError::Newer(newer)),
+    if version > SCHEMA_VERSION {
+        return Err(StoreError::Newer(version));
     }
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+    let tx = db.transaction()?;
+    if version < 1 {
+        tx.execute_batch(SCHEMA_V1)?;
+    }
+    if version < 2 {
+        tx.execute_batch(SCHEMA_V2)?;
+        backfill(&tx)?;
+    }
+    tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Fills the columns of version 2 from the JSON of every entry written by version 1.
+fn backfill(db: &Connection) -> Result<(), StoreError> {
+    let mut statement = db.prepare("SELECT data FROM items")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    for data in rows {
+        let item: Item = serde_json::from_str(&data?)?;
+        update_item(db, &item)?;
+    }
+    Ok(())
 }
 
 /// Creates `file` if missing, readable and writable only by the owner on Unix, and makes an
@@ -890,6 +1097,7 @@ pub(crate) mod tests {
             created: at(0, 0),
             last_used: None,
             rights,
+            agent: (kind == HOOK_CLIENT).then_some(AgentKind::ClaudeCode),
         }
     }
 
@@ -898,8 +1106,14 @@ pub(crate) mod tests {
         client("aa01", "script", RightsTemplate::FullAccess.rights())
     }
 
+    /// The hook client of Claude Code.
     fn hook() -> ClientInfo {
         client("bb02", HOOK_CLIENT, Rights::hook())
+    }
+
+    /// The hook client of `agent`.
+    fn hook_for(agent: AgentKind) -> ClientInfo {
+        ClientInfo { id: format!("bb-{}", agent.id()), agent: Some(agent), ..hook() }
     }
 
     /// A client that sees no source at all.
@@ -1132,10 +1346,12 @@ pub(crate) mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for path in [file_in(dir.path()), dir.path().join("state").join(format!("{FILE}-wal"))] {
+            let state = dir.path().join("state");
+            for path in [file_in(dir.path()), state.join(format!("{FILE}-wal")), state.join(format!("{FILE}-shm"))] {
                 let mode = fs::metadata(&path).expect("exists").permissions().mode() & 0o777;
                 assert_eq!(mode, 0o600, "{}", path.display());
             }
+            assert_eq!(fs::metadata(&state).expect("dir").permissions().mode() & 0o777, 0o700);
         }
         let db = Connection::open(file_in(dir.path())).expect("opens");
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
@@ -1144,7 +1360,42 @@ pub(crate) mod tests {
         db.execute_batch("PRAGMA user_version = 99").expect("written");
         drop(db);
         let newer = inbox_in(dir.path());
-        assert_eq!(code(&newer.handle(all(), None, at(8, 1))), "error", "a newer file is left alone");
+        let refused = newer.handle(all(), None, at(8, 1));
+        assert_eq!(code(&refused), "error", "a newer file is left alone");
+        let Response::Error { message, .. } = refused else { panic!("an error") };
+        let home = dir.path().to_string_lossy();
+        assert!(!message.contains(home.as_ref()) && !message.contains(FILE), "no path to clients: {message}");
+    }
+
+    #[test]
+    fn a_file_of_schema_1_is_brought_up_to_date() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = file_in(dir.path());
+        fs::create_dir_all(file.parent().expect("dir")).expect("dir");
+        let mut old = approval(at(7, 0));
+        old.id = "old".into();
+        {
+            let db = Connection::open(&file).expect("opens");
+            db.execute_batch(SCHEMA_V1).expect("tables");
+            db.execute_batch("PRAGMA user_version = 1").expect("version");
+            db.execute(
+                "INSERT INTO items (id, owner, thread_key, source, state, received, data)
+                 VALUES ('old', 'core', 'approval:1', 'suite', 'new', ?1, ?2)",
+                params![stamp(old.received), serde_json::to_string(&old).expect("json")],
+            )
+            .expect("row");
+        }
+        let inbox = inbox_in(dir.path());
+        posted(inbox.handle(notice("newer", None), None, at(8, 0)));
+        let for_me =
+            Request::ListItems { lane: Some(Lane::ForMe), source: None, state: None, since: None, limit: None };
+        assert_eq!(items(inbox.handle(for_me, None, at(9, 0))).into_iter().map(|i| i.id).collect::<Vec<_>>(), ["old"]);
+        let info = |limit| Request::ListItems { lane: None, source: None, state: None, since: None, limit };
+        let ordered = items(inbox.handle(info(Some(1)), None, at(9, 0)));
+        assert_eq!(ordered[0].id, "old", "urgent first although older");
+        let db = Connection::open(&file).expect("opens");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
@@ -1278,7 +1529,7 @@ pub(crate) mod tests {
         ));
         posted(inbox.handle(notice("Later", Some("new")), Some(&script), at(9, 0)));
 
-        let hook = hook();
+        let hook = hook_for(AgentKind::Codex);
         for n in 0..HOOK_POSTS_PER_HOUR {
             posted(inbox.handle(
                 agent_post(Kind::AgentDone, &format!("codex:{n}"), AgentKind::Codex),
@@ -1477,7 +1728,8 @@ pub(crate) mod tests {
         posted(inbox.handle(for_me("older"), None, at(8, 0)));
         posted(inbox.handle(notice("info", None), None, at(8, 1)));
         posted(inbox.handle(for_me("newer"), None, at(8, 2)));
-        posted(inbox.handle(agent_post(Kind::AgentWaiting, "w", AgentKind::Gemini), Some(&hook()), at(7, 0)));
+        let gemini = hook_for(AgentKind::Gemini);
+        posted(inbox.handle(agent_post(Kind::AgentWaiting, "w", AgentKind::Gemini), Some(&gemini), at(7, 0)));
         let titles =
             |request| items(inbox.handle(request, None, at(9, 0))).into_iter().map(|i| i.title).collect::<Vec<_>>();
         let waiting = trf("{agent} is waiting for your permission", &[("agent", &"Gemini CLI")]);
@@ -1490,6 +1742,161 @@ pub(crate) mod tests {
             ["newer"]
         );
         assert_eq!(tr("Suite"), SourceRef::suite().label(), "texts go through tr()");
+    }
+
+    #[test]
+    fn a_hook_reports_for_its_own_agent_only_so_muting_holds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let hook = hook();
+        let disguised = agent_post(Kind::AgentWaiting, "codex:s1", AgentKind::Codex);
+        assert_eq!(code(&inbox.handle(disguised.clone(), Some(&hook), at(8, 0))), "forbidden");
+        assert_eq!(inbox.refusal(&disguised, Some(&hook)).as_ref().map(code), Some("forbidden"));
+
+        // Without agent info the report still goes under the hook's own agent, with its title.
+        let bare = Request::PostItem {
+            kind: Kind::AgentDone,
+            title: "Codex finished".into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: Some("s2".into()),
+            agent: None,
+        };
+        let id = posted(inbox.handle(bare.clone(), Some(&hook), at(8, 1)));
+        let entry = item(inbox.handle(Request::GetItem { id }, None, at(8, 2)));
+        assert_eq!(entry.source, SourceRef::agent("claude-code"));
+        assert_eq!(entry.title, trf("{agent} finished", &[("agent", &"Claude Code")]));
+
+        let mute = Request::MuteSource { source: SourceRef::agent("claude-code"), muted: true };
+        assert_eq!(inbox.handle(mute, None, at(8, 3)), Response::Ok);
+        assert_eq!(inbox.handle(bare, Some(&hook), at(8, 4)), Response::Posted { id: None });
+
+        let unbound = ClientInfo { agent: None, ..hook };
+        assert_eq!(code(&inbox.handle(notice("Hi", None), Some(&unbound), at(8, 5))), "forbidden");
+    }
+
+    #[test]
+    fn posts_keep_to_their_limits() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let keyed = |key: String| notice("Keyed", Some(&key));
+        posted(inbox.handle(keyed("k".repeat(THREAD_KEY_MAX)), None, at(8, 0)));
+        assert_eq!(code(&inbox.handle(keyed("k".repeat(THREAD_KEY_MAX + 1)), None, at(8, 0))), "error");
+        let resolve = Request::ResolveItems { thread_key: "k".repeat(THREAD_KEY_MAX + 1) };
+        assert_eq!(code(&inbox.handle(resolve, None, at(8, 0))), "error");
+
+        let linked = |link: Link| Request::PostItem {
+            kind: Kind::Notice,
+            title: "Linked".into(),
+            body: None,
+            link: Some(link),
+            lane: None,
+            thread_key: None,
+            agent: None,
+        };
+        let long = format!("https://example.org/{}", "a".repeat(URL_MAX));
+        assert_eq!(code(&inbox.handle(linked(Link::Url { url: long }), None, at(8, 1))), "error");
+
+        let mut agent = session(AgentKind::ClaudeCode, &"s".repeat(AGENT_FIELD_MAX + 10));
+        agent.project = Some("ä".repeat(AGENT_FIELD_MAX));
+        agent.branch = Some("b".repeat(AGENT_FIELD_MAX + 1));
+        agent.pids = (1..=40).collect();
+        let request = Request::PostItem {
+            kind: Kind::AgentWaiting,
+            title: "ignored".into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: Some("claude-code:long".into()),
+            agent: Some(agent),
+        };
+        let id = posted(inbox.handle(request, Some(&hook()), at(8, 2)));
+        let stored = item(inbox.handle(Request::GetItem { id }, None, at(8, 3))).agent.expect("agent");
+        assert_eq!(stored.session.len(), AGENT_FIELD_MAX);
+        let project = stored.project.expect("project");
+        assert!(project.len() <= AGENT_FIELD_MAX && project.chars().all(|c| c == 'ä'), "cut at a character");
+        assert_eq!(stored.branch.map(|b| b.len()), Some(AGENT_FIELD_MAX));
+        assert_eq!(stored.pids, (1..=16).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn only_links_that_are_safe_to_open_are_kept() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let link_of = |link: Link| {
+            let request = Request::PostItem {
+                kind: Kind::Notice,
+                title: "Linked".into(),
+                body: None,
+                link: Some(link),
+                lane: None,
+                thread_key: None,
+                agent: None,
+            };
+            let id = posted(inbox.handle(request, Some(&script()), at(8, 0)));
+            item(inbox.handle(Request::GetItem { id }, None, at(8, 1))).link
+        };
+        let url = |url: &str| Link::Url { url: url.into() };
+        assert_eq!(link_of(url("https://ci.example.org/run/1")), Some(url("https://ci.example.org/run/1")));
+        assert_eq!(link_of(url("HTTP://example.org")), Some(url("HTTP://example.org")));
+        for unsafe_url in ["file:///etc/passwd", "javascript:alert(1)", "ftp://example.org", "example.org"] {
+            assert_eq!(link_of(url(unsafe_url)), None, "{unsafe_url}");
+        }
+        let app = |app: &str| Link::App { app: app.into() };
+        assert_eq!(link_of(app("torrotasks")), Some(app("torrotasks")));
+        assert_eq!(link_of(app("torroworkplace")), Some(app("torroworkplace")));
+        assert_eq!(link_of(app("rm -rf")), None);
+        assert_eq!(link_of(Link::Window), None, "no window from a non-hook");
+    }
+
+    #[test]
+    fn only_the_poster_and_the_app_key_see_a_thread_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let poster = script();
+        let id = posted(inbox.handle(notice("Build failed", Some("build:secret-branch")), Some(&poster), at(8, 0)));
+        let reader = client("dd04", "codex", RightsTemplate::FullAccess.rights());
+
+        let get = || Request::GetItem { id: id.clone() };
+        assert_eq!(item(inbox.handle(get(), Some(&poster), at(8, 1))).thread_key, "build:secret-branch");
+        assert_eq!(item(inbox.handle(get(), None, at(8, 1))).thread_key, "build:secret-branch");
+        assert_eq!(item(inbox.handle(get(), Some(&reader), at(8, 1))).thread_key, "");
+        assert_eq!(items(inbox.handle(all(), Some(&reader), at(8, 1)))[0].thread_key, "");
+        let done = Request::SetItemDone { id: id.clone(), done: true };
+        assert_eq!(item(inbox.handle(done, Some(&reader), at(8, 2))).thread_key, "");
+        // Hiding it never touches what is stored.
+        assert_eq!(item(inbox.handle(get(), Some(&poster), at(8, 3))).thread_key, "build:secret-branch");
+    }
+
+    #[test]
+    fn a_hook_lists_no_rules_and_no_sources() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let hook = hook();
+        posted(inbox.handle(agent_post(Kind::AgentWaiting, "s1", AgentKind::ClaudeCode), Some(&hook), at(8, 0)));
+        let mute = Request::MuteSource { source: SourceRef::agent("claude-code"), muted: true };
+        assert_eq!(inbox.handle(mute, None, at(8, 1)), Response::Ok);
+        assert_eq!(inbox.handle(Request::ListRules, Some(&hook), at(8, 2)), Response::Rules { rules: vec![] });
+        assert_eq!(inbox.handle(Request::ListSources, Some(&hook), at(8, 2)), Response::Sources { sources: vec![] });
+    }
+
+    #[test]
+    fn facts_for_an_approval_come_from_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = posted(inbox.handle(notice("CI red", None), Some(&script()), at(8, 0)));
+        let lane = Request::SetItemLane { id: id.clone(), lane: Lane::ForMe, remember: true };
+        let facts = inbox.facts(&lane);
+        assert_eq!(facts.item.map(|item| (item.id, item.title)), Some((id.clone(), "CI red".to_string())));
+        inbox.handle(lane, None, at(8, 1));
+        let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(8, 2)) else {
+            panic!("rules answer with Rules");
+        };
+        let remove = Request::RemoveRule { id: rules[0].id.clone() };
+        assert_eq!(inbox.facts(&remove).rule.as_ref(), rules.first());
+        assert_eq!(inbox.facts(&Request::RemoveRule { id: "nope".into() }), InboxFacts::default());
+        assert_eq!(inbox.facts(&Request::ListSources), InboxFacts::default());
     }
 
     #[test]

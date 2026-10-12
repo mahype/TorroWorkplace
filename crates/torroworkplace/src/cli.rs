@@ -206,6 +206,7 @@ fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Reque
             name: name.to_string(),
             kind: options.kind.unwrap_or(DEFAULT_KIND).to_string(),
             template: parse_template(options.template)?,
+            agent: None,
         }),
         ("remove", [id]) => Ok(Request::RemoveClient { id: id.to_string() }),
         ("new-key", [id]) => Ok(Request::NewClientKey { id: id.to_string() }),
@@ -674,8 +675,12 @@ mod tests {
 
     #[test]
     fn clients_add_with_name_kind_and_template() {
-        let add =
-            |kind: &str, template| Request::CreateClient { name: "Claude Code".into(), kind: kind.into(), template };
+        let add = |kind: &str, template| Request::CreateClient {
+            name: "Claude Code".into(),
+            kind: kind.into(),
+            template,
+            agent: None,
+        };
         assert_eq!(request(&["ctl", "clients", "add", "Claude Code"]), add("script", RightsTemplate::ReadAndWrite));
         assert_eq!(
             request(&["ctl", "clients", "add", "Claude Code", "--kind", "claude-code", "--template=read-only"]),
@@ -702,6 +707,7 @@ mod tests {
             created: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
             last_used,
             rights,
+            agent: None,
         }
     }
 

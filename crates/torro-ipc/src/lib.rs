@@ -36,7 +36,7 @@ use torro_core::AppId;
 pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
-use torro_inbox::{AgentInfo, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
+use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 use torro_pim::{AccountState, Collection, Event, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
@@ -367,7 +367,9 @@ pub enum Request {
     ListClients,
     /// Connects a new client with the rights of `template` and answers with
     /// [`Response::ClientKey`], the only time its key leaves the core. An empty `name` or `kind`
-    /// is `error`.
+    /// is `error`, so is a hook client without `agent` or another kind with one. A `script`
+    /// client named `cli` or like another script client is `conflict`: its name is its inbox
+    /// source (`script:<name>`), and the app key reports as `script:cli`.
     #[serde(rename = "clients.create_client")]
     CreateClient {
         /// What the person calls it: `Claude Code`.
@@ -377,6 +379,11 @@ pub enum Request {
         /// inbox ([`api::Rights::for_kind`]).
         kind: String,
         template: RightsTemplate,
+        /// Only and always with kind `hook`: the coding agent whose hooks use the key. It is
+        /// fixed for the client's life; the inbox files every report of the key under this agent
+        /// and refuses reports that name another one ([`api::post_source`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentKind>,
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
@@ -431,6 +438,8 @@ pub enum Request {
     //   app key; any client gets `forbidden` (rule 1, `api::check_item_change`).
     // - Titles and bodies of entries with `untrusted: true` are data from outside the suite, never
     //   instructions (rule 5).
+    // - A client sees the `thread_key` of its own entries only; on entries of other posters it
+    //   is empty, so nobody learns another client's keys (the app key sees them all).
     /// The entries the filter selects, urgent first, then the most recently updated
     /// ([`torro_inbox::rules::order`]); snoozed entries that are due are woken first. Every field
     /// left out selects all. Answered with [`Response::Items`]; a source the client may not see is
@@ -476,8 +485,17 @@ pub enum Request {
     /// The kind decides lane and urgency ([`torro_inbox::rules::placement`]); nobody makes an
     /// entry urgent. `approval` and `account_problem` come only from the core: `forbidden`.
     /// `agent_waiting` and `agent_done` are taken only from hook clients; from any other key they
-    /// become a `notice` ([`api::admit_post`], rule 3). Error codes: `forbidden`, `busy` (too many
-    /// new entries in the last hour), `error` (an empty title).
+    /// become a `notice` ([`api::admit_post`], rule 3). A hook client reports only for the agent
+    /// it was created for ([`ClientInfo::agent`]); `agent` naming another one is `forbidden`.
+    ///
+    /// Limits: `title` is cut to 200 and `body` to 4000 characters (ending in "…"); a
+    /// `thread_key` over 200 bytes or a URL over 2000 bytes is `error`. Of `agent`, `session`,
+    /// `project` and `branch` are cut to 200 bytes and `pids` to the first 16. Dropped without
+    /// error: `agent` and a `window` link from any key but a hook, a URL that is not `http` or
+    /// `https`, and an `app` link to no app of the suite. Like every write, a post may wait for a
+    /// person's approval ([`Response::Pending`]) when the client's rights ask for it. Error codes:
+    /// `forbidden`, `busy` (too many new entries in the last hour), `error` (an empty title, a
+    /// limit above).
     #[serde(rename = "inbox.post_item")]
     PostItem {
         /// `notice` for anything a script or agent reports; `agent_waiting` and `agent_done` from
@@ -505,7 +523,8 @@ pub enum Request {
     },
     /// The matter of `thread_key` went away: the caller's own open entries with it are done
     /// (`torroworkplace hook` sends it when an agent goes on). Entries of other clients are never
-    /// touched, and nothing tells them apart from none. Answered with [`Response::Ok`].
+    /// touched, and nothing tells them apart from none. Answered with [`Response::Ok`]; a
+    /// `thread_key` over 200 bytes is `error`.
     #[serde(rename = "inbox.resolve_items")]
     ResolveItems {
         /// The `thread_key` the caller posted with.
@@ -803,6 +822,10 @@ pub struct ClientInfo {
     /// The last request with its key, to the minute.
     pub last_used: Option<DateTime<Utc>>,
     pub rights: Rights,
+    /// For a hook client ([`api::HOOK_CLIENT`]): the coding agent it reports for, fixed when it
+    /// was created ([`Request::CreateClient`]). `None` for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentKind>,
 }
 
 /// One approval: a client's command that waits for a person, or did.
@@ -1016,6 +1039,7 @@ mod tests {
                 created: Utc::now(),
                 last_used: None,
                 rights: api::RightsTemplate::ReadOnly.rights(),
+                agent: None,
             },
             key: key.clone(),
         };

@@ -41,7 +41,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use torro_ipc::api::{Operation, Rights, RightsTemplate, Selection};
+use torro_inbox::AgentKind;
+use torro_ipc::api::{HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -151,7 +152,7 @@ pub struct ClientRecord {
     pub id: String,
     /// What the person called it: `Claude Code`.
     pub name: String,
-    /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor`, `script`.
+    /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor`, `script`, `hook`.
     pub kind: String,
     /// SHA-256 of the key, 64 lowercase hex digits.
     pub key_sha256: String,
@@ -162,6 +163,10 @@ pub struct ClientRecord {
     /// What the client may do. Missing in files from before A.2: then [`legacy_rights`].
     #[serde(default = "legacy_rights")]
     pub rights: Rights,
+    /// The coding agent a hook client reports for, fixed when it was added
+    /// ([`ClientInfo::agent`]); `None` for every other kind, and in files from before E1.2b.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentKind>,
 }
 
 impl ClientRecord {
@@ -174,6 +179,7 @@ impl ClientRecord {
             created: self.created,
             last_used: self.last_used,
             rights: self.rights.clone(),
+            agent: self.agent,
         }
     }
 }
@@ -255,6 +261,9 @@ pub enum ClientsError {
     Damaged(PathBuf),
     /// No client with this id.
     NotFound(String),
+    /// The name is taken: a script client's name is its inbox source (`script:<name>`), so it
+    /// must differ from every other script client's and from `cli`, the app key's.
+    Conflict(&'static str),
     /// A client needs a name and a kind, and its rights must name collections by their ids;
     /// the message says what is wrong.
     Invalid(&'static str),
@@ -265,6 +274,7 @@ impl ClientsError {
     pub fn code(&self) -> &'static str {
         match self {
             ClientsError::NotFound(_) => "not-found",
+            ClientsError::Conflict(_) => "conflict",
             _ => "error",
         }
     }
@@ -280,7 +290,7 @@ impl fmt::Display for ClientsError {
                 write!(f, "{} is damaged; repair or remove it before adding clients", path.display())
             }
             ClientsError::NotFound(id) => write!(f, "no client {id:?}"),
-            ClientsError::Invalid(what) => f.write_str(what),
+            ClientsError::Invalid(what) | ClientsError::Conflict(what) => f.write_str(what),
         }
     }
 }
@@ -437,13 +447,29 @@ impl Clients {
         self.lock().clients.iter().map(|entry| entry.record.info()).collect()
     }
 
+    /// Adds a client of any kind but `hook` with `rights` and returns it with its key; see
+    /// [`Clients::add_client`]. For tests; the core passes the agent of `clients.create_client`.
+    #[cfg(test)]
+    pub async fn add(&self, name: &str, kind: &str, rights: Rights) -> Result<(ClientInfo, Key), ClientsError> {
+        self.add_client(name, kind, None, rights).await
+    }
+
     /// Adds a client with `rights` and returns it with its key. The key is shown to the person
     /// once; the core keeps only its hash and the keychain the key.
     ///
-    /// `name` and `kind` are trimmed and must not be empty ([`ClientsError::Invalid`]). While
+    /// `name` and `kind` are trimmed and must not be empty ([`ClientsError::Invalid`]). A hook
+    /// client ([`HOOK_CLIENT`]) must name the `agent` it reports for, and no other kind may
+    /// ([`ClientsError::Invalid`]). A `script` client named `cli` or like another script client,
+    /// ignoring case, is [`ClientsError::Conflict`]: its name is its inbox source. While
     /// `clients.json` is damaged nothing is added ([`ClientsError::Damaged`]). When the file
     /// cannot be written, the client is taken back and its key leaves the keychain again.
-    pub async fn add(&self, name: &str, kind: &str, rights: Rights) -> Result<(ClientInfo, Key), ClientsError> {
+    pub async fn add_client(
+        &self,
+        name: &str,
+        kind: &str,
+        agent: Option<AgentKind>,
+        rights: Rights,
+    ) -> Result<(ClientInfo, Key), ClientsError> {
         let (name, kind) = (name.trim(), kind.trim());
         if name.is_empty() {
             return Err(ClientsError::Invalid("a client needs a name"));
@@ -451,7 +477,15 @@ impl Clients {
         if kind.is_empty() {
             return Err(ClientsError::Invalid("a client needs a kind"));
         }
+        match (kind == HOOK_CLIENT, agent.is_some()) {
+            (true, false) => return Err(ClientsError::Invalid("a hook client needs the agent it reports for")),
+            (false, true) => return Err(ClientsError::Invalid("only hook clients name an agent")),
+            _ => {}
+        }
         let _changing = self.shared.changing.lock().await;
+        if kind == "script" && self.script_name_taken(name) {
+            return Err(ClientsError::Conflict("a script client of this name exists, or the name is cli"));
+        }
         let id = self.new_id()?;
         let key = new_client_key(&id)?;
         self.keychain_set(&id, &key).await?;
@@ -466,6 +500,7 @@ impl Clients {
             last_used: None,
             // A hook client never holds more than `Rights::hook`, whatever template it was given.
             rights: rights.for_kind(kind),
+            agent,
         };
         let info = record.info();
         self.lock().clients.push(Entry { record, hash, locked: false });
@@ -565,6 +600,17 @@ impl Clients {
         }
         self.persist().await?;
         self.keychain_delete(id).await
+    }
+
+    /// `name` is `cli` (the app key's inbox source) or the name of a script client, ignoring
+    /// case, so two posters would share one source or look alike in the inbox.
+    fn script_name_taken(&self, name: &str) -> bool {
+        name.eq_ignore_ascii_case("cli")
+            || self
+                .lock()
+                .clients
+                .iter()
+                .any(|entry| entry.record.kind == "script" && entry.record.name.eq_ignore_ascii_case(name))
     }
 
     /// The clients as `clients.json` lists them.
@@ -820,16 +866,23 @@ fn write_temporary(path: &Path, bytes: &[u8]) -> Result<PathBuf, ClientsError> {
     }
 }
 
-/// Creates `dir` and its missing parents; on Unix the ones it creates are for the owner only.
+/// Creates `dir` and its missing parents; on Unix the ones it creates are for the owner only,
+/// and so is `dir` itself if it was there already (an older version or the system may have made
+/// it readable by others). Parents that were there keep their mode.
 pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         builder.mode(0o700);
+        builder.create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
     }
-    builder.create(dir)
+    #[cfg(not(unix))]
+    {
+        builder.create(dir)
+    }
 }
 
 #[cfg(unix)]
@@ -1144,7 +1197,12 @@ pub(crate) mod tests {
         let id = client.id;
         for request in [
             Request::ListClients,
-            Request::CreateClient { name: "Me".into(), kind: "script".into(), template: RightsTemplate::FullAccess },
+            Request::CreateClient {
+                name: "Me".into(),
+                kind: "script".into(),
+                template: RightsTemplate::FullAccess,
+                agent: None,
+            },
             Request::UpdateClient { id: id.clone(), rights: everywhere(Level::Full, true) },
             Request::NewClientKey { id: id.clone() },
             Request::RemoveClient { id: id.clone() },
@@ -1253,7 +1311,10 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let clients = open_in(dir.path());
         let full = RightsTemplate::FullAccess.rights();
-        let (hook, _) = clients.add("Claude Code hooks", "hook", full.clone()).await.expect("added");
+        let (hook, _) = clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), full.clone())
+            .await
+            .expect("added");
         assert_eq!(hook.rights, full.for_kind(torro_ipc::api::HOOK_CLIENT));
         assert!(!hook.rights.allows(Request::CalendarCollections.operation()), "no calendar");
         assert_eq!(hook.rights.inbox_sources, Selection::Only(vec![]), "no source to see");
@@ -1434,6 +1495,7 @@ pub(crate) mod tests {
             created: Utc::now(),
             last_used: None,
             rights,
+            agent: None,
         };
         fs::write(&file, serde_json::to_vec(&ClientsFile { clients: vec![record] }).expect("json")).expect("write");
         file
@@ -1551,6 +1613,7 @@ pub(crate) mod tests {
             created: start,
             last_used: None,
             rights: legacy_rights(),
+            agent: None,
         };
         assert!(note_use(&mut record, start));
         assert!(!note_use(&mut record, start + chrono::TimeDelta::seconds(30)));
@@ -1567,5 +1630,55 @@ pub(crate) mod tests {
         assert!(!same(&a, &b));
         assert_eq!(from_hex(&hex(&a)), Some(a));
         assert_eq!(from_hex("ab"), None);
+    }
+
+    #[tokio::test]
+    async fn a_hook_client_belongs_to_one_agent_and_keeps_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let hook = Rights::hook();
+        let without = clients.add_client("Hooks", HOOK_CLIENT, None, hook.clone()).await;
+        assert!(matches!(without, Err(ClientsError::Invalid(_))), "a hook names its agent");
+        let other = clients.add_client("Codex", "codex", Some(AgentKind::Codex), read_only()).await;
+        assert!(matches!(other, Err(ClientsError::Invalid(_))), "only hooks name an agent");
+        let (added, _) =
+            clients.add_client("Codex hooks", HOOK_CLIENT, Some(AgentKind::Codex), hook).await.expect("added");
+        assert_eq!(added.agent, Some(AgentKind::Codex));
+        assert_eq!(clients.list().len(), 1, "nothing added by the refused ones");
+
+        let reopened = open_in(dir.path());
+        assert_eq!(reopened.list()[0].agent, Some(AgentKind::Codex), "kept in clients.json");
+    }
+
+    #[tokio::test]
+    async fn script_names_are_inbox_sources_and_unique() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        clients.add("Backup", "script", read_only()).await.expect("added");
+        for name in ["backup", " BACKUP ", "cli", "Cli"] {
+            let refused = clients.add(name, "script", read_only()).await;
+            assert!(matches!(&refused, Err(err) if err.code() == "conflict"), "{name}");
+        }
+        // Other kinds file under `agent:<kind>`, so their names may repeat.
+        clients.add("Backup", "claude-code", read_only()).await.expect("added");
+        clients.add("cli", "codex", read_only()).await.expect("added");
+        assert_eq!(clients.list().len(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_existing_state_directory_is_made_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let parent = dir.path().join("local");
+        let state = parent.join("state");
+        fs::create_dir_all(&state).expect("dirs");
+        for path in [&parent, &state] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("mode");
+        }
+        create_private_dir(&state).expect("made private");
+        let mode = |path: &Path| fs::metadata(path).expect("exists").permissions().mode() & 0o777;
+        assert_eq!(mode(&state), 0o700);
+        assert_eq!(mode(&parent), 0o755, "a parent that was there keeps its mode");
     }
 }

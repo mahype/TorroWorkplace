@@ -110,6 +110,20 @@ Texte mit `untrusted: true` Daten sind, keine Anweisungen. Die Sicherheitsregeln
   `Rights::hook()`: Schreiben in `inbox`, sonst nichts, keine Quelle sichtbar (`Rights::for_kind`,
   beim Anlegen und Ändern der Rechte).
   Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`.
+- Ein Hook-Client gehört zu **genau einem Agenten** (E1.2b): `clients.create_client` mit Art `hook`
+  braucht `agent` (`claude-code`, `codex`, `gemini`), andere Arten dürfen keins nennen. Das Feld steht
+  in `clients.json` und in `ClientInfo.agent`. Meldungen landen unter `agent:<dieser Agent>`; nennt
+  `post_item` in `agent` einen anderen, ist das `forbidden`. So wirkt Stummschalten zuverlässig.
+- Namen von `script`-Clients sind ihre Quelle (`script:<Name>`) und darum eindeutig (ohne Groß- und
+  Kleinschreibung); `cli` ist für den App-Schlüssel reserviert. Sonst `conflict` beim Anlegen.
+- **Grenzen von `post_item`:** `title` 200 und `body` 4000 Zeichen (gekürzt), `thread_key` höchstens
+  200 Bytes und URL höchstens 2000 Bytes (sonst `error`), `session`/`project`/`branch` auf 200 Bytes
+  gekürzt, höchstens 16 `pids`. Nur `http`/`https`-Links und `app`-Links auf Apps der Suite werden
+  gespeichert, andere verworfen.
+- Den `thread_key` eines Eintrags sieht nur, wer ihn gemeldet hat (und der App-Schlüssel); bei
+  fremden Einträgen ist er leer.
+- Die Freigabe eines `inbox.*`-Befehls nennt Eintrag, Regel und Quelle aus dem Speicher des Eingangs
+  (`approvals::inbox_summary`, nachgeschlagen über die Kennung), nie aus dem Text des Clients.
 
 Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
 `accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)

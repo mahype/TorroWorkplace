@@ -255,7 +255,10 @@ impl Core {
     async fn ask_approval(&self, client: &str, request: Request) -> Result<Response, Refused> {
         let command = request.operation().name();
         let name = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.name);
-        let summary = crate::approvals::summary(&request, &self.facts(&request).await);
+        let summary = match request.operation().area() {
+            Area::Inbox => crate::approvals::inbox_summary(&request, &self.inbox.facts(&request)),
+            _ => crate::approvals::summary(&request, &self.facts(&request).await),
+        };
         match self.approvals.open(client, &name.unwrap_or_default(), request, summary, Utc::now()).await {
             Ok(approval) => Ok(Response::Pending { approval }),
             Err(err @ ApprovalsError::TooMany) => Ok(err.response()),
@@ -494,8 +497,8 @@ impl Core {
             },
             Request::ListApps => Response::Apps { apps: crate::apps::list() },
             Request::ListClients => Response::Clients { clients: self.clients.list() },
-            Request::CreateClient { name, kind, template } => {
-                issued(self.clients.add(&name, &kind, template.rights()).await)
+            Request::CreateClient { name, kind, template, agent } => {
+                issued(self.clients.add_client(&name, &kind, agent, template.rights()).await)
             }
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
@@ -803,6 +806,8 @@ fn error(err: &SetupsError) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use torro_core::i18n::{tr, trf};
+    use torro_inbox::AgentKind;
     use torro_ipc::api::{Area, AreaRights, Level, Rights, RightsTemplate, Selection};
 
     use super::*;
@@ -923,6 +928,7 @@ mod tests {
             name: "Script".into(),
             kind: "script".into(),
             template: RightsTemplate::FullAccess,
+            agent: None,
         };
         let Response::ClientKey { client, key } = ask(&core, Some(&app_key), create.clone()).await else {
             panic!("create answers with the key");
@@ -956,8 +962,28 @@ mod tests {
         let remove = || Request::RemoveClient { id: client.id.clone() };
         assert_eq!(ask(&core, Some(&app_key), remove()).await, Response::Ok);
         assert_eq!(code(&ask(&core, Some(&app_key), remove()).await), "not-found");
-        let nameless = Request::CreateClient { name: " ".into(), kind: "script".into(), template: Default::default() };
-        assert_eq!(code(&ask(&core, Some(&app_key), nameless).await), "error");
+        let create = |name: &str, kind: &str, agent| Request::CreateClient {
+            name: name.into(),
+            kind: kind.into(),
+            template: Default::default(),
+            agent,
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), create(" ", "script", None)).await), "error");
+        // A hook belongs to exactly one agent; script names are inbox sources and unique.
+        assert_eq!(code(&ask(&core, Some(&app_key), create("Hooks", "hook", None)).await), "error");
+        assert_eq!(code(&ask(&core, Some(&app_key), create("Codex", "codex", Some(AgentKind::Codex))).await), "error");
+        let Response::ClientKey { client: hook, .. } =
+            ask(&core, Some(&app_key), create("Codex hooks", "hook", Some(AgentKind::Codex))).await
+        else {
+            panic!("a hook client with its agent is created");
+        };
+        assert_eq!(hook.agent, Some(AgentKind::Codex));
+        assert_eq!(code(&ask(&core, Some(&app_key), create("CLI", "script", None)).await), "conflict");
+        assert!(matches!(
+            ask(&core, Some(&app_key), create("backup", "script", None)).await,
+            Response::ClientKey { .. }
+        ));
+        assert_eq!(code(&ask(&core, Some(&app_key), create("Backup", "script", None)).await), "conflict");
     }
 
     /// The approval a `pending` answer names; panics on any other answer.
@@ -2182,7 +2208,11 @@ mod tests {
         let core = core(dir.path());
         let app_key = crate::clients::tests::app_key(dir.path());
         let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
-        let (_, hook_key) = core.clients.add("Claude Code hooks", "hook", Rights::hook()).await.expect("added");
+        let (_, hook_key) = core
+            .clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
+            .await
+            .expect("added");
 
         let Response::Posted { id: Some(id) } = ask(&core, Some(&key), notice("Tests pass")).await else {
             panic!("a post answers with its id");
@@ -2229,5 +2259,84 @@ mod tests {
         let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(decided.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert_eq!(ask(&core, Some(&key), notice("Muted now")).await, Response::Posted { id: None });
+    }
+
+    #[tokio::test]
+    async fn inbox_approvals_say_what_runs_from_the_inbox_not_from_the_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = inbox_admin();
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, rights).await;
+        let Response::Posted { id: Some(id) } = ask(&core, Some(&app_key), notice("Deploy failed")).await else {
+            panic!("the app key posts without approval");
+        };
+        let codex = || torro_inbox::SourceRef::agent("codex");
+
+        let post = waits(ask(&core, Some(&key), notice("Tests \"pass\"")).await);
+        assert_eq!(post.summary, trf("Report \"{title}\" to the inbox", &[("title", &"Tests 'pass'")]));
+        let mute = waits(ask(&core, Some(&key), Request::MuteSource { source: codex(), muted: true }).await);
+        let named = "\"Codex\" (agent:codex)";
+        assert_eq!(mute.summary, trf("Mute {source} in the inbox", &[("source", &named)]));
+        let unmute = waits(ask(&core, Some(&key), Request::MuteSource { source: codex(), muted: false }).await);
+        assert_eq!(unmute.summary, trf("Unmute {source} in the inbox", &[("source", &named)]));
+
+        let lane = Request::SetItemLane { id, lane: torro_inbox::Lane::ForMe, remember: true };
+        let moved = waits(ask(&core, Some(&key), lane).await);
+        assert_eq!(
+            moved.summary,
+            trf(
+                "Move {entry} to {lane} and send later notices of {source} there too",
+                &[("entry", &"\"Deploy failed\""), ("lane", &tr("For me")), ("source", &"\"cli\" (script:cli)")]
+            )
+        );
+
+        let mute_codex = Request::MuteSource { source: codex(), muted: true };
+        assert_eq!(ask(&core, Some(&app_key), mute_codex).await, Response::Ok);
+        let Response::Rules { rules } = ask(&core, Some(&app_key), Request::ListRules).await else {
+            panic!("rules answer with Rules");
+        };
+        let remove = waits(ask(&core, Some(&key), Request::RemoveRule { id: rules[0].id.clone() }).await);
+        assert_eq!(remove.summary, trf("Unmute {source} in the inbox", &[("source", &named)]));
+    }
+
+    #[tokio::test]
+    async fn an_approved_inbox_command_runs_with_the_rights_of_now() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (client, key) = client(&core, inbox_admin()).await;
+        let mute = Request::MuteSource { source: torro_inbox::SourceRef::agent("codex"), muted: true };
+        let asked = waits(ask(&core, Some(&key), mute).await);
+
+        // While it waits, the person narrows the client to another source.
+        let mut narrowed = inbox_admin();
+        narrowed.inbox_sources = Selection::Only(vec!["agent:claude-code".into()]);
+        let update = Request::UpdateClient { id: client.clone(), rights: narrowed };
+        assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else {
+            panic!("an allowed approval is done");
+        };
+        assert_eq!(code(&response), "not-found", "the source is out of reach now");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+    }
+
+    #[tokio::test]
+    async fn remembering_a_lane_needs_the_admin_switch() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
+        let (_, key) = client(&core, rights).await;
+        let Response::Posted { id: Some(id) } = ask(&core, Some(&key), notice("CI red")).await else {
+            panic!("a post answers with its id");
+        };
+        let lane = |remember| Request::SetItemLane { id: id.clone(), lane: torro_inbox::Lane::ForMe, remember };
+        assert_eq!(code(&ask(&core, Some(&key), lane(true)).await), "forbidden");
+        assert!(matches!(ask(&core, Some(&key), lane(false)).await, Response::Item { .. }));
+        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
     }
 }

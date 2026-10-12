@@ -157,7 +157,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   schon da: `title`, `body`, `thread_key` stehen nicht in `audit.jsonl`.
 
 ### E1.2b Inbox absichern (aus der API-Prüfung von E1.1/E1.2)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E1.2 · **Dateien:** `crates/torroworkplace/src/{inbox,approvals,core,clients}.rs`,
   `crates/torro-ipc/src/{api,lib}.rs`, `docs/api.md`
 - **Hoch:** Freigaben für `inbox.mute_source` (stumm/laut), `inbox.remove_rule` und `inbox.set_item_lane`
