@@ -205,7 +205,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   sieht ein Agent keine Filterliste; die Auswahl filtert jeden Treffer.
 
 ### A.6b Agents & API: Feinschliff nach der Design-Prüfung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** A.6, A.7 (gleiche Datei) · **Dateien:** `crates/torroworkplace/src/ui/agents.rs`
 - Aus der Prüfung am 2026-10-12 (kein Muss-Befund):
   - Verwaltungsbefehle sind laut `api.md` ein **eigener Schalter je Bereich**, unabhängig von der Stufe:
@@ -224,6 +224,23 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - Clients erkennen, Schlüssel eintragen (Claude Code per `claude mcp add`, Codex per CLI, JSON
   atomar mit 0600), „Script“: einmal anzeigen.
 - **Abnahme:** Tests mit Konfigurationen unter `tests/fixtures/`, kein echtes Home-Verzeichnis.
+
+### A.7b Assistent und Agenten-Seite: Nacharbeit aus der Design-Prüfung
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** A.6b, E2.3 · **Dateien:** `crates/torroworkplace/src/ui/{agent_wizard,agents}.rs`
+- Aus der Abnahme von A.6b am 2026-10-12:
+  - **Muss:** Assistent, Schritt „Access“ in Schmal: Untertitel der Optionen hart abgeschnitten
+    („…deleting waits for your appr“). Umbrechen lassen oder kürzen („Changes everything; deleting needs approval“).
+  - **Muss:** Detailseite in Schmal: Untertitel der Bereiche abgeschnitten. Unter Mittel steht das Segment in
+    einer eigenen Zeile unter Titel und Untertitel.
+  - **Soll:** rechte Kante einheitlich (eine Spalte für alle Bedienelemente oder alle bündig rechts);
+    Schritt „Done“: „Restart …“ als Untertitel zuerst, darunter eine Gruppe mit Zeilen und Häkchen wie beim
+    Konto-Assistenten; „Disconnect… on its page removes the entry again“ → „To undo, choose Disconnect on its
+    page“; Punkte in Zeilen-Untertiteln einheitlich weglassen; „Not found“-Zeilen gleich hoch wie gefundene;
+    Häkchen-Feld im hellen Modus leichter (TEXT_2).
+  - **Schön:** Schlüssel im Schritt „Key“ tabellarisch.
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne Muss-Befund.
 
 ### A.8 Freigaben in Oberfläche und Tray
 - [x] erledigt
