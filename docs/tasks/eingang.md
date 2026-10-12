@@ -352,7 +352,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** `torro-design-review` ohne Muss-Befund.
 
 ### E3.3a Mini und Leiste
-- [ ] erledigt
+- [x] erledigt (offen aus der Prüfung: Ladefehler in Mini/Leiste zeigt noch die große Fehleransicht statt einer ruhigen Kachel)
 - **Modell:** Opus · **Braucht:** E3.2c · **Dateien:** `crates/torroinbox/src/glance.rs` (neu),
   `crates/torroinbox/src/{app,main}.rs` (nur `mod` und Umschalten der Ansicht)
 - Mini/Leiste sind Anzeigen, keine Mini-Apps (Design-Regel): „3 for you“ und die drei obersten Einträge
