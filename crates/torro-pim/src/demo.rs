@@ -21,6 +21,10 @@
 //! Filter lists can be created, changed, deleted and tried out (task G.4). The demo cannot ask
 //! GitHub; it searches the GitHub items of the sample instead and understands only a few
 //! qualifiers ([`demo_matches`]), enough for the dialog's preview to show something real.
+//!
+//! The GitHub account reaches four repositories, two of them private ([`DEMO_REPOS`]), each with
+//! labels in their colours, open milestones and people to assign ([`demo_repo`]), for the
+//! repository field and the chips of the filter list dialog (tasks G.9, G.11).
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -28,7 +32,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{GITHUB_KIND, account_of, local_id};
 use crate::model::{ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
-use crate::source::{FilterDefinition, FilterPreview, PimSource, move_plan};
+use crate::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, move_plan};
 use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
 #[derive(Debug, Default)]
@@ -782,6 +786,54 @@ fn span(event: &Event) -> (DateTime<Utc>, DateTime<Utc>) {
     (start, end)
 }
 
+/// The repositories the GitHub account of the sample reaches (task G.9), the most recently changed
+/// first: the two of the sample's items, a private one of an organisation and a private one of
+/// its own.
+const DEMO_REPOS: [(&str, bool); 4] =
+    [(REPO, false), (DESIGN_REPO, false), ("torro-labs/website", true), ("mahype/notes", true)];
+
+/// What can be picked in the sample repository `repo` (any case), as the core reads it from
+/// GitHub: the labels of the sample's items and a few more, open milestones and people. `None`
+/// for a repository [`DEMO_REPOS`] does not name.
+fn demo_repo(repo: &str) -> Option<GitHubRepoDetails> {
+    let (name, _) = DEMO_REPOS.into_iter().find(|(name, _)| name.eq_ignore_ascii_case(repo))?;
+    let labels = |labels: &[(&str, &str)]| {
+        labels.iter().map(|(name, color)| GitHubLabel { name: (*name).into(), color: Some((*color).into()) }).collect()
+    };
+    let strings = |values: &[&str]| values.iter().map(|value| value.to_string()).collect();
+    let (bug, documentation, enhancement) =
+        (("bug", "#D73A4A"), ("documentation", "#0075CA"), ("enhancement", "#2DA44E"));
+    let details = match name {
+        REPO => GitHubRepoDetails {
+            repo: name.into(),
+            labels: labels(&[
+                bug,
+                documentation,
+                enhancement,
+                ("good first issue", "#7057FF"),
+                ("linux", "#D4A72C"),
+                ("macos", "#8A8F98"),
+                ("ui", "#3B82F6"),
+            ]),
+            milestones: strings(&["v0.4", "v0.5", "v1.0"]),
+            assignees: strings(&[GITHUB_LOGIN, "lena-k", "tbauer"]),
+        },
+        DESIGN_REPO => GitHubRepoDetails {
+            repo: name.into(),
+            labels: labels(&[enhancement, ("icons", "#C2508F"), ("tokens", "#A78BFA")]),
+            milestones: strings(&["Linear refresh"]),
+            assignees: strings(&[GITHUB_LOGIN, "lena-k"]),
+        },
+        _ => GitHubRepoDetails {
+            repo: name.into(),
+            labels: labels(&[bug, documentation, enhancement]),
+            milestones: Vec::new(),
+            assignees: strings(&[GITHUB_LOGIN]),
+        },
+    };
+    Some(details)
+}
+
 impl PimSource for DemoSource {
     /// The work and the home account and the GitHub account, all connected and just synced.
     async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
@@ -1159,6 +1211,23 @@ impl PimSource for DemoSource {
         }
         Ok(preview)
     }
+
+    /// The sample's repositories ([`DEMO_REPOS`]); refused for any account but the GitHub one.
+    async fn list_github_repos(&self, account: String) -> Result<Vec<GitHubRepo>, ProviderError> {
+        if account != GITHUB_ACCOUNT {
+            return Err(ProviderError::Other(format!("{account} is no connected GitHub account")));
+        }
+        Ok(DEMO_REPOS.into_iter().map(|(repo, private)| GitHubRepo { repo: repo.into(), private }).collect())
+    }
+
+    /// Labels, milestones and people of a sample repository ([`demo_repo`]); refused like the
+    /// core refuses it: another account, a repository the sample does not have.
+    async fn describe_github_repo(&self, account: String, repo: String) -> Result<GitHubRepoDetails, ProviderError> {
+        if account != GITHUB_ACCOUNT {
+            return Err(ProviderError::Other(format!("{account} is no connected GitHub account")));
+        }
+        demo_repo(repo.trim()).ok_or_else(|| ProviderError::Other(format!("no repository {repo:?}")))
+    }
 }
 
 #[cfg(test)]
@@ -1376,6 +1445,32 @@ mod tests {
         let address = vec!["https://github.com/mahype/TorroWorkplace/issues".to_string()];
         assert!(source.preview_filter(GITHUB_ACCOUNT.into(), address).await.is_err());
         assert!(source.preview_filter(WORK_ACCOUNT.into(), vec!["is:open".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_github_account_reaches_repositories_with_labels_milestones_and_people() {
+        let source = DemoSource::new(sunday());
+        let repos = source.list_github_repos(GITHUB_ACCOUNT.into()).await.expect("repositories");
+        assert_eq!(repos.first().map(|repo| repo.repo.as_str()), Some(REPO));
+        assert!(repos.iter().any(|repo| repo.private) && repos.iter().any(|repo| !repo.private));
+        for repo in &repos {
+            let details =
+                source.describe_github_repo(GITHUB_ACCOUNT.into(), repo.repo.clone()).await.expect("described");
+            assert_eq!(details.repo, repo.repo);
+            assert!(!details.labels.is_empty() && !details.assignees.is_empty(), "{}", repo.repo);
+            assert!(details.labels.iter().all(|label| label.color.is_some()), "every label has its colour");
+        }
+        // The labels of the sample's items are there to pick, in any case of the name.
+        let torro = source.describe_github_repo(GITHUB_ACCOUNT.into(), "MAHYPE/torroworkplace".into()).await;
+        let torro = torro.expect("any case");
+        for label in ["bug", "ui", "linux", "enhancement"] {
+            assert!(torro.labels.iter().any(|l| l.name == label), "{label}");
+        }
+        assert!(torro.milestones.contains(&"v0.4".to_string()));
+
+        assert!(source.list_github_repos(WORK_ACCOUNT.into()).await.is_err());
+        assert!(source.describe_github_repo(WORK_ACCOUNT.into(), REPO.into()).await.is_err());
+        assert!(source.describe_github_repo(GITHUB_ACCOUNT.into(), "mahype/nope".into()).await.is_err());
     }
 
     #[tokio::test]

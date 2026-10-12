@@ -1046,6 +1046,36 @@ mod tests {
     }
 
     #[test]
+    fn the_repository_tools_build_their_requests_and_only_read() {
+        let account = "github:mahype";
+        let list = request_for("tasks_list_github_repos", args(json!({"account": account})), &Utc);
+        assert_eq!(list, Ok(Request::ListGithubRepos { account: account.into() }));
+        let describe = request_for(
+            "tasks_describe_github_repo",
+            args(json!({"account": account, "repo": "mahype/TorroWorkplace"})),
+            &Utc,
+        );
+        assert_eq!(
+            describe,
+            Ok(Request::DescribeGithubRepo { account: account.into(), repo: "mahype/TorroWorkplace".into() })
+        );
+        let without_repo = request_for("tasks_describe_github_repo", args(json!({"account": account})), &Utc);
+        assert!(matches!(without_repo, Err(ToolError::Input(_))), "{without_repo:?}");
+        let searching = request_for("tasks_list_github_repos", args(json!({"account": account, "query": "x"})), &Utc);
+        assert!(matches!(searching, Err(ToolError::Input(_))), "no free search over GitHub: {searching:?}");
+        // Reads that ask GitHub: read-only and idempotent, the world left open.
+        for name in ["tasks_list_github_repos", "tasks_describe_github_repo"] {
+            let tool = tools().iter().find(|tool| tool.name == name).expect("a tool");
+            let hints = tool.annotations.clone().expect("hints");
+            assert_eq!(
+                (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+                (Some(true), Some(false), Some(true), None),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn the_filter_list_tools_build_their_requests() {
         let create = request_for(
             "tasks_create_filter_list",

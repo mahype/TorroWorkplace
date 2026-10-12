@@ -442,6 +442,8 @@ fn describe(request: &Request) -> String {
         Request::UpdateFilterList { collection, .. } => format!("update filter list {collection}"),
         Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),
         Request::PreviewFilter { account, .. } => format!("preview filter of {account}"),
+        Request::ListGithubRepos { account } => format!("list github repos of {account}"),
+        Request::DescribeGithubRepo { account, .. } => format!("describe a github repo of {account}"),
         Request::UnpinIssue { collection, .. } => format!("unpin from {collection}"),
         Request::AddLink { collection, .. } => format!("add link to {collection}"),
         Request::Settings => "settings".into(),

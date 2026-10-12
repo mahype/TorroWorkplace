@@ -14,7 +14,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
-use torro_pim::source::{FilterDefinition, FilterPreview};
+use torro_pim::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 use crate::Request;
@@ -242,6 +242,24 @@ impl PimSource for PimClient {
             other => Err(unexpected(other)),
         }
     }
+
+    /// `Request::ListGithubRepos`.
+    async fn list_github_repos(&self, account: String) -> Result<Vec<GitHubRepo>, ProviderError> {
+        match self.ask(Request::ListGithubRepos { account }).await? {
+            Response::GithubRepos { repos } => Ok(repos),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `Request::DescribeGithubRepo`.
+    async fn describe_github_repo(&self, account: String, repo: String) -> Result<GitHubRepoDetails, ProviderError> {
+        match self.ask(Request::DescribeGithubRepo { account, repo }).await? {
+            Response::GithubRepo { repo, labels, milestones, assignees } => {
+                Ok(GitHubRepoDetails { repo, labels, milestones, assignees })
+            }
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -454,6 +472,22 @@ mod tests {
                 matches: queries.len() as u64,
                 truncated: false,
                 todos: vec![Todo { collection: String::new(), ..todo() }],
+            },
+            // Repositories (task G.9): the answer names the account and repository asked for.
+            Request::ListGithubRepos { account } => Response::GithubRepos {
+                repos: vec![GitHubRepo {
+                    repo: format!("{}/TorroWorkplace", account.strip_prefix("github:").unwrap_or(&account)),
+                    private: true,
+                }],
+            },
+            Request::DescribeGithubRepo { repo, .. } if repo == "mahype/nope" => {
+                Response::Error { code: "not-found".into(), message: "no repository \"mahype/nope\"".into() }
+            }
+            Request::DescribeGithubRepo { repo, .. } => Response::GithubRepo {
+                repo,
+                labels: vec![torro_pim::model::GitHubLabel { name: "bug".into(), color: Some("#d73a4a".into()) }],
+                milestones: vec!["v0.4".into()],
+                assignees: vec!["mahype".into()],
             },
             other => Response::Error { code: "error".into(), message: format!("test core does not know {other:?}") },
         }
@@ -669,6 +703,20 @@ mod tests {
         );
         let refused = client.add_link("/tasks/home/".into(), "no link".into()).await;
         assert_eq!(refused, Err(ProviderError::Other("not a GitHub link".into())));
+    }
+
+    #[tokio::test]
+    async fn repositories_are_listed_and_described_for_the_account_asked_for() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let repos = client.list_github_repos("github:mahype".into()).await.unwrap();
+        assert_eq!(repos, [GitHubRepo { repo: "mahype/TorroWorkplace".into(), private: true }]);
+        let described =
+            client.describe_github_repo("github:mahype".into(), "mahype/TorroWorkplace".into()).await.unwrap();
+        assert_eq!((described.repo.as_str(), described.labels.len()), ("mahype/TorroWorkplace", 1));
+        assert_eq!((described.milestones, described.assignees), (vec!["v0.4".to_string()], vec!["mahype".to_string()]));
+        let gone = client.describe_github_repo("github:mahype".into(), "mahype/nope".into()).await;
+        assert_eq!(gone, Err(ProviderError::Other("no repository \"mahype/nope\"".into())));
     }
 
     #[tokio::test]

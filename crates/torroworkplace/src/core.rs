@@ -798,6 +798,15 @@ impl Core {
                     },
                 }
             }
+            // What the filter list dialog offers to pick (task G.9), read with the account's token.
+            Request::ListGithubRepos { account } => match self.account_api(&account).await {
+                Ok(api) => self.pim.list_github_repos(&account, &api, reach).await,
+                Err(refused) => refused,
+            },
+            Request::DescribeGithubRepo { account, repo } => match self.account_api(&account).await {
+                Ok(api) => self.pim.describe_github_repo(&account, &repo, &api, reach).await,
+                Err(refused) => refused,
+            },
             Request::UnpinIssue { collection, url } => {
                 let api = self.filter_list_api(&collection).await;
                 self.pim.unpin_issue(&collection, &url, api.as_ref()).await
@@ -1104,6 +1113,19 @@ impl Core {
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
         accounts.splice(at..at, github);
         accounts
+    }
+
+    /// The GitHub access of the GitHub account `account`; the answer when there is none:
+    /// `not-found` for an account the core does not know, `not-connected` for one without a token
+    /// on this device.
+    async fn account_api(&self, account: &str) -> Result<torro_pim_github::Api, Response> {
+        if !self.github.knows(account).await {
+            return Err(no_github_account(account));
+        }
+        self.github.api(account).await.ok_or_else(|| Response::Error {
+            code: "not-connected".into(),
+            message: format!("{account} has no token on this device: sign in to GitHub again"),
+        })
     }
 
     /// The GitHub access of the account that owns the filter list `collection`, if any.
@@ -3042,6 +3064,155 @@ mod tests {
         assert!(todo_ids(&core, Some(&key)).await.is_empty());
         let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
         assert_eq!(code(&ask(&core, Some(&key), preview).await), "forbidden");
+    }
+
+    // --- What the filter list dialog reads (task G.9) -----------------------------------------
+
+    /// A core with `github:mahype` on a fake GitHub that reaches `mahype/TorroWorkplace`,
+    /// `mahype/secret` (private) and an archived repository, and describes any repository:
+    /// `mahype/nope` does not exist, `mahype/renamed` answers as `mahype/secret` (GitHub follows a
+    /// renamed repository). With `failing`, both questions fail with GitHub's own words.
+    async fn core_with_repos(dir: &std::path::Path, failing: bool) -> (Core, Asked) {
+        let (url, asked) = fake_github(move |seen| {
+            let sent: serde_json::Value = serde_json::from_str(&seen.body).unwrap_or_default();
+            let variables = &sent["variables"];
+            let part = |name: &str| variables[name].as_str().unwrap_or_default().to_string();
+            let repo = format!("{}/{}", part("o"), part("r"));
+            let asks = |field: &str| seen.body.contains(field);
+            let body = if failing && (asks("repositories(") || asks("assignableUsers")) {
+                let error = serde_json::json!({"type": "FORBIDDEN", "message": "mahype/secret is locked"});
+                serde_json::json!({"data": null, "errors": [error]})
+            } else if asks("repositories(") {
+                let repo = |name: &str, private: bool, archived: bool| {
+                    serde_json::json!({"nameWithOwner": name, "isPrivate": private, "isArchived": archived})
+                };
+                let nodes = [
+                    repo("mahype/TorroWorkplace", false, false),
+                    repo("mahype/secret", true, false),
+                    repo("mahype/old", false, true),
+                ];
+                serde_json::json!({"data": {"viewer": {"repositories": {
+                    "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}}})
+            } else if asks("assignableUsers") && repo == "mahype/nope" {
+                serde_json::json!({"data": {"repository": null},
+                    "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a Repository."}]})
+            } else if asks("assignableUsers") {
+                let name = if repo == "mahype/renamed" { "mahype/secret".to_string() } else { repo };
+                serde_json::json!({"data": {"repository": {"nameWithOwner": name,
+                    "labels": {"nodes": [{"name": "bug", "color": "d73a4a"}]},
+                    "milestones": {"nodes": [{"title": "v0.4"}]},
+                    "assignableUsers": {"nodes": [{"login": "mahype"}]}}}})
+            } else {
+                return (200, Some("repo"), viewer("mahype"));
+            };
+            (200, Some("repo"), body.to_string())
+        })
+        .await;
+        let core = core_with_github(dir, &MemoryTokens::default(), &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        (core, asked)
+    }
+
+    /// How often the fake GitHub was asked a question containing `field`.
+    fn asked_for(asked: &Asked, field: &str) -> usize {
+        asked.lock().expect("asked").iter().filter(|seen| seen.body.contains(field)).count()
+    }
+
+    fn repos(answer: Response) -> Vec<(String, bool)> {
+        match answer {
+            Response::GithubRepos { repos } => repos.into_iter().map(|repo| (repo.repo, repo.private)).collect(),
+            other => panic!("repositories, got {other:?}"),
+        }
+    }
+
+    fn describe(repo: &str) -> Request {
+        Request::DescribeGithubRepo { account: "github:mahype".into(), repo: repo.into() }
+    }
+
+    const LIST_REPOS: fn() -> Request = || Request::ListGithubRepos { account: "github:mahype".into() };
+
+    #[tokio::test]
+    async fn repositories_and_what_they_offer_are_read_once_until_the_next_refresh() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, asked) = core_with_repos(dir.path(), false).await;
+
+        let mine = vec![("mahype/TorroWorkplace".to_string(), false), ("mahype/secret".to_string(), true)];
+        assert_eq!(repos(core.handle(LIST_REPOS()).await), mine, "archived ones left out");
+        assert_eq!(repos(core.handle(LIST_REPOS()).await), mine);
+        assert_eq!(asked_for(&asked, "repositories("), 1, "the second answer comes from the cache");
+
+        let described = core.handle(describe("mahype/TorroWorkplace")).await;
+        let expected = Response::GithubRepo {
+            repo: "mahype/TorroWorkplace".into(),
+            labels: vec![torro_pim::model::GitHubLabel { name: "bug".into(), color: Some("#d73a4a".into()) }],
+            milestones: vec!["v0.4".into()],
+            assignees: vec!["mahype".into()],
+        };
+        assert_eq!(described, expected);
+        assert_eq!(core.handle(describe(" MAHYPE/torroworkplace ")).await, expected, "any case, from the cache");
+        assert_eq!(asked_for(&asked, "assignableUsers"), 1);
+
+        // The next refresh of the filter lists drops what was read.
+        refresh_filter_lists(&core.pim, &core.github).await;
+        assert_eq!(repos(core.handle(LIST_REPOS()).await), mine);
+        assert_eq!(core.handle(describe("mahype/TorroWorkplace")).await, expected);
+        assert_eq!((asked_for(&asked, "repositories("), asked_for(&asked, "assignableUsers")), (2, 2));
+
+        // A repository GitHub does not have, a name that is not `owner/name`, an unknown account.
+        assert_eq!(code(&core.handle(describe("mahype/nope")).await), "not-found");
+        assert_eq!(code(&core.handle(describe("TorroWorkplace")).await), "error");
+        assert_eq!(asked_for(&asked, "assignableUsers"), 3, "a name that does not fit asks nothing");
+        let stranger = Request::ListGithubRepos { account: "github:someone".into() };
+        assert_eq!(code(&core.handle(stranger).await), "not-found");
+        let stranger = Request::DescribeGithubRepo { account: "github:someone".into(), repo: "a/b".into() };
+        assert_eq!(code(&core.handle(stranger).await), "not-found");
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_only_the_repositories_it_was_granted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, asked) = core_with_repos(dir.path(), false).await;
+        let mut rights = repo_limited();
+        rights.github_repos = Selection::Only(vec!["mahype/TorroWorkplace".into(), "mahype/renamed".into()]);
+        let (_, key) = client(&core, rights).await;
+
+        let seen = repos(ask(&core, Some(&key), LIST_REPOS()).await);
+        assert_eq!(seen, [("mahype/TorroWorkplace".to_string(), false)]);
+        // The cache holds every repository, but each client sees its own.
+        assert_eq!(repos(core.handle(LIST_REPOS()).await).len(), 2);
+
+        // Outside its repositories: `not-found`, and GitHub is not asked.
+        let asked_before = asked_for(&asked, "assignableUsers");
+        let answer = ask(&core, Some(&key), describe("mahype/secret")).await;
+        assert_eq!(code(&answer), "not-found");
+        assert!(!format!("{answer:?}").contains("bug"), "{answer:?}");
+        assert_eq!(asked_for(&asked, "assignableUsers"), asked_before);
+        // GitHub answers under a name outside them: as if there were none.
+        assert_eq!(code(&ask(&core, Some(&key), describe("mahype/renamed")).await), "not-found");
+        assert!(matches!(ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await, Response::GithubRepo { .. }));
+
+        // Without read access to `github` neither question goes through.
+        let mut tasks_only = RightsTemplate::FullAccess.rights();
+        tasks_only.areas.remove(&Area::Github);
+        let (_, key) = client(&core, tasks_only).await;
+        assert_eq!(code(&ask(&core, Some(&key), LIST_REPOS()).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_a_fixed_message_when_github_fails() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _) = core_with_repos(dir.path(), true).await;
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let fixed = Response::Error { code: "error".into(), message: crate::pim::GITHUB_READ_FAILED.into() };
+        assert_eq!(ask(&core, Some(&key), LIST_REPOS()).await, fixed);
+        assert_eq!(ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await, fixed);
+        for request in [LIST_REPOS(), describe("mahype/TorroWorkplace")] {
+            let Response::Error { code, message } = core.handle(request).await else { panic!("an error") };
+            assert_eq!(code, "error");
+            assert!(message.contains("mahype/secret"), "the control centre reads what GitHub said: {message}");
+        }
     }
 
     // --- Ticking an issue of a filter list closes it (task G.5) ---------------------------------

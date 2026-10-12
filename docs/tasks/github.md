@@ -446,7 +446,7 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
   allen Größen hell und dunkel.
 
 ### G.9 GitHub: Repos, Labels, Meilensteine und Personen lesen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.2 · **Dateien:** `crates/torro-pim-github/src/{api,graphql}.rs`,
   `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `docs/api-reference.md`
