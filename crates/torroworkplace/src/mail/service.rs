@@ -23,11 +23,20 @@
 //! the server or found messages gone sends one to [`MailService::subscribe`]rs: the inbox (task
 //! E4.1) and change notices for the apps.
 //!
-//! **Security.** The password comes from the keychain and goes to the IMAP server only, never into
-//! an answer, a log or a `Debug` output. Before every connection the IMAP host must resolve to
-//! public addresses only (the guard of the CalDAV and mail discovery, `is_public`), so an account
-//! cannot be used to probe the local network. Rights are not checked here: the core checks a
-//! client's reach (`Rights::reaches_mail_account`) before it asks this service.
+//! **Connecting** (task M2.7, `accounts.connect_mail` in the core): [`MailService::check_sign_in`]
+//! signs in to IMAP (and lists the folders, for the roles the server leaves open) and to SMTP
+//! without sending anything, before anything is stored; [`MailService::save_account`] keeps the password
+//! in the keychain and the account in `accounts.json`, [`MailService::restart`] starts it.
+//! Changing settings ([`MailService::update`]) never touches servers or password, and removing an
+//! account ([`MailService::remove`]) deletes its password, its entry and its store. A mail account
+//! that syncs calendars too has one check for the inbox: its mail part and its calendar part from
+//! the calendar service joined ([`MailService::account_checks`]).
+//!
+//! **Security.** The password comes from the keychain and goes to the IMAP and SMTP servers only,
+//! never into an answer, a log or a `Debug` output. Before every connection the host must resolve
+//! to public addresses only (the guard of the CalDAV and mail discovery, `is_public`), so an
+//! account cannot be used to probe the local network. Rights are not checked here: the core checks
+//! a client's reach (`Rights::reaches_mail_account`) before it asks this service.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -45,11 +54,13 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, Response};
-use torro_mail::{MailAccountConfig, MailSettings, Role};
+use torro_mail::{Endpoint, MailAccountConfig, MailSettings, Role};
+use torro_mail_imap::folders::{self, OpenRole};
 use torro_mail_imap::imap::{IdleEvent, ImapError, Session, Trust};
-use torro_pim::AccountState;
+use torro_mail_imap::smtp::{SmtpError, SmtpSubmitter};
+use torro_pim::{AccountState, ProviderError};
 use torro_pim_caldav::discover::is_public;
 
 use super::store::MailStore;
@@ -57,7 +68,7 @@ use super::{ATTACHMENT_MAX_AGE, AttachmentCache, MailDirs, MailStoreError, sync}
 use crate::account::github::{SystemTokens, TokenStore};
 use crate::account::keychain;
 use crate::inbox::{AccountCheck, Health, Trouble};
-use crate::pim::{Reach, SYNC_PROBLEM_AFTER};
+use crate::pim::{NoKeychain, PimService, Reach, SYNC_PROBLEM_AFTER};
 
 /// How many changes wait for a slow subscriber before it misses some ([`MailService::subscribe`]).
 const EVENTS: usize = 256;
@@ -186,6 +197,114 @@ impl From<MailStoreError> for MailError {
     }
 }
 
+/// A server of a mail account's sign-in, named when its check fails (task M2.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    Imap,
+    Smtp,
+    CalDav,
+}
+
+impl Service {
+    /// How people know it: `IMAP`, `SMTP`, `CalDAV` (the same in every language).
+    pub fn name(self) -> &'static str {
+        match self {
+            Service::Imap => "IMAP",
+            Service::Smtp => "SMTP",
+            Service::CalDav => "CalDAV",
+        }
+    }
+}
+
+/// Why checking the sign-in of a mail account failed (`accounts.connect_mail`, task M2.7). Names
+/// the server that failed, never with the server's words or the password: a server may echo the
+/// login, and the answer may reach a log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignInError {
+    /// The server refused the password (or the login name).
+    Refused(Service),
+    /// The server cannot be reached.
+    Offline(Service),
+    /// The host resolves to an address that is not on the public internet; nothing was sent.
+    NotPublic(Service),
+    /// The server lacks what a secure sign-in needs (SMTP without STARTTLS or a login method).
+    Unsupported(Service),
+    /// No CalDAV answers at the CalDAV address, or none was given for calendars or tasks.
+    NoCalendars,
+    /// Anything else: an unexpected answer, a failed TLS handshake, an address that is no URL.
+    Failed(Service),
+}
+
+impl SignInError {
+    /// What a failed IMAP sign-in or folder listing means.
+    fn imap(err: ImapError) -> SignInError {
+        match err {
+            ImapError::Auth(_) => SignInError::Refused(Service::Imap),
+            ImapError::Offline(_) => SignInError::Offline(Service::Imap),
+            ImapError::Protocol(_) | ImapError::NotFound(_) => SignInError::Failed(Service::Imap),
+        }
+    }
+
+    /// What a failed check of a host of `service` ([`MailService::check_public`]) means.
+    fn host(service: Service, err: MailError) -> SignInError {
+        match err {
+            MailError::NotPublic => SignInError::NotPublic(service),
+            MailError::Offline(_) => SignInError::Offline(service),
+            _ => SignInError::Failed(service),
+        }
+    }
+
+    /// What a failed SMTP sign-in means.
+    fn smtp(err: SmtpError) -> SignInError {
+        match err {
+            SmtpError::Auth => SignInError::Refused(Service::Smtp),
+            SmtpError::Offline => SignInError::Offline(Service::Smtp),
+            SmtpError::Unsupported => SignInError::Unsupported(Service::Smtp),
+            SmtpError::Tls | SmtpError::Rejected { .. } | SmtpError::InvalidEnvelope | SmtpError::Protocol => {
+                SignInError::Failed(Service::Smtp)
+            }
+        }
+    }
+
+    /// What a failed CalDAV sign-in (`PimService::caldav_services`) means.
+    pub fn caldav(err: &ProviderError) -> SignInError {
+        match err {
+            ProviderError::Auth => SignInError::Refused(Service::CalDav),
+            ProviderError::Offline => SignInError::Offline(Service::CalDav),
+            _ => SignInError::NoCalendars,
+        }
+    }
+
+    /// The API error code: `auth`, `offline`, `unsupported`, `not-found` or `error`.
+    pub fn code(&self) -> &'static str {
+        match self {
+            SignInError::Refused(_) => "auth",
+            SignInError::Offline(_) => "offline",
+            SignInError::Unsupported(_) => "unsupported",
+            SignInError::NoCalendars => "not-found",
+            SignInError::NotPublic(_) | SignInError::Failed(_) => "error",
+        }
+    }
+
+    /// What happened, for people, naming the server.
+    pub fn message(&self) -> String {
+        let named = |text: &'static str, service: &Service| trf(text, &[("service", &service.name())]);
+        match self {
+            SignInError::Refused(service) => named("The {service} server refused the password.", service),
+            SignInError::Offline(service) => named("The {service} server cannot be reached.", service),
+            SignInError::NotPublic(service) => named("The {service} server is not on the public internet.", service),
+            SignInError::Unsupported(service) => named("The {service} server offers no secure sign-in.", service),
+            SignInError::NoCalendars => tr("No calendar service answers at this address.").into(),
+            SignInError::Failed(service) => named("The {service} server answered unexpectedly.", service),
+        }
+    }
+
+    /// The answer to `accounts.connect_mail` that failed with this error.
+    pub fn response(&self) -> Response {
+        Response::Error { code: self.code().into(), message: self.message() }
+    }
+}
+
 /// What changed in one folder of one account, as a sync found it on the server. Sent to
 /// [`MailService::subscribe`]rs; at least one of the lists is not empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,17 +406,60 @@ impl fmt::Debug for Command {
     }
 }
 
-/// How connections are made: which certificates are trusted and which addresses may be
-/// connected to. The core uses [`Connector::system`]; tests a local server with a test CA.
+/// How connections are made: which certificates are trusted, which addresses may be connected to
+/// and how an SMTP sign-in is checked. The core uses [`Connector::system`]; tests a local server
+/// with a test CA and a fake SMTP check.
 #[derive(Debug, Clone)]
 struct Connector {
     trust: Trust,
     allowed: fn(IpAddr) -> bool,
+    smtp: SmtpCheck,
+}
+
+/// The SMTP check of tests: server, login and password in, the outcome out.
+#[cfg(test)]
+type FakeSmtp = Arc<dyn Fn(&Endpoint, &str, &Secret) -> Result<(), SmtpError> + Send + Sync>;
+
+/// How [`Connector::check_smtp`] checks an SMTP sign-in.
+#[derive(Clone)]
+enum SmtpCheck {
+    /// At the server, with `SmtpSubmitter::check_login` (TLS or STARTTLS, nothing sent).
+    Server,
+    /// Tests: decides without a connection, from server, login and password.
+    #[cfg(test)]
+    Fake(FakeSmtp),
+}
+
+impl fmt::Debug for SmtpCheck {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SmtpCheck::Server => f.write_str("Server"),
+            #[cfg(test)]
+            SmtpCheck::Fake(_) => f.write_str("Fake"),
+        }
+    }
 }
 
 impl Connector {
     fn system() -> Connector {
-        Connector { trust: Trust::System, allowed: is_public }
+        Connector { trust: Trust::System, allowed: is_public, smtp: SmtpCheck::Server }
+    }
+
+    /// Connections nowhere: no address is allowed ([`MailService::without_home`]).
+    fn nowhere() -> Connector {
+        Connector { trust: Trust::System, allowed: |_| false, smtp: SmtpCheck::Server }
+    }
+
+    /// Checks the host of `server` ([`Connector::check_host`]), then signs in to SMTP as `login`
+    /// and says `QUIT` without sending anything.
+    async fn check_smtp(&self, server: &Endpoint, login: &str, password: &Secret) -> Result<(), SignInError> {
+        self.check_host(&server.host, server.port).await.map_err(|err| SignInError::host(Service::Smtp, err))?;
+        let checked = match &self.smtp {
+            SmtpCheck::Server => SmtpSubmitter::new(server.clone(), login, password.clone()).check_login().await,
+            #[cfg(test)]
+            SmtpCheck::Fake(check) => check(server, login, password),
+        };
+        checked.map_err(SignInError::smtp)
     }
 
     /// Checks the host ([`Connector::check_host`]), then connects and signs in.
@@ -618,6 +780,11 @@ pub struct MailService {
     /// The stored accounts were read (or could not be), so `entries` is all there is.
     loaded: AtomicBool,
     events: broadcast::Sender<MailChange>,
+    /// One change of a mail account in `accounts.json` at a time: read, change, write.
+    writing: Mutex<()>,
+    /// The calendar service, which holds the calendar part of a mail account (task M2.7);
+    /// [`MailService::with_calendars`]. `None` in the mail service's own tests.
+    calendars: Option<Arc<PimService>>,
 }
 
 impl MailService {
@@ -650,7 +817,25 @@ impl MailService {
             entries: RwLock::new(Vec::new()),
             loaded: AtomicBool::new(false),
             events: broadcast::channel(EVENTS).0,
+            writing: Mutex::new(()),
+            calendars: None,
         }
+    }
+
+    /// A service without account list, keychain or data directory, for the cores of tests that
+    /// bring no mail service of their own: it knows no account, cannot store one
+    /// ([`MailService::stored_accounts`] fails first, before any server is asked) and connects
+    /// nowhere.
+    pub fn without_home() -> MailService {
+        MailService::new(None, Arc::new(NoKeychain), None, Connector::nowhere(), SYSTEM_TIMING)
+    }
+
+    /// This service with the calendar service `calendars`, which holds the calendar part of a mail
+    /// account (task M2.7): its health joins the account's one check
+    /// ([`MailService::account_checks`]).
+    pub fn with_calendars(mut self, calendars: Arc<PimService>) -> MailService {
+        self.calendars = Some(calendars);
+        self
     }
 
     /// Loads the mail accounts and starts their workers ([`MailService::reload`]), and deletes
@@ -810,12 +995,190 @@ impl MailService {
     }
 
     /// How every mail account stands for the inbox at `now` (task E2.1,
-    /// [`crate::inbox::tend_suite`]); `None` until the stored accounts were read.
+    /// [`crate::inbox::tend_suite`]); `None` until the stored accounts were read. An account that
+    /// syncs calendars too has one check for both parts (task M2.7, [`joined`]): the calendar
+    /// service leaves it out of its own checks (`PimService::account_checks`).
     pub async fn account_checks(&self, now: DateTime<Utc>) -> Option<Vec<AccountCheck>> {
         if !self.loaded.load(Ordering::Acquire) {
             return None;
         }
-        Some(self.entries.read().await.iter().map(|entry| entry.mailbox.check(now)).collect())
+        let mut checks: Vec<AccountCheck> =
+            self.entries.read().await.iter().map(|entry| entry.mailbox.check(now)).collect();
+        if let Some(calendars) = &self.calendars {
+            for check in &mut checks {
+                if let Some(health) = calendars.calendar_health(&check.account, now).await {
+                    check.health = joined(check.health, health);
+                }
+            }
+        }
+        Some(checks)
+    }
+
+    /// Checks a sign-in of a mail account before anything is stored (`accounts.connect_mail`,
+    /// task M2.7): the IMAP host is public ([`Connector::check_host`]), IMAP takes `login` and
+    /// `password`, and its folders are listed with the person's picks `chosen`; then the same for
+    /// SMTP, signing in without sending anything. A refused IMAP sign-in stops there, so a server
+    /// that locks accounts after a few refusals is asked once. Answers with the roles the server
+    /// leaves open (two candidate folders with mail, `accounts.update_mail_account` picks one).
+    ///
+    /// Listing the folders may create a missing drafts or sent folder on the server, as every sync
+    /// does (`folders::discover`). Nothing is stored here, and no error holds the password or a
+    /// server's words.
+    pub async fn check_sign_in(
+        &self,
+        config: &MailAccountConfig,
+        login: &str,
+        password: &Secret,
+        chosen: &BTreeMap<Role, String>,
+    ) -> Result<Vec<Role>, SignInError> {
+        let imap = &config.imap;
+        self.check_public(Service::Imap, &imap.host, imap.port).await?;
+        let mut session =
+            Session::connect(imap, login, password, &self.connector.trust).await.map_err(SignInError::imap)?;
+        let listed = folders::discover(&mut session, chosen).await.map_err(SignInError::imap)?;
+        // Only to be polite: the sign-in was checked.
+        let _ = session.logout().await;
+        self.connector.check_smtp(&config.smtp, login, password).await?;
+        Ok(listed.open.into_iter().map(|open| open.role).collect())
+    }
+
+    /// `host` (of `service`) has addresses and all are on the public internet, as before every
+    /// connection of this service; the CalDAV address of a mail account is checked the same way
+    /// before it is signed in to (task M2.7).
+    pub async fn check_public(&self, service: Service, host: &str, port: u16) -> Result<(), SignInError> {
+        self.connector.check_host(host, port).await.map_err(|err| SignInError::host(service, err))
+    }
+
+    /// Every account of `accounts.json`, of every kind, as connecting and changing a mail account
+    /// need them (task M2.7: the account to connect again, the CalDAV account of the same sign-in
+    /// to take over). An error without a home directory, so nothing is checked that could not be
+    /// stored.
+    pub async fn stored_accounts(&self) -> Result<Vec<Account>, String> {
+        let path = self
+            .accounts_file
+            .clone()
+            .ok_or_else(|| tr("No home directory, so the account cannot be stored.").to_string())?;
+        keychain(move || account::load_from(&path).map_err(|err| err.to_string())).await
+    }
+
+    /// Stores the mail account `account` with `password` (task M2.7,
+    /// [`crate::account::store_taking_over`]): the password in the keychain under its id, the
+    /// account in `accounts.json` in place of the one with the same id (servers and password
+    /// replaced, settings as `account` brings them) or at the end, and `replaces`, the CalDAV
+    /// account of the same sign-in, out of the list in the same write and its password out of the
+    /// keychain. Does not start the account: [`MailService::restart`]. Errors never hold the
+    /// password.
+    pub async fn save_account(
+        &self,
+        account: &Account,
+        password: &Secret,
+        replaces: Option<&Account>,
+    ) -> Result<(), String> {
+        let _writing = self.writing.lock().await;
+        let (file, secrets) = (self.accounts_file.clone(), Arc::clone(&self.secrets));
+        let (account, password, replaces) = (account.clone(), password.clone(), replaces.cloned());
+        keychain(move || {
+            crate::account::store_taking_over(file.as_deref(), &*secrets, &account, &password, replaces.as_ref())
+        })
+        .await
+    }
+
+    /// Starts the account `id` anew from `accounts.json` after it was connected (task M2.7), also
+    /// when nothing about it changed: a password refused earlier is tried again, which
+    /// [`MailService::reload`] alone never does. The other accounts are reloaded as usual.
+    pub async fn restart(&self, id: &str) {
+        self.entries.write().await.retain(|entry| entry.mailbox.id() != id);
+        self.reload().await;
+    }
+
+    /// Changes the stored mail account `id` with `edit` (`accounts.update_mail_account`, task
+    /// M2.7) and reloads ([`MailService::reload`]), answering with the account as stored. Read,
+    /// changed and written under one lock, so two changes never undo each other. `Ok(None)` when no
+    /// mail account has this id; nothing is written then.
+    ///
+    /// Settings only: an `edit` that touches the id, the servers or the login is refused (`Err`)
+    /// and nothing is written, so no change of settings can steer the password elsewhere.
+    pub async fn update(
+        &self,
+        id: &str,
+        edit: impl FnOnce(&mut Account) + Send + 'static,
+    ) -> Result<Option<Account>, String> {
+        let updated = {
+            let _writing = self.writing.lock().await;
+            let path = self
+                .accounts_file
+                .clone()
+                .ok_or_else(|| tr("No home directory, so the account cannot be stored.").to_string())?;
+            let id = id.to_string();
+            keychain(move || {
+                let mut accounts = account::load_from(&path).map_err(|err| err.to_string())?;
+                let Some(stored) = accounts.iter_mut().find(|a| a.id == id && a.kind == AccountKind::Mail) else {
+                    return Ok(None);
+                };
+                let before = stored.clone();
+                edit(stored);
+                if !same_sign_in(&before, stored) {
+                    return Err("only the settings of a mail account can be changed this way".to_string());
+                }
+                let updated = stored.clone();
+                account::save_to(&path, &accounts).map_err(|err| err.to_string())?;
+                Ok(Some(updated))
+            })
+            .await?
+        };
+        if updated.is_some() {
+            self.reload().await;
+        }
+        Ok(updated)
+    }
+
+    /// The roles the server of account `id` leaves open, each with its candidate folders, asked
+    /// anew on the command connection without the person's picks (task M2.7):
+    /// `accounts.update_mail_account` takes a pick only for one of these, and only one of its
+    /// candidates. Errors as [`MailService::command`].
+    pub async fn open_roles(&self, id: &str) -> Result<Vec<OpenRole>, MailError> {
+        let mut command = self.command(id).await?;
+        let listed = folders::discover(command.session(), &BTreeMap::new()).await?;
+        command.release();
+        Ok(listed.open)
+    }
+
+    /// The password of `account` from the keychain, for its calendar part when its services
+    /// changed (task M2.7). It stays inside the core.
+    pub async fn password(&self, account: &Account) -> Result<Option<Secret>, String> {
+        let (secrets, account) = (Arc::clone(&self.secrets), account.clone());
+        keychain(move || secrets.get(&account)).await
+    }
+
+    /// Removes the mail account `id` (`accounts.remove_account`, task M2.7): its password from the
+    /// keychain and its entry in `accounts.json` (the password first, [`crate::account::forget_in`]),
+    /// then stops its sync, closes its store and deletes the store's files with `-wal` and `-shm`
+    /// (`MailStore::remove`). Its calendar part is the calendar service's
+    /// (`PimService::forget_mail_account`). An error stops at that step; what was done stays done.
+    pub async fn remove(&self, id: &str) -> Result<(), String> {
+        {
+            let _writing = self.writing.lock().await;
+            let (file, secrets, forget) = (self.accounts_file.clone(), Arc::clone(&self.secrets), id.to_string());
+            keychain(move || crate::account::forget_in(file.as_deref(), &*secrets, &forget)).await?;
+        }
+        let entry = {
+            let mut entries = self.entries.write().await;
+            entries.iter().position(|entry| entry.mailbox.id() == id).map(|at| entries.remove(at))
+        };
+        if let Some(mut entry) = entry {
+            // The worker holds the store too: it must be gone before the file is deleted.
+            if let Some(worker) = entry.worker.take() {
+                worker.abort();
+                let _ = worker.await;
+            }
+            drop(entry);
+        }
+        let Some(dirs) = self.dirs.clone() else { return Ok(()) };
+        let id = id.to_string();
+        match tokio::task::spawn_blocking(move || MailStore::remove(&dirs, &id)).await {
+            Ok(removed) => removed.map_err(|err| err.to_string()),
+            Err(err) => Err(format!("the mail store could not be deleted: {err}")),
+        }
     }
 
     /// `reach` sees mail accounts whose mail is on, so `accounts.sync` has something to do here
@@ -864,7 +1227,6 @@ impl MailService {
     /// [`MailError::Auth`] when its password was refused (also earlier: nothing is sent then);
     /// [`MailError::NoPassword`], [`MailError::Offline`], [`MailError::NotPublic`] when no
     /// connection could be made.
-    #[allow(dead_code, reason = "used from the mail commands, tasks M3.1 to M3.3")]
     pub async fn command(&self, account: &str) -> Result<Command, MailError> {
         self.mailbox_of(account).await?.command().await
     }
@@ -876,7 +1238,6 @@ impl MailService {
         self.mailbox_of(account).await?.store()
     }
 
-    #[allow(dead_code, reason = "used from the mail commands, tasks M3.1 to M3.3")]
     async fn mailbox_of(&self, account: &str) -> Result<Arc<Mailbox>, MailError> {
         self.entries
             .read()
@@ -886,6 +1247,32 @@ impl MailService {
             .map(|entry| Arc::clone(&entry.mailbox))
             .ok_or(MailError::NotFound)
     }
+}
+
+/// The health of a mail account with two parts, mail and calendars (task M2.7): a problem of
+/// either is the account's (the mail part's first), else unsure while either is, else fine.
+fn joined(mail: Health, calendars: Health) -> Health {
+    match (mail, calendars) {
+        (problem @ Health::Problem { .. }, _) | (_, problem @ Health::Problem { .. }) => problem,
+        (Health::Unsure, _) | (_, Health::Unsure) => Health::Unsure,
+        (Health::Fine, Health::Fine) => Health::Fine,
+    }
+}
+
+/// `after` signs in where `before` did: the same id, kind, login and servers (IMAP, SMTP, CalDAV).
+/// Only [`MailService::save_account`] may change these, after the servers took the password.
+fn same_sign_in(before: &Account, after: &Account) -> bool {
+    let servers = |account: &Account| {
+        account
+            .mail
+            .as_ref()
+            .map(|mail| (mail.address.clone(), mail.imap.clone(), mail.smtp.clone(), mail.caldav.clone()))
+    };
+    before.id == after.id
+        && before.kind == after.kind
+        && before.server == after.server
+        && before.login_name == after.login_name
+        && servers(before) == servers(after)
 }
 
 #[cfg(test)]
@@ -909,16 +1296,40 @@ pub(crate) mod tests {
     };
 
     /// The fake server's connections: its test CA, and loopback allowed besides the public
-    /// internet. Only tests have this way to `127.0.0.1`.
-    fn test_connector() -> Connector {
-        Connector { trust: fake::trust(), allowed: |ip| is_public(ip) || ip.is_loopback() }
+    /// internet. Only tests have this way to `127.0.0.1`. SMTP takes `smtp_password` for any login
+    /// at any server, without a connection; what it was asked is kept in `smtp_asked`.
+    fn test_connector(smtp_password: &str, smtp_asked: Arc<StdMutex<Vec<String>>>) -> Connector {
+        let accepted = Secret::new(smtp_password);
+        let check = move |server: &Endpoint, login: &str, password: &Secret| {
+            smtp_asked.lock().expect("record").push(format!("{}:{} {login}", server.host, server.port));
+            if *password == accepted { Ok(()) } else { Err(SmtpError::Auth) }
+        };
+        Connector {
+            trust: fake::trust(),
+            allowed: |ip| is_public(ip) || ip.is_loopback(),
+            smtp: SmtpCheck::Fake(Arc::new(check)),
+        }
     }
 
     /// The service on `dir`: accounts in `dir/config/accounts.json`, stores below `dir`, the
-    /// keychain `secrets`, connections to the fake server only.
+    /// keychain `secrets`, connections to the fake server only; SMTP takes [`PASSWORD`].
     pub(crate) fn service_in(dir: &Path, secrets: &MemoryTokens) -> MailService {
+        service_with_smtp(dir, secrets, PASSWORD).0
+    }
+
+    /// [`service_in`] with an SMTP server that takes `smtp_password`, and the record of what it was
+    /// asked (`host:port login`).
+    pub(crate) fn service_with_smtp(
+        dir: &Path,
+        secrets: &MemoryTokens,
+        smtp_password: &str,
+    ) -> (MailService, Arc<StdMutex<Vec<String>>>) {
         let dirs = MailDirs::new(&dir.join("data"), &dir.join("cache"));
-        MailService::new(Some(accounts_file(dir)), Arc::new(secrets.clone()), Some(dirs), test_connector(), TEST_TIMING)
+        let asked = Arc::new(StdMutex::new(Vec::new()));
+        let connector = test_connector(smtp_password, Arc::clone(&asked));
+        let service =
+            MailService::new(Some(accounts_file(dir)), Arc::new(secrets.clone()), Some(dirs), connector, TEST_TIMING);
+        (service, asked)
     }
 
     /// The mail account `address` on `server`, signed in to as `address`.
@@ -1205,7 +1616,10 @@ pub(crate) mod tests {
             let refused = connector.check_host(host, 993).await.expect_err("refused");
             assert!(matches!(refused, MailError::NotPublic), "{host}: {refused:?}");
         }
-        assert!(test_connector().check_host("127.0.0.1", 993).await.is_ok(), "only the tests' way allows it");
+        assert!(
+            test_connector(PASSWORD, Arc::default()).check_host("127.0.0.1", 993).await.is_ok(),
+            "only the tests' way allows it"
+        );
     }
 
     #[test]
@@ -1226,6 +1640,53 @@ pub(crate) mod tests {
                 message: tr("The mail server is not on the public internet.").into()
             }
         );
+    }
+
+    /// Task M2.7: changing settings never changes where the password goes.
+    #[tokio::test]
+    async fn an_update_changes_settings_and_never_the_servers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemoryTokens::default();
+        // The reload after an update starts the sync: against the fake, never the network.
+        let server = FakeImap::start(PASSWORD).await;
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+
+        let signed = service.update(&account.id, |a| {
+            a.mail_settings.get_or_insert_with(MailSettings::default).signature = Some("Anna".into());
+        });
+        let updated = signed.await.expect("written").expect("found");
+        assert_eq!(updated.mail_settings.and_then(|s| s.signature).as_deref(), Some("Anna"));
+        for steer in [
+            (|a: &mut Account| a.mail.as_mut().expect("mail").imap.host = "evil.example".into()) as fn(&mut Account),
+            |a| a.mail.as_mut().expect("mail").caldav = Some("https://evil.example/".into()),
+            |a| a.login_name = "someone".into(),
+        ] {
+            assert!(service.update(&account.id, steer).await.is_err());
+        }
+        assert_eq!(service.update("mail:bob@example.org", |_| {}).await, Ok(None));
+        let stored = account::load_from(&accounts_file(dir.path())).expect("read");
+        assert_eq!(stored[0].mail, account.mail, "the servers as they were");
+        assert_eq!(
+            service.password(&account).await.expect("read").map(|p| p.expose().to_string()).as_deref(),
+            Some(PASSWORD)
+        );
+    }
+
+    #[test]
+    fn the_parts_of_a_mail_account_make_one_health() {
+        let since = Utc::now();
+        let problem = Health::Problem { trouble: Trouble::SignInRefused, since };
+        assert_eq!(joined(Health::Fine, Health::Fine), Health::Fine);
+        assert_eq!(joined(Health::Fine, Health::Unsure), Health::Unsure);
+        assert_eq!(joined(Health::Fine, problem), problem);
+        assert_eq!(joined(problem, Health::Unsure), problem);
+        let failing = Health::Problem { trouble: Trouble::SyncFailing, since };
+        assert_eq!(joined(problem, failing), problem, "the mail part's first");
+        assert_eq!(SignInError::Refused(Service::Smtp).code(), "auth");
+        assert!(SignInError::Refused(Service::Smtp).message().contains("SMTP"));
+        assert_eq!(SignInError::caldav(&ProviderError::Offline), SignInError::Offline(Service::CalDav));
     }
 
     #[test]

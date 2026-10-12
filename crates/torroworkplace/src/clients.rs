@@ -602,6 +602,50 @@ impl Clients {
         Ok((info, Key::new(key)))
     }
 
+    /// Gives every collection of the account `from` in the clients' calendar and task list
+    /// selections the id it has under the account `to` (`<from>/<URL>` → `<to>/<URL>`), when a
+    /// mail account takes over the CalDAV account of the same sign-in (task M2.7): the clients
+    /// keep reaching the same calendars and lists, nothing more. Mail accounts are never added to
+    /// `mail_accounts` here. Writes `clients.json` (atomically) only when something changed. When
+    /// that fails, memory goes back to the old ids like the file: they name no collection any
+    /// more, so the clients reach none of them (fail closed) until the person grants them anew.
+    pub async fn rename_collections(&self, from: &str, to: &str) -> Result<(), ClientsError> {
+        let _changing = self.shared.changing.lock().await;
+        let renamed =
+            |id: &str| torro_pim::account::local_id(id, from).map(|url| torro_pim::account::collection_id(to, url));
+        let before: Vec<(String, Rights)> = {
+            let mut state = self.lock();
+            let mut before = Vec::new();
+            for entry in &mut state.clients {
+                let rights = &mut entry.record.rights;
+                let old = rights.clone();
+                for selection in [&mut rights.calendars, &mut rights.task_lists] {
+                    if let Selection::Only(ids) = selection {
+                        for id in ids.iter_mut() {
+                            if let Some(new) = renamed(id) {
+                                *id = new;
+                            }
+                        }
+                    }
+                }
+                if *rights != old {
+                    before.push((entry.record.id.clone(), old));
+                }
+            }
+            before
+        };
+        if before.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self.persist().await {
+            for (id, old) in before {
+                let _ = self.with_client(&id, |record| record.rights = old);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Removes a client. Its key stops working at once, even when the file or the keychain
     /// cannot be updated; that is then reported as an error.
     pub async fn remove(&self, id: &str) -> Result<(), ClientsError> {
