@@ -519,7 +519,7 @@ R.1 ─┬─ R.2 ─┐
 ```
 
 ### R.1 Bausteine: Symbole, Farben, kleine Widgets
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{icon,theme,widgets}.rs`,
   `crates/torro-gui/assets/icons/` (neue Lucide-SVGs 0.469.0, Strich 1.75), `crates/torro-gui/examples/gallery.rs`,
   Skill `torro-design` (Abschnitte Farben/Icons/Größenklassen, nennen)

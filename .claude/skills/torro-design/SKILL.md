@@ -94,6 +94,7 @@ aus einem Guss wirkt:
 | `LINE_STRONG` | Weiß 10 % | Schwarz 11 % | Rahmen von Knöpfen, Eingaben, Chips, Menüs |
 | `FOCUS_RING` | Weiß 35 % | Schwarz 50 % | Fokus, 2 px, 1 px Abstand (≥ 3:1) |
 | `ACCENT` | Torro-Rot `#D50C0C` | dto. | **nur** Primärknopf, Heute, Jetzt-Linie, App-Logo |
+| `merged` | `#A78BFA` | `#7C5CE6` | GitHub „gemergt/erledigt geschlossen“ (Violett): **nur** Icon oder Punkt neben einem Wort (≥ 3:1 auf allen Flächen, `Palette::merged`), nie als Text |
 | Kalender/Listen | `#5B8CFF` `#3FB984` `#E8A33D` `#D96CA8` `#A78BFA` | `#3B6EF0` `#1F9D68` `#B06F12` `#C2508F` `#7C5CE6` | Standardfarben, Tönung 18 % (hell 14 %) |
 
 ### Akzent und Status
@@ -197,6 +198,21 @@ aus einem Guss wirkt:
 - **Schwebende Karte** (`widgets::popover`): 320 breit, `MENU`, Radius 10, Innenrand 16, Kopf mit
   Kalender/Liste, Titel `TITLE`, Eigenschaftszeilen, unten Aktionen.
 - **Icons** nur aus `torro_gui::icon` (Lucide-SVG), nie Unicode-Glyphen wie ⟳ ‹ › ✓.
+  Für GitHub (R.1): offen `CircleDot`/`GitPullRequest` in `ok`, Entwurf `GitPullRequestDraft` neutral,
+  gemergt `GitMerge` bzw. geschlossenes Issue `CircleCheck` in `merged`, geschlossener PR
+  `GitPullRequestClosed` in `error`; Checks `CircleDotDashed` (läuft, `attention`), `CircleCheck`
+  (`ok`), `CircleX` (`error`), `CircleDashed` (wartet, `text_3`); Review angefordert `Eye`
+  (`attention`). Hinweise in Zeilen: `ListChecks` (Unteraufgaben), `AlignLeft` (Notiz), `Repeat`,
+  `Bell`; `GripVertical` (Ziehgriff), `SignalHigh` (Priorität im Menü), `ChevronUp`/`ChevronDown`
+  (vorige/nächste Aufgabe). Lucide 0.469.0 liefert `Github` noch mit.
+- **Kleine Bausteine der Aufgaben-App** (`widgets`, R.1; Beispiele im Doc-Kommentar, Anschauen mit
+  `cargo run -p torro-gui --example gallery -- --parts`): `prop_line(label, mark, value, on_press)` –
+  Eigenschaftszeile, Bezeichnung 88 in `META`/`TEXT_3`, Wert daneben (`prop_value`, `prop_placeholder`
+  für „nicht gesetzt“ in `TEXT_3`), ganze Zeile ein Knopf, mind. 32 hoch; `label_chip(hex, name)` –
+  GitHub-Label, 20 hoch, Radius 4, Farbe aus `#RRGGBB` (auch ohne `#`) **nur als Punkt**,
+  `label_chip_row` umbrechend mit Abstand 4; `state_pill(mark, wort)` – Zustand mit Wort, 22 hoch,
+  rund, Farbe nur im Icon; `progress_bar(done, total)` – 64×4, Spur `LINE_STRONG`, Füllung `ok`,
+  daneben immer „2/4“; `kbd(taste)` – Tastenhinweis (gab es schon).
 - **Seitenleiste:** Zeilen 28 mit Icon 16, Text `BODY` in `TEXT_2` (aktiv `TEXT` auf `SELECTED`),
   Zahl rechts `META` tabellarisch in `TEXT_3`, Tasten-Hinweis als `kbd`. Gruppen „Lists ▾“ als
   `CAPTION` in `TEXT_3` mit 12 Abstand darüber. Listen mit Ring (Aufgaben) bzw. Punkt (Kalender).

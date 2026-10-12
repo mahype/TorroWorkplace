@@ -70,6 +70,57 @@ pub enum Icon {
     Cloud,
     Layers,
     Sparkles,
+    // Added for the tasks redesign (R.1): GitHub items, properties and list hints.
+    /// Previous item in a detail header (next is [`Icon::ChevronDown`]).
+    ChevronUp,
+    /// An open issue (green).
+    CircleDot,
+    /// Checks that are running (attention colour).
+    CircleDotDashed,
+    /// Checks that are queued (grey).
+    CircleDashed,
+    /// Checks that failed (error colour).
+    CircleX,
+    /// An open pull request (green).
+    GitPullRequest,
+    /// A draft pull request (grey).
+    GitPullRequestDraft,
+    /// A closed pull request (error colour).
+    GitPullRequestClosed,
+    /// A merged pull request (the `merged` colour).
+    GitMerge,
+    /// A branch name in the properties of a pull request.
+    GitBranch,
+    /// "2/4" sub-tasks hint in a row, "Sub-tasks" section.
+    ListChecks,
+    /// Parent task in the properties.
+    ListTree,
+    /// Drag handle of a row in manual order.
+    GripVertical,
+    /// A review is requested from you.
+    Eye,
+    /// Labels / tags in the properties.
+    Tag,
+    /// Milestone in the properties.
+    Milestone,
+    /// The GitHub account or source. Lucide 0.469.0 still ships its brand icon.
+    Github,
+    /// "Copy link".
+    Link,
+    /// "Copy".
+    Copy,
+    /// "Delete" (menu entry, with the `danger` look).
+    Trash2,
+    /// Priority in menus and in the empty priority property (the lit bars are drawn by the app).
+    SignalHigh,
+    /// Repository in the properties of a GitHub item.
+    FolderGit2,
+    /// "Has notes" hint in a row.
+    AlignLeft,
+    /// "Needs me" list of the GitHub area.
+    UserCheck,
+    /// A saved search such as "Torro bugs" in the GitHub area.
+    Bug,
 }
 
 impl Icon {
@@ -121,6 +172,31 @@ impl Icon {
         Icon::Cloud,
         Icon::Layers,
         Icon::Sparkles,
+        Icon::ChevronUp,
+        Icon::CircleDot,
+        Icon::CircleDotDashed,
+        Icon::CircleDashed,
+        Icon::CircleX,
+        Icon::GitPullRequest,
+        Icon::GitPullRequestDraft,
+        Icon::GitPullRequestClosed,
+        Icon::GitMerge,
+        Icon::GitBranch,
+        Icon::ListChecks,
+        Icon::ListTree,
+        Icon::GripVertical,
+        Icon::Eye,
+        Icon::Tag,
+        Icon::Milestone,
+        Icon::Github,
+        Icon::Link,
+        Icon::Copy,
+        Icon::Trash2,
+        Icon::SignalHigh,
+        Icon::FolderGit2,
+        Icon::AlignLeft,
+        Icon::UserCheck,
+        Icon::Bug,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -182,6 +258,31 @@ impl Icon {
             Icon::Cloud => include_bytes!("../assets/icons/cloud.svg"),
             Icon::Layers => include_bytes!("../assets/icons/layers.svg"),
             Icon::Sparkles => include_bytes!("../assets/icons/sparkles.svg"),
+            Icon::ChevronUp => include_bytes!("../assets/icons/chevron-up.svg"),
+            Icon::CircleDot => include_bytes!("../assets/icons/circle-dot.svg"),
+            Icon::CircleDotDashed => include_bytes!("../assets/icons/circle-dot-dashed.svg"),
+            Icon::CircleDashed => include_bytes!("../assets/icons/circle-dashed.svg"),
+            Icon::CircleX => include_bytes!("../assets/icons/circle-x.svg"),
+            Icon::GitPullRequest => include_bytes!("../assets/icons/git-pull-request.svg"),
+            Icon::GitPullRequestDraft => include_bytes!("../assets/icons/git-pull-request-draft.svg"),
+            Icon::GitPullRequestClosed => include_bytes!("../assets/icons/git-pull-request-closed.svg"),
+            Icon::GitMerge => include_bytes!("../assets/icons/git-merge.svg"),
+            Icon::GitBranch => include_bytes!("../assets/icons/git-branch.svg"),
+            Icon::ListChecks => include_bytes!("../assets/icons/list-checks.svg"),
+            Icon::ListTree => include_bytes!("../assets/icons/list-tree.svg"),
+            Icon::GripVertical => include_bytes!("../assets/icons/grip-vertical.svg"),
+            Icon::Eye => include_bytes!("../assets/icons/eye.svg"),
+            Icon::Tag => include_bytes!("../assets/icons/tag.svg"),
+            Icon::Milestone => include_bytes!("../assets/icons/milestone.svg"),
+            Icon::Github => include_bytes!("../assets/icons/github.svg"),
+            Icon::Link => include_bytes!("../assets/icons/link.svg"),
+            Icon::Copy => include_bytes!("../assets/icons/copy.svg"),
+            Icon::Trash2 => include_bytes!("../assets/icons/trash-2.svg"),
+            Icon::SignalHigh => include_bytes!("../assets/icons/signal-high.svg"),
+            Icon::FolderGit2 => include_bytes!("../assets/icons/folder-git-2.svg"),
+            Icon::AlignLeft => include_bytes!("../assets/icons/align-left.svg"),
+            Icon::UserCheck => include_bytes!("../assets/icons/user-check.svg"),
+            Icon::Bug => include_bytes!("../assets/icons/bug.svg"),
         }
     }
 }
@@ -211,7 +312,24 @@ mod tests {
             assert!(svg.contains(r#"viewBox="0 0 24 24""#), "{which:?}: unexpected viewBox");
             assert!(svg.contains(r#"stroke-width="1.75""#), "{which:?}: stroke width is not 1.75");
             assert!(!svg.contains("<script"), "{which:?}: scripts are not allowed in icons");
+            assert!(svg.contains("lucide-static v0.469.0"), "{which:?}: not from Lucide 0.469.0");
         }
+    }
+
+    #[test]
+    fn every_bundled_file_has_exactly_one_icon() {
+        let mut files: Vec<String> = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icons"))
+            .expect("the icons directory exists")
+            .map(|entry| entry.expect("readable entry").file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".svg"))
+            .collect();
+        files.sort();
+        // A file without a variant (or a variant listed twice) would be dead weight or a typo.
+        assert_eq!(files.len(), Icon::ALL.len(), "files in assets/icons and variants in Icon::ALL differ");
+        let mut bytes: Vec<&[u8]> = Icon::ALL.iter().map(|which| which.svg()).collect();
+        bytes.sort();
+        bytes.dedup();
+        assert_eq!(bytes.len(), Icon::ALL.len(), "two variants share one file, or one is listed twice");
     }
 
     #[test]
