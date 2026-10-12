@@ -754,4 +754,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{flag} takes no value", "{flag} nimmt keinen Wert"),
     ("{flag} needs a value", "{flag} braucht einen Wert"),
     ("unknown option {option}", "unbekannte Option {option}"),
+    // Command line: hook (E2.2)
+    ("TORRO_TOKEN is not set, so nothing was reported.", "TORRO_TOKEN ist nicht gesetzt, darum wurde nichts gemeldet."),
+    (
+        "No state directory, so no core to report to.",
+        "Kein Zustandsverzeichnis, darum kein Dienst, an den gemeldet werden kann.",
+    ),
+    (
+        "Torro Workplace did not answer in time, so nothing was reported.",
+        "Torro Workplace hat nicht rechtzeitig geantwortet, darum wurde nichts gemeldet.",
+    ),
+    (
+        "the hook needs one agent: torroworkplace hook claude-code|codex|gemini",
+        "der Hook braucht genau einen Agenten: torroworkplace hook claude-code|codex|gemini",
+    ),
 ];
