@@ -17,6 +17,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::CollectionKind;
+
 /// The state of one account. One Nextcloud account per entry of [`PimAccount`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "state")]
@@ -59,6 +61,26 @@ pub fn combined_state(accounts: &[PimAccount]) -> AccountState {
         .or_else(|| first(|s| matches!(s, AccountState::SigningIn { .. })))
         .unwrap_or(AccountState::NotConnected)
 }
+
+/// [`combined_state`] of only those accounts that can hold collections of the kind `what`, which
+/// is what an app showing one kind of collection shows: the calendar asks with
+/// [`CollectionKind::Events`], the tasks app with [`CollectionKind::Todos`]. A GitHub account holds
+/// task lists only (its filter lists, task G.2), so a setup with nothing but GitHub is
+/// [`AccountState::NotConnected`] for the calendar and connected for the tasks app (task G.3).
+/// Kinds this version does not know count for every `what`, so a newer core's accounts still show.
+pub fn combined_state_for(accounts: &[PimAccount], what: CollectionKind) -> AccountState {
+    let fitting: Vec<PimAccount> = accounts.iter().filter(|a| may_hold(&a.kind, what)).cloned().collect();
+    combined_state(&fitting)
+}
+
+/// Whether an account of `kind` ([`PimAccount::kind`]) can hold collections of the kind `what`:
+/// GitHub only task lists, every other kind both.
+fn may_hold(kind: &str, what: CollectionKind) -> bool {
+    kind != GITHUB_KIND || !what.has_events()
+}
+
+/// [`PimAccount::kind`] of a GitHub account.
+pub const GITHUB_KIND: &str = "github";
 
 /// The collection id of the provider's collection `local` (CalDAV: its URL) in account
 /// `account_id`: `<account_id>/<local>`.
@@ -123,6 +145,19 @@ mod tests {
         assert_eq!(combined_state(&[account("", signing_in())]), signing_in());
         let both = [account("", signing_in()), account("a", connected("anna")), account("b", connected("bob"))];
         assert_eq!(combined_state(&both), connected("anna"));
+    }
+
+    #[test]
+    fn a_github_account_counts_for_task_lists_only() {
+        let github = PimAccount { kind: GITHUB_KIND.into(), ..account("github:mahype", connected("mahype")) };
+        let only_github = [github.clone()];
+        assert_eq!(combined_state_for(&only_github, CollectionKind::Events), AccountState::NotConnected);
+        assert_eq!(combined_state_for(&only_github, CollectionKind::Todos), connected("mahype"));
+        let both = [github, account("nextcloud:anna@cloud", connected("anna"))];
+        assert_eq!(combined_state_for(&both, CollectionKind::Events), connected("anna"), "the Nextcloud one");
+        assert_eq!(combined_state_for(&both, CollectionKind::Todos), connected("mahype"), "the first one");
+        let newer = [PimAccount { kind: "caldav".into(), ..account("caldav:x", connected("x")) }];
+        assert_eq!(combined_state_for(&newer, CollectionKind::Events), connected("x"), "unknown kinds count");
     }
 
     #[test]

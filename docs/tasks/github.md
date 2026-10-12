@@ -250,7 +250,7 @@ K.21 (frei)
   unsichtbar; `update` durch Client liefert kein fremdes `pinned`; feste Meldungen; `set_collection_shown`.
 
 ### G.3 Aufgaben-App: Filterlisten zeigen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.2b, R.2, R.3 (`docs/tasks/design.md`) · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`,
   `crates/torro-gui/src/shell.rs`, `crates/torro-pim/src/{account,demo}.rs` (Beispiel-Filterliste)
 - Zeilen und Detail für Issues und PRs baut schon das Redesign (R.2, R.3). G.3 bringt die **Filterlisten** in die App:

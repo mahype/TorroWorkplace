@@ -65,9 +65,10 @@ use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Place
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
-use torro_pim::account::account_of;
+use torro_pim::account::{GITHUB_KIND, account_of, combined_state_for};
 use torro_pim::demo::DemoSource;
-use torro_pim::{AccountState, Collection, EventTime, PimAccount, PimSource, Todo};
+use torro_pim::model::GitHubFilter;
+use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, Todo};
 
 use crate::detail::{self, Detail, Fit};
 use crate::glance::{self, GlanceData};
@@ -118,6 +119,11 @@ pub enum Open {
     PullRequest,
     /// The detail of the first task with its "…" menu open (Copy link, Delete task).
     More,
+    /// The first GitHub filter list whose last refresh failed (else the first one): its symbol in
+    /// the sidebar, the hint over the list, the rows grouped by repository.
+    FilterList,
+    /// The first item pinned in a filter list, in the detail with its "…" menu open (Unpin).
+    Pinned,
     /// The error state with its "Retry".
     Error,
     /// No tasks at all.
@@ -127,7 +133,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 11] = [
+    const ALL: [(&'static str, Open); 13] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -136,6 +142,8 @@ impl Open {
         ("due", Open::Due),
         ("pr", Open::PullRequest),
         ("more", Open::More),
+        ("filter", Open::FilterList),
+        ("pinned", Open::Pinned),
         ("error", Open::Error),
         ("empty", Open::Empty),
         ("loading", Open::Loading),
@@ -350,7 +358,7 @@ pub fn quick_add_fields(
         Some(Group::NoDate) => (None, None, None),
         Some(Group::List(id)) => (by_filter, None, Some(id.clone())),
         Some(Group::Priority(prio)) => (by_filter, prio.ical(), None),
-        Some(Group::Completed | Group::All) | None => (by_filter, None, None),
+        Some(Group::Completed | Group::Repo(_) | Group::All) | None => (by_filter, None, None),
     }
 }
 
@@ -394,6 +402,9 @@ pub struct App {
     show_completed: bool,
     /// How the list groups its rows (Display menu). Window state, nothing is stored.
     group_by: list::GroupBy,
+    /// How a GitHub filter list groups its rows: by repository until the Display menu says
+    /// otherwise (task G.3). Kept apart from `group_by`, which filter lists do not offer all of.
+    filter_group_by: list::GroupBy,
     /// Groups folded away in the list. Window state.
     collapsed: HashSet<list::Group>,
     /// The group whose "+" was pressed: the next quick add task goes there ([`quick_add_fields`]).
@@ -452,6 +463,8 @@ pub enum Message {
     Detail(detail::Message),
     Saved(Result<Todo, String>),
     Deleted(Result<(), String>),
+    /// The core's answer to "Unpin" ([`detail::Action::Unpin`]).
+    Unpinned(Result<(), String>),
     Refresh,
     Tick,
     /// The desktop's light/dark preference (once at start, then whenever it changes).
@@ -564,6 +577,7 @@ impl App {
             filter: Filter::Today,
             show_completed: false,
             group_by: list::GroupBy::default(),
+            filter_group_by: list::GroupBy::Repo,
             collapsed: HashSet::new(),
             quick_group: None,
             loaded: false,
@@ -653,7 +667,8 @@ impl App {
             Message::Resized(size) => self.size = size,
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(torro_pim::combined_state(&accounts));
+                // Every account that can hold task lists, GitHub (filter lists) included.
+                self.account = Some(combined_state_for(&accounts, CollectionKind::Todos));
                 self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();
@@ -676,8 +691,12 @@ impl App {
                     let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
                     self.selected = selected_uid.and_then(|uid| self.todos.iter().position(|t| t.uid == uid));
                     let lists = self.writable_lists();
+                    let pinned = self.detail.as_ref().is_some_and(|detail| self.is_pinned(&detail.original));
                     match (self.selected, self.detail.as_mut()) {
-                        (Some(_), Some(detail)) => detail.refresh(&lists, &self.todos),
+                        (Some(_), Some(detail)) => {
+                            detail.refresh(&lists, &self.todos);
+                            detail.pinned = pinned;
+                        }
                         _ => self.detail = None,
                     }
                     return self.open_launched();
@@ -747,7 +766,11 @@ impl App {
                 return operation::focus(QUICK_ADD);
             }
             Message::SetGroupBy(group_by) => {
-                self.group_by = group_by;
+                if self.shown_filter_list().is_some() {
+                    self.filter_group_by = group_by;
+                } else {
+                    self.group_by = group_by;
+                }
                 // Folds and the "+" group belong to the old groups.
                 self.collapsed.clear();
                 self.quick_group = None;
@@ -779,6 +802,11 @@ impl App {
             Message::Deleted(result) => match result {
                 Ok(()) => return self.load(),
                 Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
+            },
+            // The reload closes the detail when no search finds the item any more.
+            Message::Unpinned(result) => match result {
+                Ok(()) => return self.load(),
+                Err(err) => self.error = Some(trf("Unpin failed: {error}", &[("error", &err)])),
             },
             Message::Refresh => {
                 // "Sync now" in the Display menu: the menu has done its job.
@@ -922,11 +950,43 @@ impl App {
     }
 
     /// `todos[index]` with its done state flipped, ready to be saved; none if there is no such
-    /// task. The one thing a glance lets you do.
+    /// task, or it is the match of a GitHub filter list, which cannot be ticked off yet (G.5). The
+    /// one thing a glance lets you do.
     fn toggled(&self, index: usize) -> Option<Todo> {
         let mut todo = self.todos.get(index)?.clone();
+        if self.filter_source(&todo.collection).is_some() {
+            return None;
+        }
         todo.completed = !todo.completed;
         Some(todo)
+    }
+
+    /// The definition of the GitHub filter list `id` ([`Collection::source`]); `None` for every
+    /// other list.
+    fn filter_source(&self, id: &str) -> Option<&GitHubFilter> {
+        self.collections.iter().find(|c| c.id == id)?.source.as_ref()
+    }
+
+    /// The filter list the list shows, if the filter is one.
+    fn shown_filter_list(&self) -> Option<&GitHubFilter> {
+        match &self.filter {
+            Filter::List(id) => self.filter_source(id),
+            _ => None,
+        }
+    }
+
+    /// `todo` is pinned in its filter list: `source.pinned` holds its link id.
+    fn is_pinned(&self, todo: &Todo) -> bool {
+        let (Some(source), Some(link)) = (self.filter_source(&todo.collection), todo.link.as_ref()) else {
+            return false;
+        };
+        source.pinned.contains(&link.id)
+    }
+
+    /// How the list groups now: a filter list by its own choice (repository at first), every other
+    /// view by the one choice of the Display menu.
+    fn grouping(&self) -> list::GroupBy {
+        if self.shown_filter_list().is_some() { self.filter_group_by } else { self.group_by }
     }
 
     /// Collection id → its colour.
@@ -957,10 +1017,11 @@ impl App {
             today: self.today,
             selected: self.cursor_index(),
             show_list: !matches!(self.filter, Filter::List(_)),
-            group_by: self.group_by,
+            group_by: self.grouping(),
             collapsed: &self.collapsed,
             width: self.list_width(),
             palette: palette(&self.theme()),
+            read_only: self.shown_filter_list().is_some(),
         }
     }
 
@@ -1135,11 +1196,11 @@ impl App {
     /// The head of the list: the filter's icon, name and "{n} open" – in narrow windows the
     /// navigation menu ("Today ▾") after the drawer button –, then Display (its label only where the
     /// list is at least [`HEAD_LABELS_FROM`] wide) and the one primary button "New task" ("+" alone
-    /// in narrow windows).
+    /// in narrow windows). A GitHub filter list takes no new tasks, so it has no "New task".
     fn list_head<'a>(&'a self, class: SizeClass, width: f32, nav: &Anchor, display: &Anchor) -> Element<'a, Message> {
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
-        let icon = filter_icon(&self.filter);
+        let icon = self.filter_mark(&self.filter);
         let new_task = Message::Switcher(Switcher::New);
         let show_display = if width >= HEAD_LABELS_FROM {
             widgets::text_button(
@@ -1157,7 +1218,10 @@ impl App {
         } else {
             widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task))
         };
-        let trailing = [widgets::anchored(display, show_display), new_button];
+        let mut trailing = vec![widgets::anchored(display, show_display)];
+        if self.shown_filter_list().is_none() {
+            trailing.push(new_button);
+        }
         if !narrow {
             // Wide and medium have the sidebar or the rail for the navigation.
             return shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing);
@@ -1203,15 +1267,29 @@ impl App {
     fn properties_column<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
         let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
         let account = account_of(&detail.original.collection, &self.accounts, |a| a.id.as_str());
-        detail.properties_column(account.map(|a| a.label.clone()), anchor).map(Message::Detail)
+        detail.properties_column(account.map(account_title), anchor).map(Message::Detail)
     }
 
     /// The Display menu: how to group the list, "Show completed", and "Sync now" (`R`) under the
-    /// time of the last sync.
+    /// time of the last sync. A GitHub filter list groups by repository or not at all.
     fn display_menu(&self) -> Element<'_, Message> {
         use list::GroupBy;
+        let grouping = self.grouping();
         let group = |mark: Icon, label: &'static str, by: GroupBy| {
-            MenuItem::new(mark, label, Message::SetGroupBy(by)).current(self.group_by == by)
+            MenuItem::new(mark, label, Message::SetGroupBy(by)).current(grouping == by)
+        };
+        let groups = if self.shown_filter_list().is_some() {
+            vec![
+                group(Icon::FolderGit2, tr("Repository"), GroupBy::Repo),
+                group(Icon::Minus, tr("None"), GroupBy::None),
+            ]
+        } else {
+            vec![
+                group(Icon::Calendar, tr("Due date"), GroupBy::Due),
+                group(Icon::List, tr("List"), GroupBy::List),
+                group(Icon::SignalHigh, tr("Priority"), GroupBy::Priority),
+                group(Icon::Minus, tr("None"), GroupBy::None),
+            ]
         };
         let check = Mark::Check(palette(&self.theme()).text_2, self.show_completed);
         let sync = vec![MenuItem::new(Icon::RefreshCw, tr("Sync now"), Message::Refresh).trail(Trail::Kbd("R"))];
@@ -1220,15 +1298,7 @@ impl App {
             None => MenuSection::new(sync),
         };
         widgets::menu(vec![
-            MenuSection::titled(
-                tr("Group by"),
-                vec![
-                    group(Icon::Calendar, tr("Due date"), GroupBy::Due),
-                    group(Icon::List, tr("List"), GroupBy::List),
-                    group(Icon::SignalHigh, tr("Priority"), GroupBy::Priority),
-                    group(Icon::Minus, tr("None"), GroupBy::None),
-                ],
-            ),
+            MenuSection::titled(tr("Group by"), groups),
             MenuSection::new(vec![MenuItem::new(
                 check,
                 tr("Show completed"),
@@ -1279,18 +1349,50 @@ impl App {
     }
 
     /// The quick add row, an error line if there is one, and the grouped list; loading and the
-    /// error of a first load stand in for all three.
+    /// error of a first load stand in for all three. A GitHub filter list takes no new tasks: in
+    /// place of the quick add row it shows its hints, if it has any ([`App::filter_hints`]).
     fn list(&self) -> Element<'_, Message> {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
-        let mut content = column![self.quick_add_row()];
+        let mut content = match self.shown_filter_list() {
+            Some(source) => column(self.filter_hints(source)),
+            None => column![self.quick_add_row()],
+        };
         if let Some(err) = &self.error {
             let line = typo::text(typo::META, err.clone())
                 .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) });
             content = content.push(container(line).padding([space::S, space::L]));
         }
         content.push(list::view(self.list_data())).width(Fill).height(Fill).into()
+    }
+
+    /// The hints of a filter list over its rows, quiet, one line each (32 with the line below):
+    /// "Couldn't refresh from GitHub" with the reason in `text_3` when the last refresh failed
+    /// (the rows are those from before), and "Showing the first 1,000 matches" when a search found
+    /// more than GitHub hands out. The icon stands on the axis of the rows' leading symbols.
+    fn filter_hints(&self, source: &GitHubFilter) -> Vec<Element<'_, Message>> {
+        let width = self.list_width();
+        let mut hints = Vec::new();
+        if let Some(problem) = &source.problem {
+            let title = tr("Couldn't refresh from GitHub");
+            // What is left beside the icon and the title, for the reason on the same line.
+            let used = 2.0 * space::L + icon::SIZE + space::M + typo::text_width(title, typo::META) + space::S;
+            let reason = typo::ellipsize(problem, typo::META, (width - used).max(0.0));
+            let line = row![
+                typo::text(typo::META, title).style(theme::text_2).wrapping(text::Wrapping::None),
+                typo::text(typo::META, reason).style(theme::text_3).wrapping(text::Wrapping::None),
+            ]
+            .spacing(space::S);
+            hints.push(hint_row(list::toned(Icon::CircleAlert, icon::SIZE_SM, list::Tone::Attention), line));
+        }
+        if source.truncated {
+            let line = typo::text(typo::META, tr("Showing the first 1,000 matches"))
+                .style(theme::text_2)
+                .wrapping(text::Wrapping::None);
+            hints.push(hint_row(list::toned(Icon::ListFilter, icon::SIZE_SM, list::Tone::Text3), line));
+        }
+        hints
     }
 
     /// The quick add row: a list row (40 with its line) that is a text input underneath – no box,
@@ -1331,8 +1433,13 @@ impl App {
             .into_iter()
             .map(|collection| {
                 let filter = Filter::List(collection.id.clone());
+                // A filter list has a symbol of its own; a task list its ring.
+                let mark = match &collection.source {
+                    Some(source) => Mark::Icon(filter_list_icon(source)),
+                    None => Mark::Ring(collection_color(collection.color.as_deref())),
+                };
                 NavEntry {
-                    mark: Mark::Ring(collection_color(collection.color.as_deref())),
+                    mark,
                     label: collection.name,
                     count: Some(list::open_count(&self.todos, &filter, self.today)),
                     active: filter == self.filter,
@@ -1368,7 +1475,7 @@ impl App {
                     };
                     let unfolded = !self.folded.contains(&account.id);
                     let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
-                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    items.push(widgets::sidebar_group_in(mode, account_title(account), toggle));
                     // The rail has no title to unfold with, so it shows every list.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
@@ -1407,7 +1514,7 @@ impl App {
             }
             // A menu has no folding: every account is a section named after it.
             Ok(groups) => sections.extend(groups.into_iter().map(|group| {
-                let title = group.account.map_or_else(|| tr("Lists"), |account| account.label.as_str());
+                let title = group.account.map_or_else(|| tr("Lists").to_string(), account_title);
                 MenuSection::titled(title, group.items.into_iter().map(item).collect())
             })),
         }
@@ -1425,7 +1532,9 @@ impl App {
         let flush = self.close_detail();
         self.selected = Some(index);
         self.cursor = Some(todo.uid.clone());
-        self.detail = Some(Detail::new(&todo, &self.writable_lists(), &self.todos).on_day(self.today));
+        let mut detail = Detail::new(&todo, &self.writable_lists(), &self.todos).on_day(self.today);
+        detail.pinned = self.is_pinned(&todo);
+        self.detail = Some(detail);
         flush
     }
 
@@ -1472,6 +1581,13 @@ impl App {
             // R.3: a new sub-task, "Copy link" and ↑ ↓ in the detail's head.
             detail::Action::Create(todo) => self.save(todo),
             detail::Action::CopyLink(url) => iced::clipboard::write(url),
+            detail::Action::Unpin { collection, item } => {
+                let source = self.source.clone();
+                Task::perform(
+                    async move { source.unpin_issue(collection, item).await.map_err(|e| e.to_string()) },
+                    Message::Unpinned,
+                )
+            }
             detail::Action::Previous => self.step(false),
             detail::Action::Next => self.step(true),
         }
@@ -1484,6 +1600,15 @@ impl App {
     fn close_menus(&mut self) {
         self.menu = None;
         self.drawer = false;
+    }
+
+    /// The icon of a filter in the header: the smart lists' ([`filter_icon`]), a filter list's
+    /// symbol ([`filter_list_icon`]); a task list has none (its ring is in the sidebar).
+    fn filter_mark(&self, filter: &Filter) -> Option<Icon> {
+        match filter {
+            Filter::List(id) => self.filter_source(id).map(filter_list_icon),
+            other => filter_icon(other),
+        }
     }
 
     fn filter_name(&self, filter: &Filter) -> String {
@@ -1529,25 +1654,39 @@ impl App {
         Task::perform(async move { source.save_todo(todo).await.map_err(|e| e.to_string()) }, Message::Saved)
     }
 
-    /// The detail states of `--open`, once the first tasks are in: a detail needs a task to open.
+    /// The states of `--open` that need the first tasks: a detail needs a task to open, a filter
+    /// list the lists.
     fn open_launched(&mut self) -> Task<Message> {
         if std::mem::replace(&mut self.opened, true) {
             return Task::none();
         }
-        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More)) = self.launch.open else {
+        let filter_lists = || self.collections.iter().filter(|c| c.source.is_some());
+        let filter_list = match self.launch.open {
+            Some(Open::FilterList) => filter_lists()
+                .find(|c| c.source.as_ref().is_some_and(|s| s.problem.is_some()))
+                .or_else(|| filter_lists().next()),
+            Some(Open::Pinned) => filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty())),
+            _ => None,
+        }
+        .map(|list| list.id.clone());
+        if let Some(id) = filter_list {
+            self.filter = Filter::List(id);
+        }
+        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
+        else {
             return Task::none();
         };
         let order = list::order(&self.list_data());
-        let first = if open == Open::PullRequest {
-            order.into_iter().find(|&index| is_open_pull_request(&self.todos[index]))
-        } else {
-            order.first().copied()
+        let first = match open {
+            Open::PullRequest => order.into_iter().find(|&index| is_open_pull_request(&self.todos[index])),
+            Open::Pinned => order.into_iter().find(|&index| self.is_pinned(&self.todos[index])),
+            _ => order.first().copied(),
         };
         let Some(first) = first else { return Task::none() };
         let select = self.select(first);
         let editor = match open {
             Open::Due => detail::Editor::Due,
-            Open::More => detail::Editor::More,
+            Open::More | Open::Pinned => detail::Editor::More,
             _ => return select,
         };
         let card = self.update(Message::Detail(detail::Message::Open(editor)));
@@ -1604,6 +1743,41 @@ fn is_open_pull_request(todo: &Todo) -> bool {
     todo.link.as_ref().and_then(|link| link.github.as_ref()).is_some_and(|github| {
         github.kind == torro_pim::model::GitHubKind::PullRequest && github.state == torro_pim::model::GitHubState::Open
     })
+}
+
+/// The symbol of a GitHub filter list in the sidebar and the header. Its definition stores none,
+/// so it is read from the searches: one for bugs (`label:bug`) is a bug, one about me (`@me`:
+/// assigned, review requested, mentioned) a person with a check, anything else the filter symbol.
+fn filter_list_icon(source: &GitHubFilter) -> Icon {
+    let any = |needle: &str| source.queries.iter().any(|query| query.to_lowercase().contains(needle));
+    if any("label:bug") {
+        Icon::Bug
+    } else if any("@me") {
+        Icon::UserCheck
+    } else {
+        Icon::ListFilter
+    }
+}
+
+/// The title of an account's group in the sidebar and the navigation menu: its name, for a GitHub
+/// account "GitHub · login" (the name alone would be a bare login).
+fn account_title(account: &PimAccount) -> String {
+    if account.kind == GITHUB_KIND {
+        trf("GitHub · {login}", &[("login", &account.label)])
+    } else {
+        account.label.clone()
+    }
+}
+
+/// A hint over the list ([`App::filter_hints`]): `mark` (14) centred on the axis of the rows'
+/// leading symbols, `line` 12 after it, 32 high with the list's line below.
+fn hint_row<'a>(mark: Element<'a, Message>, line: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let content = row![container(mark).center_x(icon::SIZE), line.into()].spacing(space::M).align_y(Alignment::Center);
+    column![
+        container(content).width(Fill).center_y(size::ROW_GROUP - LINE).padding([0.0, space::L]).clip(true),
+        rule::horizontal(LINE).style(style::rule),
+    ]
+    .into()
 }
 
 fn filter_icon(filter: &Filter) -> Option<Icon> {
@@ -1701,14 +1875,123 @@ mod tests {
             });
             (views.len(), names)
         };
-        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let names = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         assert_eq!(
             grouped(&app),
-            (3, Some(vec![vec!["Tasks".to_string()], vec!["Groceries".to_string(), "Family".to_string()]])),
+            (3, Some(vec![names(&["Tasks"]), names(&["Groceries", "Family"]), names(&["Needs me", "Torro bugs"])])),
             "Today, Planned and All stay above the groups, each account has its lists"
         );
         let _ = app.update(Message::AccountLoaded(Ok(vec![account(torro_pim::demo::WORK_ACCOUNT)])));
         assert_eq!(grouped(&app).1, None, "a single account is not grouped");
+    }
+
+    /// The GitHub account of the demo.
+    fn github_account() -> PimAccount {
+        PimAccount { kind: GITHUB_KIND.into(), label: "mahype".into(), ..account(torro_pim::demo::GITHUB_ACCOUNT) }
+    }
+
+    /// The accounts of `--demo`: two Nextcloud accounts and the GitHub one.
+    fn demo_accounts() -> Vec<PimAccount> {
+        let mut accounts = two_accounts();
+        accounts.push(github_account());
+        accounts
+    }
+
+    #[test]
+    fn filter_lists_sit_in_the_github_group_with_their_own_symbol() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let (_, lists) = app.nav_entries();
+        let marks: Vec<(String, Mark)> =
+            lists.iter().filter(|e| e.list_id().starts_with("github:")).map(|e| (e.label.clone(), e.mark)).collect();
+        assert_eq!(
+            marks,
+            [("Needs me".to_string(), Mark::Icon(Icon::UserCheck)), ("Torro bugs".to_string(), Mark::Icon(Icon::Bug))]
+        );
+        assert!(lists.iter().filter(|e| !e.list_id().starts_with("github:")).all(|e| matches!(e.mark, Mark::Ring(_))));
+        assert_eq!(account_title(&github_account()), trf("GitHub · {login}", &[("login", &"mahype")]));
+        assert_eq!(account_title(&account("nextcloud:anna@cloud")), "nextcloud:anna@cloud", "others by their name");
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::TORRO_BUGS.into())));
+        assert_eq!(app.filter_mark(&app.filter), Some(Icon::Bug), "the header shows it too");
+    }
+
+    #[test]
+    fn a_filter_list_symbol_comes_from_its_searches() {
+        let source = |queries: &[&str]| GitHubFilter {
+            queries: queries.iter().map(|q| q.to_string()).collect(),
+            pinned: Vec::new(),
+            revision: 1,
+            truncated: false,
+            problem: None,
+        };
+        assert_eq!(filter_list_icon(&source(&["is:open Label:Bug repo:a/b"])), Icon::Bug);
+        assert_eq!(filter_list_icon(&source(&["is:pr", "review-requested:@me"])), Icon::UserCheck);
+        assert_eq!(filter_list_icon(&source(&["org:torro is:open"])), Icon::ListFilter);
+    }
+
+    #[test]
+    fn a_filter_list_groups_by_repository_and_takes_no_new_tasks() {
+        use list::GroupBy;
+        let mut app = launched(&["--demo"]);
+        assert_eq!(app.list_data().group_by, GroupBy::Due);
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        let data = app.list_data();
+        assert_eq!((data.group_by, data.read_only), (GroupBy::Repo, true), "by repository, read-only");
+        let groups: Vec<list::Group> = list::grouped(&data).into_iter().map(|(group, _)| group).collect();
+        assert_eq!(groups.len(), 2, "the two repositories of the sample");
+        let _ = app.update(Message::SetGroupBy(GroupBy::None));
+        assert_eq!((app.list_data().group_by, app.group_by), (GroupBy::None, GroupBy::Due), "its own choice");
+        let _ = app.update(Message::SetFilter(Filter::All));
+        assert_eq!(app.list_data().group_by, GroupBy::Due, "the other views keep theirs");
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        assert_eq!(app.list_data().group_by, GroupBy::None, "and the filter list keeps its own");
+        // Its matches cannot be ticked off yet (G.5): Space and a glance's check do nothing.
+        let first = list::order(&app.list_data())[0];
+        assert!(app.toggled(first).is_none());
+        assert_eq!(app.update(Message::ToggleDone(first)).units(), 0);
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ToggleDisplay);
+            let _ = app.view();
+            let _ = app.update(Message::CloseMenu);
+        }
+    }
+
+    #[test]
+    fn a_pinned_item_is_unpinned_through_the_source() {
+        let mut app = launched(&["--demo", "--open", "pinned"]);
+        assert_eq!(app.filter, Filter::List(torro_pim::demo::NEEDS_ME.into()));
+        let detail = app.detail.as_ref().expect("the pinned item is open");
+        assert!(detail.pinned && detail.layer(&Anchor::new()).is_some(), "with its \"…\" menu");
+        assert!(app.update(Message::Detail(detail::Message::Unpin)).units() > 0, "the request goes out");
+        assert_eq!(app.update(Message::Unpinned(Ok(()))).units(), 1, "then the tasks are reloaded");
+        let _ = app.update(Message::Unpinned(Err("not pinned".into())));
+        assert_eq!(app.error, Some(trf("Unpin failed: {error}", &[("error", &"not pinned")])));
+        // An item that is not pinned has no "Unpin".
+        let index = app.todos.iter().position(|t| t.collection == torro_pim::demo::TORRO_BUGS).expect("a match");
+        let _ = app.update(Message::Select(index));
+        assert!(!app.detail.as_ref().expect("open").pinned);
+    }
+
+    #[test]
+    fn the_filter_list_state_opens_the_list_with_a_hint() {
+        let app = launched(&["--demo", "--open", "filter"]);
+        assert_eq!(app.filter, Filter::List(torro_pim::demo::TORRO_BUGS.into()), "the one whose refresh failed");
+        let source = app.shown_filter_list().expect("a filter list");
+        assert_eq!(app.filter_hints(source).len(), 1);
+        let mut needs_me = launched(&["--demo"]);
+        let _ = needs_me.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        let source = needs_me.shown_filter_list().expect("a filter list");
+        assert_eq!(needs_me.filter_hints(source).len(), 1, "more than 1,000 matches");
+        let _ = needs_me.list();
+    }
+
+    #[test]
+    fn a_github_account_alone_is_enough_for_the_tasks_app() {
+        let mut app = demo_app();
+        let _ = app.update(Message::AccountLoaded(Ok(vec![github_account()])));
+        assert!(app.connected(), "its filter lists are task lists");
     }
 
     #[test]

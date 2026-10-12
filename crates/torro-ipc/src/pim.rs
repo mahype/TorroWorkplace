@@ -175,6 +175,11 @@ impl PimSource for PimClient {
             other => Err(unexpected(other)),
         }
     }
+
+    /// `Request::UnpinIssue` with the list's id and the item's link id as `url`.
+    async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
+        expect_ok(self.ask(Request::UnpinIssue { collection, url: item }).await?)
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -289,6 +294,15 @@ mod tests {
                 Response::LoginStarted { login_url: format!("{server}/login/v2/flow") }
             }
             Request::Sync | Request::DeleteEvent { .. } | Request::DeleteTodo { .. } => Response::Ok,
+            // Only the pinned item of the test list can be unpinned.
+            Request::UnpinIssue { collection, url }
+                if collection == "github:mahype/bugs" && url == "github:mahype/TorroWorkplace#7" =>
+            {
+                Response::Ok
+            }
+            Request::UnpinIssue { .. } => {
+                Response::Error { code: "not-found".into(), message: "the list does not pin it".into() }
+            }
             // The collection with both kinds is in both answers.
             Request::CalendarCollections => Response::Collections { collections: vec![collection(), calendar()] },
             Request::TaskCollections => Response::Collections { collections: vec![list(), collection()] },
@@ -497,6 +511,15 @@ mod tests {
         let to_the_end = core.client().move_todo(moved, None).await.unwrap();
         assert_eq!(to_the_end[0].summary, "", "no before");
         assert!(matches!(core.client().move_todo(todo(), None).await, Err(ProviderError::Other(_))), "not saved");
+    }
+
+    #[tokio::test]
+    async fn unpin_sends_list_and_item() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        client.unpin_issue("github:mahype/bugs".into(), "github:mahype/TorroWorkplace#7".into()).await.unwrap();
+        let other = client.unpin_issue("github:mahype/bugs".into(), "github:mahype/TorroWorkplace#8".into()).await;
+        assert_eq!(other, Err(ProviderError::Other("the list does not pin it".into())));
     }
 
     #[tokio::test]

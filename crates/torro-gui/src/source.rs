@@ -158,6 +158,10 @@ impl PimSource for Source {
     async fn move_todo(&self, todo: Todo, before: Option<Todo>) -> Result<Vec<Todo>, ProviderError> {
         delegate!(self, s => s.move_todo(todo, before))
     }
+
+    async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
+        delegate!(self, s => s.unpin_issue(collection, item))
+    }
 }
 
 #[cfg(test)]

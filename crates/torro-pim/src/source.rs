@@ -17,8 +17,8 @@ use crate::{Collection, Event, PimAccount, ProviderError, Todo};
 pub trait PimSource: Send + Sync {
     /// Every account behind the data, in the order they were added; empty when none is set up.
     /// A sign-in that runs is listed too, with an empty `id` and [`crate::AccountState::SigningIn`].
-    /// Apps that show a single state use [`crate::combined_state`]; collections name their
-    /// account in their id ([`crate::account`]).
+    /// Apps that show a single state use [`crate::account::combined_state_for`] with the kind of
+    /// collection they show; collections name their account in their id ([`crate::account`]).
     fn accounts(&self) -> impl Future<Output = Result<Vec<PimAccount>, ProviderError>> + Send;
 
     /// Starts Login Flow v2 for the Nextcloud at `server` (as the user typed it) and opens
@@ -68,6 +68,17 @@ pub trait PimSource: Send + Sync {
         todo: Todo,
         before: Option<Todo>,
     ) -> impl Future<Output = Result<Vec<Todo>, ProviderError>> + Send;
+
+    /// Takes the pinned issue or pull request `item` out of the GitHub filter list `collection`
+    /// (`tasks.unpin_issue`, task G.2; "Unpin" in the tasks app, task G.3). `collection` is the
+    /// list's [`Collection::id`] (`github:<login>/<list-id>`), `item` the link id as
+    /// `source.pinned` lists it (`github:owner/repo#12`; the core also takes the item's address on
+    /// github.com). The item stays in the list while one of its searches finds it; nothing changes
+    /// on GitHub. Reload the tasks afterwards.
+    ///
+    /// [`ProviderError::Other`] when the list does not pin the item or `collection` is no filter
+    /// list (the core's `not-found`).
+    fn unpin_issue(&self, collection: String, item: String) -> impl Future<Output = Result<(), ProviderError>> + Send;
 }
 
 /// Room left behind the last number when a task goes to the end of a list or a task without

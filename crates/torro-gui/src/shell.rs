@@ -559,23 +559,33 @@ pub struct AccountGroup<'a, T> {
 /// [`torro_pim::account`]), for a sidebar that groups per account (task M1.3). The groups follow
 /// the order of `accounts`, the items keep their order, accounts without items get no group.
 ///
-/// `Err(items)` – the items given back – with fewer than two accounts: one account looks like it
-/// always did, a flat list under the app's own title, so the caller needs no second code path,
-/// only `Err(items) => flat`.
+/// `Err(items)` – the items given back – when fewer than two accounts own any of the items: one
+/// account looks like it always did, a flat list under the app's own title, so the caller needs no
+/// second code path, only `Err(items) => flat`. Only owners count, so an account without
+/// collections of the kind the app shows – a GitHub account in the calendar, or one without
+/// filter lists in the tasks app – brings no account titles (task G.3).
 pub fn account_groups<'a, T>(
     accounts: &'a [PimAccount],
     items: Vec<T>,
     id: impl Fn(&T) -> &str,
 ) -> Result<Vec<AccountGroup<'a, T>>, Vec<T>> {
-    if accounts.len() < 2 {
+    let owners: Vec<Option<usize>> = items
+        .iter()
+        .map(|item| {
+            account_of(id(item), accounts, |a| a.id.as_str())
+                .and_then(|owner| accounts.iter().position(|a| std::ptr::eq(a, owner)))
+        })
+        .collect();
+    let mut owning: Vec<usize> = owners.iter().flatten().copied().collect();
+    owning.sort_unstable();
+    owning.dedup();
+    if owning.len() < 2 {
         return Err(items);
     }
     let mut groups: Vec<AccountGroup<'a, T>> =
         accounts.iter().map(|account| AccountGroup { account: Some(account), items: Vec::new() }).collect();
     let mut strays = Vec::new();
-    for item in items {
-        let owner = account_of(id(&item), accounts, |a| a.id.as_str())
-            .and_then(|owner| accounts.iter().position(|a| std::ptr::eq(a, owner)));
+    for (item, owner) in items.into_iter().zip(owners) {
         match owner {
             Some(index) => groups[index].items.push(item),
             None => strays.push(item),
@@ -645,6 +655,18 @@ mod tests {
             vec![(Some("a"), vec!["a/1", "a/2"]), (Some("b"), vec!["b/1", "b/2"]), (None, vec!["gone/3"]),],
             "account c has no items and no group; strays come last"
         );
+    }
+
+    #[test]
+    fn an_account_without_items_brings_no_titles() {
+        // A Nextcloud account and a GitHub account without filter lists (or, in the calendar, a
+        // GitHub account at all): one owner, so the flat list as before.
+        let accounts = [account("a"), account("github:mahype")];
+        let items: Vec<String> = ["a/1", "a/2", "gone/3"].map(String::from).to_vec();
+        assert_eq!(account_groups(&accounts, items.clone(), |i| i), Err(items));
+        let with_list: Vec<String> = ["a/1", "github:mahype/bugs"].map(String::from).to_vec();
+        let groups = account_groups(&accounts, with_list, |i| i).expect("two owners");
+        assert_eq!(groups.len(), 2);
     }
 
     #[test]

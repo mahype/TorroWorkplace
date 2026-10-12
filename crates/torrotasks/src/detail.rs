@@ -19,8 +19,9 @@
 //!
 //! - [`Detail::head`]: the row in the window's header bar (44, line below, split from the
 //!   list's head by the app) with the path "List › Parent" (only the real hierarchy), ↑ ↓ to the
-//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, Delete task – never for a
-//!   GitHub item) and ✕; in narrow windows "‹ <list view>" instead of path and ✕.
+//!   previous/next task, "…" (Copy link, Open on GitHub / Open link, Unpin for an item pinned in
+//!   its filter list ([`Detail::pinned`], task G.3), Delete task – never for a GitHub item) and ✕;
+//!   in narrow windows "‹ <list view>" instead of path and ✕.
 //! - [`Detail::main_column`]: title with check or GitHub state, for GitHub the line "state ·
 //!   owner/repo#123", the [`Detail::property_chips`] unless the properties column is shown, the
 //!   notes, "Sub-tasks" (always, to add one), and for pull requests "Checks" and "Reviews" (the
@@ -103,6 +104,10 @@ pub struct Detail {
     pub lists: Vec<Collection>,
     /// The other tasks, for the parent menu and the subtasks.
     pub others: Vec<Todo>,
+    /// The task is a pinned item of its GitHub filter list (`source.pinned` holds its link id),
+    /// so "…" offers "Unpin" ([`Action::Unpin`], task G.3). The app sets it when it opens the
+    /// detail and after every reload; `false` for every other task.
+    pub pinned: bool,
     /// Today, for the due keywords and chips.
     today: NaiveDate,
     draft: Draft,
@@ -192,6 +197,8 @@ pub enum Message {
     OpenLink,
     /// "Copy link" in the "…" menu.
     CopyLink,
+    /// "Unpin" in the "…" menu of a pinned item ([`Detail::pinned`]).
+    Unpin,
     /// "Delete task" in the "…" menu: ask once more.
     Delete,
     CancelDelete,
@@ -229,6 +236,12 @@ pub enum Action {
     OpenUrl(String),
     /// Put this address on the clipboard.
     CopyLink(String),
+    /// Take the pinned item `item` (its link id, `github:owner/repo#12`) out of the filter list
+    /// `collection` (`tasks.unpin_issue`) and reload: it stays while a search finds it.
+    Unpin {
+        collection: String,
+        item: String,
+    },
     /// Show the task above the open one in the list (as ↑ moves the cursor), if there is one.
     Previous,
     /// Show the task below the open one in the list (as ↓ moves the cursor), if there is one.
@@ -273,6 +286,8 @@ enum More {
     CopyLink,
     /// "Open on GitHub" for a GitHub link, else "Open link".
     OpenLink,
+    /// A pinned item of a filter list.
+    Unpin,
     Delete,
 }
 
@@ -340,6 +355,7 @@ impl Detail {
             original: todo.clone(),
             lists: lists.to_vec(),
             others: others_of(todo, all),
+            pinned: false,
             today: Local::now().date_naive(),
             title: text_editor::Content::with_text(&draft.summary),
             notes: text_editor::Content::with_text(&draft.notes),
@@ -444,6 +460,13 @@ impl Detail {
             Message::CopyLink => {
                 self.close_editor();
                 return self.link_target().map_or(Action::None, Action::CopyLink);
+            }
+            Message::Unpin => {
+                self.close_editor();
+                let item = self.original.link.as_ref().map(|link| link.id.clone());
+                if let Some(item) = item.filter(|_| self.pinned) {
+                    return Action::Unpin { collection: self.original.collection.clone(), item };
+                }
             }
             Message::Delete => self.confirm_delete = self.can_delete(),
             Message::CancelDelete => self.close_editor(),
@@ -796,6 +819,9 @@ impl Detail {
         let mut items = Vec::new();
         if self.link_target().is_some() {
             items.extend([More::CopyLink, More::OpenLink]);
+        }
+        if self.pinned && self.original.link.is_some() {
+            items.push(More::Unpin);
         }
         if self.can_delete() {
             items.push(More::Delete);
@@ -1337,6 +1363,10 @@ impl Detail {
                         None => (Icon::Link, tr("Open link")),
                     };
                     first.push(MenuItem::new(mark, label, Message::OpenLink).trail(Trail::Icon(Icon::ArrowUpRight)));
+                }
+                // The icon set has no pin; X says "take it out" as Cancel does.
+                More::Unpin => {
+                    sections.push(MenuSection::new(vec![MenuItem::new(Icon::X, tr("Unpin"), Message::Unpin)]))
                 }
                 More::Delete if self.confirm_delete => sections.push(MenuSection::titled(
                     tr("Delete this task?"),
@@ -2195,6 +2225,24 @@ mod tests {
         // Also not when it sits in a writable list.
         let in_list = Todo { collection: "work".into(), ..item };
         assert!(!detail_of(&in_list).more_items().contains(&More::Delete));
+    }
+
+    #[test]
+    fn a_pinned_item_can_be_unpinned_from_its_filter_list() {
+        let item = github_item(pull_request());
+        let mut detail = detail_of(&item);
+        assert!(!detail.more_items().contains(&More::Unpin), "not pinned");
+        assert_eq!(detail.update(Message::Unpin), Action::None, "nothing to unpin");
+        detail.pinned = true;
+        assert_eq!(detail.more_items(), [More::CopyLink, More::OpenLink, More::Unpin]);
+        detail.update(Message::Open(Editor::More));
+        assert!(detail.layer(&Anchor::new()).is_some());
+        let unpin = Action::Unpin {
+            collection: "github:mahype/needs-me".into(),
+            item: "github:mahype/TorroWorkplace#131".into(),
+        };
+        assert_eq!(detail.update(Message::Unpin), unpin, "the list and the link id as source.pinned has it");
+        assert_eq!(detail.open, None, "the menu closes");
     }
 
     #[test]

@@ -3,7 +3,8 @@
 //!
 //! [`arrange`] picks and orders the tasks for a filter, [`grouped`] splits them into the groups
 //! the Display menu asks for ([`GroupBy`]: due date – Overdue, Today, Upcoming, No date,
-//! Completed –, list, priority, or none); [`view`] renders them:
+//! Completed –, list, priority, GitHub repository – what a filter list starts with, task G.3 –,
+//! or none); [`view`] renders them:
 //!
 //! - **Group heads** (32, `raised`, flush, no gap and no double line): a chevron to fold the group
 //!   (`Message::ToggleGroup`), its icon on the axis of the rows' leading symbol, the name in
@@ -22,7 +23,8 @@
 //!   first, then the hints, the pill becomes a dot, `repo#123` becomes `#123`. A row never takes
 //!   two lines.
 //!
-//! Empty → an empty state ("Nothing to do").
+//! Empty → an empty state ("Nothing to do"; in a filter list "No matches"). A filter list
+//! ([`ListData::read_only`]) offers no "+" in its group heads.
 //!
 //! For the keyboard (T.3) [`order`] gives the visible order of the rows and [`row_span`] where a
 //! row lies in the scrolled content, so `app.rs` can step through the rows and keep the chosen
@@ -71,6 +73,9 @@ pub struct ListData<'a> {
     pub width: f32,
     /// The colours of the current mode, for marks that take a fixed colour.
     pub palette: &'static Palette,
+    /// The list takes no new tasks: a GitHub filter list (task G.3). Its empty state says that
+    /// nothing matches, and no group head offers "+".
+    pub read_only: bool,
 }
 
 /// The tasks to show as `(index into todos, depth)`: `depth` 0 for top-level tasks, 1 for
@@ -309,6 +314,9 @@ pub enum GroupBy {
     List,
     /// Urgent, High, Medium, Low, No priority.
     Priority,
+    /// One group per GitHub repository (`owner/name`), by name; tasks without a GitHub link last.
+    /// What a filter list starts with (task G.3).
+    Repo,
     /// One run of rows without heads.
     None,
 }
@@ -332,6 +340,8 @@ pub enum Group {
     List(String),
     /// The tasks of one priority.
     Priority(Prio),
+    /// The GitHub items of one repository (`owner/name`); empty for tasks without a GitHub link.
+    Repo(String),
     /// Every row, without a head ([`GroupBy::None`]).
     All,
 }
@@ -343,6 +353,10 @@ impl Group {
             GroupBy::Due => Group::by_due(todo, today),
             GroupBy::List => Group::List(todo.collection.clone()),
             GroupBy::Priority => Group::Priority(Prio::of(todo.priority)),
+            GroupBy::Repo => {
+                let repo = todo.link.as_ref().and_then(Link::github_ref).map(|(repo, _)| repo.to_string());
+                Group::Repo(repo.unwrap_or_default())
+            }
             GroupBy::None => Group::All,
         }
     }
@@ -369,6 +383,9 @@ impl Group {
             Group::Completed => (4, String::new()),
             Group::List(id) => (5, names.get(id).map_or_else(|| id.clone(), |name| name.to_lowercase())),
             Group::Priority(prio) => (6 + *prio as u8, String::new()),
+            // After the five priorities; tasks without a repository last.
+            Group::Repo(repo) if repo.is_empty() => (12, String::new()),
+            Group::Repo(repo) => (11, repo.to_lowercase()),
             Group::All => (u8::MAX, String::new()),
         }
     }
@@ -383,13 +400,16 @@ impl Group {
             Group::Completed => tr("Completed").into(),
             Group::List(id) => names.get(id).cloned().unwrap_or_else(|| tr("List").into()),
             Group::Priority(prio) => prio.label().into(),
+            Group::Repo(repo) if repo.is_empty() => tr("No repository").into(),
+            Group::Repo(repo) => repo.clone(),
             Group::All => String::new(),
         }
     }
 
-    /// Whether the head offers "+": not for done tasks, and the headless run has no head.
+    /// Whether the head offers "+": not for done tasks or a repository (a task cannot be added to
+    /// GitHub here), and the headless run has no head.
     fn can_add(&self) -> bool {
-        !matches!(self, Group::Completed | Group::All)
+        !matches!(self, Group::Completed | Group::Repo(_) | Group::All)
     }
 }
 
@@ -512,6 +532,9 @@ impl RowParts {
 /// The list: group heads with their rows, scrolling; the empty state when nothing is shown.
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     let groups = grouped(&data);
+    if groups.is_empty() && data.read_only {
+        return widgets::empty_state(tr("No matches"), tr("Nothing on GitHub matches this list right now"));
+    }
     if groups.is_empty() {
         return widgets::empty_state(tr("Nothing to do"), tr("Add a task above"));
     }
@@ -567,7 +590,7 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
         Space::new().width(Fill),
     ]
     .align_y(Alignment::Center);
-    if group.can_add() {
+    if group.can_add() && !data.read_only {
         let add = button(center(toned(Icon::Plus, icon::SIZE_SM, Tone::Text3)))
             .width(size::CONTROL_SM)
             .height(size::CONTROL_SM)
@@ -600,6 +623,7 @@ fn group_mark<'a>(group: &Group, data: &ListData<'a>) -> Element<'a, Message> {
         Group::List(id) => ring(colour_of(data, id)),
         Group::Priority(Prio::None) => toned(Icon::SignalHigh, icon::SIZE_SM, Tone::Text3),
         Group::Priority(prio) => prio_glyph(*prio),
+        Group::Repo(_) => toned(Icon::FolderGit2, icon::SIZE_SM, Tone::Text3),
         Group::All => Space::new().into(),
     }
 }
@@ -1037,6 +1061,7 @@ mod tests {
             collapsed: no_folds(),
             width: size::CONTENT_MAX,
             palette: palette(&Theme::Dark),
+            read_only: false,
         }
     }
 
@@ -1441,11 +1466,46 @@ mod tests {
         ];
         let filter = Filter::All;
         let folded: HashSet<Group> = [Group::Today].into();
-        for group_by in [GroupBy::Due, GroupBy::List, GroupBy::Priority, GroupBy::None] {
+        for group_by in [GroupBy::Due, GroupBy::List, GroupBy::Priority, GroupBy::Repo, GroupBy::None] {
             for width in [size::CONTENT_MAX, size::LIST, size::LIST_MEDIUM, 300.0] {
-                let d = ListData { group_by, width, collapsed: &folded, ..data(&todos, &filter, true) };
-                let _ = view(d);
+                for read_only in [false, true] {
+                    let d = ListData { group_by, width, read_only, collapsed: &folded, ..data(&todos, &filter, true) };
+                    let _ = view(d);
+                }
             }
         }
+        let _ = view(ListData { read_only: true, ..data(&[], &filter, true) });
+    }
+
+    #[test]
+    fn grouping_by_repository_puts_tasks_without_one_last() {
+        let item = |uid: &str, repo: &str, number: u64| Todo {
+            link: Some(Link {
+                github: Some(details(GitHubKind::Issue, GitHubState::Open)),
+                ..Link::github(repo, number)
+            }),
+            ..todo(uid, uid)
+        };
+        let todos = vec![
+            item("w1", "mahype/TorroWorkplace", 1),
+            todo("plain", "plain"),
+            item("d1", "mahype/torro-design", 18),
+            item("w2", "mahype/TorroWorkplace", 2),
+        ];
+        let filter = Filter::All;
+        let d = ListData { group_by: GroupBy::Repo, ..data(&todos, &filter, false) };
+        let strings = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            summaries(&todos, &d),
+            [
+                (Group::Repo("mahype/torro-design".into()), strings(&["d1"])),
+                (Group::Repo("mahype/TorroWorkplace".into()), strings(&["w1", "w2"])),
+                (Group::Repo(String::new()), strings(&["plain"])),
+            ],
+            "by name regardless of case, then the tasks without a repository"
+        );
+        assert_eq!(Group::Repo("mahype/torro-design".into()).label(&d.names), "mahype/torro-design");
+        assert_eq!(Group::Repo(String::new()).label(&d.names), tr("No repository"));
+        assert!(!Group::Repo("mahype/torro-design".into()).can_add(), "nothing is added to GitHub here");
     }
 }

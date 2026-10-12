@@ -682,7 +682,9 @@ impl App {
         match message {
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(torro_pim::combined_state(&accounts));
+                // Only accounts that can hold calendars: GitHub alone is "No calendar account yet".
+                self.account =
+                    Some(torro_pim::account::combined_state_for(&accounts, torro_pim::CollectionKind::Events));
                 self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();

@@ -9,13 +9,18 @@
 //! linked tasks with what GitHub reports about them (task R.2 in `docs/tasks/design.md`): open
 //! and closed issues, an open pull request with a review asked for and its checks running, a
 //! draft and a merged one – so every state a row can show is there with `--demo`.
+//!
+//! A third account, the GitHub account `mahype`, holds two filter lists (task G.3), read-only
+//! like the core's: "Needs me" (two searches, one pinned issue of another repository, more than
+//! 1,000 matches) and "Torro bugs" (its last refresh from GitHub failed), so the sidebar's GitHub
+//! group, the grouping by repository, the hints of a list and "Unpin" all show with `--demo`.
 
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
-use crate::account::{account_of, local_id};
-use crate::model::{ChecksState, GitHubDetails, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
+use crate::account::{GITHUB_KIND, account_of, local_id};
+use crate::model::{ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
 use crate::source::{PimSource, move_plan};
 use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
@@ -26,6 +31,16 @@ struct Data {
     todos: Vec<Todo>,
     next_id: u64,
 }
+
+impl Data {
+    /// `collection` is a known one that takes no changes: a filter list.
+    fn read_only(&self, collection: &str) -> bool {
+        self.collections.iter().any(|c| c.id == collection && !c.writable)
+    }
+}
+
+/// What a change of a filter list's item is answered with; the core answers `unsupported`.
+const READ_ONLY: &str = "Items of a GitHub filter list cannot be changed yet";
 
 /// See the module docs.
 #[derive(Debug, Default)]
@@ -51,6 +66,17 @@ pub const WORK_ACCOUNT: &str = "nextcloud:anna@work.example.org";
 pub const HOME_ACCOUNT: &str = "nextcloud:anna@home.example.org";
 /// Both, in the order [`DemoSource::accounts`] lists them.
 const ACCOUNTS: [&str; 2] = [WORK_ACCOUNT, HOME_ACCOUNT];
+/// The GitHub account with the filter lists "Needs me" and "Torro bugs", listed after the two
+/// Nextcloud accounts.
+pub const GITHUB_ACCOUNT: &str = "github:mahype";
+/// Its login, the account's name.
+const GITHUB_LOGIN: &str = "mahype";
+
+// Filter list ids as the core writes them: `github:<login>/<list-id>`.
+/// "Needs me": more than 1,000 matches, one pinned issue.
+pub const NEEDS_ME: &str = "github:mahype/needs-me";
+/// "Torro bugs": the last refresh from GitHub failed.
+pub const TORRO_BUGS: &str = "github:mahype/torro-bugs";
 
 // Collection ids as the core writes them: `<account-id>/<collection URL>` (`crate::account`).
 const WORK: &str = "nextcloud:anna@work.example.org/https://work.example.org/remote.php/dav/calendars/anna/work/";
@@ -67,9 +93,10 @@ fn url_of(collection: &str) -> &str {
     account_of(collection, &ACCOUNTS, |id| id).and_then(|account| local_id(collection, account)).unwrap_or(collection)
 }
 
-/// The sample content: five collections in two accounts, 27 events for this week and the two
-/// after it, and 24 tasks (six of them GitHub items). Dates are relative to `today`; a week runs
-/// Monday to Sunday.
+/// The sample content: five collections in two Nextcloud accounts and two filter lists of the
+/// GitHub account, 27 events for this week and the two after it, and 30 tasks (six GitHub items
+/// in "Tasks", six in the filter lists). Dates are relative to `today`; a week runs Monday to
+/// Sunday.
 pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     let monday = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
     let collections = vec![
@@ -78,6 +105,30 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
         collection(TASKS, "Tasks", CollectionKind::Todos, "#4F9426"),
         collection(GROCERIES, "Groceries", CollectionKind::Todos, "#7A57E3"),
         collection(FAMILY, "Family", CollectionKind::Both, "#E0485D"),
+        filter_list(
+            NEEDS_ME,
+            "Needs me",
+            "#D96CA8",
+            GitHubFilter {
+                queries: vec!["is:open involves:@me".into(), "is:open is:pr review-requested:@me".into()],
+                pinned: vec![Link::github(DESIGN_REPO, 18).id],
+                revision: 1,
+                truncated: true,
+                problem: None,
+            },
+        ),
+        filter_list(
+            TORRO_BUGS,
+            "Torro bugs",
+            "#E8A33D",
+            GitHubFilter {
+                queries: vec![format!("is:issue repo:{REPO} label:bug")],
+                pinned: Vec::new(),
+                revision: 3,
+                truncated: false,
+                problem: Some("GitHub did not answer in time.".into()),
+            },
+        ),
     ];
     let mut events = sample_events(monday);
     for (n, item) in events.iter_mut().enumerate() {
@@ -89,11 +140,30 @@ pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
         item.href = Some(format!("{}todo-{}.ics", url_of(&item.collection), n + 1));
         item.etag = Some(format!("\"sample-todo-{}\"", n + 1));
     }
+    // The core keeps a match where GitHub has it: its page is the href, its last update the etag.
+    todos.extend(filter_todos(today).into_iter().enumerate().map(|(n, item)| Todo {
+        href: item.url.clone(),
+        etag: Some(format!("2026-10-0{}T12:00:00Z", n + 1)),
+        sort_order: i64::try_from(n).ok(),
+        ..item
+    }));
     (collections, events, todos)
 }
 
 fn collection(id: &str, name: &str, kind: CollectionKind, color: &str) -> Collection {
     Collection { id: id.into(), name: name.into(), kind, color: Some(color.into()), writable: true, source: None }
+}
+
+/// A filter list of the GitHub account, as the core lists it: task items only, never writable.
+fn filter_list(id: &str, name: &str, color: &str, source: GitHubFilter) -> Collection {
+    Collection {
+        id: id.into(),
+        name: name.into(),
+        kind: CollectionKind::Todos,
+        color: Some(color.into()),
+        writable: false,
+        source: Some(source),
+    }
 }
 
 /// Local wall-clock time on `day` as an instant. The sample avoids the hour that a DST
@@ -185,6 +255,82 @@ fn with_details(mut todo: Todo, change: impl FnOnce(&mut GitHubDetails)) -> Todo
         change(details);
     }
     todo
+}
+
+/// The design repository, whose one issue is pinned in "Needs me".
+const DESIGN_REPO: &str = "mahype/torro-design";
+
+/// A match of the filter list `list` as the core keeps it ([`github`] otherwise): issue or pull
+/// request `number` of `repo`, its link id as uid, without a due date. Href and etag come in
+/// [`sample`].
+fn found(
+    list: &str,
+    repo: &str,
+    number: u64,
+    kind_state: (GitHubKind, GitHubState),
+    labels: &[(&str, &str)],
+    summary: &str,
+) -> Todo {
+    let item = github("", number, kind_state, labels, summary, None);
+    let details = item.link.clone().and_then(|link| link.github);
+    let link = Link { github: details, ..Link::github(repo, number) };
+    Todo { uid: link.id.clone(), collection: list.into(), url: link.web_url(), link: Some(link), ..item }
+}
+
+/// `todo` in the milestone `name` due on `day`: the core takes its date as the item's due date.
+fn in_milestone(todo: Todo, name: &str, day: NaiveDate) -> Todo {
+    let todo = Todo { due: Some(EventTime::Date(day)), ..todo };
+    with_details(todo, |details| {
+        details.milestone = Some(name.into());
+        details.milestone_due = Some(day);
+    })
+}
+
+/// The matches of the two filter lists. "Needs me": a pull request waiting for a review, an
+/// issue assigned to me in a milestone, and the pinned issue of the design repository. "Torro
+/// bugs": two open bugs (one in a milestone) and a closed one.
+fn filter_todos(today: NaiveDate) -> Vec<Todo> {
+    let (issue, pull) = (GitHubKind::Issue, GitHubKind::PullRequest);
+    let (open, closed) = (GitHubState::Open, GitHubState::Closed);
+    let (bug, ui, linux, enhancement) =
+        (("bug", "#D73A4A"), ("ui", "#3B82F6"), ("linux", "#D4A72C"), ("enhancement", "#2DA44E"));
+    let milestone = today + Days::new(4);
+    let mine = |details: &mut GitHubDetails| details.assignees = vec![GITHUB_LOGIN.into()];
+    vec![
+        with_details(
+            found(NEEDS_ME, REPO, 138, (pull, open), &[ui], "Show filter lists in the tasks sidebar"),
+            |details| {
+                details.review = Some(ReviewState::Required);
+                details.checks = Some(ChecksState::Pending);
+            },
+        ),
+        with_details(
+            in_milestone(
+                found(NEEDS_ME, REPO, 142, (issue, open), &[bug], "Calendar treats a GitHub-only setup as connected"),
+                "v0.4",
+                milestone,
+            ),
+            mine,
+        ),
+        found(NEEDS_ME, DESIGN_REPO, 18, (issue, open), &[enhancement], "Export the colour tokens for Iced"),
+        with_details(
+            in_milestone(
+                found(
+                    TORRO_BUGS,
+                    REPO,
+                    123,
+                    (issue, open),
+                    &[bug, ui, linux],
+                    "Tray icon disappears after resuming from sleep",
+                ),
+                "v0.4",
+                milestone,
+            ),
+            mine,
+        ),
+        found(TORRO_BUGS, REPO, 145, (issue, open), &[bug, ui], "Week view: all-day events cover the day names"),
+        found(TORRO_BUGS, REPO, 119, (issue, closed), &[bug], "Week view jumps when the clock changes"),
+    ]
 }
 
 /// The GitHub items of the sample, in "Tasks": an overdue open issue, an open pull request due
@@ -475,8 +621,19 @@ fn span(event: &Event) -> (DateTime<Utc>, DateTime<Utc>) {
 }
 
 impl PimSource for DemoSource {
-    /// The work and the home account, both connected and just synced.
+    /// The work and the home account and the GitHub account, all connected and just synced.
     async fn accounts(&self) -> Result<Vec<PimAccount>, ProviderError> {
+        let github = PimAccount {
+            id: GITHUB_ACCOUNT.into(),
+            label: GITHUB_LOGIN.into(),
+            kind: GITHUB_KIND.into(),
+            state: AccountState::Connected {
+                server: "https://github.com".into(),
+                login_name: GITHUB_LOGIN.into(),
+                last_sync: Some(Utc::now()),
+                problem: None,
+            },
+        };
         Ok(ACCOUNTS
             .iter()
             .map(|id| {
@@ -493,6 +650,7 @@ impl PimSource for DemoSource {
                     },
                 }
             })
+            .chain([github])
             .collect())
     }
 
@@ -559,8 +717,12 @@ impl PimSource for DemoSource {
         if data.events.len() == before { Err(ProviderError::Other("No such event".into())) } else { Ok(()) }
     }
 
+    /// Like the core, a filter list takes no changes ([`Data::read_only`]).
     async fn save_todo(&self, mut todo: Todo) -> Result<Todo, ProviderError> {
         let mut data = self.lock();
+        if data.read_only(&todo.collection) {
+            return Err(ProviderError::Other(READ_ONLY.into()));
+        }
         data.next_id += 1;
         let version = format!("\"demo-{}\"", data.next_id);
         match todo.href.clone() {
@@ -588,6 +750,9 @@ impl PimSource for DemoSource {
 
     async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
         let mut data = self.lock();
+        if data.read_only(&todo.collection) {
+            return Err(ProviderError::Other(READ_ONLY.into()));
+        }
         let before = data.todos.len();
         data.todos.retain(|t| t.href != todo.href || t.uid != todo.uid);
         if data.todos.len() == before { Err(ProviderError::Other("No such task".into())) } else { Ok(()) }
@@ -623,6 +788,25 @@ impl PimSource for DemoSource {
             written.push(task);
         }
         Ok(written)
+    }
+
+    /// Takes the pin out of the list's definition. The sample's searches find none of the pinned
+    /// items, so the item leaves the list at once, as it would with the core's next refresh.
+    async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
+        let mut data = self.lock();
+        let Some(filter) = data.collections.iter_mut().find(|c| c.id == collection).and_then(|c| c.source.as_mut())
+        else {
+            return Err(ProviderError::Other(format!("No filter list {collection}")));
+        };
+        let names_item = |id: &String| {
+            *id == item || Link { id: id.clone(), github: None }.web_url().is_some_and(|page| page == item)
+        };
+        let Some(at) = filter.pinned.iter().position(names_item) else {
+            return Err(ProviderError::Other(format!("The list does not pin {item}")));
+        };
+        let id = filter.pinned.remove(at);
+        data.todos.retain(|t| t.collection != collection || t.link.as_ref().is_none_or(|link| link.id != id));
+        Ok(())
     }
 }
 
@@ -666,6 +850,8 @@ mod tests {
                 ("Tasks", CollectionKind::Todos),
                 ("Groceries", CollectionKind::Todos),
                 ("Family", CollectionKind::Both),
+                ("Needs me", CollectionKind::Todos),
+                ("Torro bugs", CollectionKind::Todos),
             ]
         );
         let events_in = |id: &str| events.iter().filter(|e| e.collection == id).count();
@@ -677,7 +863,8 @@ mod tests {
         assert_eq!(todos_in(TASKS), 14);
         assert_eq!(todos_in(GROCERIES), 5);
         assert_eq!(todos_in(FAMILY), 5);
-        assert_eq!(todos.len(), 24);
+        assert_eq!((todos_in(NEEDS_ME), todos_in(TORRO_BUGS)), (3, 3));
+        assert_eq!(todos.len(), 30);
 
         for e in &events {
             assert!(collections.iter().any(|c| c.id == e.collection && c.kind.has_events()), "{}", e.summary);
@@ -688,22 +875,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_sample_spreads_over_two_connected_accounts() {
+    async fn the_sample_spreads_over_two_nextcloud_accounts_and_a_github_one() {
         let accounts = DemoSource::new(sunday()).accounts().await.expect("accounts");
         let ids: Vec<&str> = accounts.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, [WORK_ACCOUNT, HOME_ACCOUNT]);
+        assert_eq!(ids, [WORK_ACCOUNT, HOME_ACCOUNT, GITHUB_ACCOUNT]);
         assert!(accounts.iter().all(|a| matches!(a.state, AccountState::Connected { .. })));
         assert_eq!(accounts[0].label, "anna@work.example.org");
+        assert_eq!((accounts[2].kind.as_str(), accounts[2].label.as_str()), (GITHUB_KIND, "mahype"));
 
         let (collections, _, _) = sample(sunday());
         let owner = |c: &Collection| account_of(&c.id, &accounts, |a| a.id.as_str()).map(|a| a.id.clone());
         let per_account = |id: &str| collections.iter().filter(|c| owner(c).as_deref() == Some(id)).count();
-        assert_eq!((per_account(WORK_ACCOUNT), per_account(HOME_ACCOUNT)), (2, 3));
+        assert_eq!((per_account(WORK_ACCOUNT), per_account(HOME_ACCOUNT), per_account(GITHUB_ACCOUNT)), (2, 3, 2));
     }
 
     #[test]
     fn every_item_has_unique_href_and_etag() {
-        let (_, events, todos) = sample(sunday());
+        let (collections, events, todos) = sample(sunday());
+        let filter_list = |id: &str| collections.iter().any(|c| c.id == id && c.source.is_some());
         let mut hrefs = HashSet::new();
         for e in &events {
             let href = e.href.as_deref().expect("sample event has an href");
@@ -713,10 +902,64 @@ mod tests {
         }
         for t in &todos {
             let href = t.href.as_deref().expect("sample task has an href");
-            assert!(href.starts_with(url_of(&t.collection)) && href.ends_with(".ics"), "{href}");
+            if filter_list(&t.collection) {
+                assert_eq!(t.href, t.url, "a match lives on GitHub");
+            } else {
+                assert!(href.starts_with(url_of(&t.collection)) && href.ends_with(".ics"), "{href}");
+            }
             assert!(t.etag.is_some(), "{href}");
             assert!(hrefs.insert(href.to_owned()), "duplicate href {href}");
         }
+    }
+
+    #[test]
+    fn the_filter_lists_are_read_only_with_their_hints_and_a_pin() {
+        let (collections, _, todos) = sample(sunday());
+        let lists: Vec<&Collection> = collections.iter().filter(|c| c.source.is_some()).collect();
+        assert_eq!(lists.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), [NEEDS_ME, TORRO_BUGS]);
+        for list in &lists {
+            assert!(!list.writable && list.kind == CollectionKind::Todos && list.color.is_some(), "{}", list.name);
+            for item in todos.iter().filter(|t| t.collection == list.id) {
+                let link = item.link.as_ref().expect("a match is a GitHub item");
+                assert_eq!(item.uid, link.id, "the core's uid of a match is its link id");
+                assert!(link.github.is_some(), "{}", item.summary);
+            }
+        }
+        let source = |id: &str| collections.iter().find(|c| c.id == id).and_then(|c| c.source.clone());
+        let needs_me = source(NEEDS_ME).expect("a filter list");
+        assert!(needs_me.truncated && needs_me.problem.is_none() && needs_me.queries.len() == 2);
+        let pinned = &needs_me.pinned[0];
+        assert!(todos.iter().any(|t| t.collection == NEEDS_ME && t.uid == *pinned), "the pinned item is in the list");
+        let bugs = source(TORRO_BUGS).expect("a filter list");
+        assert!(bugs.problem.is_some() && !bugs.truncated);
+        let repos: HashSet<&str> = todos
+            .iter()
+            .filter(|t| t.collection == NEEDS_ME)
+            .filter_map(|t| t.link.as_ref()?.github_ref().map(|(repo, _)| repo))
+            .collect();
+        assert_eq!(repos.len(), 2, "grouped by repository, the list has two groups");
+    }
+
+    #[tokio::test]
+    async fn unpinning_takes_the_item_out_and_matches_cannot_be_changed() {
+        let source = DemoSource::new(sunday());
+        let pinned = Link::github(DESIGN_REPO, 18);
+        let in_list = |todos: &[Todo]| todos.iter().any(|t| t.collection == NEEDS_ME && t.uid == pinned.id);
+        let match_ = source.todos().await.expect("todos").into_iter().find(|t| t.collection == TORRO_BUGS);
+        let match_ = match_.expect("a match");
+        let done = Todo { completed: true, ..match_.clone() };
+        assert_eq!(source.save_todo(done).await, Err(ProviderError::Other(READ_ONLY.into())));
+        assert_eq!(source.delete_todo(match_).await, Err(ProviderError::Other(READ_ONLY.into())));
+
+        assert!(source.unpin_issue(TORRO_BUGS.into(), pinned.id.clone()).await.is_err(), "not pinned there");
+        assert!(in_list(&source.todos().await.expect("todos")));
+        source.unpin_issue(NEEDS_ME.into(), pinned.id.clone()).await.expect("unpinned");
+        assert!(!in_list(&source.todos().await.expect("todos")));
+        let collections = source.collections().await.expect("collections");
+        let needs_me = collections.iter().find(|c| c.id == NEEDS_ME).and_then(|c| c.source.as_ref());
+        assert_eq!(needs_me.map(|s| s.pinned.len()), Some(0));
+        assert!(source.unpin_issue(NEEDS_ME.into(), pinned.id.clone()).await.is_err(), "only once");
+        assert!(source.unpin_issue(TASKS.into(), pinned.id).await.is_err(), "no filter list");
     }
 
     #[test]
@@ -800,7 +1043,7 @@ mod tests {
     fn tasks_cover_overdue_today_later_and_undated() {
         let (_, _, todos) = sample(sunday());
         let open = || todos.iter().filter(|t| !t.completed);
-        assert_eq!(todos.iter().filter(|t| t.completed).count(), 5, "three tasks, a merged PR, a closed issue");
+        assert_eq!(todos.iter().filter(|t| t.completed).count(), 6, "three tasks, a merged PR, two closed issues");
         assert!(open().any(|t| t.due.is_some_and(|due| local_date(due) < sunday())), "overdue");
         assert!(open().any(|t| t.due.is_some_and(|due| local_date(due) == sunday())), "due today");
         assert!(open().any(|t| t.due.is_some_and(|due| local_date(due) > sunday())), "later");
@@ -814,8 +1057,12 @@ mod tests {
     fn one_task_has_tags_and_the_github_items_cover_every_state() {
         let (_, _, todos) = sample(sunday());
         assert!(todos.iter().any(|t| t.categories.len() > 1 && t.link.is_none()), "a task with tags");
-        let github: Vec<(&GitHubDetails, &Todo)> =
-            todos.iter().filter_map(|t| Some((t.link.as_ref()?.github.as_ref()?, t))).collect();
+        // The linked tasks of "Tasks"; the filter lists have their own test.
+        let github: Vec<(&GitHubDetails, &Todo)> = todos
+            .iter()
+            .filter(|t| t.collection == TASKS)
+            .filter_map(|t| Some((t.link.as_ref()?.github.as_ref()?, t)))
+            .collect();
         assert_eq!(github.len(), 6);
         for (details, todo) in &github {
             let link = todo.link.as_ref().expect("linked");
