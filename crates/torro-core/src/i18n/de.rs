@@ -381,10 +381,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{span} left", "noch {span}"),
     ("Back to now", "Zurück zu jetzt"),
     ("Collapse night", "Nacht einklappen"),
-    ("Fading out, until {time}", "Blendet aus, bis {time}"),
-    ("Free for {span}", "Frei für {span}"),
-    ("Next {n} hours", "Nächste {n} Stunden"),
-    ("Next {time} · {title}", "Als Nächstes {time} · {title}"),
     ("Nights", "Nächte"),
     ("Nothing planned", "Nichts geplant"),
     ("Radar", "Radar"),
@@ -393,9 +389,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{h} h {m}", "{h} h {m}"),
     ("{n} d", "{n} Tg."),
     ("{weekday} {day}", "{weekday} {day}."),
-    ("Free until {date} at {time}", "Frei bis {date} um {time}"),
-    ("Free until tomorrow {time}", "Frei bis morgen {time}"),
     ("This week", "Diese Woche"),
+    // Calendar: mini radars (K.30)
+    ("Coming days", "Nächste Tage"),
     // Calendar: the night (K.27)
     ("Double-click to set the night", "Doppelklick legt die Nacht fest"),
     ("From", "Von"),
