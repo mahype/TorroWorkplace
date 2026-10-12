@@ -406,6 +406,13 @@ pub struct Core {
     make_mail_discoverer: fn() -> Option<MailDiscoverer>,
     /// The searches each client key runs ([`MAX_SEARCHES`]).
     searches: Searches,
+    /// One decision at a time about who syncs the calendars of a sign-in (task M2.7b): held by
+    /// `accounts.connect_caldav`, `accounts.connect_mail` and `accounts.update_mail_account` when
+    /// it switches services, each from its check ("does another account sync these?") to the
+    /// calendar service's answer. Otherwise a CalDAV account and the calendar part of a mail
+    /// account of the same sign-in could both pass their check, and the settings would say
+    /// "calendars on" while the calendar service refused the duplicate.
+    calendar_sign_ins: Mutex<()>,
 }
 
 impl Core {
@@ -436,6 +443,7 @@ impl Core {
             mail_discovery: OnceLock::new(),
             make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
             searches: Searches::default(),
+            calendar_sign_ins: Mutex::new(()),
         }
     }
 
@@ -1097,8 +1105,12 @@ impl Core {
             // A client never reaches `connect_caldav`: `Rights::allows` refuses every command kept
             // from agents (`docs/api.md`, "Was nie nach außen geht", 5).
             Request::DiscoverServices { address } => self.discover_services(address, reach).await,
+            // Decided under the lock a mail account's calendars take too (task M2.7b).
+            request @ Request::ConnectCalDav { .. } => {
+                let _deciding = self.calendar_sign_ins.lock().await;
+                self.pim.handle_within(request, reach).await
+            }
             pim @ (Request::ConnectNextcloud { .. }
-            | Request::ConnectCalDav { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
             | Request::Events { .. }
@@ -1136,17 +1148,7 @@ impl Core {
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
-            Request::RemoveAccount { id } if self.github.knows(&id).await => match self.github.remove(&id).await {
-                Ok(()) => {
-                    self.pim.forget_filter_lists(&id).await;
-                    Response::Ok
-                }
-                Err(message) => Response::Error { code: "error".into(), message },
-            },
-            Request::RemoveAccount { id } if id.starts_with(torro_mail::ACCOUNT_PREFIX) => {
-                self.remove_mail_account(&id).await
-            }
-            Request::RemoveAccount { id } => self.pim.remove_account(&id).await,
+            Request::RemoveAccount { id } => self.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
                 Ok(template) => Response::Saved { template },
                 Err(err) => error(&err),
@@ -1215,6 +1217,8 @@ impl Core {
             } => {
                 let sign_in =
                     MailSignIn { address, sender_name, imap, smtp, login_name, password, calendars, tasks, caldav };
+                // Who syncs the calendars of this sign-in is decided under one lock (task M2.7b).
+                let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
             }
             Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => {
@@ -1632,8 +1636,9 @@ impl Core {
     }
 
     /// Checks the CalDAV address `url` of a mail account (task M2.7): its host is public
-    /// ([`MailService::check_public`]) and it takes `login` and `password`
-    /// ([`PimService::caldav_services`]). Answers with what it offers.
+    /// ([`MailService::check_public`]) and, at exactly the addresses checked (task M2.7b,
+    /// `CalDavClient::pinned`), it takes `login` and `password`. Answers with what it offers
+    /// (`CalDavClient::services`). Stores, caches and logs nothing.
     async fn check_caldav(
         &self,
         url: &str,
@@ -1645,8 +1650,11 @@ impl Core {
         let port = parsed.port_or_known_default().ok_or(SignInError::Failed(Service::CalDav))?;
         // `Url` writes an IPv6 host in brackets; the resolver wants it without.
         let host = host.trim_start_matches('[').trim_end_matches(']');
-        self.mail.check_public(Service::CalDav, host, port).await?;
-        self.pim.caldav_services(url, login, password).await.map_err(|err| SignInError::caldav(&err))
+        let addresses = self.mail.check_public(Service::CalDav, host, port).await?;
+        let dav = torro_pim_caldav::CalDavAccount { url: url.to_string(), username: login.to_string() };
+        let client = torro_pim_caldav::CalDavClient::pinned(&dav, password.clone(), &addresses)
+            .map_err(|_| SignInError::Failed(Service::CalDav))?;
+        client.services().await.map_err(|err| SignInError::caldav(&err))
     }
 
     /// After a mail account `to` took over the CalDAV account `from` and was stored (task M2.7):
@@ -1684,6 +1692,13 @@ impl Core {
         if let Some(refused) = mail_text_refusal(sender_name.as_deref(), signature.as_deref()) {
             return refused;
         }
+        // Switching services decides who syncs the calendars of this sign-in: from the check for a
+        // CalDAV account beside it to the calendar service's answer, under the lock
+        // `accounts.connect_caldav` takes too (task M2.7b).
+        let _deciding = match services {
+            Some(_) => Some(self.calendar_sign_ins.lock().await),
+            None => None,
+        };
         let stored = match self.mail.stored_accounts().await {
             Ok(stored) => stored,
             Err(message) => return refusal("error", message),
@@ -1753,6 +1768,46 @@ impl Core {
             }
         }
         Response::Ok
+    }
+
+    /// `accounts.remove_account` (tasks M1.4, G.1, M7.1, M2.7): a GitHub account with its filter
+    /// lists, a mail account ([`Core::remove_mail_account`]), else a Nextcloud or CalDAV account
+    /// (`PimService::remove_account`).
+    ///
+    /// An id the core does not know is `not-found`, and nothing changes. Otherwise the account
+    /// first leaves every client's rights (task M2.7b, [`Clients::forget_account`]): connecting the
+    /// same address again later must not give an agent its reach back unasked. When `clients.json`
+    /// cannot be written, nothing is removed (`error`); when removing fails after that, the
+    /// clients stay without the account, which fails safe (the person grants it anew).
+    async fn remove_account(&self, id: &str) -> Response {
+        let known: Vec<String> = self.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
+        // A mail account the mail service could not load is still removed from the list.
+        let stored_mail = id.starts_with(torro_mail::ACCOUNT_PREFIX)
+            && self
+                .mail
+                .stored_accounts()
+                .await
+                .is_ok_and(|stored| stored.iter().any(|a| a.id == id && a.kind == AccountKind::Mail));
+        if !stored_mail && !known.iter().any(|known| known == id) {
+            return refusal("not-found", format!("no account {id:?}"));
+        }
+        if let Err(err) = self.clients.forget_account(id, &known).await {
+            eprintln!("torroworkplace: the clients' rights to {id} could not be taken back: {err}");
+            return refusal("error", err.to_string());
+        }
+        if self.github.knows(id).await {
+            return match self.github.remove(id).await {
+                Ok(()) => {
+                    self.pim.forget_filter_lists(id).await;
+                    Response::Ok
+                }
+                Err(message) => Response::Error { code: "error".into(), message },
+            };
+        }
+        if id.starts_with(torro_mail::ACCOUNT_PREFIX) {
+            return self.remove_mail_account(id).await;
+        }
+        self.pim.remove_account(id).await
     }
 
     /// `accounts.remove_account` for a mail account (`mail:<address>`, task M2.7), decided by the
@@ -6299,6 +6354,179 @@ mod tests {
         let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
         assert!(accounts.is_empty(), "neither the mail nor the calendar part: {accounts:?}");
         assert_eq!(code(&core.handle(Request::RemoveAccount { id: ANNA_MAIL.into() }).await), "not-found");
+    }
+
+    /// Task M2.7b: removing an account takes it out of every agent's rights (mail account, inbox
+    /// source, its calendars), so connecting the same address again gives nobody its reach back.
+    #[tokio::test]
+    async fn removing_an_account_takes_it_out_of_every_agents_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(answer, Response::MailConnected { .. }), "{answer:?}");
+        let work = format!("{ANNA_MAIL}/{dav}calendars/anna/work/");
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        rights.inbox_sources = Selection::Only(vec![ANNA_MAIL.into(), "agent:codex".into()]);
+        rights.calendars = Selection::Only(vec![work.clone()]);
+        let (agent, key) = client(&core, rights).await;
+        let folders = Request::MailFolders { account: Some(ANNA_MAIL.into()) };
+        assert!(matches!(ask(&core, Some(&key), folders.clone()).await, Response::MailFolders { .. }));
+
+        // An id the core does not know (a prefix of Anna's included) changes nobody's rights.
+        for unknown in ["mail:anna@example", "mail:bob@example.org"] {
+            assert_eq!(code(&core.handle(Request::RemoveAccount { id: unknown.into() }).await), "not-found");
+        }
+        let kept = core.clients.list().into_iter().find(|c| c.id == agent).expect("the agent").rights;
+        assert_eq!(kept.calendars, Selection::Only(vec![work.clone()]));
+
+        assert_eq!(core.handle(Request::RemoveAccount { id: ANNA_MAIL.into() }).await, Response::Ok);
+        let rights = core.clients.list().into_iter().find(|c| c.id == agent).expect("the agent").rights;
+        assert_eq!(
+            (rights.mail_accounts, rights.inbox_sources, rights.calendars),
+            (Selection::Only(vec![]), Selection::Only(vec!["agent:codex".into()]), Selection::Only(vec![]))
+        );
+        let file = std::fs::read_to_string(crate::clients::tests::clients_file(dir.path())).expect("clients.json");
+        assert!(!file.contains("anna@example.org"), "{file}");
+
+        // The same address connected again: the agent does not reach it.
+        let again = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(again, Response::MailConnected { .. }), "{again:?}");
+        assert_eq!(code(&ask(&core, Some(&key), folders).await), "not-found");
+        let Response::Collections { collections } = ask(&core, Some(&key), Request::CalendarCollections).await else {
+            panic!("calendars")
+        };
+        assert!(collections.is_empty(), "{collections:?}");
+    }
+
+    /// Task M2.7b: a role the server leaves open (two folders named for junk, both with mail) goes
+    /// from the sign-in's answer to the account's page, the person's pick settles it, and the next
+    /// folder sync no longer shows it open.
+    #[tokio::test]
+    async fn an_open_folder_role_is_reported_listed_and_settled_by_the_person() {
+        use torro_ipc::{FolderChoice, OpenRoleView};
+        use torro_mail::Role;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add_folder("Junk", "\\HasNoChildren", 21);
+        server.add_folder("Spam", "\\HasNoChildren", 22);
+        server.add("Junk", &crate::mail::sync::fake::mail("Offer", 1, None), &[]);
+        server.add("Spam", &crate::mail::sync::fake::mail("Prize", 2, None), &[]);
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        let Response::MailConnected { open_roles, .. } = &answer else { panic!("connected, got {answer:?}") };
+        assert_eq!(open_roles, &[Role::Junk]);
+        let view = || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+            anna_view(&accounts).expect("a mail view")
+        };
+        let choice = |path: &str| FolderChoice { name: path.into(), path: path.into() };
+        let open = OpenRoleView { role: Role::Junk, candidates: vec![choice("Junk"), choice("Spam")] };
+        crate::mail::service::tests::eventually("the open role on the page", || async {
+            view().await.open_roles == [open.clone()]
+        })
+        .await;
+
+        let pick = |path: &str| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: None,
+            folder_roles: Some(std::collections::BTreeMap::from([(Role::Junk, path.to_string())])),
+        };
+        assert_eq!(code(&core.handle(pick("INBOX")).await), "error", "only one of the candidates");
+        assert_eq!(core.handle(pick("Spam")).await, Response::Ok);
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let roles = stored[0].mail_settings.as_ref().map(|settings| settings.folder_roles.clone());
+        assert_eq!(roles, Some(std::collections::BTreeMap::from([(Role::Junk, "Spam".to_string())])));
+        // The account starts over with the pick; once its folders were synced nothing is open.
+        crate::mail::service::tests::eventually("the role settled", || async {
+            let view = view().await;
+            view.mail.last_sync.is_some() && view.open_roles.is_empty()
+        })
+        .await;
+    }
+
+    /// Task M2.7b: switching a mail account's calendars on and signing in to the same calendars
+    /// as a CalDAV account at the same time: exactly one of them syncs them, and the settings say
+    /// so (never "calendars on" while the calendar service refused the duplicate).
+    #[tokio::test]
+    async fn calendars_switched_on_and_a_caldav_sign_in_of_the_same_login_never_both_win() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        // CalDAV sign-ins store into the same account list and keychain as the mail accounts.
+        let discoverer = torro_pim_caldav::discover::Discoverer::new(Arc::new(NoDns)).expect("discovery");
+        let pim = PimService::with_filter_file(SettingsStore::at(settings_file(dir.path())), filters_file(dir.path()))
+            .with_sign_in(mail_accounts_file(dir.path()), Arc::new(secrets.clone()), discoverer);
+        let (mail, _) = service_with_smtp(dir.path(), &secrets, MAIL_PASSWORD);
+        let core = Core::new(
+            Backend::Unsupported { name: "test".into() },
+            Store::at(dir.path().to_path_buf()),
+            Arc::new(pim),
+            crate::clients::tests::open_in(dir.path()),
+        )
+        .with_approvals(crate::approvals::tests::quiet_in(dir.path()))
+        .with_inbox(crate::inbox::tests::inbox_in(dir.path()))
+        .with_mail(mail);
+        let switch = |calendars| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
+            folder_roles: None,
+        };
+        let caldav = Request::ConnectCalDav {
+            address: "anna@example.org".into(),
+            server: Some(dav.clone()),
+            login_name: "anna".into(),
+            password: torro_ipc::Secret::new(MAIL_PASSWORD),
+            calendars: true,
+            tasks: true,
+        };
+        let connected = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        assert_eq!(core.handle(switch(false)).await, Response::Ok);
+
+        // Both decide under one lock: while it is held, neither gets anywhere.
+        let deciding = core.calendar_sign_ins.lock().await;
+        let both = async { tokio::join!(core.handle(switch(true)), core.handle(caldav)) };
+        tokio::pin!(both);
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(200), &mut both).await;
+        assert!(waited.is_err(), "both wait for the decision");
+        let before = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert!(before.iter().all(|account| account.kind != AccountKind::CalDav), "nothing decided yet");
+        drop(deciding);
+        let (switched, signed_in) = both.await;
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let calendars_on = stored
+            .iter()
+            .find(|account| account.id == ANNA_MAIL)
+            .and_then(|account| account.mail_settings.as_ref())
+            .is_some_and(|settings| settings.services.calendars);
+        let caldav_stored = stored.iter().any(|account| account.kind == AccountKind::CalDav);
+        let syncing: Vec<String> = core.pim.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
+        match (&switched, &signed_in) {
+            (Response::Ok, Response::Error { code, .. }) => {
+                assert_eq!(code, "conflict");
+                assert!(calendars_on && !caldav_stored, "{stored:?}");
+                assert_eq!(syncing, [ANNA_MAIL]);
+            }
+            (Response::Error { code, .. }, Response::Connected { account, .. }) => {
+                assert_eq!(code, "conflict");
+                assert!(!calendars_on && caldav_stored, "{stored:?}");
+                assert_eq!(syncing, std::slice::from_ref(&account.id));
+            }
+            other => panic!("exactly one wins, got {other:?}"),
+        }
     }
 
     #[test]

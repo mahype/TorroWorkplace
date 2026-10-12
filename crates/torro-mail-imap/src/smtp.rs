@@ -31,7 +31,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
 use std::io::{self, Write};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -176,6 +176,9 @@ pub struct SmtpSubmitter {
 enum Target {
     /// A mail server as configured: always TLS or STARTTLS.
     Server(Endpoint),
+    /// A mail server as configured, reached at `addresses` only ([`SmtpSubmitter::pinned_to`]);
+    /// the server's host name is only for TLS.
+    Pinned { server: Endpoint, addresses: Vec<SocketAddr> },
     /// The scripted test server on 127.0.0.1 without TLS. Only in this crate's unit tests, so no
     /// build of the suite can send a password in plain text.
     #[cfg(test)]
@@ -186,6 +189,23 @@ impl SmtpSubmitter {
     /// A submitter for `server`, signing in as `login` (often the address) with `password`.
     pub fn new(server: Endpoint, login: impl Into<String>, password: Secret) -> SmtpSubmitter {
         SmtpSubmitter { target: Target::Server(server), login: login.into(), password }
+    }
+
+    /// This submitter connecting to `addresses` only, never to what its server's host name
+    /// resolves to at the time (task M2.7b): the core checks the host's addresses (public internet
+    /// only) and hands over exactly those, so a name that answers differently the second time (DNS
+    /// rebinding) never gets the password. The host name stays what TLS checks the certificate
+    /// against and sends as SNI; the port of each address is used, not the server's.
+    ///
+    /// The addresses are tried in order. An empty list makes every connection fail with
+    /// [`SmtpError::Offline`].
+    pub fn pinned_to(self, addresses: Vec<SocketAddr>) -> SmtpSubmitter {
+        let target = match self.target {
+            Target::Server(server) | Target::Pinned { server, .. } => Target::Pinned { server, addresses },
+            #[cfg(test)]
+            other @ Target::PlainLoopback(_) => other,
+        };
+        SmtpSubmitter { target, ..self }
     }
 
     /// Connects and signs in without sending anything, then says `QUIT`: for checking a new
@@ -217,31 +237,9 @@ impl SmtpSubmitter {
         // called.
         let hello = ClientId::Ipv4(Ipv4Addr::LOCALHOST);
         match &self.target {
-            Target::Server(server) => {
-                let address = (server.host.as_str(), server.port);
-                match server.security {
-                    Security::Tls => {
-                        let tls = tls_parameters(&server.host)?;
-                        AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), &hello, Some(tls), None)
-                            .await
-                            .map_err(|error| connect_error(&error))
-                    }
-                    Security::StartTls => {
-                        let mut connection =
-                            AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), &hello, None, None)
-                                .await
-                                .map_err(|error| connect_error(&error))?;
-                        // Without STARTTLS the login would go out in plain text: refuse.
-                        if !connection.can_starttls() {
-                            connection.abort().await;
-                            return Err(SmtpError::Unsupported);
-                        }
-                        let tls = tls_parameters(&server.host)?;
-                        connection.starttls(tls, &hello).await.map_err(|error| connect_error(&error))?;
-                        Ok(connection)
-                    }
-                }
-            }
+            Target::Server(server) => secured(server, (server.host.as_str(), server.port), &hello).await,
+            Target::Pinned { addresses, .. } if addresses.is_empty() => Err(SmtpError::Offline),
+            Target::Pinned { server, addresses } => secured(server, addresses.as_slice(), &hello).await,
             #[cfg(test)]
             Target::PlainLoopback(port) => AsyncSmtpConnection::connect_tokio1(
                 (Ipv4Addr::LOCALHOST, *port),
@@ -252,6 +250,36 @@ impl SmtpSubmitter {
             )
             .await
             .map_err(|error| connect_error(&error)),
+        }
+    }
+}
+
+/// Connects to `address` and secures the connection to `server` as its security asks: TLS from
+/// the first byte, or STARTTLS, which a server must offer or nothing is sent. The certificate is
+/// checked against the server's host name, wherever `address` points.
+async fn secured<A>(server: &Endpoint, address: A, hello: &ClientId) -> Result<AsyncSmtpConnection, SmtpError>
+where
+    A: tokio::net::ToSocketAddrs,
+{
+    match server.security {
+        Security::Tls => {
+            let tls = tls_parameters(&server.host)?;
+            AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), hello, Some(tls), None)
+                .await
+                .map_err(|error| connect_error(&error))
+        }
+        Security::StartTls => {
+            let mut connection = AsyncSmtpConnection::connect_tokio1(address, Some(CONNECT_TIMEOUT), hello, None, None)
+                .await
+                .map_err(|error| connect_error(&error))?;
+            // Without STARTTLS the login would go out in plain text: refuse.
+            if !connection.can_starttls() {
+                connection.abort().await;
+                return Err(SmtpError::Unsupported);
+            }
+            let tls = tls_parameters(&server.host)?;
+            connection.starttls(tls, hello).await.map_err(|error| connect_error(&error))?;
+            Ok(connection)
         }
     }
 }
@@ -946,6 +974,23 @@ mod tests {
             password: Secret::new(PASSWORD),
         };
         assert_eq!(submitter.submit(&envelope(), MESSAGE).await, Submitted::NotAccepted(SmtpError::Offline));
+    }
+
+    /// Task M2.7b: a pinned submitter goes to the address it was given, never to what the host
+    /// name (here a closed port on `localhost`) would resolve to; STARTTLS is still required.
+    #[tokio::test]
+    async fn a_pinned_submitter_connects_to_the_checked_address_only() {
+        let server = Server::start(Mode::Accept).await;
+        let configured = Endpoint { host: "localhost".into(), port: 9, security: Security::StartTls };
+        let pinned = SmtpSubmitter::new(configured.clone(), "anna", Secret::new(PASSWORD))
+            .pinned_to(vec![SocketAddr::from((Ipv4Addr::LOCALHOST, server.port))]);
+        assert_eq!(pinned.check_login().await, Err(SmtpError::Unsupported), "no STARTTLS, nothing sent");
+        assert_eq!(server.connections(), 1, "the checked address was reached");
+        assert!(server.received().mail_from.is_empty());
+
+        let nowhere = SmtpSubmitter::new(configured, "anna", Secret::new(PASSWORD)).pinned_to(Vec::new());
+        assert_eq!(nowhere.check_login().await, Err(SmtpError::Offline));
+        assert!(!format!("{nowhere:?}").contains(PASSWORD));
     }
 
     #[test]

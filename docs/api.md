@@ -369,6 +369,9 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 - **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten, Repositories,
   Quellen des Eingangs und Mail-Konten (später auch Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
+  Wird ein Konto entfernt (`accounts.remove_account`), fallen das Konto und seine Sammlungen aus
+  allen Auswahlen (M2.7b); wird dieselbe Adresse später neu verbunden, bekommt kein Agent seinen
+  Zugriff von selbst zurück.
 - **Freigabe vorher**: Nie · Beim Löschen (Standard) · Bei jeder Änderung.
 - **Nach außen** (Mail senden, M2.1): Nie · Mit Freigabe (Standard, in allen Vorlagen) · Frei. Senden ist kein
   gewöhnliches Schreiben: Es verlässt den Rechner und lässt sich nicht zurückholen. Es gilt die strengere

@@ -35,14 +35,16 @@
 //! **Security.** The password comes from the keychain and goes to the IMAP and SMTP servers only,
 //! never into an answer, a log or a `Debug` output. Before every connection the host must resolve
 //! to public addresses only (the guard of the CalDAV and mail discovery, `is_public`), so an
-//! account cannot be used to probe the local network. Rights are not checked here: the core checks
+//! account cannot be used to probe the local network; the connection then goes to exactly the
+//! addresses checked, the host name serving TLS alone (task M2.7b), so a name that answers
+//! differently the second time (DNS rebinding) reaches nothing new. Rights are not checked here: the core checks
 //! a client's reach (`Rights::reaches_mail_account`) before it asks this service.
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::fmt;
 use std::io;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
@@ -267,7 +269,7 @@ impl SignInError {
         }
     }
 
-    /// What a failed CalDAV sign-in (`PimService::caldav_services`) means.
+    /// What a failed CalDAV sign-in (`CalDavClient::services`, `Core::check_caldav`) means.
     pub fn caldav(err: &ProviderError) -> SignInError {
         match err {
             ProviderError::Auth => SignInError::Refused(Service::CalDav),
@@ -407,14 +409,40 @@ impl fmt::Debug for Command {
     }
 }
 
-/// How connections are made: which certificates are trusted, which addresses may be connected to
-/// and how an SMTP sign-in is checked. The core uses [`Connector::system`]; tests a local server
-/// with a test CA and a fake SMTP check.
+/// How connections are made: which certificates are trusted, which addresses may be connected to,
+/// how host names are resolved and how an SMTP sign-in is checked. The core uses
+/// [`Connector::system`]; tests a local server with a test CA and a fake SMTP check.
 #[derive(Debug, Clone)]
 struct Connector {
     trust: Trust,
     allowed: fn(IpAddr) -> bool,
     smtp: SmtpCheck,
+    lookup: Lookup,
+}
+
+/// The name lookups of tests: host and port in, the addresses out.
+#[cfg(test)]
+type FakeLookup = Arc<dyn Fn(&str, u16) -> Vec<SocketAddr> + Send + Sync>;
+
+/// How [`Connector::public_addresses`] resolves a host name. Only there: every connection then
+/// goes to the addresses it found (task M2.7b).
+#[derive(Clone)]
+enum Lookup {
+    /// The operating system's resolver (`getaddrinfo`), as every connection of the suite.
+    System,
+    /// Tests: answers from a function, never from a DNS server.
+    #[cfg(test)]
+    Fake(FakeLookup),
+}
+
+impl fmt::Debug for Lookup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Lookup::System => f.write_str("System"),
+            #[cfg(test)]
+            Lookup::Fake(_) => f.write_str("Fake"),
+        }
+    }
 }
 
 /// The SMTP check of tests: server, login and password in, the outcome out.
@@ -443,47 +471,59 @@ impl fmt::Debug for SmtpCheck {
 
 impl Connector {
     fn system() -> Connector {
-        Connector { trust: Trust::System, allowed: is_public, smtp: SmtpCheck::Server }
+        Connector { trust: Trust::System, allowed: is_public, smtp: SmtpCheck::Server, lookup: Lookup::System }
     }
 
     /// Connections nowhere: no address is allowed ([`MailService::without_home`]).
     fn nowhere() -> Connector {
-        Connector { trust: Trust::System, allowed: |_| false, smtp: SmtpCheck::Server }
+        Connector { trust: Trust::System, allowed: |_| false, smtp: SmtpCheck::Server, lookup: Lookup::System }
     }
 
-    /// Checks the host of `server` ([`Connector::check_host`]), then signs in to SMTP as `login`
-    /// and says `QUIT` without sending anything.
+    /// Checks the host of `server` ([`Connector::public_addresses`]), then signs in to SMTP as
+    /// `login` at those addresses and says `QUIT` without sending anything.
     async fn check_smtp(&self, server: &Endpoint, login: &str, password: &Secret) -> Result<(), SignInError> {
-        self.check_host(&server.host, server.port).await.map_err(|err| SignInError::host(Service::Smtp, err))?;
+        let addresses = self
+            .public_addresses(&server.host, server.port)
+            .await
+            .map_err(|err| SignInError::host(Service::Smtp, err))?;
         let checked = match &self.smtp {
-            SmtpCheck::Server => SmtpSubmitter::new(server.clone(), login, password.clone()).check_login().await,
+            SmtpCheck::Server => {
+                SmtpSubmitter::new(server.clone(), login, password.clone()).pinned_to(addresses).check_login().await
+            }
             #[cfg(test)]
             SmtpCheck::Fake(check) => check(server, login, password),
         };
         checked.map_err(SignInError::smtp)
     }
 
-    /// Checks the host ([`Connector::check_host`]), then connects and signs in.
+    /// Checks the host ([`Connector::public_addresses`]), then connects to those addresses and
+    /// signs in.
     async fn connect(&self, config: &MailAccountConfig, login: &str, password: &Secret) -> Result<Session, MailError> {
-        self.check_host(&config.imap.host, config.imap.port).await?;
-        Ok(Session::connect(&config.imap, login, password, &self.trust).await?)
+        let addresses = self.public_addresses(&config.imap.host, config.imap.port).await?;
+        Ok(Session::connect_to(&addresses, &config.imap, login, password, &self.trust).await?)
     }
 
-    /// `host` has addresses and every one is allowed ([`is_public`] in the core), so the account
-    /// never connects into the local network. The name is resolved again by the connection
-    /// itself (`Session::connect` takes a host name, which TLS needs for the certificate), so a
-    /// name that answers differently the second time (DNS rebinding) is not caught: this check is
-    /// the same the discovery makes, not a pin. Pinning needs `torro-mail-imap` to connect to a
-    /// given address under the host's name.
-    async fn check_host(&self, host: &str, port: u16) -> Result<(), MailError> {
-        let found = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|err| MailError::Offline(format!("cannot resolve the mail server: {}", err.kind())))?;
-        let ips: Vec<IpAddr> = found.map(|address| address.ip()).collect();
-        if ips.is_empty() || !ips.iter().all(|ip| (self.allowed)(*ip)) {
+    /// The addresses of `host` at `port`, when it has any and every one is allowed ([`is_public`]
+    /// in the core), so the account never connects into the local network. The name is resolved
+    /// here only: every connection goes to exactly these addresses, the host name serving for TLS
+    /// alone (`Session::connect_to`, `SmtpSubmitter::pinned_to`, task M2.7b), so a name that
+    /// answers differently the second time (DNS rebinding) reaches nothing new.
+    ///
+    /// [`MailError::Offline`] when the name cannot be resolved, [`MailError::NotPublic`] when it
+    /// has no address or one that is not allowed.
+    async fn public_addresses(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, MailError> {
+        let found: Vec<SocketAddr> = match &self.lookup {
+            Lookup::System => tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|err| MailError::Offline(format!("cannot resolve the mail server: {}", err.kind())))?
+                .collect(),
+            #[cfg(test)]
+            Lookup::Fake(lookup) => lookup(host, port),
+        };
+        if found.is_empty() || !found.iter().all(|address| (self.allowed)(address.ip())) {
             return Err(MailError::NotPublic);
         }
-        Ok(())
+        Ok(found)
     }
 }
 
@@ -1069,7 +1109,8 @@ impl MailService {
     }
 
     /// Checks a sign-in of a mail account before anything is stored (`accounts.connect_mail`,
-    /// task M2.7): the IMAP host is public ([`Connector::check_host`]), IMAP takes `login` and
+    /// task M2.7): the IMAP host is public ([`Connector::public_addresses`], and the sign-in goes to
+    /// the addresses checked, task M2.7b), IMAP takes `login` and
     /// `password`, and its folders are listed with the person's picks `chosen`; then the same for
     /// SMTP, signing in without sending anything. A refused IMAP sign-in stops there, so a server
     /// that locks accounts after a few refusals is asked once. Answers with the roles the server
@@ -1086,9 +1127,10 @@ impl MailService {
         chosen: &BTreeMap<Role, String>,
     ) -> Result<Vec<Role>, SignInError> {
         let imap = &config.imap;
-        self.check_public(Service::Imap, &imap.host, imap.port).await?;
-        let mut session =
-            Session::connect(imap, login, password, &self.connector.trust).await.map_err(SignInError::imap)?;
+        let addresses = self.check_public(Service::Imap, &imap.host, imap.port).await?;
+        let mut session = Session::connect_to(&addresses, imap, login, password, &self.connector.trust)
+            .await
+            .map_err(SignInError::imap)?;
         let listed = folders::discover(&mut session, chosen).await.map_err(SignInError::imap)?;
         // Only to be polite: the sign-in was checked.
         let _ = session.logout().await;
@@ -1098,9 +1140,11 @@ impl MailService {
 
     /// `host` (of `service`) has addresses and all are on the public internet, as before every
     /// connection of this service; the CalDAV address of a mail account is checked the same way
-    /// before it is signed in to (task M2.7).
-    pub async fn check_public(&self, service: Service, host: &str, port: u16) -> Result<(), SignInError> {
-        self.connector.check_host(host, port).await.map_err(|err| SignInError::host(service, err))
+    /// before it is signed in to (task M2.7). Answers with those addresses (task M2.7b): connect to
+    /// them and nowhere else (`Session::connect_to`, `CalDavClient::pinned`), the host name only
+    /// for TLS, so the name cannot point elsewhere between the check and the connection.
+    pub async fn check_public(&self, service: Service, host: &str, port: u16) -> Result<Vec<SocketAddr>, SignInError> {
+        self.connector.public_addresses(host, port).await.map_err(|err| SignInError::host(service, err))
     }
 
     /// Every account of `accounts.json`, of every kind, as connecting and changing a mail account
@@ -1357,7 +1401,8 @@ impl MailService {
 
     /// Who hands the mail of `account` to its SMTP server (task M3.3): its SMTP server, login and
     /// password, after the host was found to be public like every IMAP host
-    /// ([`Connector::check_host`]). Nothing is sent yet. [`MailError::Auth`] when the password was
+    /// ([`Connector::public_addresses`]); it connects to the addresses checked and nowhere else
+    /// (task M2.7b). Nothing is sent yet. [`MailError::Auth`] when the password was
     /// refused before (the same password signs in to SMTP), [`MailError::NoPassword`],
     /// [`MailError::NotPublic`] and [`MailError::Offline`] as for connecting.
     pub(crate) async fn smtp(&self, account: &str) -> Result<SmtpSubmitter, MailError> {
@@ -1367,8 +1412,8 @@ impl MailService {
         }
         let password = mailbox.password.clone().ok_or(MailError::NoPassword)?;
         let server = &mailbox.config.smtp;
-        self.connector.check_host(&server.host, server.port).await?;
-        Ok(SmtpSubmitter::new(server.clone(), mailbox.account.login_name.clone(), password))
+        let addresses = self.connector.public_addresses(&server.host, server.port).await?;
+        Ok(SmtpSubmitter::new(server.clone(), mailbox.account.login_name.clone(), password).pinned_to(addresses))
     }
 
     /// The SMTP server of `account` refused its password (task M3.3): the account shows "Password
@@ -1470,6 +1515,7 @@ pub(crate) mod tests {
             trust: fake::trust(),
             allowed: |ip| is_public(ip) || ip.is_loopback(),
             smtp: SmtpCheck::Fake(Arc::new(check)),
+            lookup: Lookup::System,
         }
     }
 
@@ -1775,13 +1821,51 @@ pub(crate) mod tests {
     async fn the_core_connects_only_to_public_mail_servers() {
         let connector = Connector::system();
         for host in ["127.0.0.1", "10.0.0.8", "192.168.1.2", "::1", "169.254.1.1"] {
-            let refused = connector.check_host(host, 993).await.expect_err("refused");
+            let refused = connector.public_addresses(host, 993).await.expect_err("refused");
             assert!(matches!(refused, MailError::NotPublic), "{host}: {refused:?}");
         }
         assert!(
-            test_connector(PASSWORD, Arc::default()).check_host("127.0.0.1", 993).await.is_ok(),
+            test_connector(PASSWORD, Arc::default()).public_addresses("127.0.0.1", 993).await.is_ok(),
             "only the tests' way allows it"
         );
+    }
+
+    /// Task M2.7b: the name is resolved once, for the check, and the session goes to what that
+    /// found. The IMAP server is configured as `localhost` on a port where nothing listens; only
+    /// the checked address leads to the fake, whose certificate names `localhost` (TLS checks the
+    /// host name, not the address). A lookup that finds a private address connects nowhere.
+    #[tokio::test]
+    async fn the_session_goes_to_the_checked_address_under_the_host_name() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let lookups = Arc::new(StdMutex::new(Vec::new()));
+        let answer = Arc::new(StdMutex::new(SocketAddr::from(([127, 0, 0, 1], server.endpoint.port))));
+        let (asked, answering) = (Arc::clone(&lookups), Arc::clone(&answer));
+        let mut connector = test_connector(PASSWORD, Arc::default());
+        connector.lookup = Lookup::Fake(Arc::new(move |host: &str, port: u16| {
+            asked.lock().expect("record").push(format!("{host}:{port}"));
+            vec![*answering.lock().expect("answer")]
+        }));
+        let dirs = MailDirs::new(&dir.path().join("data"), &dir.path().join("cache"));
+        let service = MailService::new(
+            Some(accounts_file(dir.path())),
+            Arc::new(MemoryTokens::default()),
+            Some(dirs),
+            connector,
+            TEST_TIMING,
+        );
+        let configured = Endpoint { host: "localhost".into(), port: 9, security: Security::Tls };
+        let account = mail_account("anna@example.org", &configured);
+        let config = account.mail.clone().expect("a mail account");
+        let mailbox = service.mailbox(account, config, Some(Secret::new(PASSWORD))).await;
+
+        mailbox.connect().await.expect("signed in at the checked address").logout().await.expect("bye");
+        assert_eq!((server.logins(), lookups.lock().expect("record").clone()), (1, vec!["localhost:9".to_string()]));
+
+        // The name now points into the local network: refused before anything is sent.
+        *answer.lock().expect("answer") = SocketAddr::from(([10, 0, 0, 8], server.endpoint.port));
+        assert!(matches!(mailbox.connect().await, Err(MailError::NotPublic)));
+        assert_eq!(server.logins(), 1);
     }
 
     #[test]

@@ -318,7 +318,11 @@ ihre Texte im Bericht.
   Passwort erscheint nirgends (Antwort, `Debug`, Fehler, Protokoll, `approvals.json`).
 
 ### M2.7b Konten absichern (aus den Berichten von M2.6/M2.7)
-- [ ] erledigt
+- [x] erledigt (zusätzlich angefasst: `torro-mail-imap/src/smtp.rs` additiv `SmtpSubmitter::pinned_to`,
+  `torroworkplace/src/pim.rs` für gefundene CalDAV-Adressen und den Kalenderteil von Mail-Konten,
+  Beschreibung von `accounts.remove_account` in `torro-ipc/src/api.rs` und `docs/api.md`; offen: der Sync
+  reiner CalDAV-Konten (M7.1) prüft keine öffentliche Adresse, weil ein eingetippter Server im eigenen Netz
+  stehen darf)
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,clients,account}.rs`,
   `crates/torroworkplace/src/mail/service.rs`, `crates/torro-mail-imap/src/imap.rs` (nur additiv),
   `crates/torro-pim-caldav/src/client.rs` (nur additiv)
