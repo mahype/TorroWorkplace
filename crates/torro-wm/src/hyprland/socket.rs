@@ -104,7 +104,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn request_without_socket_file_is_not_running() {
-        let dir = std::env::temp_dir().join("torro-wm-no-such-instance-socket");
+        // /tmp, not temp_dir(): macOS puts that under /var/folders/…, too long for a socket path (104 bytes).
+        let dir = std::path::Path::new("/tmp").join("torro-wm-no-such-instance-socket");
         let err = request(&dir, "j/clients").await.expect_err("no socket there");
         assert!(matches!(err, WmError::NotRunning(_)), "{err:?}");
     }
@@ -120,7 +121,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!("torro-wm-{}-{nanos}", std::process::id()));
+        // /tmp, not temp_dir(): macOS puts that under /var/folders/…, too long for a socket path (104 bytes).
+        let dir = std::path::Path::new("/tmp").join(format!("torro-wm-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp instance dir");
 
         let listener = UnixListener::bind(dir.join(REQUEST_SOCKET)).expect("bind fake socket");

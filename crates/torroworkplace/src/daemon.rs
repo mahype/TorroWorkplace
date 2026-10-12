@@ -1,18 +1,24 @@
 //! `torroworkplace daemon`: the background service.
 //!
-//! One process per session. The main task owns a multi-threaded tokio runtime and runs:
+//! One process per session. A multi-threaded tokio runtime runs:
 //!
 //! - the socket (`torro_ipc::server`) for `ctl`, hotkeys, the control centre, the apps and
 //!   agents; every request there passes the key check ([`Core::handle_from`]),
-//! - the tray icon (Linux: ksni; it runs its own D-Bus task on the same runtime),
+//! - the tray icon (see `tray`),
 //! - a refresher that rebuilds the tray menu after every command, on window manager events and
 //!   when the open approvals change ([`watch_approvals`]) or anything is written to the inbox
 //!   ([`watch_inbox`]), all debounced into one refresh,
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
 //!
-//! and ends on "Beenden", Ctrl+C or when the socket server fails. Every command, from the
+//! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
 //! tray or the socket, goes through [`Core::handle`].
+//!
+//! Where the main thread goes depends on the system. On Linux it waits for the service
+//! (`block_on`); ksni runs its D-Bus task on the same runtime. On macOS and Windows the tray
+//! needs a native event loop on the main thread, so the service runs as a task on the runtime's
+//! worker threads and the main thread runs [`tray::Shell`] until the service ends.
+//! `--headless` runs no tray and no event loop on any system.
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -26,12 +32,10 @@ use torro_setups::storage::Store;
 
 use crate::clients::{Clients, SystemKeychain};
 use crate::core::{Core, Snapshot};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::tray;
 
 /// The way back into the daemon for front ends like the tray menu.
-// Only the Linux tray uses it so far; macOS and Windows run headless until they get a tray.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct Daemon {
     core: Arc<Core>,
     runtime: tokio::runtime::Handle,
@@ -39,7 +43,6 @@ pub struct Daemon {
     quit: mpsc::UnboundedSender<()>,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 impl Daemon {
     /// Runs `request` in the background and refreshes the menu before (to show "busy") and
     /// after.
@@ -76,6 +79,9 @@ impl Daemon {
 /// go out first.
 const ANSWER_GRACE: Duration = Duration::from_millis(200);
 
+/// How long the start waits for an answer to "is a core already running?".
+const START_PING_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Ends the service once the answer to a `system.quit` is on its way (see [`ANSWER_GRACE`]).
 fn end_after_answer(quit: mpsc::UnboundedSender<()>) {
     tokio::spawn(async move {
@@ -93,7 +99,63 @@ pub fn run(headless: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(serve(headless)) {
+    if headless {
+        return finish(runtime.block_on(serve(Shows::Nothing)));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        finish(runtime.block_on(serve(Shows::Ksni)))
+    }
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        run_with_event_loop(runtime)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        eprintln!("torroworkplace: no tray icon on this system; running headless");
+        finish(runtime.block_on(serve(Shows::Nothing)))
+    }
+}
+
+/// How long the main thread waits for the service once the event loop has ended. Normally the
+/// loop ends because the service did ([`tray::DesktopHandle::exit`]), so the result is there
+/// at once; if the system ended the loop instead, the service does not get to tidy up.
+#[cfg(any(target_os = "macos", windows))]
+const SERVICE_WAIT: Duration = Duration::from_secs(2);
+
+/// macOS and Windows: the service as a task on the runtime, the tray's event loop on this (the
+/// main) thread. Without an event loop the service runs headless.
+#[cfg(any(target_os = "macos", windows))]
+fn run_with_event_loop(runtime: tokio::runtime::Runtime) -> ExitCode {
+    let shell = match tray::Shell::new() {
+        Ok(shell) => shell,
+        Err(err) => {
+            eprintln!("torroworkplace: {err}; running headless");
+            return finish(runtime.block_on(serve(Shows::Nothing)));
+        }
+    };
+    let handle = shell.handle();
+    let service = runtime.spawn(async move {
+        let result = serve(Shows::Desktop(handle.clone())).await;
+        handle.exit();
+        result
+    });
+    if let Err(err) = shell.run() {
+        // The service does not need the icon: keep it running until it is told to quit.
+        eprintln!("torroworkplace: {err}; running headless");
+        return finish(runtime.block_on(service).unwrap_or_else(|err| Err(format!("service task: {err}"))));
+    }
+    // The timer must be made inside the runtime, hence the async block.
+    match runtime.block_on(async { tokio::time::timeout(SERVICE_WAIT, service).await }) {
+        Ok(Ok(result)) => finish(result),
+        Ok(Err(err)) => finish(Err(format!("service task: {err}"))),
+        Err(_) => finish(Err("the tray event loop ended before the service".into())),
+    }
+}
+
+/// The exit code for the service's result; the error goes to stderr.
+fn finish(result: Result<(), String>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("torroworkplace: {err}");
@@ -102,9 +164,24 @@ pub fn run(headless: bool) -> ExitCode {
     }
 }
 
-async fn serve(headless: bool) -> Result<(), String> {
+/// What the service shows its state with, decided before it starts.
+enum Shows {
+    /// Nothing: `--headless`, or no tray on this system.
+    Nothing,
+    /// The ksni tray, started by [`serve`] on its runtime.
+    #[cfg(target_os = "linux")]
+    Ksni,
+    /// The tray on the main thread's event loop, reached through its handle.
+    #[cfg(any(target_os = "macos", windows))]
+    Desktop(tray::DesktopHandle),
+}
+
+async fn serve(shows: Shows) -> Result<(), String> {
     let socket = socket_path().ok_or("no home directory")?;
-    if let Ok(Response::Pong { .. }) = client::call(&socket, &Request::Ping).await {
+    // Bounded: a program that holds the socket or pipe name but never answers must not stall
+    // the start; the server then fails on the taken name with a clear error instead.
+    let ping = tokio::time::timeout(START_PING_TIMEOUT, client::call(&socket, &Request::Ping)).await;
+    if let Ok(Ok(Response::Pong { .. })) = ping {
         return Err("already running".into());
     }
     // The app key goes next to the socket, where `torro_ipc::client` looks for it.
@@ -175,7 +252,7 @@ async fn serve(headless: bool) -> Result<(), String> {
     // refreshes the menu.
     let approval_changes = core.approval_changes();
     let inbox_changes = core.inbox().changes();
-    let front = Front::start(&daemon, headless, core.snapshot().await).await?;
+    let front = Front::start(&daemon, shows, core.snapshot().await).await?;
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
@@ -205,30 +282,34 @@ async fn serve(headless: bool) -> Result<(), String> {
     result
 }
 
-/// What shows the state to the user: the tray icon, or nothing when headless or not
-/// available on this system yet.
+/// What shows the state to the user: the tray icon, or nothing when headless or without a
+/// tray on this system.
 #[derive(Clone)]
 enum Front {
     #[cfg(target_os = "linux")]
     Tray(tray::TrayHandle),
+    #[cfg(any(target_os = "macos", windows))]
+    Desktop(tray::DesktopHandle),
     None,
 }
 
 impl Front {
-    async fn start(daemon: &Arc<Daemon>, headless: bool, snapshot: Snapshot) -> Result<Front, String> {
-        if headless {
-            return Ok(Front::None);
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let handle = tray::spawn(Arc::clone(daemon), snapshot).await.map_err(|err| err.to_string())?;
-            Ok(Front::Tray(handle))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (daemon, snapshot);
-            eprintln!("torroworkplace: no tray icon on this system yet; running headless");
-            Ok(Front::None)
+    async fn start(daemon: &Arc<Daemon>, shows: Shows, snapshot: Snapshot) -> Result<Front, String> {
+        match shows {
+            Shows::Nothing => {
+                let _ = (daemon, snapshot);
+                Ok(Front::None)
+            }
+            #[cfg(target_os = "linux")]
+            Shows::Ksni => {
+                let handle = tray::spawn(Arc::clone(daemon), snapshot).await.map_err(|err| err.to_string())?;
+                Ok(Front::Tray(handle))
+            }
+            #[cfg(any(target_os = "macos", windows))]
+            Shows::Desktop(handle) => {
+                handle.start(Arc::clone(daemon), snapshot);
+                Ok(Front::Desktop(handle))
+            }
         }
     }
 
@@ -238,6 +319,8 @@ impl Front {
             Front::Tray(handle) => {
                 handle.update(|tray| tray.snapshot = snapshot).await;
             }
+            #[cfg(any(target_os = "macos", windows))]
+            Front::Desktop(handle) => handle.show(snapshot),
             Front::None => {
                 let _ = snapshot;
             }

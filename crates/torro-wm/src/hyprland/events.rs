@@ -234,7 +234,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!("torro-wm-no-events-{}-{nanos}", std::process::id()));
+        // /tmp, not temp_dir(): macOS puts that under /var/folders/…, too long for a socket path (104 bytes).
+        let dir = std::path::Path::new("/tmp").join(format!("torro-wm-no-events-{}-{nanos}", std::process::id()));
         let Err(err) = subscribe(&dir).await else {
             panic!("subscribing without a socket must fail");
         };
@@ -252,7 +253,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or_default();
-        let dir = std::env::temp_dir().join(format!("torro-wm-events-{}-{nanos}", std::process::id()));
+        // /tmp, not temp_dir(): macOS puts that under /var/folders/…, too long for a socket path (104 bytes).
+        let dir = std::path::Path::new("/tmp").join(format!("torro-wm-events-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("create temp instance dir");
 
         let listener = UnixListener::bind(dir.join(EVENT_SOCKET)).expect("bind fake socket");

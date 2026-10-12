@@ -1,0 +1,79 @@
+[
+  {
+    "app-bundle-id" : "com.apple.finder",
+    "app-name" : "Finder",
+    "app-pid" : 662,
+    "monitor-name" : "Built-in Retina Display",
+    "window-id" : 101,
+    "window-is-fullscreen" : false,
+    "window-parent-container-layout" : "h_tiles",
+    "window-title" : "Documents",
+    "workspace" : "1"
+  },
+  {
+    "app-bundle-id" : "com.mitchellh.ghostty",
+    "app-name" : "Ghostty",
+    "app-pid" : 1201,
+    "monitor-name" : "Built-in Retina Display",
+    "window-id" : 102,
+    "window-is-fullscreen" : false,
+    "window-parent-container-layout" : "v_tiles",
+    "window-title" : "Terminal",
+    "workspace" : "1"
+  },
+  {
+    "app-bundle-id" : "org.mozilla.firefox",
+    "app-name" : "Firefox",
+    "app-pid" : 1310,
+    "monitor-name" : "Built-in Retina Display",
+    "window-id" : 103,
+    "window-is-fullscreen" : false,
+    "window-parent-container-layout" : "v_tiles",
+    "window-title" : "Start page",
+    "workspace" : "1"
+  },
+  {
+    "app-bundle-id" : "com.apple.Notes",
+    "app-name" : "Notes",
+    "app-pid" : 1402,
+    "monitor-name" : "DELL U2723QE",
+    "window-id" : 104,
+    "window-is-fullscreen" : false,
+    "window-parent-container-layout" : "floating",
+    "window-title" : "Notes",
+    "workspace" : "2"
+  },
+  {
+    "app-bundle-id" : "NULL-APP-BUNDLE-ID",
+    "app-name" : "Player",
+    "app-pid" : 1503,
+    "monitor-name" : "DELL U2723QE",
+    "window-id" : 105,
+    "window-is-fullscreen" : true,
+    "window-parent-container-layout" : "h_accordion",
+    "window-title" : "Player",
+    "workspace" : "3"
+  },
+  {
+    "app-bundle-id" : "com.apple.TextEdit",
+    "app-name" : "TextEdit",
+    "app-pid" : 1604,
+    "monitor-name" : "DELL U2723QE",
+    "window-id" : 106,
+    "window-is-fullscreen" : false,
+    "window-parent-container-layout" : "macos_native_minimized",
+    "window-title" : "Untitled",
+    "workspace" : "2"
+  },
+  {
+    "app-bundle-id" : "com.apple.Preview",
+    "app-name" : "Preview",
+    "app-pid" : 1705,
+    "monitor-name" : "Built-in Retina Display",
+    "window-id" : 107,
+    "window-is-fullscreen" : false,
+    "window-parent-container-layout" : "macos_native_window_of_hidden_app",
+    "window-title" : "Document.pdf",
+    "workspace" : "4"
+  }
+]

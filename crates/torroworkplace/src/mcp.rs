@@ -176,8 +176,9 @@ impl TorroMcp {
         TorroMcp { socket, key, start_core, started: Mutex::new(None), approval_wait: APPROVAL_WAIT }
     }
 
-    /// The server waiting `wait` instead of a minute for a person's decision.
-    #[cfg(test)]
+    /// The server waiting `wait` instead of a minute for a person's decision. Only the end-to-end
+    /// tests use it, and they run on Unix.
+    #[cfg(all(test, unix))]
     fn with_approval_wait(mut self, wait: Duration) -> TorroMcp {
         self.approval_wait = wait;
         self

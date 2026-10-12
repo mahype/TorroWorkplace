@@ -111,7 +111,8 @@ impl Popup {
         }
     }
 
-    /// Comes with critical urgency and a sound.
+    /// Comes with critical urgency and a sound. Only where popups carry urgency (Linux, the BSDs).
+    #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
     pub fn urgent(&self) -> bool {
         match self {
             Popup::Entry(entry) => entry.urgent,
@@ -129,8 +130,10 @@ impl Popup {
     }
 }
 
-/// What the person did with a popup. Closing it, or letting it time out, is no answer.
+/// What the person did with a popup. Closing it, or letting it time out, is no answer. Only
+/// popups with buttons answer (Linux, the BSDs); on macOS and Windows none comes back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
 pub enum Answer {
     /// "Done".
     Done,
@@ -409,8 +412,8 @@ async fn busy_title(core: &Core, now: DateTime<Utc>) -> Option<String> {
 }
 
 /// The desktop's notifications. Linux and the BSDs show the buttons; macOS and Windows show the
-/// popup without them (their notifications need an app bundle or identity for buttons), as for
-/// approvals.
+/// popup without them (notify-rust has no buttons there) under the app's own sender
+/// ([`crate::notify::show`]), as for approvals.
 pub struct SystemDesktop;
 
 impl Desktop for SystemDesktop {

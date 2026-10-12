@@ -846,7 +846,7 @@ pub fn is_ctrl_typing(
     if !modifiers.command() || modifiers.alt() {
         return false;
     }
-    if !text.and_then(|text| text.chars().next()).is_some_and(|c| !c.is_control()) {
+    if text.and_then(|text| text.chars().next()).is_none_or(|c| c.is_control()) {
         return false;
     }
     !matches!(key.to_latin(physical_key), Some('c' | 'x' | 'v' | 'a')) && !is_sidebar_key(key, modifiers)

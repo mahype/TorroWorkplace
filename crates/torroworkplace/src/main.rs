@@ -11,6 +11,12 @@
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
 //! - `mcp`: one MCP server for the whole suite, on stdio, with the agent's key from
 //!   `TORRO_TOKEN`.
+//!
+//! On Windows the binary is a GUI program, so a double click opens no console window. Commands
+//! attach to the console of the shell that started them instead (see [`attach_console`]).
+
+// Not for the test harness: its output has to reach the console.
+#![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 
 use std::process::ExitCode;
 
@@ -39,6 +45,9 @@ const APP: AppId = AppId::WORKPLACE;
 
 fn main() -> ExitCode {
     let command = std::env::args().nth(1);
+    if needs_console(command.as_deref()) {
+        attach_console();
+    }
     match command.as_deref() {
         Some("daemon") => daemon::run(std::env::args().any(|arg| arg == "--headless")),
         None | Some("ui") => {
@@ -46,6 +55,8 @@ fn main() -> ExitCode {
             let launch = match ui::Launch::parse(&std::env::args().skip(2).collect::<Vec<_>>()) {
                 Ok(launch) => launch,
                 Err(err) => {
+                    // Started from a shell, the error belongs there (Windows; elsewhere a no-op).
+                    attach_console();
                     eprintln!("{}: {err}", APP.binary);
                     return ExitCode::from(64);
                 }
@@ -53,6 +64,7 @@ fn main() -> ExitCode {
             match ui::run(launch) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(err) => {
+                    attach_console();
                     eprintln!("{}: {err}", APP.binary);
                     ExitCode::FAILURE
                 }
@@ -69,5 +81,68 @@ fn main() -> ExitCode {
             eprintln!("{}: unknown command {other:?}; try daemon, status, ctl, notify, hook or mcp", APP.binary);
             ExitCode::from(64)
         }
+    }
+}
+
+/// Whether `command` (the first argument) is a command-line command rather than the control centre.
+///
+/// Everything except `ui` and no command at all prints to a terminal or speaks over stdio: `daemon`,
+/// `status`, `ctl`, `mcp`, `--version` and unknown commands (for their error message).
+fn needs_console(command: Option<&str>) -> bool {
+    !matches!(command, None | Some("ui"))
+}
+
+/// Windows: makes `println!`/`eprintln!` reach the console of the shell that started us.
+///
+/// A GUI-subsystem program gets no console, so its standard handles are empty when it is started
+/// from PowerShell or `cmd`, and the output would vanish. Then we attach to the parent's console,
+/// which fills the empty handles; Rust's stdio asks for the handle on every write, so printing
+/// works from here on.
+///
+/// When any standard handle is already there, the caller redirected it (pipes from an MCP client
+/// starting `torroworkplace mcp`, `status > file`, a CI runner) and all three are left alone:
+/// attaching must not swap a pipe for the console and break the protocol on stdout.
+///
+/// Without a parent console (double click, autostart) nothing happens. Shells do not wait for GUI
+/// programs, so the prompt may come back before the output.
+#[cfg(windows)]
+fn attach_console() {
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, RawHandle};
+
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+
+    // `as_raw_handle` returns what `GetStdHandle` holds: null when the process has no such handle.
+    // Checking this in safe Rust keeps the unsafe part down to the one call below.
+    let present = |handle: RawHandle| !handle.is_null() && handle != INVALID_HANDLE_VALUE;
+    let handles = [io::stdin().as_raw_handle(), io::stdout().as_raw_handle(), io::stderr().as_raw_handle()];
+    if handles.into_iter().any(present) {
+        return;
+    }
+    // The only unsafe code in this crate (see the `[lints]` note in Cargo.toml): Rust's std has no
+    // safe way to attach to a console.
+    #[allow(unsafe_code)]
+    // SAFETY: `AttachConsole` takes a process id by value and touches no memory of ours. It fails
+    // when the parent has no console or this process already has one; both leave nothing to do,
+    // so the result is ignored.
+    let _ = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
+/// Other systems: a program started from a terminal already writes to it; nothing to do.
+#[cfg(not(windows))]
+fn attach_console() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_need_the_console_and_the_control_centre_does_not() {
+        for command in ["daemon", "status", "ctl", "mcp", "--version", "-V", "bogus"] {
+            assert!(needs_console(Some(command)), "{command}");
+        }
+        assert!(!needs_console(None));
+        assert!(!needs_console(Some("ui")));
     }
 }

@@ -1,11 +1,13 @@
 //! The Torro tray icon: a 2×2 grid of four rounded squares in `theme::TORRO_RED`, on a
 //! transparent background. It is drawn in code, so no image file is needed. The geometry is
 //! in fractions of the icon size, so one description serves every pixmap size, and each
-//! pixel is anti-aliased by supersampling.
+//! pixel is anti-aliased by supersampling. Linux gets ARGB32 pixmaps ([`argb32`], ksni), macOS
+//! and Windows an RGBA image ([`rgba`], tray-icon).
 
 use torro_core::theme::TORRO_RED;
 
 /// Pixmap sizes handed to the tray. The desktop picks the one that fits its panel.
+#[cfg(any(target_os = "linux", test))]
 pub const SIZES: [u32; 4] = [16, 22, 32, 48];
 
 /// Distance from the icon edge to the grid, as a fraction of the icon size.
@@ -25,12 +27,31 @@ const SAMPLES: u32 = 4;
 
 /// Returns the ARGB32 pixmap of the icon, `size` × `size` pixels, as ksni expects it: four
 /// bytes per pixel (A, R, G, B) in network byte order, row by row from the top left.
+#[cfg(any(target_os = "linux", test))]
 pub fn argb32(size: u32) -> Vec<u8> {
     let mut data = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
         for x in 0..size {
             let alpha = coverage(x, y, size);
             data.extend_from_slice(&[alpha, TORRO_RED.0, TORRO_RED.1, TORRO_RED.2]);
+        }
+    }
+    data
+}
+
+/// Returns the icon as RGBA bytes (R, G, B, A per pixel, row by row from the top left) on a
+/// transparent canvas of `size + 2 * padding` pixels a side, the grid `size` pixels wide in the
+/// middle. The padding lets a system that fills its whole tray slot with the image (macOS, 22 pt
+/// high) still show the grid at the size of its own symbols.
+#[cfg(any(target_os = "macos", windows, test))]
+pub fn rgba(size: u32, padding: u32) -> Vec<u8> {
+    let canvas = size + 2 * padding;
+    let mut data = Vec::with_capacity((canvas * canvas * 4) as usize);
+    for y in 0..canvas {
+        for x in 0..canvas {
+            let inside = (padding..padding + size).contains(&x) && (padding..padding + size).contains(&y);
+            let alpha = if inside { coverage(x - padding, y - padding, size) } else { 0 };
+            data.extend_from_slice(&[TORRO_RED.0, TORRO_RED.1, TORRO_RED.2, alpha]);
         }
     }
     data
@@ -80,6 +101,29 @@ mod tests {
     fn pixel(data: &[u8], size: u32, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * size + x) * 4) as usize;
         [data[i], data[i + 1], data[i + 2], data[i + 3]]
+    }
+
+    #[test]
+    fn rgba_has_the_padding_transparent_and_the_grid_in_the_middle() {
+        let (size, padding) = (36, 4);
+        let canvas = size + 2 * padding;
+        let data = rgba(size, padding);
+        assert_eq!(data.len(), (canvas * canvas * 4) as usize);
+        let alpha = |x: u32, y: u32| data[((y * canvas + x) * 4 + 3) as usize];
+        assert_eq!(alpha(padding - 1, padding + size / 4), 0, "padding");
+        assert_eq!(alpha(canvas / 2, canvas / 2), 0, "gap between the tiles");
+        let p = padding + size / 4;
+        let i = ((p * canvas + p) * 4) as usize;
+        assert_eq!(&data[i..i + 4], &[TORRO_RED.0, TORRO_RED.1, TORRO_RED.2, 255], "middle of a tile");
+    }
+
+    #[test]
+    fn rgba_without_padding_matches_the_pixmap() {
+        let size = 22;
+        let (argb, rgba) = (argb32(size), rgba(size, 0));
+        for (a, r) in argb.chunks(4).zip(rgba.chunks(4)) {
+            assert_eq!([a[1], a[2], a[3], a[0]], [r[0], r[1], r[2], r[3]]);
+        }
     }
 
     #[test]
