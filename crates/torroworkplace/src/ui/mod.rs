@@ -1,5 +1,5 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
-//! whole suite (accounts, workspaces, apps, general settings). Concept: `docs/settings.md`,
+//! whole suite (accounts, workspaces, apps, approvals, general settings). Concept: `docs/settings.md`,
 //! tasks: `docs/tasks/steuerzentrale.md`.
 //!
 //! A separate Iced process (app id `torro-workplace`) that talks to the daemon over the
@@ -36,6 +36,7 @@
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 
 mod accounts;
+mod approvals;
 mod apps;
 mod general;
 mod glance;
@@ -62,7 +63,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
-use torro_ipc::{AccountInfo, AppInfo, Request, Response, Status, client};
+use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, Request, Response, Status, client};
 use torro_setups::TemplateSummary;
 
 pub use launch::{Launch, Open};
@@ -74,12 +75,20 @@ pub enum Section {
     Accounts,
     Workspaces,
     Apps,
+    /// What agents wait for and what was decided (task A.8).
+    Approvals,
     General,
 }
 
 impl Section {
-    pub const ALL: [Section; 5] =
-        [Section::Overview, Section::Accounts, Section::Workspaces, Section::Apps, Section::General];
+    pub const ALL: [Section; 6] = [
+        Section::Overview,
+        Section::Accounts,
+        Section::Workspaces,
+        Section::Apps,
+        Section::Approvals,
+        Section::General,
+    ];
 
     /// The sections at the top of the sidebar; [`Section::General`] sits at its foot, where Linear
     /// keeps "Settings".
@@ -93,6 +102,7 @@ impl Section {
             Section::Accounts => tr("Accounts"),
             Section::Workspaces => tr("Workspaces"),
             Section::Apps => tr("Apps"),
+            Section::Approvals => tr("Approvals"),
             Section::General => tr("General"),
         }
     }
@@ -104,6 +114,8 @@ impl Section {
             Section::Accounts => Icon::Cloud,
             Section::Workspaces => Icon::Layers,
             Section::Apps => Icon::AppWindow,
+            // A person who confirms: the agent asks, the person decides.
+            Section::Approvals => Icon::UserCheck,
             Section::General => Icon::Settings,
         }
     }
@@ -115,6 +127,7 @@ impl Section {
             Section::Accounts => "accounts",
             Section::Workspaces => "workspaces",
             Section::Apps => "apps",
+            Section::Approvals => "approvals",
             Section::General => "general",
         }
     }
@@ -134,6 +147,8 @@ pub struct Data {
     pub settings: Settings,
     /// The suite's apps as the core reports them; `None` until the first answer.
     pub apps: Option<Vec<AppInfo>>,
+    /// The approvals of the last day (`approvals.list_approvals`), open and decided, newest first.
+    pub approvals: Vec<ApprovalInfo>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -229,6 +244,7 @@ pub struct Ui {
     accounts: accounts::State,
     workspaces: workspaces::State,
     apps: apps::State,
+    approvals: approvals::State,
     general: general::State,
 }
 
@@ -268,6 +284,7 @@ pub enum Message {
     Accounts(accounts::Message),
     Workspaces(workspaces::Message),
     Apps(apps::Message),
+    Approvals(approvals::Message),
     General(general::Message),
 }
 
@@ -308,6 +325,7 @@ impl Ui {
             accounts: accounts::State::default(),
             workspaces: workspaces::State::default(),
             apps: apps::State::default(),
+            approvals: approvals::State::default(),
             general: general::State::default(),
         };
         if demo {
@@ -386,6 +404,11 @@ impl Ui {
                     })
                 }));
                 messages
+            }
+            // The demo's sample approvals gone, so the page shows its empty state.
+            Open::ApprovalsEmpty => {
+                self.data.approvals.clear();
+                vec![Message::Select(Section::Approvals)]
             }
         };
         for message in messages {
@@ -477,6 +500,7 @@ impl Ui {
             Message::Sent(result) => {
                 // The add-account dialog shows the outcome of its own requests itself.
                 let in_dialog = accounts::answered(&mut self.accounts, &result);
+                approvals::answered(&mut self.approvals);
                 self.notice = if in_dialog { None } else { result.err() };
                 return self.reload();
             }
@@ -507,6 +531,7 @@ impl Ui {
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
+            Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
         };
         self.perform(action)
@@ -627,11 +652,13 @@ impl Ui {
         .into()
     }
 
-    /// The count after a section in the sidebar and the menu: accounts and templates.
+    /// The count after a section in the sidebar and the menu: accounts, templates and the
+    /// approvals that wait for the person.
     fn trail(&self, section: Section) -> Trail {
         let count = match section {
             Section::Accounts => accounts::listed(&self.data.accounts).count(),
             Section::Workspaces => self.data.templates.len(),
+            Section::Approvals => approvals::pending(&self.data.approvals).count(),
             _ => 0,
         };
         if count > 0 { Trail::Count(count) } else { Trail::None }
@@ -744,6 +771,7 @@ impl Ui {
             Section::Accounts => accounts::view(&self.accounts, &self.data).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
             Section::Apps => apps::view(&self.apps, &self.data).map(Message::Apps),
+            Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
@@ -918,6 +946,9 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Apps { apps }) = client::call(&socket, &Request::ListApps).await {
                 data.apps = Some(apps);
+            }
+            if let Ok(Response::Approvals { approvals }) = client::call(&socket, &Request::ListApprovals).await {
+                data.approvals = approvals;
             }
             data
         },
@@ -1119,6 +1150,31 @@ mod tests {
     }
 
     #[test]
+    fn the_approvals_section_counts_the_open_ones_and_decides_through_the_core() {
+        let mut demo = started(&["--demo", "--section", "approvals"]);
+        assert_eq!(demo.section, Section::Approvals);
+        let open = demo.data.approvals.iter().filter(|approval| approval.state.is_pending()).count();
+        assert!(open > 0 && open < demo.data.approvals.len());
+        assert_eq!(demo.trail(Section::Approvals), Trail::Count(open), "decided ones are not counted");
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = demo.window(class);
+        }
+
+        let id = demo.data.approvals[0].id.clone();
+        let action = approvals::update(
+            &mut demo.approvals,
+            approvals::Message::Decide { id: id.clone(), allow: false },
+            &demo.data,
+        );
+        assert!(matches!(action, Action::Send(Request::DecideApproval { id: ref sent, allow: false }) if *sent == id));
+        assert_eq!(ui(Section::Approvals).perform(action).units(), 1, "outside the demo it is a request");
+
+        let empty = started(&["--demo", "--open", "approvals-empty"]);
+        assert_eq!((empty.section, empty.data.approvals.len()), (Section::Approvals, 0));
+        assert_eq!(empty.trail(Section::Approvals), Trail::None);
+    }
+
+    #[test]
     fn sections_are_named_by_their_argument() {
         for section in Section::ALL {
             assert_eq!(Section::from_arg(section.arg()), Some(section));
@@ -1206,6 +1262,7 @@ mod tests {
             Message::Workspaces(workspaces::Message::Load(demo.data.templates[0].id.clone())),
             Message::Workspaces(workspaces::Message::AskDelete(demo.data.templates[0].id.clone())),
             Message::Workspaces(workspaces::Message::ConfirmDelete),
+            Message::Approvals(approvals::Message::Decide { id: demo.data.approvals[0].id.clone(), allow: true }),
         ];
         for message in messages {
             let text = format!("{message:?}");

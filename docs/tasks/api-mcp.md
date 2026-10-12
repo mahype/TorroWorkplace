@@ -210,7 +210,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** Tests mit Konfigurationen unter `tests/fixtures/`, kein echtes Home-Verzeichnis.
 
 ### A.8 Freigaben in Oberfläche und Tray
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/ui/approvals.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/tray/linux.rs`
 - Liste mit „Allow“/„Deny“, Zahl am Tray-Icon.
 

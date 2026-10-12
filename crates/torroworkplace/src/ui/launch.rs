@@ -9,8 +9,9 @@ use std::fmt;
 
 use chrono::{Duration, Local, Utc};
 use torro_core::AppId;
+use torro_core::i18n::trf;
 use torro_core::settings::Settings;
-use torro_ipc::{AccountInfo, AppInfo, Status};
+use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ApprovalState, Response, Status};
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
@@ -41,10 +42,12 @@ pub enum Open {
     DeleteTemplate,
     /// The first template's row in rename mode.
     RenameTemplate,
+    /// The approvals page without any approvals: its empty state.
+    ApprovalsEmpty,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 11] = [
+    pub const ALL: [(&'static str, Open); 12] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -56,14 +59,16 @@ impl Open {
         ("remove", Open::Remove),
         ("delete-template", Open::DeleteTemplate),
         ("rename-template", Open::RenameTemplate),
+        ("approvals-empty", Open::ApprovalsEmpty),
     ];
 }
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|general`: the page to start on. The states of
+/// - `--section overview|accounts|workspaces|apps|approvals|general`: the page to start on. The states of
 ///   `--open` that belong to a page choose that page themselves.
-/// - `--demo`: sample accounts, templates, settings and apps in memory instead of the service.
+/// - `--demo`: sample accounts, templates, settings, apps and approvals in memory instead of the
+///   service.
 ///   Nothing is sent and nothing is stored.
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
@@ -156,7 +161,8 @@ impl Launch {
 
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
 /// a second one that cannot reach its server (so the problem rows show), a GitHub account, three
-/// templates, the suite's apps, and settings with one list hidden. Times are relative to now.
+/// templates, the suite's apps, settings with one list hidden, and approvals: two open, one done,
+/// one failed, one denied, one expired ([`demo_approvals`]). Times are relative to now.
 pub fn demo_data() -> Data {
     let now = Utc::now();
     let (mut sample, _, _) = torro_pim::demo::sample(Local::now().date_naive());
@@ -256,8 +262,88 @@ pub fn demo_data() -> Data {
         templates,
         settings: Settings { start_at_login: true, hidden_collections, ..Settings::default() },
         apps: Some(apps),
+        approvals: demo_approvals(now),
         error: None,
     }
+}
+
+/// The demo's approvals: summaries as the core builds them (the same texts, so they are translated
+/// too), from two agents.
+fn demo_approvals(now: chrono::DateTime<Utc>) -> Vec<ApprovalInfo> {
+    let approval = |id: &str, client: (&str, &str), summary: String, age: Duration, state: ApprovalState| {
+        let created = now - age;
+        let decided = match state {
+            ApprovalState::Pending => None,
+            ApprovalState::Expired => Some(created + Duration::minutes(10)),
+            _ => Some(created + Duration::minutes(1)),
+        };
+        ApprovalInfo {
+            id: id.into(),
+            client: client.0.into(),
+            client_name: client.1.into(),
+            command: "calendar.delete_event".into(),
+            summary,
+            created,
+            expires: created + Duration::minutes(10),
+            decided,
+            state,
+        }
+    };
+    let (claude, codex) = (("claude-code", "Claude Code"), ("codex", "Codex"));
+    let delete_event = |title: &str, when: &str, calendar: &str| {
+        trf(
+            "Delete event \"{title}\" on {when} from \"{calendar}\"",
+            &[("title", &title), ("when", &when), ("calendar", &calendar)],
+        )
+    };
+    let failed = Response::Error {
+        code: "forbidden".into(),
+        message: "The client may not write to this calendar anymore".into(),
+    };
+    vec![
+        approval(
+            "9c1f0a7e3b2d4c58",
+            claude,
+            delete_event("Team meeting", "Tue, 14 Oct 09:00", "Work"),
+            Duration::minutes(2),
+            ApprovalState::Pending,
+        ),
+        approval(
+            "4b7d2e9a0c1f3a66",
+            codex,
+            trf("Overwrite template \"{name}\" with the active workspace", &[("name", &"Development")]),
+            Duration::minutes(7),
+            ApprovalState::Pending,
+        ),
+        approval(
+            "1e5a8c3f7b2d9e40",
+            claude,
+            trf("Delete task \"{title}\" from \"{list}\"", &[("title", &"Renew passport"), ("list", &"Personal")]),
+            Duration::minutes(25),
+            ApprovalState::Done { response: Box::new(Response::Ok) },
+        ),
+        approval(
+            "7f3c1a9e5d2b8c04",
+            claude,
+            delete_event("Dentist", "Thu, 16 Oct 15:30", "Family"),
+            Duration::minutes(48),
+            ApprovalState::Done { response: Box::new(failed) },
+        ),
+        approval(
+            "2a9e4c7b1f5d3e88",
+            codex,
+            trf("Delete template \"{name}\"", &[("name", &"Writing")]),
+            Duration::hours(2),
+            ApprovalState::Denied,
+        ),
+        approval(
+            "6d1b8f2a4e7c9a13",
+            claude,
+            delete_event("Weekly review", "Fri, 17 Oct 16:00", "Work"),
+            Duration::hours(5),
+            ApprovalState::Expired,
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -305,7 +391,10 @@ mod tests {
             assert!(text.contains(name), "{name} is listed in: {text}");
         }
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
-        assert!(err.to_string().ends_with("valid values: overview, accounts, workspaces, apps, general"), "{err}");
+        assert!(
+            err.to_string().ends_with("valid values: overview, accounts, workspaces, apps, approvals, general"),
+            "{err}"
+        );
         let err = Launch::parse(&args(&["--appearance", "sepia"])).expect_err("unknown appearance");
         assert!(err.to_string().ends_with("valid values: light, dark, system"), "{err}");
         assert_eq!(Launch::parse(&args(&["--demo", "--open"])), Err(LaunchError::MissingValue("--open")));
@@ -342,5 +431,10 @@ mod tests {
         let apps = data.apps.as_ref().expect("apps");
         assert!(apps.iter().all(|app| app.binary != AppId::WORKPLACE.binary), "the core is not one of its apps");
         assert!(apps.len() >= 2);
+
+        let open = data.approvals.iter().filter(|approval| approval.state.is_pending()).count();
+        assert!(open >= 2, "the approvals page has open ones to decide");
+        assert!(data.approvals.len() > open, "and decided ones below");
+        assert!(data.approvals.iter().all(|approval| approval.expires > approval.created));
     }
 }
