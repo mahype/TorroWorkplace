@@ -955,4 +955,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{name} loses access at once: its key stops working. Connect it again to give it access.",
         "{name} verliert sofort den Zugriff, sein Schlüssel funktioniert nicht mehr. Verbinde ihn erneut, um ihm Zugriff zu geben.",
     ),
+    // Inbox: make a task (E3.5)
+    ("Make a task \"{title}\" in \"{list}\" from {entry}", "Aufgabe „{title}“ in „{list}“ aus {entry} anlegen"),
+    ("Make task", "Aufgabe anlegen"),
+    ("Loading lists…", "Listen werden geladen …"),
+    ("Couldn't load the task lists.", "Die Aufgabenlisten ließen sich nicht laden."),
+    ("No task lists yet", "Noch keine Aufgabenlisten"),
+    ("Due", "Fällig"),
+    ("Create task", "Aufgabe anlegen"),
+    ("Task created in {list}", "Aufgabe in {list} angelegt"),
+    ("Couldn't create the task.", "Die Aufgabe ließ sich nicht anlegen."),
+    ("Work", "Arbeit"),
 ];
