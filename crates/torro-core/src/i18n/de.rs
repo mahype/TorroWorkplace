@@ -1248,4 +1248,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't add the link: {error}", "Link konnte nicht hinzugefügt werden: {error}"),
     ("Add to list…", "Zu Liste hinzufügen…"),
     ("Add to list", "Zu Liste hinzufügen"),
+    ("Order", "Reihenfolge"),
+    ("Manual", "Manuell"),
+    ("Drag to reorder", "Zum Sortieren ziehen"),
+    ("Couldn't save the order: {error}", "Reihenfolge konnte nicht gespeichert werden: {error}"),
+    ("Couldn't move the task: {error}", "Aufgabe konnte nicht verschoben werden: {error}"),
+    (
+        "The list changed elsewhere and was reloaded. Move the task again.",
+        "Die Liste wurde anderswo geändert und neu geladen. Verschieb die Aufgabe noch einmal.",
+    ),
+    ("The task is gone", "Die Aufgabe gibt es nicht mehr"),
 ];
