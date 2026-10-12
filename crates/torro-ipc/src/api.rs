@@ -1259,17 +1259,21 @@ static SET_GITHUB_TOKEN: Command = Command {
 };
 
 // Read access: it signs in nowhere and only names addresses. The core searches the domain alone,
-// never the part before `@`, and never contacts private networks (`torro_pim_caldav::discover`).
+// never the part before `@`, and never contacts private networks (`torro_pim_caldav::discover`,
+// `torro_mail_imap::discover`); at most two searches of a client run at a time (task M2.2).
 static DISCOVER_SERVICES: Command = Command {
     name: "accounts.discover_services",
     area: Area::Accounts,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Finds the calendar and task service (CalDAV) of a mail provider from an e-mail address or a \
-                  domain, without signing in: only the domain is looked up (DNS SRV, its well-known address, a \
-                  table of known providers). Returns the provider's name and the addresses to sign in at, none when \
-                  nothing was found, or `unsupported` with the reason (Gmail, Outlook.com). Signing in needs the \
-                  password, which only a person enters in Torro Workplace.",
+    description: "Finds the calendar and task service (CalDAV) and the mail servers (IMAP, SMTP) of a mail \
+                  provider from an e-mail address or a domain, without signing in: only the domain is looked up \
+                  (DNS SRV and MX, the provider's well-known and autoconfig addresses, tables of known providers) \
+                  and sent to Thunderbird's provider database at autoconfig.thunderbird.net. Returns the provider's \
+                  name, the CalDAV addresses, `imap`, `smtp`, `login_hint` and `app_password`, or `unsupported` / \
+                  `mail_unsupported` with the reason (Gmail, Outlook.com). A search can take several seconds; at \
+                  most two of one agent run at a time, a third is answered `busy`. Signing in needs the password, \
+                  which only a person enters in Torro Workplace.",
 };
 
 // Never an MCP tool, and for the app key only: it hands the core a password (`docs/api.md`, "Was

@@ -7,7 +7,8 @@
 //! Every request of a client key, and every run of one a person allowed, gets a line in the audit
 //! log without any content ([`crate::audit`]).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, PoisonError};
 
 use chrono::{Local, Utc};
 use tokio::sync::Mutex;
@@ -15,7 +16,9 @@ use torro_core::AppId;
 use torro_core::settings::ListOrderEntry;
 use torro_ipc::api::{Access, Area};
 use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
+use torro_mail_imap::discover::{LoginHint, MailDiscoverer, MailDiscovery};
 use torro_pim::AccountState;
+use torro_pim_caldav::discover::NoDns;
 use torro_setups::capture::{auto_name, capture};
 use torro_setups::launch::{Launcher, SystemLauncher, command_for};
 use torro_setups::restore::{RestoreOptions, restore};
@@ -90,6 +93,129 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 /// What tests open instead of a browser: nothing, so no test starts one by accident.
 fn no_browser(_url: &str) -> Result<(), String> {
     Err("no browser in tests".into())
+}
+
+/// The mail discovery of the daemon (task M2.2): the system's DNS and the public internet.
+/// `None` (and a line on stderr) when no HTTP client can be built; searching then finds no mail
+/// servers, the calendar search still answers.
+fn system_mail_discoverer() -> Option<MailDiscoverer> {
+    MailDiscoverer::system()
+        .map_err(|err| eprintln!("torroworkplace: no HTTP client for finding mail servers: {err}"))
+        .ok()
+}
+
+/// The mail discovery of tests: a DNS that knows no name ([`NoDns`]), so only the table answers
+/// and no test reaches the network.
+fn offline_mail_discoverer() -> Option<MailDiscoverer> {
+    MailDiscoverer::new(Arc::new(NoDns)).ok()
+}
+
+/// How many `accounts.discover_services` one client key may run at a time (task M2.2): each
+/// search asks DNS and web servers, so an agent must not turn the core into a stream of them.
+const MAX_SEARCHES: usize = 2;
+
+/// The searches each client key runs right now, by client id.
+#[derive(Default)]
+struct Searches {
+    running: std::sync::Mutex<HashMap<String, usize>>,
+}
+
+impl Searches {
+    /// A slot for one more search of `client`; `None` when it runs [`MAX_SEARCHES`] already.
+    /// The slot is given back when it is dropped, also when the request is cancelled midway.
+    fn enter(&self, client: &str) -> Option<SearchSlot<'_>> {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = running.entry(client.to_string()).or_default();
+        if *count >= MAX_SEARCHES {
+            return None;
+        }
+        *count += 1;
+        Some(SearchSlot { searches: self, client: client.to_string() })
+    }
+}
+
+/// One running search of a client ([`Searches::enter`]).
+struct SearchSlot<'a> {
+    searches: &'a Searches,
+    client: String,
+}
+
+impl Drop for SearchSlot<'_> {
+    fn drop(&mut self) {
+        let mut running = self.searches.running.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = running.get_mut(&self.client) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                running.remove(&self.client);
+            }
+        }
+    }
+}
+
+/// The answer to a client that runs [`MAX_SEARCHES`] searches already.
+fn too_many_searches() -> Response {
+    Response::Error {
+        code: "busy".into(),
+        message: format!("{MAX_SEARCHES} searches of this client are running; ask again when one has answered"),
+    }
+}
+
+/// `calendars`, the CalDAV search's answer, with what the mail search found for `address` (task
+/// M2.2), as `accounts.discover_services` answers:
+///
+/// - an error of the CalDAV search stays the answer (no domain: the mail search has none either),
+///   except `offline` when the mail search found something: then that is the answer;
+/// - the mail servers, the login name ([`login_name`]), the app password and the reason in the
+///   core's language are added; the provider is the mail search's name once it found something
+///   (it knows the base domain of the MX: `familie.example` at mailbox.org is "mailbox.org");
+/// - without CalDAV addresses and without a reason against them, the table's CalDAV address of
+///   the provider (GMX, a domain whose mail goes to mailbox.org) is the one.
+///
+/// `mail` is `None` when the mail search failed or had no HTTP client.
+fn with_mail(calendars: Response, mail: Option<MailDiscovery>, address: &str) -> Response {
+    let mail = mail.filter(|mail| mail.imap.is_some() || mail.unsupported.is_some() || mail.caldav.is_some());
+    let (provider, urls, unsupported) = match (calendars, &mail) {
+        (Response::Discovery { provider, urls, unsupported, .. }, _) => (provider, urls, unsupported),
+        (Response::Error { code, .. }, Some(_)) if code == "offline" => (String::new(), Vec::new(), None),
+        (other, _) => return other,
+    };
+    let Some(mail) = mail else {
+        return Response::Discovery {
+            provider,
+            urls,
+            unsupported,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
+        };
+    };
+    let urls = match (urls.is_empty() && unsupported.is_none(), mail.caldav) {
+        (true, Some(caldav)) => vec![caldav],
+        _ => urls,
+    };
+    Response::Discovery {
+        provider: mail.provider,
+        urls,
+        unsupported,
+        imap: mail.imap,
+        smtp: mail.smtp,
+        login_hint: mail.login.and_then(|hint| login_name(address, hint)),
+        app_password: mail.app_password,
+        mail_unsupported: mail.unsupported.map(|why| torro_core::i18n::tr(why.reason()).to_string()),
+    }
+}
+
+/// The login name `hint` asks for, made of `address` as the person gave it: the whole address or
+/// its part before the last `@`. `None` for a bare domain, which has no login name in it.
+fn login_name(address: &str, hint: LoginHint) -> Option<String> {
+    let address = address.trim();
+    let (local, _) = address.rsplit_once('@').filter(|(local, _)| !local.is_empty())?;
+    match hint {
+        LoginHint::Address => Some(address.to_string()),
+        LoginHint::LocalPart => Some(local.to_string()),
+    }
 }
 
 /// Brings the window of a coding agent to the front (task E2.4): of `pids`, the hook's parent
@@ -264,6 +390,13 @@ pub struct Core {
     start_control_centre: fn(Section) -> Result<(), String>,
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
+    /// The mail search of `accounts.discover_services` (task M2.2), built by
+    /// `make_mail_discoverer` on first use (its HTTP client costs time every core would pay at
+    /// start); `None` when no HTTP client could be built.
+    mail_discovery: OnceLock<Option<Arc<MailDiscoverer>>>,
+    make_mail_discoverer: fn() -> Option<MailDiscoverer>,
+    /// The searches each client key runs ([`MAX_SEARCHES`]).
+    searches: Searches,
 }
 
 impl Core {
@@ -287,7 +420,37 @@ impl Core {
             github: Arc::new(GithubAccounts::system()),
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
+            mail_discovery: OnceLock::new(),
+            make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
+            searches: Searches::default(),
         }
+    }
+
+    /// The core with `discoverer` as its mail search, for tests.
+    #[cfg(test)]
+    fn with_mail_discoverer(mut self, discoverer: MailDiscoverer) -> Core {
+        self.mail_discovery = OnceLock::from(Some(Arc::new(discoverer)));
+        self
+    }
+
+    /// The mail search, built on first use.
+    fn mail_discoverer(&self) -> Option<&MailDiscoverer> {
+        self.mail_discovery.get_or_init(|| (self.make_mail_discoverer)().map(Arc::new)).as_deref()
+    }
+
+    /// `accounts.discover_services` (tasks M7.1, M2.2): the calendar service's CalDAV search and
+    /// the mail search side by side, joined by [`with_mail`]. Logs nothing: the address is the
+    /// person's.
+    async fn discover_services(&self, address: String, reach: Reach<'_>) -> Response {
+        let calendars = self.pim.handle_within(Request::DiscoverServices { address: address.clone() }, reach);
+        let mail = async {
+            match self.mail_discoverer() {
+                Some(discoverer) => discoverer.discover(&address).await.ok(),
+                None => None,
+            }
+        };
+        let (calendars, mail) = tokio::join!(calendars, mail);
+        with_mail(calendars, mail, &address)
     }
 
     /// The core with `approvals` instead of the user's, for tests in other modules.
@@ -496,6 +659,14 @@ impl Core {
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
         }
+        // Held until the answer is out (task M2.2); a person's searches are not counted.
+        let _search = match &request {
+            Request::DiscoverServices { .. } => match self.searches.enter(&id) {
+                Some(slot) => Some(slot),
+                None => return Ok(too_many_searches()),
+            },
+            _ => None,
+        };
         Ok(self.handle_within(request, reach).await)
     }
 
@@ -822,8 +993,8 @@ impl Core {
             }
             // A client never reaches `connect_caldav`: `Rights::allows` refuses every command kept
             // from agents (`docs/api.md`, "Was nie nach außen geht", 5).
+            Request::DiscoverServices { address } => self.discover_services(address, reach).await,
             pim @ (Request::ConnectNextcloud { .. }
-            | Request::DiscoverServices { .. }
             | Request::ConnectCalDav { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
@@ -1478,6 +1649,7 @@ mod tests {
     use torro_core::i18n::{tr, trf};
     use torro_inbox::AgentKind;
     use torro_ipc::api::{Area, AreaRights, Level, Rights, RightsTemplate, Selection};
+    use torro_mail_imap::discover::MailUnsupported;
 
     use super::*;
 
@@ -1935,7 +2107,7 @@ mod tests {
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
 
         let discover = Request::DiscoverServices { address: "anna.secret@gmail.com".into() };
-        let Response::Discovery { provider, urls, unsupported } = ask(&core, Some(&key), discover).await else {
+        let Response::Discovery { provider, urls, unsupported, .. } = ask(&core, Some(&key), discover).await else {
             panic!("a client may search")
         };
         assert_eq!((provider.as_str(), urls.len(), unsupported.is_some()), ("Gmail", 0, true));
@@ -1953,6 +2125,142 @@ mod tests {
         let answer = ask(&core, Some(&app_key), connect).await;
         assert!(!format!("{answer:?}").contains("hunter2"), "{answer:?}");
         assert_eq!(code(&answer), "offline");
+    }
+
+    #[tokio::test]
+    async fn the_search_answers_with_calendars_and_mail_servers_together() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let search = |address: &str| Request::DiscoverServices { address: address.into() };
+        let endpoint = |host: &str, port: u16, security: torro_mail::Security| {
+            Some(torro_mail::Endpoint { host: host.into(), port, security })
+        };
+        use torro_mail::Security::{StartTls, Tls};
+
+        let mailbox = ask(&core, Some(&key), search(" anna@mailbox.org ")).await;
+        assert_eq!(
+            mailbox,
+            Response::Discovery {
+                provider: "mailbox.org".into(),
+                urls: vec!["https://dav.mailbox.org/".into()],
+                unsupported: None,
+                imap: endpoint("imap.mailbox.org", 993, Tls),
+                smtp: endpoint("smtp.mailbox.org", 587, StartTls),
+                login_hint: Some("anna@mailbox.org".into()),
+                app_password: false,
+                mail_unsupported: None,
+            }
+        );
+        // The CalDAV search does not know GMX; the mail table names its CalDAV address.
+        let Response::Discovery { provider, urls, .. } = ask(&core, Some(&key), search("gmx.de")).await else {
+            panic!("an answer")
+        };
+        assert_eq!((provider.as_str(), urls), ("GMX", vec!["https://caldav.gmx.net/".to_string()]));
+        // Gmail: calendars not supported, mail only with an app password.
+        let Response::Discovery { unsupported, imap, app_password, mail_unsupported, login_hint, .. } =
+            ask(&core, Some(&key), search("anna@gmail.com")).await
+        else {
+            panic!("an answer")
+        };
+        assert!(unsupported.is_some() && app_password);
+        assert_eq!(imap, endpoint("imap.gmail.com", 993, Tls));
+        assert_eq!(mail_unsupported.as_deref(), Some(tr(MailUnsupported::Google.reason())));
+        assert_eq!(login_hint.as_deref(), Some("anna@gmail.com"));
+        // Nothing known and nothing on the network (tests ask no DNS): calendars' answer alone.
+        let Response::Discovery { imap, login_hint, .. } = ask(&core, Some(&key), search("a@example.org")).await else {
+            panic!("an answer")
+        };
+        assert_eq!((imap, login_hint), (None, None));
+        assert_eq!(code(&ask(&core, Some(&key), search("anna@192.168.1.1")).await), "error");
+    }
+
+    #[test]
+    fn the_login_name_is_made_of_the_address_as_given() {
+        assert_eq!(login_name(" Anna@Example.org ", LoginHint::Address).as_deref(), Some("Anna@Example.org"));
+        assert_eq!(login_name("anna@example.org", LoginHint::LocalPart).as_deref(), Some("anna"));
+        assert_eq!(login_name("example.org", LoginHint::Address), None);
+        assert_eq!(login_name("@example.org", LoginHint::LocalPart), None);
+    }
+
+    #[test]
+    fn a_mail_answer_stands_in_for_an_offline_calendar_search() {
+        let offline = Response::Error { code: "offline".into(), message: "x".into() };
+        let mut found = MailDiscovery::nothing("example.org");
+        found.imap = Some(torro_mail::Endpoint {
+            host: "imap.example.org".into(),
+            port: 993,
+            security: torro_mail::Security::Tls,
+        });
+        let Response::Discovery { provider, urls, imap, .. } = with_mail(offline.clone(), Some(found), "example.org")
+        else {
+            panic!("the mail servers are an answer")
+        };
+        assert_eq!((provider.as_str(), urls.len(), imap.is_some()), ("example.org", 0, true));
+        assert_eq!(with_mail(offline.clone(), Some(MailDiscovery::nothing("example.org")), "x"), offline);
+        assert_eq!(with_mail(offline.clone(), None, "x"), offline);
+    }
+
+    /// A DNS that never answers MX questions: the mail search waits until its budget runs out.
+    struct StalledDns;
+
+    impl torro_pim_caldav::discover::Resolver for StalledDns {
+        fn srv<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> torro_pim_caldav::discover::Lookup<'a, torro_pim_caldav::discover::SrvRecord> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn txt<'a>(&'a self, _: &'a str) -> torro_pim_caldav::discover::Lookup<'a, String> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn mx<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> torro_pim_caldav::discover::Lookup<'a, torro_pim_caldav::discover::MxRecord> {
+            Box::pin(std::future::pending())
+        }
+        fn ips<'a>(&'a self, _: &'a str) -> torro_pim_caldav::discover::Lookup<'a, std::net::IpAddr> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_runs_at_most_two_searches_at_a_time() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stalled = MailDiscoverer::new(Arc::new(StalledDns)).expect("discovery");
+        let core = Arc::new(core(dir.path()).with_mail_discoverer(stalled));
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let (_, other) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let search = || Request::DiscoverServices { address: "anna@example.org".into() };
+        let running: Vec<_> = (0..2)
+            .map(|_| {
+                let (core, key) = (Arc::clone(&core), key.clone());
+                tokio::spawn(async move { ask(&core, Some(&key), search()).await })
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        while core.searches.running.lock().expect("lock").values().sum::<usize>() < 2 {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "both searches start");
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(code(&ask(&core, Some(&key), search()).await), "busy");
+        // Another client and the app key are not held up by it.
+        let waits = |key: Key| {
+            let core = Arc::clone(&core);
+            async move {
+                tokio::time::timeout(std::time::Duration::from_millis(100), ask(&core, Some(&key), search())).await
+            }
+        };
+        assert!(waits(other).await.is_err(), "another client's search runs");
+        assert!(waits(crate::clients::tests::app_key(dir.path())).await.is_err(), "the person's search runs");
+        // A cancelled search gives its slot back.
+        for search in running {
+            search.abort();
+            let _ = search.await;
+        }
+        assert!(waits(key).await.is_err(), "running again, not busy");
+        assert!(core.searches.running.lock().expect("lock").is_empty());
     }
 
     #[tokio::test]

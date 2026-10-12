@@ -541,10 +541,16 @@ fn demo_discovery(address: &str) -> Response {
         ),
         other => (other, Vec::new(), None),
     };
+    // Calendars only until the mail account's wizard (task M5.1) shows the mail servers.
     Response::Discovery {
         provider: provider.to_string(),
         urls: urls.into_iter().map(str::to_string).collect(),
         unsupported: unsupported.map(str::to_string),
+        imap: None,
+        smtp: None,
+        login_hint: None,
+        app_password: false,
+        mail_unsupported: None,
     }
 }
 
@@ -755,7 +761,7 @@ mod tests {
     #[test]
     fn the_demo_searches_like_the_core_table() {
         let found = |address: &str| match demo_discovery(address) {
-            Response::Discovery { provider, urls, unsupported } => (provider, urls, unsupported),
+            Response::Discovery { provider, urls, unsupported, .. } => (provider, urls, unsupported),
             other => panic!("expected Discovery, got {other:?}"),
         };
         assert_eq!(found("anna@mailbox.org"), ("mailbox.org".into(), vec!["https://dav.mailbox.org/".into()], None));

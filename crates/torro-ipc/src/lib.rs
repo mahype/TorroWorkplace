@@ -253,10 +253,16 @@ pub enum Request {
     /// five redirects, https only), then a table of known providers. Names and redirects that lead
     /// to loopback, private, link-local or ULA addresses are never contacted.
     ///
+    /// At the same time it searches the mail servers (IMAP, SMTP) of the domain (task M2.2,
+    /// `torro_mail_imap::discover`): a table of known providers, MX (Google, Microsoft: not
+    /// supported), the domain's autoconfig, Thunderbird's ISPDB at `autoconfig.thunderbird.net`
+    /// (the domain goes there), SPF, the MX's base domain, DNS SRV (RFC 6186). No mail server is
+    /// contacted. A client key may run at most two searches at a time, else `busy`.
+    ///
     /// Answered with [`Response::Discovery`]: candidate addresses, none, or "not supported" with
     /// the reason (Gmail, Outlook.com); all of them are answers, not errors. Error codes: `error`
     /// for an input that names no internet domain (an IP address, `localhost`, no dot),
-    /// `offline` when neither DNS nor a server answered and the table does not know the domain.
+    /// `offline` when neither DNS nor a server answered and no table knows the domain, `busy`.
     #[serde(rename = "accounts.discover_services")]
     DiscoverServices {
         /// An e-mail address (`anna@mailbox.org`) or a domain (`mailbox.org`).
@@ -1182,10 +1188,32 @@ pub enum Response {
         /// Addresses to sign in at with [`Request::ConnectCalDav`], best first. Empty when
         /// nothing was found or the provider is not supported.
         urls: Vec<String>,
-        /// Why the provider does not work with Torro Workplace, for people, in the core's
-        /// language; `None` when it may.
+        /// Why the provider's calendars and tasks do not work with Torro Workplace, for people,
+        /// in the core's language; `None` when they may.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unsupported: Option<String>,
+        /// The IMAP server of the address (task M2.2, `torro_mail_imap::discover`); `None` when
+        /// none was found or the provider's mail is not supported. Optional, so an answer of an
+        /// older core (calendars only) still reads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        imap: Option<Endpoint>,
+        /// The SMTP server to send through; may be `None` while `imap` is set, then a person
+        /// enters it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        smtp: Option<Endpoint>,
+        /// The login name to try with these servers: the address as given or its part before
+        /// `@`, as the provider asks; `None` when it does not say or only a domain was given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login_hint: Option<String>,
+        /// The provider wants an app password created on its website instead of the account
+        /// password (iCloud, Fastmail, Yahoo, Gmail).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        app_password: bool,
+        /// Why the provider's mail does not work with its usual sign-in, for people, in the
+        /// core's language (Gmail, Outlook.com, Microsoft 365, Google Workspace). With
+        /// `app_password` the servers are still given (Gmail with an app password).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mail_unsupported: Option<String>,
     },
     /// A CalDAV account just connected ([`Request::ConnectCalDav`]), never with its password.
     Connected {
@@ -1675,11 +1703,35 @@ mod tests {
             provider: "mailbox.org".into(),
             urls: vec!["https://dav.mailbox.org/".into()],
             unsupported: None,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
         };
         let json = serde_json::to_value(&found).expect("json");
         assert_eq!(json["result"], "discovery");
-        assert!(json.get("unsupported").is_none());
-        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), found);
+        for absent in ["unsupported", "imap", "smtp", "login_hint", "app_password", "mail_unsupported"] {
+            assert!(json.get(absent).is_none(), "{absent}");
+        }
+        assert_eq!(serde_json::from_value::<Response>(json).expect("an answer of an older core"), found);
+        let mail = Response::Discovery {
+            provider: "iCloud".into(),
+            urls: vec![],
+            unsupported: None,
+            imap: Some(Endpoint { host: "imap.mail.me.com".into(), port: 993, security: torro_mail::Security::Tls }),
+            smtp: None,
+            login_hint: Some("anna@icloud.com".into()),
+            app_password: true,
+            mail_unsupported: None,
+        };
+        let json = serde_json::to_value(&mail).expect("json");
+        assert_eq!(json["imap"], serde_json::json!({"host": "imap.mail.me.com", "port": 993, "security": "tls"}));
+        assert_eq!(
+            (json["app_password"].as_bool(), json["login_hint"].as_str()),
+            (Some(true), Some("anna@icloud.com"))
+        );
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), mail);
         let account: AccountInfo = serde_json::from_str(
             r#"{"id":"caldav:anna@dav.mailbox.org","kind":"caldav","label":"anna@mailbox.org",
             "state":{"state":"not-connected"},"collections":[]}"#,

@@ -211,7 +211,7 @@ ihre Texte im Bericht.
   braucht Delete; Adresse mit `/` abgelehnt; API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
 ### M2.2 Dienstsuche für Mail
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.1 (Resolver-Trait und Schutzregeln aus M7.1) · **Dateien:**
   `crates/torro-mail-imap/src/discover.rs`, `crates/torro-mail-imap/tests/fixtures/*`, `crates/torro-ipc/src/lib.rs`
   (nur `Response::Discovery` um optionale Mail-Felder erweitern), `crates/torroworkplace/src/core.rs` (Handler)

@@ -459,7 +459,7 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         other => other,
     };
     match (state.step, result) {
-        (Step::MailSearching, Ok(Response::Discovery { provider, urls, unsupported })) => {
+        (Step::MailSearching, Ok(Response::Discovery { provider, urls, unsupported, .. })) => {
             let found = Found::of(provider, urls, unsupported);
             state.mail.server = match &found {
                 Found::Provider { url, .. } => url.clone(),
@@ -1605,6 +1605,11 @@ mod tests {
             provider: "mailbox.org".into(),
             urls: vec!["https://dav.mailbox.org/".into()],
             unsupported: None,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
         };
         assert!(answered(&mut state, &Ok(found)));
         assert_eq!(state.step, Step::MailAddress);
@@ -1678,7 +1683,16 @@ mod tests {
         assert_eq!((state.step, state.error.as_deref()), (Step::MailAddress, Some("The server cannot be reached.")));
         assert_eq!(state.mail.found, None, "the person can search again");
         // An answer outside a search is not the dialog's.
-        let found = Response::Discovery { provider: "x".into(), urls: vec![], unsupported: None };
+        let found = Response::Discovery {
+            provider: "x".into(),
+            urls: vec![],
+            unsupported: None,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
+        };
         assert!(!answered(&mut State::new(), &Ok(found)));
     }
 

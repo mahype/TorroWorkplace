@@ -148,6 +148,15 @@ eine Domain gehört, der kann über SRV bis zu drei öffentliche Ziele mit belie
 „gefunden/nicht gefunden“ ablesen, ob dort ein Server antwortet; und die Anmeldung selbst nutzt den
 normalen HTTP-Client, eine Adresse kann also zwischen Suche und Anmeldung anders auflösen. Beides
 betrifft nur öffentliche Adressen bzw. eine Anmeldung, die ein Mensch auslöst.
+Seit M2.2 sucht derselbe Befehl gleichzeitig die Mail-Server (`imap`, `smtp`, `login_hint`,
+`app_password`, `mail_unsupported`, alle optional): Tabelle → MX (Google/Microsoft „nicht
+unterstützt“, Gmail mit Hinweis auf App-Passwort) → `autoconfig.<domain>` → `/.well-known/autoconfig`
+→ ISPDB (`autoconfig.thunderbird.net`, **die Domain geht an Thunderbird**) → SPF → Basis-Domain des MX
+→ SRV `_imaps._tcp`/`_submission._tcp`. Kein Mail-Server wird kontaktiert (kein TCP-Abtasten), Budget
+8 s. Dieselben Schutzregeln: Autoconfig ohne `emailaddress=`, jeder Host aus MX, SRV oder Dokument
+syntaktisch geprüft (≤ 253 Zeichen, kein IP-Literal), Ports nur 993/143/465/587, zurückgegebene Hosts
+nur mit öffentlichen Adressen, Weiterleitungen nur auf Port 443, Dokumente ≤ 256 KiB ohne DTD, kein Anzeigename eines Servers in der
+Antwort. Höchstens zwei laufende Suchen je Client-Schlüssel, sonst `busy`.
 
 ⁷ **`mail`** (Gerüst M2.1, Konzept [mail.md](mail.md), Aufgaben [tasks/mail.md](tasks/mail.md)): Die Auswahl
 geht über **Konten**, `Rights.mail_accounts` mit Konto-Kennungen `mail:<adresse>`; alte `clients.json` ohne das
