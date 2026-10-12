@@ -1268,10 +1268,16 @@ impl PimService {
             return error("error", "no HTTP client".into());
         };
         match discoverer.discover(address).await {
+            // The mail servers are the core's to add (`Core::discover_services`, task M2.2).
             Ok(found) => Response::Discovery {
                 provider: found.provider,
                 urls: found.urls,
                 unsupported: found.unsupported.map(|why| tr(why.reason()).to_string()),
+                imap: None,
+                smtp: None,
+                login_hint: None,
+                app_password: false,
+                mail_unsupported: None,
             },
             Err(err) => discover_error(err),
         }
@@ -4181,16 +4187,19 @@ pub(crate) mod tests {
         let ask = |address: &str| Request::DiscoverServices { address: address.into() };
         let gmail = service.handle_within(ask("anna@gmail.com"), Reach::Suite).await;
         let reason = tr(discover::Unsupported::Google.reason()).to_string();
-        assert_eq!(gmail, Response::Discovery { provider: "Gmail".into(), urls: vec![], unsupported: Some(reason) });
+        let calendars_only = |provider: &str, urls: Vec<String>, unsupported: Option<String>| Response::Discovery {
+            provider: provider.into(),
+            urls,
+            unsupported,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
+        };
+        assert_eq!(gmail, calendars_only("Gmail", vec![], Some(reason)));
         let mailbox = service.handle_within(ask("anna@mailbox.org"), Reach::Suite).await;
-        assert_eq!(
-            mailbox,
-            Response::Discovery {
-                provider: "mailbox.org".into(),
-                urls: vec!["https://dav.mailbox.org/".into()],
-                unsupported: None
-            }
-        );
+        assert_eq!(mailbox, calendars_only("mailbox.org", vec!["https://dav.mailbox.org/".into()], None));
         for refused in ["anna@192.168.1.1", "anna@localhost", ""] {
             assert_eq!(code_of(&service.handle_within(ask(refused), Reach::Suite).await), "error", "{refused:?}");
         }
