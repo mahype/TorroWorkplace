@@ -584,7 +584,11 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("temp dir");
         let clients = crate::clients::tests::open_in(dir.path());
-        let (_, hook_key) = clients.add("Claude Code hooks", "hook", Rights::hook()).await.expect("added");
+        // A hook client is bound to one agent (task E1.2b); this one reports for Claude Code.
+        let (_, hook_key) = clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
+            .await
+            .expect("added");
         let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
         let core = Arc::new(
             crate::core::Core::new(

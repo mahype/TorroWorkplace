@@ -24,7 +24,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use torro_core::i18n::{tr, trf};
-use torro_inbox::{Kind, Lane, Link};
+use torro_inbox::{AgentKind, Kind, Lane, Link};
 use torro_ipc::api::{Rights, RightsTemplate};
 use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, IpcError, Key, Request, Response, socket_path};
 use torro_setups::{LoadMode, TemplateSummary};
@@ -38,6 +38,7 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]
   torroworkplace ctl clients list [--json]
   torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script|hook]
+                                        [--agent claude-code|codex|gemini]
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
   torroworkplace ctl clients new-key <id> [--json]
@@ -56,6 +57,8 @@ const DEFAULT_KIND: &str = "script";
 struct Options<'a> {
     mode: Option<&'a str>,
     kind: Option<&'a str>,
+    /// The agent a `hook` client reports for (task E1.2b binds every hook client to one).
+    agent: Option<&'a str>,
     template: Option<&'a str>,
 }
 
@@ -124,6 +127,7 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
             }
             "--mode" => &mut options.mode,
             "--kind" => &mut options.kind,
+            "--agent" => &mut options.agent,
             "--template" => &mut options.template,
             flag if flag.starts_with('-') => return Err(UsageError::new(format!("unknown option {arg}"))),
             word => {
@@ -152,8 +156,9 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     if options.mode.is_some() && !matches!(request, Request::LoadTemplate { .. }) {
         return Err(UsageError::new("--mode only applies to ctl setups load"));
     }
-    if (options.kind.is_some() || options.template.is_some()) && !matches!(request, Request::CreateClient { .. }) {
-        return Err(UsageError::new(tr("--kind and --template only apply to ctl clients add")));
+    let client_options = options.kind.is_some() || options.agent.is_some() || options.template.is_some();
+    if client_options && !matches!(request, Request::CreateClient { .. }) {
+        return Err(UsageError::new(tr("--kind, --agent and --template only apply to ctl clients add")));
     }
     Ok(Command { request, json })
 }
@@ -163,6 +168,7 @@ fn missing_value(flag: &str) -> UsageError {
     match flag {
         "--mode" => UsageError::new("--mode needs a value: empty, add or replace"),
         "--kind" => UsageError::new(tr("--kind needs a value, e.g. claude-code or script")),
+        "--agent" => UsageError::new(tr("--agent needs a value: claude-code, codex or gemini")),
         _ => UsageError::new(tr("--template needs a value: read-only, read-and-write or full-access")),
     }
 }
@@ -206,7 +212,7 @@ fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Reque
             name: name.to_string(),
             kind: options.kind.unwrap_or(DEFAULT_KIND).to_string(),
             template: parse_template(options.template)?,
-            agent: None,
+            agent: parse_agent(options.agent)?,
         }),
         ("remove", [id]) => Ok(Request::RemoveClient { id: id.to_string() }),
         ("new-key", [id]) => Ok(Request::NewClientKey { id: id.to_string() }),
@@ -222,6 +228,17 @@ fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Reque
             &[("verb", &format!("{verb:?}"))],
         ))),
     }
+}
+
+/// `--agent` for a hook client: the agent it reports for; left out, none (the core then refuses
+/// a `hook` client, task E1.2b).
+fn parse_agent(agent: Option<&str>) -> Result<Option<AgentKind>, UsageError> {
+    agent
+        .map(|id| {
+            AgentKind::from_id(id)
+                .ok_or_else(|| UsageError::new(tr("--agent needs a value: claude-code, codex or gemini")))
+        })
+        .transpose()
 }
 
 /// `--template`; without it the standard template, *Read and write*.
@@ -695,6 +712,14 @@ mod tests {
         assert!(parse_strs(&["ctl", "clients", "add", "A", "--template", "everything"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "add", "A", "--kind"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "list", "--kind", "codex"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "list", "--agent", "codex"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "add", "H", "--kind", "hook", "--agent", "nobody"]).is_err());
+        let Request::CreateClient { agent, kind, .. } =
+            request(&["ctl", "clients", "add", "Claude Code hooks", "--kind", "hook", "--agent", "claude-code"])
+        else {
+            panic!("ctl clients add asks for a new client");
+        };
+        assert_eq!((kind.as_str(), agent), ("hook", Some(AgentKind::ClaudeCode)));
         assert!(parse_strs(&["ctl", "setups", "list", "--template", "read-only"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "add", "A", "--mode", "add"]).is_err());
     }
