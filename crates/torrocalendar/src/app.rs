@@ -42,7 +42,7 @@ use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -948,7 +948,17 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(self.content()), self.zoom.factor(), Message::DragWindow))
+        let content = self.zoom.view(self.content());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), self.surface(), Message::DragWindow))
+    }
+
+    /// The surface at the top of [`App::content`], which the title band takes: the window background
+    /// while signing in and for the glance's loading and error state, else that of the layout.
+    fn surface(&self) -> Surface {
+        let class = self.class();
+        let connected = matches!(self.account, Some(AccountState::Connected { .. }));
+        let bare_glance = is_glance(class) && (self.error.is_some() || !self.loaded);
+        if !connected || bare_glance { Surface::Window } else { Surface::of(class) }
     }
 
     fn content(&self) -> Element<'_, Message> {

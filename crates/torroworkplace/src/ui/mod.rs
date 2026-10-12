@@ -60,7 +60,7 @@ use torro_core::i18n::tr;
 use torro_core::settings::Settings;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -736,7 +736,9 @@ impl Ui {
             SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
             class => self.window(class),
         });
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), Message::DragWindow))
+        // The glances lie on the panel even while loading, so the layout alone decides the band.
+        let surface = Surface::of(layout::of(self.size));
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), surface, Message::DragWindow))
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {

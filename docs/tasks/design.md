@@ -608,3 +608,20 @@ R.1 ─┬─ R.2 ─┐
 - Neue Texte: keine.
 - Abnahme: Tests für die Fenstereinstellung auf macOS und für das Band; Sichtprüfung auf macOS
   (Ampeln liegen im Band, nichts darunter, Fenster lässt sich am Band ziehen) in Breit und Schmal.
+
+### U.7 Titelband in der Farbe der Fläche darunter (macOS)
+- [x] erledigt (Sichtprüfung Kalender auf macOS: Mittel und Breit hell/dunkel, Schmal und Mini hell; Schmal dunkel nicht gesehen)
+- **Modell:** Opus · **Braucht:** U.6 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`
+- Das Band aus U.6 hatte immer die Fensterfarbe `BG`. Das passt nur über Seitenleiste und Leiste (Breit,
+  Mittel). In Schmal und in den Kurzansichten (Mini, Leiste) liegt darunter `PANEL`; dort stand ein Streifen
+  in anderer Farbe über dem Inhalt (hell grau über Weiß).
+- `shell::titlebar` bekommt die Fläche darunter als `shell::Surface` (`Window` = `BG`, `Panel` = `PANEL`).
+  `Surface::of(class)` nennt die Fläche des Fensteraufbaus: `Window` in Breit und Mittel, sonst `Panel`.
+  Die Apps geben `Window` auch für Zustände ohne Fensteraufbau auf dem Fenstergrund (Anmelden, Laden und
+  Fehler der Kurzansicht).
+- Andere Systeme bleiben unverändert (dort gibt es kein Band).
+- Neue Texte: keine.
+- Abnahme: Test für `Surface::of` in allen Größenklassen und für das Band mit beiden Flächen;
+  Sichtprüfung auf macOS in Breit, Schmal und Mini, hell und dunkel.

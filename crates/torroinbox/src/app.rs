@@ -51,7 +51,7 @@ use torro_gui::connect;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -1557,15 +1557,19 @@ impl<S: InboxSource + 'static> App<S> {
         if self.is_glance() {
             // The panel, menus, the drawer and the hint stay in the state and come back with a
             // larger window.
+            // Before the first load the glance is the loading or error state on the window itself.
+            let surface = if self.loaded { Surface::of(class) } else { Surface::Window };
             return widgets::ctrl_guard(shell::titlebar(
                 self.zoom.view(self.glance(class)),
                 self.zoom.factor(),
+                surface,
                 Message::DragWindow,
             ));
         }
         // Always two layers, so the window keeps its state when the hint comes and goes.
         let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), Message::DragWindow))
+        let surface = Surface::of(class);
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), surface, Message::DragWindow))
     }
 
     /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.

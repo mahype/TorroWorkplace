@@ -284,21 +284,49 @@ impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
 #[cfg(target_os = "macos")]
 const TITLEBAR: f32 = 28.0;
 
+/// The surface at the top of a window, right under the band of [`titlebar`]: the band takes its
+/// colour, so the top of every window reads as one piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// The window background `bg`: the sidebar or the rail (wide, medium), and the states that lie
+    /// on the window itself (signing in, loading or failing before a layout exists).
+    Window,
+    /// The content panel `panel`: the flush narrow window and the glance of mini and strip.
+    Panel,
+}
+
+impl Surface {
+    /// The surface at the top of the window [`shell`] lays out in `class`, or of the glance in mini
+    /// and strip: the window background where a sidebar or rail runs up to the top, else the panel.
+    pub fn of(class: SizeClass) -> Surface {
+        match sidebar_mode(class, SidebarMode::Expanded) {
+            Some(_) => Surface::Window,
+            None => Surface::Panel,
+        }
+    }
+}
+
 /// Puts the band of the window's own title bar above `content` on macOS, where the window has none
 /// (see [`crate::window`]): the traffic lights sit in it, so nothing of the content lies under them.
-/// The band takes the window background and is pressed to drag the window; `on_drag` goes to the
-/// app's `update`, which returns [`crate::drag_window`]. `zoom` is the factor of the app's
-/// `scale_factor`, so the band stays [`TITLEBAR`] points high at any zoom. Other platforms keep their
-/// own title bar and get `content` back unchanged.
+/// The band takes the colour of `surface`, the top of `content`, and is pressed to drag the window;
+/// `on_drag` goes to the app's `update`, which returns [`crate::drag_window`]. `zoom` is the factor of
+/// the app's `scale_factor`, so the band stays [`TITLEBAR`] points high at any zoom. Other platforms
+/// keep their own title bar and get `content` back unchanged.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-pub fn titlebar<'a, M: Clone + 'a>(content: impl Into<Element<'a, M>>, zoom: f32, on_drag: M) -> Element<'a, M> {
+pub fn titlebar<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    zoom: f32,
+    surface: Surface,
+    on_drag: M,
+) -> Element<'a, M> {
     #[cfg(target_os = "macos")]
     {
         // The band is in layout units, which `scale_factor` multiplies; dividing keeps it in points.
-        let band = container(blank().width(Fill).height(Fill))
-            .width(Fill)
-            .height(TITLEBAR / zoom)
-            .style(style::container::sidebar);
+        let band =
+            container(blank().width(Fill).height(Fill)).width(Fill).height(TITLEBAR / zoom).style(match surface {
+                Surface::Window => style::container::sidebar,
+                Surface::Panel => style::container::panel_flush,
+            });
         column![mouse_area(band).on_press(on_drag), container(content).width(Fill).height(Fill)].into()
     }
     #[cfg(not(target_os = "macos"))]
@@ -767,8 +795,20 @@ mod tests {
 
     #[test]
     fn titlebar_wraps_any_content() {
-        let _: Element<'_, Msg> = titlebar(blank(), 1.0, Msg::Close);
-        let _: Element<'_, Msg> = titlebar(blank(), 1.5, Msg::Close);
+        for surface in [Surface::Window, Surface::Panel] {
+            let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, Msg::Close);
+            let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, Msg::Close);
+        }
+    }
+
+    #[test]
+    fn the_band_takes_the_surface_at_the_top_of_each_class() {
+        // Sidebar or rail run up to the top on the window background; elsewhere the panel does.
+        assert_eq!(Surface::of(SizeClass::Wide), Surface::Window);
+        assert_eq!(Surface::of(SizeClass::Medium), Surface::Window);
+        assert_eq!(Surface::of(SizeClass::Narrow), Surface::Panel);
+        assert_eq!(Surface::of(SizeClass::Mini), Surface::Panel);
+        assert_eq!(Surface::of(SizeClass::Strip), Surface::Panel);
     }
 
     #[test]
