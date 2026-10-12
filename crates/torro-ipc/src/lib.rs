@@ -22,6 +22,7 @@
 
 pub mod api;
 pub mod client;
+pub mod inbox;
 pub mod pim;
 pub mod server;
 

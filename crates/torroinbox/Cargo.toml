@@ -15,6 +15,7 @@ workspace = true
 torro-core.workspace = true
 torro-gui.workspace = true
 torro-inbox.workspace = true
+torro-ipc.workspace = true
 chrono.workspace = true
 iced.workspace = true
 webbrowser.workspace = true

@@ -1,8 +1,7 @@
-//! The source the app runs on without `--demo` until the core serves the inbox.
+//! An inbox without entries, for the app's tests only.
 //!
-//! The real client (`torro_ipc::inbox::InboxClient`) comes with task E1.3; until then the app
-//! starts on this source and shows its empty state, so nobody sees sample data they might take
-//! for real entries. E1.3 replaces it in `main.rs` and deletes this file.
+//! The app runs on the core's client (`torro_ipc::inbox::InboxClient`) or the demo source; the
+//! tests use this one to see the empty state and views that start without any data.
 
 use chrono::{DateTime, Utc};
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};

@@ -3,7 +3,7 @@
 //! - `daemon`: the background service with the tray icon. Owns the window manager
 //!   connection and the workspace templates, and the socket clients talk to; later also
 //!   accounts, sync and the app registry. `--headless` runs it without a tray icon.
-//! - `status --json`, `ctl`: for bars, hotkeys and scripts.
+//! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
@@ -52,14 +52,14 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Some("ctl" | "status") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
+        Some("ctl" | "status" | "notify") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
         Some("mcp") => mcp::run(),
         Some("--version") | Some("-V") => {
             println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("{}: unknown command {other:?}; try daemon, status, ctl or mcp", APP.binary);
+            eprintln!("{}: unknown command {other:?}; try daemon, status, ctl, notify or mcp", APP.binary);
             ExitCode::from(64)
         }
     }

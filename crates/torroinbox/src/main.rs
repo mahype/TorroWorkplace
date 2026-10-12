@@ -5,8 +5,9 @@
 //! the lanes "For me" and "Info". The app reads and changes entries only through
 //! [`torro_inbox::InboxSource`]; the core checks rights and the security rules.
 //!
-//! `--demo` runs on sample data ([`DemoSource`]). Without it the app runs on an empty source for
-//! now ([`empty::EmptySource`]); the client for the core comes with task E1.3 and is chosen here.
+//! `--demo` runs on sample data ([`DemoSource`]). Without it the app talks to the core over its
+//! socket ([`InboxClient`], task E1.3); [`Source::from_args`] starts the core first when it is not
+//! running, and until it answers the app shows "isn't responding" and asks again on its timer.
 //! With `--demo`, `--open <state>` starts in a given state and `--now <YYYY-MM-DDTHH:MM>` fixes
 //! "now"; `--appearance light|dark|system` overrides the stored appearance (see [`app::Launch`]).
 //!
@@ -17,6 +18,7 @@
 
 mod app;
 mod detail;
+#[cfg(test)]
 mod empty;
 mod glance;
 mod keys;
@@ -28,6 +30,7 @@ use std::sync::Arc;
 use torro_gui::source::Source;
 use torro_inbox::InboxSource;
 use torro_inbox::demo::DemoSource;
+use torro_ipc::inbox::InboxClient;
 
 use crate::app::{App, INBOX, Launch};
 
@@ -51,7 +54,7 @@ fn main() -> ExitCode {
     let result = if launch.demo {
         run(Arc::new(DemoSource::new(launch.start())), suite, launch)
     } else {
-        run(Arc::new(empty::EmptySource), suite, launch)
+        run(Arc::new(InboxClient::default()), suite, launch)
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -62,7 +65,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// The window on `inbox`. Generic, so a new source (the core's client, E1.3) only changes `main`.
+/// The window on `inbox`: the core's client or the demo source.
 fn run<S: InboxSource + 'static>(inbox: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
     iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), App::update, App::view)
         .settings(torro_gui::settings())

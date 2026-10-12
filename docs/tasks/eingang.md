@@ -180,7 +180,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
 
 ### E1.3 MCP, `torroworkplace notify` und Client für die App
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E1.2, E3.1 · **Dateien:** `crates/torroworkplace/src/{mcp,cli}.rs`,
   `crates/torro-ipc/src/inbox.rs` (neu), `crates/torro-ipc/src/lib.rs` (nur `mod`), `crates/torroinbox/src/main.rs`
 - **MCP:** Tools kommen aus dem Katalog; bequeme Eingaben: `inbox_list_items` ohne Angaben = für mich,
