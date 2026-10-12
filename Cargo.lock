@@ -5117,6 +5117,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "torro-core",
+ "torro-mail",
 ]
 
 [[package]]
@@ -5274,6 +5275,7 @@ dependencies = [
  "torro-gui",
  "torro-inbox",
  "torro-ipc",
+ "torro-mail",
  "webbrowser",
 ]
 

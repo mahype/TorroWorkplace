@@ -19,6 +19,9 @@
 //! icon button next to "Snooze": its words would not fit beside the others in the panel's 400.
 //! Approvals have none – they close once decided, and a task would not decide them.
 //!
+//! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
+//! text) in place of its short text; the footer stays the entry's.
+//!
 //! Commands in a message ("cargo test --workspace") should not break at their hyphens: the message
 //! shows them as non-breaking hyphens ([`unbroken`]), which Inter draws the same.
 
@@ -68,7 +71,17 @@ pub struct Footer {
 
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
 /// triage buttons register `footer.anchors`.
-pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: Footer) -> Panel<'a, Message> {
+///
+/// `letter` is the whole mail of a mail entry (task E4.2, `mail::body`: headers, actions,
+/// attachments, text). It stands in place of the entry's own short text and brings its own note on
+/// foreign text; `None` for every other entry.
+pub fn panel<'a>(
+    item: &'a Item,
+    view_name: String,
+    now: DateTime<Utc>,
+    footer: Footer,
+    letter: Option<Element<'a, Message>>,
+) -> Panel<'a, Message> {
     let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
     let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::L);
     let link = openable(item);
@@ -87,10 +100,12 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         body = body.push(widgets::prop_section(tr("Agent"), rows));
     }
     // The note on foreign text belongs to the text: right under the message, or – without one –
-    // at the end of the body, where it still speaks of the title.
-    let mut untrusted =
-        item.untrusted.then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
-    if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
+    // at the end of the body, where it still speaks of the title. A whole mail has its own.
+    let mut untrusted = (item.untrusted && letter.is_none())
+        .then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
+    if let Some(letter) = letter {
+        body = body.push(letter);
+    } else if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
         let message = typo::text(typo::BODY, unbroken(&text)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
         let mut block = column![message].spacing(space::S);
         if let Some(note) = untrusted.take() {
@@ -397,7 +412,7 @@ mod tests {
     #[test]
     fn every_sample_entry_builds_a_panel() {
         for item in demo::sample(now()) {
-            let _ = panel(&item, tr("For me").to_owned(), now(), footer(false));
+            let _ = panel(&item, tr("For me").to_owned(), now(), footer(false), None);
         }
     }
 }

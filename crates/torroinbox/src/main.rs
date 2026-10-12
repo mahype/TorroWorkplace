@@ -23,6 +23,7 @@ mod empty;
 mod glance;
 mod keys;
 mod list;
+mod mail;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -33,6 +34,7 @@ use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
 
 use crate::app::{App, INBOX, Launch};
+use crate::mail::MailSource;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,7 +68,7 @@ fn main() -> ExitCode {
 }
 
 /// The window on `inbox`: the core's client or the demo source.
-fn run<S: InboxSource + 'static>(inbox: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
+fn run<S: InboxSource + MailSource + 'static>(inbox: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
     iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), App::update, App::view)
         .settings(torro_gui::settings())
         .title(App::title)
