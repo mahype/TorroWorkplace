@@ -1305,8 +1305,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Looking for your provider.", "Der Anbieter wird gesucht."),
     ("Looking for your provider…", "Anbieter wird gesucht …"),
     ("Mail", "E-Mail"),
-    ("Mail comes later.", "E-Mail kommt später."),
-    ("Mail provider", "Mail-Anbieter"),
     (
         "No calendar service found for {domain}. If you know its address, enter it under Advanced.",
         "Für {domain} wurde kein Kalenderdienst gefunden. Kennst du seine Adresse, gib sie unter „Erweitert“ ein.",
@@ -1444,5 +1442,31 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "Stop sending mail from {sender} of {source} to {lane}",
         "Mails von {sender} aus {source} nicht mehr nach {lane} einsortieren",
+    ),
+    // Mail account in the add-account wizard (M5.1)
+    ("Calendars and tasks (CalDAV)", "Kalender und Aufgaben (CalDAV)"),
+    ("Incoming mail (IMAP)", "Eingehende E-Mail (IMAP)"),
+    ("Leave empty to use the name shown.", "Leer lassen, um den angezeigten Namen zu verwenden."),
+    ("Leave empty to use this account for mail only.", "Leer lassen, um dieses Konto nur für E-Mail zu verwenden."),
+    ("Mail account", "E-Mail-Konto"),
+    ("Mail is ready.", "E-Mail ist bereit."),
+    (
+        "Mail needs an incoming and an outgoing server. Enter the missing one under Advanced.",
+        "Für E-Mail brauchst du einen Eingangs- und einen Ausgangsserver. Gib den fehlenden unter „Erweitert“ ein.",
+    ),
+    ("Mail server found", "Mail-Server gefunden"),
+    ("Mail, calendars and tasks", "E-Mail, Kalender und Aufgaben"),
+    ("Mail, calendars and tasks found", "E-Mail, Kalender und Aufgaben gefunden"),
+    ("Note", "Hinweis"),
+    (
+        "Nothing found for {domain}. If you know the servers of your provider, enter them under Advanced.",
+        "Für {domain} wurde nichts gefunden. Wenn du die Server deines Anbieters kennst, gib sie unter „Erweitert“ ein.",
+    ),
+    ("Outgoing mail (SMTP)", "Ausgehende E-Mail (SMTP)"),
+    ("Security", "Sicherheit"),
+    ("Sender name", "Absendername"),
+    (
+        "Shown next to your address in the mail you send. Optional.",
+        "Wird in gesendeten E-Mails neben deiner Adresse angezeigt. Optional.",
     ),
 ];
