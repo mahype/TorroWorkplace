@@ -20,15 +20,13 @@
 //! The night (the suite's setting, 22:00–06:00 by default, as in the timeline; task K.27) lies
 //! behind the rings as a sector in the night colour, a small moon on the numerals' circle at its
 //! first half hour. A double-click on the moon opens the night's card (`EditNight`); resting on it
-//! says so after a moment. Free time of two hours or more outside the night, from now on, says
-//! "3 h free" along the arc in the innermost ring. All of it fades with the last quarter, piece by
-//! piece like the rest.
+//! says so after a moment. All of it fades with the last quarter, piece by piece like the rest.
 //!
-//! The middle says the date and the time, what runs ("40 min left") or how long is free, what
-//! comes next and what lasts all day; with nothing in the window, "Nothing planned" and when the
-//! next event comes ("Free until tomorrow 09:30"); away from now, "Back to now". Beside the dial (in the
-//! properties column when wide, at the right when medium, below when narrow) the events of the
-//! next nine hours and of the fading quarter are listed.
+//! The middle says only the date and the time. Away from now (another day, or the dial turned) it
+//! shows a clock button, "Back to now". Free time is not named: a stretch without an event is not
+//! necessarily free time. Beside the dial (in the properties column when wide, at the right when
+//! medium, below when narrow) the events of the next nine hours and of the fading quarter are
+//! listed.
 //!
 //! Clicks: an arc → `OpenEvent`, free room in the rings → `NewEvent` (rounded down to the quarter
 //! hour), a list row → `OpenEvent`. The dial turns (`Turn`): the mouse wheel over it in quarter
@@ -42,7 +40,7 @@ mod layout;
 
 pub use layout::{HOUR_STEP, WHEEL_STEP, clamp_offset};
 
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Duration, NaiveDateTime, NaiveTime, Timelike};
 use iced::alignment::Vertical;
 use iced::border::Radius;
 use iced::time::Instant;
@@ -62,7 +60,7 @@ use torro_gui::widgets::{self, Anchor};
 
 use layout::{Arc, Dial, END, Hit, Span, VISIBLE, WINDOW, Window, opacity, pieces, split};
 
-use super::glance::{self, span};
+use super::glance;
 use super::timeline::{self, is_double_click};
 use super::{ViewData, short_date};
 use crate::app::Message;
@@ -134,13 +132,9 @@ const CHIP_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
 const MAJOR: typo::Level = typo::BODY_STRONG.tabular();
 /// Opacity of the dot of a fading event in the list.
 const DIM_DOT: f32 = 0.55;
-/// The middle shows at most this many all-day chips.
-const CHIPS: usize = 2;
 /// While dragging, the pointer this close to the centre does not turn the dial: there the
 /// direction swings at the smallest move.
 const DRAG_DEAD: f32 = space::XL;
-/// Free time is named from two hours on, as in the week grid and the timeline.
-const FREE_MINUTES: f32 = 120.0;
 
 /// The radar for the day `data.anchor`, its dial turned `offset` minutes from the start of that
 /// day ([`start`]), a ring for each of `calendars` (the visible ones' collection ids, in the order
@@ -268,8 +262,6 @@ struct Plan {
     rings: usize,
     /// The nights in the window ([`layout::nights`]).
     nights: Vec<(f32, f32)>,
-    /// The free time of two hours or more from now on ([`layout::free`]).
-    free: Vec<(f32, f32)>,
     /// The app's index of the event open in the side panel.
     selected: Option<usize>,
 }
@@ -306,7 +298,6 @@ impl Plan {
             })
             .collect::<Vec<Span>>();
         let nights = layout::nights(&window, night);
-        let free = layout::free(&spans, &nights, window.rel(data.now), FREE_MINUTES);
         Plan {
             window,
             now: data.now,
@@ -315,38 +306,12 @@ impl Plan {
             spans,
             rings: rings.len(),
             nights,
-            free,
             selected: data.selected,
         }
     }
 
     fn is_selected(&self, id: usize) -> bool {
         self.selected.is_some_and(|index| self.entries.get(id).is_some_and(|entry| entry.index == index))
-    }
-
-    /// The timed event running at the start of the window: of several the one begun last.
-    fn running(&self) -> Option<&Entry> {
-        let at = self.window.start;
-        self.entries
-            .iter()
-            .filter(|e| e.timed() && e.event.start <= at && at < e.event.end)
-            .max_by(|a, b| a.event.start.cmp(&b.event.start).then(b.event.end.cmp(&a.event.end)))
-    }
-
-    /// The first timed event starting after the start of the window.
-    fn next(&self) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.timed() && e.event.start > self.window.start)
-    }
-
-    /// [`Plan::next`] if it starts in the window.
-    fn next_inside(&self) -> Option<&Entry> {
-        self.next().filter(|e| self.window.rel(e.event.start) < END)
-    }
-
-    /// What lasts all day on the day of the window's start.
-    fn all_day(&self) -> Vec<&Entry> {
-        let day = self.window.start.date();
-        self.entries.iter().filter(|e| e.event.all_day && e.event.on(day)).collect()
     }
 
     /// The timed events of the window for the list: those starting in the first nine hours (and
@@ -376,77 +341,23 @@ fn ring_order<'a>(used: impl Iterator<Item = &'a str>, calendars: &[String]) -> 
     rings
 }
 
-/// The middle of the dial: date, time, what runs or how long is free, what comes next, the
-/// all-day chips and – while looking ahead – "Back to now". Cut to the room inside the rings.
+/// The middle of the dial: the date and the time. Away from now (another day, or the dial turned)
+/// a clock button brings the dial back to now. Cut to the room inside the rings.
 fn middle(plan: &Plan, dial: &Dial) -> Element<'static, Message> {
     let width = (2.0 * dial.inner - 2.0 * MIDDLE_INSET).max(0.0);
     let at = plan.window.start;
-    let mut parts = column![
+    let clock = column![
         typo::text(typo::META, short_date(at.date())).style(theme::text_3),
         typo::text(typo::DISPLAY.tabular(), format_time(at.time())),
     ]
     .spacing(space::XS)
     .align_x(iced::Alignment::Center);
-    let mut detail = column![].spacing(space::XS).align_x(iced::Alignment::Center);
-    if let Some(running) = plan.running() {
-        let left = trf("{span} left", &[("span", &span(layout::minutes_until(at, running.event.end)))]);
-        let title = ellipsize(&running.event.title, typo::BODY_STRONG, width - space::S - space::S);
-        detail = detail
-            .push(
-                row![widgets::color_dot(running.event.color, space::S), one_line(typo::BODY_STRONG, title)]
-                    .spacing(space::S)
-                    .align_y(iced::Alignment::Center),
-            )
-            .push(one_line(typo::META, left).style(theme::text_2));
-    } else if let Some(next) = plan.next_inside() {
-        let free = trf("Free for {span}", &[("span", &span(layout::minutes_until(at, next.event.start)))]);
-        detail =
-            detail.push(one_line(typo::BODY_STRONG, ellipsize(&free, typo::BODY_STRONG, width)).style(theme::text_2));
-    } else {
-        // Nothing in the window: say so, and when the next event comes, wherever it lies.
-        let nothing = ellipsize(tr("Nothing planned"), typo::BODY_STRONG, width);
-        detail = detail.push(one_line(typo::BODY_STRONG, nothing).style(theme::text_2));
-        if let Some(next) = plan.next() {
-            let until = free_until(next.event.start, at.date(), plan.now.date());
-            detail = detail.push(one_line(typo::META, ellipsize(&until, typo::META, width)).style(theme::text_3));
-        }
-    }
-    if let Some(next) = plan.next_inside() {
-        let line = trf(
-            "Next {time} · {title}",
-            &[("time", &format_time(next.event.start.time())), ("title", &next.event.title)],
-        );
-        detail = detail.push(one_line(typo::META, ellipsize(&line, typo::META, width)).style(theme::text_3));
-    }
-    parts = parts.push(detail);
-    let chips: Vec<Element<'static, Message>> = plan
-        .all_day()
-        .into_iter()
-        .take(CHIPS)
-        .map(|entry| widgets::pill(Some(entry.event.color), ellipsize(&entry.event.title, typo::META, width / 2.0)))
-        .collect();
-    if !chips.is_empty() {
-        parts = parts.push(row(chips).spacing(space::XS));
-    }
+    let mut parts = column![clock].spacing(space::S).align_x(iced::Alignment::Center);
     if plan.looking {
-        parts =
-            parts.push(widgets::text_button(None, tr("Back to now"), style::button::secondary, Some(Message::Today)));
+        // The icon button carries its own tooltip, which is also its label for screen readers.
+        parts = parts.push(widgets::icon_button(Icon::Clock, tr("Back to now"), Some(Message::Today)));
     }
-    container(parts.spacing(space::S)).width(width).center_x(width).into()
-}
-
-/// When the free time from the window's start on ends, at the start of the next event `next`:
-/// "Free until 09:30" on `day` (the day of the window), "Free until tomorrow 09:30" on the day after
-/// `today`, else "Free until Thu, 15 Oct at 09:30".
-fn free_until(next: NaiveDateTime, day: NaiveDate, today: NaiveDate) -> String {
-    let time = format_time(next.time());
-    if next.date() == day {
-        trf("Free until {time}", &[("time", &time)])
-    } else if next.date() == today + Duration::days(1) {
-        trf("Free until tomorrow {time}", &[("time", &time)])
-    } else {
-        trf("Free until {date} at {time}", &[("date", &short_date(next.date())), ("time", &time)])
-    }
+    container(parts).width(width).center_x(width).into()
 }
 
 /// One line of text, never wrapped (the caller cuts it).
@@ -795,7 +706,6 @@ impl canvas::Program<Message> for Radar {
         }
 
         moon(&mut frame, &dial, plan, p, &faded);
-        free_time(&mut frame, &dial, plan, p, &faded);
         start_edge(&mut frame, &dial, plan, p);
         if let Some((_, target)) = state.hover.filter(|(since, _)| since.elapsed() >= timeline::TOOLTIP_DELAY) {
             timeline::moon_tooltip(&mut frame, p, target, Rectangle::new(Point::ORIGIN, bounds.size()));
@@ -943,52 +853,6 @@ fn moon(frame: &mut Frame, dial: &Dial, plan: &Plan, p: &Palette, faded: &dyn Fn
     let half = icon::SIZE_SM / 2.0;
     let bounds = Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(icon::SIZE_SM, icon::SIZE_SM));
     frame.draw_svg(bounds, &Icon::Moon.tinted(faded(p.text_3, opacity(rel))));
-}
-
-/// "3 h free" in `text_3` along the arc of each free stretch ([`Plan::free`]), centred on it in
-/// the innermost ring, upright in the bottom half like the titles; left out where it does not fit.
-/// The ring is empty there – free means no event in any ring – while just inside the rings the
-/// label ran into the lines of the middle in the medium and narrow layouts.
-fn free_time(frame: &mut Frame, dial: &Dial, plan: &Plan, p: &Palette, faded: &dyn Fn(Color, f32) -> Color) {
-    let level = typo::META;
-    let Some(innermost) = dial.rings.checked_sub(1) else { return };
-    let (inner, outer) = dial.ring(innermost);
-    let radius = (inner + outer) / 2.0;
-    if outer - inner < line_height(level) || radius <= 0.0 {
-        return;
-    }
-    let window = &plan.window;
-    for &(from, to) in &plan.free {
-        let note = free_note(from, to);
-        let width = text_width(&note, level);
-        let room = (window.angle(to) - window.angle(from)).to_radians() * radius;
-        if width + 2.0 * space::S > room {
-            continue;
-        }
-        let middle = window.angle((from + to) / 2.0);
-        let flipped = (90.0..270.0).contains(&middle.rem_euclid(360.0));
-        let half = (width / 2.0 / radius).to_degrees();
-        let start = if flipped { middle + half } else { middle - half };
-        for glyph in layout::glyphs(&note, level, radius, start, flipped) {
-            let alpha = opacity(window.rel_of(glyph.angle));
-            if alpha <= 0.002 {
-                continue;
-            }
-            let at = dial.point(radius, glyph.angle);
-            frame.with_save(|frame| {
-                frame.translate(iced::Vector::new(at.x, at.y));
-                frame.rotate(glyph.turn);
-                label(frame, &glyph.letter, Point::ORIGIN, level, faded(p.text_3, alpha));
-            });
-        }
-    }
-}
-
-/// "3 h free" for the free stretch `from`–`to` (minutes into the window): whole hours, as in the
-/// timeline.
-fn free_note(from: f32, to: f32) -> String {
-    let hours = ((to - from) / 60.0).floor() as i64;
-    trf("{n} h free", &[("n", &hours)])
 }
 
 /// The colours of the start edge, of the chip with its time and of the time: red with white
@@ -1175,64 +1039,36 @@ mod tests {
     }
 
     #[test]
-    fn the_night_and_free_time_come_with_the_window() {
+    fn the_night_comes_with_the_window() {
         let events = events();
-        // 14:20: free 15:00–18:30 and 19:30–22:00; the night from 22:00 holds the late call.
+        // 14:20: the night from 22:00 holds the late call.
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
         assert_eq!(plan.nights, [(460.0, END)]);
-        assert_eq!(plan.free, [(40.0, 250.0), (310.0, 460.0)]);
-        assert_eq!(
-            (free_note(40.0, 250.0), free_note(310.0, 460.0)),
-            (trf("{n} h free", &[("n", &3)]), trf("{n} h free", &[("n", &2)]))
-        );
-        // An empty Sunday: no night between 08:00 and 19:54, all of it free.
+        // An empty Sunday: no night between 08:00 and 19:54.
         let sunday = Plan::new(&data_on(&[], 18), &calendars(), 0, Night::DEFAULT);
         assert!(sunday.nights.is_empty());
-        assert_eq!(sunday.free, [(0.0, END)]);
-        // Looking back at last night: what is over is not free.
+        // Looking back at last night: the night until 06:00 lies in the window.
         let back = Plan::new(&data(&events), &calendars(), -12 * 60, Night::DEFAULT);
         assert_eq!(back.window.start, at(13, 2, 20));
         assert_eq!(back.nights, [(0.0, 220.0)], "until 06:00");
-        assert!(back.free.is_empty(), "all of it lies before now");
     }
 
     #[test]
-    fn with_nothing_in_the_window_the_middle_says_when_the_next_event_comes() {
+    fn the_middle_offers_back_to_now_only_away_from_now() {
         let events = events();
-        let today = at(13, 0, 0).date();
-        // Wednesday with only Tuesday's events loaded: nothing runs, nothing comes.
-        let wednesday = Plan::new(&data_on(&events[..4], 14), &calendars(), 0, Night::DEFAULT);
-        assert!(wednesday.next().is_none() && wednesday.running().is_none());
-        let late = [event("work", "Late call", local(15, 9, 30), local(15, 10, 0))];
-        let plan = Plan::new(&data_on(&late, 14), &calendars(), 0, Night::DEFAULT);
-        assert!(plan.next().is_some() && plan.next_inside().is_none(), "the next event lies beyond the window");
-        assert_eq!(free_until(at(14, 9, 30), today, today), trf("Free until tomorrow {time}", &[("time", &"09:30")]));
-        assert_eq!(
-            free_until(at(14, 17, 0), at(14, 0, 0).date(), today),
-            trf("Free until {time}", &[("time", &"17:00")])
-        );
-        let far = free_until(at(15, 9, 30), at(14, 0, 0).date(), today);
-        assert_eq!(
-            far,
-            trf("Free until {date} at {time}", &[("date", &short_date(at(15, 0, 0).date())), ("time", &"09:30")])
-        );
-        // The middle builds in all three cases.
-        for plan in [&wednesday, &plan, &Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT)] {
-            let _ = middle(plan, &Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings));
+        let dial = |plan: &Plan| Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings);
+        // Today at 14:20: date and time only, no button.
+        let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
+        assert!(!today.looking);
+        // Another day, and the dial turned on today: the button is there.
+        let tomorrow = Plan::new(&data_on(&events, 14), &calendars(), 0, Night::DEFAULT);
+        let turned = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT);
+        assert!(tomorrow.looking && turned.looking);
+        // The middle builds in each case, with and without events in the window.
+        let empty = Plan::new(&data(&[]), &calendars(), 0, Night::DEFAULT);
+        for plan in [&today, &tomorrow, &turned, &empty] {
+            let _ = middle(plan, &dial(plan));
         }
-    }
-
-    #[test]
-    fn the_middle_knows_what_runs_and_what_comes_next() {
-        let events = events();
-        let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        assert_eq!(plan.running().map(|e| e.event.title.as_str()), Some("API design workshop"));
-        assert_eq!(plan.next().map(|e| e.event.title.as_str()), Some("1:1 with Lena"));
-        let ahead = Plan::new(&data(&events), &calendars(), 60, Night::DEFAULT);
-        assert!(ahead.running().is_none(), "15:20: nothing runs");
-        assert_eq!(ahead.next().map(|e| e.event.title.as_str()), Some("Run"));
-        let all_day: Vec<&str> = plan.all_day().iter().map(|e| e.event.title.as_str()).collect();
-        assert_eq!(all_day, ["Holiday"]);
     }
 
     #[test]
