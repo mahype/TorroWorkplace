@@ -391,6 +391,8 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     AccountLoaded(Result<Vec<PimAccount>, String>),
     /// An account's title in the sidebar: fold or unfold its calendars.
     ToggleAccount(String),
@@ -680,6 +682,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Only accounts that can hold calendars: GitHub alone is "No calendar account yet".
@@ -944,7 +947,7 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(self.zoom.view(self.content()))
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(self.content()), self.zoom.factor(), Message::DragWindow))
     }
 
     fn content(&self) -> Element<'_, Message> {

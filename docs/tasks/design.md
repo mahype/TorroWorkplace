@@ -591,3 +591,20 @@ R.1 ─┬─ R.2 ─┐
 - `torro-design-review` vergleicht die App mit `--demo` in allen Größenklassen, hell und dunkel, mit dem Entwurf;
   Abweichungen beheben (Achsen, Abstände, Abschneiden, Kontraste). Skill `torro-design` an den Stellen anpassen,
   die der Entwurf geändert hat (Abschnitt 6: Mittel nebeneinander; Detail ohne roten Fuß).
+
+## Rückmeldungen 2026-10-12
+
+### U.6 Titelleiste wie aus einem Guss (macOS)
+- [ ] erledigt, Sichtprüfung auf macOS offen (Ampeln und Ziehen am Band nicht gesehen)
+- **Modell:** Opus · **Braucht:** keine · **Dateien:** `crates/torro-gui/src/{lib,shell}.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`
+- Auf macOS hatten die Apps eine Systemtitelleiste in eigener Farbe über dem Inhalt; neben Claude
+  wirkte das wie ein Fremdkörper. Das Fenster hat jetzt keine eigene Titelleiste mehr (Titel
+  verborgen, Leiste transparent, Inhalt bis zur Oberkante). `shell::titlebar` legt ein 28 Punkte hohes
+  Band in Fensterfarbe über den Inhalt; dort liegen die Ampeln, und ein Druck auf das Band zieht das
+  Fenster (`torro_gui::drag_window`). Das Band bleibt bei jeder Zoomstufe 28 Punkte hoch.
+- Andere Systeme bleiben unverändert (`#[cfg(target_os = "macos")]`).
+- Neue Texte: keine.
+- Abnahme: Tests für die Fenstereinstellung auf macOS und für das Band; Sichtprüfung auf macOS
+  (Ampeln liegen im Band, nichts darunter, Fenster lässt sich am Band ziehen) in Breit und Schmal.

@@ -489,11 +489,11 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   fmt, clippy, test (auch `TORRO_LANG=de`) grün; `--demo --open radar --now 2026-10-13T14:20`
   Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
 
-### K.29 Radar: kräftige Termine mit Titel, Zeiger und Tooltip
+### K.29 Radar: kräftige Termine mit Titel, Zeiger, Tooltip und Kalendernamen
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** K.28, K.30 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
   `crates/torrocalendar/src/views/radar/layout.rs`, `crates/torrocalendar/src/views/radar/mini.rs`
-  (nur die Farbe der Bögen)
+  (nur die Farbe der Bögen), `crates/torrocalendar/src/app.rs` (nur die Kalendernamen an das Radar)
 - **Oberfläche:**
   - **Farbe:** Termine im Radar deutlich kräftiger als die Tönung im Wochenraster: Füllung =
     Kalenderfarbe mit eigener Konstante `FILL` über der Spur (Startwert hell ~45 %, dunkel ~55 %,
@@ -513,10 +513,22 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
     „14:00–15:00“ (`META`, tabellarisch, `TEXT_2`) und – falls vorhanden – der Ort mit `MapPin`.
     Neben dem Zeiger, nie über den Rand des `Canvas`. Verschwindet beim Verlassen, Drücken und
     Ziehen.
+  - **Welcher Ring welcher Kalender ist** (Wunsch des Nutzers 2026-10-12):
+    - Die Spur jedes Rings leise in seiner Kalenderfarbe getönt (statt `TEXT` 7 %; Startwert ~10 %,
+      per Screenshot so, dass Termine weiter klar davor stehen und die Nacht erkennbar bleibt).
+    - Der Kalendername steht in jedem Ring entlang des Bogens **kurz vor der Startkante**, wo das
+      letzte Viertel ausgeblendet und der Ring leer ist: Farbpunkt + Name (`MICRO`, `TEXT_2`, voll
+      deckend, nicht mit ausgeblendet), endet ~8 vor der Kante, gekürzt mit „…“; passt er nicht
+      (Bahn < 14 oder zu wenig Bogen), nur der Farbpunkt. Er dreht mit dem Zifferblatt mit.
+    - Ruht die Maus auf der leeren Spur eines Rings, sagt der Tooltip den Kalendernamen (der
+      Zeiger bleibt `Grab`).
+    - Die Namen kommen aus der Kalenderliste der App (`calendar_order` liefert heute nur Ids);
+      dafür darf `app.rs` die Namen neben den Ids an `views::radar::view` geben (nur diese Stelle).
 - **API / MCP:** keiner.
 - **Abnahme:** Tests: Farbe/Kontrast der Füllung über hell und dunkel (feste Demo-Farben), Titel-Regel
   (Bahnbreite → Schrift/kein Titel), `mouse_interaction` über Termin/Spur/außen, Tooltip-Zustand
-  (Verzögerung, Wechsel des Termins, Verschwinden beim Drücken), Lage am Rand; fmt, clippy, test
+  (Verzögerung, Wechsel des Termins, Verschwinden beim Drücken), Lage am Rand, Kalendername je Ring
+  (Lage vor der Kante, gekürzt, nur Punkt bei schmaler Bahn, Tooltip auf leerer Spur); fmt, clippy, test
   (auch `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
 
 ### K.30 Radar: Mini-Radare der nächsten Tage

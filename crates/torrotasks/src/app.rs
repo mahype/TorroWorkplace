@@ -574,6 +574,8 @@ pub struct App {
 // counts one variant as oversized. Boxing them would only add an allocation.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     AccountLoaded(Result<Vec<PimAccount>, String>),
@@ -887,6 +889,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
@@ -1397,7 +1400,7 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(self.zoom.view(self.content()))
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(self.content()), self.zoom.factor(), Message::DragWindow))
     }
 
     fn content(&self) -> Element<'_, Message> {
