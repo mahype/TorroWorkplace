@@ -160,7 +160,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Startup", "Start"),
     ("System", "System"),
     // Command line (torroworkplace ctl clients)
-    ("--kind and --template only apply to ctl clients add", "--kind und --template gelten nur für ctl clients add"),
+    (
+        "--kind, --agent and --template only apply to ctl clients add",
+        "--kind, --agent und --template gelten nur für ctl clients add",
+    ),
+    (
+        "--agent needs a value: claude-code, codex or gemini",
+        "--agent braucht einen Wert: claude-code, codex oder gemini",
+    ),
     ("--kind needs a value, e.g. claude-code or script", "--kind braucht einen Wert, z. B. claude-code oder script"),
     (
         "--template needs a value: read-only, read-and-write or full-access",
@@ -768,4 +775,26 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "the hook needs one agent: torroworkplace hook claude-code|codex|gemini",
         "der Hook braucht genau einen Agenten: torroworkplace hook claude-code|codex|gemini",
     ),
+    // Approvals: inbox summaries (E1.2b)
+    ("Report \"{title}\" to the inbox", "„{title}“ in den Eingang melden"),
+    ("Report the state of a coding agent to the inbox", "Den Zustand eines Coding-Agenten in den Eingang melden"),
+    (
+        "Mark its own inbox entries of thread {thread} as done",
+        "Eigene Eingangseinträge des Vorgangs {thread} erledigen",
+    ),
+    ("Mark {entry} as done", "{entry} als erledigt markieren"),
+    ("Open {entry} again", "{entry} wieder öffnen"),
+    ("Snooze {entry} until {when}", "{entry} bis {when} vertagen"),
+    ("Stop snoozing {entry}", "{entry} nicht mehr vertagen"),
+    ("Move {entry} to {lane}", "{entry} nach „{lane}“ verschieben"),
+    (
+        "Move {entry} to {lane} and send later notices of {source} there too",
+        "{entry} nach „{lane}“ verschieben und spätere Meldungen von {source} auch dorthin",
+    ),
+    ("Mute {source} in the inbox", "{source} im Eingang stummschalten"),
+    ("Unmute {source} in the inbox", "{source} im Eingang wieder laut schalten"),
+    ("Stop sending notices of {source} to {lane}", "Meldungen von {source} nicht mehr nach „{lane}“ schicken"),
+    ("Remove an unknown inbox rule", "Eine unbekannte Eingangsregel entfernen"),
+    ("an unknown inbox entry", "einen unbekannten Eingangseintrag"),
+    ("its source", "seiner Quelle"),
 ];
