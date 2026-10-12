@@ -1030,4 +1030,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The {command} command could not be started.", "Der Befehl {command} ließ sich nicht starten."),
     ("The {command} command reported an error.", "Der Befehl {command} hat einen Fehler gemeldet."),
     ("The {command} command did not finish.", "Der Befehl {command} ist nicht fertig geworden."),
+    // Control centre: hooks in connect agent (E2.3)
+    ("Report to Inbox when waiting or done", "Im Eingang melden, wenn er wartet oder fertig ist"),
+    ("A separate key that can only report.", "Ein eigener Schlüssel, der nur melden kann."),
+    ("Hooks added to {file}.", "Hooks in {file} eingetragen."),
+    (
+        "Codex runs new hooks only after you trust them: type /hooks in Codex.",
+        "Codex führt neue Hooks erst aus, wenn du ihnen vertraust: Gib in Codex /hooks ein.",
+    ),
+    ("Inbox reports could not be set up: {error}", "Meldungen an den Eingang ließen sich nicht einrichten: {error}"),
 ];
