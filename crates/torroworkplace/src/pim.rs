@@ -287,6 +287,7 @@ impl Slot {
             state: self.state(),
             collections: self.collections.clone(),
             scopes: None,
+            mail: None,
         }
     }
 }
@@ -2970,6 +2971,7 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
             state: AccountState::SigningIn { server: server.clone(), login_url: login_url.clone() },
             collections: Vec::new(),
             scopes: None,
+            mail: None,
         });
     }
     infos
@@ -3448,6 +3450,7 @@ pub(crate) mod tests {
                 },
                 collections: vec![],
                 scopes: None,
+                mail: None,
             }
         );
     }
@@ -3475,6 +3478,7 @@ pub(crate) mod tests {
                 },
                 collections: vec![collection(&cal("work")), collection(&cal("home"))],
                 scopes: None,
+                mail: None,
             }]
         );
     }

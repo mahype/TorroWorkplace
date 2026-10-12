@@ -55,9 +55,9 @@ use tokio::time::Instant;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::i18n::{tr, trf};
-use torro_ipc::{AccountInfo, Response};
+use torro_ipc::{AccountInfo, FolderChoice, MailView, OpenRoleView, Response, ServiceState};
 use torro_mail::{Endpoint, MailAccountConfig, MailSettings, Role};
-use torro_mail_imap::folders::{self, OpenRole};
+use torro_mail_imap::folders::{self, FolderList, OpenRole};
 use torro_mail_imap::imap::{IdleEvent, ImapError, Session, Trust};
 use torro_mail_imap::smtp::{SmtpError, SmtpSubmitter};
 use torro_pim::{AccountState, ProviderError};
@@ -542,6 +542,11 @@ pub(crate) struct Mailbox {
     resume: Notify,
     /// The inbox's path as the server names it (`INBOX` until the folders were listed).
     inbox: StdMutex<String>,
+    /// The roles the server leaves open (with the person's picks applied) and their candidate
+    /// folders, as the last folder sync listed them ([`Mailbox::note_folders`], task M2.8). Kept
+    /// here so `accounts.list_accounts` answers without asking the server; empty until the first
+    /// folder sync of this mailbox.
+    open_roles: StdMutex<Vec<OpenRoleView>>,
     events: broadcast::Sender<MailChange>,
     connector: Connector,
     timing: Timing,
@@ -587,6 +592,29 @@ impl Mailbox {
 
     pub(crate) fn set_inbox_path(&self, path: &str) {
         *self.inbox.lock().unwrap_or_else(PoisonError::into_inner) = path.to_string();
+    }
+
+    /// Notes the roles `list` leaves open, each with its candidates' names and paths (task M2.8),
+    /// for [`MailView::open_roles`]. The folder sync calls it with every listing it makes with the
+    /// person's picks ([`Mailbox::folder_roles`]), so a picked role is no longer open. Names and
+    /// paths come from the server: they are shown, never acted on.
+    pub(crate) fn note_folders(&self, list: &FolderList) {
+        let name_of = |path: &str| {
+            list.folders.iter().find(|folder| folder.path == path).map_or_else(|| path.to_string(), |f| f.name.clone())
+        };
+        let open = list
+            .open
+            .iter()
+            .map(|open| OpenRoleView {
+                role: open.role,
+                candidates: open
+                    .candidates
+                    .iter()
+                    .map(|path| FolderChoice { name: name_of(path), path: path.clone() })
+                    .collect(),
+            })
+            .collect();
+        *self.open_roles.lock().unwrap_or_else(PoisonError::into_inner) = open;
     }
 
     /// One folder sync at a time ([`Mailbox::sync_lock`]).
@@ -667,8 +695,24 @@ impl Mailbox {
         result
     }
 
+    /// The account as `accounts.list_accounts` lists it, with its [`MailView`] (task M2.8): what
+    /// is stored for it, the open roles of the last folder sync and the mail part's state. The
+    /// calendar part's state is the calendar service's; the core adds it when it joins both parts
+    /// (`calendars` stays `None` here). Never the password.
     fn info(&self) -> AccountInfo {
         let status = self.status();
+        let mail = ServiceState { last_sync: status.last_sync, problem: status.problem.clone() };
+        let view = MailView {
+            address: self.config.address.clone(),
+            sender_name: self.config.sender_name.clone(),
+            imap: self.config.imap.clone(),
+            smtp: self.config.smtp.clone(),
+            caldav: self.config.caldav.clone(),
+            settings: self.settings.clone(),
+            open_roles: self.open_roles.lock().unwrap_or_else(PoisonError::into_inner).clone(),
+            mail,
+            calendars: None,
+        };
         AccountInfo {
             id: self.account.id.clone(),
             kind: AccountKind::Mail.name().into(),
@@ -681,6 +725,7 @@ impl Mailbox {
             },
             collections: Vec::new(),
             scopes: None,
+            mail: Some(view),
         }
     }
 
@@ -967,6 +1012,7 @@ impl MailService {
             sync_lock: Mutex::new(()),
             resume: Notify::new(),
             inbox: StdMutex::new("INBOX".to_string()),
+            open_roles: StdMutex::new(Vec::new()),
             events: self.events.clone(),
             connector: self.connector.clone(),
             timing: self.timing,
@@ -983,7 +1029,8 @@ impl MailService {
 
     /// The mail accounts as `accounts.list_accounts` lists them, never with their passwords: for
     /// a client only those its rights reach (`Rights::reaches_mail_account`); the others behave as
-    /// if they did not exist. Mail accounts have no collections here.
+    /// if they did not exist. Mail accounts have no collections here; each has its [`MailView`]
+    /// (task M2.8), answered from memory without asking a server.
     pub async fn infos(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
         self.entries
             .read()
@@ -1136,6 +1183,10 @@ impl MailService {
     /// anew on the command connection without the person's picks (task M2.7):
     /// `accounts.update_mail_account` takes a pick only for one of these, and only one of its
     /// candidates. Errors as [`MailService::command`].
+    ///
+    /// Nothing is noted for the account's view here ([`Mailbox::note_folders`], task M2.8): this
+    /// listing ignores the person's picks, so it would show picked roles as open again. The view
+    /// takes what the folder sync lists with the picks.
     pub async fn open_roles(&self, id: &str) -> Result<Vec<OpenRole>, MailError> {
         let mut command = self.command(id).await?;
         let listed = folders::discover(command.session(), &BTreeMap::new()).await?;
@@ -1236,6 +1287,15 @@ impl MailService {
     #[allow(dead_code, reason = "used from the mail commands, tasks M3.1 to M3.3")]
     pub async fn store(&self, account: &str) -> Result<SharedStore, MailError> {
         self.mailbox_of(account).await?.store()
+    }
+
+    /// Notes `list` at the account `id` as its folder sync would ([`Mailbox::note_folders`]), for
+    /// tests whose fake server leaves no role open.
+    #[cfg(test)]
+    pub(crate) async fn note_folders_of(&self, id: &str, list: &FolderList) {
+        if let Some(entry) = self.entries.read().await.iter().find(|entry| entry.mailbox.id() == id) {
+            entry.mailbox.note_folders(list);
+        }
     }
 
     async fn mailbox_of(&self, account: &str) -> Result<Arc<Mailbox>, MailError> {
@@ -1687,6 +1747,54 @@ pub(crate) mod tests {
         assert_eq!(SignInError::Refused(Service::Smtp).code(), "auth");
         assert!(SignInError::Refused(Service::Smtp).message().contains("SMTP"));
         assert_eq!(SignInError::caldav(&ProviderError::Offline), SignInError::Offline(Service::CalDav));
+    }
+
+    /// A folder listing that leaves `Sent` open between `Sent` and `INBOX.Gesendet` (task M2.8).
+    pub(crate) fn sent_left_open() -> FolderList {
+        let folder = |path: &str, name: &str| folders::RemoteFolder {
+            path: path.into(),
+            name: name.into(),
+            delimiter: Some('.'),
+            role: None,
+            selectable: true,
+        };
+        FolderList {
+            folders: vec![folder("Sent", "Sent"), folder("INBOX.Gesendet", "Gesendet")],
+            open: vec![OpenRole { role: Role::Sent, candidates: vec!["Sent".into(), "INBOX.Gesendet".into()] }],
+            created: Vec::new(),
+        }
+    }
+
+    /// The account's view (task M2.8) holds what is stored and the open roles of the last folder
+    /// listing, with the names to show; the next folder sync notes them anew.
+    #[tokio::test]
+    async fn the_view_shows_the_open_roles_of_the_last_folder_sync() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let account = mail_account("anna@example.org", &server.endpoint);
+        let mailbox = mailbox_in(dir.path(), account, PASSWORD).await;
+        let view = mailbox.info().mail.expect("a mail view");
+        assert_eq!(
+            (view.address.as_str(), &view.imap, view.open_roles.len()),
+            ("anna@example.org", &server.endpoint, 0)
+        );
+        assert_eq!((view.mail.clone(), view.calendars.clone()), (ServiceState::default(), None), "before any sync");
+
+        mailbox.note_folders(&sent_left_open());
+        let view = mailbox.info().mail.expect("a mail view");
+        let choice = |name: &str, path: &str| FolderChoice { name: name.into(), path: path.into() };
+        assert_eq!(
+            view.open_roles,
+            [OpenRoleView {
+                role: Role::Sent,
+                candidates: vec![choice("Sent", "Sent"), choice("Gesendet", "INBOX.Gesendet")]
+            }]
+        );
+
+        // The fake gives every role a folder of its own: after a folder sync nothing is open.
+        sync::sync_account(&mailbox).await.expect("synced");
+        assert!(mailbox.info().mail.expect("a mail view").open_roles.is_empty());
+        assert!(!format!("{:?}", mailbox.info()).contains(PASSWORD));
     }
 
     #[test]

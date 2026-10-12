@@ -731,6 +731,7 @@ pub mod github {
                 },
                 collections: Vec::new(),
                 scopes: self.scopes.clone(),
+                mail: None,
             }
         }
 

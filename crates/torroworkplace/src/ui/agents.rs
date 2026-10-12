@@ -1500,6 +1500,7 @@ mod tests {
             state: AccountState::NotConnected,
             collections: Vec::new(),
             scopes: None,
+            mail: None,
         }
     }
 

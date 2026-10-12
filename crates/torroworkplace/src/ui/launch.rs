@@ -265,6 +265,7 @@ pub fn demo_data() -> Data {
             },
             collections: sample,
             scopes: None,
+            mail: None,
         },
         AccountInfo {
             id: "nextcloud:anna@work.example.net".into(),
@@ -281,6 +282,7 @@ pub fn demo_data() -> Data {
                 team("demo:/work/calendars/ops/", "Ops", CollectionKind::Todos, "#E8A33D"),
             ],
             scopes: None,
+            mail: None,
         },
         // A GitHub account whose token reads private repositories but has no projects scope, so
         // the detail page shows what is allowed and what is missing.
@@ -296,6 +298,7 @@ pub fn demo_data() -> Data {
             },
             collections: Vec::new(),
             scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
+            mail: None,
         },
         // A mail provider's calendars and tasks (task M7.2).
         AccountInfo {
@@ -313,6 +316,7 @@ pub fn demo_data() -> Data {
                 team("demo:/mailbox/tasks/inbox/", "Inbox", CollectionKind::Todos, "#A78BFA"),
             ],
             scopes: None,
+            mail: None,
         },
         // Two mail accounts (task M3.4), so the agents' "Mail accounts" have something to choose
         // from. Their ids are `mail:<address>`, as the core makes them.
@@ -412,6 +416,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         },
         collections: Vec::new(),
         scopes: None,
+        mail: None,
     }
 }
 

@@ -102,6 +102,8 @@ pub(crate) async fn sync_account(mailbox: &Mailbox) -> Result<(), MailError> {
     let mut command = mailbox.command().await?;
     let list = folders::discover(command.session(), mailbox.folder_roles()).await?;
     command.release();
+    // For the account's page (task M2.8): which roles are still open, without asking again.
+    mailbox.note_folders(&list);
     // Only folders that hold messages; the others only hold folders.
     let listed: Vec<folders::RemoteFolder> = list.folders.into_iter().filter(|folder| folder.selectable).collect();
     let mut targets = store
