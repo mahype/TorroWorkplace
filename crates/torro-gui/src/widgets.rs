@@ -45,9 +45,12 @@ use std::time::Duration;
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{
-    button, canvas, center, column, container, float, mouse_area, opaque, pin, row, rule, stack, svg, tooltip,
+    button, canvas, center, column, container, float, mouse_area, opaque, pin, responsive, row, rule, stack, svg,
+    tooltip,
 };
-use iced::{Alignment, Background, Color, Element, Fill, Padding, Point, Rectangle, Size, Subscription, Theme, Vector};
+use iced::{
+    Alignment, Background, Color, Element, Fill, Length, Padding, Point, Rectangle, Size, Subscription, Theme, Vector,
+};
 use iced::{border, keyboard, mouse};
 
 use torro_core::i18n::tr;
@@ -77,6 +80,8 @@ const ROW_GAP: f32 = 10.0;
 const LINE: f32 = size::HAIRLINE;
 /// Height of a list pill ([`pill`]) and of its round ends.
 const PILL_HEIGHT: f32 = 20.0;
+/// Edge of the icon in an [`icon_pill`] (the mock-up's `.s12`).
+const PILL_ICON: f32 = space::M;
 /// Edge of an avatar in [`avatar_stack`] and how far the next one is moved right.
 const AVATAR: f32 = 22.0;
 const AVATAR_STEP: f32 = 20.0;
@@ -310,16 +315,14 @@ fn icon_only<'a, M: Clone + 'a>(
     which: Icon,
     tooltip: impl IntoFragment<'a>,
     style: ButtonStyle,
-    square: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let edge = if square { icon::SIZE } else { icon::SIZE_SM };
-    let b = if square {
-        button(center(button_icon(which, edge, style))).width(size::CONTROL_SM).padding(0)
-    } else {
-        button(container(button_icon(which, edge, style)).center_y(Fill)).padding(style::BUTTON_PADDING)
-    };
-    let b = b.height(size::CONTROL_SM).style(style).on_press_maybe(on_press);
+    let b = button(center(button_icon(which, icon::SIZE, style)))
+        .width(size::CONTROL_SM)
+        .height(size::CONTROL_SM)
+        .padding(0)
+        .style(style)
+        .on_press_maybe(on_press);
     with_tooltip(b, tooltip)
 }
 
@@ -330,7 +333,7 @@ pub fn icon_button<'a, M: Clone + 'a>(
     tooltip: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    icon_only(which, tooltip, style::button::icon, true, on_press)
+    icon_only(which, tooltip, style::button::icon, on_press)
 }
 
 /// An icon button with a frame (`style::button::boxed`), 28 × 28: "New" next to the app switcher.
@@ -339,19 +342,20 @@ pub fn boxed_button<'a, M: Clone + 'a>(
     tooltip: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    icon_only(which, tooltip, style::button::boxed, true, on_press)
+    icon_only(which, tooltip, style::button::boxed, on_press)
 }
 
 /// A text button reduced to its icon, for the narrow layout where the label does not fit (the
-/// primary "+" in a narrow header). Same height and padding as [`text_button`]; `tooltip` keeps
-/// the label.
+/// primary "+" in a narrow header): 28 × 28 with the icon at 16 in the style's text colour
+/// (`on_accent` for `primary`), as `.lhead .btn.primary` in the tasks mock-up. The larger icon
+/// keeps its thin strokes readable on the red; `tooltip` keeps the label.
 pub fn compact_button<'a, M: Clone + 'a>(
     which: Icon,
     tooltip: impl IntoFragment<'a>,
     style: ButtonStyle,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    icon_only(which, tooltip, style, false, on_press)
+    icon_only(which, tooltip, style, on_press)
 }
 
 /// A segmented control (Day · Week · Month): one segment per `(label, message)`, the segment at
@@ -935,9 +939,31 @@ pub fn chip<'a, M: Clone + 'a>(
     label: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    chip_with(mark.map(|mark| mark_view(mark, Scale::Small, Tone::Text3)), label, on_press)
+}
+
+/// A [`chip`] led by a glyph of the app's own instead of a [`Mark`], e.g. the priority bars of the
+/// task list, so a chip reads like the row it belongs to. `lead` should be at most 14 high.
+///
+/// ```ignore
+/// widgets::chip_led(list::prio_glyph(prio), prio.label(), Some(Message::Open(Editor::Priority)))
+/// ```
+pub fn chip_led<'a, M: Clone + 'a>(
+    lead: impl Into<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    chip_with(Some(lead.into()), label, on_press)
+}
+
+fn chip_with<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
-    if let Some(mark) = mark {
-        content = content.push(mark_view(mark, Scale::Small, Tone::Text3));
+    if let Some(lead) = lead {
+        content = content.push(lead);
     }
     let label = label.into_fragment();
     if !label.is_empty() {
@@ -962,6 +988,16 @@ pub fn pill<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> E
     pill_at(colour, label, 1.0)
 }
 
+/// A [`pill`] led by a 12-px icon in `text_3` instead of the dot: where a row comes from when
+/// that is not a list, e.g. the GitHub mark before a repository ("TorroWorkplace").
+///
+/// ```ignore
+/// widgets::icon_pill(Icon::Github, "TorroWorkplace")
+/// ```
+pub fn icon_pill<'a, M: 'a>(which: Icon, label: impl IntoFragment<'a>) -> Element<'a, M> {
+    pill_led(Some(toned(which, PILL_ICON, Tone::Text3)), label, 1.0)
+}
+
 /// [`pill`] for a disabled row ("Coming soon" next to a service that is not available yet): the
 /// whole pill at the disabled opacity of 40 %, like the row's text.
 pub fn pill_disabled<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> Element<'a, M> {
@@ -970,9 +1006,14 @@ pub fn pill_disabled<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<
 
 /// The pill with its colours at `alpha` of their strength.
 fn pill_at<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>, alpha: f32) -> Element<'a, M> {
+    pill_led(colour.map(|colour| color_dot(colour.scale_alpha(alpha), Scale::Small.dot())), label, alpha)
+}
+
+/// The pill with `lead` (dot or icon) before the label, its colours at `alpha` of their strength.
+fn pill_led<'a, M: 'a>(lead: Option<Element<'a, M>>, label: impl IntoFragment<'a>, alpha: f32) -> Element<'a, M> {
     let mut content = row![].spacing(space::XS).align_y(Alignment::Center);
-    if let Some(colour) = colour {
-        content = content.push(color_dot(colour.scale_alpha(alpha), Scale::Small.dot()));
+    if let Some(lead) = lead {
+        content = content.push(lead);
     }
     content = content.push(typo::text(typo::META, label).wrapping(Wrapping::None));
     container(content)
@@ -1078,13 +1119,23 @@ pub fn prop_placeholder<'a, M: 'a>(placeholder: impl IntoFragment<'a>) -> Elemen
     prop_text(placeholder, theme::text_3)
 }
 
-/// One clipped line of `BODY` in the colour `colour` picks. The colour is set explicitly because
-/// the text sits in a button, which would otherwise hand it its own (`text_2`).
+/// One line of `BODY` in the colour `colour` picks, cut with "…" to the width it gets
+/// ([`typo::ellipsize`]; Iced 0.14 cannot do that itself); a cut value shows the whole of it as a
+/// tooltip. The colour is set explicitly because the text sits in a button, which would otherwise
+/// hand it its own (`text_2`).
 fn prop_text<'a, M: 'a>(
     text: impl IntoFragment<'a>,
     colour: fn(&Theme) -> iced::widget::text::Style,
 ) -> Element<'a, M> {
-    container(typo::text(typo::BODY, text).style(colour).wrapping(Wrapping::None)).width(Fill).clip(true).into()
+    let full = text.into_fragment().into_owned();
+    responsive(move |room| {
+        let shown = typo::ellipsize(&full, typo::BODY, room.width);
+        let cut = shown != full;
+        let line = container(typo::text(typo::BODY, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        if cut { with_tooltip(line, full.clone()) } else { line.into() }
+    })
+    .height(Length::Shrink)
+    .into()
 }
 
 /// A label of a GitHub issue or pull request ("● bug"): 20 high, `line_strong` frame with radius 4,

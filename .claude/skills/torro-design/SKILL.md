@@ -126,7 +126,7 @@ aus einem Guss wirkt:
 | `HEADER` | 44 | Kopfleiste |
 | `SIDEBAR` | 232 | Seitenleiste |
 | `PROPS` | 300 | Eigenschaften-Spalte |
-| `PANEL` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, sonst darüber in voller Höhe |
+| `PANEL` | 400 | Seitenpaneel für Details (`torro_gui::panel`): Breit daneben, in Schmal darüber in voller Höhe (die Aufgaben-App zeigt ihr Detail auch in Mittel daneben, Abschnitt 6) |
 | `shell::RAIL` | 52 | Eingeklappte Seitenleiste (Leiste, nur Icons) |
 | `LIST` | 460 / 380 | Liste neben dem Detail (Breit / Mittel) |
 | `HOUR` | 48 | Stundenhöhe im Kalender, Zeitachse 52 (Schmal 44) |
@@ -190,7 +190,9 @@ aus einem Guss wirkt:
 - **Knöpfe** (`style::button`): `primary` (Rot, weiß, höchstens einer pro Fenster), `secondary`
   (`RAISED` mit `LINE_STRONG`-Rand), `ghost` (transparent, `TEXT_2`, Hover `HOVER` + `TEXT` –
   Standard in Kopfleisten), `icon` (28×28 ghost), `boxed` (Icon-Knopf mit Rand, für „Neu“ in der
-  Seitenleiste), `danger` (ghost mit `STATUS_ERROR`-Text). Ansichten wechseln: `segmented` (Grund
+  Seitenleiste), `danger` (ghost mit `STATUS_ERROR`-Text). Wird der Primärknopf in Schmal zum Icon
+  (`widgets::compact_button`), ist er 28×28 mit Icon 16 in `on_accent` – so bleibt das „+“ auf Rot
+  kräftig (5,4:1). Ansichten wechseln: `segmented` (Grund
   `BG`, aktives Segment `SELECTED` mit `LINE_STRONG`-Kante).
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius 8, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `CAPTION`-
@@ -218,8 +220,14 @@ aus einem Guss wirkt:
   `CAPTION` in `TEXT_3` mit 12 Abstand darüber. Listen mit Ring (Aufgaben) bzw. Punkt (Kalender).
 - **Aufgabenzeile:** 40 hoch, Kreis 16 (abgehakt gefüllt in Listenfarbe mit Häkchen), Priorität als
   drei Balken (dringend: oranges Quadrat mit „!“), Titel einzeilig, rechts Listen-Etikett (Pille mit
-  Punkt) und Fälligkeit `META` tabellarisch (überfällig Attention-Orange). Gruppenköpfe 32 auf
-  `RAISED` mit Icon, Name, Zahl und „+“.
+  Punkt; GitHub-Einträge `widgets::icon_pill(Icon::Github, repo)`) und Fälligkeit `META` tabellarisch
+  (überfällig Attention-Orange). Gruppenköpfe 32 auf `RAISED` mit Icon, Name, Zahl und „+“.
+- **Priorität** überall aus einer Abbildung (`torrotasks::list::Prio`): iCalendar 1 = Urgent
+  (Quadrat), 2–4 High, 5 Medium, 6–9 Low, sonst keine; gespeichert werden 1 / 3 / 5 / 9. Zeile,
+  Gruppenkopf, Chip, Eigenschaft und Menü zeigen dasselbe Wort und dasselbe Zeichen.
+- **Werte, die nicht passen,** (Eigenschaften, Chips, Titel) werden mit „…“ gekürzt
+  (`typo::ellipsize`, in `prop_value` eingebaut) und zeigen den ganzen Wert als Tooltip – nie
+  stumm abgeschnitten.
 - **Termine:** Fläche Kalenderfarbe 18 % (hell 14 %) über `PANEL`, 3-px-Balken links in voller
   Farbe, Titel 12/500 in `TEXT`, Zeit `MICRO` in `TEXT_2`, Radius 4, kein Rahmen; kurze Termine
   einzeilig „09:30 Titel“; unbestätigt gestrichelter Rahmen ohne Fläche; Aufgaben im Raster als
@@ -251,8 +259,20 @@ funktionieren.
 | 1 | **Leiste** | Höhe < 280 und Breite ≥ 600 | 8 senkrecht, 12 waagerecht | keins | Zeitstrahl von heute / Chips |
 | 2 | **Mini** | Breite < 360 oder Höhe < 280 | 12 | keins | nächster Termin + „free until 14:00“ / Zahl offener + nächste 3 |
 | 3 | **Schmal** | Breite < 600 | bündig | Kopf 44, Navigation im Menü | ein Tag mit Wochenleiste / Liste, Detail ersetzt die Liste |
-| 4 | **Mittel** | Breite < 1024 | eingesetzt 8 | Leiste 52 + Kopf 44, Navigation im Menü | Woche + schwebende Karte / Liste + Detail mit Chips |
-| 5 | **Breit** | sonst | eingesetzt 8 | Seitenleiste 232 (oder Leiste 52) + Kopf 44 + Eigenschaften 300 | Woche + Eigenschaften / Liste + Detail + Eigenschaften |
+| 4 | **Mittel** | Breite < 1024 | eingesetzt 8 | Leiste 52 + Kopf 44, Navigation im Menü | Woche + schwebende Karte / Liste 380 **neben** dem Detail, Eigenschaften als Chips unter dem Titel |
+| 5 | **Breit** | sonst | eingesetzt 8 | Seitenleiste 232 (oder Leiste 52) + Kopf 44 + Eigenschaften 300 | Woche + Eigenschaften / Liste 460 + Detail + Eigenschaften-Spalte 300 |
+
+**Aufgaben-App** (Entwurf `docs/prototypes/tasks/redesign.html`, R.1–R.4): ohne offene Aufgabe steht
+die Liste allein links (max. `CONTENT_MAX`). Mit offener Aufgabe: **Breit** ab Inhaltsbreite 1320
+drei Spalten – Liste `LIST` 460 | Detail (Text max. 640, Innenrand 32) | Eigenschaften `PROPS` 300
+(Blöcke durch `LINE` getrennt: Status, Priority, Due · „Organisation“ · „Source“), je eine `LINE`
+dazwischen; schmaler wie Mittel. **Mittel:** Liste `LIST` 380 neben dem Detail, die Eigenschaften
+als Chips unter dem Titel; bekommt das Detail daneben weniger als `PROPS` (Inhalt unter 683, also
+Fenster unter etwa 740), ersetzt es die Liste wie in Schmal („‹ Today“, ↑↓). **Schmal:** Detail
+ersetzt die Liste. Neben dem Detail verkürzen sich die Zeilen nach der Breite der Liste (erst Labels,
+dann Hinweise, Pille wird Punkt, `repo#123` wird `#123`). Das Detail hat **keinen roten Fuß** und
+keinen Speichern-Knopf (speichert selbst); Kopf: Pfad, ↑ ↓, „…“ (Copy link, Open on GitHub,
+**Delete task** – nur dort, mit Rückfrage, bei GitHub-Einträgen gar nicht), Schließen.
 
 Regeln:
 
@@ -311,15 +331,16 @@ das Skript nutzt diese Form. Eine Ansicht wechseln geht per Tastenkürzel an das
 **Zustände per Startparameter (Q.1), ohne zu klicken:** `--demo --open <zustand>` öffnet einen
 Zustand direkt (`--open` und `--now` gehen nur mit `--demo`). Kalender: `day week month agenda
 timeline radar night editor editor-new menu drawer switcher error empty loading` (`night`: Zeitstrahl
-mit der Karte „Night“); Aufgaben: `detail menu display drawer
-switcher due error empty loading`; Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
+mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
+switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
+offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
 remove delete-template rename-template` und `--section overview|accounts|workspaces|apps|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
 Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
 entfällt jedes im Code erzwungene „hell“); `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
-„jetzt“ samt Demo-Daten für wiederholbare Bilder (das Aufgaben-Detail liest die Uhr noch selbst).
+„jetzt“ samt Demo-Daten für wiederholbare Bilder (auch im Aufgaben-Detail).
 Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
 
 ```bash

@@ -188,18 +188,22 @@ fn is_overdue(todo: &Todo, today: NaiveDate) -> bool {
 }
 
 /// `Today`, `Tomorrow`, `Yesterday`, otherwise the short date (`Mon, 12 Oct`,
-/// `datetime::format_short_date`); a time of day is appended (`Today 14:00`).
+/// `datetime::format_short_date`); a time of day is appended, after a comma behind a word
+/// (`Today, 14:00`, as in the mock-up) and a space behind a date (`Mon, 12 Oct 14:00`).
 pub(crate) fn due_text(due: EventTime, today: NaiveDate) -> String {
     let day = due_date(due);
-    let name = match (day - today).num_days() {
-        0 => tr("Today").to_string(),
-        1 => tr("Tomorrow").to_string(),
-        -1 => tr("Yesterday").to_string(),
-        _ => datetime::format_short_date(day, today),
+    let (name, word) = match (day - today).num_days() {
+        0 => (tr("Today").to_string(), true),
+        1 => (tr("Tomorrow").to_string(), true),
+        -1 => (tr("Yesterday").to_string(), true),
+        _ => (datetime::format_short_date(day, today), false),
     };
     match due {
         EventTime::Date(_) => name,
-        EventTime::DateTime(at) => format!("{name} {}", datetime::format_time(datetime::to_local(at).time())),
+        EventTime::DateTime(at) => {
+            let time = datetime::format_time(datetime::to_local(at).time());
+            if word { format!("{name}, {time}") } else { format!("{name} {time}") }
+        }
     }
 }
 
@@ -232,19 +236,9 @@ pub fn row_due(due: EventTime, today: NaiveDate, under_today: bool) -> String {
 /// How far from today a row's date names the weekday ("Fri 9") instead of the month.
 const DAYS_WITH_WEEKDAY: i64 = 6;
 
-/// Linear's priority levels: how many of the three bars are lit. iCalendar 1–4 is high (3),
-/// 5 medium (2), 6–9 low (1); 0 and anything else is none (0, all bars dim).
-pub(crate) fn priority_level(priority: Option<u8>) -> usize {
-    match priority {
-        Some(1..=4) => 3,
-        Some(5) => 2,
-        Some(6..=9) => 1,
-        _ => 0,
-    }
-}
-
-/// The priority a row and a priority group show. iCalendar 1 is urgent (the orange square),
-/// 2–4 high, 5 medium, 6–9 low; anything else is none.
+/// The priority of a task in the app's five classes – the one mapping between iCalendar's nine
+/// levels and what rows, group heads, the detail and its menu show. iCalendar 1 is urgent (the
+/// orange square), 2–4 high, 5 medium, 6–9 low; 0, nothing and anything else is none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Prio {
     Urgent,
@@ -255,6 +249,9 @@ pub enum Prio {
 }
 
 impl Prio {
+    /// The classes in the order the priority menu offers them.
+    pub const ALL: [Prio; 5] = [Prio::None, Prio::Urgent, Prio::High, Prio::Medium, Prio::Low];
+
     /// The class of an iCalendar priority.
     pub fn of(priority: Option<u8>) -> Prio {
         match priority {
@@ -266,7 +263,32 @@ impl Prio {
         }
     }
 
-    fn label(self) -> &'static str {
+    /// The iCalendar priority saved for this class: urgent 1, high 3 (inside 1–4, which clients
+    /// that only know "high" read as high), medium 5, low 9; `None` saves none.
+    /// `Prio::of(prio.ical()) == prio` for every class.
+    pub fn ical(self) -> Option<u8> {
+        match self {
+            Prio::Urgent => Some(1),
+            Prio::High => Some(3),
+            Prio::Medium => Some(5),
+            Prio::Low => Some(9),
+            Prio::None => None,
+        }
+    }
+
+    /// How many of the three bars are lit: high 3, medium 2, low 1, none 0. Urgent has a glyph of
+    /// its own ([`prio_glyph`]); counted as bars it is all three.
+    pub fn level(self) -> usize {
+        match self {
+            Prio::Urgent | Prio::High => 3,
+            Prio::Medium => 2,
+            Prio::Low => 1,
+            Prio::None => 0,
+        }
+    }
+
+    /// The short name: in group heads, the detail's chips, properties and menu.
+    pub fn label(self) -> &'static str {
         match self {
             Prio::Urgent => tr("Urgent"),
             Prio::High => tr("High"),
@@ -797,12 +819,15 @@ fn labels<'a>(details: &GitHubDetails) -> Element<'a, Message> {
 }
 
 /// Where a row comes from: its list (dot in the list's colour and name) or, for a GitHub item,
-/// its repository; a dot alone when the list is narrow.
+/// its repository after the GitHub mark; a dot alone when the list is narrow.
 fn origin<'a>(data: &ListData<'a>, todo: &Todo, github: bool, pill: bool) -> Element<'a, Message> {
-    let (colour, name) = match todo.link.as_ref().and_then(Link::github_ref).filter(|_| github) {
-        Some((repo, _)) => (data.palette.text_3, repo.rsplit('/').next().unwrap_or(repo).to_string()),
-        None => (colour_of(data, &todo.collection), data.names.get(&todo.collection).cloned().unwrap_or_default()),
-    };
+    if let Some((repo, _)) = todo.link.as_ref().and_then(Link::github_ref).filter(|_| github) {
+        let name = repo.rsplit('/').next().unwrap_or(repo).to_string();
+        let colour = data.palette.text_3;
+        return if pill { widgets::icon_pill(Icon::Github, name) } else { widgets::color_dot(colour, ORIGIN_DOT) };
+    }
+    let colour = colour_of(data, &todo.collection);
+    let name = data.names.get(&todo.collection).cloned().unwrap_or_default();
     if pill { widgets::pill(Some(colour), name) } else { widgets::color_dot(colour, ORIGIN_DOT) }
 }
 
@@ -888,8 +913,9 @@ fn prio_cell<'a>(priority: Option<u8>) -> Element<'a, Message> {
     }
 }
 
-/// The glyph of a priority: urgent as an orange square with "!", the others as three bars.
-fn prio_glyph<'a>(prio: Prio) -> Element<'a, Message> {
+/// The glyph of a priority, 14 wide: urgent as an orange square with "!", the others as three
+/// bars (none: all dim).
+pub(crate) fn prio_glyph<'a, M: 'a>(prio: Prio) -> Element<'a, M> {
     match prio {
         Prio::Urgent => container(typo::text(typo::CAPTION, "!").style(|t: &Theme| text::Style {
             // The panel colour is dark on the bright orange of dark mode and white on the darker
@@ -903,10 +929,7 @@ fn prio_glyph<'a>(prio: Prio) -> Element<'a, Message> {
             ..container::Style::default()
         })
         .into(),
-        Prio::High => priority_view(3),
-        Prio::Medium => priority_view(2),
-        Prio::Low => priority_view(1),
-        Prio::None => priority_view(0),
+        other => priority_view(other.level()),
     }
 }
 
@@ -1152,7 +1175,9 @@ mod tests {
     #[test]
     fn due_text_shows_time_of_day() {
         let at = EventTime::DateTime(datetime::to_utc(day(11).and_hms_opt(14, 0, 0).expect("time")));
-        assert_eq!(due_text(at, today()), format!("{} 14:00", tr("Today")));
+        assert_eq!(due_text(at, today()), format!("{}, 14:00", tr("Today")));
+        let later = EventTime::DateTime(datetime::to_utc(day(14).and_hms_opt(9, 30, 0).expect("time")));
+        assert_eq!(due_text(later, today()), format!("{} 09:30", datetime::format_short_date(day(14), today())));
     }
 
     #[test]
@@ -1186,19 +1211,23 @@ mod tests {
     }
 
     #[test]
-    fn priority_levels_follow_icalendar() {
-        assert_eq!(priority_level(Some(1)), 3);
-        assert_eq!(priority_level(Some(4)), 3);
-        assert_eq!(priority_level(Some(5)), 2);
-        assert_eq!(priority_level(Some(6)), 1);
-        assert_eq!(priority_level(Some(9)), 1);
-        assert_eq!(priority_level(Some(0)), 0);
-        assert_eq!(priority_level(None), 0);
+    fn priority_classes_follow_icalendar() {
         let classes: Vec<Prio> =
             [Some(1), Some(2), Some(4), Some(5), Some(6), Some(9), Some(0), None].into_iter().map(Prio::of).collect();
         let expected =
             [Prio::Urgent, Prio::High, Prio::High, Prio::Medium, Prio::Low, Prio::Low, Prio::None, Prio::None];
         assert_eq!(classes, expected, "1 is urgent, the square");
+        let levels: Vec<usize> = expected.iter().map(|prio| prio.level()).collect();
+        assert_eq!(levels, [3, 3, 3, 2, 1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn every_priority_class_saves_a_value_of_its_own_class() {
+        for prio in Prio::ALL {
+            assert_eq!(Prio::of(prio.ical()), prio, "{prio:?}");
+        }
+        let saved: Vec<Option<u8>> = Prio::ALL.iter().map(|prio| prio.ical()).collect();
+        assert_eq!(saved, [None, Some(1), Some(3), Some(5), Some(9)]);
     }
 
     fn summaries(todos: &[Todo], d: &ListData<'_>) -> Vec<(Group, Vec<String>)> {

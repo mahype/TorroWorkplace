@@ -586,7 +586,7 @@ R.1 ─┬─ R.2 ─┐
   gegen `redesign-wide-task.png`, `redesign-wide-pr.png`, `redesign-medium-task.png`, `redesign-narrow-detail.png`.
 
 ### R.4 Abnahme und Feinschliff
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** R.2, R.3 · **Dateien:** nach Befund (nennen)
 - `torro-design-review` vergleicht die App mit `--demo` in allen Größenklassen, hell und dunkel, mit dem Entwurf;
   Abweichungen beheben (Achsen, Abstände, Abschneiden, Kontraste). Skill `torro-design` an den Stellen anpassen,

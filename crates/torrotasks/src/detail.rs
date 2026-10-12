@@ -60,7 +60,7 @@ use torro_gui::{datetime, style, typo};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
 use torro_pim::{Collection, EventTime, Todo};
 
-use crate::list;
+use crate::list::{self, Prio};
 
 /// The id of the date field in the due card, so opening the card can focus it.
 pub const DUE_INPUT: &str = "detail-due";
@@ -164,7 +164,7 @@ pub enum Message {
     Open(Editor),
     /// Close the open editor (click beside it).
     CloseEditor,
-    PrioritySelected(Priority),
+    PrioritySelected(Prio),
     /// A [`Collection::id`].
     ListSelected(String),
     /// The parent's uid, `None` for none.
@@ -235,55 +235,6 @@ pub enum Action {
     Next,
 }
 
-/// The priorities the menu offers. iCalendar has nine levels; the app uses these four.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Priority {
-    None,
-    Low,
-    Medium,
-    High,
-}
-
-const PRIORITIES: [Priority; 4] = [Priority::None, Priority::High, Priority::Medium, Priority::Low];
-
-impl Priority {
-    /// The iCalendar priority stored for this choice; `None` means undefined.
-    fn to_todo(self) -> Option<u8> {
-        match self {
-            Priority::None => None,
-            Priority::Low => Some(9),
-            Priority::Medium => Some(5),
-            Priority::High => Some(1),
-        }
-    }
-
-    /// The choice nearest to a stored priority: 1–4 High, 5 Medium, 6–9 Low. Undefined (0 or
-    /// missing) and values outside 1–9 are None, the same as the task list treats them.
-    fn from_todo(priority: Option<u8>) -> Priority {
-        match priority {
-            Some(1..=4) => Priority::High,
-            Some(5) => Priority::Medium,
-            Some(6..=9) => Priority::Low,
-            _ => Priority::None,
-        }
-    }
-
-    /// The short name, for the menu, the chips and the properties.
-    fn label(self) -> &'static str {
-        match self {
-            Priority::None => tr("No priority"),
-            Priority::Low => tr("Low"),
-            Priority::Medium => tr("Medium"),
-            Priority::High => tr("High"),
-        }
-    }
-
-    /// How many of the three bars are lit.
-    fn level(self) -> usize {
-        list::priority_level(self.to_todo())
-    }
-}
-
 /// The editable fields, as they will be saved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Draft {
@@ -292,7 +243,7 @@ struct Draft {
     /// [`Collection::id`] the task is saved into.
     collection: String,
     due: Option<EventTime>,
-    priority: Priority,
+    priority: Prio,
     /// UID of the parent task.
     parent: Option<String>,
     notes: String,
@@ -375,6 +326,13 @@ fn review_look(review: ReviewState) -> Look {
 }
 
 impl Detail {
+    /// The detail counting its days ("Today", overdue, "Tomorrow" in the date card) from `today`
+    /// instead of the clock: the app's day, which `--demo --now` fixes, so list and detail agree.
+    pub fn on_day(mut self, today: NaiveDate) -> Detail {
+        self.today = today;
+        self
+    }
+
     /// The detail of `todo`; `lists` are the writable task lists, `all` every loaded task.
     pub fn new(todo: &Todo, lists: &[Collection], all: &[Todo]) -> Detail {
         let draft = draft_of(todo);
@@ -777,7 +735,7 @@ impl Detail {
     fn property_blocks(&self, account: bool) -> Vec<(Option<&'static str>, Vec<Prop>)> {
         let editable = self.editable();
         let mut first = vec![Prop::Status];
-        if editable || self.draft.priority != Priority::None {
+        if editable || self.draft.priority != Prio::None {
             first.push(Prop::Priority);
         }
         if editable || self.draft.due.is_some() {
@@ -823,7 +781,7 @@ impl Detail {
         if self.github().is_none() {
             chips.push(Prop::Status);
         }
-        if editable || self.draft.priority != Priority::None {
+        if editable || self.draft.priority != Prio::None {
             chips.push(Prop::Priority);
         }
         if editable || self.draft.due.is_some() {
@@ -1041,11 +999,20 @@ impl Detail {
                 return widgets::chip(Some(mark), self.status_word(), on_press);
             }
             Prop::Priority => {
-                let label = match self.draft.priority {
-                    Priority::None => tr("Priority"),
-                    set => set.label(),
+                // The same glyph as the list's priority column, so a chip reads like the row.
+                let chip = match self.draft.priority {
+                    Prio::None => widgets::chip(
+                        Some(Mark::Icon(Icon::SignalHigh)),
+                        tr("Priority"),
+                        editable.then_some(Message::Open(Editor::Priority)),
+                    ),
+                    set => widgets::chip_led(
+                        list::prio_glyph(set),
+                        set.label(),
+                        editable.then_some(Message::Open(Editor::Priority)),
+                    ),
                 };
-                (Mark::Icon(Icon::SignalHigh), label.to_string(), Editor::Priority)
+                return self.trigger(Editor::Priority, anchor, chip);
             }
             Prop::Due => {
                 let mark = match colours {
@@ -1083,14 +1050,14 @@ impl Detail {
             }
             Prop::Priority => {
                 let line = match self.draft.priority {
-                    Priority::None => widgets::prop_line(
+                    Prio::None => widgets::prop_line(
                         tr("Priority"),
                         Some(Mark::Icon(Icon::SignalHigh)),
                         widgets::prop_placeholder(tr("Add priority")),
                         open(Editor::Priority),
                     ),
                     set => {
-                        let value = row![bars_cell(set.level()), widgets::prop_value(set.label())]
+                        let value = row![prio_cell(set), widgets::prop_value(set.label())]
                             .spacing(space::S)
                             .align_y(Alignment::Center);
                         widgets::prop_line(tr("Priority"), None, value, open(Editor::Priority))
@@ -1392,7 +1359,7 @@ impl Detail {
     }
 
     fn priority_menu(&self) -> Element<'_, Message> {
-        let items = PRIORITIES
+        let items = Prio::ALL
             .into_iter()
             .map(|choice| MenuItem {
                 mark: None,
@@ -1621,9 +1588,10 @@ fn bare_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     }
 }
 
-/// The priority bars in a 16-wide cell, so they line up with the icons of the other rows.
-fn bars_cell<'a>(level: usize) -> Element<'a, Message> {
-    container(list::priority_view(level)).center_x(icon::SIZE).into()
+/// The priority glyph of the list (bars, or the urgent square) in a 16-wide cell, so it lines up
+/// with the icons of the other rows.
+fn prio_cell<'a>(prio: Prio) -> Element<'a, Message> {
+    container(list::prio_glyph(prio)).center_x(icon::SIZE).into()
 }
 
 fn error_text<'a>(problem: &'a str) -> Element<'a, Message> {
@@ -1642,7 +1610,7 @@ fn draft_of(todo: &Todo) -> Draft {
         completed: todo.completed,
         collection: todo.collection.clone(),
         due: todo.due,
-        priority: Priority::from_todo(todo.priority),
+        priority: Prio::of(todo.priority),
         parent: todo.parent.clone(),
         notes: todo.description.clone().unwrap_or_default(),
     }
@@ -1653,11 +1621,8 @@ fn draft_of(todo: &Todo) -> Draft {
 /// maps to the unchanged choice is kept as it was.
 fn build_todo(original: &Todo, draft: &Draft) -> Todo {
     let notes = draft.notes.trim_end();
-    let priority = if Priority::from_todo(original.priority) == draft.priority {
-        original.priority
-    } else {
-        draft.priority.to_todo()
-    };
+    let priority =
+        if Prio::of(original.priority) == draft.priority { original.priority } else { draft.priority.ical() };
     Todo {
         uid: original.uid.clone(),
         // On the server a move between lists is a delete plus a create. The core does that
@@ -1875,33 +1840,34 @@ mod tests {
     }
 
     #[test]
-    fn priority_maps_stored_values_to_choices() {
-        assert_eq!(Priority::from_todo(None), Priority::None);
-        assert_eq!(Priority::from_todo(Some(0)), Priority::None);
-        assert_eq!(Priority::from_todo(Some(1)), Priority::High);
-        assert_eq!(Priority::from_todo(Some(4)), Priority::High);
-        assert_eq!(Priority::from_todo(Some(5)), Priority::Medium);
-        assert_eq!(Priority::from_todo(Some(6)), Priority::Low);
-        assert_eq!(Priority::from_todo(Some(9)), Priority::Low);
-        assert_eq!(Priority::from_todo(Some(10)), Priority::None);
+    fn the_detail_names_a_priority_as_the_list_shows_it() {
+        // The list shows iCalendar 1 as urgent (the square); the detail must say "Urgent" too.
+        let urgent = detail(&Todo { priority: Some(1), ..todo("t1", "a") }, &[]);
+        assert_eq!(urgent.draft.priority, list::Prio::Urgent);
+        for (stored, shown) in
+            [(Some(2), Prio::High), (Some(4), Prio::High), (Some(5), Prio::Medium), (Some(7), Prio::Low)]
+        {
+            assert_eq!(detail(&Todo { priority: stored, ..todo("t1", "a") }, &[]).draft.priority, shown, "{stored:?}");
+        }
+        assert_eq!(detail(&todo("t1", "a"), &[]).draft.priority, Prio::None);
     }
 
     #[test]
-    fn priority_maps_choices_to_stored_values() {
-        assert_eq!(Priority::None.to_todo(), None);
-        assert_eq!(Priority::Low.to_todo(), Some(9));
-        assert_eq!(Priority::Medium.to_todo(), Some(5));
-        assert_eq!(Priority::High.to_todo(), Some(1));
-        for choice in PRIORITIES {
-            assert_eq!(Priority::from_todo(choice.to_todo()), choice);
+    fn the_priority_menu_offers_urgent_and_saves_each_class() {
+        assert_eq!(Prio::ALL, [Prio::None, Prio::Urgent, Prio::High, Prio::Medium, Prio::Low]);
+        for (choice, saved) in [(Prio::Urgent, Some(1)), (Prio::High, Some(3)), (Prio::Medium, Some(5))] {
+            let mut detail = detail(&Todo { priority: Some(9), ..todo("t1", "a") }, &[]);
+            assert_eq!(saves(&mut detail, Message::PrioritySelected(choice)).priority, saved, "{choice:?}");
         }
+        let mut detail = detail(&Todo { priority: Some(1), ..todo("t1", "a") }, &[]);
+        assert_eq!(saves(&mut detail, Message::PrioritySelected(Prio::None)).priority, None);
     }
 
     #[test]
     fn chosen_priority_is_saved_at_once() {
         let mut detail = detail(&todo("t1", "a"), &[]);
         detail.update(Message::Open(Editor::Priority));
-        assert_eq!(saves(&mut detail, Message::PrioritySelected(Priority::Low)).priority, Some(9));
+        assert_eq!(saves(&mut detail, Message::PrioritySelected(Prio::Low)).priority, Some(9));
         assert_eq!(detail.open, None, "picking closes the menu");
     }
 
@@ -2009,12 +1975,12 @@ mod tests {
         assert!(first.completed);
         // Typed while the first save is under way: waits.
         type_title(&mut detail, "b");
-        assert_eq!(detail.update(Message::PrioritySelected(Priority::High)), Action::None);
+        assert_eq!(detail.update(Message::PrioritySelected(Prio::High)), Action::None);
         match store(&mut detail, first, "v2") {
             Action::Save(next) => {
                 assert_eq!(next.etag.as_deref(), Some("v2"));
                 assert_eq!(next.summary, "b");
-                assert_eq!(next.priority, Some(1));
+                assert_eq!(next.priority, Some(3), "High saves 3");
                 assert!(next.completed);
                 assert_eq!(store(&mut detail, next, "v3"), Action::None, "nothing left to save");
             }
@@ -2051,7 +2017,7 @@ mod tests {
         let mut detail = detail(&todo("t1", "a"), &[]);
         saves(&mut detail, Message::ToggleDone);
         detail.save_failed();
-        assert!(saves(&mut detail, Message::PrioritySelected(Priority::High)).completed);
+        assert!(saves(&mut detail, Message::PrioritySelected(Prio::High)).completed);
     }
 
     #[test]
@@ -2256,7 +2222,7 @@ mod tests {
             ]
         );
         assert_eq!(detail.status_word(), tr("Open"));
-        assert_eq!((detail.draft.priority, detail.due_label(), detail.parent_title()), (Priority::None, None, None));
+        assert_eq!((detail.draft.priority, detail.due_label(), detail.parent_title()), (Prio::None, None, None));
         assert!(rows(&detail, false).iter().all(|(title, _)| *title != Some(tr("Source"))), "no empty Source block");
     }
 

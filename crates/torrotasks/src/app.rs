@@ -113,6 +113,11 @@ pub enum Open {
     Switcher,
     /// The detail of the first task with its due date card open.
     Due,
+    /// The detail of the first open pull request in the list (a GitHub item with checks and
+    /// review), so its detail can be photographed as well.
+    PullRequest,
+    /// The detail of the first task with its "…" menu open (Copy link, Delete task).
+    More,
     /// The error state with its "Retry".
     Error,
     /// No tasks at all.
@@ -122,13 +127,15 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 9] = [
+    const ALL: [(&'static str, Open); 11] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
         ("due", Open::Due),
+        ("pr", Open::PullRequest),
+        ("more", Open::More),
         ("error", Open::Error),
         ("empty", Open::Empty),
         ("loading", Open::Loading),
@@ -141,8 +148,8 @@ impl Open {
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
 /// - `--now <YYYY-MM-DDTHH:MM>`: a fixed "now" (only its day counts here) and demo data around
-///   it, for pictures that can be made again; needs `--demo`. The detail panel still reads the
-///   clock itself (`detail.rs`).
+///   it, for pictures that can be made again; needs `--demo`. The detail counts from that day as
+///   well ([`Detail::on_day`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub open: Option<Open>,
@@ -252,6 +259,12 @@ const QUICK_ADD_END: f32 = space::L + space::XL + space::S;
 /// Wide windows show the properties column beside the detail from this content width on (the
 /// panel next to the sidebar or rail): list 460 + detail + properties 300 (mock-up).
 pub const THREE_COLUMNS_FROM: f32 = 1320.0;
+/// List ([`size::LIST_MEDIUM`]) and detail side by side from this content width on: the detail
+/// then gets at least the width of the properties column ([`size::PROPS`]), the narrowest column
+/// the design gives a task's facts. Below it (medium windows under about 740) the detail beside
+/// the list would be a sliver of wrapped words – there it replaces the list as in narrow windows.
+/// The content's two border lines and the line between the columns count as well.
+pub const LIST_DETAIL_FROM: f32 = size::LIST_MEDIUM + size::PROPS + 3.0 * LINE;
 /// The list head keeps the label of "Display" from this list width on; narrower it is an icon
 /// with a tooltip (mock-up: `@container list (max-width:439px)`).
 const HEAD_LABELS_FROM: f32 = 440.0;
@@ -276,13 +289,15 @@ pub enum Columns {
 
 /// The columns for a window of `class` whose content (the panel beside sidebar or rail; the whole
 /// window in narrow ones) is `content` wide, with a task open in the detail or not. Mini and strip
-/// show a glance and no columns; they count as narrow here.
+/// show a glance and no columns; they count as narrow here. A medium window too small for list
+/// and detail side by side ([`LIST_DETAIL_FROM`]) shows the detail instead of the list, as a
+/// narrow one does.
 pub fn columns(class: SizeClass, content: f32, detail_open: bool) -> Columns {
     match (class, detail_open) {
         (_, false) => Columns::List,
         (SizeClass::Wide, true) if content >= THREE_COLUMNS_FROM => Columns::ListDetailProps,
-        (SizeClass::Wide | SizeClass::Medium, true) => Columns::ListDetail,
-        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, true) => Columns::Detail,
+        (SizeClass::Wide | SizeClass::Medium, true) if content >= LIST_DETAIL_FROM => Columns::ListDetail,
+        (_, true) => Columns::Detail,
     }
 }
 
@@ -325,7 +340,7 @@ pub fn quick_add_fields(
     filter: &Filter,
     today: NaiveDate,
 ) -> (Option<EventTime>, Option<u8>, Option<String>) {
-    use list::{Group, Prio};
+    use list::Group;
     let day = |date: Option<NaiveDate>| date.map(EventTime::Date);
     let by_filter = day((*filter == Filter::Today).then_some(today));
     match group {
@@ -334,16 +349,7 @@ pub fn quick_add_fields(
         Some(Group::Upcoming) => (day(today.succ_opt()), None, None),
         Some(Group::NoDate) => (None, None, None),
         Some(Group::List(id)) => (by_filter, None, Some(id.clone())),
-        Some(Group::Priority(prio)) => {
-            let priority = match prio {
-                Prio::Urgent => Some(1),
-                Prio::High => Some(3),
-                Prio::Medium => Some(5),
-                Prio::Low => Some(9),
-                Prio::None => None,
-            };
-            (by_filter, priority, None)
-        }
+        Some(Group::Priority(prio)) => (by_filter, prio.ical(), None),
         Some(Group::Completed | Group::All) | None => (by_filter, None, None),
     }
 }
@@ -1419,7 +1425,7 @@ impl App {
         let flush = self.close_detail();
         self.selected = Some(index);
         self.cursor = Some(todo.uid.clone());
-        self.detail = Some(Detail::new(&todo, &self.writable_lists(), &self.todos));
+        self.detail = Some(Detail::new(&todo, &self.writable_lists(), &self.todos).on_day(self.today));
         flush
     }
 
@@ -1528,14 +1534,24 @@ impl App {
         if std::mem::replace(&mut self.opened, true) {
             return Task::none();
         }
-        let Some(open @ (Open::Detail | Open::Due)) = self.launch.open else { return Task::none() };
-        let Some(first) = list::order(&self.list_data()).first().copied() else { return Task::none() };
+        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More)) = self.launch.open else {
+            return Task::none();
+        };
+        let order = list::order(&self.list_data());
+        let first = if open == Open::PullRequest {
+            order.into_iter().find(|&index| is_open_pull_request(&self.todos[index]))
+        } else {
+            order.first().copied()
+        };
+        let Some(first) = first else { return Task::none() };
         let select = self.select(first);
-        if open == Open::Due {
-            let card = self.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
-            return Task::batch([select, card]);
-        }
-        select
+        let editor = match open {
+            Open::Due => detail::Editor::Due,
+            Open::More => detail::Editor::More,
+            _ => return select,
+        };
+        let card = self.update(Message::Detail(detail::Message::Open(editor)));
+        Task::batch([select, card])
     }
 
     fn load(&self) -> Task<Message> {
@@ -1583,6 +1599,13 @@ impl NavEntry {
 }
 
 /// The icon of a filter; lists have none (they show their colour as a ring).
+/// An open GitHub pull request (what `--open pr` looks for).
+fn is_open_pull_request(todo: &Todo) -> bool {
+    todo.link.as_ref().and_then(|link| link.github.as_ref()).is_some_and(|github| {
+        github.kind == torro_pim::model::GitHubKind::PullRequest && github.state == torro_pim::model::GitHubState::Open
+    })
+}
+
 fn filter_icon(filter: &Filter) -> Option<Icon> {
     match filter {
         Filter::Today => Some(Icon::Sun),
@@ -2149,6 +2172,14 @@ mod tests {
         assert_eq!(columns(SizeClass::Wide, 1320.0, true), Columns::ListDetailProps);
         assert_eq!(columns(SizeClass::Wide, 1319.0, true), Columns::ListDetail);
         assert_eq!(columns(SizeClass::Medium, 1320.0, true), Columns::ListDetail, "medium never has three");
+        // Medium windows of 600-740: the detail beside the list would be a sliver, so it replaces it.
+        assert_eq!(LIST_DETAIL_FROM, 683.0);
+        assert_eq!(columns(SizeClass::Medium, LIST_DETAIL_FROM, true), Columns::ListDetail);
+        assert_eq!(columns(SizeClass::Medium, LIST_DETAIL_FROM - 1.0, true), Columns::Detail);
+        let medium_700 = content_width(SizeClass::Medium, SidebarMode::Rail, 700.0);
+        assert_eq!(columns(SizeClass::Medium, medium_700, true), Columns::Detail, "700 wide");
+        let medium_800 = content_width(SizeClass::Medium, SidebarMode::Rail, 800.0);
+        assert_eq!(columns(SizeClass::Medium, medium_800, true), Columns::ListDetail, "800 wide");
         assert_eq!(columns(SizeClass::Narrow, 480.0, true), Columns::Detail);
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
             assert_eq!(columns(class, 1400.0, false), Columns::List, "{class:?}");
@@ -2368,8 +2399,14 @@ mod tests {
         assert_eq!(open.original.uid, detail.todos[first].uid);
         assert!(open.layer(&Anchor::new()).is_none(), "no property editor");
 
+        let pr = launched(&["--demo", "--open", "pr"]);
+        let open = &pr.detail.as_ref().expect("the detail is open").original;
+        assert!(is_open_pull_request(open), "{} is an open pull request", open.summary);
+
         let due = launched(&["--demo", "--open", "due"]);
         assert!(due.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the due card");
+        let more = launched(&["--demo", "--open", "more"]);
+        assert!(more.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the … menu");
 
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "detail"]);
