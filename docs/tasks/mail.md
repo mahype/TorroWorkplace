@@ -20,7 +20,7 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
 ```
 
 ### M7.1 Kern: CalDAV-Konto mit Dienstsuche
-- [ ] erledigt
+- [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9)
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Braucht:** M1.1 · **Dateien:**
   `crates/torro-core/src/account.rs`, `crates/torro-pim-caldav/src/{lib,client}.rs` und neu
   `discover.rs`, `crates/torroworkplace/src/{account,pim,core,mcp,clients}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,

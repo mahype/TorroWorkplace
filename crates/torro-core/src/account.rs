@@ -2,8 +2,9 @@
 //!
 //! An account is set up once and serves every app. Where and as whom lives in
 //! `accounts.json` in the core's config directory; the secret (for Nextcloud the app
-//! password from Login Flow v2, for GitHub the token) lives in the system keychain: Secret
-//! Service on Linux, Keychain on macOS, Credential Manager on Windows.
+//! password from Login Flow v2, for GitHub the token, for a CalDAV account of a mail provider its
+//! password or app password) lives in the system keychain: Secret Service on Linux, Keychain on
+//! macOS, Credential Manager on Windows.
 //!
 //! A secret on its way there travels as a [`Secret`], which never shows its value in `Debug`.
 
@@ -44,6 +45,23 @@ pub enum AccountKind {
     /// GitHub: issues and pull requests (task G.1). Written `github`.
     #[serde(rename = "github")]
     GitHub,
+    /// Any other CalDAV server, usually the calendars and tasks of a mail provider (mailbox.org,
+    /// Posteo, Fastmail, iCloud …; task M7.1), signed in to with a password or app password.
+    /// Written `caldav`.
+    #[serde(rename = "caldav")]
+    CalDav,
+}
+
+impl AccountKind {
+    /// How the kind is written in `accounts.json` and in the API (`AccountInfo::kind`):
+    /// `nextcloud`, `github`, `caldav`.
+    pub fn name(self) -> &'static str {
+        match self {
+            AccountKind::Nextcloud => "nextcloud",
+            AccountKind::GitHub => "github",
+            AccountKind::CalDav => "caldav",
+        }
+    }
 }
 
 /// Where GitHub accounts live: the `server` of every [`Account::github`].
@@ -54,8 +72,8 @@ pub const GITHUB_SERVER: &str = "https://github.com";
 /// `Debug` shows `Secret(…)`, never the value, so a secret cannot slip into a log, an error
 /// message or an answer by accident. It serializes as the plain string (a request has to carry
 /// it), and its JSON Schema is a `string` marked `writeOnly`. Comparing looks at every byte,
-/// whatever differs first. Meant for every secret a request carries (GitHub tokens since G.1;
-/// the CalDAV password of task M7 can take it over).
+/// whatever differs first. Meant for every secret a request carries: GitHub tokens since G.1, the
+/// CalDAV password since M7.1, also inside the CalDAV client's connection data.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
@@ -120,6 +138,11 @@ pub struct Account {
     pub server: String,
     /// The name the server knows the user by (Nextcloud: `loginName`).
     pub login_name: String,
+    /// What to call the account besides its login: for a CalDAV account the provider or the
+    /// domain it was found at (`mailbox.org`, `iCloud`). `None` for the other kinds, and in
+    /// lists written before task M7.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 impl Account {
@@ -130,6 +153,25 @@ impl Account {
             kind: AccountKind::Nextcloud,
             server: server.trim_end_matches('/').to_string(),
             login_name: login_name.to_string(),
+            display_name: None,
+        }
+    }
+
+    /// The CalDAV account of `login_name` at the DAV address `server` (task M7.1): id
+    /// `caldav:<login>@<host>`, where `<host>` is the host of `server`, with its port when that is
+    /// not the scheme's own (`caldav:anna@mailbox.org@dav.mailbox.org`). `server` is kept as
+    /// given: it is the address the CalDAV client starts at. `display_name` names the provider.
+    ///
+    /// The caller checks `login_name`: not empty and without `/`, because collection ids are
+    /// split at the first `/` after the account id. The id starts with `caldav:`, so it never
+    /// names a client key's keychain entry ([`RESERVED_ID_PREFIX`]).
+    pub fn caldav(server: &str, login_name: &str, display_name: &str) -> Account {
+        Account {
+            id: format!("caldav:{login_name}@{}", authority(server)),
+            kind: AccountKind::CalDav,
+            server: server.to_string(),
+            login_name: login_name.to_string(),
+            display_name: Some(display_name.to_string()),
         }
     }
 
@@ -141,6 +183,7 @@ impl Account {
             kind: AccountKind::GitHub,
             server: GITHUB_SERVER.to_string(),
             login_name: login.to_string(),
+            display_name: None,
         }
     }
 
@@ -171,6 +214,16 @@ impl Account {
         }
         keyring::Entry::new(KEYCHAIN_SERVICE, &self.id).map_err(|err| AccountError::Keychain(err.to_string()))
     }
+}
+
+/// `https://dav.example.org:8443/dav/` → `dav.example.org:8443`: host and port of a URL, without
+/// scheme, user, path or the scheme's own port, lowercased.
+fn authority(server: &str) -> String {
+    let rest = server.split_once("://").map_or(server, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let own_port = if server.starts_with("http://") { ":80" } else { ":443" };
+    authority.strip_suffix(own_port).unwrap_or(authority).to_ascii_lowercase()
 }
 
 /// Why reading or writing accounts failed.
@@ -264,6 +317,32 @@ mod tests {
         let account = Account::nextcloud("https://cloud.example.org/", "anna");
         assert_eq!(account.id, "nextcloud:anna@cloud.example.org");
         assert_eq!(account.server, "https://cloud.example.org");
+    }
+
+    #[test]
+    fn caldav_ids_name_login_and_host_and_keep_the_server() {
+        let account = Account::caldav("https://dav.mailbox.org/", "anna@mailbox.org", "mailbox.org");
+        assert_eq!(account.id, "caldav:anna@mailbox.org@dav.mailbox.org");
+        assert_eq!(account.server, "https://dav.mailbox.org/");
+        assert_eq!((account.kind, account.display_name.as_deref()), (AccountKind::CalDav, Some("mailbox.org")));
+        assert_eq!(Account::caldav("https://Posteo.de:8443/", "anna", "Posteo").id, "caldav:anna@posteo.de:8443");
+        assert_eq!(Account::caldav("https://dav.example.org:443/x/", "anna", "x").id, "caldav:anna@dav.example.org");
+        assert_eq!(Account::caldav("http://127.0.0.1:5232/", "anna", "x").id, "caldav:anna@127.0.0.1:5232");
+        assert!(!is_reserved_id(&Account::caldav("https://client-x.example.org/", "client-1", "x").id));
+
+        let json = serde_json::to_value(&account).expect("json");
+        assert_eq!((json["kind"].as_str(), json["display_name"].as_str()), (Some("caldav"), Some("mailbox.org")));
+        assert_eq!(serde_json::from_value::<Account>(json).expect("read back"), account);
+        assert_eq!(AccountKind::CalDav.name(), "caldav");
+        assert_eq!(AccountKind::Nextcloud.name(), "nextcloud");
+    }
+
+    #[test]
+    fn lists_from_before_display_names_read_as_before() {
+        let json = r#"[{"id":"nextcloud:anna@cloud","kind":"nextcloud","server":"https://cloud","login_name":"anna"}]"#;
+        let accounts: Vec<Account> = serde_json::from_str(json).expect("an older list");
+        assert_eq!(accounts[0].display_name, None);
+        assert!(!serde_json::to_string(&accounts).expect("json").contains("display_name"));
     }
 
     #[test]

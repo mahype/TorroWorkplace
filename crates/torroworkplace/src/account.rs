@@ -15,7 +15,12 @@
 //!
 //! Task G.1: GitHub accounts live in [`github`], apart from the Nextcloud ones: they have no
 //! calendars or task lists, so the calendar service never loads them ([`stored`] keeps only
-//! Nextcloud accounts) and its sync is not touched.
+//! calendar accounts) and its sync is not touched.
+//!
+//! Task M7.1: CalDAV accounts of mail providers (`AccountKind::CalDav`) are calendar accounts
+//! like the Nextcloud ones, signed in to with a password instead of Login Flow v2 ([`store`]).
+//! Their server is the DAV address itself ([`caldav`]); revoking an app password and the remote
+//! wipe exist only for Nextcloud. Passwords travel as [`Secret`], so no `Debug` shows them.
 
 use std::future::Future;
 use std::path::Path;
@@ -23,10 +28,12 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 use torro_core::Account;
-use torro_core::account::{self, AccountKind};
+use torro_core::account::{self, AccountKind, Secret};
 use torro_pim::ProviderError;
 use torro_pim_caldav::nextcloud::{self, Credentials, LoginFlow};
 use torro_pim_caldav::{CalDavAccount, CalDavClient};
+
+use self::github::TokenStore;
 
 /// How often the sign-in is polled while the user is in the browser.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -35,14 +42,15 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// the same time.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
-/// A signed-in account with its secret.
+/// A signed-in calendar account with its secret: the app password of a Nextcloud, the password
+/// (or app password) of a CalDAV account. `Debug` never shows it.
 #[derive(Debug, Clone)]
 pub struct Connected {
     pub account: Account,
-    pub app_password: String,
+    pub app_password: Secret,
 }
 
-/// One stored Nextcloud account as the core loads it ([`stored`]).
+/// One stored calendar account (Nextcloud or CalDAV) as the core loads it ([`stored`]).
 #[derive(Debug, Clone)]
 pub enum Stored {
     /// With its app password from the keychain: ready to sync.
@@ -62,25 +70,30 @@ impl Stored {
     }
 }
 
-/// Every stored Nextcloud account, in the order of `accounts.json` (task M1.1), each with its
-/// secret from the keychain. A secret that is missing or cannot be read costs only that account
-/// ([`Stored::Unusable`]), never the others (task M1.4). An unreadable `accounts.json` is an error.
+/// Every stored calendar account (Nextcloud and CalDAV), in the order of `accounts.json` (task
+/// M1.1), each with its secret from the keychain. A secret that is missing or cannot be read
+/// costs only that account ([`Stored::Unusable`]), never the others (task M1.4). An unreadable
+/// `accounts.json` is an error.
 pub fn stored() -> Result<Vec<Stored>, String> {
     let accounts = account::load().map_err(|err| err.to_string())?;
     Ok(with_secrets(accounts, |account| account.secret().map_err(|err| err.to_string())))
 }
 
-/// The Nextcloud accounts of `accounts` with what `secret` finds for each; the keychain is a
-/// parameter so the sorting can be tested without one.
+/// The calendar accounts of `accounts` (Nextcloud, CalDAV) with what `secret` finds for each;
+/// the keychain is a parameter so the sorting can be tested without one.
 fn with_secrets(accounts: Vec<Account>, secret: impl Fn(&Account) -> Result<Option<String>, String>) -> Vec<Stored> {
     accounts
         .into_iter()
-        .filter(|account| account.kind == AccountKind::Nextcloud)
+        .filter(|account| matches!(account.kind, AccountKind::Nextcloud | AccountKind::CalDav))
         .map(|account| match secret(&account) {
-            Ok(Some(app_password)) => Stored::Ready(Connected { account, app_password }),
+            Ok(Some(app_password)) => Stored::Ready(Connected { account, app_password: Secret::new(app_password) }),
             Ok(None) => {
                 eprintln!("torroworkplace: {} has no secret in the keychain; sign in again", account.id);
-                Stored::Unusable { account, problem: "Sign in again: no app password is stored on this device".into() }
+                let problem = match account.kind {
+                    AccountKind::CalDav => "Sign in again: no password is stored on this device",
+                    _ => "Sign in again: no app password is stored on this device",
+                };
+                Stored::Unusable { account, problem: problem.into() }
             }
             Err(err) => {
                 eprintln!("torroworkplace: cannot read the secret of {}: {err}", account.id);
@@ -125,20 +138,21 @@ pub async fn start(http: &reqwest::Client, server_input: &str) -> Result<LoginFl
 pub async fn finish(http: &reqwest::Client, flow: &LoginFlow) -> Result<Connected, String> {
     let credentials = poll_until_granted(|| flow.poll(http), POLL_INTERVAL, SIGN_IN_TIMEOUT).await?;
     let account = signed_in_account(&flow.server, &credentials)?;
-    let connected = Connected { account, app_password: credentials.app_password };
+    let connected = Connected { account, app_password: Secret::new(credentials.app_password) };
     let storing = connected.clone();
     let replaced = keychain(move || {
         let account = &storing.account;
         // Only to revoke it afterwards: a secret that cannot be read stays valid on the server.
         let replaced = account.secret().ok().flatten();
-        account.set_secret(&storing.app_password).map_err(|err| err.to_string())?;
+        account.set_secret(storing.app_password.expose()).map_err(|err| err.to_string())?;
         let accounts = with_account(account::load().map_err(|err| err.to_string())?, account.clone());
         account::save(&accounts).map_err(|err| err.to_string())?;
         Ok(replaced)
     })
     .await?;
-    if let Some(old) = replaced.filter(|old| *old != connected.app_password) {
-        let (http, old) = (http.clone(), Connected { account: connected.account.clone(), app_password: old });
+    if let Some(old) = replaced.filter(|old| old != connected.app_password.expose()) {
+        let old = Connected { account: connected.account.clone(), app_password: Secret::new(old) };
+        let http = http.clone();
         tokio::spawn(async move {
             if let Err(err) = revoke(&http, &old).await {
                 eprintln!("torroworkplace: the replaced app password was not revoked on the server: {err}");
@@ -163,6 +177,26 @@ fn signed_in_account(server: &str, credentials: &Credentials) -> Result<Account,
         return Err(format!("sign-in refused: the server sent an unusable login name {login_name:?}"));
     }
     Ok(Account::nextcloud(server, login_name))
+}
+
+/// Stores a CalDAV account signed in to with a password (task M7.1): the password in `secrets`
+/// under the account id first, then the account in the list at `accounts_file`, added at the end
+/// or in place of the one with the same id ([`with_account`]); the other accounts stay. The secret
+/// goes first, as in [`finish`]: a password nobody lists is better than a listed account without
+/// one. Blocking (keychain and file): run it through [`keychain`].
+///
+/// `accounts_file` is `None` without a home directory; then nothing is stored and the answer
+/// says so. Errors never hold the password.
+pub fn store(
+    accounts_file: Option<&Path>,
+    secrets: &dyn TokenStore,
+    account: &Account,
+    password: &Secret,
+) -> Result<(), String> {
+    let file = accounts_file.ok_or("no home directory, so the account cannot be stored")?;
+    secrets.set(account, password)?;
+    let accounts = with_account(account::load_from(file).map_err(|err| err.to_string())?, account.clone());
+    account::save_to(file, &accounts).map_err(|err| err.to_string())
 }
 
 /// `accounts` with `account` added at the end, or in place of the one with the same id (signing
@@ -217,7 +251,7 @@ pub async fn revoke(http: &reqwest::Client, connected: &Connected) -> Result<(),
 fn revoke_request(http: &reqwest::Client, connected: &Connected) -> Result<reqwest::Request, String> {
     let url = format!("{}/ocs/v2.php/core/apppassword", connected.account.server.trim_end_matches('/'));
     http.delete(url)
-        .basic_auth(&connected.account.login_name, Some(&connected.app_password))
+        .basic_auth(&connected.account.login_name, Some(connected.app_password.expose()))
         // Without this header OCS refuses the call as a possible CSRF attempt.
         .header("OCS-APIRequest", "true")
         .header(reqwest::header::ACCEPT, "application/json")
@@ -272,12 +306,15 @@ where
     Ok(true)
 }
 
-/// A CalDAV client for the account (`<server>/remote.php/dav/`).
+/// A CalDAV client for the account: for a Nextcloud `<server>/remote.php/dav/`, for a CalDAV
+/// account its server, which is the DAV address it was signed in at (task M7.1).
 pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavClient, String> {
-    let dav = CalDavAccount {
-        url: nextcloud::dav_url(&connected.account.server),
-        username: connected.account.login_name.clone(),
+    let account = &connected.account;
+    let url = match account.kind {
+        AccountKind::CalDav => account.server.clone(),
+        AccountKind::Nextcloud | AccountKind::GitHub => nextcloud::dav_url(&account.server),
     };
+    let dav = CalDavAccount { url, username: account.login_name.clone() };
     CalDavClient::new(http.clone(), &dav, connected.app_password.clone()).map_err(|err| err.to_string())
 }
 
@@ -1313,7 +1350,53 @@ mod tests {
     }
 
     fn connected() -> Connected {
-        Connected { account: Account::nextcloud("https://cloud.example.org/", "anna"), app_password: "secret".into() }
+        Connected {
+            account: Account::nextcloud("https://cloud.example.org/", "anna"),
+            app_password: Secret::new("secret"),
+        }
+    }
+
+    #[test]
+    fn caldav_accounts_are_calendar_accounts_and_their_server_is_the_dav_address() {
+        let mailbox = Account::caldav("https://dav.mailbox.org/", "anna@mailbox.org", "mailbox.org");
+        let accounts =
+            vec![Account::github("anna"), mailbox.clone(), Account::nextcloud("https://cloud.example.org", "anna")];
+        let loaded = with_secrets(accounts, |account| match account.kind {
+            AccountKind::CalDav => Ok(None),
+            _ => Ok(Some("secret".into())),
+        });
+        let kinds: Vec<AccountKind> = loaded.iter().map(|stored| stored.account().kind).collect();
+        assert_eq!(kinds, [AccountKind::CalDav, AccountKind::Nextcloud], "GitHub stays out, the order stays");
+        assert!(matches!(&loaded[0], Stored::Unusable { problem, .. } if problem.contains("no password")));
+
+        let http = reqwest::Client::new();
+        let client =
+            caldav(&http, &Connected { account: mailbox, app_password: Secret::new("hunter2") }).expect("client");
+        let shown = format!("{client:?}");
+        assert!(shown.contains("https://dav.mailbox.org/") && !shown.contains("hunter2"), "{shown}");
+        let nextcloud = caldav(&http, &connected()).expect("client");
+        assert!(format!("{nextcloud:?}").contains("https://cloud.example.org/remote.php/dav/"));
+        assert!(!format!("{:?}", connected()).contains("secret"), "{:?}", connected());
+    }
+
+    #[test]
+    fn a_caldav_account_is_stored_with_its_password_next_to_the_others() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join(account::ACCOUNTS_FILE);
+        let anna = Account::nextcloud("https://cloud.example.org", "anna");
+        account::save_to(&file, std::slice::from_ref(&anna)).expect("saved");
+        let secrets = github::tests::MemoryTokens::default();
+        let mailbox = Account::caldav("https://dav.mailbox.org/", "anna@mailbox.org", "mailbox.org");
+
+        store(Some(&file), &secrets, &mailbox, &Secret::new("first")).expect("stored");
+        store(Some(&file), &secrets, &mailbox, &Secret::new("second")).expect("stored again");
+        assert_eq!(account::load_from(&file).expect("read"), [anna, mailbox.clone()], "added once, the others stay");
+        assert_eq!(secrets.get_plain(&mailbox.id).as_deref(), Some("second"), "only the password changed");
+        let on_disk = std::fs::read_to_string(&file).expect("read");
+        assert!(!on_disk.contains("second") && !on_disk.contains("first"), "{on_disk}");
+
+        let refused = store(None, &secrets, &mailbox, &Secret::new("third")).expect_err("no file");
+        assert!(!refused.contains("third"), "{refused}");
     }
 
     #[test]
@@ -1382,7 +1465,7 @@ mod tests {
             ["nextcloud:anna@cloud.example.org", "nextcloud:bob@other.example.org", "nextcloud:carl@third.example.org"],
             "all of them, in their order"
         );
-        assert!(matches!(&loaded[0], Stored::Ready(connected) if connected.app_password == "secret"));
+        assert!(matches!(&loaded[0], Stored::Ready(connected) if connected.app_password.expose() == "secret"));
         for stored in &loaded[1..] {
             assert!(
                 matches!(stored, Stored::Unusable { problem, .. } if problem.starts_with("Sign in again")),

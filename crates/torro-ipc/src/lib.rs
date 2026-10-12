@@ -242,6 +242,62 @@ pub enum Request {
         /// (`github_pat_…`). It goes into the system keychain only and is never part of an answer.
         token: Secret,
     },
+    /// Searches the calendar and task service (CalDAV) of the mail provider of `address`, without
+    /// signing in (task M7.1, `torro_pim_caldav::discover`). Only the domain is looked at and
+    /// asked about, never the part before `@`: DNS SRV `_caldavs._tcp.<domain>` with its TXT
+    /// `path`, then `https://<domain>/.well-known/caldav` and `https://caldav.<domain>/…` (at most
+    /// five redirects, https only), then a table of known providers. Names and redirects that lead
+    /// to loopback, private, link-local or ULA addresses are never contacted.
+    ///
+    /// Answered with [`Response::Discovery`]: candidate addresses, none, or "not supported" with
+    /// the reason (Gmail, Outlook.com); all of them are answers, not errors. Error codes: `error`
+    /// for an input that names no internet domain (an IP address, `localhost`, no dot),
+    /// `offline` when neither DNS nor a server answered and the table does not know the domain.
+    #[serde(rename = "accounts.discover_services")]
+    DiscoverServices {
+        /// An e-mail address (`anna@mailbox.org`) or a domain (`mailbox.org`).
+        address: String,
+    },
+    /// Signs in to a CalDAV account with a password (task M7.1): the calendars and tasks of a mail
+    /// provider (mailbox.org, Posteo, Fastmail, iCloud …) or of any other CalDAV server.
+    ///
+    /// The core tries `server`, or else the addresses `accounts.discover_services` finds for
+    /// `address`, one after the other, checks `current-user-principal` and the calendar home, and
+    /// learns whether the server has calendars (VEVENT) and task lists (VTODO). Then it keeps the
+    /// password in the system keychain only, under the account id `caldav:<login>@<host>`, adds
+    /// the account, hides the collections of a service not chosen (`calendars`, `tasks`; a
+    /// collection with both is hidden only when neither is chosen) at its first sync, and syncs it
+    /// in the background. Connecting an account that exists already replaces only its password and
+    /// server: `calendars`, `tasks` are ignored then, hidden collections and rights stay.
+    ///
+    /// Answered with [`Response::Connected`]: the account as `accounts.list_accounts` lists it and
+    /// what the server offers, never the password. Error codes: `auth` when the server refuses
+    /// the password, `not-found` when no CalDAV answers at the address (or nothing was found for
+    /// `address`), `unsupported` for a provider that does not work (the message says why),
+    /// `offline`, and `error` for an empty login name or password, a login name with `/`, a server
+    /// that is no https address or a keychain that refuses. Only the app key may send it: every
+    /// client key gets `forbidden`, whatever its rights, because it hands the core a secret
+    /// (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval either.
+    #[serde(rename = "accounts.connect_caldav")]
+    ConnectCalDav {
+        /// The e-mail address the account belongs to. Its domain names the provider and, without
+        /// `server`, is searched like `accounts.discover_services`.
+        address: String,
+        /// The CalDAV address to sign in at, as `accounts.discover_services` found it or a person
+        /// typed it (`https://` is added when missing; plain `http` only for `localhost`). Leave
+        /// out to search it from `address`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
+        /// The user name at the server, usually the e-mail address. Must not hold `/`.
+        login_name: String,
+        /// The password or app password. It goes into the system keychain only and is never part
+        /// of an answer, an error message, a log or an approval.
+        password: Secret,
+        /// Show the account's calendars (collections with events) in the suite.
+        calendars: bool,
+        /// Show the account's task lists (collections with tasks) in the suite.
+        tasks: bool,
+    },
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
     /// its own: one that fails keeps its cache and its problem, the others are updated. The
     /// answer is the first failure, else [`Response::Ok`].
@@ -901,6 +957,28 @@ pub enum Response {
     /// The control centre was opened so a person can finish the request there (a client's
     /// [`Request::ConnectGithub`]); nothing has changed yet.
     Opened,
+    /// What [`Request::DiscoverServices`] found. Built from what was found only: never a
+    /// server's content or headers.
+    Discovery {
+        /// Who runs the service: a known provider's name (`mailbox.org`, `iCloud`) or the domain.
+        provider: String,
+        /// Addresses to sign in at with [`Request::ConnectCalDav`], best first. Empty when
+        /// nothing was found or the provider is not supported.
+        urls: Vec<String>,
+        /// Why the provider does not work with Torro Workplace, for people, in the core's
+        /// language; `None` when it may.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unsupported: Option<String>,
+    },
+    /// A CalDAV account just connected ([`Request::ConnectCalDav`]), never with its password.
+    Connected {
+        /// The account as [`Request::Accounts`] lists it; its collections follow with the sync.
+        account: AccountInfo,
+        /// The server has at least one collection with events.
+        calendars: bool,
+        /// The server has at least one collection with tasks.
+        tasks: bool,
+    },
     /// One collection as `tasks.list_lists` lists it: a filter list just created or changed
     /// ([`Request::CreateFilterList`], [`Request::UpdateFilterList`]).
     Collection {
@@ -971,7 +1049,7 @@ pub enum Response {
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
     /// - `forbidden`: the client's rights do not cover the command, it is for the app key only
     ///   (`clients` commands, `system.quit`, `accounts.set_github_token`,
-    ///   `approvals.decide_approval`), it needs a person's approval that the core could not
+    ///   `accounts.connect_caldav`, `approvals.decide_approval`), it needs a person's approval that the core could not
     ///   record (`approvals.json` cannot be written), or a security rule of the inbox refuses it
     ///   (a client changing an approval or an entry of the suite, or posting an approval),
     /// - `error`: anything else.
@@ -997,9 +1075,11 @@ pub struct AccountInfo {
     /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`; the front part of
     /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
-    /// Provider: `nextcloud` or `github` (later `slack`, …).
+    /// Provider: `nextcloud`, `github` or `caldav` (a mail provider's or any other CalDAV
+    /// server, task M7.1; later `slack`, …).
     pub kind: String,
-    /// `anna@cloud.example.org`; for GitHub the login.
+    /// `anna@cloud.example.org`; for GitHub the login; for CalDAV the login when it is an e-mail
+    /// address, else `<login>@<provider>`.
     pub label: String,
     pub state: AccountState,
     /// All collections of the account, hidden ones included; for GitHub its filter lists.
@@ -1257,6 +1337,44 @@ mod tests {
         let json = serde_json::to_string(&request).expect("serializes");
         assert_eq!(json, r#"{"method":"accounts.set_github_token","token":"ghp_secret"}"#);
         assert_eq!(serde_json::from_str::<Request>(&json).expect("parses"), request);
+    }
+
+    #[test]
+    fn a_caldav_password_does_not_show_in_debug_output() {
+        let request = Request::ConnectCalDav {
+            address: "anna@mailbox.org".into(),
+            server: None,
+            login_name: "anna@mailbox.org".into(),
+            password: Secret::new("hunter2-secret"),
+            calendars: true,
+            tasks: false,
+        };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
+        let json = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(json["method"], "accounts.connect_caldav");
+        assert!(json.get("server").is_none());
+        assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), request);
+    }
+
+    #[test]
+    fn discoveries_and_connections_are_answers_of_their_own() {
+        let found = Response::Discovery {
+            provider: "mailbox.org".into(),
+            urls: vec!["https://dav.mailbox.org/".into()],
+            unsupported: None,
+        };
+        let json = serde_json::to_value(&found).expect("json");
+        assert_eq!(json["result"], "discovery");
+        assert!(json.get("unsupported").is_none());
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), found);
+        let account: AccountInfo = serde_json::from_str(
+            r#"{"id":"caldav:anna@dav.mailbox.org","kind":"caldav","label":"anna@mailbox.org",
+            "state":{"state":"not-connected"},"collections":[]}"#,
+        )
+        .expect("an account");
+        let connected = Response::Connected { account, calendars: true, tasks: true };
+        assert_eq!(serde_json::to_value(&connected).expect("json")["result"], "connected");
     }
 
     #[test]

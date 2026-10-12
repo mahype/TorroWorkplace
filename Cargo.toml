@@ -39,6 +39,10 @@ torro-gui = { path = "crates/torro-gui" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 getrandom = "0.4.3"
+# DNS SRV and TXT lookups for finding a mail provider's CalDAV service (torro-pim-caldav, M7.1).
+hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
+# A local HTTP server for the discovery tests (torro-pim-caldav, M7.1); only a dev-dependency.
+httpmock = { version = "0.8.3", default-features = false }
 # Windows named pipes with a safe API for the security descriptor (torro-ipc, X.1).
 interprocess = { version = "2.4.5", features = ["tokio"] }
 iced ={ version = "0.14.0", features = ["canvas", "svg", "tokio"] }
