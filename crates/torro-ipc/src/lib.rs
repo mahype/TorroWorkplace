@@ -321,6 +321,30 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<String>,
     },
+    /// Creates a new task list on the server of the Nextcloud account `account` (task G.7): a
+    /// CalDAV collection for tasks only (`MKCALENDAR` in the account's calendar home), named
+    /// `name`, in `color`. Its address is a new one made of the name and a random part; one that
+    /// exists already is never overwritten (another address is tried). Answered with
+    /// [`Response::Collection`]: the list as `tasks.list_lists` lists it from now on (id
+    /// `<account-id>/<list URL>`, kind `todos`, writable), in the core's cache at once.
+    ///
+    /// A new list is never added to a client's selection of task lists: a client limited to some
+    /// lists does not see it afterwards. Codes: `not-found` for an account the core does not know,
+    /// `unsupported` for an account without task lists of its own (GitHub: use
+    /// [`Request::CreateFilterList`]), `error` for an empty name (or one over 200 characters) and
+    /// a colour that is not `#RRGGBB`, `not-connected` when the account has no app password on this
+    /// device, `auth` and `offline` when its server refuses or cannot be reached, `error` when the
+    /// server refuses the list.
+    #[serde(rename = "tasks.create_list")]
+    CreateTaskList {
+        /// The Nextcloud account, `nextcloud:<login>@<server>` as `accounts.list_accounts` lists it.
+        account: String,
+        /// The name of the list.
+        name: String,
+        /// The colour of the list as `#RRGGBB`; leave out for the server's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
 
     // GitHub filter lists (task G.2, `docs/github.md`). Granted in the area `github`: for a client
     // key the core also filters every issue and pull request by its repository
@@ -901,7 +925,8 @@ pub enum Response {
     /// The control centre was opened so a person can finish the request there (a client's
     /// [`Request::ConnectGithub`]); nothing has changed yet.
     Opened,
-    /// One collection as `tasks.list_lists` lists it: a filter list just created or changed
+    /// One collection as `tasks.list_lists` lists it: a task list just created
+    /// ([`Request::CreateTaskList`]), a filter list just created or changed
     /// ([`Request::CreateFilterList`], [`Request::UpdateFilterList`]).
     Collection {
         collection: Collection,

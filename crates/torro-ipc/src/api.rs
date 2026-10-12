@@ -701,6 +701,7 @@ impl Request {
             Request::SaveTodo { .. } => &SAVE_TODO,
             Request::DeleteTodo { .. } => &DELETE_TODO,
             Request::MoveTodo { .. } => &MOVE_TODO,
+            Request::CreateTaskList { .. } => &CREATE_LIST,
             Request::CreateFilterList { .. } => &CREATE_FILTER_LIST,
             Request::UpdateFilterList { .. } => &UPDATE_FILTER_LIST,
             Request::DeleteFilterList { .. } => &DELETE_FILTER_LIST,
@@ -782,6 +783,7 @@ pub static CATALOGUE: &[&Command] = &[
     &SAVE_TODO,
     &DELETE_TODO,
     &MOVE_TODO,
+    &CREATE_LIST,
     &CREATE_FILTER_LIST,
     &UPDATE_FILTER_LIST,
     &DELETE_FILTER_LIST,
@@ -1010,6 +1012,19 @@ static MOVE_TODO: Command = Command {
                   ordered among those with the same parent that are open or done like it, smaller `sort_order` \
                   first, tasks without one last; only tasks whose number must change are written and returned. \
                   If a write fails, the task has not moved yet: reload with list_todos and try again.",
+};
+
+static CREATE_LIST: Command = Command {
+    name: "tasks.create_list",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Creates a new task list on the server of a Nextcloud account (`account` from \
+                  accounts.list_accounts) with a `name` and an optional `color` (`#RRGGBB`), and returns it as \
+                  list_lists lists it from now on (its `id` is what save_todo takes as `collection`). The list holds \
+                  tasks only and other apps of the account (Nextcloud Tasks) show it too. A key limited to some \
+                  task lists does not get the new list added, so it does not see it afterwards. A GitHub account \
+                  has no task lists of its own (`unsupported`): use create_filter_list there.",
 };
 
 // The GitHub filter lists (task G.2): task commands, granted in the area `github` together with
@@ -1565,6 +1580,11 @@ mod tests {
             Request::SaveTodo { todo: todo() },
             Request::DeleteTodo { todo: todo() },
             Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None },
+            Request::CreateTaskList {
+                account: "nextcloud:anna@cloud.example.test".into(),
+                name: "Groceries".into(),
+                color: Some("#3FB984".into()),
+            },
             Request::CreateFilterList {
                 account: "github:mahype".into(),
                 name: "Bugs".into(),
@@ -1941,6 +1961,27 @@ mod tests {
         rights.areas.remove(&Area::Github);
         let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
         assert!(!rights.allows(preview.operation()));
+    }
+
+    #[test]
+    fn a_new_task_list_needs_write_access_to_tasks() {
+        let create = Request::CreateTaskList {
+            account: "nextcloud:anna@cloud.example.test".into(),
+            name: "Groceries".into(),
+            color: None,
+        };
+        let operation = create.operation();
+        assert_eq!(
+            (operation.name(), operation.area(), operation.access),
+            ("tasks.create_list", Area::Tasks, Access::Write)
+        );
+        assert_eq!(CREATE_LIST.mcp, Mcp::Tool);
+        assert!(!RightsTemplate::ReadOnly.rights().allows(operation));
+        assert!(RightsTemplate::ReadAndWrite.rights().allows(operation));
+        // A task list lives on the Nextcloud: rights in `github` alone do not open it.
+        let mut github_only = RightsTemplate::FullAccess.rights();
+        github_only.areas.remove(&Area::Tasks);
+        assert!(!github_only.allows(operation));
     }
 
     #[test]

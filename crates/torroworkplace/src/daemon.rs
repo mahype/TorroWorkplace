@@ -436,7 +436,8 @@ fn describe(request: &Request) -> String {
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::MoveTodo { .. } => "move todo".into(),
-        // Ids only, never a search or a name (task G.2).
+        // Ids only, never a search or a name (tasks G.2, G.7).
+        Request::CreateTaskList { account, .. } => format!("create task list in {account}"),
         Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
         Request::UpdateFilterList { collection, .. } => format!("update filter list {collection}"),
         Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),

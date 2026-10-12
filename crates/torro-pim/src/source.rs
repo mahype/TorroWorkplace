@@ -98,6 +98,25 @@ pub trait PimSource: Send + Sync {
     /// be reached.
     fn add_link(&self, collection: String, url: String) -> impl Future<Output = Result<Todo, ProviderError>> + Send;
 
+    /// Creates a new task list named `name` on the server of the Nextcloud account `account`
+    /// (`nextcloud:…`, as [`PimSource::accounts`] lists it) (`tasks.create_list`, task G.7; the
+    /// dialog "New task list" of task G.8). `color` is `#RRGGBB`, `None` for the server's default.
+    ///
+    /// Returns the new list as [`PimSource::collections`] lists it from now on: id
+    /// `<account>/<list URL>`, [`crate::CollectionKind::Todos`], writable, `name` trimmed, no
+    /// `source`. Reload the collections afterwards to show it; it has no tasks yet.
+    ///
+    /// [`ProviderError::Auth`] / [`ProviderError::Offline`] when the server refuses the account or
+    /// cannot be reached; [`ProviderError::Other`] with the core's message for an unknown account,
+    /// a GitHub account (no task lists of its own), an empty name, a colour that is not `#RRGGBB`,
+    /// and a server that refuses the list.
+    fn create_task_list(
+        &self,
+        account: String,
+        name: String,
+        color: Option<String>,
+    ) -> impl Future<Output = Result<Collection, ProviderError>> + Send;
+
     /// Creates a GitHub filter list of the GitHub account `account` (`github:<login>`, as
     /// [`PimSource::accounts`] lists it) from `definition` (`tasks.create_filter_list`, dialog of
     /// task G.4). Returns the new list as [`PimSource::collections`] will list it: id

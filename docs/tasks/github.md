@@ -403,7 +403,7 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 - **Nach dem Anlegen:** Dialog zu, neue Liste in der Seitenleiste gewählt, Meldung „List "{name}" created“.
 
 ### G.7 Aufgabenliste anlegen: Kern, API, MCP
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-pim-caldav/src/{client,write}.rs`,
   `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp,approvals}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`

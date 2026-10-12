@@ -725,8 +725,11 @@ impl PimService {
             }
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
-            // is asked ([`Reach::confines`]).
-            Request::CreateFilterList { .. } | Request::PreviewFilter { .. } => return None,
+            // is asked ([`Reach::confines`]). A new task list goes to an account, which every
+            // client sees (`accounts.list_accounts`), and never into a client's selection.
+            Request::CreateTaskList { .. } | Request::CreateFilterList { .. } | Request::PreviewFilter { .. } => {
+                return None;
+            }
             // Both tasks name their list only through the cache; one it does not hold, or one in a
             // list the client may not see, is `not-found`. The tasks renumbered with them are in
             // the same list (`move_todo` refuses `before` in another one).
@@ -1358,6 +1361,62 @@ impl PimService {
             written.push(self.save_todo(todo).await?);
         }
         Ok(written)
+    }
+
+    /// `tasks.create_list` (task G.7): a new task list named `name` in `color` on the server of
+    /// the Nextcloud account `account` ([`CalDavClient::create_task_list`]), answered with the list
+    /// as `tasks.list_lists` lists it from now on.
+    ///
+    /// Checked before the server is asked: `error` for an empty name, one over [`MAX_LIST_NAME`]
+    /// characters and a colour that is not `#RRGGBB`; `not-found` for an account the core does not
+    /// have (the core answers a GitHub account itself); `not-connected` without its app password.
+    /// The address is new, of the name and a random part ([`random_suffixes`]); a taken one is
+    /// never overwritten. The list goes into the account's cache at once, as one of the user's
+    /// private lists ([`Slot::private`]: theirs, shared with nobody), so it is listed before the
+    /// next sync. Nothing is added to any client's selection.
+    ///
+    /// Runs while no sync of the account does: a sync that started before the list existed would
+    /// otherwise put back the collections without it when it ends.
+    pub async fn create_task_list(&self, account: &str, name: &str, color: Option<&str>) -> Response {
+        let name = name.trim();
+        if name.is_empty() {
+            return error("error", "A task list needs a name.".into());
+        }
+        if name.chars().count() > MAX_LIST_NAME {
+            return error("error", format!("The name is too long; use at most {MAX_LIST_NAME} characters."));
+        }
+        let color = match lists::check_color(color) {
+            Ok(color) => color,
+            Err(err) => return error(err.code(), err.to_string()),
+        };
+        let suffixes = match random_suffixes() {
+            Ok(suffixes) => suffixes,
+            Err(message) => return error("error", message),
+        };
+        let syncing = self.syncing.lock().await;
+        let client = match self.state.read().await.slot(account) {
+            None => return error("not-found", format!("no account {account:?}")),
+            Some(slot) => slot.client.clone(),
+        };
+        let Some(client) = client else {
+            return provider_error(&not_connected());
+        };
+        let made = client.create_task_list(name, color.as_deref(), &suffixes).await;
+        let mut state = self.state.write().await;
+        match (made, state.slot_mut(account)) {
+            (Ok(mut collection), Some(slot)) => {
+                collection.id = collection_id(account, &collection.id);
+                slot.collections.push(collection.clone());
+                slot.private.push(collection.id.clone());
+                Response::Collection { collection }
+            }
+            // Removed while the server made the list: nothing of the account is kept.
+            (Ok(_), None) => error("not-found", format!("no account {account:?}")),
+            (Err(err), _) => {
+                drop((state, syncing));
+                self.failed(Failed::at(account, err)).await
+            }
+        }
     }
 
     /// Where a write to `collection` (an id) goes. Refused before anything is sent when no
@@ -2612,6 +2671,24 @@ fn not_connected() -> ProviderError {
     ProviderError::Other("not connected to a Nextcloud".into())
 }
 
+/// The longest name a new task list may have, as for filter lists.
+pub const MAX_LIST_NAME: usize = 200;
+
+/// How many addresses a new task list tries before giving up ([`random_suffixes`]).
+const LIST_ATTEMPTS: usize = 5;
+
+/// The random parts for the addresses of a new task list, one per attempt: 8 hex digits each, so
+/// two lists of the same name never share an address and a taken one is unlikely to come twice.
+fn random_suffixes() -> Result<Vec<String>, String> {
+    (0..LIST_ATTEMPTS)
+        .map(|_| {
+            let mut bytes = [0u8; 4];
+            getrandom::fill(&mut bytes).map_err(|err| format!("cannot make an address for the list: {err}"))?;
+            Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+        })
+        .collect()
+}
+
 /// Where a write goes: the account that holds the collection, and its connection.
 #[derive(Debug, Clone)]
 struct Place {
@@ -3489,6 +3566,8 @@ pub(crate) mod tests {
         path: String,
         if_match: Option<String>,
         if_none_match: Option<String>,
+        /// The request body, as text.
+        body: String,
     }
 
     impl Seen {
@@ -3577,11 +3656,13 @@ pub(crate) mod tests {
                         }
                     }
                     let mut first = head.lines().next().unwrap_or_default().split(' ');
+                    let body = buf.get(head_end..).unwrap_or_default();
                     let seen = Seen {
                         method: first.next().unwrap_or_default().to_string(),
                         path: first.next().unwrap_or_default().to_string(),
                         if_match: header("if-match"),
                         if_none_match: header("if-none-match"),
+                        body: String::from_utf8_lossy(body).to_string(),
                     };
                     let (status, etag, body) = reply(&seen);
                     log.lock().expect("record").push(seen);
@@ -3637,6 +3718,8 @@ pub(crate) mod tests {
     /// and what the server saw ([`FakeCalDav::lines`]).
     pub(crate) struct FakeCalDav {
         pub service: Arc<PimService>,
+        /// The id of anna's account on the server.
+        pub account: String,
         pub work: String,
         pub home: String,
         record: Arc<std::sync::Mutex<Vec<Seen>>>,
@@ -3651,12 +3734,30 @@ pub(crate) mod tests {
 
     /// See [`FakeCalDav`]; the service reads and writes `settings`.
     pub(crate) async fn fake_caldav(settings: SettingsStore) -> FakeCalDav {
-        let (base, record) = fake_server(server_holding("")).await;
+        fake_caldav_on(settings, server_holding("")).await
+    }
+
+    /// [`fake_caldav`] on a server that answers discovery and makes every new task list
+    /// (`MKCALENDAR`, task G.7) at the first address asked for.
+    pub(crate) async fn fake_caldav_making_lists(settings: SettingsStore) -> FakeCalDav {
+        fake_caldav_on(settings, making_lists(0, 201)).await
+    }
+
+    async fn fake_caldav_on(
+        settings: SettingsStore,
+        reply: impl Fn(&Seen) -> Reply + Send + Sync + 'static,
+    ) -> FakeCalDav {
+        let (base, record) = fake_server(reply).await;
         let service = service_with(settings);
         service.state.write().await.accounts.push(slot_on(&base));
         let (work, _) = on_server(&base, WORK, "");
         let (home, _) = on_server(&base, HOME, "");
-        FakeCalDav { service, work, home, record }
+        FakeCalDav { service, account: account_on(&base), work, home, record }
+    }
+
+    /// The id of anna's account on the fake server at `base`.
+    fn account_on(base: &str) -> String {
+        torro_core::Account::nextcloud(base.trim_end_matches("/remote.php/dav/"), "anna").id
     }
 
     /// The collection id of the collection at `path` of the account at `base` and the href of
@@ -4268,5 +4369,168 @@ pub(crate) mod tests {
             health(service.account_checks(late).await),
             [Health::Problem { trouble: Trouble::SignInRefused, since: late }]
         );
+    }
+
+    // New task lists (task G.7).
+
+    /// What Nextcloud (Sabre) answers an `MKCALENDAR` at an address that is taken, with `405`.
+    const TAKEN: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:sabredav-version>4.7.0</s:sabredav-version>
+  <s:exception>Sabre\DAV\Exception\MethodNotAllowed</s:exception>
+  <s:message>The resource you tried to create already exists</s:message>
+</d:error>"#;
+
+    /// A Nextcloud with anna's calendar home ([`healthy_server`]) whose first `taken` `MKCALENDAR`s
+    /// find their address taken; the others are answered with `then`.
+    fn making_lists(taken: usize, then: u16) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        let tried = std::sync::atomic::AtomicUsize::new(0);
+        move |seen| match seen.method.as_str() {
+            "MKCALENDAR" if tried.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < taken => (405, None, TAKEN),
+            "MKCALENDAR" => (then, None, ""),
+            _ => healthy_server(seen),
+        }
+    }
+
+    /// The `MKCALENDAR`s the fake server saw: path and body.
+    fn mkcalendars(record: &std::sync::Mutex<Vec<Seen>>) -> Vec<(String, String)> {
+        let seen = record.lock().expect("record");
+        seen.iter()
+            .filter(|seen| seen.method == "MKCALENDAR")
+            .map(|seen| (seen.path.clone(), seen.body.clone()))
+            .collect()
+    }
+
+    /// `path` is a new list's address in anna's calendar home: `<slug>-<8 hex digits>/`.
+    fn new_list_address(path: &str, slug: &str) -> bool {
+        let Some(rest) = path.strip_prefix(&format!("/remote.php/dav/calendars/anna/{slug}-")) else { return false };
+        let Some(random) = rest.strip_suffix('/') else { return false };
+        random.len() == 8 && random.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    #[tokio::test]
+    async fn a_new_task_list_is_made_on_the_server_and_listed_at_once() {
+        let (base, record) = fake_server(making_lists(0, 201)).await;
+        let service = service_on(&base).await;
+        let account = account_on(&base);
+
+        let response = service.create_task_list(&account, "  Groceries & more ", Some("#3FB984")).await;
+        let Response::Collection { collection } = response else { panic!("a new list, got {response:?}") };
+        assert_eq!(
+            lines(&record)[..2],
+            ["PROPFIND /remote.php/dav/".to_string(), "PROPFIND /remote.php/dav/principals/users/anna/".to_string()],
+            "the calendar home as the server names it"
+        );
+        let made = mkcalendars(&record);
+        assert_eq!(made.len(), 1);
+        let (path, body) = &made[0];
+        assert!(new_list_address(path, "groceries-more"), "{path}");
+        for part in ["<d:displayname>Groceries &amp; more</d:displayname>", "#3FB984FF", r#"<c:comp name="VTODO"/>"#] {
+            assert!(body.contains(part), "{part} in {body}");
+        }
+
+        let origin = base.trim_end_matches("/remote.php/dav/");
+        let expected = Collection {
+            id: collection_id(&account, &format!("{origin}{path}")),
+            name: "Groceries & more".into(),
+            kind: torro_pim::CollectionKind::Todos,
+            color: Some("#3FB984".into()),
+            writable: true,
+            source: None,
+        };
+        assert_eq!(collection, expected);
+        let Response::Collections { collections: listed } =
+            service.handle_within(Request::TaskCollections, Reach::Suite).await
+        else {
+            panic!("task lists answer with Collections");
+        };
+        assert!(listed.contains(&expected), "listed before the next sync: {listed:?}");
+        assert!(
+            service.state.read().await.accounts[0].private.contains(&expected.id),
+            "anna's own, shared with nobody"
+        );
+
+        let Response::Collection { collection: again } =
+            service.create_task_list(&account, "Groceries & more", None).await
+        else {
+            panic!("a second list of the same name");
+        };
+        assert_ne!(again.id, expected.id, "a new address every time");
+        assert_eq!(again.color, None);
+        assert!(!mkcalendars(&record)[1].1.contains("calendar-color"), "the server's default colour");
+    }
+
+    #[tokio::test]
+    async fn a_taken_address_is_never_overwritten_but_another_one_tried() {
+        let (base, record) = fake_server(making_lists(2, 201)).await;
+        let service = service_on(&base).await;
+        let response = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        let Response::Collection { collection } = response else { panic!("made at the third address: {response:?}") };
+        let paths: Vec<String> = mkcalendars(&record).into_iter().map(|(path, _)| path).collect();
+        assert_eq!(paths.len(), 3, "{paths:?}");
+        assert!(paths.iter().all(|path| new_list_address(path, "groceries")), "{paths:?}");
+        assert!(paths[0] != paths[1] && paths[1] != paths[2] && paths[0] != paths[2], "{paths:?}");
+        assert!(collection.id.ends_with(&paths[2]), "{} at {}", collection.id, paths[2]);
+        assert!(lines(&record).iter().all(|line| !line.starts_with("PUT") && !line.starts_with("DELETE")));
+
+        // Every address taken: an error after a few tries, and nothing cached.
+        let (base, record) = fake_server(making_lists(usize::MAX, 201)).await;
+        let service = service_on(&base).await;
+        let before = cached(&service).await;
+        let response = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&response), "error", "{response:?}");
+        assert_eq!(mkcalendars(&record).len(), LIST_ATTEMPTS);
+        assert_eq!(cached(&service).await, before);
+    }
+
+    #[tokio::test]
+    async fn a_new_task_list_is_checked_before_the_server_is_asked() {
+        let (base, record) = fake_server(making_lists(0, 201)).await;
+        let service = service_on(&base).await;
+        let account = account_on(&base);
+        let long = "x".repeat(MAX_LIST_NAME + 1);
+        for (name, color, code) in [
+            ("", None, "error"),
+            ("   ", None, "error"),
+            (long.as_str(), None, "error"),
+            ("Groceries", Some("green"), "error"),
+            ("Groceries", Some("#3FB98"), "error"),
+        ] {
+            let response = service.create_task_list(&account, name, color).await;
+            assert_eq!(code_of(&response), code, "{name:?} {color:?}: {response:?}");
+        }
+        let unknown = service.create_task_list("nextcloud:bob@cloud.example.org", "Groceries", None).await;
+        assert_eq!(code_of(&unknown), "not-found");
+        assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
+
+        // An account without its app password on this device.
+        let without = self::service();
+        without.pretend_signed_in().await;
+        assert_eq!(code_of(&without.create_task_list(ANNA, "Groceries", None).await), "not-connected");
+    }
+
+    #[tokio::test]
+    async fn a_refused_new_task_list_is_an_error_with_the_servers_reason() {
+        let (base, _) = fake_server(making_lists(0, 507)).await;
+        let service = service_on(&base).await;
+        let full = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&full), "error", "{full:?}");
+
+        let (base, _) = fake_server(making_lists(0, 401)).await;
+        let service = service_on(&base).await;
+        // The remote wipe check ran already for this refusal, so no further request goes out.
+        service.state.write().await.accounts[0].wipe_checked = true;
+        let refused = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&refused), "auth", "{refused:?}");
+
+        // A server that is not there.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let gone = format!("http://{}/remote.php/dav/", listener.local_addr().expect("address"));
+        drop(listener);
+        let service = service_on(&gone).await;
+        let offline = service.create_task_list(&account_on(&gone), "Groceries", None).await;
+        assert_eq!(code_of(&offline), "offline", "{offline:?}");
+        let collections = cached(&service).await;
+        assert_eq!(collections.len(), 2, "work and home only: {collections:?}");
     }
 }

@@ -200,6 +200,16 @@ impl PimSource for PimClient {
         }
     }
 
+    /// `Request::CreateTaskList`; the answer is the new list.
+    async fn create_task_list(
+        &self,
+        account: String,
+        name: String,
+        color: Option<String>,
+    ) -> Result<Collection, ProviderError> {
+        self.ask_collection(Request::CreateTaskList { account, name, color }).await
+    }
+
     /// `Request::CreateFilterList` with the definition's fields.
     async fn create_filter_list(
         &self,
@@ -408,6 +418,20 @@ mod tests {
                     sort_order: Some(0),
                     ..todo()
                 }],
+            },
+            // Task lists: the answer names what arrived; GitHub has none of its own.
+            Request::CreateTaskList { account, .. } if account.starts_with("github:") => {
+                Response::Error { code: "unsupported".into(), message: "GitHub has no task lists".into() }
+            }
+            Request::CreateTaskList { account, name, color } => Response::Collection {
+                collection: Collection {
+                    id: format!("{account}/https://cloud.example.test/remote.php/dav/calendars/anna/new/"),
+                    name,
+                    kind: CollectionKind::Todos,
+                    color,
+                    writable: true,
+                    source: None,
+                },
             },
             // Filter lists: the answer names what arrived (account, revision, searches).
             Request::CreateFilterList { account, name, color, queries } => {
@@ -645,6 +669,20 @@ mod tests {
         );
         let refused = client.add_link("/tasks/home/".into(), "no link".into()).await;
         assert_eq!(refused, Err(ProviderError::Other("not a GitHub link".into())));
+    }
+
+    #[tokio::test]
+    async fn create_task_list_sends_account_name_and_colour_and_returns_the_list() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let account = "nextcloud:anna@cloud.example.test";
+        let created =
+            client.create_task_list(account.into(), "Groceries".into(), Some("#3FB984".into())).await.unwrap();
+        assert!(created.id.starts_with(&format!("{account}/")), "{}", created.id);
+        assert_eq!((created.name.as_str(), created.color.as_deref()), ("Groceries", Some("#3FB984")));
+        assert_eq!((created.kind, created.writable), (CollectionKind::Todos, true));
+        let refused = client.create_task_list("github:mahype".into(), "Bugs".into(), None).await;
+        assert_eq!(refused, Err(ProviderError::Other("GitHub has no task lists".into())));
     }
 
     #[tokio::test]

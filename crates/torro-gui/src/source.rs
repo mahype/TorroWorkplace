@@ -168,6 +168,15 @@ impl PimSource for Source {
         delegate!(self, s => s.add_link(collection, url))
     }
 
+    async fn create_task_list(
+        &self,
+        account: String,
+        name: String,
+        color: Option<String>,
+    ) -> Result<Collection, ProviderError> {
+        delegate!(self, s => s.create_task_list(account, name, color))
+    }
+
     async fn create_filter_list(
         &self,
         account: String,

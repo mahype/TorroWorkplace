@@ -1013,6 +1013,39 @@ mod tests {
     }
 
     #[test]
+    fn the_new_task_list_tool_builds_its_request() {
+        let account = "nextcloud:anna@cloud.example.org";
+        let create = request_for(
+            "tasks_create_list",
+            args(json!({"account": account, "name": "Groceries", "color": "#3FB984"})),
+            &Utc,
+        );
+        assert_eq!(
+            create,
+            Ok(Request::CreateTaskList {
+                account: account.into(),
+                name: "Groceries".into(),
+                color: Some("#3FB984".into())
+            })
+        );
+        let plain = request_for("tasks_create_list", args(json!({"account": account, "name": "Groceries"})), &Utc);
+        assert_eq!(
+            plain,
+            Ok(Request::CreateTaskList { account: account.into(), name: "Groceries".into(), color: None })
+        );
+        let unknown =
+            request_for("tasks_create_list", args(json!({"account": account, "name": "x", "kind": "todos"})), &Utc);
+        assert!(matches!(unknown, Err(ToolError::Input(_))), "{unknown:?}");
+        // A new list each time: neither read-only nor idempotent; it talks to a server.
+        let tool = tools().iter().find(|tool| tool.name == "tasks_create_list").expect("a tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+            (Some(false), Some(false), Some(false), None)
+        );
+    }
+
+    #[test]
     fn the_filter_list_tools_build_their_requests() {
         let create = request_for(
             "tasks_create_filter_list",

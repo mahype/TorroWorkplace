@@ -597,7 +597,8 @@ impl Core {
     }
 
     /// What the core holds about the things `request` names, for its approval's summary
-    /// ([`Facts`]): the template's name from the store, the account's label, and for calendars,
+    /// ([`Facts`]): the template's name from the store, the account's label (to remove it or to
+    /// create a task list in it), and for calendars,
     /// tasks and filter lists what the calendar service caches ([`PimService::facts`]). Looked up
     /// by the ids the command runs with, after the client's reach was checked.
     async fn facts(&self, request: &Request) -> Facts {
@@ -608,9 +609,10 @@ impl Core {
             | Request::RenameTemplate { id, .. } => {
                 Facts { name: self.store.load(id).ok().map(|template| template.name), ..Facts::default() }
             }
-            Request::RemoveAccount { id } => {
+            // The account's label as the core knows it, never a name the client sends along.
+            Request::RemoveAccount { id: account } | Request::CreateTaskList { account, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
-                Facts { name: accounts.into_iter().find(|a| a.id == *id).map(|a| a.label), ..Facts::default() }
+                Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
             }
             request => self.pim.facts(request).await,
         }
@@ -761,6 +763,14 @@ impl Core {
             Request::SetGithubToken { token } => {
                 let answer = account_answer(self.github.connect_token(token).await);
                 self.refresh_connected(answer)
+            }
+            // A GitHub account has no task lists of its own, only filter lists (task G.7).
+            Request::CreateTaskList { account, .. } if self.github.knows(&account).await => Response::Error {
+                code: "unsupported".into(),
+                message: format!("{account} has no task lists of its own: create a filter list there"),
+            },
+            Request::CreateTaskList { account, name, color } => {
+                self.pim.create_task_list(&account, &name, color.as_deref()).await
             }
             Request::CreateFilterList { account, name, color, queries } => {
                 if !self.github.knows(&account).await {
@@ -3505,21 +3515,98 @@ mod tests {
         assert!(!opened.iter().any(|url| url == shown || url == swapped), "{opened:?}");
     }
 
+    // ----- New task lists (task G.7) -------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_new_task_list_is_listed_at_once_but_never_added_to_a_clients_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fake = crate::pim::tests::fake_caldav_making_lists(SettingsStore::at(settings_file(dir.path()))).await;
+        let core = core_on(dir.path(), &fake);
+        let create = |name: &str| Request::CreateTaskList {
+            account: fake.account.clone(),
+            name: name.into(),
+            color: Some("#3FB984".into()),
+        };
+        let made = || fake.lines().iter().filter(|line| line.starts_with("MKCALENDAR ")).count();
+        let lists = |answer: Response| match answer {
+            Response::Collections { collections } => collections.into_iter().map(|c| c.id).collect::<Vec<_>>(),
+            other => panic!("lists answer with Collections, got {other:?}"),
+        };
+
+        // The suite: the new list is there before the next sync.
+        let Response::Collection { collection } = core.handle(create("Groceries")).await else {
+            panic!("the suite makes a list");
+        };
+        assert!(lists(core.handle(Request::TaskCollections).await).contains(&collection.id));
+
+        // Without write access to tasks: refused before the server is asked.
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&reader), create("Errands")).await), "forbidden");
+        assert_eq!(made(), 1);
+
+        // A client limited to `work` makes a list but does not see it, and its rights stay.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.task_lists = Selection::Only(vec![fake.work.clone()]);
+        let (id, limited) = client(&core, rights.clone()).await;
+        let Response::Collection { collection: its } = ask(&core, Some(&limited), create("Errands")).await else {
+            panic!("a client with write access makes a list");
+        };
+        assert_eq!(made(), 2);
+        assert!(lists(core.handle(Request::TaskCollections).await).contains(&its.id), "the suite sees it");
+        assert_eq!(lists(ask(&core, Some(&limited), Request::TaskCollections).await), vec![fake.work.clone()]);
+        let stored = core.clients.list().into_iter().find(|info| info.id == id).expect("the client");
+        assert_eq!(stored.rights, rights, "not added to the selection");
+
+        // A client that asks before every change: the approval names the account by its label.
+        let mut asking = RightsTemplate::ReadAndWrite.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, careful) = client(&core, asking).await;
+        let Response::Pending { approval } = ask(&core, Some(&careful), create("Later")).await else {
+            panic!("waits for a person");
+        };
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        let label = accounts.into_iter().find(|a| a.id == fake.account).expect("the account").label;
+        let expected = trf("Create task list \"{name}\" in {account}", &[("name", &"Later"), ("account", &label)]);
+        assert_eq!(approval.summary, expected);
+        assert_eq!(made(), 2, "nothing made before a person allows it");
+
+        // An account the core does not know.
+        let unknown =
+            Request::CreateTaskList { account: "nextcloud:bob@x.example".into(), name: "x".into(), color: None };
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+    }
+
+    #[tokio::test]
+    async fn a_github_account_has_no_task_lists_of_its_own() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let (url, _) = fake_github(|_| (200, Some("repo"), viewer("mahype"))).await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        let create = Request::CreateTaskList { account: "github:mahype".into(), name: "Bugs".into(), color: None };
+        assert_eq!(code(&core.handle(create).await), "unsupported");
+    }
+
     // ----- Making a task of an inbox entry (task E3.5) ---------------------------------------
 
     /// The core of [`core`], but with a calendar service on a fake CalDAV server that takes every
     /// write, and its settings in `dir` (so a list can be hidden).
     async fn core_with_tasks(dir: &std::path::Path) -> (Core, crate::pim::tests::FakeCalDav) {
         let fake = crate::pim::tests::fake_caldav(SettingsStore::at(settings_file(dir))).await;
-        let core = Core::new(
+        (core_on(dir, &fake), fake)
+    }
+
+    /// The core of [`core`], with the calendar service of `fake`.
+    fn core_on(dir: &std::path::Path, fake: &crate::pim::tests::FakeCalDav) -> Core {
+        Core::new(
             Backend::Unsupported { name: "test".into() },
             Store::at(dir.to_path_buf()),
             Arc::clone(&fake.service),
             crate::clients::tests::open_in(dir),
         )
         .with_approvals(crate::approvals::tests::quiet_in(dir))
-        .with_inbox(crate::inbox::tests::inbox_in(dir));
-        (core, fake)
+        .with_inbox(crate::inbox::tests::inbox_in(dir))
     }
 
     /// A notice the app key posts, with a web page and a text; its id.

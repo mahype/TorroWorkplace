@@ -221,9 +221,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveTodo { href, before, .. } => {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
-        Request::CreateFilterList { account: name, .. } | Request::PreviewFilter { account: name, .. } => {
-            vec![account(name)]
-        }
+        // The account only, never the name of the new list (task G.7).
+        Request::CreateTaskList { account: name, .. }
+        | Request::CreateFilterList { account: name, .. }
+        | Request::PreviewFilter { account: name, .. } => vec![account(name)],
         Request::UpdateFilterList { collection: list, .. }
         | Request::DeleteFilterList { collection: list }
         | Request::SetCollectionShown { collection: list, .. } => vec![collection(list)],

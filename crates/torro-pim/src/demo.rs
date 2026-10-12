@@ -15,6 +15,9 @@
 //! 1,000 matches) and "Torro bugs" (its last refresh from GitHub failed), so the sidebar's GitHub
 //! group, the grouping by repository, the hints of a list and "Unpin" all show with `--demo`.
 //!
+//! New task lists can be created in either Nextcloud account (task G.7); they live in memory like
+//! everything else.
+//!
 //! Filter lists can be created, changed, deleted and tried out (task G.4). The demo cannot ask
 //! GitHub; it searches the GitHub items of the sample instead and understands only a few
 //! qualifiers ([`demo_matches`]), enough for the dialog's preview to show something real.
@@ -1035,6 +1038,40 @@ impl PimSource for DemoSource {
         Ok(todo)
     }
 
+    /// A new, empty task list of a Nextcloud account with a fresh id
+    /// (`<account>/https://<server>/remote.php/dav/calendars/anna/list-<n>/`, never handed out
+    /// twice), refused like the core refuses it: a GitHub or unknown account, an empty name, a
+    /// colour that is not `#RRGGBB`.
+    async fn create_task_list(
+        &self,
+        account: String,
+        name: String,
+        color: Option<String>,
+    ) -> Result<Collection, ProviderError> {
+        if account == GITHUB_ACCOUNT {
+            return Err(ProviderError::Other(format!("{account} has no task lists of its own")));
+        }
+        if !ACCOUNTS.contains(&account.as_str()) {
+            return Err(ProviderError::Other(format!("no account {account:?}")));
+        }
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ProviderError::Other("A task list needs a name.".into()));
+        }
+        let hex = |c: &str| c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|d| d.is_ascii_hexdigit());
+        if color.as_deref().is_some_and(|c| !hex(c)) {
+            return Err(ProviderError::Other("A colour is written as #RRGGBB.".into()));
+        }
+        let server = account.rsplit_once('@').map_or("example.org", |(_, server)| server);
+        let mut data = self.lock();
+        data.next_id += 1;
+        let id = format!("{account}/https://{server}/remote.php/dav/calendars/anna/list-{}/", data.next_id);
+        let list =
+            Collection { id, name: name.into(), kind: CollectionKind::Todos, color, writable: true, source: None };
+        data.collections.push(list.clone());
+        Ok(list)
+    }
+
     /// A new list of the GitHub account with a fresh id (`github:mahype/list-<n>`, never handed
     /// out twice) and the sample's items its searches find.
     async fn create_filter_list(
@@ -1339,6 +1376,31 @@ mod tests {
         let address = vec!["https://github.com/mahype/TorroWorkplace/issues".to_string()];
         assert!(source.preview_filter(GITHUB_ACCOUNT.into(), address).await.is_err());
         assert!(source.preview_filter(WORK_ACCOUNT.into(), vec!["is:open".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn task_lists_are_created_in_a_nextcloud_account_and_written_to() {
+        let source = DemoSource::new(sunday());
+        let list = source
+            .create_task_list(HOME_ACCOUNT.into(), " Errands ".into(), Some("#3FB984".into()))
+            .await
+            .expect("created");
+        assert!(list.id.starts_with(&format!("{HOME_ACCOUNT}/https://home.example.org/")), "{}", list.id);
+        assert_eq!((list.name.as_str(), list.kind, list.writable), ("Errands", CollectionKind::Todos, true));
+        assert!(source.collections().await.expect("collections").contains(&list));
+        let other = source.create_task_list(HOME_ACCOUNT.into(), "Errands".into(), None).await.expect("again");
+        assert_ne!(other.id, list.id, "ids are never handed out twice");
+        let any = source.todos().await.expect("todos").into_iter().next().expect("a sample task");
+        let todo = Todo { uid: String::new(), collection: list.id.clone(), href: None, etag: None, link: None, ..any };
+        assert_eq!(source.save_todo(todo).await.expect("a task in it").collection, list.id);
+
+        let refused = |name: &str, color: Option<&str>, account: &str| {
+            source.create_task_list(account.into(), name.into(), color.map(str::to_string))
+        };
+        assert!(refused(" ", None, HOME_ACCOUNT).await.is_err(), "no name");
+        assert!(refused("Errands", Some("green"), HOME_ACCOUNT).await.is_err(), "no #RRGGBB");
+        assert!(refused("Errands", None, GITHUB_ACCOUNT).await.is_err(), "GitHub has no task lists");
+        assert!(refused("Errands", None, "nextcloud:nobody@example.org").await.is_err(), "unknown account");
     }
 
     #[tokio::test]
