@@ -1,0 +1,15 @@
+{
+  "data": {
+    "viewer": {
+      "repositories": {
+        "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29yOnYyOpK5MjAyNi0xMC0xMlQwOTowMDowMCswMjowMM4AAAAB" },
+        "nodes": [
+          { "nameWithOwner": "mahype/TorroWorkplace", "isPrivate": false, "isArchived": false },
+          { "nameWithOwner": "mahype/old-dotfiles", "isPrivate": false, "isArchived": true },
+          null,
+          { "nameWithOwner": "awesome-org/website", "isPrivate": true, "isArchived": false }
+        ]
+      }
+    }
+  }
+}

@@ -225,6 +225,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::CreateTaskList { account: name, .. }
         | Request::CreateFilterList { account: name, .. }
         | Request::PreviewFilter { account: name, .. } => vec![account(name)],
+        // The account, and the repository hashed: its name may be a private one (task G.9).
+        Request::ListGithubRepos { account: name } => vec![account(name)],
+        Request::DescribeGithubRepo { account: name, repo } => {
+            vec![account(name), format!("repo:{}", hashed(&repo.trim().to_ascii_lowercase()))]
+        }
         Request::UpdateFilterList { collection: list, .. }
         | Request::DeleteFilterList { collection: list }
         | Request::SetCollectionShown { collection: list, .. } => vec![collection(list)],
@@ -484,6 +489,15 @@ pub(crate) mod tests {
         assert!(!template.join(" ").contains("secret"), "{template:?}");
         let preview = Request::PreviewFilter { account: "github:anna".into(), queries: vec!["is:open salary".into()] };
         assert_eq!(super::ids(&preview), vec!["account:github:anna".to_string()]);
+        // The account, and a repository's name only hashed (task G.9), the same in any case.
+        let repos = Request::ListGithubRepos { account: "github:anna".into() };
+        assert_eq!(super::ids(&repos), vec!["account:github:anna".to_string()]);
+        let describe =
+            |repo: &str| super::ids(&Request::DescribeGithubRepo { account: "github:anna".into(), repo: repo.into() });
+        let described = describe("anna/salary-talks");
+        assert_eq!(described, vec!["account:github:anna".to_string(), format!("repo:{}", hashed("anna/salary-talks"))]);
+        assert!(!described.join(" ").contains("salary"), "{described:?}");
+        assert_eq!(describe(" Anna/Salary-Talks"), described);
         let open = Request::OpenApp { app: "Dinner with Anna".into() };
         assert_eq!(super::ids(&open), Vec::<String>::new());
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };

@@ -8,13 +8,17 @@
 //! [`move_plan`], task P.3a), shared by the core, the demo data and the apps.
 //!
 //! GitHub filter lists are created, changed, deleted and tried out here as well
-//! ([`FilterDefinition`], [`FilterPreview`]; the dialog of task G.4).
+//! ([`FilterDefinition`], [`FilterPreview`]; the dialog of task G.4), and the repositories, labels,
+//! milestones and people the dialog offers are read here ([`GitHubRepo`], [`GitHubRepoDetails`];
+//! task G.9).
 
 use std::cmp::Ordering;
 use std::future::Future;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
+use crate::model::GitHubLabel;
 use crate::{Collection, Event, PimAccount, ProviderError, Todo};
 
 pub trait PimSource: Send + Sync {
@@ -166,6 +170,63 @@ pub trait PimSource: Send + Sync {
         account: String,
         queries: Vec<String>,
     ) -> impl Future<Output = Result<FilterPreview, ProviderError>> + Send;
+
+    /// The repositories the GitHub account `account` (`github:<login>`) reaches
+    /// (`tasks.list_github_repos`, task G.9; the repository field of the dialog of task G.11): its
+    /// own, those it collaborates on and those of its organisations, archived ones left out, the
+    /// most recently changed first. For a client key only those in its selection.
+    ///
+    /// The core keeps the answer until the next refresh of the filter lists (every five minutes,
+    /// `accounts.sync`), so asking each time the dialog opens is cheap.
+    ///
+    /// [`ProviderError::Auth`] / [`ProviderError::Offline`] when GitHub refuses the token or cannot
+    /// be reached; [`ProviderError::Other`] with the core's message for an account that is no
+    /// connected GitHub account (`not-found`), one without a token on this device
+    /// (`not-connected`) and an answer GitHub could not give.
+    fn list_github_repos(&self, account: String)
+    -> impl Future<Output = Result<Vec<GitHubRepo>, ProviderError>> + Send;
+
+    /// What can be picked in the repository `repo` (`owner/name`, as
+    /// [`PimSource::list_github_repos`] lists it) of the GitHub account `account`
+    /// (`tasks.describe_github_repo`, task G.9): its labels with their colours, its open
+    /// milestones and the people issues can be assigned to, read in one call to GitHub and kept
+    /// like [`PimSource::list_github_repos`].
+    ///
+    /// [`ProviderError::Auth`] / [`ProviderError::Offline`] as above; [`ProviderError::Other`]
+    /// with the core's message for a repository GitHub does not have, the token does not reach or
+    /// a client may not see (`not-found`), a `repo` that is not `owner/name` (`error`), and for the
+    /// account as above.
+    fn describe_github_repo(
+        &self,
+        account: String,
+        repo: String,
+    ) -> impl Future<Output = Result<GitHubRepoDetails, ProviderError>> + Send;
+}
+
+/// One repository a GitHub account reaches ([`PimSource::list_github_repos`],
+/// `tasks.list_github_repos`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitHubRepo {
+    /// `owner/name` as GitHub writes it (`mahype/TorroWorkplace`): what
+    /// [`PimSource::describe_github_repo`] and a search's `repo:` take.
+    pub repo: String,
+    /// Only people given access see it.
+    pub private: bool,
+}
+
+/// What can be picked in one repository ([`PimSource::describe_github_repo`],
+/// `tasks.describe_github_repo`): the values a filter list's labels, milestone and assignee are
+/// chosen from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitHubRepoDetails {
+    /// `owner/name` as GitHub writes it, which may differ in case from what was asked for.
+    pub repo: String,
+    /// Its labels by name (at most 100), each with its colour as `#rrggbb`.
+    pub labels: Vec<GitHubLabel>,
+    /// Titles of its open milestones (at most 100), by due date as GitHub sorts them.
+    pub milestones: Vec<String>,
+    /// Logins of the people issues can be assigned to (at most 100).
+    pub assignees: Vec<String>,
 }
 
 /// What a GitHub filter list is made of, as the dialog of task G.4 sends it to

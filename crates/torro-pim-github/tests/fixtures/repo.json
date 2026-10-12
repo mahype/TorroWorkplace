@@ -1,0 +1,27 @@
+{
+  "data": {
+    "repository": {
+      "nameWithOwner": "mahype/TorroWorkplace",
+      "labels": {
+        "nodes": [
+          { "name": "bug", "color": "d73a4a" },
+          { "name": "enhancement", "color": "a2eeef" },
+          { "name": "good first issue", "color": "7057ff" }
+        ]
+      },
+      "milestones": {
+        "nodes": [
+          { "title": "v0.4" },
+          { "title": "v0.5" }
+        ]
+      },
+      "assignableUsers": {
+        "nodes": [
+          { "login": "mahype" },
+          null,
+          { "login": "octocat" }
+        ]
+      }
+    }
+  }
+}

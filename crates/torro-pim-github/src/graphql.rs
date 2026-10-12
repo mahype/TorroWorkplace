@@ -6,15 +6,18 @@
 //! sub-issue parent come in the same call. Closing and reopening an issue (task G.5) takes two:
 //! [`issue_id_body`] (the issue's node id, which the mutations need) and [`set_done_body`]
 //! (`closeIssue` with `stateReason: COMPLETED`, or `reopenIssue`), which answers with the issue
-//! as it is afterwards. Values travel as GraphQL variables, never inside the document. Answers
-//! are read by [`read_search`], [`read_items`], [`read_issue_id`] and [`read_set_done`]; GitHub's
-//! GraphQL documentation describes their shape, and `tests/fixtures/` holds answers of that
-//! shape.
+//! as it is afterwards. The dialog of a filter list (task G.9) reads the repositories the account
+//! reaches ([`repos_body`], page by page) and, in one call, a repository's labels, open milestones
+//! and assignable people ([`repo_body`]). Values travel as GraphQL variables, never inside the
+//! document. Answers are read by [`read_search`], [`read_items`], [`read_issue_id`],
+//! [`read_set_done`], [`read_repos`] and [`read_repo`]; GitHub's GraphQL documentation describes
+//! their shape, and `tests/fixtures/` holds answers of that shape.
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use torro_pim::model::{ChecksState, GitHubKind, GitHubLabel, GitHubState, ReviewState};
+use torro_pim::source::{GitHubRepo, GitHubRepoDetails};
 
 use crate::Error;
 use crate::address::IssueRef;
@@ -162,6 +165,97 @@ pub fn read_set_done(answer: &Value, done: bool) -> Result<Item, Error> {
         .ok_or_else(|| Error::Github("GitHub sent an answer without the issue.".into()))
 }
 
+/// Whose repositories [`repos_body`] lists: the account's own, those it collaborates on and those
+/// of its organisations, both as `affiliations` and `ownerAffiliations` (GitHub's default for the
+/// latter leaves the organisations' repositories out).
+const AFFILIATIONS: &str = "[OWNER, COLLABORATOR, ORGANIZATION_MEMBER]";
+
+/// One page of the repositories the token's account reaches (`viewer.repositories`, task G.9): at
+/// most `first` (GitHub allows 100) after the cursor `after`, the most recently changed first.
+/// Archived ones are asked for too and left out by [`read_repos`], so the document works whatever
+/// filters GitHub's `repositories` field takes.
+pub fn repos_body(first: usize, after: Option<&str>) -> Value {
+    let document = format!(
+        "query($first: Int!, $after: String) {{ viewer {{ repositories(first: $first, after: $after, \
+         affiliations: {AFFILIATIONS}, ownerAffiliations: {AFFILIATIONS}, \
+         orderBy: {{ field: UPDATED_AT, direction: DESC }}) {{ pageInfo {{ hasNextPage endCursor }} \
+         nodes {{ nameWithOwner isPrivate isArchived }} }} }} }}"
+    );
+    json!({ "query": document, "variables": { "first": first, "after": after } })
+}
+
+/// One page of repositories, as [`read_repos`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoPage {
+    /// The repositories of the page that are not archived, in GitHub's order.
+    pub repos: Vec<GitHubRepo>,
+    /// The cursor of the next page; `None` on the last one.
+    pub next: Option<String>,
+}
+
+/// GitHub's answer to [`repos_body`]. Any error in it fails the page.
+pub fn read_repos(answer: &Value) -> Result<RepoPage, Error> {
+    if let Some(message) = first_error(answer, |_| true) {
+        return Err(Error::Github(format!("GitHub could not list the repositories: {message}")));
+    }
+    let repos: Repositories = answer
+        .pointer("/data/viewer/repositories")
+        .cloned()
+        .and_then(|repos| serde_json::from_value(repos).ok())
+        .ok_or_else(|| Error::Github("GitHub sent an answer without repositories.".into()))?;
+    let next = repos.page_info.end_cursor.filter(|_| repos.page_info.has_next_page);
+    let repos = repos
+        .nodes
+        .into_iter()
+        .flatten()
+        .filter(|repo| !repo.is_archived)
+        .map(|repo| GitHubRepo { repo: repo.name_with_owner, private: repo.is_private })
+        .collect();
+    Ok(RepoPage { repos, next })
+}
+
+/// How many labels, open milestones and assignable people [`repo_body`] asks for: one page each,
+/// so it stays one call.
+const REPO_VALUES: usize = 100;
+
+/// Labels (by name), open milestones (by due date) and the people issues can be assigned to of
+/// the repository `owner`/`name`, in one call (task G.9).
+pub fn repo_body(owner: &str, name: &str) -> Value {
+    let document = format!(
+        "query($o: String!, $r: String!) {{ repository(owner: $o, name: $r) {{ nameWithOwner \
+         labels(first: {REPO_VALUES}, orderBy: {{ field: NAME, direction: ASC }}) {{ nodes {{ name color }} }} \
+         milestones(first: {REPO_VALUES}, states: [OPEN], orderBy: {{ field: DUE_DATE, direction: ASC }}) \
+         {{ nodes {{ title }} }} assignableUsers(first: {REPO_VALUES}) {{ nodes {{ login }} }} }} }}"
+    );
+    json!({ "query": document, "variables": { "o": owner, "r": name } })
+}
+
+/// GitHub's answer to [`repo_body`]: [`Error::NotFound`] when GitHub has no such repository or
+/// the token does not reach it (`NOT_FOUND`, or no repository in the answer); any other error is
+/// [`Error::Github`] with GitHub's message. Label colours come as `#rrggbb`.
+pub fn read_repo(answer: &Value) -> Result<GitHubRepoDetails, Error> {
+    if first_error(answer, |kind| kind == Some("NOT_FOUND")).is_some() {
+        return Err(Error::NotFound);
+    }
+    if let Some(message) = first_error(answer, |_| true) {
+        return Err(Error::Github(format!("GitHub could not read the repository: {message}")));
+    }
+    let node = answer.pointer("/data/repository").filter(|node| !node.is_null()).ok_or(Error::NotFound)?;
+    let repo: Described = serde_json::from_value(node.clone())
+        .map_err(|_| Error::Github("GitHub sent an answer without the repository.".into()))?;
+    Ok(GitHubRepoDetails {
+        repo: repo.name_with_owner,
+        labels: repo
+            .labels
+            .into_iter()
+            .flat_map(Connection::into_nodes)
+            .map(|label| GitHubLabel { name: label.name, color: label.color.map(|c| format!("#{c}")) })
+            .collect(),
+        milestones: repo.milestones.into_iter().flat_map(Connection::into_nodes).map(|m| m.title).collect(),
+        assignees: repo.assignable_users.into_iter().flat_map(Connection::into_nodes).map(|u| u.login).collect(),
+    })
+}
+
 /// The first error of an answer to [`issue_id_body`] or [`set_done_body`], by its `type`:
 /// `FORBIDDEN` and `INSUFFICIENT_SCOPES` are [`Error::Forbidden`] (the token may not write
 /// issues there), `NOT_FOUND` is [`Error::NotFound`], anything else [`Error::Github`] with
@@ -220,6 +314,40 @@ impl<T> Connection<T> {
 #[serde(rename_all = "camelCase")]
 struct Repository {
     name_with_owner: String,
+}
+
+/// `viewer.repositories` as [`repos_body`] asks for it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Repositories {
+    page_info: PageInfo,
+    #[serde(default)]
+    nodes: Vec<Option<RepoNode>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoNode {
+    name_with_owner: String,
+    #[serde(default)]
+    is_private: bool,
+    #[serde(default)]
+    is_archived: bool,
+}
+
+/// A repository as [`repo_body`] asks for it.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Described {
+    name_with_owner: String,
+    labels: Option<Connection<Label>>,
+    milestones: Option<Connection<OpenMilestone>>,
+    assignable_users: Option<Connection<User>>,
+}
+
+#[derive(Deserialize)]
+struct OpenMilestone {
+    title: String,
 }
 
 #[derive(Deserialize)]
@@ -367,6 +495,10 @@ pub(crate) mod tests {
             "reopen_issue" => include_str!("../tests/fixtures/reopen_issue.json"),
             "close_insufficient_scopes" => include_str!("../tests/fixtures/close_insufficient_scopes.json"),
             "close_forbidden" => include_str!("../tests/fixtures/close_forbidden.json"),
+            "repos_page1" => include_str!("../tests/fixtures/repos_page1.json"),
+            "repos_page2" => include_str!("../tests/fixtures/repos_page2.json"),
+            "repo" => include_str!("../tests/fixtures/repo.json"),
+            "repo_not_found" => include_str!("../tests/fixtures/repo_not_found.json"),
             other => panic!("no fixture {other}"),
         };
         serde_json::from_str(text).expect("valid fixture")
@@ -481,5 +613,68 @@ pub(crate) mod tests {
         let err = read_set_done(&limited, true).expect_err("an error");
         assert_eq!(err.code(), "error");
         assert!(err.to_string().contains("rate limit"), "the suite reads GitHub's words: {err}");
+    }
+
+    #[test]
+    fn repositories_are_read_without_archived_ones_with_their_cursor() {
+        let page = read_repos(&fixture("repos_page1")).expect("a page");
+        let repo = |name: &str, private| GitHubRepo { repo: name.into(), private };
+        assert_eq!(page.repos, [repo("mahype/TorroWorkplace", false), repo("awesome-org/website", true)]);
+        assert_eq!(page.next.as_deref(), Some("Y3Vyc29yOnYyOpK5MjAyNi0xMC0xMlQwOTowMDowMCswMjowMM4AAAAB"));
+        let last = read_repos(&fixture("repos_page2")).expect("a page");
+        assert_eq!((last.repos, last.next), (vec![repo("mahype/torro-design", true)], None));
+        let limited = json!({"errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]});
+        assert_eq!(read_repos(&limited).map_err(|err| err.code()), Err("error"));
+        assert!(read_repos(&json!({"data": {"viewer": null}})).is_err());
+    }
+
+    #[test]
+    fn the_repositories_document_asks_for_every_affiliation_newest_first() {
+        let body = repos_body(100, Some("abc"));
+        assert_eq!(body["variables"], json!({"first": 100, "after": "abc"}));
+        let document = body["query"].as_str().expect("document");
+        for part in [
+            "viewer { repositories(",
+            "affiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]",
+            "ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]",
+            "orderBy: { field: UPDATED_AT, direction: DESC }",
+            "isArchived",
+        ] {
+            assert!(document.contains(part), "{part} in {document}");
+        }
+        assert_eq!(repos_body(100, None)["variables"]["after"], Value::Null);
+    }
+
+    #[test]
+    fn a_repository_is_described_in_one_call() {
+        let body = repo_body("mahype", "TorroWorkplace");
+        assert_eq!(body["variables"], json!({"o": "mahype", "r": "TorroWorkplace"}));
+        let document = body["query"].as_str().expect("document");
+        assert!(!document.contains("mahype"), "values are variables: {document}");
+        for part in ["labels(first: 100", "milestones(first: 100, states: [OPEN]", "assignableUsers(first: 100)"] {
+            assert!(document.contains(part), "{part} in {document}");
+        }
+
+        let described = read_repo(&fixture("repo")).expect("the repository");
+        assert_eq!(described.repo, "mahype/TorroWorkplace");
+        let label = |name: &str, color: &str| GitHubLabel { name: name.into(), color: Some(color.into()) };
+        assert_eq!(
+            described.labels,
+            [label("bug", "#d73a4a"), label("enhancement", "#a2eeef"), label("good first issue", "#7057ff")]
+        );
+        assert_eq!(described.milestones, ["v0.4", "v0.5"]);
+        assert_eq!(described.assignees, ["mahype", "octocat"]);
+    }
+
+    #[test]
+    fn a_repository_github_does_not_have_is_not_found_and_other_errors_fail() {
+        assert_eq!(read_repo(&fixture("repo_not_found")), Err(Error::NotFound));
+        assert_eq!(read_repo(&json!({"data": {"repository": null}})), Err(Error::NotFound));
+        let limited = json!({"data": null, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]});
+        let err = read_repo(&limited).expect_err("an error");
+        assert_eq!(err.code(), "error");
+        assert!(err.to_string().contains("rate limit"), "{err}");
+        let bare = read_repo(&json!({"data": {"repository": {"nameWithOwner": "a/b"}}})).expect("no values");
+        assert_eq!(bare, GitHubRepoDetails { repo: "a/b".into(), ..GitHubRepoDetails::default() });
     }
 }

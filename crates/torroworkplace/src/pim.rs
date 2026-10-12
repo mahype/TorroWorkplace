@@ -68,6 +68,12 @@
 //!   write to a list could otherwise place a link to the user's private issue there and read its
 //!   title once the core wrote it in – or have the user's tick close an issue they never meant
 //!   (task G.6c).
+//! - **What the filter list dialog offers** (task G.9): the repositories a GitHub account reaches
+//!   ([`PimService::list_github_repos`]) and a repository's labels, open milestones and assignable
+//!   people ([`PimService::describe_github_repo`]), read with the account's token and kept in its
+//!   [`FilterSlot`] until the next refresh of its filter lists. A client sees only the
+//!   repositories it reaches; one outside them is `not-found` before GitHub is asked, and
+//!   GitHub's own words never reach it ([`GITHUB_READ_FAILED`]).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -82,7 +88,7 @@ use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::model::{GitHubKind, GitHubState, Link};
-use torro_pim::source::move_plan;
+use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
 use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, ProviderError, Todo, combined_state};
 use torro_pim_caldav::CalDavClient;
 use torro_pim_caldav::nextcloud;
@@ -287,7 +293,12 @@ impl State {
         match self.filters.iter().position(|slot| slot.account == account) {
             Some(at) => &mut self.filters[at],
             None => {
-                self.filters.push(FilterSlot { account: account.to_string(), lists: Vec::new() });
+                self.filters.push(FilterSlot {
+                    account: account.to_string(),
+                    lists: Vec::new(),
+                    repos: None,
+                    described: HashMap::new(),
+                });
                 let last = self.filters.len() - 1;
                 &mut self.filters[last]
             }
@@ -295,12 +306,21 @@ impl State {
     }
 }
 
-/// The filter lists of one GitHub account (task G.2).
+/// The filter lists of one GitHub account (task G.2), and what its filter list dialog last read
+/// from GitHub (task G.9).
 #[derive(Debug)]
 struct FilterSlot {
     /// `github:<login>`.
     account: String,
     lists: Vec<FilterCache>,
+    /// The repositories the account reaches, as `tasks.list_github_repos` last read them; `None`
+    /// until then. For everyone: a client's view is filtered on the way out. Dropped when the
+    /// filter lists are refreshed ([`PimService::refresh_filter_lists`]), so it is never older
+    /// than one refresh period.
+    repos: Option<Vec<GitHubRepo>>,
+    /// What `tasks.describe_github_repo` last read, by repository as asked for in lower case
+    /// (GitHub ignores case); dropped like `repos`.
+    described: HashMap<String, GitHubRepoDetails>,
 }
 
 /// One filter list: its definition, how `tasks.list_lists` shows it and what GitHub last found.
@@ -722,6 +742,12 @@ impl PimService {
                 }
                 let outside = address::issue_ref(url).is_some_and(|issue| !reach.reaches_repo(&issue.repo));
                 return outside.then(|| url.clone());
+            }
+            // The handler leaves out the repositories outside the client's; one it names is
+            // `not-found` before GitHub is asked (task G.9).
+            Request::ListGithubRepos { .. } => return None,
+            Request::DescribeGithubRepo { repo, .. } => {
+                return (!reach.reaches_repo(repo.trim())).then(|| repo.clone());
             }
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
@@ -1721,6 +1747,13 @@ impl PimService {
     /// cache and fetches each from GitHub with `api`. Without `api` (no token) the lists keep
     /// what they had and show a problem. A file that cannot be read changes nothing.
     pub async fn refresh_filter_lists(&self, account: &str, api: Option<&Api>) {
+        // What the filter list dialog read is kept until here (task G.9).
+        {
+            let mut state = self.state.write().await;
+            let slot = state.filter_slot_mut(account);
+            slot.repos = None;
+            slot.described.clear();
+        }
         let file = match self.read_filters() {
             Ok(file) => file,
             Err(err) => {
@@ -2016,6 +2049,70 @@ impl PimService {
         all.truncate(PREVIEW_ITEMS);
         let todos = item::todos(&all, "").iter().filter_map(|todo| reach.todo_for(todo)).collect();
         Response::FilterPreview { matches, truncated, todos }
+    }
+
+    /// `tasks.list_github_repos` for the GitHub account `account`, which the core knows: what
+    /// [`FilterSlot::repos`] holds since the last refresh, else asked of GitHub with `api` and
+    /// kept. Answered as `reach` may see it: a client only the repositories it reaches
+    /// ([`Reach::reaches_repo`]), and its failures with fixed messages ([`read_message`]).
+    pub async fn list_github_repos(&self, account: &str, api: &Api, reach: Reach<'_>) -> Response {
+        let cached = self
+            .state
+            .read()
+            .await
+            .filters
+            .iter()
+            .find(|slot| slot.account == account)
+            .and_then(|slot| slot.repos.clone());
+        let repos = match cached {
+            Some(repos) => repos,
+            None => match api.repos().await {
+                Ok(repos) => {
+                    self.state.write().await.filter_slot_mut(account).repos = Some(repos.clone());
+                    repos
+                }
+                Err(err) => return error(err.code(), read_message(reach, &err)),
+            },
+        };
+        Response::GithubRepos { repos: repos.into_iter().filter(|repo| reach.reaches_repo(&repo.repo)).collect() }
+    }
+
+    /// `tasks.describe_github_repo` for the repository `repo` (`owner/name`) of the GitHub
+    /// account `account`, which the core knows: what [`FilterSlot::described`] holds since the
+    /// last refresh, else asked of GitHub with `api` (one call) and kept.
+    ///
+    /// A repository outside the reach of a client is `not-found` before GitHub is asked (the core
+    /// checked that already, [`PimService::out_of_reach`]; again here for an approved run), and so
+    /// is one GitHub answers under a name outside it (it follows a renamed repository). GitHub's
+    /// `NOT_FOUND` is `not-found` with the core's message; a `repo` that is not `owner/name` is
+    /// `error`.
+    pub async fn describe_github_repo(&self, account: &str, repo: &str, api: &Api, reach: Reach<'_>) -> Response {
+        let repo = repo.trim();
+        if !reach.reaches_repo(repo) {
+            return no_repo(repo);
+        }
+        let key = repo.to_ascii_lowercase();
+        let cached = {
+            let state = self.state.read().await;
+            let slot = state.filters.iter().find(|slot| slot.account == account);
+            slot.and_then(|slot| slot.described.get(&key).cloned())
+        };
+        let details = match cached {
+            Some(details) => details,
+            None => match api.describe_repo(repo).await {
+                Ok(details) => {
+                    self.state.write().await.filter_slot_mut(account).described.insert(key, details.clone());
+                    details
+                }
+                Err(torro_pim_github::Error::NotFound) => return no_repo(repo),
+                Err(err) => return error(err.code(), read_message(reach, &err)),
+            },
+        };
+        if !reach.reaches_repo(&details.repo) {
+            return no_repo(repo);
+        }
+        let GitHubRepoDetails { repo, labels, milestones, assignees } = details;
+        Response::GithubRepo { repo, labels, milestones, assignees }
     }
 
     /// Fetches the list `list` of `account` and keeps what came, unless its definition changed
@@ -2543,6 +2640,26 @@ fn change_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
 }
 
 /// The answer for a collection that is no filter list: `not-found`.
+/// What a client reads when reading repositories from GitHub failed (task G.9): GitHub's own words
+/// could name repositories it may not see.
+pub const GITHUB_READ_FAILED: &str = "GitHub could not be read. Try again later.";
+
+/// The message of a failure to read repositories from GitHub for `reach`: the whole of it for the
+/// suite, for a client [`GITHUB_READ_FAILED`] instead of GitHub's own words; the core's fixed
+/// texts (token refused, offline, a name that is not `owner/name`) for both.
+fn read_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
+    match (reach, err) {
+        (Reach::Client(_), torro_pim_github::Error::Github(_)) => GITHUB_READ_FAILED.to_string(),
+        _ => err.to_string(),
+    }
+}
+
+/// The answer for a repository GitHub does not have, the token does not reach or a client may not
+/// see: the same `not-found` for all three.
+fn no_repo(repo: &str) -> Response {
+    error("not-found", format!("no repository {repo:?}"))
+}
+
 fn no_filter_list(collection: &str) -> Response {
     error("not-found", format!("no filter list {collection:?}"))
 }

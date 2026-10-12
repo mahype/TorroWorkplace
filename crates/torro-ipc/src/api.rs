@@ -706,6 +706,8 @@ impl Request {
             Request::UpdateFilterList { .. } => &UPDATE_FILTER_LIST,
             Request::DeleteFilterList { .. } => &DELETE_FILTER_LIST,
             Request::PreviewFilter { .. } => &PREVIEW_FILTER,
+            Request::ListGithubRepos { .. } => &LIST_GITHUB_REPOS,
+            Request::DescribeGithubRepo { .. } => &DESCRIBE_GITHUB_REPO,
             Request::UnpinIssue { .. } => &UNPIN_ISSUE,
             Request::AddLink { .. } => &ADD_LINK,
             Request::Settings => &GET_SETTINGS,
@@ -788,6 +790,8 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_FILTER_LIST,
     &DELETE_FILTER_LIST,
     &PREVIEW_FILTER,
+    &LIST_GITHUB_REPOS,
+    &DESCRIBE_GITHUB_REPO,
     &UNPIN_ISSUE,
     &ADD_LINK,
     &LIST_ACCOUNTS,
@@ -1075,6 +1079,32 @@ static PREVIEW_FILTER: Command = Command {
                   saving anything and returns how many issues and pull requests match and the first 20 of them as \
                   tasks. A key limited to some repositories must name granted ones in every search, as for \
                   create_filter_list, else `forbidden` before GitHub is asked; it sees only matches in them.",
+};
+
+// What the dialog of a filter list offers to pick (task G.9): read with the account's token, so a
+// client sees only the repositories of `Rights::github_repos`.
+
+static LIST_GITHUB_REPOS: Command = Command {
+    name: "tasks.list_github_repos",
+    area: Area::Github,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the repositories a GitHub account (`github:<login>`) reaches: its own, those it \
+                  collaborates on and those of its organisations, without archived ones, the most recently \
+                  changed first, each as `owner/name` with whether it is private. Use a `repo` from here in \
+                  describe_github_repo and in the `repo:` of a filter list's search. A key limited to some \
+                  repositories sees only those. Kept until the next refresh (five minutes or accounts.sync).",
+};
+
+static DESCRIBE_GITHUB_REPO: Command = Command {
+    name: "tasks.describe_github_repo",
+    area: Area::Github,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Returns what can be picked in one repository (`owner/name`) of a GitHub account: its labels \
+                  with their colours, its open milestones and the logins issues can be assigned to, at most 100 \
+                  of each, for the `label:`, `milestone:` and `assignee:` of a filter list's search. A repository \
+                  GitHub does not have, or one outside a key's repositories, is `not-found`.",
 };
 
 static UNPIN_ISSUE: Command = Command {
@@ -1600,6 +1630,8 @@ mod tests {
             },
             Request::DeleteFilterList { collection: "github:mahype/00ff".into() },
             Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] },
+            Request::ListGithubRepos { account: "github:mahype".into() },
+            Request::DescribeGithubRepo { account: "github:mahype".into(), repo: "mahype/TorroWorkplace".into() },
             Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::AddLink { collection: "/tasks/home/".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::Settings,
@@ -1950,6 +1982,8 @@ mod tests {
                 "tasks.update_filter_list",
                 "tasks.delete_filter_list",
                 "tasks.preview_filter",
+                "tasks.list_github_repos",
+                "tasks.describe_github_repo",
                 "tasks.unpin_issue"
             ]
         );
@@ -1961,6 +1995,24 @@ mod tests {
         rights.areas.remove(&Area::Github);
         let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
         assert!(!rights.allows(preview.operation()));
+    }
+
+    #[test]
+    fn reading_repositories_needs_read_access_to_github_only() {
+        let account = || "github:mahype".to_string();
+        let requests = [
+            Request::ListGithubRepos { account: account() },
+            Request::DescribeGithubRepo { account: account(), repo: "mahype/TorroWorkplace".into() },
+        ];
+        for (request, name) in requests.iter().zip(["tasks.list_github_repos", "tasks.describe_github_repo"]) {
+            let operation = request.operation();
+            assert_eq!((operation.name(), operation.area(), operation.access), (name, Area::Github, Access::Read));
+            assert!(RightsTemplate::ReadOnly.rights().allows(operation), "{name}");
+            let mut tasks_only = RightsTemplate::FullAccess.rights();
+            tasks_only.areas.remove(&Area::Github);
+            assert!(!tasks_only.allows(operation), "{name}: rights in `tasks` alone do not open it");
+        }
+        assert_eq!((LIST_GITHUB_REPOS.mcp, DESCRIBE_GITHUB_REPO.mcp), (Mcp::Tool, Mcp::Tool));
     }
 
     #[test]
