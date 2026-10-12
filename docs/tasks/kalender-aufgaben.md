@@ -468,7 +468,7 @@ entfernt Einträge, die nicht mehr gebraucht werden).
 danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
 
 ### K.28 Radar: ruhige Mitte, ohne „freie Zeit“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** K.25, K.27 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`
   (nur `middle`, `free_until`, `free_time`, `free_note`, `Plan::free`/`running`/`next`/`next_inside`/
   `all_day`, Kopfkommentar, Tests dazu), `crates/torrocalendar/src/views/radar/layout.rs` (nur
