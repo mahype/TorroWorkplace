@@ -443,7 +443,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung Mini/Leiste, Tests der Nachrichten.
 
 ### M5.1 Steuerzentrale: Mail-Konto im Assistenten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.7, M7.2 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts}.rs`
 - **Oberfläche:** Der Anbieter aus M7.2 heißt „Mail account“. Schritt 1 Adresse → `accounts.discover_services`;
   gefundener Anbieter; „Advanced“ klappt IMAP/SMTP (Host, Port, Sicherheit), Anmeldename und CalDAV-URL auf

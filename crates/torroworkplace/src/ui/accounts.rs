@@ -338,6 +338,7 @@ pub fn provider_name(kind: &str) -> String {
     match kind {
         "nextcloud" => tr("Nextcloud").to_string(),
         "caldav" => tr("CalDAV").to_string(),
+        "mail" => tr("Mail").to_string(),
         "github" => tr("GitHub").to_string(),
         other => other.to_string(),
     }
@@ -868,6 +869,7 @@ mod tests {
     fn provider_names() {
         assert_eq!(provider_name("nextcloud"), tr("Nextcloud"));
         assert_eq!(provider_name("github"), tr("GitHub"));
+        assert_eq!(provider_name("mail"), tr("Mail"), "a mail account is not shown as the raw kind");
         assert_eq!(provider_name("slack"), "slack");
     }
 

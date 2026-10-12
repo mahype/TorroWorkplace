@@ -15,23 +15,28 @@
 //!    is the one confirmation; the core runs `gh auth token`, never this window), "Paste a token"
 //!    leads to a masked field with a link to GitHub's token page (scope `repo` preselected) and
 //!    sends `Request::SetGithubToken`. Both wait in **Checking** for the core's answer.
-//! 4. Mail provider (task M7.2): the path of [`MAIL_STEPS`] – **Address** (an e-mail address;
+//! 4. Mail account (tasks M7.2, M5.1): the path of [`MAIL_STEPS`] – **Address** (an e-mail address;
 //!    "Find provider" sends `Request::DiscoverServices`, which is only a search and needs no
-//!    password), the answer shown on the same step (the provider's name, "Server" only under
-//!    "Advanced", or the reason a provider is not supported and nothing more), **Password** (with
-//!    "Use an app password" and a link where a provider asks for one; the user name under
-//!    "Advanced"), **Services** (check boxes from [`Service::ALL`], "Mail" greyed out with "Coming
-//!    later"); "Connect" sends `Request::ConnectCalDav` and waits in **Connecting**. A refused
-//!    password (`auth`) comes back to the Password step, under the field. The steps and the check
-//!    boxes are data, so the mail core (M5.1) adds a step or a service without a new screen.
+//!    password), the answer shown on the same step (the provider's name and what it has – mail,
+//!    calendars and tasks –, a note where mail needs an app password, or the reason a provider is
+//!    not supported and nothing more). "Advanced" opens the IMAP and SMTP servers (host, port,
+//!    security) and the CalDAV address, filled from what was found; it opens by itself when
+//!    nothing was found or the SMTP server is missing, because typing them is the way on.
+//!    **Password** (with "Use an app password" and a link where a provider asks for one; the user
+//!    name under "Advanced"), **Services** (check boxes from [`Service::ALL`]: Mail, Calendars,
+//!    Tasks – the ones the servers have are ticked, the others say "Not found" – and, with Mail,
+//!    the sender name). "Connect" sends `Request::ConnectMail`, or `Request::ConnectCalDav` when
+//!    only calendars and tasks are ticked, and waits in **Connecting**. A refused password
+//!    (`auth`) comes back to the Password step, under the field, with the server that refused it.
+//!    The steps and the check boxes are data, so a step or a service is added without a new screen.
 //! 5. **Done:** "Your calendars and task lists are ready." (Nextcloud), "Signed in to GitHub as
-//!    …" (GitHub) or what the mail provider's server has, and "Done".
+//!    …" (GitHub) or what the mail account's servers have, and "Done".
 //!
 //! How a step learns that it is over:
 //!
 //! - The shell hands every answer to a request to [`answered`] while the dialog is open. GitHub's
 //!   answer is the account or an error; a failed `ConnectNextcloud` (server not found) comes back
-//!   the same way, and so do the answers of the mail provider's two requests. The shell's `send`
+//!   the same way, and so do the answers of the mail account's requests. The shell's `send`
 //!   passes on the message of an error but not its code, so a refused password is recognised by
 //!   the core's own text ([`password_refused`]): both run in the same language.
 //! - The Nextcloud sign-in ends in the browser, so [`observe`] follows it through every reload of
@@ -46,6 +51,7 @@
 //! puts it on the dialog surface over the whole window (`super::dialog`).
 
 use chrono::{DateTime, Utc};
+use iced::Length::FillPortion;
 use iced::widget::space as blank;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
@@ -55,6 +61,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{dialog, style, typo, widgets};
 use torro_ipc::{AccountInfo, Request, Response};
+use torro_mail::{Endpoint, Security};
 use torro_pim::AccountState;
 
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
@@ -91,9 +98,9 @@ enum Step {
     Done,
 }
 
-/// The steps of the mail provider path, in order. Back and Continue walk this list; the mail core
-/// (task M5.1) puts its own step into it (IMAP and SMTP settings come under "Advanced" of the
-/// address step), the screens of the others stay as they are.
+/// The steps of the mail account path, in order. Back and Continue walk this list; the IMAP and
+/// SMTP settings are under "Advanced" of the address step, so a step is added here without a new
+/// screen for the others.
 const MAIL_STEPS: [Step; 3] = [Step::MailAddress, Step::MailPassword, Step::MailServices];
 
 impl Step {
@@ -112,47 +119,50 @@ impl Step {
     }
 }
 
-/// What a mail provider's account can bring to the suite. A row of the services step each.
+/// What a mail account can bring to the suite. A row of the services step each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Service {
+    Mail,
     Calendars,
     Tasks,
-    Mail,
 }
 
 impl Service {
-    const ALL: [Service; 3] = [Service::Calendars, Service::Tasks, Service::Mail];
+    const ALL: [Service; 3] = [Service::Mail, Service::Calendars, Service::Tasks];
 
-    /// Calendars and tasks come over CalDAV; mail comes with the mail core (task M5.1) and is
-    /// listed greyed out until then.
-    fn is_available(self) -> bool {
-        !matches!(self, Service::Mail)
+    /// Mail needs both mail servers, calendars and tasks need the CalDAV address; what the search
+    /// did not find (and nobody typed under "Advanced") is listed greyed out.
+    fn is_available(self, mail: &Mail) -> bool {
+        match self {
+            Service::Mail => mail.servers() == Servers::Ready,
+            Service::Calendars | Service::Tasks => mail.caldav_address().is_some(),
+        }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Service::Mail => tr("Mail"),
             Service::Calendars => tr("Calendars"),
             Service::Tasks => tr("Tasks"),
-            Service::Mail => tr("Mail"),
         }
     }
 
     fn summary(self) -> &'static str {
         match self {
+            Service::Mail => tr("Read and send email"),
             Service::Calendars => tr("Appointments and events"),
             Service::Tasks => tr("To-dos and reminders"),
-            Service::Mail => tr("Read and send email"),
         }
     }
 
     /// The sentence on the last step for this service: whether the server has it.
     fn found_text(self, found: bool) -> &'static str {
         match (self, found) {
+            (Service::Mail, _) => tr("Mail is ready."),
             (Service::Calendars, true) => tr("Calendars are ready."),
             (Service::Calendars, false) => tr("This server has no calendars."),
             (Service::Tasks, true) => tr("Tasks are ready."),
             (Service::Tasks, false) => tr("This server has no task lists."),
-            (Service::Mail, _) => tr("Mail comes later."),
         }
     }
 }
@@ -162,7 +172,7 @@ impl Service {
 pub enum Provider {
     #[default]
     Nextcloud,
-    /// The calendars and tasks of a mail provider (CalDAV, task M7.2); later its mail as well.
+    /// A mail account: its mail, and the calendars and tasks of the same sign-in (tasks M7.2, M5.1).
     Mail,
     GitHub,
     Slack,
@@ -218,28 +228,134 @@ pub struct State {
     mail: Mail,
 }
 
-/// What the search for a mail provider found ([`Request::DiscoverServices`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Found {
-    /// A calendar service: the provider's name and its best address.
-    Provider { name: String, url: String },
-    /// A provider that does not work with Torro Workplace, and why (in the core's language).
-    Unsupported { name: String, reason: String },
-    /// Nothing answered for this domain; the server can still be typed under "Advanced".
-    Nothing,
+/// The two mail servers of an account.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Server {
+    /// Incoming mail.
+    Imap,
+    /// Outgoing mail (submission).
+    Smtp,
 }
 
-impl Found {
-    fn of(provider: &str, urls: &[String], unsupported: &Option<String>) -> Found {
-        match (unsupported, urls.first()) {
-            (Some(reason), _) => Found::Unsupported { name: provider.to_string(), reason: reason.clone() },
-            (None, Some(url)) => Found::Provider { name: provider.to_string(), url: url.clone() },
-            (None, None) => Found::Nothing,
+impl Server {
+    /// The usual port for `security`: IMAP 993 (TLS) or 143 (STARTTLS), SMTP 465 or 587.
+    fn default_port(self, security: Security) -> u16 {
+        match (self, security) {
+            (Server::Imap, Security::Tls) => 993,
+            (Server::Imap, Security::StartTls) => 143,
+            (Server::Smtp, Security::Tls) => 465,
+            (Server::Smtp, Security::StartTls) => 587,
+        }
+    }
+
+    /// What most providers use when the search found nothing: IMAP over TLS, SMTP with STARTTLS.
+    fn default_security(self) -> Security {
+        match self {
+            Server::Imap => Security::Tls,
+            Server::Smtp => Security::StartTls,
         }
     }
 }
 
-/// What the server of a signed-in account has ([`Response::Connected`]).
+/// One mail server as typed under "Advanced": the port stays text until it is sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ServerFields {
+    host: String,
+    port: String,
+    security: Security,
+}
+
+impl ServerFields {
+    /// No host yet, with the usual port and security of `server`.
+    fn empty(server: Server) -> ServerFields {
+        let security = server.default_security();
+        ServerFields { host: String::new(), port: server.default_port(security).to_string(), security }
+    }
+
+    /// The fields of a server the search found.
+    fn of(endpoint: &Endpoint) -> ServerFields {
+        ServerFields { host: endpoint.host.clone(), port: endpoint.port.to_string(), security: endpoint.security }
+    }
+
+    /// Nothing was entered for this server.
+    fn is_blank(&self) -> bool {
+        self.host.trim().is_empty()
+    }
+
+    /// The server as the request wants it; `None` without a host or with a port that is no port.
+    fn endpoint(&self) -> Option<Endpoint> {
+        let host = self.host.trim();
+        let port = self.port.trim().parse::<u16>().ok().filter(|port| *port > 0)?;
+        (!host.is_empty()).then(|| Endpoint { host: host.to_string(), port, security: self.security })
+    }
+
+    /// Another security: a port that was the usual one of the old security follows to the usual
+    /// one of the new, so switching to STARTTLS does not leave port 993 behind.
+    fn set_security(&mut self, server: Server, security: Security) {
+        if self.port.trim() == server.default_port(self.security).to_string() {
+            self.port = server.default_port(security).to_string();
+        }
+        self.security = security;
+    }
+}
+
+/// How far the mail servers are filled in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Servers {
+    /// Neither server: no mail from this account (calendars and tasks only).
+    Missing,
+    /// One server, or a port that is no port: the person is on the way to mail and must finish it.
+    Incomplete,
+    /// Both servers, with hosts and ports.
+    Ready,
+}
+
+/// What the search for a mail account found ([`Request::DiscoverServices`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Found {
+    /// The provider's name, or the domain when it is not known.
+    name: String,
+    /// The best CalDAV address of the provider.
+    caldav: Option<String>,
+    /// The mail servers; the SMTP server can be missing while the IMAP server is there.
+    imap: Option<Endpoint>,
+    smtp: Option<Endpoint>,
+    /// The user name to try, when the provider says which.
+    login_hint: Option<String>,
+    /// The provider wants an app password instead of the account password.
+    app_password: bool,
+    /// Why mail or calendars do not work with the usual sign-in, in the core's language. With
+    /// servers it is a hint (Gmail with an app password), without them the end of the way.
+    note: Option<String>,
+}
+
+impl Found {
+    /// Something to sign in to: a mail server or a calendar service.
+    fn is_usable(&self) -> bool {
+        self.imap.is_some() || self.caldav.is_some()
+    }
+
+    /// A provider that does not work with Torro Workplace, and why; nothing more to show.
+    fn is_unsupported(&self) -> bool {
+        !self.is_usable() && self.note.is_some()
+    }
+
+    /// Nothing answered for this domain; the servers can still be typed under "Advanced".
+    fn is_nothing(&self) -> bool {
+        !self.is_usable() && self.note.is_none()
+    }
+
+    /// What the provider has, for the line under its name.
+    fn summary(&self) -> &'static str {
+        match (self.imap.is_some(), self.caldav.is_some()) {
+            (true, true) => tr("Mail, calendars and tasks found"),
+            (true, false) => tr("Mail server found"),
+            _ => tr("Calendar and task service found"),
+        }
+    }
+}
+
+/// What the servers of a signed-in account have ([`Response::Connected`], [`Response::MailConnected`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Connected {
     /// The account as the list shows it, for "Signed in as …".
@@ -248,25 +364,32 @@ struct Connected {
     tasks: bool,
 }
 
-/// The mail provider path: everything typed and learned. The password is a [`Secret`], so even a
+/// The mail account path: everything typed and learned. The password is a [`Secret`], so even a
 /// `Debug` of the dialog shows none.
 #[derive(Debug)]
 struct Mail {
     address: String,
     /// The answer of the search for `address`; any edit of the address clears it.
     found: Option<Found>,
-    /// The server under "Advanced": the address found, or one typed when nothing was found.
-    server: String,
-    /// The user name under "Advanced"; blank means the e-mail address.
+    /// The servers under "Advanced": those found, or the ones typed when nothing was found.
+    imap: ServerFields,
+    smtp: ServerFields,
+    /// The CalDAV address under "Advanced": the one found or one typed; blank for none.
+    caldav: String,
+    /// The user name under "Advanced"; blank means the one the search suggests, else the e-mail
+    /// address.
     login: String,
     password: Secret,
-    /// The core refused the password (`auth`): the text under the password field. Cleared by the
-    /// next edit.
+    /// The core refused the password (`auth`): the text under the password field, naming the
+    /// server. Cleared by the next edit.
     refused: Option<String>,
     /// "Advanced" is open on the current step.
     advanced: bool,
-    /// The services ticked on the last step.
-    chosen: Vec<Service>,
+    /// The name next to the address in sent mail; blank for none.
+    sender_name: String,
+    /// The services ticked on the last step; `None` until the person ticks one, then all the
+    /// servers have are chosen ([`Mail::services`]).
+    chosen: Option<Vec<Service>>,
     connected: Option<Connected>,
 }
 
@@ -275,12 +398,15 @@ impl Default for Mail {
         Mail {
             address: String::new(),
             found: None,
-            server: String::new(),
+            imap: ServerFields::empty(Server::Imap),
+            smtp: ServerFields::empty(Server::Smtp),
+            caldav: String::new(),
             login: String::new(),
             password: Secret::default(),
             refused: None,
             advanced: false,
-            chosen: Service::ALL.into_iter().filter(|service| service.is_available()).collect(),
+            sender_name: String::new(),
+            chosen: None,
             connected: None,
         }
     }
@@ -290,27 +416,75 @@ impl Mail {
     /// The provider's name for the screens: the one found, else the domain of the address.
     fn provider_name(&self) -> String {
         match &self.found {
-            Some(Found::Provider { name, .. }) => name.clone(),
+            Some(found) if !found.name.is_empty() => found.name.clone(),
             _ => domain_of(&self.address).to_string(),
         }
     }
 
-    /// The server to sign in at when the person changed it or nothing was found; `None` lets the
-    /// core try every address it finds for the e-mail address, best first.
-    fn server_override(&self) -> Option<String> {
-        let typed = self.server.trim();
-        let found = match &self.found {
-            Some(Found::Provider { url, .. }) => url.as_str(),
-            _ => "",
-        };
-        (!typed.is_empty() && typed != found).then(|| typed.to_string())
+    /// The server field of `server`.
+    fn server_mut(&mut self, server: Server) -> &mut ServerFields {
+        match server {
+            Server::Imap => &mut self.imap,
+            Server::Smtp => &mut self.smtp,
+        }
     }
 
-    /// The user name to sign in with: the one typed under "Advanced", else the e-mail address.
+    /// How far the two mail servers are filled in.
+    fn servers(&self) -> Servers {
+        match (self.imap.is_blank(), self.smtp.is_blank()) {
+            (true, true) => Servers::Missing,
+            _ if self.imap.endpoint().is_some() && self.smtp.endpoint().is_some() => Servers::Ready,
+            _ => Servers::Incomplete,
+        }
+    }
+
+    /// The two mail servers once both are filled in.
+    fn mail_servers(&self) -> Option<(Endpoint, Endpoint)> {
+        Some((self.imap.endpoint()?, self.smtp.endpoint()?))
+    }
+
+    /// The CalDAV address, if one is there.
+    fn caldav_address(&self) -> Option<&str> {
+        Some(self.caldav.trim()).filter(|address| !address.is_empty())
+    }
+
+    /// The address step has what it needs to go on: mail servers, or a CalDAV address without
+    /// them. Half a mail setup is not enough.
+    fn is_ready(&self) -> bool {
+        match self.servers() {
+            Servers::Ready => true,
+            Servers::Missing => self.caldav_address().is_some(),
+            Servers::Incomplete => false,
+        }
+    }
+
+    /// After a search, "Advanced" opens by itself where the person has to type something.
+    fn needs_input(&self) -> bool {
+        self.found.as_ref().is_some_and(|found| !found.is_unsupported()) && !self.is_ready()
+    }
+
+    /// The services the account takes: the ones ticked, or all of them as long as none was ticked;
+    /// never one the servers lack.
+    fn services(&self) -> Vec<Service> {
+        let chosen = self.chosen.clone().unwrap_or_else(|| Service::ALL.to_vec());
+        Service::ALL.into_iter().filter(|service| chosen.contains(service) && service.is_available(self)).collect()
+    }
+
+    /// The CalDAV address to sign in at when the person changed it or nothing was found; `None`
+    /// lets the core try every address it finds for the e-mail address, best first.
+    fn server_override(&self) -> Option<String> {
+        let typed = self.caldav_address()?;
+        let found = self.found.as_ref().and_then(|found| found.caldav.as_deref()).unwrap_or_default();
+        (typed != found).then(|| typed.to_string())
+    }
+
+    /// The user name to sign in with: the one typed under "Advanced", else the one the provider
+    /// suggests, else the e-mail address.
     fn login_name(&self) -> String {
-        match self.login.trim() {
-            "" => self.address.trim().to_string(),
-            typed => typed.to_string(),
+        match (self.login.trim(), self.found.as_ref().and_then(|found| found.login_hint.as_deref())) {
+            ("", Some(hint)) => hint.to_string(),
+            ("", None) => self.address.trim().to_string(),
+            (typed, _) => typed.to_string(),
         }
     }
 }
@@ -321,17 +495,27 @@ fn domain_of(address: &str) -> &str {
     address.rsplit_once('@').map_or(address, |(_, domain)| domain)
 }
 
-/// The core's text for `auth` ("Password was refused", `pim.rs`). Compared with the message of an
-/// error answer because the shell passes on messages, not codes.
+/// The names of the servers in a refusal of the password (`mail/service.rs`): the same in every
+/// language.
+const SERVER_NAMES: [&str; 3] = ["IMAP", "SMTP", "CalDAV"];
+
+/// The core's text for `auth`: "Password was refused" (`pim.rs`, a CalDAV account) or "The {service}
+/// server refused the password." (`accounts.connect_mail`, naming the server). Compared with the
+/// message of an error answer because the shell passes on messages, not codes.
 fn password_refused(message: &str) -> bool {
     message == tr("Password was refused")
+        || SERVER_NAMES
+            .iter()
+            .any(|service| message == trf("The {service} server refused the password.", &[("service", service)]))
 }
 
 /// Providers that ask for an app password instead of the usual one, with the page of their help
 /// that says how to create it. Matched with the provider's name from the search.
-const APP_PASSWORDS: [(&str, &str); 2] = [
+const APP_PASSWORDS: [(&str, &str); 4] = [
     ("iCloud", "https://support.apple.com/102654"),
     ("Fastmail", "https://www.fastmail.help/hc/en-us/articles/360058752854"),
+    ("Yahoo", "https://help.yahoo.com/kb/SLN15241.html"),
+    ("Gmail", "https://support.google.com/accounts/answer/185833"),
 ];
 
 /// The help page for creating an app password at `provider`, if it asks for one.
@@ -387,12 +571,20 @@ pub enum Message {
     TokenChanged(Secret),
     /// "Create a token on GitHub".
     OpenTokenPage,
-    /// The e-mail address changed (mail provider).
+    /// The e-mail address changed (mail account).
     AddressChanged(String),
-    /// The server under "Advanced" changed (mail provider).
-    MailServerChanged(String),
-    /// The user name under "Advanced" changed (mail provider).
+    /// The host of a mail server under "Advanced" changed.
+    ServerHostChanged(Server, String),
+    /// The port of a mail server under "Advanced" changed.
+    ServerPortChanged(Server, String),
+    /// A mail server's security was picked under "Advanced".
+    ServerSecurityPicked(Server, Security),
+    /// The CalDAV address under "Advanced" changed.
+    CaldavChanged(String),
+    /// The user name under "Advanced" changed.
     LoginChanged(String),
+    /// The sender name on the last step changed.
+    SenderNameChanged(String),
     /// The password field changed. A [`Secret`] like the token.
     PasswordChanged(Secret),
     /// "Advanced" was pressed.
@@ -459,15 +651,38 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         other => other,
     };
     match (state.step, result) {
-        (Step::MailSearching, Ok(Response::Discovery { provider, urls, unsupported, .. })) => {
-            let found = Found::of(provider, urls, unsupported);
-            state.mail.server = match &found {
-                Found::Provider { url, .. } => url.clone(),
-                _ => String::new(),
+        (
+            Step::MailSearching,
+            Ok(Response::Discovery {
+                provider,
+                urls,
+                unsupported,
+                imap,
+                smtp,
+                login_hint,
+                app_password,
+                mail_unsupported,
+            }),
+        ) => {
+            let found = Found {
+                name: provider.clone(),
+                caldav: urls.first().cloned(),
+                imap: imap.clone(),
+                smtp: smtp.clone(),
+                login_hint: login_hint.clone(),
+                app_password: *app_password,
+                // The reason for mail is the one that matters here; the one for calendars only
+                // stands in where mail has none.
+                note: mail_unsupported.clone().or_else(|| unsupported.clone()),
             };
-            // Nothing found: the one way on is the server, so "Advanced" opens by itself.
-            state.mail.advanced = found == Found::Nothing;
-            state.mail.found = Some(found);
+            let mail = &mut state.mail;
+            mail.imap = found.imap.as_ref().map_or_else(|| ServerFields::empty(Server::Imap), ServerFields::of);
+            mail.smtp = found.smtp.as_ref().map_or_else(|| ServerFields::empty(Server::Smtp), ServerFields::of);
+            mail.caldav = found.caldav.clone().unwrap_or_default();
+            mail.found = Some(found);
+            // Where nothing or only half of the servers was found, typing them is the way on, so
+            // "Advanced" opens by itself.
+            mail.advanced = mail.needs_input();
             state.step = Step::MailAddress;
             state.error = None;
             true
@@ -482,7 +697,13 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             state.error = Some(message.clone());
             true
         }
-        (Step::MailConnecting, Ok(Response::Connected { account, calendars, tasks })) => {
+        (
+            Step::MailConnecting,
+            Ok(
+                Response::Connected { account, calendars, tasks }
+                | Response::MailConnected { account, calendars, tasks, .. },
+            ),
+        ) => {
             state.mail.connected =
                 Some(Connected { account: account.label.clone(), calendars: *calendars, tasks: *tasks });
             state.step = Step::Done;
@@ -561,12 +782,28 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.error = None;
             Action::None
         }
-        Message::MailServerChanged(server) => {
-            state.mail.server = server;
+        Message::ServerHostChanged(server, host) => {
+            state.mail.server_mut(server).host = host;
+            Action::None
+        }
+        Message::ServerPortChanged(server, port) => {
+            state.mail.server_mut(server).port = port;
+            Action::None
+        }
+        Message::ServerSecurityPicked(server, security) => {
+            state.mail.server_mut(server).set_security(server, security);
+            Action::None
+        }
+        Message::CaldavChanged(address) => {
+            state.mail.caldav = address;
             Action::None
         }
         Message::LoginChanged(login) => {
             state.mail.login = login;
+            Action::None
+        }
+        Message::SenderNameChanged(name) => {
+            state.mail.sender_name = name;
             Action::None
         }
         Message::PasswordChanged(password) => {
@@ -579,11 +816,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::ToggleService(service) => {
-            if service.is_available() && state.step == Step::MailServices {
-                match state.mail.chosen.iter().position(|chosen| *chosen == service) {
-                    Some(at) => drop(state.mail.chosen.remove(at)),
-                    None => state.mail.chosen.push(service),
+            if service.is_available(&state.mail) && state.step == Step::MailServices {
+                let mut chosen = state.mail.services();
+                match chosen.iter().position(|ticked| *ticked == service) {
+                    Some(at) => drop(chosen.remove(at)),
+                    None => chosen.push(service),
                 }
+                state.mail.chosen = Some(chosen);
             }
             Action::None
         }
@@ -630,12 +869,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     }
 }
 
-/// Moves to `step` of the mail path. "Advanced" starts closed, except where nothing was found and
-/// the server is the way on.
+/// Moves to `step` of the mail path. "Advanced" starts closed, except where the person has to type
+/// the servers (nothing found, or half of them).
 fn go(state: &mut State, step: Step) {
     state.step = step;
     state.error = None;
-    state.mail.advanced = step == Step::MailAddress && state.mail.found == Some(Found::Nothing);
+    state.mail.advanced = step == Step::MailAddress && state.mail.needs_input();
 }
 
 /// Whether Continue does something on `step` of the mail path.
@@ -644,19 +883,18 @@ fn mail_can_continue(state: &State, step: Step) -> bool {
     match step {
         Step::MailAddress => match &mail.found {
             None => !mail.address.trim().is_empty(),
-            Some(Found::Provider { .. }) => true,
-            // Nothing found: only a typed server leads on. A provider that does not work stops here.
-            Some(Found::Nothing) => !mail.server.trim().is_empty(),
-            Some(Found::Unsupported { .. }) => false,
+            // A provider that does not work stops here; else the servers must be there (found or
+            // typed).
+            Some(found) => !found.is_unsupported() && mail.is_ready(),
         },
         Step::MailPassword => !mail.password.is_blank(),
-        Step::MailServices => mail.chosen.iter().any(|service| service.is_available()),
+        Step::MailServices => !mail.services().is_empty(),
         _ => false,
     }
 }
 
 /// Continue on a step of the mail path: search first, then walk [`MAIL_STEPS`]; at the end send
-/// `ConnectCalDav`.
+/// `ConnectMail`, or `ConnectCalDav` when only calendars and tasks are wanted.
 fn continue_mail(state: &mut State, step: Step) -> Action {
     if !mail_can_continue(state, step) {
         return Action::None;
@@ -670,19 +908,43 @@ fn continue_mail(state: &mut State, step: Step) -> Action {
         go(state, next);
         return Action::None;
     }
-    let mail = &mut state.mail;
-    let request = Request::ConnectCalDav {
-        address: mail.address.trim().to_string(),
-        server: mail.server_override(),
-        login_name: mail.login_name(),
-        // Taken, so the dialog keeps no copy; a refusal asks for it again.
-        password: std::mem::take(&mut mail.password),
-        calendars: mail.chosen.contains(&Service::Calendars),
-        tasks: mail.chosen.contains(&Service::Tasks),
-    };
+    let Some(request) = connect_request(&mut state.mail) else { return Action::None };
     state.step = Step::MailConnecting;
     state.error = None;
     Action::Send(request)
+}
+
+/// The request for what the last step chose. The password is taken, so the dialog keeps no copy; a
+/// refusal asks for it again.
+fn connect_request(mail: &mut Mail) -> Option<Request> {
+    let services = mail.services();
+    let calendars = services.contains(&Service::Calendars);
+    let tasks = services.contains(&Service::Tasks);
+    let address = mail.address.trim().to_string();
+    let login_name = mail.login_name();
+    if services.contains(&Service::Mail) {
+        let (imap, smtp) = mail.mail_servers()?;
+        return Some(Request::ConnectMail {
+            address,
+            sender_name: mail.sender_name.trim().to_string(),
+            imap,
+            smtp,
+            login_name,
+            password: std::mem::take(&mut mail.password),
+            calendars,
+            tasks,
+            // The CalDAV address only goes with the services that use it.
+            caldav: mail.caldav_address().filter(|_| calendars || tasks).map(str::to_string),
+        });
+    }
+    Some(Request::ConnectCalDav {
+        address,
+        server: mail.server_override(),
+        login_name,
+        password: std::mem::take(&mut mail.password),
+        calendars,
+        tasks,
+    })
 }
 
 /// Starts Login Flow v2 and notes what the accounts were, so [`observe`] can tell the end.
@@ -770,7 +1032,7 @@ fn done_text(state: &State) -> String {
 fn provider_step() -> Element<'static, Message> {
     let rows = vec![
         provider_row(Provider::Nextcloud, "Nextcloud", tr("Calendars and tasks")),
-        provider_row(Provider::Mail, tr("Mail provider"), tr("Calendars and tasks")),
+        provider_row(Provider::Mail, tr("Mail account"), tr("Mail, calendars and tasks")),
         provider_row(Provider::GitHub, "GitHub", tr("Issues and projects")),
         provider_row(Provider::Slack, "Slack", tr("Mentions and messages")),
         provider_row(Provider::Ai, tr("AI providers"), tr("Summaries and agents")),
@@ -896,7 +1158,7 @@ fn signing_in_step(data: &Data) -> Element<'_, Message> {
     body.push(row![again]).into()
 }
 
-// ----- The mail provider path (task M7.2) ---------------------------------------------------------
+// ----- The mail account path (tasks M7.2, M5.1) ------------------------------------------------------
 
 /// A group with one row of `content`, for a field.
 fn field_group<'a>(
@@ -936,9 +1198,64 @@ fn advanced<'a>(open: bool, content: Element<'a, Message>) -> Element<'a, Messag
     block.into()
 }
 
-/// The e-mail address and, below it, what the search found: the provider's name and "Advanced"
-/// with the server, or the reason a provider does not work and nothing more, or the hint to type
-/// the server when nothing answered.
+/// How the width of the host and port fields relate: a port is a few digits, a host a name.
+const HOST_SHARE: u16 = 3;
+const PORT_SHARE: u16 = 1;
+
+/// One mail server under "Advanced": host and port in one row, the security in the next. Enter in
+/// a field works like Continue.
+fn server_group<'a>(
+    server: Server,
+    fields: &'a ServerFields,
+    title: &'static str,
+    host_placeholder: &'static str,
+    submit: Option<Message>,
+) -> Element<'a, Message> {
+    let host = field(host_placeholder, &fields.host)
+        .on_input(move |host| Message::ServerHostChanged(server, host))
+        .on_submit_maybe(submit.clone())
+        .width(FillPortion(HOST_SHARE));
+    let port = field(tr("Port"), &fields.port)
+        .on_input(move |port| Message::ServerPortChanged(server, port))
+        .on_submit_maybe(submit)
+        .width(FillPortion(PORT_SHARE));
+    // TLS and STARTTLS are the protocols' names, the same in every language.
+    let security = widgets::segmented(
+        [
+            ("TLS", Message::ServerSecurityPicked(server, Security::Tls)),
+            ("STARTTLS", Message::ServerSecurityPicked(server, Security::StartTls)),
+        ],
+        usize::from(fields.security == Security::StartTls),
+    );
+    let rows =
+        vec![row_frame(row![host, port].spacing(space::S), false), setting_row(None, tr("Security"), None, security)];
+    widgets::group(title, rows, None)
+}
+
+/// What "Advanced" holds on the address step: both mail servers and the CalDAV address, filled in
+/// with what was found.
+fn servers_block(state: &State) -> Element<'_, Message> {
+    let mail = &state.mail;
+    let submit = mail_can_continue(state, state.step).then_some(Message::Continue);
+    let caldav =
+        field("https://dav.example.org", &mail.caldav).on_input(Message::CaldavChanged).on_submit_maybe(submit.clone());
+    column![
+        server_group(Server::Imap, &mail.imap, tr("Incoming mail (IMAP)"), "imap.example.org", submit.clone()),
+        server_group(Server::Smtp, &mail.smtp, tr("Outgoing mail (SMTP)"), "smtp.example.org", submit),
+        field_group(
+            tr("Calendars and tasks (CalDAV)"),
+            caldav,
+            Some(tr("Leave empty to use this account for mail only.")),
+        ),
+    ]
+    .spacing(space::XL)
+    .into()
+}
+
+/// The e-mail address and, below it, what the search found: the provider's name and what it has,
+/// a note where mail needs an app password, "Advanced" with the servers – or the reason a
+/// provider does not work and nothing more, or the hint to type the servers when nothing
+/// answered.
 fn mail_address_step(state: &State) -> Element<'_, Message> {
     let mail = &state.mail;
     let searching = state.step == Step::MailSearching;
@@ -950,42 +1267,42 @@ fn mail_address_step(state: &State) -> Element<'_, Message> {
     if searching {
         page = page.push(typo::text(typo::BODY, tr("Looking for your provider…")).style(theme::text_2));
     }
-    let server = || {
-        let input = field("https://dav.example.org", &mail.server)
-            .on_input(Message::MailServerChanged)
-            .on_submit_maybe(mail_can_continue(state, state.step).then_some(Message::Continue));
-        field_group(tr("Server"), input, Some(tr("Change this only if your provider gave you another address.")))
-    };
-    match &mail.found {
-        Some(Found::Provider { name, .. }) => {
-            let row = setting_row(
-                Some(widgets::status_dot(widgets::Status::Ok)),
-                name.as_str(),
-                Some(tr("Calendar and task service found").to_string()),
-                Space::new(),
-            );
-            page = page.push(widgets::group(tr("Provider"), vec![row], None));
-            page = page.push(advanced(mail.advanced, server()));
-        }
-        Some(Found::Unsupported { name, reason }) => {
-            let row = note_row(status_icon(Icon::CircleAlert, |p| p.attention), name.clone(), reason.clone());
-            page = page.push(widgets::group(tr("Provider"), vec![row], None));
-        }
-        Some(Found::Nothing) => {
-            let text = trf(
-                "No calendar service found for {domain}. If you know its address, enter it under Advanced.",
-                &[("domain", &domain_of(&mail.address))],
-            );
-            page = page.push(typo::text(typo::BODY, text).style(theme::text_2));
-            page = page.push(advanced(mail.advanced, server()));
-        }
-        None => {}
+    let Some(found) = &mail.found else { return page.into() };
+    if found.is_unsupported() {
+        let reason = found.note.clone().unwrap_or_default();
+        let row = note_row(status_icon(Icon::CircleAlert, |p| p.attention), found.name.clone(), reason);
+        return page.push(widgets::group(tr("Provider"), vec![row], None)).into();
     }
-    page.into()
+    if found.is_nothing() {
+        let text = trf(
+            "Nothing found for {domain}. If you know the servers of your provider, enter them under Advanced.",
+            &[("domain", &domain_of(&mail.address))],
+        );
+        page = page.push(typo::text(typo::BODY, text).style(theme::text_2));
+    } else {
+        let name = setting_row(
+            Some(widgets::status_dot(widgets::Status::Ok)),
+            found.name.as_str(),
+            Some(found.summary().to_string()),
+            Space::new(),
+        );
+        let mut rows = vec![name];
+        // A provider that works only with an app password says so next to its name.
+        if let Some(note) = &found.note {
+            rows.push(note_row(status_icon(Icon::CircleAlert, |p| p.attention), tr("Note").to_string(), note.clone()));
+        }
+        page = page.push(widgets::group(tr("Provider"), rows, None));
+        if mail.servers() == Servers::Incomplete {
+            let text = tr("Mail needs an incoming and an outgoing server. Enter the missing one under Advanced.");
+            page = page.push(typo::text(typo::BODY, text).style(theme::text_2));
+        }
+    }
+    page.push(advanced(mail.advanced, servers_block(state))).into()
 }
 
 /// The provider found, what to enter, and the masked password field. A provider that asks for an
-/// app password says so and links to its help; a refused password stands under the field.
+/// app password says so and links to its help; a refused password stands under the field, naming
+/// the server that refused it.
 fn mail_password_step(state: &State) -> Element<'_, Message> {
     let mail = &state.mail;
     let provider = mail.provider_name();
@@ -996,26 +1313,27 @@ fn mail_password_step(state: &State) -> Element<'_, Message> {
     ];
     let context = row![status_icon(Icon::CircleCheck, |p| p.ok), lines].spacing(space::M).align_y(Alignment::Center);
     let mut page = column![context].spacing(space::XL);
+    let help = app_password_help(&provider);
     let mut hint = column![].spacing(space::S);
-    if app_password_help(&provider).is_some() {
-        hint = hint
-            .push(typo::text(typo::BODY_STRONG, tr("Use an app password")))
-            .push(
-                typo::text(
-                    typo::BODY,
-                    trf(
-                        "{provider} does not accept your usual password here. Create an app password in your account settings.",
-                        &[("provider", &provider)],
-                    ),
-                )
-                .style(theme::text_2),
+    if help.is_some() || mail.found.as_ref().is_some_and(|found| found.app_password) {
+        hint = hint.push(typo::text(typo::BODY_STRONG, tr("Use an app password"))).push(
+            typo::text(
+                typo::BODY,
+                trf(
+                    "{provider} does not accept your usual password here. Create an app password in your account settings.",
+                    &[("provider", &provider)],
+                ),
             )
-            .push(row![widgets::text_button(
+            .style(theme::text_2),
+        );
+        if help.is_some() {
+            hint = hint.push(row![widgets::text_button(
                 Some(Icon::ArrowUpRight),
                 tr("Create an app password"),
                 style::button::secondary,
                 Some(Message::OpenPasswordHelp),
             )]);
+        }
     } else {
         hint = hint.push(
             typo::text(typo::BODY, tr("Use your mailbox password, or an app password if your provider offers them."))
@@ -1039,27 +1357,30 @@ fn mail_password_step(state: &State) -> Element<'_, Message> {
         ),
     };
     page = page.push(password);
+    let suggested = mail.login_name();
     let login = field_group(
         tr("User name"),
-        field(mail.address.trim(), &mail.login).on_input(Message::LoginChanged),
-        Some(tr("Leave empty to use your email address.")),
+        field(&suggested, &mail.login).on_input(Message::LoginChanged),
+        Some(tr("Leave empty to use the name shown.")),
     );
     page.push(advanced(mail.advanced, login)).into()
 }
 
-/// The services as check boxes, the ones the server has not been asked about yet preselected;
-/// the whole row ticks it. Services that are not available are greyed out with "Coming later".
+/// The services as check boxes, the ones the servers have preselected; the whole row ticks it.
+/// A service the search did not find (and nobody typed) is greyed out with "Not found". With Mail
+/// ticked, the sender name below.
 fn mail_services_step(state: &State) -> Element<'_, Message> {
+    let mail = &state.mail;
+    let ticked = mail.services();
     let rows = Service::ALL
         .into_iter()
         .map(|service| {
-            if !service.is_available() {
+            if !service.is_available(mail) {
                 // A box without a handler is drawn disabled.
                 let off: Element<'_, Message> = checkbox(false).size(style::CHECK_SIZE).style(check_style).into();
-                return coming_soon_row(Some(off), service.name(), service.summary(), tr("Coming later"));
+                return coming_soon_row(Some(off), service.name(), service.summary(), tr("Not found"));
             }
-            let on = state.mail.chosen.contains(&service);
-            let check = checkbox(on)
+            let check = checkbox(ticked.contains(&service))
                 .size(style::CHECK_SIZE)
                 .style(check_style)
                 .on_toggle(move |_| Message::ToggleService(service));
@@ -1069,7 +1390,18 @@ fn mail_services_step(state: &State) -> Element<'_, Message> {
         })
         .collect();
     let footer = tr("You can show or hide single calendars and lists on the account's page later.");
-    widgets::group(tr("Services"), rows, Some(footer.to_string()))
+    let mut page = column![widgets::group(tr("Services"), rows, Some(footer.to_string()))].spacing(space::XL);
+    if ticked.contains(&Service::Mail) {
+        let name = field("Anna Example", &mail.sender_name)
+            .on_input(Message::SenderNameChanged)
+            .on_submit_maybe(mail_can_continue(state, state.step).then_some(Message::Continue));
+        page = page.push(field_group(
+            tr("Sender name"),
+            name,
+            Some(tr("Shown next to your address in the mail you send. Optional.")),
+        ));
+    }
+    page.into()
 }
 
 /// `text_2` for the box, not `text`: a black box would be the heaviest mark of the light dialog.
@@ -1084,7 +1416,7 @@ fn mail_done_step(state: &State) -> Element<'_, Message> {
     };
     let mut body = column![typo::text(typo::BODY, trf("Signed in as {account}.", &[("account", &connected.account)]))]
         .spacing(space::M);
-    for (found, text) in done_lines(connected, &state.mail.chosen) {
+    for (found, text) in done_lines(connected, &state.mail.services()) {
         let which = if found {
             status_icon(Icon::CircleCheck, |p| p.ok)
         } else {
@@ -1100,12 +1432,11 @@ fn mail_done_step(state: &State) -> Element<'_, Message> {
 fn done_lines(connected: &Connected, chosen: &[Service]) -> Vec<(bool, &'static str)> {
     chosen
         .iter()
-        .filter(|service| service.is_available())
         .map(|service| {
             let found = match service {
+                Service::Mail => true,
                 Service::Calendars => connected.calendars,
                 Service::Tasks => connected.tasks,
-                Service::Mail => false,
             };
             (found, service.found_text(found))
         })
@@ -1152,36 +1483,49 @@ fn footer(state: &State) -> Element<'_, Message> {
 
 // ----- Demo states (`--demo --open wizard-mail-…`) --------------------------------------------
 
-/// The states of the mail provider path that `torroworkplace ui --demo --open …` starts in.
+/// The states of the mail account path that `torroworkplace ui --demo --open …` starts in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Demo {
     /// The empty address step.
     Address,
-    /// mailbox.org found, "Advanced" closed.
+    /// mailbox.org found (mail, calendars, tasks), "Advanced" closed.
     Found,
-    /// Gmail: the reason and nothing more.
+    /// The same with "Advanced" open: both servers and the CalDAV address as found.
+    Advanced,
+    /// Outlook.com: mail is not supported, the reason and nothing more.
     Unsupported,
-    /// A domain nothing answers for: "Advanced" open with the empty server field.
+    /// Gmail: servers found, with the note that an app password works.
+    Gmail,
+    /// A domain nothing answers for: "Advanced" open with empty servers.
     NotFound,
     /// iCloud: the password step with "Use an app password".
     Password,
-    /// The password was refused: back at the password step with the text under the field.
+    /// The IMAP server refused the password: back at the password step with the text under the field.
     Refused,
+    /// The same for the SMTP server.
+    RefusedSmtp,
     /// The services step.
     Services,
-    /// Connected: what the server has.
+    /// The services step of a mail-only provider: calendars and tasks "Not found".
+    MailOnly,
+    /// Connected: what the servers have.
     Done,
 }
 
 /// The messages that lead to `demo` the way a person would get there. The demo's answers to the
-/// two requests come from `launch::demo_answer`; the password "wrong" is the one it refuses.
+/// requests come from `launch::demo_answer`; the passwords "wrong" (IMAP) and "wrong-smtp" are the
+/// ones it refuses.
 pub fn demo_messages(demo: Demo) -> Vec<Message> {
     let address = match demo {
         Demo::Address => None,
-        Demo::Unsupported => Some("anna@gmail.com"),
+        Demo::Unsupported => Some("anna@outlook.com"),
+        Demo::Gmail => Some("anna@gmail.com"),
         Demo::NotFound => Some("anna@example.org"),
         Demo::Password => Some("anna@icloud.com"),
-        Demo::Found | Demo::Refused | Demo::Services | Demo::Done => Some("anna@mailbox.org"),
+        Demo::MailOnly => Some("anna@work.example.net"),
+        Demo::Found | Demo::Advanced | Demo::Refused | Demo::RefusedSmtp | Demo::Services | Demo::Done => {
+            Some("anna@mailbox.org")
+        }
     };
     let mut steps = vec![Message::ChooseProvider(Provider::Mail)];
     if let Some(address) = address {
@@ -1191,14 +1535,18 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     let password = |text: &str| Message::PasswordChanged(Secret::new(text));
     match demo {
         Demo::Password => steps.push(Message::Continue),
-        Demo::Refused => steps.extend([Message::Continue, password("wrong"), Message::Continue, Message::Continue]),
-        Demo::Services | Demo::Done => {
+        Demo::Advanced => steps.push(Message::ToggleAdvanced),
+        Demo::Refused | Demo::RefusedSmtp => {
+            let wrong = if demo == Demo::Refused { "wrong" } else { "wrong-smtp" };
+            steps.extend([Message::Continue, password(wrong), Message::Continue, Message::Continue]);
+        }
+        Demo::Services | Demo::MailOnly | Demo::Done => {
             steps.extend([Message::Continue, password("demo-password"), Message::Continue]);
             if demo == Demo::Done {
                 steps.push(Message::Continue);
             }
         }
-        Demo::Address | Demo::Found | Demo::Unsupported | Demo::NotFound => {}
+        Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
     }
     steps
 }
@@ -1206,6 +1554,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
 #[cfg(test)]
 mod tests {
     use chrono::TimeDelta;
+    use torro_mail_imap::discover::MailUnsupported;
 
     use super::*;
 
@@ -1537,7 +1886,7 @@ mod tests {
         drop(view(&github, &empty));
     }
 
-    // ----- The mail provider path (task M7.2) ----------------------------------------------------
+    // ----- The mail account path (tasks M7.2, M5.1) ----------------------------------------------
 
     /// Plays `messages` the way the shell does: a request goes to the demo's answers and the answer
     /// comes back through [`answered`].
@@ -1570,6 +1919,28 @@ mod tests {
         update(state, Message::AddressChanged(address.into()), &Data::default());
     }
 
+    fn send(state: &mut State, message: Message) -> Action {
+        update(state, message, &Data::default())
+    }
+
+    /// Types the two servers under "Advanced" the way a person does.
+    fn type_servers(state: &mut State) {
+        send(state, Message::ServerHostChanged(Server::Imap, "imap.example.org".into()));
+        send(state, Message::ServerHostChanged(Server::Smtp, " smtp.example.org ".into()));
+    }
+
+    /// From the address step through the password to the services step.
+    fn to_services(state: &mut State) {
+        send(state, Message::Continue);
+        send(state, Message::PasswordChanged(Secret::new("pw")));
+        send(state, Message::Continue);
+        assert_eq!(state.step, Step::MailServices);
+    }
+
+    fn found_of(demo: Demo) -> Found {
+        at_mail(demo).mail.found.expect("the search answered")
+    }
+
     #[test]
     fn the_mail_steps_are_a_list() {
         assert_eq!(Step::MailAddress.mail_next(), Some(Step::MailPassword));
@@ -1582,8 +1953,9 @@ mod tests {
     }
 
     #[test]
-    fn the_catalog_offers_the_mail_provider() {
+    fn the_catalog_offers_the_mail_account() {
         let mut state = State::new();
+        drop(view(&state, &Data::default()));
         update(&mut state, Message::ChooseProvider(Provider::Mail), &Data::default());
         assert_eq!((state.provider, state.step), (Provider::Mail, Step::MailAddress));
         assert_eq!(subtitle(&state), tr("Enter the email address of your mailbox."));
@@ -1601,24 +1973,32 @@ mod tests {
         assert_eq!(state.step, Step::MailSearching);
         assert!(!state.busy(), "the answer comes with the request, no reload is needed");
 
+        let server = |host: &str, port, security| Endpoint { host: host.into(), port, security };
         let found = Response::Discovery {
             provider: "mailbox.org".into(),
-            urls: vec!["https://dav.mailbox.org/".into()],
+            urls: vec!["https://dav.mailbox.org/".into(), "https://other.mailbox.org/".into()],
             unsupported: None,
-            imap: None,
-            smtp: None,
-            login_hint: None,
+            imap: Some(server("imap.mailbox.org", 993, Security::Tls)),
+            smtp: Some(server("smtp.mailbox.org", 587, Security::StartTls)),
+            login_hint: Some("anna".into()),
             app_password: false,
             mail_unsupported: None,
         };
         assert!(answered(&mut state, &Ok(found)));
         assert_eq!(state.step, Step::MailAddress);
+        let mail = &state.mail;
+        let found = mail.found.as_ref().expect("found");
+        assert_eq!((found.name.as_str(), found.caldav.as_deref()), ("mailbox.org", Some("https://dav.mailbox.org/")));
+        assert_eq!(found.summary(), tr("Mail, calendars and tasks found"));
         assert_eq!(
-            state.mail.found,
-            Some(Found::Provider { name: "mailbox.org".into(), url: "https://dav.mailbox.org/".into() })
+            (mail.imap.host.as_str(), mail.imap.port.as_str(), mail.imap.security),
+            ("imap.mailbox.org", "993", Security::Tls),
+            "prefilled for Advanced"
         );
-        assert_eq!(state.mail.server, "https://dav.mailbox.org/", "prefilled for Advanced");
-        assert!(!state.mail.advanced, "the server is only a click away");
+        assert_eq!((mail.smtp.port.as_str(), mail.smtp.security), ("587", Security::StartTls));
+        assert_eq!(mail.caldav, "https://dav.mailbox.org/");
+        assert_eq!(mail.login_name(), "anna", "the provider says which user name");
+        assert!(!mail.advanced, "everything is there, the servers are only a click away");
 
         // The second press goes on, to the password.
         update(&mut state, Message::Continue, &Data::default());
@@ -1630,7 +2010,10 @@ mod tests {
         let mut state = at_mail(Demo::Found);
         assert!(state.mail.found.is_some());
         type_address(&mut state, "anna@posteo.de");
-        assert_eq!((state.mail.found.as_ref(), state.mail.server.as_str()), (None, ""));
+        assert_eq!(
+            (state.mail.found.as_ref(), state.mail.imap.host.as_str(), state.mail.caldav.as_str()),
+            (None, "", "")
+        );
         // Searching again is what Continue does then.
         let action = update(&mut state, Message::Continue, &Data::default());
         assert!(matches!(action, Action::Send(Request::DiscoverServices { .. })));
@@ -1650,9 +2033,12 @@ mod tests {
     #[test]
     fn an_unsupported_provider_shows_its_reason_and_nothing_more() {
         let mut state = at_mail(Demo::Unsupported);
-        let reason = tr("Google calendars need a sign-in through Google, which Torro Workplace does not support yet.");
-        assert_eq!(state.mail.found, Some(Found::Unsupported { name: "Gmail".into(), reason: reason.into() }));
+        let found = state.mail.found.clone().expect("found");
+        assert!(found.is_unsupported());
+        assert_eq!(found.name, "Outlook.com");
+        assert_eq!(found.note.as_deref(), Some(tr(MailUnsupported::Microsoft.reason())));
         assert!(!mail_can_continue(&state, Step::MailAddress));
+        assert!(!state.mail.advanced, "there is nothing to type");
         assert!(matches!(update(&mut state, Message::Continue, &Data::default()), Action::None));
         assert_eq!(state.step, Step::MailAddress, "no way on");
         drop(view(&state, &Data::default()));
@@ -1662,16 +2048,101 @@ mod tests {
     }
 
     #[test]
-    fn nothing_found_opens_advanced_and_asks_for_the_server() {
-        let mut state = at_mail(Demo::NotFound);
-        assert_eq!(state.mail.found, Some(Found::Nothing));
-        assert!(state.mail.advanced, "the server is the way on");
-        assert!(!mail_can_continue(&state, Step::MailAddress), "until one is typed");
-        update(&mut state, Message::MailServerChanged("  dav.example.org ".into()), &Data::default());
+    fn gmail_works_with_an_app_password_and_says_so() {
+        let mut state = at_mail(Demo::Gmail);
+        let found = state.mail.found.clone().expect("found");
+        assert!(found.is_usable() && !found.is_unsupported());
+        assert_eq!(
+            found.note.as_deref(),
+            Some(tr(MailUnsupported::Google.reason())),
+            "the mail hint, not the calendar one"
+        );
+        assert!(found.app_password);
+        assert_eq!(found.summary(), tr("Mail server found"));
         assert!(mail_can_continue(&state, Step::MailAddress));
+        drop(view(&state, &Data::default()));
         update(&mut state, Message::Continue, &Data::default());
         assert_eq!(state.step, Step::MailPassword);
-        assert_eq!(state.mail.server_override().as_deref(), Some("dav.example.org"));
+        match update(&mut state, Message::OpenPasswordHelp, &Data::default()) {
+            Action::OpenUrl(url) => assert!(url.starts_with("https://support.google.com/")),
+            other => panic!("expected OpenUrl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nothing_found_opens_advanced_and_asks_for_the_servers() {
+        let mut state = at_mail(Demo::NotFound);
+        assert!(state.mail.found.as_ref().is_some_and(Found::is_nothing));
+        assert!(state.mail.advanced, "the servers are the way on");
+        assert_eq!((state.mail.imap.port.as_str(), state.mail.smtp.port.as_str()), ("993", "587"), "the usual ports");
+        assert!(!mail_can_continue(&state, Step::MailAddress), "until they are typed");
+
+        send(&mut state, Message::ServerHostChanged(Server::Imap, "imap.example.org".into()));
+        assert_eq!(state.mail.servers(), Servers::Incomplete);
+        assert!(!mail_can_continue(&state, Step::MailAddress), "half of a mail setup is not enough");
+        send(&mut state, Message::ServerHostChanged(Server::Smtp, " smtp.example.org ".into()));
+        assert!(mail_can_continue(&state, Step::MailAddress));
+        send(&mut state, Message::ServerPortChanged(Server::Smtp, "five".into()));
+        assert!(!mail_can_continue(&state, Step::MailAddress), "a port is a number");
+        send(&mut state, Message::ServerPortChanged(Server::Smtp, " 2525 ".into()));
+        assert!(mail_can_continue(&state, Step::MailAddress));
+        send(&mut state, Message::Continue);
+        assert_eq!(state.step, Step::MailPassword);
+        assert!(!state.mail.advanced, "closed again on the next step");
+    }
+
+    #[test]
+    fn a_calendar_address_alone_is_enough_and_it_stays_calendars_only() {
+        let mut state = at_mail(Demo::NotFound);
+        send(&mut state, Message::CaldavChanged("  dav.example.org ".into()));
+        assert!(mail_can_continue(&state, Step::MailAddress));
+        to_services(&mut state);
+        assert_eq!(state.mail.services(), [Service::Calendars, Service::Tasks], "no mail servers, no mail");
+        match send(&mut state, Message::Continue) {
+            Action::Send(Request::ConnectCalDav { server, calendars, tasks, .. }) => {
+                assert_eq!(server.as_deref(), Some("dav.example.org"));
+                assert!(calendars && tasks);
+            }
+            other => panic!("expected ConnectCalDav, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn only_half_found_servers_open_advanced_and_ask_for_the_other() {
+        let mut state = at_mail(Demo::Address);
+        type_address(&mut state, "anna@example.com");
+        update(&mut state, Message::Continue, &Data::default());
+        let imap = Endpoint { host: "imap.example.com".into(), port: 993, security: Security::Tls };
+        let found = Response::Discovery {
+            provider: "example.com".into(),
+            urls: vec![],
+            unsupported: None,
+            imap: Some(imap),
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
+        };
+        assert!(answered(&mut state, &Ok(found)));
+        assert_eq!(state.mail.servers(), Servers::Incomplete);
+        assert!(state.mail.advanced, "the outgoing server has to be typed");
+        assert!(!mail_can_continue(&state, Step::MailAddress));
+        assert_eq!(state.mail.smtp.port, "587", "with the usual port ready");
+        send(&mut state, Message::ServerHostChanged(Server::Smtp, "smtp.example.com".into()));
+        assert!(mail_can_continue(&state, Step::MailAddress));
+        drop(view(&state, &Data::default()));
+    }
+
+    #[test]
+    fn another_security_takes_the_usual_port_along_but_not_a_typed_one() {
+        let mut state = at_mail(Demo::NotFound);
+        send(&mut state, Message::ServerSecurityPicked(Server::Imap, Security::StartTls));
+        assert_eq!((state.mail.imap.port.as_str(), state.mail.imap.security), ("143", Security::StartTls));
+        send(&mut state, Message::ServerSecurityPicked(Server::Smtp, Security::Tls));
+        assert_eq!((state.mail.smtp.port.as_str(), state.mail.smtp.security), ("465", Security::Tls));
+        send(&mut state, Message::ServerPortChanged(Server::Imap, "1143".into()));
+        send(&mut state, Message::ServerSecurityPicked(Server::Imap, Security::Tls));
+        assert_eq!(state.mail.imap.port, "1143", "a port the person chose stays");
     }
 
     #[test]
@@ -1716,36 +2187,64 @@ mod tests {
     }
 
     #[test]
-    fn the_services_are_ticked_but_mail_is_not_available() {
+    fn the_services_the_servers_have_are_ticked() {
         let mut state = at_mail(Demo::Services);
         assert_eq!(state.step, Step::MailServices);
-        assert_eq!(state.mail.chosen, [Service::Calendars, Service::Tasks]);
-        assert!(!Service::Mail.is_available());
-        update(&mut state, Message::ToggleService(Service::Mail), &Data::default());
-        assert_eq!(state.mail.chosen, [Service::Calendars, Service::Tasks], "Mail does nothing yet");
+        assert_eq!(state.mail.services(), [Service::Mail, Service::Calendars, Service::Tasks]);
         update(&mut state, Message::ToggleService(Service::Tasks), &Data::default());
-        assert_eq!(state.mail.chosen, [Service::Calendars]);
+        assert_eq!(state.mail.services(), [Service::Mail, Service::Calendars]);
+        update(&mut state, Message::ToggleService(Service::Mail), &Data::default());
         update(&mut state, Message::ToggleService(Service::Calendars), &Data::default());
         assert!(!mail_can_continue(&state, Step::MailServices), "at least one service");
         assert!(matches!(update(&mut state, Message::Continue, &Data::default()), Action::None));
         update(&mut state, Message::ToggleService(Service::Tasks), &Data::default());
-        assert_eq!(state.mail.chosen, [Service::Tasks]);
+        assert_eq!(state.mail.services(), [Service::Tasks]);
+        drop(view(&state, &Data::default()));
     }
 
     #[test]
-    fn connect_sends_the_choice_and_keeps_no_password() {
-        let mut state = at_mail(Demo::Services);
-        update(&mut state, Message::ToggleService(Service::Tasks), &Data::default());
-        let action = update(&mut state, Message::Continue, &Data::default());
-        match &action {
-            Action::Send(Request::ConnectCalDav { address, server, login_name, password, calendars, tasks }) => {
-                assert_eq!(address, "anna@mailbox.org");
-                assert_eq!(server, &None, "the core tries every address it finds");
-                assert_eq!(login_name, "anna@mailbox.org", "the address is the user name unless changed");
-                assert_eq!(password.expose(), "demo-password");
-                assert_eq!((*calendars, *tasks), (true, false));
+    fn a_mail_only_provider_has_no_calendars_to_tick() {
+        let mut state = at_mail(Demo::MailOnly);
+        assert_eq!(state.mail.services(), [Service::Mail]);
+        assert!(Service::Mail.is_available(&state.mail));
+        assert!(!Service::Calendars.is_available(&state.mail) && !Service::Tasks.is_available(&state.mail));
+        update(&mut state, Message::ToggleService(Service::Calendars), &Data::default());
+        assert_eq!(state.mail.services(), [Service::Mail], "a greyed row does nothing");
+        match send(&mut state, Message::Continue) {
+            Action::Send(Request::ConnectMail { calendars, tasks, caldav, login_name, .. }) => {
+                assert_eq!((calendars, tasks, caldav), (false, false, None), "the CalDAV address is not sent unused");
+                assert_eq!(login_name, "anna", "the provider's hint");
             }
-            other => panic!("expected ConnectCalDav, got {other:?}"),
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connect_sends_the_mail_account_and_keeps_no_password() {
+        let mut state = at_mail(Demo::Services);
+        send(&mut state, Message::SenderNameChanged("  Anna Example ".into()));
+        let action = send(&mut state, Message::Continue);
+        match &action {
+            Action::Send(Request::ConnectMail {
+                address,
+                sender_name,
+                imap,
+                smtp,
+                login_name,
+                password,
+                calendars,
+                tasks,
+                caldav,
+            }) => {
+                assert_eq!((address.as_str(), sender_name.as_str()), ("anna@mailbox.org", "Anna Example"));
+                assert_eq!((imap.host.as_str(), imap.port, imap.security), ("imap.mailbox.org", 993, Security::Tls));
+                assert_eq!((smtp.host.as_str(), smtp.port, smtp.security), ("smtp.mailbox.org", 465, Security::Tls));
+                assert_eq!(login_name, "anna@mailbox.org");
+                assert_eq!(password.expose(), "demo-password");
+                assert_eq!((*calendars, *tasks), (true, true));
+                assert_eq!(caldav.as_deref(), Some("https://dav.mailbox.org/"));
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
         }
         assert!(!format!("{action:?}").contains("demo-password"), "a Secret shows nothing");
         assert!(state.mail.password.is_blank(), "the dialog keeps no copy");
@@ -1754,33 +2253,107 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_user_name_and_server_go_with_the_request() {
-        let mut state = at_mail(Demo::Found);
-        update(&mut state, Message::Continue, &Data::default());
-        update(&mut state, Message::LoginChanged(" anna ".into()), &Data::default());
-        update(&mut state, Message::PasswordChanged(Secret::new("pw")), &Data::default());
-        update(&mut state, Message::Continue, &Data::default());
-        // The server was changed under Advanced, not left as found.
-        state.mail.server = "https://other.example.org/dav/".into();
+    fn without_mail_only_calendars_and_tasks_are_connected_over_caldav() {
+        let mut state = at_mail(Demo::Services);
+        update(&mut state, Message::ToggleService(Service::Mail), &Data::default());
+        update(&mut state, Message::ToggleService(Service::Tasks), &Data::default());
+        let action = update(&mut state, Message::Continue, &Data::default());
+        match &action {
+            Action::Send(Request::ConnectCalDav { address, server, login_name, password, calendars, tasks }) => {
+                assert_eq!(address, "anna@mailbox.org");
+                assert_eq!(server, &None, "the core tries every address it finds");
+                assert_eq!(login_name, "anna@mailbox.org");
+                assert_eq!(password.expose(), "demo-password");
+                assert_eq!((*calendars, *tasks), (true, false));
+            }
+            other => panic!("expected ConnectCalDav, got {other:?}"),
+        }
+        assert!(state.mail.password.is_blank());
+        assert_eq!(state.step, Step::MailConnecting);
+    }
+
+    #[test]
+    fn mail_only_leaves_out_the_calendar_address() {
+        let mut state = at_mail(Demo::Services);
+        update(&mut state, Message::ToggleService(Service::Calendars), &Data::default());
+        update(&mut state, Message::ToggleService(Service::Tasks), &Data::default());
         match update(&mut state, Message::Continue, &Data::default()) {
-            Action::Send(Request::ConnectCalDav { server, login_name, .. }) => {
+            Action::Send(Request::ConnectMail { calendars, tasks, caldav, .. }) => {
+                assert_eq!((calendars, tasks, caldav), (false, false, None));
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn typed_servers_and_a_user_name_go_with_the_request() {
+        let mut state = at_mail(Demo::NotFound);
+        type_servers(&mut state);
+        send(&mut state, Message::ServerSecurityPicked(Server::Imap, Security::StartTls));
+        send(&mut state, Message::Continue);
+        send(&mut state, Message::LoginChanged(" anna ".into()));
+        send(&mut state, Message::PasswordChanged(Secret::new("pw")));
+        send(&mut state, Message::Continue);
+        match send(&mut state, Message::Continue) {
+            Action::Send(Request::ConnectMail { imap, smtp, login_name, caldav, .. }) => {
+                assert_eq!(
+                    (imap.host.as_str(), imap.port, imap.security),
+                    ("imap.example.org", 143, Security::StartTls)
+                );
+                assert_eq!(
+                    (smtp.host.as_str(), smtp.port, smtp.security),
+                    ("smtp.example.org", 587, Security::StartTls)
+                );
+                assert_eq!((login_name.as_str(), caldav), ("anna", None));
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_calendar_address_changed_under_advanced_goes_with_the_caldav_request() {
+        let mut state = at_mail(Demo::Found);
+        send(&mut state, Message::CaldavChanged("https://other.example.org/dav/".into()));
+        to_services(&mut state);
+        update(&mut state, Message::ToggleService(Service::Mail), &Data::default());
+        match send(&mut state, Message::Continue) {
+            Action::Send(Request::ConnectCalDav { server, .. }) => {
                 assert_eq!(server.as_deref(), Some("https://other.example.org/dav/"));
-                assert_eq!(login_name, "anna");
             }
             other => panic!("expected ConnectCalDav, got {other:?}"),
         }
     }
 
     #[test]
-    fn a_refused_password_comes_back_under_the_password_field() {
-        let mut state = at_mail(Demo::Refused);
+    fn a_refused_password_comes_back_under_the_password_field_naming_the_server() {
+        for (demo, server) in [(Demo::Refused, "IMAP"), (Demo::RefusedSmtp, "SMTP")] {
+            let mut state = at_mail(demo);
+            assert_eq!(state.step, Step::MailPassword, "{server}");
+            let said = trf("The {service} server refused the password.", &[("service", &server)]);
+            assert_eq!(state.mail.refused.as_deref(), Some(said.as_str()), "{server}");
+            assert!(state.error.is_none(), "not in the footer");
+            assert!(state.mail.password.is_blank(), "to type again");
+            drop(view(&state, &Data::default()));
+            update(&mut state, Message::PasswordChanged(Secret::new("x")), &Data::default());
+            assert_eq!(state.mail.refused, None, "an edit clears it");
+        }
+    }
+
+    #[test]
+    fn every_refusal_of_the_core_is_recognised() {
+        assert!(password_refused(tr("Password was refused")), "a CalDAV account");
+        for server in ["IMAP", "SMTP", "CalDAV"] {
+            assert!(password_refused(&trf("The {service} server refused the password.", &[("service", &server)])));
+        }
+        assert!(!password_refused(&trf("The {service} server cannot be reached.", &[("service", &"IMAP")])));
+        assert!(!password_refused("The server cannot be reached."));
+        // The CalDAV-only request is refused the same way as before.
+        let mut state = at_mail(Demo::Services);
+        update(&mut state, Message::ToggleService(Service::Mail), &Data::default());
+        update(&mut state, Message::PasswordChanged(Secret::new("wrong")), &Data::default());
+        state.step = Step::MailConnecting;
+        assert!(answered(&mut state, &Err(tr("Password was refused").into())));
         assert_eq!(state.step, Step::MailPassword);
-        assert_eq!(state.mail.refused.as_deref(), Some(tr("Password was refused")));
-        assert!(state.error.is_none(), "not in the footer");
-        assert!(state.mail.password.is_blank(), "to type again");
-        update(&mut state, Message::PasswordChanged(Secret::new("x")), &Data::default());
-        assert_eq!(state.mail.refused, None, "an edit clears it");
-        drop(view(&state, &Data::default()));
     }
 
     #[test]
@@ -1790,22 +2363,24 @@ mod tests {
         assert!(answered(&mut state, &Err("The server cannot be reached.".into())));
         assert_eq!((state.step, state.error.as_deref()), (Step::MailServices, Some("The server cannot be reached.")));
         assert_eq!(state.mail.refused, None);
+        // Untick calendars that were not found and go on.
+        assert_eq!(state.mail.services().len(), 3, "the choice stays for the next try");
     }
 
     #[test]
-    fn done_says_what_the_server_has() {
+    fn done_says_what_the_servers_have() {
         let state = at_mail(Demo::Done);
         assert_eq!(state.step, Step::Done);
         assert_eq!(subtitle(&state), tr("Your account is connected."));
         let connected = state.mail.connected.clone().expect("connected");
         assert_eq!(
-            done_lines(&connected, &state.mail.chosen),
-            [(true, tr("Calendars are ready.")), (true, tr("Tasks are ready."))]
+            done_lines(&connected, &state.mail.services()),
+            [(true, tr("Mail is ready.")), (true, tr("Calendars are ready.")), (true, tr("Tasks are ready."))]
         );
         let no_tasks = Connected { account: "anna@mailbox.org".into(), calendars: true, tasks: false };
         assert_eq!(
             done_lines(&no_tasks, &[Service::Tasks, Service::Mail]),
-            [(false, tr("This server has no task lists."))],
+            [(false, tr("This server has no task lists.")), (true, tr("Mail is ready."))],
             "only what was chosen, and only what exists"
         );
         drop(view(&state, &Data::default()));
@@ -1823,16 +2398,28 @@ mod tests {
     }
 
     #[test]
+    fn what_was_ticked_survives_a_step_back() {
+        let mut state = at_mail(Demo::Services);
+        update(&mut state, Message::ToggleService(Service::Tasks), &Data::default());
+        update(&mut state, Message::Back, &Data::default());
+        update(&mut state, Message::Continue, &Data::default());
+        assert_eq!(state.mail.services(), [Service::Mail, Service::Calendars]);
+    }
+
+    #[test]
     fn every_demo_state_leads_where_it_says() {
         let at = |demo| at_mail(demo);
         assert_eq!((at(Demo::Address).step, at(Demo::Address).mail.found), (Step::MailAddress, None));
-        assert!(matches!(at(Demo::Found).mail.found, Some(Found::Provider { .. })));
-        assert!(matches!(at(Demo::Unsupported).mail.found, Some(Found::Unsupported { .. })));
-        assert_eq!(at(Demo::NotFound).mail.found, Some(Found::Nothing));
+        assert!(found_of(Demo::Found).is_usable());
+        assert!(at(Demo::Advanced).mail.advanced && at(Demo::Advanced).mail.found.is_some());
+        assert!(found_of(Demo::Unsupported).is_unsupported());
+        assert!(found_of(Demo::Gmail).is_usable());
+        assert!(found_of(Demo::NotFound).is_nothing());
         assert_eq!(at(Demo::Password).step, Step::MailPassword);
         assert_eq!(at(Demo::Refused).step, Step::MailPassword);
-        assert!(at(Demo::Refused).mail.refused.is_some());
+        assert!(at(Demo::Refused).mail.refused.is_some() && at(Demo::RefusedSmtp).mail.refused.is_some());
         assert_eq!(at(Demo::Services).step, Step::MailServices);
+        assert_eq!(at(Demo::MailOnly).step, Step::MailServices);
         assert_eq!(at(Demo::Done).step, Step::Done);
     }
 
@@ -1841,11 +2428,15 @@ mod tests {
         for demo in [
             Demo::Address,
             Demo::Found,
+            Demo::Advanced,
             Demo::Unsupported,
+            Demo::Gmail,
             Demo::NotFound,
             Demo::Password,
             Demo::Refused,
+            Demo::RefusedSmtp,
             Demo::Services,
+            Demo::MailOnly,
             Demo::Done,
         ] {
             let mut state = at_mail(demo);
