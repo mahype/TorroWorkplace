@@ -381,6 +381,7 @@ fn describe(request: &Request) -> String {
         Request::ListItems { .. } => "inbox items".into(),
         Request::GetItem { id } => format!("inbox item {id}"),
         Request::OpenItem { id } => format!("open inbox item {id}"),
+        Request::CreateTaskFromItem { id, collection, .. } => format!("make a task in {collection} of inbox item {id}"),
         Request::ListSources => "inbox sources".into(),
         Request::PostItem { .. } => "post to inbox".into(),
         Request::ResolveItems { .. } => "resolve inbox items".into(),

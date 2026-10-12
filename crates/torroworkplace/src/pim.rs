@@ -690,6 +690,9 @@ impl PimService {
             | Request::ListApprovals
             | Request::ApprovalStatus { .. }
             | Request::DecideApproval { .. } => return None,
+            // The core checks the task list itself, before the entry and before anything else
+            // (`Core::task_target_refusal`, task E3.5).
+            Request::CreateTaskFromItem { .. } => return None,
             // No collection: the inbox filters by the client's sources itself (task E1.2).
             Request::ListItems { .. }
             | Request::GetItem { .. }
@@ -2898,6 +2901,33 @@ pub(crate) mod tests {
         let service = service();
         service.state.write().await.accounts.push(slot_on(base));
         service
+    }
+
+    /// A service on a fake CalDAV server that takes every write, for the core's tests of
+    /// `inbox.create_task_from_item` (task E3.5), with the ids of its task lists `work` and `home`
+    /// and what the server saw ([`FakeCalDav::lines`]).
+    pub(crate) struct FakeCalDav {
+        pub service: Arc<PimService>,
+        pub work: String,
+        pub home: String,
+        record: Arc<std::sync::Mutex<Vec<Seen>>>,
+    }
+
+    impl FakeCalDav {
+        /// The requests the server saw, `"PUT /…/x.ics If-None-Match *"`.
+        pub fn lines(&self) -> Vec<String> {
+            lines(&self.record)
+        }
+    }
+
+    /// See [`FakeCalDav`]; the service reads and writes `settings`.
+    pub(crate) async fn fake_caldav(settings: SettingsStore) -> FakeCalDav {
+        let (base, record) = fake_server(server_holding("")).await;
+        let service = service_with(settings);
+        service.state.write().await.accounts.push(slot_on(&base));
+        let (work, _) = on_server(&base, WORK, "");
+        let (home, _) = on_server(&base, HOME, "");
+        FakeCalDav { service, work, home, record }
     }
 
     /// The collection id of the collection at `path` of the account at `base` and the href of

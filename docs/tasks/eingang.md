@@ -418,7 +418,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   dringend; Sammelmeldung danach; Bündeln ab vier.
 
 ### E3.5 Zur Aufgabe machen
-- [ ] erledigt
+- [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9; Rückweg: `link.id = inbox:<id>`, Webseite als `url`, Text als Beschreibung; Freigabe über das `confirm` des Clients wie bei jedem Write)
 - **Modell:** Opus · **Braucht:** E3.2, E1.2, P.2 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{core,inbox,mcp}.rs`, `crates/torroinbox/src/app.rs`, `docs/api-reference.md`
 - **Oberfläche:** Taste `t` öffnet einen kleinen Dialog (Titel vorbelegt, Liste, Fälligkeit). Die

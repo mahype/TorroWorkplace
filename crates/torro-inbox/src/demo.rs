@@ -9,12 +9,12 @@
 use std::collections::BTreeSet;
 use std::sync::{Mutex, MutexGuard};
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 
 use crate::item::{Action, AgentInfo, AgentKind, Item, Kind, Lane, Link, SourceInfo, SourceRef, State};
 use crate::rules;
-use crate::source::{InboxError, InboxSource, ItemFilter};
+use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
 
 /// The approval behind the sample approval entry; its actions name it.
 pub const APPROVAL_ID: &str = "demo-approval-1";
@@ -23,6 +23,28 @@ pub const APPROVAL_ID: &str = "demo-approval-1";
 struct Data {
     items: Vec<Item>,
     muted: BTreeSet<SourceRef>,
+    /// The tasks made from entries ("Make task", task E3.5), in memory only.
+    tasks: Vec<DemoTask>,
+}
+
+/// A task the demo made from an entry: the list's id, the title and the due day.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DemoTask {
+    list: String,
+    title: String,
+    due: Option<NaiveDate>,
+}
+
+/// The ids of the two task lists the demo offers for "Make task" (task E3.5).
+pub const DEMO_LISTS: [&str; 2] = ["demo/personal", "demo/work"];
+
+/// The two task lists of the demo, "Personal" and "Work", in the user's language.
+fn demo_lists() -> Vec<TaskList> {
+    let [personal, work] = DEMO_LISTS;
+    vec![
+        TaskList { id: personal.into(), name: tr("Personal").into() },
+        TaskList { id: work.into(), name: tr("Work").into() },
+    ]
 }
 
 /// See the module docs.
@@ -37,7 +59,8 @@ pub struct DemoSource {
 impl DemoSource {
     /// The sample entries around `now`, which is also where the demo's clock starts.
     pub fn new(now: DateTime<Utc>) -> DemoSource {
-        DemoSource { data: Mutex::new(Data { items: sample(now), muted: BTreeSet::new() }), offset: now - Utc::now() }
+        let data = Data { items: sample(now), muted: BTreeSet::new(), tasks: Vec::new() };
+        DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
 
     fn now(&self) -> DateTime<Utc> {
@@ -261,6 +284,32 @@ impl InboxSource for DemoSource {
         }
         Ok(())
     }
+
+    /// "Personal" and "Work": the demo has no account behind it.
+    async fn list_task_lists(&self) -> Result<Vec<TaskList>, InboxError> {
+        Ok(demo_lists())
+    }
+
+    /// Keeps the task in memory and marks the entry done, as the core does for the app key.
+    /// [`InboxError::NotFound`] for an unknown entry or list; nothing changes then.
+    async fn create_task_from_item(
+        &self,
+        id: String,
+        list: String,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+    ) -> Result<(), InboxError> {
+        if !DEMO_LISTS.contains(&list.as_str()) {
+            return Err(InboxError::NotFound);
+        }
+        let now = self.now();
+        let mut data = self.lock();
+        let item = data.items.iter_mut().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        let title = title.filter(|title| !title.trim().is_empty()).unwrap_or_else(|| item.title.clone());
+        rules::set_done(item, true, now);
+        data.tasks.push(DemoTask { list, title: title.trim().to_owned(), due });
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -432,5 +481,31 @@ mod tests {
         assert_eq!(demo.open_item("demo-7".into()).await, Err(InboxError::Unsupported), "no link");
         let items = demo.list_items(ItemFilter::default()).await.expect("items");
         assert_eq!(state(&items, "demo-7"), State::New, "nothing opened, nothing seen");
+    }
+
+    #[tokio::test]
+    async fn making_a_task_keeps_it_and_marks_the_entry_done() {
+        let demo = DemoSource::new(now());
+        let lists = demo.list_task_lists().await.expect("lists");
+        assert_eq!(lists.iter().map(|list| list.id.as_str()).collect::<Vec<_>>(), DEMO_LISTS);
+        assert_eq!(lists[0].to_string(), tr("Personal"), "shown by its name");
+        let due = NaiveDate::from_ymd_opt(2026, 10, 14);
+        demo.create_task_from_item("demo-6".into(), DEMO_LISTS[1].into(), Some("  ".into()), due).await.expect("made");
+        let items = demo.list_items(ItemFilter::default()).await.expect("items");
+        let entry = items.iter().find(|i| i.id == "demo-6").expect("still there");
+        assert!(matches!(entry.state, State::Done { .. }), "the entry is done");
+        let task = DemoTask { list: DEMO_LISTS[1].into(), title: entry.title.clone(), due };
+        assert_eq!(demo.lock().tasks, vec![task], "a blank title takes the entry's");
+    }
+
+    #[tokio::test]
+    async fn a_task_needs_a_known_entry_and_list() {
+        let demo = DemoSource::new(now());
+        let make = |id: &str, list: &str| demo.create_task_from_item(id.into(), list.into(), None, None);
+        assert_eq!(make("nope", DEMO_LISTS[0]).await, Err(InboxError::NotFound));
+        assert_eq!(make("demo-6", "demo/elsewhere").await, Err(InboxError::NotFound));
+        let items = demo.list_items(ItemFilter::default()).await.expect("items");
+        assert!(items.iter().any(|i| i.id == "demo-6" && i.state.is_open()), "nothing changed");
+        assert!(demo.lock().tasks.is_empty());
     }
 }

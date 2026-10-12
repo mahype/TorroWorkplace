@@ -236,6 +236,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. } => vec![id("inbox", entry)],
+        Request::CreateTaskFromItem { id: entry, collection, .. } => {
+            vec![id("inbox", entry), id("collection", collection)]
+        }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![id("rule", rule)],
     }

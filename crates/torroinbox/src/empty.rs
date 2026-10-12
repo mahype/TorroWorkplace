@@ -3,12 +3,13 @@
 //! The app runs on the core's client (`torro_ipc::inbox::InboxClient`) or the demo source; the
 //! tests use this one to see the empty state and views that start without any data.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 
-/// An inbox without entries and without sources. Listing gives nothing; changing or opening an
-/// entry gives [`InboxError::NotFound`] (there is none), muting [`InboxError::Offline`] (nothing
-/// would keep it).
+/// An inbox without entries and without sources. Listing gives nothing (no task lists either);
+/// changing or opening an entry or making a task of it gives [`InboxError::NotFound`] (there is
+/// none), muting [`InboxError::Offline`] (nothing would keep it).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptySource;
 
@@ -40,6 +41,20 @@ impl InboxSource for EmptySource {
     async fn open_item(&self, _id: String) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
     }
+
+    async fn list_task_lists(&self) -> Result<Vec<TaskList>, InboxError> {
+        Ok(Vec::new())
+    }
+
+    async fn create_task_from_item(
+        &self,
+        _id: String,
+        _list: String,
+        _title: Option<String>,
+        _due: Option<NaiveDate>,
+    ) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
 }
 
 #[cfg(test)]
@@ -58,5 +73,10 @@ mod tests {
         assert_eq!(block_on(source.set_item_lane("x".into(), Lane::Info, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.mute_source(SourceRef::suite(), true)), Err(InboxError::Offline));
         assert_eq!(block_on(source.open_item("x".into())), Err(InboxError::NotFound));
+        assert_eq!(block_on(source.list_task_lists()), Ok(Vec::new()));
+        assert_eq!(
+            block_on(source.create_task_from_item("x".into(), "l".into(), None, None)),
+            Err(InboxError::NotFound)
+        );
     }
 }

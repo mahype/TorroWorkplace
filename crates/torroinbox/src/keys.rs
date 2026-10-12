@@ -4,14 +4,14 @@
 //!
 //! 1. [`listen`] turns a key press into a [`Key`] – only plain keys (no Ctrl, Alt or logo key) that
 //!    no widget has taken. A text field that has the focus takes the characters typed into it, so
-//!    they never reach the list. (The inbox has no text field yet; one that does not take every
-//!    key, like a search field with its arrows, has to be asked for its focus first, as torrotasks
-//!    does with `operation::is_focused`.)
+//!    they never reach the list: the title field of "Make task" (task E3.5) takes letters, the
+//!    arrows and `Enter` (which creates the task through its `on_submit`).
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
-//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` mute; in a menu of
-//!    choices the digits pick its entries; in the date picker the arrows change day and time and
-//!    `Enter` snoozes. Behind the navigation menu, the app switcher or the drawer no key
-//!    reaches the list. Escape is not here: `widgets::escape` closes whatever is in front.
+//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` mute, `t` make a
+//!    task; in a menu of choices the digits pick its entries; in the date picker the arrows change
+//!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
+//!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
+//!    is not here: `widgets::escape` closes whatever is in front.
 
 use iced::keyboard::{self, Key as Name, key::Named};
 use torro_gui::shell;
@@ -41,6 +41,8 @@ pub enum Key {
     L,
     /// `m`.
     M,
+    /// `t`.
+    T,
     /// `1` … `9`.
     Digit(u8),
     /// `[` ([`shell::is_sidebar_key`]).
@@ -56,6 +58,8 @@ pub enum Focus {
     Choices,
     /// The date and time picker of "Pick…" is open.
     Picker,
+    /// The dialog of "Make task" is open (task E3.5); its title field takes what is typed.
+    Task,
     /// The navigation menu, the app switcher or the drawer is open; only `[` works.
     Elsewhere,
 }
@@ -80,6 +84,8 @@ pub enum Command {
     Lane,
     /// Mute the entry's source, or unmute it; at once, with an undo.
     Mute,
+    /// Open the dialog that makes a task of the entry (task E3.5).
+    MakeTask,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
     /// Picker: one day earlier.
@@ -90,7 +96,7 @@ pub enum Command {
     EarlierTime,
     /// Picker: the next time of the day.
     LaterTime,
-    /// Picker: snooze to the picked time.
+    /// Picker: snooze to the picked time; dialog of "Make task": create the task.
     Confirm,
     /// Collapse or expand the sidebar, open or close the drawer.
     Sidebar,
@@ -125,6 +131,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("s") => Key::S,
         Name::Character("l") => Key::L,
         Name::Character("m") => Key::M,
+        Name::Character("t") => Key::T,
         Name::Character(digit) => match digit.parse::<u8>() {
             Ok(n @ 1..=9) => Key::Digit(n),
             _ => return None,
@@ -145,12 +152,13 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::S) => Some(Command::Snooze),
         (Focus::List, Key::L) => Some(Command::Lane),
         (Focus::List, Key::M) => Some(Command::Mute),
+        (Focus::List, Key::T) => Some(Command::MakeTask),
         (Focus::Choices, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Picker, Key::Left) => Some(Command::EarlierDay),
         (Focus::Picker, Key::Right) => Some(Command::LaterDay),
         (Focus::Picker, Key::Up) => Some(Command::EarlierTime),
         (Focus::Picker, Key::Down) => Some(Command::LaterTime),
-        (Focus::Picker, Key::Enter) => Some(Command::Confirm),
+        (Focus::Picker | Focus::Task, Key::Enter) => Some(Command::Confirm),
         _ => None,
     }
 }
@@ -205,6 +213,7 @@ mod tests {
             (char("s"), Command::Snooze),
             (char("l"), Command::Lane),
             (char("m"), Command::Mute),
+            (char("t"), Command::MakeTask),
             (char("["), Command::Sidebar),
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
@@ -245,8 +254,16 @@ mod tests {
     }
 
     #[test]
+    fn the_task_dialog_takes_enter_and_nothing_of_the_list() {
+        assert_eq!(command(Focus::Task, Key::Enter), Some(Command::Confirm));
+        for key in [Key::Down, Key::E, Key::S, Key::T, Key::U, Key::Digit(1), Key::Sidebar] {
+            assert_eq!(command(Focus::Task, key), None, "{key:?} stays out of the dialog");
+        }
+    }
+
+    #[test]
     fn other_menus_block_the_list() {
-        for key in [Key::Down, Key::Up, Key::Enter, Key::E, Key::U, Key::S, Key::L, Key::M, Key::Digit(1)] {
+        for key in [Key::Down, Key::Up, Key::Enter, Key::E, Key::U, Key::S, Key::L, Key::M, Key::T, Key::Digit(1)] {
             assert_eq!(command(Focus::Elsewhere, key), None, "{key:?} behind a menu or the drawer");
         }
         assert_eq!(command(Focus::Elsewhere, Key::Sidebar), Some(Command::Sidebar), "[ still closes the drawer");

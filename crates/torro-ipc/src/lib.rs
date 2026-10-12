@@ -37,7 +37,7 @@ pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
-use torro_pim::{AccountState, Collection, Event, Todo};
+use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
@@ -494,6 +494,39 @@ pub enum Request {
     OpenItem {
         /// The entry's id from `inbox.list_items`.
         id: String,
+    },
+    /// Turns the entry into a task in the task list `collection` and marks the entry done (task
+    /// E3.5), as `t` and "Make task" in the inbox app do. Answered with [`Response::Todo`]: the
+    /// new task as stored, with its `href` and `etag` for later changes through
+    /// `tasks.save_todo`.
+    ///
+    /// The task gets `title` (the entry's title when it is left out or blank), `due`, the
+    /// entry's `body` as description (plain text, as it came), the entry's web page as `url`
+    /// when it has an `http`/`https` link, and `link.id = "inbox:<entry id>"` as the way back to
+    /// the entry. The entry is done only once the task was saved; a task that cannot be saved
+    /// leaves the entry as it is.
+    ///
+    /// The command is granted in the area `inbox` (Write), but it writes a task too, so the core
+    /// checks the client's tasks rights itself, in this order: write access in `tasks`
+    /// (`forbidden`), then the list (`not-found` when it is hidden, outside the client's
+    /// `task_lists` or unknown, as for `tasks.save_todo`), then the entry (`not-found` for an
+    /// unknown id or a source the client may not see, `forbidden` for approvals, account problems
+    /// and the suite's entries, rule 1). It waits for a person's approval when the client's
+    /// `confirm` asks for it on writes ([`Response::Pending`]); the core checks everything again
+    /// when it runs. Errors from the server as for `tasks.save_todo` (`unsupported` for a GitHub
+    /// filter list, `conflict`, `offline` …).
+    #[serde(rename = "inbox.create_task_from_item")]
+    CreateTaskFromItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
+        /// The task list's id from `tasks.list_lists`.
+        collection: String,
+        /// The task's title; left out or blank: the entry's title.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// When the task is due, a day or an instant; left out: no due date.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        due: Option<EventTime>,
     },
     /// The sources with entries or muted, with their number of open entries and whether they are
     /// muted, for the sidebar ([`Response::Sources`]); only those the client may see.

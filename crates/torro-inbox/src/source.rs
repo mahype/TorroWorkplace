@@ -8,7 +8,7 @@
 use std::fmt;
 use std::future::Future;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::tr;
@@ -61,6 +61,42 @@ pub trait InboxSource: Send + Sync {
     /// opening anything itself. [`InboxError::NotFound`] for an unknown id,
     /// [`InboxError::Unsupported`] when there is nothing safe to open or no window was found.
     fn open_item(&self, id: String) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// The task lists a task can be made in, for the dialog of "Make task" (task E3.5): the
+    /// lists of `tasks.list_lists` that can be written to (no GitHub filter lists), in the order
+    /// the core lists them. Empty without a connected account. Errors as the other calls
+    /// ([`InboxError::Offline`] when the core does not answer).
+    fn list_task_lists(&self) -> impl Future<Output = Result<Vec<TaskList>, InboxError>> + Send;
+
+    /// Turns the entry `id` into a task in the list `list` (an id from
+    /// [`InboxSource::list_task_lists`]) and marks the entry done (`inbox.create_task_from_item`,
+    /// task E3.5). `title` `None` or blank takes the entry's title; `due` is a local day or none.
+    /// The core links the task back to the entry and checks rights and lists; the entry stays
+    /// open when the task could not be saved. [`InboxError::NotFound`] for an unknown entry or
+    /// list, [`InboxError::Forbidden`] when the entry may not be changed ([`rules::human_only`]).
+    fn create_task_from_item(
+        &self,
+        id: String,
+        list: String,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+}
+
+/// A task list a task can be made in ([`InboxSource::list_task_lists`]): its id as
+/// `tasks.list_lists` gives it, and its name. Shown by its name in pickers ([`fmt::Display`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TaskList {
+    /// `<account-id>/<collection URL>`, what `inbox.create_task_from_item` takes as `collection`.
+    pub id: String,
+    /// The list's name, as the server calls it.
+    pub name: String,
+}
+
+impl fmt::Display for TaskList {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)
+    }
 }
 
 /// Which entries [`InboxSource::list_items`] returns. Every field left at `None` selects all;

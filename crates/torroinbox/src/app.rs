@@ -23,6 +23,13 @@
 //! that takes the entry off the list moves the cursor – and the panel – to the row that took its
 //! place, so `e`, `e`, `e` works through a list.
 //!
+//! Make task (E3.5): `t` or the panel's "Make task" opens a small dialog at the entry – the title
+//! (the entry's, to change), the task list (from [`InboxSource::list_task_lists`]) and an optional
+//! due day (Today, Tomorrow, Next week, as the snooze menu counts them). "Create task" or `Enter`
+//! sends `inbox.create_task_from_item`: the core makes the task, links it back to the entry and
+//! marks the entry done; the hint says in which list. There is no undo: taking the task back
+//! would delete it, and deleting is for the tasks app.
+//!
 //! Security rule 1 (`docs/tasks/eingang.md`): approvals, account problems and the suite's entries
 //! belong to the human. This window is the human (it holds the app key), so it may change them,
 //! with two limits of its own: an approval has no "done" (it closes once decided), and the suite
@@ -36,7 +43,7 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, row, stack};
+use iced::widget::{Space, column, container, pick_list, row, stack, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -51,6 +58,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
+use torro_inbox::source::TaskList;
 use torro_inbox::{InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter};
 
 use crate::glance::{self, GlanceData};
@@ -82,6 +90,58 @@ pub const PICK_HOURS: [u32; 4] = [MORNING, 13, 17, 20];
 
 /// How many days ahead "Pick…" goes.
 const PICK_DAYS: u64 = 60;
+
+/// The id of the title field in the dialog of "Make task", which takes the focus as it opens.
+const TASK_TITLE: &str = "task-title";
+
+/// When a task made of an entry is due (task E3.5): a day counted as the snooze menu counts it,
+/// or none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Due {
+    #[default]
+    None,
+    Today,
+    Tomorrow,
+    /// Monday of next week.
+    NextWeek,
+}
+
+impl Due {
+    /// In the order the dialog lists them.
+    pub const ALL: [Due; 4] = [Due::None, Due::Today, Due::Tomorrow, Due::NextWeek];
+
+    /// The local day, seen from `now`; `None` for no due date.
+    pub fn day(self, now: DateTime<Utc>) -> Option<NaiveDate> {
+        let today = local_today(now);
+        match self {
+            Due::None => None,
+            Due::Today => Some(today),
+            Due::Tomorrow => Some(today + Days::new(1)),
+            Due::NextWeek => Some(datetime::week_start(today) + Days::new(7)),
+        }
+    }
+}
+
+impl fmt::Display for Due {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Due::None => tr("No due date"),
+            Due::Today => tr("Today"),
+            Due::Tomorrow => tr("Tomorrow"),
+            Due::NextWeek => tr("Next week"),
+        })
+    }
+}
+
+/// What the dialog of "Make task" holds while it is open, for the entry in `App::subject`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskDraft {
+    /// The task's title; starts as the entry's. Left blank, the core takes the entry's.
+    pub title: String,
+    /// The list chosen; `None` until the lists are in (then the last one used, else the first).
+    pub list: Option<TaskList>,
+    pub due: Due,
+}
 
 /// A change of one entry, one [`InboxSource`] call each (`inbox.set_item_done`,
 /// `inbox.snooze_item`, `inbox.set_item_lane`). Keys, menus and the panel's footer all end here.
@@ -290,6 +350,15 @@ pub enum Sent {
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
+    /// The task lists were asked for (the dialog of "Make task" opened).
+    Lists,
+    /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day.
+    Task {
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+    },
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -356,6 +425,8 @@ pub enum Menu {
     Pick,
     /// The lane question of `App::subject`: only this entry, or always for its source.
     Lane,
+    /// The dialog that makes a task of `App::subject` (task E3.5).
+    Task,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -398,10 +469,13 @@ pub enum Open {
     Mute,
     /// The hint after marking the first entry done, with "Undo", kept for good.
     Undo,
+    /// The panel of the first entry of "For me" that is no approval, with the dialog of "Make
+    /// task" open at its footer (task E3.5).
+    Task,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 17] = [
+    const ALL: [(&'static str, Open); 18] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -419,6 +493,7 @@ impl Open {
         ("lane", Open::Lane),
         ("mute", Open::Mute),
         ("undo", Open::Undo),
+        ("task", Open::Task),
     ];
 }
 
@@ -634,6 +709,12 @@ pub struct App<S> {
     subject: Option<Item>,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
+    /// The dialog of "Make task" while [`Menu::Task`] is open.
+    task: TaskDraft,
+    /// The task lists for that dialog: `None` while they load, then the answer.
+    lists: Option<Result<Vec<TaskList>, String>>,
+    /// The id of the list the last task went into; the dialog chooses it first next time.
+    last_list: Option<String>,
     /// The hint after the last change, with its undo.
     hint: Option<Hint>,
     /// The calls started, for the tests.
@@ -704,6 +785,21 @@ pub enum Message {
     OpenItem(String),
     /// The source's answer to `inbox.open_item`.
     ItemOpened(Result<(), String>),
+    /// From the panel or `t`: the dialog that makes a task of the entry with this id.
+    AskTask(String),
+    /// The task lists for the dialog, or why they could not be read.
+    TaskLists(Result<Vec<TaskList>, String>),
+    /// The dialog's title field.
+    TaskTitle(String),
+    /// The dialog's list.
+    TaskList(TaskList),
+    /// The dialog's due day.
+    TaskDue(Due),
+    /// "Create task", or `Enter` in the dialog.
+    TaskConfirm,
+    /// The source's answer to `inbox.create_task_from_item`, with the name of the list for the
+    /// hint.
+    TaskCreated(Result<(), String>, String),
     /// The browser could not be started (or was); only logged, as in the other apps.
     LinkOpened(Result<(), String>),
     Refresh,
@@ -787,6 +883,9 @@ impl<S: InboxSource + 'static> App<S> {
             scroll: None,
             subject: None,
             pick: Pick::start(Utc::now() + offset),
+            task: TaskDraft::default(),
+            lists: None,
+            last_list: None,
             hint: None,
             #[cfg(test)]
             sent: Vec::new(),
@@ -861,7 +960,7 @@ impl<S: InboxSource + 'static> App<S> {
                     return Task::none();
                 }
                 match result {
-                    Ok(loaded) => self.take(loaded),
+                    Ok(loaded) => return self.take(loaded),
                     Err(err) => self.error = Some(load_failed(&err)),
                 }
             }
@@ -942,6 +1041,19 @@ impl<S: InboxSource + 'static> App<S> {
                 self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
             }
             Message::OpenItem(id) => return self.open_item(&id),
+            Message::AskTask(id) => return self.ask_task(&id),
+            Message::TaskLists(result) => self.take_lists(result),
+            Message::TaskTitle(title) => self.task.title = title,
+            Message::TaskList(list) => self.task.list = Some(list),
+            Message::TaskDue(due) => self.task.due = due,
+            Message::TaskConfirm => return self.create_task(),
+            Message::TaskCreated(Ok(()), list) => {
+                self.note(trf("Task created in {list}", &[("list", &list)]));
+                return self.load();
+            }
+            Message::TaskCreated(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't create the task."), err));
+            }
             // The entry is seen now; the list shows it.
             Message::ItemOpened(Ok(())) => return self.load(),
             Message::ItemOpened(Err(err)) => {
@@ -1052,7 +1164,7 @@ impl<S: InboxSource + 'static> App<S> {
     /// Waiting entries ([`list::is_waiting`]) go first, keeping the source's order otherwise. The
     /// source already sorts them so ([`torro_inbox::rules`]); this makes sure that the group
     /// "Waiting for you" holds all of them and that the keys walk the rows as they are shown.
-    fn take(&mut self, loaded: Loaded) {
+    fn take(&mut self, loaded: Loaded) -> Task<Message> {
         let place = self.cursor_place();
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
         self.items = loaded.items;
@@ -1079,7 +1191,7 @@ impl<S: InboxSource + 'static> App<S> {
                 None => {}
             }
         }
-        self.open_launched();
+        self.open_launched()
     }
 
     /// From the glance: the entry `id` of "For me" under the cursor and in the panel, with "For me"
@@ -1119,6 +1231,7 @@ impl<S: InboxSource + 'static> App<S> {
         match self.menu {
             Some(Menu::Snooze | Menu::Lane) => Focus::Choices,
             Some(Menu::Pick) => Focus::Picker,
+            Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
             None => Focus::List,
@@ -1152,6 +1265,7 @@ impl<S: InboxSource + 'static> App<S> {
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
             Command::Mute => cursor.map_or_else(Task::none, |id| self.ask_mute(&id)),
+            Command::MakeTask => cursor.map_or_else(Task::none, |id| self.ask_task(&id)),
             Command::Choose(n) => match self.choices().into_iter().nth(n.wrapping_sub(1)) {
                 Some(choice) => self.update(choice.message),
                 None => Task::none(),
@@ -1160,6 +1274,7 @@ impl<S: InboxSource + 'static> App<S> {
             Command::LaterDay => self.update(Message::PickDay(self.pick.day + Days::new(1))),
             Command::EarlierTime => self.update(Message::PickHour(self.pick.hour.saturating_sub(1))),
             Command::LaterTime => self.update(Message::PickHour(self.pick.hour + 1)),
+            Command::Confirm if self.menu == Some(Menu::Task) => self.create_task(),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
         }
@@ -1245,6 +1360,58 @@ impl<S: InboxSource + 'static> App<S> {
         self.close_menus();
         let muted = !self.is_muted(&source);
         self.mute(source, muted, true)
+    }
+
+    /// Opens the dialog that makes a task of the entry with `id` (task E3.5): its title to change,
+    /// no due day, the lists asked for anew (a list made meanwhile shows up), the title field
+    /// focused. An approval closes once it is decided; it becomes no task.
+    fn ask_task(&mut self, id: &str) -> Task<Message> {
+        let Some(item) = self.find(id).cloned() else { return Task::none() };
+        if detail::is_approval(&item) {
+            self.note(tr("An approval closes once it is decided.").to_owned());
+            return Task::none();
+        }
+        self.drawer = false;
+        self.task = TaskDraft { title: list::one_line(&item.title), list: None, due: Due::None };
+        self.subject = Some(item);
+        self.menu = Some(Menu::Task);
+        self.lists = None;
+        #[cfg(test)]
+        self.sent.push(Sent::Lists);
+        let inbox = self.inbox.clone();
+        let lists = async move { inbox.list_task_lists().await.map_err(|err| err.to_string()) };
+        Task::batch([Task::perform(lists, Message::TaskLists), operation::focus(TASK_TITLE)])
+    }
+
+    /// The task lists for the open dialog: the list chosen is the one used last, else the first.
+    fn take_lists(&mut self, result: Result<Vec<TaskList>, String>) {
+        if self.menu != Some(Menu::Task) {
+            return;
+        }
+        if let Ok(lists) = &result {
+            let last = lists.iter().find(|list| Some(&list.id) == self.last_list.as_ref());
+            self.task.list = last.or(lists.first()).cloned();
+        }
+        self.lists = Some(result);
+    }
+
+    /// "Create task": sends `inbox.create_task_from_item` for the dialog's entry, list, title
+    /// (none when blank: the core takes the entry's) and due day, and closes the dialog. Nothing
+    /// without a list.
+    fn create_task(&mut self) -> Task<Message> {
+        let (Some(item), Some(list)) = (self.subject.clone(), self.task.list.clone()) else { return Task::none() };
+        let title = Some(self.task.title.trim().to_owned()).filter(|title| !title.is_empty());
+        let due = self.task.due.day(self.now);
+        self.last_list = Some(list.id.clone());
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::Task { id: item.id.clone(), list: list.clone(), title: title.clone(), due });
+        let inbox = self.inbox.clone();
+        let TaskList { id: list_id, name } = list;
+        Task::perform(
+            async move { inbox.create_task_from_item(item.id, list_id, title, due).await.map_err(|err| err.to_string()) },
+            move |result| Message::TaskCreated(result, name.clone()),
+        )
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -1454,8 +1621,11 @@ impl<S: InboxSource + 'static> App<S> {
         let anchors = detail::Anchors::default();
         // Menus for an entry open at the panel's buttons while it is open (the row may be under
         // it), else at the cursor's row.
-        let (snooze_at, lane_at) =
-            if self.detail.is_some() { (&anchors.snooze, &anchors.lane) } else { (&anchors.row, &anchors.row) };
+        let (snooze_at, lane_at, task_at) = if self.detail.is_some() {
+            (&anchors.snooze, &anchors.lane, &anchors.task)
+        } else {
+            (&anchors.row, &anchors.row, &anchors.row)
+        };
         let below = Placement::Below(Align::End);
         let layer = match self.menu {
             None => None,
@@ -1478,6 +1648,7 @@ impl<S: InboxSource + 'static> App<S> {
                 Some(widgets::floating(lane_at, below, self.choice_menu(title), Message::CloseMenu))
             }
             Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
+            Some(Menu::Task) => Some(widgets::floating(task_at, below, self.task_dialog(), Message::CloseMenu)),
         };
         let detail = self.detail.as_ref().map(|item| {
             let footer = detail::Footer {
@@ -1700,6 +1871,57 @@ impl<S: InboxSource + 'static> App<S> {
         widgets::popover(widgets::section_title(tr("Snooze until")), title, rows, actions)
     }
 
+    /// The dialog of "Make task" as a floating card at the entry (the shape of `widgets::popover`,
+    /// whose title is text only; here the title is the field): "Make task" over the title field,
+    /// the list and the due day as properties, and at the right "Cancel" and "Create task" (off
+    /// until a list is chosen). The list row says so while the lists load, when there are none and
+    /// when they could not be read.
+    fn task_dialog(&self) -> Element<'_, Message> {
+        let inset = Padding::new(0.0).left(space::S).right(space::S);
+        let title = text_input(tr("Task title"), &self.task.title)
+            .id(TASK_TITLE)
+            .size(typo::BODY.size)
+            .line_height(typo::BODY.line_height)
+            .font(typo::BODY.font)
+            .padding(style::INPUT_PADDING)
+            .width(Fill)
+            .style(style::text_input)
+            .on_input(Message::TaskTitle)
+            .on_submit(Message::TaskConfirm);
+        let list: Element<'_, Message> = match &self.lists {
+            None => widgets::prop_placeholder(tr("Loading lists…")),
+            Some(Err(_)) => widgets::prop_placeholder(tr("Couldn't load the task lists.")),
+            Some(Ok(lists)) if lists.is_empty() => widgets::prop_placeholder(tr("No task lists yet")),
+            Some(Ok(lists)) => choice(lists.clone(), self.task.list.clone(), Message::TaskList),
+        };
+        let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
+        let rows = column![
+            widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None),
+            widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None),
+        ];
+        let create = self.task.list.is_some().then_some(Message::TaskConfirm);
+        let actions = row![
+            iced::widget::space::horizontal(),
+            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
+            widgets::text_button(Some(Icon::Check), tr("Create task"), style::button::primary, create),
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+        let card = column![
+            container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::XS)),
+            container(title).padding(Padding::new(0.0).bottom(space::S)),
+            rows,
+            column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
+                .spacing(space::M)
+                .padding(inset.top(space::M)),
+        ];
+        container(card)
+            .width(widgets::POPOVER_WIDTH)
+            .padding([space::L, space::S])
+            .style(style::container::popover)
+            .into()
+    }
+
     fn toggle_menu(&mut self, menu: Menu) {
         self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
     }
@@ -1717,10 +1939,11 @@ impl<S: InboxSource + 'static> App<S> {
         Task::perform(async move { theme::stored_appearance(&suite).await }, Message::Appearance)
     }
 
-    /// The panel states of `--open`, once the first entries are in: a panel needs an entry.
-    fn open_launched(&mut self) {
+    /// The panel states of `--open`, once the first entries are in: a panel needs an entry. The
+    /// task asks for what a state needs (the task lists of `--open task`).
+    fn open_launched(&mut self) -> Task<Message> {
         if std::mem::replace(&mut self.opened, true) {
-            return;
+            return Task::none();
         }
         let first = self.items.first().map(|item| item.id.clone());
         // The first entry not from the suite: one with a lane question and a mute button.
@@ -1755,11 +1978,19 @@ impl<S: InboxSource + 'static> App<S> {
                     });
                 }
             }
+            Some(Open::Task) => {
+                if let Some(item) = self.items.iter().find(|item| !detail::is_approval(item)).cloned() {
+                    self.cursor = Some(item.id.clone());
+                    self.detail = Some(item.clone());
+                    return self.ask_task(&item.id);
+                }
+            }
             _ => {}
         }
         if let Some(detail) = &self.detail {
             self.cursor = Some(detail.id.clone());
         }
+        Task::none()
     }
 
     fn load(&self) -> Task<Message> {
@@ -1821,6 +2052,24 @@ fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
         .padding(style::ITEM_PADDING)
         .style(style::button::menu_item(false))
         .on_press(choice.message)
+        .into()
+}
+
+/// A pick list in the suite's look for a property of the dialog of "Make task": `options` shown
+/// by their names, `selected` in it, `on_pick` with the one picked. As high as a small button,
+/// as wide as its row.
+fn choice<'a, T>(options: Vec<T>, selected: Option<T>, on_pick: fn(T) -> Message) -> Element<'a, Message>
+where
+    T: ToString + PartialEq + Clone + 'a,
+{
+    pick_list(options, selected, on_pick)
+        .width(Fill)
+        .padding(style::PICK_LIST_PADDING)
+        .text_size(typo::CAPTION.size)
+        .text_line_height(typo::CAPTION.line_height)
+        .font(typo::CAPTION.font)
+        .style(style::pick_list)
+        .menu_style(style::pick_list_menu)
         .into()
 }
 
@@ -2706,5 +2955,150 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
         let _ = app.update(Message::SetDone("demo-6".into(), true));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, Some(_)))), "with undo");
+    }
+
+    // ----- Make task (E3.5) ------------------------------------------------------------------
+
+    /// The demo's task lists, handed to `update` as the task of the dialog would.
+    fn deliver_lists(app: &mut App<DemoSource>) {
+        assert_eq!(app.sent.last(), Some(&Sent::Lists), "the dialog asked for the lists");
+        let lists = block_on(app.inbox.list_task_lists()).map_err(|err| err.to_string());
+        let _ = app.update(Message::TaskLists(lists));
+    }
+
+    /// Runs the task the dialog sent against the demo source and hands its answer to `update`.
+    fn deliver_task(app: &mut App<DemoSource>) {
+        let Some(Sent::Task { id, list, title, due }) = app.sent.pop() else { panic!("no task sent") };
+        let result = block_on(app.inbox.create_task_from_item(id, list.id, title, due)).map_err(|err| err.to_string());
+        let _ = app.update(Message::TaskCreated(result, list.name));
+        load(app);
+    }
+
+    fn demo_list(index: usize) -> TaskList {
+        let lists = block_on(DemoSource::new(Utc::now()).list_task_lists()).expect("demo lists");
+        lists[index].clone()
+    }
+
+    #[test]
+    fn t_opens_the_dialog_and_create_sends_the_task_then_the_entry_is_done() {
+        let mut app = at("demo-6");
+        let title = app.find("demo-6").map(|item| item.title.clone()).expect("demo-6");
+        let _ = press(&mut app, Key::T);
+        assert_eq!((app.menu, app.subject.as_ref().map(|i| i.id.as_str())), (Some(Menu::Task), Some("demo-6")));
+        assert_eq!(app.task.title, title, "the entry's title to change");
+        assert_eq!(app.task.list, None, "no list before the lists are in");
+        deliver_lists(&mut app);
+        assert_eq!(app.task.list, Some(demo_list(0)), "the first list");
+
+        let _ = app.update(Message::TaskTitle("Fix the deploy".into()));
+        let _ = app.update(Message::TaskList(demo_list(1)));
+        let _ = app.update(Message::TaskDue(Due::Tomorrow));
+        // The keys of the list stay out while the dialog is open; Enter creates the task.
+        let _ = press(&mut app, Key::E);
+        assert_eq!(app.menu, Some(Menu::Task), "e is no triage key in the dialog");
+        let _ = press(&mut app, Key::Enter);
+        let tomorrow = local_today(app.now) + Days::new(1);
+        assert_eq!(
+            app.sent.last(),
+            Some(&Sent::Task {
+                id: "demo-6".into(),
+                list: demo_list(1),
+                title: Some("Fix the deploy".into()),
+                due: Some(tomorrow),
+            })
+        );
+        assert!(app.menu.is_none(), "the dialog closes");
+        deliver_task(&mut app);
+        let hint = app.hint.as_ref().expect("a hint");
+        assert_eq!(hint.text, trf("Task created in {list}", &[("list", &demo_list(1).name)]));
+        assert!(hint.undo.is_none(), "no undo: that would delete the task");
+        assert!(!ids(&app).contains(&"demo-6"), "the entry is done and left For me");
+    }
+
+    #[test]
+    fn the_panel_button_opens_the_same_dialog_and_remembers_the_list() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Select("demo-6".into()));
+        let _ = app.update(Message::AskTask("demo-6".into()));
+        assert_eq!(app.menu, Some(Menu::Task));
+        deliver_lists(&mut app);
+        let _ = app.update(Message::TaskList(demo_list(1)));
+        let _ = app.update(Message::TaskConfirm);
+        deliver_task(&mut app);
+
+        let next = app.items.iter().find(|item| !detail::is_approval(item)).map(|item| item.id.clone());
+        let _ = app.update(Message::AskTask(next.expect("another entry")));
+        deliver_lists(&mut app);
+        assert_eq!(app.task.list, Some(demo_list(1)), "the list used last");
+    }
+
+    #[test]
+    fn create_needs_a_list_and_a_blank_title_is_left_to_the_core() {
+        let mut app = at("demo-6");
+        let _ = press(&mut app, Key::T);
+        let _ = app.update(Message::TaskConfirm);
+        assert_eq!(app.sent.last(), Some(&Sent::Lists), "nothing sent while the lists load");
+        let _ = app.update(Message::TaskLists(Ok(Vec::new())));
+        let _ = app.update(Message::TaskConfirm);
+        assert_eq!((app.menu, app.sent.last()), (Some(Menu::Task), Some(&Sent::Lists)), "no list, no task");
+        let _ = app.update(Message::TaskLists(Ok(vec![demo_list(0)])));
+        let _ = app.update(Message::TaskTitle("   ".into()));
+        let _ = app.update(Message::TaskConfirm);
+        assert!(matches!(app.sent.last(), Some(Sent::Task { title: None, due: None, .. })), "{:?}", app.sent.last());
+    }
+
+    #[test]
+    fn an_approval_becomes_no_task() {
+        let mut app = at("demo-3");
+        let _ = press(&mut app, Key::T);
+        assert!(app.menu.is_none());
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("An approval closes once it is decided."))
+        );
+        assert!(app.sent.is_empty(), "the lists are not even asked for");
+    }
+
+    #[test]
+    fn a_task_that_could_not_be_made_says_so_and_escape_closes_the_dialog() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::TaskCreated(Err("The server did not answer".into()), "Work".into()));
+        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't create the task.")));
+        assert!(app.hint.is_none());
+
+        let _ = press(&mut app, Key::T);
+        let _ = app.update(Message::TaskLists(Err("offline".into())));
+        assert!(matches!(app.lists, Some(Err(_))));
+        let _ = app.update(Message::Escape);
+        assert!(app.menu.is_none() && app.subject.is_none());
+        // Lists that arrive after the dialog closed change nothing.
+        let _ = app.update(Message::TaskLists(Ok(vec![demo_list(0)])));
+        assert_eq!(app.task.list, None);
+    }
+
+    #[test]
+    fn the_due_days_count_like_the_snooze_menu() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time");
+        let today = local_today(now);
+        assert_eq!(Due::None.day(now), None);
+        assert_eq!(Due::Today.day(now), Some(today));
+        assert_eq!(Due::Tomorrow.day(now), Some(today + Days::new(1)));
+        let next_week = Due::NextWeek.day(now).expect("a day");
+        assert_eq!(datetime::to_local(snooze_times(now)[2]).date(), next_week, "Monday, as \"Next week\" snoozes");
+        assert_eq!(Due::NextWeek.to_string(), tr("Next week"));
+    }
+
+    #[test]
+    fn the_task_state_opens_the_dialog_at_the_panel_and_every_size_draws_it() {
+        let mut app = loaded(&["--open", "task"]);
+        assert_eq!(app.menu, Some(Menu::Task));
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), app.subject.as_ref().map(|i| i.id.as_str()));
+        for lists in [None, Some(Ok(Vec::new())), Some(Err("offline".to_string())), Some(Ok(vec![demo_list(0)]))] {
+            app.lists = lists;
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
     }
 }

@@ -359,7 +359,7 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
-///   left open.
+///   left open, and so is `inbox.create_task_from_item`, which writes a task to the server.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -369,6 +369,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         .destructive(destructive)
         .idempotent(read_only || IDEMPOTENT.contains(&command.name));
     match command.area {
+        Area::Inbox if command.name == "inbox.create_task_from_item" => hints,
         Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox => {
             hints.open_world(false)
         }
@@ -899,10 +900,11 @@ mod tests {
             if matches!(command.access, Access::Delete | Access::Admin) {
                 assert_eq!(hints.destructive_hint, Some(true), "{}", tool.name);
             }
+            // Making a task of an inbox entry writes to the task server (task E3.5).
             let local = matches!(
                 command.area,
                 Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox
-            );
+            ) && command.name != "inbox.create_task_from_item";
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
@@ -1322,6 +1324,39 @@ mod tests {
             (Some(false), Some(false), Some(true), Some(false)),
             "it only steers the person's view"
         );
+    }
+
+    /// Task E3.5: making a task writes to the task server and makes a new one every time.
+    #[test]
+    fn making_a_task_of_an_entry_is_a_write_to_the_server() {
+        let tool = tools().iter().find(|tool| tool.name == "inbox_create_task_from_item").expect("tool");
+        let task = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (task.read_only_hint, task.destructive_hint, task.idempotent_hint, task.open_world_hint),
+            (Some(false), Some(false), Some(false), None),
+        );
+    }
+
+    /// Task E3.5: the tool takes the entry, the list and optionally title and due day.
+    #[test]
+    fn inbox_create_task_from_item_builds_its_request() {
+        let arguments = json!({"id": "i1", "collection": "work", "title": "Fix it", "due": {"date": "2026-10-14"}});
+        let request = request_for("inbox_create_task_from_item", args(arguments), &Utc);
+        let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
+        let wanted = Request::CreateTaskFromItem {
+            id: "i1".into(),
+            collection: "work".into(),
+            title: Some("Fix it".into()),
+            due,
+        };
+        assert_eq!(request, Ok(wanted));
+        let short = request_for("inbox_create_task_from_item", args(json!({"id": "i1", "collection": "work"})), &Utc);
+        assert_eq!(
+            short,
+            Ok(Request::CreateTaskFromItem { id: "i1".into(), collection: "work".into(), title: None, due: None })
+        );
+        let refused = request_for("inbox_create_task_from_item", args(json!({"id": "i1"})), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "the list is needed: {refused:?}");
     }
 
     /// Task E2.4: the tool takes the entry's id and nothing else.

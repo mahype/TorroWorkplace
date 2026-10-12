@@ -15,7 +15,9 @@
 //! opens the snooze menu, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
 //! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`])
 //! – and "Mute …" (`m`) as an icon button, which mutes at once with an undo (E3.2c). The suite as a
-//! source is never muted, so its entries have no mute button.
+//! source is never muted, so its entries have no mute button. "Make task" (`t`, task E3.5) is an
+//! icon button next to "Snooze": its words would not fit beside the others in the panel's 400.
+//! Approvals have none – they close once decided, and a task would not decide them.
 //!
 //! Commands in a message ("cargo test --workspace") should not break at their hyphens: the message
 //! shows them as non-breaking hyphens ([`unbroken`]), which Inter draws the same.
@@ -47,6 +49,8 @@ pub struct Anchors {
     pub snooze: Anchor,
     /// The footer's "Move to …": the lane question opens here while the panel is open.
     pub lane: Anchor,
+    /// The footer's "Make task": its dialog opens here while the panel is open (task E3.5).
+    pub task: Anchor,
 }
 
 /// What the footer needs besides the entry.
@@ -194,7 +198,8 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 }
 
 /// The buttons below the line: Allow/Deny for an approval (disabled for now), else done or reopen;
-/// then "Snooze" for an entry that is not done, and at the right "Move to …" and "Mute …".
+/// then "Snooze" for an entry that is not done and "Make task" for one that is no approval, and at
+/// the right "Move to …" and "Mute …".
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     let mut buttons = decide(item);
     if !matches!(item.state, State::Done { .. }) {
@@ -205,6 +210,10 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
             Some(Message::AskSnooze(item.id.clone())),
         );
         buttons.push(widgets::anchored(&footer.anchors.snooze, snooze));
+    }
+    if !is_approval(item) {
+        let task = widgets::icon_button(Icon::ListTodo, tr("Make task"), Some(Message::AskTask(item.id.clone())));
+        buttons.push(widgets::anchored(&footer.anchors.task, task));
     }
     buttons.push(iced::widget::space::horizontal().into());
     let lane = app::other_lane(item.lane);
@@ -356,12 +365,12 @@ mod tests {
 
     #[test]
     fn the_footer_offers_triage_to_the_mouse() {
-        // Mark as done, Snooze, the gap, Move to, Mute.
-        assert_eq!(buttons(&sample("demo-1"), &footer(false)).len(), 5);
-        // Allow, Deny, Snooze, the gap, Move to: the suite is never muted.
+        // Mark as done, Snooze, Make task, the gap, Move to, Mute.
+        assert_eq!(buttons(&sample("demo-1"), &footer(false)).len(), 6);
+        // Allow, Deny, Snooze, the gap, Move to: the suite is never muted, an approval no task.
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
-        // Reopen, the gap, Move to, Mute: a done entry is not snoozed.
-        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 4);
+        // Reopen, Make task, the gap, Move to, Mute: a done entry is not snoozed.
+        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
     }
 
     #[test]
@@ -369,7 +378,7 @@ mod tests {
         // One block: the note over the row of buttons.
         assert_eq!(footer_view(&sample("demo-3"), &footer(false)).len(), 1);
         // Other entries keep the plain row.
-        assert_eq!(footer_view(&sample("demo-1"), &footer(false)).len(), 5);
+        assert_eq!(footer_view(&sample("demo-1"), &footer(false)).len(), 6);
     }
 
     #[test]

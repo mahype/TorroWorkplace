@@ -17,8 +17,10 @@
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
+use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
+use torro_pim::EventTime;
 
 use crate::{IpcError, Request, Response};
 
@@ -110,6 +112,35 @@ impl InboxSource for InboxClient {
             other => Err(unexpected(other)),
         }
     }
+
+    /// `tasks.list_lists`, without the lists nothing can be written to (GitHub filter lists,
+    /// read-only shares) and without calendars that hold no tasks.
+    async fn list_task_lists(&self) -> Result<Vec<TaskList>, InboxError> {
+        match self.ask(Request::TaskCollections).await? {
+            Response::Collections { collections } => Ok(collections
+                .into_iter()
+                .filter(|list| list.writable && list.kind.has_todos() && list.source.is_none())
+                .map(|list| TaskList { id: list.id, name: list.name })
+                .collect()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.create_task_from_item` with the day as an all-day due date; the core answers with
+    /// the new task, which the app does not need.
+    async fn create_task_from_item(
+        &self,
+        id: String,
+        list: String,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+    ) -> Result<(), InboxError> {
+        let due = due.map(EventTime::Date);
+        match self.ask(Request::CreateTaskFromItem { id, collection: list, title, due }).await? {
+            Response::Todo { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -176,6 +207,28 @@ mod tests {
             }
             Request::MuteSource { source, muted: true } if source == SourceRef::script("ci") => Response::Ok,
             Request::OpenItem { id } if id == "window" => Response::Ok,
+            Request::TaskCollections => Response::Collections { collections: lists() },
+            Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
+                todo: torro_pim::Todo {
+                    uid: "new".into(),
+                    collection,
+                    href: Some("https://cloud.example.org/t/new.ics".into()),
+                    etag: Some("\"1\"".into()),
+                    summary: title.unwrap_or_default(),
+                    due,
+                    priority: None,
+                    completed: false,
+                    parent: None,
+                    description: None,
+                    url: None,
+                    categories: Vec::new(),
+                    sort_order: None,
+                    link: None,
+                },
+            },
+            Request::CreateTaskFromItem { .. } => {
+                Response::Error { code: "not-found".into(), message: "no task list \"gone\"".into() }
+            }
             Request::OpenItem { .. } => {
                 Response::Error { code: "unsupported".into(), message: "no window of the agent found".into() }
             }
@@ -275,6 +328,62 @@ mod tests {
         let client = core.client();
         client.open_item("window".into()).await.expect("opened");
         assert_eq!(client.open_item("gone".into()).await, Err(InboxError::Unsupported));
+    }
+
+    /// A writable task list, a read-only share, a GitHub filter list and a calendar without tasks.
+    fn lists() -> Vec<torro_pim::Collection> {
+        let list = |id: &str, kind, writable| torro_pim::Collection {
+            id: id.into(),
+            name: id.to_uppercase(),
+            kind,
+            color: None,
+            writable,
+            source: None,
+        };
+        let filter = torro_pim::Collection {
+            source: Some(torro_pim::model::GitHubFilter {
+                queries: vec!["is:open".into()],
+                pinned: Vec::new(),
+                revision: 1,
+                truncated: false,
+                problem: None,
+            }),
+            ..list("github", torro_pim::CollectionKind::Todos, false)
+        };
+        vec![
+            list("work", torro_pim::CollectionKind::Both, true),
+            list("shared", torro_pim::CollectionKind::Todos, false),
+            filter,
+            list("events", torro_pim::CollectionKind::Events, true),
+        ]
+    }
+
+    #[tokio::test]
+    async fn only_lists_a_task_can_be_written_to_are_offered() {
+        let core = start(|request| async move { answer(request) }).await;
+        let lists = core.client().list_task_lists().await.expect("lists");
+        assert_eq!(lists, vec![TaskList { id: "work".into(), name: "WORK".into() }]);
+    }
+
+    #[tokio::test]
+    async fn making_a_task_sends_the_day_as_due_date() {
+        let core = start(|request| async move {
+            // Only the request the client should build is answered with a task.
+            let day = NaiveDate::from_ymd_opt(2026, 10, 14).map(EventTime::Date);
+            match request {
+                Request::CreateTaskFromItem { ref title, due, .. } if title.as_deref() == Some("Fix") && due == day => {
+                    answer(request)
+                }
+                Request::CreateTaskFromItem { .. } => Response::Error { code: "error".into(), message: "wrong".into() },
+                other => answer(other),
+            }
+        })
+        .await;
+        let client = core.client();
+        let day = NaiveDate::from_ymd_opt(2026, 10, 14);
+        client.create_task_from_item("i1".into(), "work".into(), Some("Fix".into()), day).await.expect("made");
+        let gone = client.create_task_from_item("i2".into(), "gone".into(), Some("Fix".into()), day).await;
+        assert_eq!(gone, Err(InboxError::NotFound));
     }
 
     #[tokio::test]

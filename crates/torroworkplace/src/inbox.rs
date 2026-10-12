@@ -38,6 +38,11 @@
 //! ([`behind_tmux`]): the agent's terminal window is not among them, so there would be nothing to
 //! jump to and the app shows no "Go to window".
 //!
+//! **Making a task of an entry** (task E3.5, `inbox.create_task_from_item`) is split the same way:
+//! the inbox hands over the entry the caller may change ([`Inbox::entry_for_task`]), the core
+//! checks the task list, writes the task through the calendar service and then marks the entry
+//! done like `inbox.set_item_done`.
+//!
 //! **The source `suite`** (task E2.1) is filed by the core itself, not through a request: every
 //! open approval ([`file_approvals`]) and every account that needs the user
 //! ([`Inbox::file_account_problems`]) is one entry, owned by [`CORE_OWNER`], so no client and not
@@ -274,9 +279,10 @@ impl Inbox {
                 .and_then(|_| api::post_source(Some(client), agent.as_ref()))
                 .map(drop)
                 .map_err(Failure::Forbidden),
-            Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
-                changeable(db, id, Some(client)).map(drop)
-            }
+            Request::SetItemDone { id, .. }
+            | Request::SnoozeItem { id, .. }
+            | Request::SetItemLane { id, .. }
+            | Request::CreateTaskFromItem { id, .. } => changeable(db, id, Some(client)).map(drop),
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
@@ -296,12 +302,14 @@ impl Inbox {
                 Request::OpenItem { id }
                 | Request::SetItemDone { id, .. }
                 | Request::SnoozeItem { id, .. }
-                | Request::SetItemLane { id, .. } => {
+                | Request::SetItemLane { id, .. }
+                | Request::CreateTaskFromItem { id, .. } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
-                    InboxFacts { item, rule: None }
+                    InboxFacts { item, ..InboxFacts::default() }
                 }
                 Request::RemoveRule { id } => {
-                    InboxFacts { item: None, rule: read_rules(db, &Scope::All, "id = ?", by_id(id))?.pop() }
+                    let rule = read_rules(db, &Scope::All, "id = ?", by_id(id))?.pop();
+                    InboxFacts { rule, ..InboxFacts::default() }
                 }
                 _ => InboxFacts::default(),
             })
@@ -322,6 +330,28 @@ impl Inbox {
         self.with(|db| {
             wake_due(db, now)?;
             opening(&visible_item(db, id, client)?.item)
+        })
+        .map_err(|failure| Box::new(failure.response()))
+    }
+
+    /// The entry `id` as stored, for `inbox.create_task_from_item` (task E3.5): the task is made
+    /// from its title, text and link. Snoozed entries that are due are woken first; changes
+    /// nothing else.
+    ///
+    /// `Err` holds the answer: `not-found` for an unknown entry or one of a source `client` may
+    /// not see (a hook client sees none), `forbidden` when `client` may not change it (security
+    /// rule 1: approvals, account problems and the suite's entries are the person's, so an agent
+    /// cannot turn an approval into a task and mark it done). The app key (`None`) may change
+    /// every entry.
+    pub fn entry_for_task(
+        &self,
+        id: &str,
+        client: Option<&ClientInfo>,
+        now: DateTime<Utc>,
+    ) -> Result<Item, Box<Response>> {
+        self.with(|db| {
+            wake_due(db, now)?;
+            Ok(changeable(db, id, client)?.item)
         })
         .map_err(|failure| Box::new(failure.response()))
     }
@@ -616,6 +646,11 @@ fn answer(
         // Opening needs the window manager, the browser or the apps: the core answers it with
         // `Inbox::opening` and `Inbox::opened`.
         Request::OpenItem { .. } => Err(Failure::Invalid("inbox.open_item is answered by the core".into())),
+        // A task is written by the calendar service: the core answers it with
+        // `Inbox::entry_for_task` and `inbox.set_item_done`.
+        Request::CreateTaskFromItem { .. } => {
+            Err(Failure::Invalid("inbox.create_task_from_item is answered by the core".into()))
+        }
         Request::ListRules => Ok(Response::Rules { rules: list_rules(db, client)? }),
         Request::RemoveRule { id } => {
             removable_rule(db, &id, client)?;

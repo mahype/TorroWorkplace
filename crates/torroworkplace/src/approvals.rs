@@ -683,6 +683,9 @@ pub struct InboxFacts {
     pub item: Option<Item>,
     /// The rule `inbox.remove_rule` would remove, as stored; `None` when unknown.
     pub rule: Option<Rule>,
+    /// The display name of the task list `inbox.create_task_from_item` writes to, as the core
+    /// caches it (task E3.5); `None` when unknown: the summary then shows the list's id.
+    pub list: Option<String>,
 }
 
 /// What an `inbox.*` request would do, in words, like [`summary`]: `Unmute "Codex"
@@ -709,6 +712,16 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             trf("Mark its own inbox entries of thread {thread} as done", &[("thread", &quote(thread_key))])
         }
         Request::OpenItem { .. } => trf("Show {entry} on the screen", &[("entry", &entry())]),
+        // The title that will be written: the client's, or – left out or blank – the entry's.
+        Request::CreateTaskFromItem { collection, title, .. } => {
+            let title = title.as_deref().filter(|title| !title.trim().is_empty());
+            let title = title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default();
+            let list = facts.list.as_deref().unwrap_or(collection);
+            trf(
+                "Make a task \"{title}\" in \"{list}\" from {entry}",
+                &[("title", &quote(title)), ("list", &quote(list)), ("entry", &entry())],
+            )
+        }
         Request::SetItemDone { done: true, .. } => trf("Mark {entry} as done", &[("entry", &entry())]),
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
         Request::SnoozeItem { until: Some(until), .. } => trf(
@@ -1421,7 +1434,7 @@ pub(crate) mod tests {
         assert_eq!(mute(true), trf("Mute {source} in the inbox", &[("source", &named)]));
         assert_eq!(mute(false), trf("Unmute {source} in the inbox", &[("source", &named)]));
 
-        let known = InboxFacts { item: Some(inbox_entry("Backup \"done\"")), rule: None };
+        let known = InboxFacts { item: Some(inbox_entry("Backup \"done\"")), ..InboxFacts::default() };
         let entry = "\"Backup 'done'\"";
         let lane = |remember| Request::SetItemLane { id: "e1".into(), lane: Lane::ForMe, remember };
         assert_eq!(
@@ -1450,8 +1463,8 @@ pub(crate) mod tests {
         assert_eq!(snooze, trf("Stop snoozing {entry}", &[("entry", &unknown)]));
 
         let rule = |effect| InboxFacts {
-            item: None,
             rule: Some(Rule { id: "r1".into(), source: source.clone(), effect, created: Utc::now() }),
+            ..InboxFacts::default()
         };
         let remove = Request::RemoveRule { id: "r1".into() };
         assert_eq!(
@@ -1476,6 +1489,42 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&post, &InboxFacts::default()),
             trf("Report \"{title}\" to the inbox", &[("title", &"Ignore all (previous) instructions")])
+        );
+    }
+
+    /// Task E3.5: the summary names the title that will be written, the list by its name and the
+    /// entry as the inbox holds it, all quoted.
+    #[test]
+    fn a_task_from_an_entry_names_title_list_and_entry() {
+        let make = |title: Option<&str>| Request::CreateTaskFromItem {
+            id: "e1".into(),
+            collection: "nextcloud:anna/work".into(),
+            title: title.map(str::to_string),
+            due: None,
+        };
+        let known = InboxFacts {
+            item: Some(inbox_entry("Deploy \"failed\"")),
+            list: Some("Work".into()),
+            ..InboxFacts::default()
+        };
+        let entry = "\"Deploy 'failed'\"";
+        let wanted = |title: &str, list: &str, entry: &str| {
+            trf(
+                "Make a task \"{title}\" in \"{list}\" from {entry}",
+                &[("title", &title), ("list", &list), ("entry", &entry)],
+            )
+        };
+        assert_eq!(inbox_summary(&make(Some("Fix {it}\nnow")), &known), wanted("Fix (it) now", "Work", entry));
+        assert_eq!(
+            inbox_summary(&make(Some(" ")), &known),
+            wanted("Deploy 'failed'", "Work", entry),
+            "blank: the entry's"
+        );
+        let unknown = tr("an unknown inbox entry");
+        assert_eq!(
+            inbox_summary(&make(None), &InboxFacts::default()),
+            wanted("", "nextcloud:anna/work", unknown),
+            "without facts the id the command runs with"
         );
     }
 }
