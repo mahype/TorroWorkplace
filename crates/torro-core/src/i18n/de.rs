@@ -1379,7 +1379,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     (
         "Messages leave your computer and can't be taken back",
-        "Nachrichten verlassen deinen Computer und lassen sich nicht zurückholen",
+        "Gesendete Nachrichten lassen sich nicht zurückholen",
     ),
     ("Send on my behalf", "In meinem Namen senden"),
     ("Sending mail always asks you first.", "Das Senden von E-Mails fragt immer zuerst bei dir nach."),
