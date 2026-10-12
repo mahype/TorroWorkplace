@@ -985,8 +985,9 @@ static SAVE_TODO: Command = Command {
                   list done closes it on GitHub (reopening reopens it); other fields of a GitHub match cannot be \
                   changed (`unsupported`). That needs write access to `github` (else `forbidden`) and the issue's \
                   repository among a key's repositories (else `not-found`). Marking a link to an issue (from \
-                  add_link) done closes the issue too; without write access to `github` only the task is marked \
-                  done, without an error. Pull requests are never closed.",
+                  add_link) done closes the issue too, but only in a list of the user's own that nobody else may \
+                  write to; in a shared list, or without write access to `github`, only the task is marked done, \
+                  without an error. Pull requests are never closed.",
 };
 
 static DELETE_TODO: Command = Command {

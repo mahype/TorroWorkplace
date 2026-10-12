@@ -60,13 +60,14 @@
 //!   only to whom may see the repository. Title and state go into the stored task when they
 //!   changed (closed or merged = done, never back), ETag-guarded, nothing else of it. Ticking a link
 //!   to an issue closes it on GitHub too ([`PimService::save_link_todo`]), under the rights of
-//!   G.5. A client may neither add nor write a link to a repository outside its selection: GitHub
+//!   G.5 and only in a private list (task G.6c); elsewhere it only marks the task done. A client may neither add nor write a link to a repository outside its selection: GitHub
 //!   would otherwise tell it the title through the task. Nor may a client without read access to
 //!   `github` set or change one at all (task G.6b, [`PimService::link_refusal`]).
 //! - **Only private lists are brought in step** (task G.6b): lists the user owns and nobody else
 //!   may write to, as the server reports owner and sharees ([`Slot::private`]). Someone who may
 //!   write to a list could otherwise place a link to the user's private issue there and read its
-//!   title once the core wrote it in.
+//!   title once the core wrote it in – or have the user's tick close an issue they never meant
+//!   (task G.6c).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -1456,8 +1457,9 @@ impl PimService {
     /// - `tasks.save_todo` on a GitHub filter list (tasks G.5, G.5b): the item the list holds under
     ///   the `uid`, the one [`PimService::save_filter_todo`] closes or reopens, and for an issue
     ///   (not a pull request) its `owner/repo#n` ([`Facts::issue`]);
-    /// - `tasks.save_todo` on a link to an issue (task G.6): the issue it ticks ([`ticked_issue`])
-    ///   and whether that is all the save changes ([`Facts::ticks_only`], G.6b);
+    /// - `tasks.save_todo` on a link to an issue (task G.6): the issue it ticks ([`ticked_issue`];
+    ///   none in a list that is not private, G.6c) and whether that is all the save changes
+    ///   ([`Facts::ticks_only`], G.6b);
     /// - `tasks.add_link`: the list's display name and whether it is a filter list, where the item
     ///   is pinned ([`Facts::pins`], G.6b);
     /// - `tasks.unpin_issue`: the filter list and the pinned item with the same repository and
@@ -2206,9 +2208,10 @@ impl PimService {
 
     /// `tasks.save_todo` on a task of a writable list (task G.6): stored as
     /// [`PimService::save_todo`] stores it; when that ticks or unticks a link to an issue
-    /// ([`ticked_issue`]) and `reach` may close its issues ([`Reach::closes_issues_of`]), the issue
-    /// is then closed as completed or reopened with `api`. GitHub's refusal (or no `api`) is only
-    /// logged: the task is stored, and the answer's `link.github` shows the issue as it is. A
+    /// ([`ticked_issue`]: in a private list only, task G.6c) and `reach` may close its issues
+    /// ([`Reach::closes_issues_of`]), the issue is then closed as completed or reopened with `api`.
+    /// GitHub's refusal (or no `api`) is only logged: the task is stored, and the answer's
+    /// `link.github` shows the issue as it is (the app shows "Issue closed" only then). A
     /// client that may not set the link is refused first ([`PimService::link_refusal`]), also for
     /// an approved run.
     pub async fn save_link_todo(&self, todo: Todo, api: Option<&Api>, reach: Reach<'_>) -> Response {
@@ -2358,8 +2361,15 @@ fn linked_issue(todo: &Todo) -> Option<IssueRef> {
 /// `href` links to it, `todo` keeps that link, `completed` changes, and as far as the core knows
 /// ([`State::links`]) it is an issue whose state is the other one. `None` for every other save,
 /// also for a new task and for a pull request.
+///
+/// Also `None` for a task in a list that is not private to the user ([`Slot::private`], task
+/// G.6c): someone who may write to that list could have placed the link there, and the user's tick
+/// would close an issue they never meant. Ticking it there only marks the task done.
 fn ticked_issue(state: &State, todo: &Todo) -> Option<IssueRef> {
     let held = cached_todo(state, todo.href.as_deref()?)?;
+    if !state.owner(&held.collection).is_some_and(|slot| slot.private.contains(&held.collection)) {
+        return None;
+    }
     let issue = linked_issue(held)?;
     if held.completed == todo.completed || !linked_issue(todo).is_some_and(|sent| sent.same(&issue)) {
         return None;

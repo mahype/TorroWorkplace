@@ -72,8 +72,8 @@ heute einer Nextcloud-Liste. Sie trägt den Link auf das Issue (`URL`) und eine 
   `{DAV:}owner` aus RFC 3744, beide müssen der angemeldete Benutzer sein) und die Freigaben
   (`oc:invite`: keine mit `read-write`; Freigaben nur zum Lesen sind in Ordnung, weil dann nur ich
   Verweise anlegen kann). Meldet der Server das nicht, gilt die Liste als nicht privat (fail
-  closed). Verweise in anderen Listen bleiben, wie sie geschrieben wurden; nur Abhaken schließt
-  weiter das Issue. Verworfen: „nur Verweise, die diese Suite angelegt hat“ – das bräuchte eine
+  closed). Verweise in anderen Listen bleiben, wie sie geschrieben wurden, und Abhaken erledigt
+  dort nur die Aufgabe (G.6c, siehe „Abhaken“). Verworfen: „nur Verweise, die diese Suite angelegt hat“ – das bräuchte eine
   Signatur im VTODO mit einem Schlüssel je Gerät, Verweise vom zweiten Gerät oder aus Nextcloud
   Tasks würden nie abgeglichen, und eine kopierte Aufgabe trüge die Signatur mit.
 
@@ -90,11 +90,19 @@ wählbar: „Manual order“ oder wie bisher nach Fälligkeit gruppiert.
 | Eintrag | Haken | Ohne Schreibrecht |
 |---|---|---|
 | Issue in Filterliste | schließt das Issue („completed“), Meldung mit „Undo“ (öffnet wieder) | Haken aus, Hinweis auf das fehlende Recht |
-| Verweis auf Issue | erledigt den Verweis **und** schließt das Issue, mit „Undo“ | erledigt nur den Verweis |
+| Verweis auf Issue (private Liste) | erledigt den Verweis **und** schließt das Issue, mit „Undo“ | erledigt nur den Verweis |
+| Verweis auf Issue (geteilte Liste) | erledigt nur den Verweis, das Issue bleibt offen (G.6c) | erledigt nur den Verweis |
 | PR in Filterliste | kein Haken, nur Typ-Symbol; erledigt, wenn gemergt oder geschlossen | – |
 | Verweis auf PR | erledigt nur den Verweis; wird von selbst erledigt, wenn der PR gemergt oder geschlossen ist | – |
 
 PRs werden in Torro nie gemergt oder geschlossen: Das ist keine Nebenbei-Entscheidung.
+
+**Geteilte Listen (G.6c, entschieden 2026-10-12, sichere Voreinstellung):** In Listen, die nicht
+privat sind (siehe „Verweis“: nicht mein Konto, oder jemand anderes darf hineinschreiben), erledigt
+der Haken an einem Verweis nur die Aufgabe – für die Suite wie für Clients. Sonst könnte jemand,
+mit dem die Liste geteilt ist, dort einen Verweis ablegen, und mein Haken schlösse ein Issue, das
+ich nicht meinte. Die Freigabe sagt dann „Change task …“, nie „close“; die App zeigt „Issue closed ·
+Undo“ nur, wenn die Antwort des Kerns das Issue wirklich geschlossen meldet (`link.github`).
 
 ## Was aus GitHub in die Aufgaben kommt
 
@@ -203,7 +211,8 @@ einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben
   "Liste"“ bzw. „Pin owner/repo#n to filter list "Liste"“ (Liste aus dem Cache, Kennung aus der
   Adresse); eine unlesbare Adresse wird vorher mit `error` abgelehnt. Abhaken eines Verweises heißt
   nur dann „Close GitHub issue …“, wenn sich sonst nichts ändert; sonst „Change task … and close
-  GitHub issue owner/repo#n“.
+  GitHub issue owner/repo#n“. In einer geteilten Liste nennt die Freigabe kein Issue (G.6c), weil
+  dort nichts geschlossen wird.
 - Neue Filterlisten kommen nie von selbst in eine Auswahl „nur diese“; Listen-Kennungen werden nie
   wiederverwendet, damit ein alter Eintrag in `clients.json` keine neue Liste freischaltet.
 - Die Reichweitenprüfung im Kern (`out_of_reach`) behandelt jeden Request ausdrücklich, ohne
@@ -235,7 +244,6 @@ einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben
    für Menschen, mit denen eine Liste nur zum Lesen geteilt ist.
 7. **Mehrere GitHub-Konten:** Verweise in Aufgabenlisten liest und schließt der Kern mit dem ersten
    Konto, das ein Token hat. Später das Konto im Verweis mitführen.
-8. **Verweise in geteilten Listen** werden nicht abgeglichen (G.6b) und behalten den Titel vom
-   Anlegen. Abhaken schließt dort trotzdem das Issue, wenn der Mensch es abhakt – ein Verweis, den
-   jemand anderes dort abgelegt hat, könnte so ein Issue schließen lassen, das der Mensch nicht
-   meinte. Abhaken dort auf die Aufgabe beschränken?
+8. **Verweise in geteilten Listen** (entschieden, G.6c): Sie werden nicht abgeglichen (G.6b) und
+   behalten den Titel vom Anlegen; Abhaken erledigt dort nur die Aufgabe, das Issue bleibt offen
+   (siehe „Abhaken“). Wer dort ein Issue schließen will, tut das in einer Filterliste oder auf GitHub.

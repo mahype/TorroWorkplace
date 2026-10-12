@@ -4579,4 +4579,35 @@ mod tests {
         let shown = todos.iter().find(|t| t.uid == "planted").expect("shown");
         assert_eq!(github_state(shown), None, "no details from GitHub");
     }
+
+    #[tokio::test]
+    async fn ticking_a_link_in_a_list_others_may_write_to_closes_no_issue() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let (core, fake, asked) = core_with_links(dir.path(), &world).await;
+        // The same issue in an own list and in one shared with someone who may write to it.
+        let mine = link_task(&fake.work, "mine", ISSUE_1);
+        let shared = link_task(&fake.home, "shared", ISSUE_1);
+        core.pim.cache_todos(vec![mine, shared.clone()]).await;
+        core.pim.share_list(&fake.home).await;
+        refresh_filter_lists(&core.pim, &core.github).await;
+        core.pim.rename_list(&fake.home, "Family").await;
+        let tick = || Request::SaveTodo { todo: torro_pim::Todo { completed: true, ..shared.clone() } };
+
+        // A client asking for approval: the summary changes the task, it closes nothing (task G.6c).
+        let mut careful = repo_limited();
+        careful.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, careful).await;
+        let asked_for = waits(ask(&core, Some(&key), tick()).await);
+        let args: [(&str, &dyn std::fmt::Display); 2] = [("title", &"Fix the week view"), ("list", &"Family")];
+        assert_eq!(asked_for.summary, trf("Change task \"{title}\" in \"{list}\"", &args));
+
+        // The person ticks it: the task is done, the issue stays open, GitHub hears nothing of it.
+        let ticked = the_todo(core.handle(tick()).await);
+        assert!(ticked.completed, "the task is done");
+        assert_eq!(sent(&asked, "closeIssue("), 0, "nothing closed on GitHub");
+        assert!(world.lock().expect("world").closed.is_empty());
+        assert_ne!(github_state(&ticked), Some(torro_pim::model::GitHubState::Closed), "the answer says so");
+        assert_eq!(puts(&fake).len(), 1, "only the task is written: {:?}", fake.lines());
+    }
 }

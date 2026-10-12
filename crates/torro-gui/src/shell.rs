@@ -89,11 +89,14 @@
 //! ```
 //!
 //! The drawer of the medium and narrow layouts dims the window behind it (scrim) and has a shadow.
+//!
+//! While something is dragged over the sidebar, the rows that may take it are wrapped in
+//! [`drop_target`]: they report the pointer and show a ring while it is on them.
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Element, Fill, Padding, Shadow, Vector, keyboard};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Vector, keyboard};
 use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
@@ -357,6 +360,34 @@ pub fn sidebar<'a, M: 'a>(
     let top = column![switcher.into(), blank().height(space::S)].extend(items).spacing(SIDEBAR_GAP);
     let bottom = column(footer).spacing(SIDEBAR_GAP);
     column![top, blank::vertical(), bottom].height(Fill).into()
+}
+
+/// A sidebar row ([`widgets::sidebar_item_in`], either mode) that takes what is being dragged –
+/// the tasks app drags a task onto a list (task G.6c). The app wraps only the rows that may take
+/// the dragged item, and only while something is dragged:
+///
+/// - `on_enter` / `on_exit` report the pointer coming onto the row and leaving it. The app keeps
+///   which row it is over and acts on the drop where the mouse button is released; a press that
+///   began elsewhere never presses the row's button.
+/// - `over`: the pointer is on the row. A 2-px ring in `focus_ring` with the row's radius lies on
+///   top of its hover surface, so the target stands apart from the chosen row (`selected`, no
+///   ring) and from rows that take nothing (hover only). The ring layer is there in both states,
+///   so the row keeps its widget state when the pointer comes and goes.
+///
+/// ```ignore
+/// let row = widgets::sidebar_item_in(mode, mark, name, trail, active, Message::Show(id.clone()));
+/// shell::drop_target(row, drag.over.as_ref() == Some(&id), Message::DragOver(id.clone()), Message::DragLeave(id))
+/// ```
+pub fn drop_target<'a, M: Clone + 'a>(row: Element<'a, M>, over: bool, on_enter: M, on_exit: M) -> Element<'a, M> {
+    let ring = container(blank().width(Fill).height(Fill)).style(move |t| container::Style {
+        border: Border {
+            color: if over { palette(t).focus_ring } else { Color::TRANSPARENT },
+            width: style::FOCUS_RING_WIDTH,
+            radius: radius::SM.into(),
+        },
+        ..container::Style::default()
+    });
+    mouse_area(stack![row, ring].width(Fill)).on_enter(on_enter).on_exit(on_exit).into()
 }
 
 /// The row inside the header bar: `leading` (sidebar toggle, back button), the `title`

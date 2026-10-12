@@ -363,7 +363,7 @@ K.21 (frei)
   nicht abgeglichen, beide Freigabetexte (inkl. Abhaken mit weiteren Änderungen), `error` vor Freigabe.
 
 ### G.6c Verweise: geteilte Listen, Ziehen auf die Seitenleiste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.6b, G.3b · **Dateien:** `crates/torroworkplace/src/{pim,core,approvals}.rs`,
   `crates/torrotasks/src/{app,list}.rs`, `crates/torro-gui/src/shell.rs` (falls die Seitenleiste ein Ziel braucht), `docs/github.md`
 - **Geteilte Listen (entschieden 2026-10-12, sichere Voreinstellung):** In Listen, die nicht privat sind (G.6b:

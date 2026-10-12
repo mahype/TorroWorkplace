@@ -54,7 +54,8 @@
 //! filter list's item does the same for the list picked; a card then says "Added to {list}" when
 //! that is not the list shown (task G.6b). A link has the issue's check in the list
 //! and the detail; ticking one goes the way of an issue of a filter list, so "Issue closed · Undo"
-//! shows when the core closed the issue too.
+//! shows when the core closed the issue too – only when its answer reports the issue closed and
+//! it was not before. In a list shared with others the core closes nothing (task G.6c), so no card.
 //!
 //! GitHub filter lists (task G.4): "New filter list…" closes the GitHub account's group in the
 //! sidebar, the "…" menu in the head of a filter list has "Edit filter…" and "Delete list…". The
@@ -67,6 +68,13 @@
 //! has no groups (`list.rs`); Alt+↑/↓ moves the task under the cursor one step among the tasks it is
 //! ordered with, and a row can be dragged by its grip. A move shows at once and goes to the core's
 //! `tasks.move_todo` ([`Moving`], one at a time); an error puts the list back, says so and reloads.
+//!
+//! Dragging to the sidebar (task G.6c): in a GitHub filter list, and in a writable list with
+//! another list of its account, every row has the grip. Dragged onto a list of the sidebar that
+//! takes it ([`App::drop_targets`]; that row shows a ring, `shell::drop_target`), an item of a
+//! filter list becomes a link there (`tasks.add_link`, "Added to {list}"), a task moves there
+//! (`tasks.save_todo` with the new list, "Moved to {list}"). Lists of another account are no
+//! targets: the core refuses such a move (`unsupported`).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -161,6 +169,9 @@ pub enum Open {
     Order,
     /// The same with its first row being dragged and the marker two places further down.
     Drag,
+    /// The first filter list with its first row dragged onto the first writable list of the
+    /// sidebar, which shows the ring of a drop target (task G.6c).
+    Drop,
     /// The dialog "New filter list" of the first GitHub account.
     FilterNew,
     /// The dialog "Edit filter list" of the first filter list, shown behind it.
@@ -176,7 +187,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 19] = [
+    const ALL: [(&'static str, Open); 20] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -190,6 +201,7 @@ impl Open {
         ("manual", Open::Manual),
         ("order", Open::Order),
         ("drag", Open::Drag),
+        ("drop", Open::Drop),
         ("filter-new", Open::FilterNew),
         ("filter-edit", Open::FilterEdit),
         ("filter-delete", Open::FilterDelete),
@@ -343,6 +355,9 @@ struct Notice {
     /// The name of the list a GitHub link went to when it is not the one shown (task G.6b): the
     /// card then says "Added to {list}", without "Undo".
     added_to: Option<String>,
+    /// With `added_to`: the task was moved there by dragging it onto the list (task G.6c), so the
+    /// card says "Moved to {list}".
+    moved: bool,
 }
 
 /// Moves of a list in manual order on their way to the core (task P.3b), sent one at a time: a
@@ -384,6 +399,9 @@ struct Drag {
     key: Key,
     /// Where the marker stands: a place of [`list::drop_places`]; `None` until the pointer moved.
     place: Option<usize>,
+    /// The list of the sidebar the pointer is on, when it takes the task ([`App::drop_targets`],
+    /// task G.6c): the drop goes there, and the list's marker hides meanwhile.
+    over: Option<String>,
 }
 
 /// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
@@ -647,8 +665,16 @@ pub enum Message {
     DragStart(usize),
     /// The pointer is at this height in the list's content while a row is dragged.
     DragMove(f32),
-    /// The mouse button was released while a row is dragged: the task goes where the marker is.
+    /// The mouse button was released while a row is dragged: the task goes where the marker is, or
+    /// onto the list of the sidebar the pointer is on.
     DragEnd,
+    /// While a row is dragged, the pointer came onto this list of the sidebar, which takes it
+    /// (task G.6c).
+    DragOver(String),
+    /// The pointer left this list of the sidebar again.
+    DragLeave(String),
+    /// The core's answer to moving a task to another list by dragging it there (task G.6c).
+    TaskMoved(Result<Todo, String>),
     /// The core's answer to a move in manual order: the tasks it wrote, with their new etags.
     Moved(Result<Vec<Todo>, ProviderError>),
     /// A failed move, said again once the reload it started has come back (a reload clears the
@@ -1155,6 +1181,14 @@ impl App {
             Message::DragStart(index) => self.start_drag(index),
             Message::DragMove(y) => self.drag_to(y),
             Message::DragEnd => return self.drop_dragged(),
+            Message::DragOver(list) => self.drag_over(list),
+            Message::DragLeave(list) => {
+                // Leaving one row and coming onto the next can arrive in either order.
+                if let Some(drag) = self.drag.as_mut().filter(|drag| drag.over.as_ref() == Some(&list)) {
+                    drag.over = None;
+                }
+            }
+            Message::TaskMoved(result) => return self.task_moved(result),
             Message::Moved(result) => return self.moved(result),
             Message::MoveFailed(text) => self.error = Some(text),
             Message::ShortcutChecked(key, typing) => {
@@ -1295,7 +1329,12 @@ impl App {
             read_only: self.shown_filter_list().is_some(),
             issue_lists: self.issue_lists(),
             manual: self.manual(),
-            drag: self.drag.as_ref().and_then(|drag| Some((self.key_index(&drag.key)?, drag.place))),
+            grips: self.grips(),
+            // Over a list of the sidebar the drop goes there: no marker in the list meanwhile.
+            drag: self.drag.as_ref().and_then(|drag| {
+                let place = drag.place.filter(|_| drag.over.is_none());
+                Some((self.key_index(&drag.key)?, place))
+            }),
         }
     }
 
@@ -1773,9 +1812,23 @@ impl App {
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons (U.2).
     fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
         let (views, lists) = self.nav_entries();
+        // While a row is dragged, the lists that take it report the pointer and show a ring (G.6c).
+        let targets = self.dragged_targets();
+        let over = self.drag.as_ref().and_then(|drag| drag.over.as_deref());
         let row = |e: NavEntry| {
             let trail = e.trail();
-            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
+            let target = match &e.filter {
+                Filter::List(id) if targets.contains(id) => Some(id.clone()),
+                _ => None,
+            };
+            let item = widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter));
+            match target {
+                Some(id) => {
+                    let on = over == Some(id.as_str());
+                    shell::drop_target(item, on, Message::DragOver(id.clone()), Message::DragLeave(id))
+                }
+                None => item,
+            }
         };
         let new_filter_list = |account: &PimAccount| {
             let open = Message::OpenFilterDialog(filter::Open::New(account.id.clone()));
@@ -2034,6 +2087,10 @@ impl App {
             self.open_manual();
             return Task::none();
         }
+        if self.launch.open == Some(Open::Drop) {
+            self.open_drop();
+            return Task::none();
+        }
         let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
         else {
             return Task::none();
@@ -2195,17 +2252,21 @@ impl App {
             }
         };
         let same = |t: &Todo| t.uid == saved.uid && t.collection == saved.collection;
+        let is_closed = |todo: &Todo| list::github_of(todo).is_some_and(|github| github.state != GitHubState::Open);
+        // Closed already before this tick (as far as the list knew): then the tick closed nothing.
+        let was_closed = self.todos.iter().find(|t| same(t)).is_some_and(is_closed);
         if let Some(shown) = self.todos.iter_mut().find(|t| same(t)) {
             *shown = saved.clone();
         }
-        // Only when an issue was really closed: a link to a pull request, or one whose issue the
-        // core could not close, is only done itself.
-        let closed = list::github_of(&saved)
-            .is_some_and(|github| github.kind == GitHubKind::Issue && github.state != GitHubState::Open);
-        self.notice = (saved.completed && closed).then(|| Notice {
+        // Only when an issue was really closed now, as the core's answer reports it: a link to a
+        // pull request, one whose issue the core could not close, and one in a list shared with
+        // others (task G.6c: the core closes nothing there) are only done themselves.
+        let issue = list::github_of(&saved).is_some_and(|github| github.kind == GitHubKind::Issue);
+        self.notice = (saved.completed && issue && is_closed(&saved) && !was_closed).then(|| Notice {
             todo: saved.clone(),
             since: iced::time::Instant::now(),
             added_to: None,
+            moved: false,
         });
         let follow_up = match self.detail.as_mut() {
             Some(detail) if same(&detail.original) => detail.stored(&saved),
@@ -2246,7 +2307,8 @@ impl App {
         if !matches!(&self.filter, Filter::List(id) if *id == added.collection) {
             let name = self.collections.iter().find(|c| c.id == added.collection).map(|c| c.name.clone());
             let added_to = Some(name.unwrap_or_else(|| tr("List").into()));
-            self.notice = Some(Notice { todo: added.clone(), since: iced::time::Instant::now(), added_to });
+            self.notice =
+                Some(Notice { todo: added.clone(), since: iced::time::Instant::now(), added_to, moved: false });
         }
         let planned = Todo { due: added.due.or(due), priority: added.priority.or(priority), ..added.clone() };
         let writable = self.writable_lists().iter().any(|list| list.id == added.collection);
@@ -2260,7 +2322,7 @@ impl App {
     /// two layers, so the window keeps its state (scroll, focus) when the card comes and goes.
     fn with_notice<'a>(&'a self, window: Element<'a, Message>) -> Element<'a, Message> {
         let card: Element<'a, Message> = match &self.notice {
-            Some(Notice { added_to: Some(list), .. }) => added_card(list),
+            Some(Notice { added_to: Some(list), moved, .. }) => added_card(list, *moved),
             Some(_) => notice_card(),
             None => Space::new().into(),
         };
@@ -2332,9 +2394,9 @@ impl App {
 
     /// The grip of `todos[index]` was pressed: it becomes the cursor row and is dragged.
     fn start_drag(&mut self, index: usize) {
-        let Some(key) = self.todos.get(index).map(Key::of).filter(|_| self.manual()) else { return };
+        let Some(key) = self.todos.get(index).map(Key::of).filter(|_| self.manual() || self.grips()) else { return };
         self.cursor = Some(key.clone());
-        self.drag = Some(Drag { key, place: None });
+        self.drag = Some(Drag { key, place: None, over: None });
     }
 
     /// The pointer is at `y` in the list's content: the marker goes to the nearest place the
@@ -2351,6 +2413,9 @@ impl App {
     /// pointer moved).
     fn drop_dragged(&mut self) -> Task<Message> {
         let Some(drag) = self.drag.take() else { return Task::none() };
+        if let (Some(index), Some(list)) = (self.key_index(&drag.key), drag.over) {
+            return self.drop_on_list(index, list);
+        }
         let (Some(index), Some(place)) = (self.key_index(&drag.key), drag.place) else { return Task::none() };
         let places = list::drop_places(&self.list_data(), index);
         match places.into_iter().find(|&(at, _)| at == place) {
@@ -2446,7 +2511,108 @@ impl App {
         let Some(&first) = list::order(&self.list_data()).first() else { return };
         let place = list::drop_places(&self.list_data(), first).get(2).map(|&(place, _)| place);
         self.cursor = Some(Key::of(&self.todos[first]));
-        self.drag = Some(Drag { key: Key::of(&self.todos[first]), place });
+        self.drag = Some(Drag { key: Key::of(&self.todos[first]), place, over: None });
+    }
+}
+
+/// Dragging a row onto a list of the sidebar (task G.6c).
+impl App {
+    /// The lists of the sidebar a task of the list `collection` may be dropped on, by id:
+    ///
+    /// - from a GitHub filter list every writable task list, where the item becomes a link
+    ///   (`tasks.add_link`; one there already is the answer, nothing doubles);
+    /// - from a writable task list the other writable lists of the same account, where the task
+    ///   moves (`tasks.save_todo` with the new list). The core refuses a move to another account
+    ///   (`unsupported`), so those lists are no targets; neither is any list while the accounts are
+    ///   not known.
+    ///
+    /// Empty for every other list (read-only, unknown).
+    fn drop_targets(&self, collection: &str) -> Vec<String> {
+        let writable = self.writable_lists();
+        if self.filter_source(collection).is_some() {
+            return writable.into_iter().map(|list| list.id).collect();
+        }
+        if !writable.iter().any(|list| list.id == collection) {
+            return Vec::new();
+        }
+        let account = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str()).map(|a| a.id.as_str());
+        let Some(own) = account(collection) else { return Vec::new() };
+        writable
+            .into_iter()
+            .filter(|list| list.id != collection && account(&list.id) == Some(own))
+            .map(|list| list.id)
+            .collect()
+    }
+
+    /// The rows of the list shown have a grip to drag them onto a list of the sidebar: one list is
+    /// shown and its tasks have somewhere to go ([`App::drop_targets`]). The smart lists (Today,
+    /// Planned, All) have none; manual order has its own grip ([`App::manual`]).
+    fn grips(&self) -> bool {
+        matches!(&self.filter, Filter::List(id) if !self.drop_targets(id).is_empty())
+    }
+
+    /// The lists of the sidebar the row being dragged may be dropped on; empty without a drag.
+    fn dragged_targets(&self) -> Vec<String> {
+        let dragged = self.drag.as_ref().and_then(|drag| self.key_index(&drag.key));
+        dragged.map(|index| self.drop_targets(&self.todos[index].collection)).unwrap_or_default()
+    }
+
+    /// The pointer came onto the list `list` of the sidebar while a row is dragged: the drop goes
+    /// there, if it takes the row.
+    fn drag_over(&mut self, list: String) {
+        if !self.dragged_targets().contains(&list) {
+            return;
+        }
+        if let Some(drag) = self.drag.as_mut() {
+            drag.over = Some(list);
+        }
+    }
+
+    /// `todos[index]` was dropped on the list `list` of the sidebar: an item of a filter list
+    /// becomes a link there ([`App::add_link`], "Added to {list}"), a task moves there – out of its
+    /// parent, which stays behind, as "Move to list" in the detail does it. Nothing for a list that
+    /// does not take it.
+    fn drop_on_list(&mut self, index: usize, list: String) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        if !self.drop_targets(&todo.collection).contains(&list) {
+            return Task::none();
+        }
+        if self.filter_source(&todo.collection).is_some() {
+            let Some(url) = todo.link.map(|link| link.id) else { return Task::none() };
+            return self.add_link(list, url, None, None);
+        }
+        let moved = Todo { collection: list, parent: None, ..todo };
+        let source = self.source.clone();
+        Task::perform(async move { source.save_todo(moved).await.map_err(|e| e.to_string()) }, Message::TaskMoved)
+    }
+
+    /// The core's answer to a move by dragging: "Moved to {list}", then as any save (the detail
+    /// follows, the list is loaded again). A refusal is the error line.
+    fn task_moved(&mut self, result: Result<Todo, String>) -> Task<Message> {
+        match result {
+            Ok(saved) => {
+                let name = self.collections.iter().find(|c| c.id == saved.collection).map(|c| c.name.clone());
+                let added_to = Some(name.unwrap_or_else(|| tr("List").into()));
+                let since = iced::time::Instant::now();
+                self.notice = Some(Notice { todo: saved.clone(), since, added_to, moved: true });
+                self.update(Message::Saved(Ok(saved)))
+            }
+            Err(err) => {
+                self.error = Some(trf("Couldn't move the task: {error}", &[("error", &err)]));
+                Task::none()
+            }
+        }
+    }
+
+    /// `--open drop`: the first filter list with its first row dragged onto the first writable
+    /// list of the sidebar, for pictures of the drop target.
+    fn open_drop(&mut self) {
+        let Some(id) = self.collections.iter().find(|c| c.source.is_some()).map(|c| c.id.clone()) else { return };
+        self.filter = Filter::List(id);
+        let Some(&first) = list::order(&self.list_data()).first() else { return };
+        let over = self.drop_targets(&self.todos[first].collection).into_iter().next();
+        self.cursor = Some(Key::of(&self.todos[first]));
+        self.drag = Some(Drag { key: Key::of(&self.todos[first]), place: None, over });
     }
 }
 
@@ -2502,13 +2668,16 @@ fn notice_card<'a>() -> Element<'a, Message> {
         .into()
 }
 
-/// "Added to {list}" after a GitHub link went to a list not shown (task G.6b): the card of
-/// [`notice_card`] with a check, no action. A long list name is cut with "…".
-fn added_card<'a>(name: &str) -> Element<'a, Message> {
+/// "Added to {list}" after a GitHub link went to a list not shown (task G.6b), or "Moved to {list}"
+/// after a task was dragged onto another list (`moved`, task G.6c): the card of [`notice_card`]
+/// with a check, no action. A long list name is cut with "…".
+fn added_card<'a>(name: &str, moved: bool) -> Element<'a, Message> {
     let name = typo::ellipsize(name, typo::BODY, size::PROPS);
+    let args: [(&str, &dyn std::fmt::Display); 1] = [("list", &name)];
+    let text = if moved { trf("Moved to {list}", &args) } else { trf("Added to {list}", &args) };
     let line = row![
         list::toned(Icon::Check, icon::SIZE, list::Tone::Ok),
-        typo::text(typo::BODY, trf("Added to {list}", &[("list", &name)])).wrapping(text::Wrapping::None),
+        typo::text(typo::BODY, text).wrapping(text::Wrapping::None),
     ]
     .spacing(space::S)
     .align_y(Alignment::Center);
@@ -4043,7 +4212,7 @@ mod tests {
         let first = app.todos.iter().position(|t| t.uid == top[0]).expect("shown");
         let idle = app.subscription().units();
         let _ = app.update(Message::DragStart(first));
-        assert_eq!(app.drag, Some(Drag { key: Key::of(&app.todos[first]), place: None }));
+        assert_eq!(app.drag, Some(Drag { key: Key::of(&app.todos[first]), place: None, over: None }));
         assert_eq!(cursor(&app), Some(top[0].as_str()), "the dragged row is the cursor row");
         assert_eq!(app.subscription().units(), idle + 2, "Escape and the release listen while dragging");
         assert_eq!(app.update(Message::DragEnd).units(), 0, "released before it moved: nothing");
@@ -4112,5 +4281,142 @@ mod tests {
         let mut app = app_with_rows();
         let _ = app.update(Message::ShortcutChecked(Shortcut::Down, false));
         assert_eq!(app.update(Message::ShortcutChecked(Shortcut::MoveDown, false)).units(), 0);
+    }
+
+    // ----- Dragging onto the sidebar (task G.6c) ------------------------------------------------
+
+    /// The id of the demo's list named `name`.
+    fn list_named(app: &App, name: &str) -> String {
+        app.collections.iter().find(|c| c.name == name).map(|c| c.id.clone()).expect("a list of the demo")
+    }
+
+    /// The first row of the list shown, as an index into `todos`.
+    fn first_row(app: &App) -> usize {
+        list::order(&app.list_data()).first().copied().expect("a row")
+    }
+
+    #[test]
+    fn an_item_of_a_filter_list_dragged_onto_a_list_becomes_a_link_there() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        assert!(app.grips() && app.list_data().grips, "its rows have a grip");
+        let tasks = list_named(&app, "Tasks");
+        let first = first_row(&app);
+        let _ = app.update(Message::DragStart(first));
+        // Every writable list takes it, whatever the account; filter lists do not.
+        let mut targets = app.dragged_targets();
+        targets.sort();
+        let mut writable: Vec<String> = app.writable_lists().into_iter().map(|c| c.id).collect();
+        writable.sort();
+        assert_eq!(targets, writable);
+        assert!(!targets.iter().any(|id| id.starts_with("github:")));
+
+        let _ = app.update(Message::DragOver(torro_pim::demo::TORRO_BUGS.into()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), None, "a filter list takes nothing");
+        let _ = app.update(Message::DragOver(tasks.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), Some(tasks.clone()), "the target");
+        for size in [WIDE, MEDIUM] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        assert!(app.update(Message::DragEnd).units() > 0, "the core is asked to add the link");
+        assert!(app.drag.is_none());
+
+        // The core's answer: "Added to Tasks".
+        let url = app.todos[first].link.as_ref().map(|link| link.id.clone()).expect("a GitHub item");
+        let added = iced::futures::executor::block_on(app.source.add_link(tasks.clone(), url)).expect("added");
+        assert_eq!(added.collection, tasks);
+        let _ = app.update(Message::LinkAdded(Ok(added), None, None));
+        assert_eq!(app.notice.as_ref().and_then(|n| n.added_to.as_deref()), Some("Tasks"));
+        assert!(!app.notice.as_ref().is_some_and(|n| n.moved));
+    }
+
+    #[test]
+    fn a_task_dragged_onto_another_list_of_its_account_moves_there() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        let (groceries, family, tasks) =
+            (list_named(&app, "Groceries"), list_named(&app, "Family"), list_named(&app, "Tasks"));
+        let _ = app.update(Message::SetFilter(Filter::List(groceries.clone())));
+        // Family is in the same account; Tasks is in the other one, the core would refuse the move.
+        assert_eq!(app.drop_targets(&groceries), std::slice::from_ref(&family));
+        assert!(app.grips());
+        let first = first_row(&app);
+        let _ = app.update(Message::DragStart(first));
+        let _ = app.update(Message::DragOver(tasks.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), None, "no target across accounts");
+        let _ = app.update(Message::DragOver(family.clone()));
+        // Leaving another row afterwards (events in either order) keeps the target.
+        let _ = app.update(Message::DragLeave(tasks.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), Some(family.clone()));
+        let _ = app.update(Message::DragLeave(family.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), None);
+        let _ = app.update(Message::DragOver(family.clone()));
+        let _ = app.view();
+        assert!(app.update(Message::DragEnd).units() > 0, "the core is asked to move it");
+
+        // The core's answer: "Moved to Family", the row leaves the list with the reload.
+        let moved = Todo { collection: family.clone(), parent: None, ..app.todos[first].clone() };
+        let moved = stored(&app, moved);
+        let _ = app.update(Message::TaskMoved(Ok(moved)));
+        let notice = app.notice.as_ref().expect("a card");
+        assert_eq!((notice.added_to.as_deref(), notice.moved), (Some("Family"), true));
+        let _ = app.view();
+        assert_eq!(app.update(Message::Undo).units(), 0, "nothing to undo");
+        let _ = app.update(Message::TaskMoved(Err("The server did not answer".into())));
+        assert!(app.error.as_deref().is_some_and(|e| e.contains("The server did not answer")));
+
+        // Tasks has no other list in its account, the smart lists have no grip.
+        assert!(app.drop_targets(&tasks).is_empty());
+        let _ = app.update(Message::SetFilter(Filter::List(tasks)));
+        assert!(!app.grips());
+        let _ = app.update(Message::DragStart(first_row(&app)));
+        assert!(app.drag.is_none(), "nothing to drag to");
+        let _ = app.update(Message::SetFilter(Filter::Today));
+        assert!(!app.grips());
+    }
+
+    #[test]
+    fn without_the_accounts_a_task_has_nowhere_to_go() {
+        let app = launched(&["--demo"]);
+        let groceries = list_named(&app, "Groceries");
+        assert!(app.drop_targets(&groceries).is_empty(), "the account of a list is not known yet");
+        assert!(!app.drop_targets(torro_pim::demo::NEEDS_ME).is_empty(), "a link may go anywhere");
+    }
+
+    #[test]
+    fn the_drop_state_shows_a_filter_list_row_over_a_list() {
+        let app = launched(&["--demo", "--open", "drop"]);
+        assert!(app.shown_filter_list().is_some());
+        let over = app.drag.as_ref().and_then(|drag| drag.over.clone()).expect("over a list");
+        assert!(app.writable_lists().iter().any(|list| list.id == over));
+        assert_eq!(app.list_data().drag.and_then(|(_, place)| place), None, "no marker in the list");
+    }
+
+    #[test]
+    fn ticking_a_link_whose_issue_stays_open_shows_no_issue_closed_card() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let issue = link_in_tasks(&app, 123);
+        let ticked = app.toggled(issue).expect("a link can be ticked");
+        // A list shared with others: the core marks the task done and leaves the issue open.
+        let _ = app.update(Message::IssueChanged(Ok(Todo { etag: Some("\"2\"".into()), ..ticked.clone() })));
+        assert!(app.todos[issue].completed, "the task is done");
+        assert!(app.notice.is_none(), "no Issue closed · Undo");
+        // Without GitHub's details in the answer, the same.
+        let bare = Todo { link: ticked.link.clone().map(|link| Link { github: None, ..link }), ..ticked.clone() };
+        let _ = app.update(Message::IssueChanged(Ok(bare)));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn an_issue_closed_before_the_tick_brings_no_card() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let issue = link_in_tasks(&app, 123);
+        let closed = stored(&app, Todo { completed: true, ..app.todos[issue].clone() });
+        // The list already knew it closed (GitHub, or a tick elsewhere): this tick closed nothing.
+        app.todos[issue] = Todo { completed: false, ..closed.clone() };
+        let _ = app.update(Message::IssueChanged(Ok(closed)));
+        assert!(app.notice.is_none());
     }
 }

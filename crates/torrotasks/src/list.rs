@@ -39,6 +39,11 @@
 //! (`Message::DragStart`), the list reports the pointer's height (`Message::DragMove`) and shows a
 //! 2-px marker in `text_2` where the task would go. [`drop_places`] says where a task may go – only
 //! among the tasks it is ordered with ([`same_level`]) – and [`step_target`] where Alt+↑/↓ takes it.
+//!
+//! **Dragging to the sidebar** (task G.6c, [`ListData::grips`]): the rows of a GitHub filter list,
+//! and of a writable list with another one of its account, have the same grip ("Drag to a list"
+//! outside manual order). The list itself shows no marker then; `app.rs` highlights the list in
+//! the sidebar the row is dragged over and acts on the drop.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -96,6 +101,10 @@ pub struct ListData<'a> {
     /// sorted by [`manual_order`] (open before done, subtasks under their parent), each row with a
     /// grip in its left inner margin on hover to drag it. Only a single writable list is.
     pub manual: bool,
+    /// The rows have the grip of manual order without being in it (task G.6c): they can be
+    /// dragged onto a list in the sidebar, but there is no order to drop them into here, so no
+    /// marker shows. Where [`ListData::manual`] is set the grip is there anyway.
+    pub grips: bool,
     /// While a row is dragged by its grip: the task (index into `todos`) and the place in [`order`]
     /// the marker stands above (`order.len()`: under the last row; `None` until the pointer moved).
     pub drag: Option<(usize, Option<usize>)>,
@@ -693,7 +702,15 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         let under_today = group == Group::Today;
         for (index, depth) in items {
             let line = row_view(&data, index, depth, parts, &subtasks, under_today);
-            list = list.push(if data.manual { with_grip(line, index, held == Some(index)) } else { line });
+            let grip = match (data.manual, data.grips) {
+                (true, _) => Some(tr("Drag to reorder")),
+                (false, true) => Some(tr("Drag to a list")),
+                (false, false) => None,
+            };
+            list = list.push(match grip {
+                Some(hint) => with_grip(line, index, held == Some(index), hint),
+                None => line,
+            });
             if held == Some(index) {
                 held_depth = depth;
             }
@@ -712,13 +729,14 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         .into()
 }
 
-/// A row of a list in manual order with its grip: in the 16 left of the leading symbol, shown while
-/// the pointer is over the row (and always on the row being dragged, `held`). Pressing it starts a
-/// drag ([`Message::DragStart`]); the press stays with the grip, so the row does not open.
-fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool) -> Element<'a, Message> {
+/// A row with its grip (manual order, or a row that can be dragged to a list): in the 16 left of
+/// the leading symbol, shown while the pointer is over the row (and always on the row being
+/// dragged, `held`), `hint` as its tooltip. Pressing it starts a drag ([`Message::DragStart`]); the
+/// press stays with the grip, so the row does not open.
+fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool, hint: &'static str) -> Element<'a, Message> {
     let mark =
         container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(space::L).center_y(size::ROW - LINE);
-    let grip = mouse_area(widgets::with_tooltip(mark, tr("Drag to reorder")))
+    let grip = mouse_area(widgets::with_tooltip(mark, hint))
         .on_press(Message::DragStart(index))
         .interaction(mouse::Interaction::Grab);
     if held { stack![line, grip].into() } else { hover(line, grip) }
@@ -1296,6 +1314,7 @@ mod tests {
             read_only: false,
             issue_lists: HashMap::new(),
             manual: false,
+            grips: false,
             drag: None,
         }
     }
@@ -1854,6 +1873,16 @@ mod tests {
         assert_eq!(groups, [Group::All], "no heads, not even Overdue for c");
         assert_eq!(row_span(&d, index_of(&todos, "b")), Some((3.0 * size::ROW, 4.0 * size::ROW)));
         let _ = view(ListData { drag: Some((index_of(&todos, "b"), Some(1))), ..d });
+    }
+
+    #[test]
+    fn rows_that_go_to_a_list_have_the_grip_without_the_order() {
+        let todos = manual_list();
+        let filter = Filter::List("work".into());
+        let d = ListData { grips: true, ..data(&todos, &filter, true) };
+        // Grouped by due date as before: the grip changes nothing of the order.
+        assert_eq!(grouped(&d), grouped(&data(&todos, &filter, true)));
+        let _ = view(ListData { drag: Some((index_of(&todos, "b"), None)), ..d });
     }
 
     fn shown_manual<'a>(todos: &'a [Todo], d: &ListData<'a>) -> Vec<(&'a str, usize)> {
