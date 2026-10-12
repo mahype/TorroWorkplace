@@ -288,6 +288,8 @@ pub enum Sent {
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
     Link(String),
+    /// `inbox.open_item` for the entry with this id.
+    Open(String),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -697,8 +699,11 @@ pub enum Message {
     PickConfirm,
     /// The source's answer to muting or unmuting, with the hint to show (`None` after an undo).
     Muted(Result<(), String>, Option<Hint>),
-    /// From the panel: open the entry's link (only what [`detail::openable`] offers).
-    OpenLink(Link),
+    /// From the panel: open what the entry with this id links to – its page, its app, the agent's
+    /// window – as far as [`detail::openable`] offers it.
+    OpenItem(String),
+    /// The source's answer to `inbox.open_item`.
+    ItemOpened(Result<(), String>),
     /// The browser could not be started (or was); only logged, as in the other apps.
     LinkOpened(Result<(), String>),
     Refresh,
@@ -936,7 +941,12 @@ impl<S: InboxSource + 'static> App<S> {
             Message::Changed(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
             }
-            Message::OpenLink(link) => return self.open_link(link),
+            Message::OpenItem(id) => return self.open_item(&id),
+            // The entry is seen now; the list shows it.
+            Message::ItemOpened(Ok(())) => return self.load(),
+            Message::ItemOpened(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't open the entry."), err));
+            }
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
@@ -994,24 +1004,41 @@ impl<S: InboxSource + 'static> App<S> {
         Task::none()
     }
 
-    /// Opens `link` if the panel offers it: a web page in the browser, an app of the suite through
-    /// the core. The panel only offers what [`detail::openable`] allows; this checks again, because
-    /// a message can outlive the entry it came from.
-    fn open_link(&mut self, link: Link) -> Task<Message> {
-        let offered = self.detail.as_ref().and_then(detail::openable);
-        if offered.as_ref() != Some(&link) {
-            return Task::none();
-        }
-        match link {
-            Link::Url { url } => self.open_url(url),
-            Link::App { app } if app == AppId::WORKPLACE.binary => self.update(Message::OpenSettings),
-            Link::App { app } => self.update(Message::OpenApp(app)),
-            Link::Window => Task::none(),
+    /// Opens the entry `id` if it is the one in the panel: a message can outlive the entry it came
+    /// from.
+    fn open_item(&mut self, id: &str) -> Task<Message> {
+        match self.detail.as_ref().filter(|item| item.id == id).cloned() {
+            Some(item) => self.open_entry(&item),
+            None => Task::none(),
         }
     }
 
-    /// Opens a web page in the browser. Only called with what [`detail::openable`] allowed.
-    /// Like the other apps: a browser that cannot be started is only logged.
+    /// Opens what `item` links to, if [`detail::openable`] offers it, through the core
+    /// (`inbox.open_item`, task E2.4): the core focuses the agent's window, starts the browser or
+    /// the app and checks security rule 6 again; this window opens nothing itself.
+    ///
+    /// With `--demo` there is no core behind the source: pages still open in the browser and apps
+    /// through the suite from here, as before; "Go to window" reaches the demo source, which only
+    /// marks the entry seen.
+    fn open_entry(&mut self, item: &Item) -> Task<Message> {
+        let Some(link) = detail::openable(item) else { return Task::none() };
+        if self.launch.demo {
+            match link {
+                Link::Url { url } => return self.open_url(url),
+                Link::App { app } if app == AppId::WORKPLACE.binary => return self.update(Message::OpenSettings),
+                Link::App { app } => return self.update(Message::OpenApp(app)),
+                Link::Window => {}
+            }
+        }
+        #[cfg(test)]
+        self.sent.push(Sent::Open(item.id.clone()));
+        let (inbox, id) = (self.inbox.clone(), item.id.clone());
+        Task::perform(async move { inbox.open_item(id).await.map_err(|err| err.to_string()) }, Message::ItemOpened)
+    }
+
+    /// Opens a web page in the browser, for `--demo` only (without it the core opens pages). Only
+    /// called with what [`detail::openable`] allowed. Like the other apps: a browser that cannot
+    /// be started is only logged.
     fn open_url(&mut self, url: String) -> Task<Message> {
         #[cfg(test)]
         self.sent.push(Sent::Link(url.clone()));
@@ -1174,14 +1201,13 @@ impl<S: InboxSource + 'static> App<S> {
         operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
     }
 
-    /// Enter: the web link of the entry under the cursor in the browser (`http`/`https` only, as
-    /// [`detail::openable`] allows; apps and the agent's window come with `inbox.open_item`,
-    /// E2.4), else the entry in the panel.
+    /// Enter: opens what the entry under the cursor links to – its page, its app, the agent's
+    /// window – as [`App::open_entry`] does; an entry without such a link opens in the panel.
     fn open_cursor(&mut self) -> Task<Message> {
         let Some(item) = self.cursor_item().cloned() else { return Task::none() };
         match detail::openable(&item) {
-            Some(Link::Url { url }) => self.open_url(url),
-            _ => self.update(Message::Select(item.id)),
+            Some(_) => self.open_entry(&item),
+            None => self.update(Message::Select(item.id)),
         }
     }
 
@@ -2215,11 +2241,11 @@ mod tests {
     #[test]
     fn links_open_only_from_the_open_panel() {
         let mut app = loaded(&[]);
-        let link = Link::Url { url: "https://ci.example.org/runs/1842".into() };
-        let _ = app.update(Message::OpenLink(link.clone()));
-        assert!(app.detail.is_none(), "nothing open, nothing happens");
+        let _ = app.update(Message::OpenItem("demo-6".into()));
+        assert!(app.detail.is_none() && app.sent.is_empty(), "nothing open, nothing happens");
         let _ = app.update(Message::Select("demo-1".into()));
-        assert_eq!(app.open_link(link).units(), 0, "not the link of the open entry");
+        assert_eq!(app.open_item("demo-6").units(), 0, "not the open entry");
+        assert!(app.sent.is_empty());
     }
 
     #[test]
@@ -2299,6 +2325,10 @@ mod tests {
                 let result = block_on(app.inbox.mute_source(source, muted)).map_err(|err| err.to_string());
                 let _ = app.update(Message::Muted(result, hint));
             }
+            Some(Sent::Open(id)) => {
+                let result = block_on(app.inbox.open_item(id)).map_err(|err| err.to_string());
+                let _ = app.update(Message::ItemOpened(result));
+            }
             other => panic!("no call to deliver: {other:?}"),
         }
         load(app);
@@ -2372,18 +2402,50 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_web_links_and_else_the_panel() {
+    fn enter_opens_the_link_and_else_the_panel() {
+        // The demo has no core: a page still opens in the browser from here.
         let mut app = at("demo-6");
         let _ = press(&mut app, Key::Enter);
         assert_eq!(app.sent, [Sent::Link("https://ci.example.org/runs/1842".into())], "https in the browser");
         assert!(app.detail.is_none());
-        // The agent's window waits for E2.4, an app link for `inbox.open_item`: the panel opens.
-        for id in ["demo-1", "demo-5"] {
+        // The agent's window goes to the source (`inbox.open_item`), in the demo too.
+        let mut app = at("demo-1");
+        let _ = press(&mut app, Key::Enter);
+        assert_eq!(app.sent, [Sent::Open("demo-1".into())]);
+        assert!(app.detail.is_none());
+        // Nothing to open: the panel opens.
+        let mut app = at("demo-3");
+        let _ = press(&mut app, Key::Enter);
+        assert!(app.sent.is_empty());
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-3"));
+    }
+
+    /// Without `--demo` the core opens everything (E2.4): the agent's window, apps and pages alike
+    /// go out as `inbox.open_item`, from `Enter` and from the panel's row.
+    #[test]
+    fn the_button_and_enter_send_open_item_to_the_core() {
+        for id in ["demo-1", "demo-5", "demo-6"] {
             let mut app = at(id);
+            app.launch.demo = false;
             let _ = press(&mut app, Key::Enter);
-            assert!(app.sent.is_empty(), "{id}");
-            assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some(id));
+            assert_eq!(app.sent, [Sent::Open(id.into())], "Enter on {id}");
+            let _ = app.update(Message::Select(id.into()));
+            let _ = app.update(Message::OpenItem(id.into()));
+            assert_eq!(app.sent, [Sent::Open(id.into()), Sent::Open(id.into())], "the panel's row on {id}");
         }
+    }
+
+    #[test]
+    fn going_to_the_window_marks_the_entry_seen_and_a_failure_says_so() {
+        let mut app = at("demo-1");
+        let _ = press(&mut app, Key::Enter);
+        deliver(&mut app);
+        let item = app.items.iter().find(|item| item.id == "demo-1").expect("still open");
+        assert_eq!(item.state, State::Seen);
+        assert_eq!(app.error, None);
+        let _ = app.update(Message::ItemOpened(Err(torro_inbox::InboxError::Unsupported.to_string())));
+        let failure = Failure::new(tr("Couldn't open the entry."), torro_inbox::InboxError::Unsupported.to_string());
+        assert_eq!(app.error, Some(failure));
     }
 
     #[test]

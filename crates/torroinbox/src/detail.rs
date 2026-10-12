@@ -3,8 +3,10 @@
 //!
 //! Head: the source and the view as path. Title: the entry's title, wrapping. Body: "Properties"
 //! (status as dot and word, lane, source, time with how long ago, merged reports), for coding
-//! agents "Agent" (agent, project, branch), the message with – right under it – a quiet note that
-//! the text comes from outside the suite, and a link to open when it is safe ([`openable`]).
+//! agents "Agent" (agent, project, branch and – for a hook's entry – "Go to window", E2.4), the
+//! message with – right under it – a quiet note that the text comes from outside the suite, and a
+//! link to open when it is safe ([`openable`]). Every link opens through the core
+//! (`inbox.open_item`), the window of a coding agent included.
 //! Footer: "Mark as done" / "Reopen"; approvals show "Allow" and "Deny" instead, which stay
 //! disabled until the core decides approvals from here (E1.1/E2.1), with a note saying so right
 //! above them – an approval resolves itself once decided, so it has no "Mark as done".
@@ -63,6 +65,7 @@ pub struct Footer {
 pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: Footer) -> Panel<'a, Message> {
     let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
     let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::L);
+    let link = openable(item);
     if let Some(agent) = &item.agent {
         let mut rows = vec![value_row(Icon::Sparkles, agent.agent.label().to_owned())];
         if let Some(project) = &agent.project {
@@ -70,6 +73,10 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         }
         if let Some(branch) = &agent.branch {
             rows.push(value_row(Icon::GitBranch, list::one_line(branch)));
+        }
+        // The agent's window belongs to the agent, not under "Link".
+        if link == Some(Link::Window) {
+            rows.push(link_row(item, &Link::Window));
         }
         body = body.push(widgets::prop_section(tr("Agent"), rows));
     }
@@ -85,13 +92,8 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         }
         body = body.push(column![section(tr("Message")), panel::inset(block)].spacing(space::XS));
     }
-    if let Some(link) = openable(item) {
-        let row = widgets::prop_row(
-            Some(Mark::Icon(Icon::ArrowUpRight)),
-            one_line_text(link_label(&link)),
-            Some(Message::OpenLink(link)),
-        );
-        body = body.push(widgets::prop_section(tr("Link"), vec![row]));
+    if let Some(link) = link.filter(|link| *link != Link::Window) {
+        body = body.push(widgets::prop_section(tr("Link"), vec![link_row(item, &link)]));
     }
     if let Some(note) = untrusted {
         body = body.push(panel::inset(note));
@@ -148,12 +150,23 @@ pub fn is_approval(item: &Item) -> bool {
     item.kind == Kind::Approval
 }
 
-/// The link the panel offers to open: `http`/`https` pages and apps of the suite, as
-/// [`rules::may_open`] allows. The agent's window needs the core's lookup (E2.4) and is left out.
+/// The link the panel offers to open, as [`rules::may_open`] allows: `http`/`https` pages, apps of
+/// the suite, and the window of the agent behind a hook's entry (task E2.4). The core links that
+/// window only when it can be looked for (Linux, not inside tmux), so elsewhere there is none to
+/// offer. The core checks again when it opens ([`Message::OpenItem`]).
 pub fn openable(item: &Item) -> Option<Link> {
     let link = item.link.clone()?;
     let known_app = |app: &str| AppId::ALL.iter().any(|known| known.binary == app);
-    (!matches!(link, Link::Window) && rules::may_open(item, known_app)).then_some(link)
+    rules::may_open(item, known_app).then_some(link)
+}
+
+/// The row that opens `link` of `item`: "Go to window" with a window, else the page or the app.
+fn link_row<'a>(item: &Item, link: &Link) -> Element<'a, Message> {
+    let mark = match link {
+        Link::Window => Icon::AppWindow,
+        Link::Url { .. } | Link::App { .. } => Icon::ArrowUpRight,
+    };
+    widgets::prop_row(Some(Mark::Icon(mark)), one_line_text(link_label(link)), Some(Message::OpenItem(item.id.clone())))
 }
 
 /// The text of the link row: the address of a page, "Open Torro Workplace" for an app.
@@ -319,7 +332,9 @@ mod tests {
         let deploy = sample("demo-6");
         assert!(matches!(openable(&deploy), Some(Link::Url { .. })), "https pages open");
         assert_eq!(openable(&sample("demo-5")), Some(Link::App { app: "torroworkplace".into() }));
-        assert_eq!(openable(&sample("demo-1")), None, "the agent's window needs the core (E2.4)");
+        assert_eq!(openable(&sample("demo-1")), Some(Link::Window), "a hook's agent: its window");
+        let notice_with_window = Item { link: Some(Link::Window), ..deploy.clone() };
+        assert_eq!(openable(&notice_with_window), None, "a window only on entries of hooks");
         let local_file = Item { link: Some(Link::Url { url: "file:///etc/passwd".into() }), ..deploy.clone() };
         assert_eq!(openable(&local_file), None);
         let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..deploy };

@@ -693,6 +693,7 @@ impl PimService {
             // No collection: the inbox filters by the client's sources itself (task E1.2).
             Request::ListItems { .. }
             | Request::GetItem { .. }
+            | Request::OpenItem { .. }
             | Request::ListSources
             | Request::PostItem { .. }
             | Request::ResolveItems { .. }

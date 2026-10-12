@@ -27,7 +27,7 @@ use crate::account::github::{GithubAccounts, GithubError};
 use crate::approvals::{Approvals, ApprovalsError, Decision, Facts};
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
-use crate::inbox::Inbox;
+use crate::inbox::{Inbox, Opening};
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 use crate::ui::Section;
@@ -81,6 +81,41 @@ async fn show_control_centre(
     }
 }
 
+/// Opens `url` in the system browser, for `inbox.open_item`. The inbox let only `http`/`https`
+/// through ([`Inbox::opening`]).
+fn open_in_browser(url: &str) -> Result<(), String> {
+    webbrowser::open(url).map_err(|err| err.to_string())
+}
+
+/// What tests open instead of a browser: nothing, so no test starts one by accident.
+fn no_browser(_url: &str) -> Result<(), String> {
+    Err("no browser in tests".into())
+}
+
+/// Brings the window of a coding agent to the front (task E2.4): of `pids`, the hook's parent
+/// processes nearest first, the first that owns a window is the agent's terminal.
+///
+/// `Err` holds the answer: `unsupported` when the window manager cannot list windows (none
+/// supported, macOS, Windows), when none of the processes has a window (closed, or the agent runs
+/// under a tmux server) or when that process has several, since a terminal that serves all its
+/// windows from one process does not say which one shows the agent; `error` when focusing fails.
+async fn focus_agent_window(wm: &impl WindowManager, pids: &[u32]) -> Result<(), Box<Response>> {
+    let unsupported = |message: String| Box::new(Response::Error { code: "unsupported".into(), message });
+    let windows = wm.windows(None).await.map_err(|err| unsupported(format!("cannot list windows: {err}")))?;
+    let owned = |pid: u32| windows.iter().filter(move |window| window.pid == Some(pid));
+    let Some(pid) = pids.iter().copied().find(|pid| owned(*pid).next().is_some()) else {
+        return Err(unsupported("no window of the agent's processes is open".into()));
+    };
+    let mut candidates = owned(pid);
+    match (candidates.next(), candidates.next()) {
+        (Some(window), None) => wm.focus_window(&window.id).await.map_err(|err| match err {
+            WmError::NotFound(_) => unsupported("the agent's window closed meanwhile".into()),
+            err => Box::new(Response::Error { code: "error".into(), message: err.to_string() }),
+        }),
+        _ => Err(unsupported("the agent's terminal has several windows; which one shows it is unknown".into())),
+    }
+}
+
 /// How long after an approval's `expires` [`Core::approvals_changed`] wakes: the timer runs on the
 /// monotonic clock, the expiry on the wall clock, and the snapshot must find it expired.
 const EXPIRY_SLACK: std::time::Duration = std::time::Duration::from_millis(20);
@@ -130,6 +165,8 @@ pub struct Core {
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
+    /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
+    open_url: fn(&str) -> Result<(), String>,
 }
 
 impl Core {
@@ -152,6 +189,7 @@ impl Core {
             audit: Arc::new(Audit::system()),
             github: Arc::new(GithubAccounts::system()),
             start_control_centre,
+            open_url: if cfg!(test) { no_browser } else { open_in_browser },
         }
     }
 
@@ -319,7 +357,7 @@ impl Core {
             return self.ask_approval(&id, request).await;
         }
         if let Some(info) = inbox_client {
-            return Ok(self.inbox.handle(request, Some(&info), Utc::now()));
+            return Ok(self.inbox_request(request, Some(&info)).await);
         }
         Ok(self.handle_within(request, reach).await)
     }
@@ -442,7 +480,7 @@ impl Core {
             return Refused::Forbidden { command }.response();
         }
         if request.operation().area() == Area::Inbox {
-            return self.inbox.handle(request, Some(&info), Utc::now());
+            return self.inbox_request(request, Some(&info)).await;
         }
         let reach = Reach::Client(rights);
         if let Some(collection) = self.out_of_reach(reach, &request).await {
@@ -626,6 +664,7 @@ impl Core {
             // who asks; without that the inbox cannot tell a client's own entries apart.
             request @ (Request::ListItems { .. }
             | Request::GetItem { .. }
+            | Request::OpenItem { .. }
             | Request::ListSources
             | Request::PostItem { .. }
             | Request::ResolveItems { .. }
@@ -636,7 +675,7 @@ impl Core {
             | Request::ListRules
             | Request::RemoveRule { .. }) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
-                Reach::Suite => self.inbox.handle(request, None, Utc::now()),
+                Reach::Suite => self.inbox_request(request, None).await,
             },
         }
     }
@@ -652,6 +691,40 @@ impl Core {
             Ok(Ok(entries)) => Response::Activity { entries },
             Ok(Err(err)) => err.response(),
             Err(err) => Response::Error { code: "error".into(), message: format!("cannot read the audit log: {err}") },
+        }
+    }
+
+    /// Answers an `inbox.*` request of `client` (`None` for the app key) after the checks of
+    /// [`Core::handle_from`]. The inbox answers all but `inbox.open_item`, which needs the window
+    /// manager, the browser or the apps ([`Core::open_item`]).
+    async fn inbox_request(&self, request: Request, client: Option<&torro_ipc::ClientInfo>) -> Response {
+        match request {
+            Request::OpenItem { id } => self.open_item(&id, client).await,
+            request => self.inbox.handle(request, client, Utc::now()),
+        }
+    }
+
+    /// `inbox.open_item` (task E2.4): the inbox says what the entry `id` may open for `client`
+    /// ([`Inbox::opening`]); this opens it – the agent's window ([`focus_agent_window`]), the page
+    /// in the browser, the app ([`Core::open_app`]) – and then marks a new entry seen
+    /// ([`Inbox::opened`]). Nothing is marked when opening failed.
+    async fn open_item(&self, id: &str, client: Option<&torro_ipc::ClientInfo>) -> Response {
+        let opening = match self.inbox.opening(id, client, Utc::now()) {
+            Ok(opening) => opening,
+            Err(refused) => return *refused,
+        };
+        let failed = |message: String| Box::new(Response::Error { code: "error".into(), message });
+        let opened = match opening {
+            Opening::Window { pids } => focus_agent_window(&self.backend, &pids).await,
+            Opening::Url(url) => (self.open_url)(&url).map_err(|err| failed(format!("cannot start a browser: {err}"))),
+            Opening::App(app) => self.open_app(app).await.map_err(failed),
+        };
+        match opened {
+            Ok(()) => {
+                self.inbox.opened(id, client, Utc::now());
+                Response::Ok
+            }
+            Err(response) => *response,
         }
     }
 
@@ -2479,6 +2552,126 @@ mod tests {
             thread_key: Some("t".into()),
             agent: None,
         }
+    }
+
+    /// Processes no system has (above the largest pid Linux hands out): the hook's parents,
+    /// nearest first, in the tests of task E2.4.
+    const AGENT_PIDS: [u32; 3] = [4_500_001, 4_500_002, 4_500_003];
+
+    /// Task E2.4: of the agent's processes, the nearest that owns a window is its terminal.
+    #[tokio::test]
+    async fn the_agents_window_is_found_by_its_processes_nearest_first() {
+        use torro_wm::fake::{Call, FakeWm};
+        let wm = FakeWm::new("1");
+        let _editor = wm.open_window("code", Some(7));
+        let launcher = wm.open_window("launcher", Some(AGENT_PIDS[2]));
+        let terminal = wm.open_window("Alacritty", Some(AGENT_PIDS[1]));
+
+        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS).await, Ok(()));
+        assert_eq!(wm.calls(), vec![Call::Focus(terminal.clone())], "the nearest, not the launcher");
+        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS[2..]).await, Ok(()));
+        assert_eq!(wm.calls().last(), Some(&Call::Focus(launcher)));
+    }
+
+    #[tokio::test]
+    async fn without_the_agents_window_there_is_no_jump() {
+        use torro_wm::fake::FakeWm;
+        let unsupported = |result: Result<(), Box<Response>>| code(&result.expect_err("no jump")).to_string();
+        let wm = FakeWm::new("1");
+        let terminal = wm.open_window("Alacritty", Some(AGENT_PIDS[1]));
+        wm.close_window(&terminal).await.expect("closed");
+        assert_eq!(unsupported(focus_agent_window(&wm, &AGENT_PIDS).await), "unsupported", "the window is gone");
+        // A terminal that serves several windows from one process does not say which one it is.
+        wm.open_window("ghostty", Some(AGENT_PIDS[0]));
+        wm.open_window("ghostty", Some(AGENT_PIDS[0]));
+        assert_eq!(unsupported(focus_agent_window(&wm, &AGENT_PIDS).await), "unsupported", "several windows");
+        // No window manager to ask (macOS, Windows, none supported).
+        let none = Backend::Unsupported { name: "test".into() };
+        assert_eq!(unsupported(focus_agent_window(&none, &AGENT_PIDS).await), "unsupported");
+    }
+
+    /// The pages a test core opened instead of starting a browser.
+    static OPENED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_url(url: &str) -> Result<(), String> {
+        OPENED.lock().expect("lock").push(url.to_string());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_core_opens_an_entry_and_it_is_seen_then() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { open_url: record_url, ..core(dir.path()) };
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let post = |url: &str| Request::PostItem {
+            kind: torro_inbox::Kind::Notice,
+            title: "Deploy failed".into(),
+            body: None,
+            link: Some(torro_inbox::Link::Url { url: url.into() }),
+            lane: None,
+            thread_key: Some(url.into()),
+            agent: None,
+        };
+        let Response::Posted { id: Some(page) } = core.handle(post("https://ci.example.org/run/7")).await else {
+            panic!("a post answers with its id");
+        };
+        let state = |id: String| async {
+            let Response::Item { item } = ask(&core, Some(&app_key), Request::GetItem { id }).await else {
+                panic!("the app key reads every entry");
+            };
+            item.state
+        };
+        assert_eq!(ask(&core, Some(&app_key), Request::OpenItem { id: page.clone() }).await, Response::Ok);
+        assert!(OPENED.lock().expect("lock").contains(&"https://ci.example.org/run/7".to_string()));
+        assert_eq!(state(page).await, torro_inbox::State::Seen);
+
+        // A `file:` link was never kept: nothing to open.
+        let Response::Posted { id: Some(file) } = core.handle(post("file:///etc/passwd")).await else {
+            panic!("a post answers with its id");
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), Request::OpenItem { id: file.clone() }).await), "unsupported");
+        assert_eq!(state(file).await, torro_inbox::State::New, "nothing opened, nothing seen");
+    }
+
+    #[tokio::test]
+    async fn the_agents_window_is_opened_for_whoever_sees_its_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, hook_key) = core
+            .clients
+            .add_client("Claude Code hooks", "hook", Some(AgentKind::ClaudeCode), Rights::hook())
+            .await
+            .expect("added");
+        let waiting = Request::PostItem {
+            kind: torro_inbox::Kind::AgentWaiting,
+            title: "ignored".into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: Some("claude-code:s1".into()),
+            agent: Some(torro_inbox::AgentInfo {
+                agent: AgentKind::ClaudeCode,
+                session: "s1".into(),
+                project: None,
+                branch: None,
+                pids: AGENT_PIDS.to_vec(),
+            }),
+        };
+        let Response::Posted { id: Some(id) } = ask(&core, Some(&hook_key), waiting).await else {
+            panic!("a hook's post answers with its id");
+        };
+        let open = || Request::OpenItem { id: id.clone() };
+        // The test core has no window manager, so there is no window to jump to.
+        assert_eq!(code(&ask(&core, Some(&app_key), open()).await), "unsupported");
+        // A client that may not see the agent's source, and the hook itself, find no entry.
+        let mut blind = RightsTemplate::FullAccess.rights();
+        blind.inbox_sources = Selection::Only(Vec::new());
+        let (_, blind_key) = client(&core, blind).await;
+        assert_eq!(code(&ask(&core, Some(&blind_key), open()).await), "not-found");
+        assert_eq!(code(&ask(&core, Some(&hook_key), open()).await), "not-found");
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&key), open()).await), "unsupported", "seen, but no window");
     }
 
     #[tokio::test]

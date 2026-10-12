@@ -718,6 +718,7 @@ impl Request {
             Request::DecideApproval { .. } => &DECIDE_APPROVAL,
             Request::ListItems { .. } => &LIST_ITEMS,
             Request::GetItem { .. } => &GET_ITEM,
+            Request::OpenItem { .. } => &OPEN_ITEM,
             Request::ListSources => &LIST_SOURCES,
             Request::PostItem { .. } => &POST_ITEM,
             Request::ResolveItems { .. } => &RESOLVE_ITEMS,
@@ -801,6 +802,7 @@ pub static CATALOGUE: &[&Command] = &[
     &DECIDE_APPROVAL,
     &LIST_ITEMS,
     &GET_ITEM,
+    &OPEN_ITEM,
     &LIST_SOURCES,
     &POST_ITEM,
     &RESOLVE_ITEMS,
@@ -1294,6 +1296,19 @@ static GET_ITEM: Command = Command {
                   on an entry this key did not post.",
 };
 
+static OPEN_ITEM: Command = Command {
+    name: "inbox.open_item",
+    area: Area::Inbox,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Opens an inbox entry on the person's screen: brings the window of the coding agent behind a \
+                  hook's entry to the front, opens the entry's http(s) link in the browser, or starts the app of \
+                  the suite it names; a new entry counts as seen then. It only steers what the person looks at \
+                  and reads or runs nothing else. `unsupported` when there is nothing safe to open or the agent's \
+                  window is not found (closed, inside tmux, not on Linux); `not-found` for entries of sources \
+                  this key may not see.",
+};
+
 static LIST_SOURCES: Command = Command {
     name: "inbox.list_sources",
     area: Area::Inbox,
@@ -1521,6 +1536,7 @@ mod tests {
                 limit: Some(50),
             },
             Request::GetItem { id: "i1".into() },
+            Request::OpenItem { id: "i1".into() },
             Request::ListSources,
             Request::PostItem {
                 kind: Kind::Notice,
@@ -2070,6 +2086,7 @@ mod tests {
             [
                 "inbox.list_items",
                 "inbox.get_item",
+                "inbox.open_item",
                 "inbox.list_sources",
                 "inbox.post_item",
                 "inbox.resolve_items",
@@ -2090,6 +2107,8 @@ mod tests {
         assert_eq!(access(Request::ListSources), Access::Read);
         assert_eq!(access(Request::ListRules), Access::Read);
         assert_eq!(access(Request::GetItem { id: "i".into() }), Access::Read);
+        // Opening steers what the person looks at: it changes something, though nothing stored but "seen".
+        assert_eq!(access(Request::OpenItem { id: "i".into() }), Access::Write);
         assert_eq!(access(Request::ResolveItems { thread_key: "t".into() }), Access::Write);
         assert_eq!(access(Request::SetItemDone { id: "i".into(), done: false }), Access::Write);
         assert_eq!(access(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: false }), Access::Write);

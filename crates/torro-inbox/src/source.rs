@@ -53,6 +53,14 @@ pub trait InboxSource: Send + Sync {
     /// Mutes the source (its new reports are dropped from then on) or unmutes it. Entries already
     /// there stay. A permanent rule, admin level.
     fn mute_source(&self, source: SourceRef, muted: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// Opens the entry on the person's screen (`inbox.open_item`, task E2.4): the core brings the
+    /// window of the agent behind a hook's entry to the front, opens its web page in the browser
+    /// or starts the app of the suite it names, as far as [`rules::may_open`] allows; a new entry
+    /// is [`State::Seen`] afterwards. The app calls it for "Go to window" and `Enter` instead of
+    /// opening anything itself. [`InboxError::NotFound`] for an unknown id,
+    /// [`InboxError::Unsupported`] when there is nothing safe to open or no window was found.
+    fn open_item(&self, id: String) -> impl Future<Output = Result<(), InboxError>> + Send;
 }
 
 /// Which entries [`InboxSource::list_items`] returns. Every field left at `None` selects all;
@@ -127,6 +135,9 @@ pub enum InboxError {
     Forbidden,
     /// Too many reports in the last hour (`busy`).
     Busy,
+    /// Nothing that may be opened, or the agent's window was not found (`unsupported`,
+    /// [`InboxSource::open_item`]).
+    Unsupported,
     /// The core does not answer.
     Offline,
     /// Anything else, with the message of the core (`error`).
@@ -139,6 +150,7 @@ impl fmt::Display for InboxError {
             InboxError::NotFound => f.write_str(tr("This entry no longer exists.")),
             InboxError::Forbidden => f.write_str(tr("Only you can change this entry, in the Inbox app.")),
             InboxError::Busy => f.write_str(tr("Too many entries at once. Try again later.")),
+            InboxError::Unsupported => f.write_str(tr("Can't open this from here. The window may have closed.")),
             InboxError::Offline => f.write_str(tr("Torro Workplace isn't responding. It may still be starting.")),
             InboxError::Other(message) => f.write_str(message),
         }

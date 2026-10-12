@@ -476,6 +476,25 @@ pub enum Request {
         /// The entry's id from `inbox.list_items`.
         id: String,
     },
+    /// Opens the entry on the person's screen, as "Go to window" and `Enter` in the inbox app do
+    /// (task E2.4): a `window` link brings the window of the coding agent behind a hook's entry to
+    /// the front, found anew from its `agent.pids` (nearest process first, because window ids
+    /// change); a `url` opens in the system browser; an `app` link starts or raises that app of the
+    /// suite. Only what security rule 6 allows is opened: `http`/`https` pages, apps of
+    /// `apps.list_apps`, windows only on entries of hooks (`agent_waiting`, `agent_done`).
+    ///
+    /// A new entry is seen afterwards, when the caller may change it (rule 1); nothing else
+    /// changes. Answered with [`Response::Ok`]. Errors: `not-found` for an unknown id or an entry
+    /// of a source the client may not see (hook clients see none, rule 4); `unsupported` when
+    /// there is nothing safe to open, no window of the agent's processes is found (closed, the
+    /// agent runs in tmux, several windows share its process) or the window manager cannot list
+    /// windows (macOS, Windows, no supported one); `error` when the browser or the app does not
+    /// start.
+    #[serde(rename = "inbox.open_item")]
+    OpenItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
+    },
     /// The sources with entries or muted, with their number of open entries and whether they are
     /// muted, for the sidebar ([`Response::Sources`]); only those the client may see.
     #[serde(rename = "inbox.list_sources")]

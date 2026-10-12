@@ -374,6 +374,7 @@ fn describe(request: &Request) -> String {
         // Ids only, never a title, a body or a thread key (security rule 7 of the inbox).
         Request::ListItems { .. } => "inbox items".into(),
         Request::GetItem { id } => format!("inbox item {id}"),
+        Request::OpenItem { id } => format!("open inbox item {id}"),
         Request::ListSources => "inbox sources".into(),
         Request::PostItem { .. } => "post to inbox".into(),
         Request::ResolveItems { .. } => "resolve inbox items".into(),

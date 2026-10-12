@@ -246,6 +246,21 @@ impl InboxSource for DemoSource {
         }
         Ok(())
     }
+
+    /// Demo mode has no window manager and no browser behind it: nothing comes to the front (the
+    /// app opens pages and apps itself with `--demo`), the entry is only seen, as after opening.
+    /// [`InboxError::Unsupported`] for an entry without a link.
+    async fn open_item(&self, id: String) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let item = data.items.iter_mut().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        if item.link.is_none() {
+            return Err(InboxError::Unsupported);
+        }
+        if item.state == State::New {
+            item.state = State::Seen;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +419,18 @@ mod tests {
         assert_eq!(demo.set_item_done("nope".into(), true).await, Err(InboxError::NotFound));
         assert_eq!(demo.snooze_item("nope".into(), None).await, Err(InboxError::NotFound));
         assert_eq!(demo.set_item_lane("nope".into(), Lane::Info, false).await, Err(InboxError::NotFound));
+        assert_eq!(demo.open_item("nope".into()).await, Err(InboxError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn opening_marks_a_new_entry_seen_and_needs_a_link() {
+        let demo = DemoSource::new(now());
+        let state = |items: &[Item], id: &str| items.iter().find(|i| i.id == id).map(|i| i.state).expect("listed");
+        demo.open_item("demo-1".into()).await.expect("the agent's window");
+        let items = demo.list_items(ItemFilter::default()).await.expect("items");
+        assert_eq!(state(&items, "demo-1"), State::Seen);
+        assert_eq!(demo.open_item("demo-7".into()).await, Err(InboxError::Unsupported), "no link");
+        let items = demo.list_items(ItemFilter::default()).await.expect("items");
+        assert_eq!(state(&items, "demo-7"), State::New, "nothing opened, nothing seen");
     }
 }

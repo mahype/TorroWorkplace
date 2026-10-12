@@ -391,6 +391,8 @@ const IDEMPOTENT: &[&str] = &[
     "settings.set_collection_shown",
     "settings.update_settings",
     "apps.open_app",
+    // Bringing the same window or page to the front again changes nothing more.
+    "inbox.open_item",
     // Setting a state, lane or mute again leaves it as it is; a remembered lane replaces the old.
     "inbox.resolve_items",
     "inbox.set_item_done",
@@ -1314,6 +1316,21 @@ mod tests {
         );
         assert_eq!(hints("inbox_set_item_done").idempotent_hint, Some(true));
         assert_eq!(hints("inbox_mute_source").destructive_hint, Some(true), "admin");
+        let open = hints("inbox_open_item");
+        assert_eq!(
+            (open.read_only_hint, open.destructive_hint, open.idempotent_hint, open.open_world_hint),
+            (Some(false), Some(false), Some(true), Some(false)),
+            "it only steers the person's view"
+        );
+    }
+
+    /// Task E2.4: the tool takes the entry's id and nothing else.
+    #[test]
+    fn inbox_open_item_opens_one_entry_by_its_id() {
+        let request = request_for("inbox_open_item", args(json!({"id": "i1"})), &Utc);
+        assert_eq!(request, Ok(Request::OpenItem { id: "i1".into() }));
+        let refused = request_for("inbox_open_item", args(json!({"id": "i1", "url": "https://x.example"})), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "{refused:?}");
     }
 
     #[test]

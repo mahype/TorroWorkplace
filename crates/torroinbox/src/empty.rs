@@ -6,8 +6,9 @@
 use chrono::{DateTime, Utc};
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 
-/// An inbox without entries and without sources. Listing gives nothing; changing an entry gives
-/// [`InboxError::NotFound`] (there is none), muting [`InboxError::Offline`] (nothing would keep it).
+/// An inbox without entries and without sources. Listing gives nothing; changing or opening an
+/// entry gives [`InboxError::NotFound`] (there is none), muting [`InboxError::Offline`] (nothing
+/// would keep it).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptySource;
 
@@ -35,6 +36,10 @@ impl InboxSource for EmptySource {
     async fn mute_source(&self, _source: SourceRef, _muted: bool) -> Result<(), InboxError> {
         Err(InboxError::Offline)
     }
+
+    async fn open_item(&self, _id: String) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
 }
 
 #[cfg(test)]
@@ -52,5 +57,6 @@ mod tests {
         assert_eq!(block_on(source.snooze_item("x".into(), None)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.set_item_lane("x".into(), Lane::Info, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.mute_source(SourceRef::suite(), true)), Err(InboxError::Offline));
+        assert_eq!(block_on(source.open_item("x".into())), Err(InboxError::NotFound));
     }
 }

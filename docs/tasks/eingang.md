@@ -277,7 +277,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   zweimal einrichten = einmal, Entfernen sauber), kein echtes Home-Verzeichnis.
 
 ### E2.4 Ins Fenster des Agenten springen
-- [ ] erledigt
+- [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9)
 - **Modell:** Opus · **Braucht:** E2.2 · **Dateien:** `crates/torroworkplace/src/{inbox,core,mcp}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`
 - Der Kern sucht zu `agent.pids` das Fenster über `torro-wm` (`windows()` mit `pid`) und setzt den
@@ -289,6 +289,13 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **MCP:** `inbox_open_item` (Write; ein Agent kann damit den Blick des Menschen lenken, mehr nicht).
 - Grenzen im ersten Schritt: Läuft der Agent in tmux, endet die Kette beim tmux-Server, dann gibt es
   keinen Sprung (Aktion ausgeblendet). macOS/Windows: Aktion ausgeblendet.
+- Umgesetzt: Der Kern setzt `window` selbst, sobald ein Hook bei `agent_waiting`/`agent_done` Prozesse
+  mitschickt; ist einer davon ein tmux-Server (`/proc/<pid>/comm` beginnt mit `tmux`), bleibt der Link
+  weg, ebenso ohne Prozesse (macOS, Windows) – die App zeigt „Go to window“ dann nicht. Beim Öffnen
+  gewinnt der nächste Prozess mit Fenster; hat er mehrere Fenster (ein Terminal, das alle Fenster aus
+  einem Prozess bedient), ist die Antwort `unsupported`. Nach erfolgreichem Öffnen wird ein neuer
+  Eintrag `seen`, wenn der Aufrufer ihn ändern darf (Regel 1). Die App schickt für jeden Link
+  `inbox.open_item`; nur mit `--demo` öffnet sie Seiten und Apps weiter selbst.
 - **Abnahme:** Tests mit `torro-wm`-Fake (Fenster mit pid): Treffer, Fenster weg → `unsupported`;
   `file:`-Link → `unsupported`; `window` an einem Nicht-Hook-Eintrag wird ignoriert.
 

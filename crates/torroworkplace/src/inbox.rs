@@ -29,6 +29,15 @@
 //!
 //! Failures of the file reach clients without paths or details; those go to the core's log.
 //!
+//! **Opening an entry** (task E2.4, `inbox.open_item`) is split: the inbox decides what may be
+//! opened ([`Inbox::opening`], security rule 6) and marks a new entry seen once it was
+//! ([`Inbox::opened`]); the core carries it out with the window manager, the browser or the apps.
+//! A hook's agent states link to the agent's window ([`Link::Window`]) when the hook sent the
+//! processes it runs under; the window is looked up only when the entry is opened, because window
+//! ids change. A chain of processes that passes a tmux server gets no such link
+//! ([`behind_tmux`]): the agent's terminal window is not among them, so there would be nothing to
+//! jump to and the app shows no "Go to window".
+//!
 //! **The source `suite`** (task E2.1) is filed by the core itself, not through a request: every
 //! open approval ([`file_approvals`]) and every account that needs the user
 //! ([`Inbox::file_account_problems`]) is one entry, owned by [`CORE_OWNER`], so no client and not
@@ -217,6 +226,7 @@ impl Inbox {
             }
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
+            Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
             _ => Ok(()),
         });
         checked.err().map(Failure::response)
@@ -244,6 +254,39 @@ impl Inbox {
             eprintln!("torroworkplace: inbox: cannot look up an approval's entry: {failure}");
             InboxFacts::default()
         })
+    }
+
+    /// How to open the entry `id` for `client` (`None` for the app key), for `inbox.open_item`:
+    /// what its link allows under security rule 6 ([`rules::may_open`]). Changes nothing.
+    ///
+    /// `Err` holds the answer: `not-found` for an unknown entry or one of a source the client may
+    /// not see (a hook client sees none), `unsupported` when the entry has no link that may be
+    /// opened, or a window link without processes to look for.
+    pub fn opening(&self, id: &str, client: Option<&ClientInfo>, now: DateTime<Utc>) -> Result<Opening, Box<Response>> {
+        self.with(|db| {
+            wake_due(db, now)?;
+            opening(&visible_item(db, id, client)?.item)
+        })
+        .map_err(|failure| Box::new(failure.response()))
+    }
+
+    /// The entry `id` was opened for `client` at `now`: a new one is seen from now on, if the
+    /// client may change it (security rule 1; an agent opening an approval leaves it new). Nothing
+    /// else changes, `updated` neither. A failure is only logged: the entry was opened anyway.
+    pub fn opened(&self, id: &str, client: Option<&ClientInfo>, now: DateTime<Utc>) {
+        let seen = self.with(|db| {
+            wake_due(db, now)?;
+            let stored = visible_item(db, id, client)?;
+            if stored.item.state == State::New && api::check_item_change(&stored.item, client).is_ok() {
+                let mut item = stored.item;
+                item.state = State::Seen;
+                update_item(db, &item)?;
+            }
+            Ok(())
+        });
+        if let Err(failure) = seen {
+            eprintln!("torroworkplace: inbox: cannot mark an opened entry seen: {failure}");
+        }
     }
 
     /// The daemon's routine at `now`: wakes snoozed entries that are due and, with `clean_up`,
@@ -321,6 +364,18 @@ impl Inbox {
     }
 }
 
+/// What opening an entry does, as [`Inbox::opening`] decides it; the core carries it out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    /// Bring the window of one of these processes to the front: the hook's parent processes,
+    /// nearest first ([`AgentInfo::pids`]). The first that has a window is the agent's terminal.
+    Window { pids: Vec<u32> },
+    /// Open this `http`/`https` page in the system browser.
+    Url(String),
+    /// Start or raise this app of the suite.
+    App(AppId),
+}
+
 /// Why the inbox file could not be used.
 #[derive(Debug)]
 pub enum StoreError {
@@ -377,6 +432,8 @@ enum Failure {
     Forbidden(InboxForbidden),
     /// `busy`: too many new threads in the last hour.
     Busy(String),
+    /// `unsupported`: nothing on the entry may be opened (`inbox.open_item`).
+    Unsupported(String),
     /// `error`: the request itself does not fit (an empty title, a limit).
     Invalid(String),
     /// `error`: the file could not be used. The client is told so without the details, which
@@ -390,6 +447,7 @@ impl Failure {
             Failure::Forbidden(refused) => return refused.response(),
             Failure::NotFound(message) => ("not-found", message),
             Failure::Busy(message) => ("busy", message),
+            Failure::Unsupported(message) => ("unsupported", message),
             Failure::Invalid(message) => ("error", message),
             Failure::Store(err) => {
                 eprintln!("torroworkplace: inbox: {err}");
@@ -404,7 +462,10 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Failure::Forbidden(refused) => f.write_str(refused.0),
-            Failure::NotFound(message) | Failure::Busy(message) | Failure::Invalid(message) => f.write_str(message),
+            Failure::NotFound(message)
+            | Failure::Busy(message)
+            | Failure::Unsupported(message)
+            | Failure::Invalid(message) => f.write_str(message),
             Failure::Store(err) => err.fmt(f),
         }
     }
@@ -486,6 +547,9 @@ fn answer(
             set_muted(db, &source, muted, now)?;
             Ok(Response::Ok)
         }
+        // Opening needs the window manager, the browser or the apps: the core answers it with
+        // `Inbox::opening` and `Inbox::opened`.
+        Request::OpenItem { .. } => Err(Failure::Invalid("inbox.open_item is answered by the core".into())),
         Request::ListRules => Ok(Response::Rules { rules: list_rules(db, client)? }),
         Request::RemoveRule { id } => {
             removable_rule(db, &id, client)?;
@@ -754,6 +818,11 @@ fn post(
     // Only hooks know an agent session, and only their entries may jump to its window (E2.4).
     let agent = post.agent.filter(|_| poster == Poster::Hook).map(capped_agent);
     let own_agent = client.and_then(|client| client.agent).filter(|_| poster == Poster::Hook);
+    // The window of a hook's agent is the core's to link, never the poster's (task E2.4).
+    let link = match post.link {
+        None | Some(Link::Window) => window_link(kind, agent.as_ref()),
+        link => link,
+    };
     let rules = read_rules(db, &Scope::All, "source = ?", vec![text(source.key())])?;
     if rules.iter().any(|rule| rule.effect == RuleEffect::Muted) {
         return Ok(None);
@@ -792,7 +861,7 @@ fn post(
         updated: now,
         count: 1,
         state: State::New,
-        link: post.link,
+        link,
         actions: Vec::new(),
         // Requests never come from the core: whatever they carry is foreign text (rule 5).
         untrusted: true,
@@ -831,6 +900,52 @@ fn capped_agent(mut agent: AgentInfo) -> AgentInfo {
     agent.branch = agent.branch.map(|branch| cap_bytes(&branch, AGENT_FIELD_MAX));
     agent.pids.truncate(PIDS_MAX);
     agent
+}
+
+/// The link of a report of `kind` about `agent`: the agent's window for a hook's agent state
+/// (only hooks keep `agent`, [`post`]) that names the processes it runs under, unless they pass a
+/// tmux server ([`behind_tmux`]). `None` otherwise: without processes (macOS, Windows) there is
+/// no window to look for, so the app offers none.
+fn window_link(kind: Kind, agent: Option<&AgentInfo>) -> Option<Link> {
+    let pids = &agent?.pids;
+    let agent_state = matches!(kind, Kind::AgentWaiting | Kind::AgentDone);
+    (agent_state && !pids.is_empty() && !behind_tmux(pids)).then_some(Link::Window)
+}
+
+/// One of `pids` is a tmux server (its process name starts with `tmux`). An agent in tmux runs
+/// under the server, which belongs to no window; the terminal showing it runs a tmux client that
+/// is not among the agent's parents, so its window cannot be found. Read from `/proc` while the
+/// hook still runs and its parents live; a process that is gone counts as no tmux.
+#[cfg(target_os = "linux")]
+fn behind_tmux(pids: &[u32]) -> bool {
+    pids.iter().any(|pid| fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.starts_with("tmux")))
+}
+
+/// Only Linux sends processes ([`AgentInfo::pids`]); elsewhere there is nothing to look at.
+#[cfg(not(target_os = "linux"))]
+fn behind_tmux(_pids: &[u32]) -> bool {
+    false
+}
+
+/// What opening `item` does, as security rule 6 allows ([`rules::may_open`]): a web page, an app
+/// of the suite, or the window of a hook's agent with processes to look for; else `unsupported`.
+fn opening(item: &Item) -> Result<Opening, Failure> {
+    let refused = |why: &str| Err(Failure::Unsupported(format!("inbox entry {:?}: {why}", item.id)));
+    if !rules::may_open(item, is_app_of_the_suite) {
+        return refused("nothing on it may be opened");
+    }
+    match &item.link {
+        Some(Link::Url { url }) => Ok(Opening::Url(url.clone())),
+        Some(Link::App { app }) => match AppId::ALL.iter().find(|known| known.binary == app) {
+            Some(app) => Ok(Opening::App(*app)),
+            None => refused("no app of the suite"),
+        },
+        Some(Link::Window) => match item.agent.as_ref().map(|agent| agent.pids.clone()) {
+            Some(pids) if !pids.is_empty() => Ok(Opening::Window { pids }),
+            _ => refused("the agent's processes are unknown"),
+        },
+        None => refused("it has no link"),
+    }
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -2142,6 +2257,127 @@ pub(crate) mod tests {
         assert_eq!(link_of(app("torroworkplace")), Some(app("torroworkplace")));
         assert_eq!(link_of(app("rm -rf")), None);
         assert_eq!(link_of(Link::Window), None, "no window from a non-hook");
+    }
+
+    /// Processes no system has (above the largest pid Linux hands out), so `/proc` knows none of
+    /// them and no test depends on what runs on the machine.
+    const AGENT_PIDS: [u32; 3] = [4_500_001, 4_500_002, 4_500_003];
+
+    /// A waiting agent as its hook reports it, with `pids` and `link`; returns the entry's id.
+    fn hook_reports(inbox: &Inbox, pids: &[u32], link: Option<Link>, thread: &str) -> String {
+        let request = Request::PostItem {
+            kind: Kind::AgentWaiting,
+            title: "ignored".into(),
+            body: None,
+            link,
+            lane: None,
+            thread_key: Some(thread.into()),
+            agent: Some(AgentInfo { pids: pids.to_vec(), ..session(AgentKind::ClaudeCode, thread) }),
+        };
+        posted(inbox.handle(request, Some(&hook()), at(9, 0)))
+    }
+
+    /// `opening` of `item` as the answer a client would get.
+    fn refused(item: &Item) -> Response {
+        opening(item).map_err(Failure::response).expect_err("not to be opened")
+    }
+
+    /// Task E2.4, security rule 6: the core links a hook's agent to its window, and opening
+    /// follows the stored link, whatever was posted.
+    #[test]
+    fn opening_follows_what_is_safe_to_open() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let get = |id: &str| item(inbox.handle(Request::GetItem { id: id.into() }, None, at(9, 1)));
+
+        // A hook's agent with processes jumps to its window, also when the hook sent no link.
+        let waiting = hook_reports(&inbox, &AGENT_PIDS, None, "s1");
+        assert_eq!(get(&waiting).link, Some(Link::Window));
+        let pids = AGENT_PIDS.to_vec();
+        assert_eq!(inbox.opening(&waiting, None, at(9, 2)), Ok(Opening::Window { pids }));
+        // Without processes (macOS, Windows) there is no window to look for: no link, nothing to open.
+        let blind_agent = hook_reports(&inbox, &[], Some(Link::Window), "s2");
+        assert_eq!(get(&blind_agent).link, None);
+        assert_eq!(code(&inbox.opening(&blind_agent, None, at(9, 2)).expect_err("no link")), "unsupported");
+
+        // `window` on an entry that is no hook's is ignored: dropped when posted, refused when opened.
+        let post = |link: Link| Request::PostItem {
+            kind: Kind::Notice,
+            title: "Linked".into(),
+            body: None,
+            link: Some(link),
+            lane: None,
+            thread_key: None,
+            agent: Some(AgentInfo { pids: AGENT_PIDS.to_vec(), ..session(AgentKind::ClaudeCode, "s3") }),
+        };
+        let notice = posted(inbox.handle(post(Link::Window), Some(&script()), at(9, 3)));
+        assert_eq!(get(&notice).link, None);
+        assert_eq!(code(&inbox.opening(&notice, None, at(9, 4)).expect_err("no window")), "unsupported");
+        let stored = Item { link: Some(Link::Window), ..get(&notice) };
+        assert_eq!(code(&refused(&stored)), "unsupported", "a window only on a hook's entry");
+
+        // Only `http`/`https` pages and apps of the suite.
+        let web = Link::Url { url: "https://ci.example.org/1".into() };
+        let page = posted(inbox.handle(post(web), Some(&script()), at(9, 5)));
+        assert_eq!(inbox.opening(&page, None, at(9, 6)), Ok(Opening::Url("https://ci.example.org/1".into())));
+        let app = posted(inbox.handle(post(Link::App { app: "torrotasks".into() }), Some(&script()), at(9, 5)));
+        assert_eq!(inbox.opening(&app, None, at(9, 6)), Ok(Opening::App(AppId::TASKS)));
+        let file = Item { link: Some(Link::Url { url: "file:///etc/passwd".into() }), ..stored.clone() };
+        assert_eq!(code(&refused(&file)), "unsupported", "file:");
+        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..stored };
+        assert_eq!(code(&refused(&unknown_app)), "unsupported", "no app of the suite");
+        assert_eq!(code(&inbox.opening("nope", None, at(9, 7)).expect_err("unknown")), "not-found");
+    }
+
+    #[test]
+    fn a_client_opens_only_what_it_sees() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let waiting = hook_reports(&inbox, &AGENT_PIDS, None, "s1");
+        // A client without the source, and the hook itself (rule 4), find nothing to open.
+        for client in [blind(), hook()] {
+            assert_eq!(code(&inbox.opening(&waiting, Some(&client), at(9, 1)).expect_err("hidden")), "not-found");
+            let open = Request::OpenItem { id: waiting.clone() };
+            assert_eq!(inbox.refusal(&open, Some(&client)).as_ref().map(code), Some("not-found"), "before approval");
+        }
+        assert!(inbox.opening(&waiting, Some(&script()), at(9, 1)).is_ok());
+        assert_eq!(inbox.refusal(&Request::OpenItem { id: waiting }, Some(&script())), None);
+        // The inbox never answers it alone: the core opens.
+        assert_eq!(code(&inbox.handle(Request::OpenItem { id: "x".into() }, None, at(9, 2))), "error");
+    }
+
+    #[test]
+    fn an_opened_entry_is_seen_if_the_opener_may_change_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let get = |id: &str| item(inbox.handle(Request::GetItem { id: id.into() }, None, at(9, 5)));
+        let waiting = hook_reports(&inbox, &AGENT_PIDS, None, "s1");
+        let before = get(&waiting);
+        inbox.opened(&waiting, Some(&script()), at(9, 2));
+        let after = get(&waiting);
+        assert_eq!(after.state, State::Seen);
+        assert_eq!((after.updated, after.count), (before.updated, before.count), "only seen, nothing else");
+        // An approval belongs to the person (rule 1): an agent opening it leaves it new.
+        file_from_core(&inbox, &approval(at(9, 0)));
+        inbox.opened("approval-1", Some(&script()), at(9, 4));
+        assert_eq!(get("approval-1").state, State::New);
+        inbox.opened("approval-1", None, at(9, 4));
+        assert_eq!(get("approval-1").state, State::Seen);
+        // A done entry stays done; an unknown or hidden one is only logged.
+        inbox.handle(Request::SetItemDone { id: waiting.clone(), done: true }, None, at(9, 5));
+        inbox.opened(&waiting, None, at(9, 6));
+        assert!(matches!(get(&waiting).state, State::Done { .. }));
+        inbox.opened("nope", Some(&blind()), at(9, 6));
+    }
+
+    #[test]
+    fn only_a_hooks_agent_state_with_processes_links_its_window() {
+        assert!(!behind_tmux(&AGENT_PIDS), "unknown processes are no tmux");
+        assert!(!behind_tmux(&[std::process::id()]), "this test is no tmux server");
+        let with_pids = AgentInfo { pids: vec![AGENT_PIDS[0]], ..session(AgentKind::Codex, "s") };
+        assert_eq!(window_link(Kind::AgentDone, Some(&with_pids)), Some(Link::Window));
+        assert_eq!(window_link(Kind::Notice, Some(&with_pids)), None, "no agent state");
+        assert_eq!(window_link(Kind::AgentDone, None), None, "no agent");
     }
 
     #[test]

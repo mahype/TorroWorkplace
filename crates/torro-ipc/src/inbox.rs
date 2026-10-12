@@ -5,7 +5,8 @@
 //!
 //! - the expected variant → `Ok`,
 //! - `Response::Error { code, .. }`: `not-found` → [`InboxError::NotFound`], `forbidden` →
-//!   [`InboxError::Forbidden`], `busy` → [`InboxError::Busy`], every other code →
+//!   [`InboxError::Forbidden`], `busy` → [`InboxError::Busy`], `unsupported` →
+//!   [`InboxError::Unsupported`], every other code →
 //!   [`InboxError::Other`] with the core's message,
 //! - a core that is not running → [`InboxError::Offline`], so the app shows "isn't responding"
 //!   and tries again on its next refresh; any other socket problem → [`InboxError::Other`] with
@@ -43,6 +44,7 @@ impl InboxClient {
                 "not-found" => InboxError::NotFound,
                 "forbidden" => InboxError::Forbidden,
                 "busy" => InboxError::Busy,
+                "unsupported" => InboxError::Unsupported,
                 _ => InboxError::Other(message),
             }),
             Ok(response) => Ok(response),
@@ -96,6 +98,14 @@ impl InboxSource for InboxClient {
 
     async fn mute_source(&self, source: SourceRef, muted: bool) -> Result<(), InboxError> {
         match self.ask(Request::MuteSource { source, muted }).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.open_item`: the core opens the entry (window, page or app) on the person's screen.
+    async fn open_item(&self, id: String) -> Result<(), InboxError> {
+        match self.ask(Request::OpenItem { id }).await? {
             Response::Ok => Ok(()),
             other => Err(unexpected(other)),
         }
@@ -165,6 +175,10 @@ mod tests {
                 Response::Item { item: Item { lane, title: format!("remember {remember}"), ..item(&id) } }
             }
             Request::MuteSource { source, muted: true } if source == SourceRef::script("ci") => Response::Ok,
+            Request::OpenItem { id } if id == "window" => Response::Ok,
+            Request::OpenItem { .. } => {
+                Response::Error { code: "unsupported".into(), message: "no window of the agent found".into() }
+            }
             other => Response::Error { code: "error".into(), message: format!("test core does not know {other:?}") },
         }
     }
@@ -256,10 +270,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn opening_sends_open_item_and_maps_unsupported() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        client.open_item("window".into()).await.expect("opened");
+        assert_eq!(client.open_item("gone".into()).await, Err(InboxError::Unsupported));
+    }
+
+    #[tokio::test]
     async fn error_codes_map_to_inbox_errors() {
         assert_eq!(error_from("not-found").await, InboxError::NotFound);
         assert_eq!(error_from("forbidden").await, InboxError::Forbidden);
         assert_eq!(error_from("busy").await, InboxError::Busy);
+        assert_eq!(error_from("unsupported").await, InboxError::Unsupported);
         assert_eq!(error_from("unauthorized").await, InboxError::Other("said the core".into()));
         assert_eq!(error_from("error").await, InboxError::Other("said the core".into()));
     }

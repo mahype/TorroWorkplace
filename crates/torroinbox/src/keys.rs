@@ -67,7 +67,8 @@ pub enum Command {
     Next,
     /// Move the cursor to the previous row.
     Previous,
-    /// Open the entry under the cursor: its web link in the browser, else the panel.
+    /// Open the entry under the cursor: its page, app or agent's window (`inbox.open_item`), else
+    /// the panel.
     Open,
     /// Mark the entry done, or open it again when it is done.
     Done,

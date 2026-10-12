@@ -232,6 +232,7 @@ pub fn ids(request: &Request) -> Vec<String> {
             vec![id("approval", approval)]
         }
         Request::GetItem { id: entry }
+        | Request::OpenItem { id: entry }
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. } => vec![id("inbox", entry)],
