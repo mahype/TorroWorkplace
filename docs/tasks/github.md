@@ -406,7 +406,9 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 - [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-pim-caldav/src/{client,write}.rs`,
   `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp,approvals}.rs`,
-  `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`
+  `crates/torro-ipc/src/{lib,api}.rs`; zusätzlich geändert: `crates/torro-ipc/src/pim.rs`,
+  `crates/torro-pim/src/demo.rs`, `crates/torro-gui/src/source.rs`, `crates/torroworkplace/src/{audit,daemon}.rs`.
+  Offen: `docs/api-reference.md` (entsteht mit A.9).
 - Neue Aufgabenliste in einem Nextcloud-Konto: CalDAV `MKCALENDAR` im Kalender-Zuhause des Kontos mit
   `displayname`, `calendar-color` (Apple-Namensraum, `#RRGGBBFF` wie Nextcloud) und
   `supported-calendar-component-set` = nur `VTODO`. Der Pfad ist ein neuer, nie wiederverwendeter Name
@@ -420,9 +422,9 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 - **Rechte:** Clients brauchen `write` im Bereich `tasks`; die neue Liste kommt nie von selbst in eine Auswahl
   „nur diese“ (`task_lists`), wie bei Filterlisten. Braucht der Befehl eine Freigabe, lautet sie
   „Create task list "{name}" in {account}“ (Konto-Name aus dem Kern, nicht vom Client). Protokoll nur mit
-  Konto- und Listen-Kennung, nie mit dem Namen.
+  der Konto-Kennung (der Pfad enthält einen Teil des Namens), nie mit dem Namen.
 - Katalogbeschreibung nennt die Nebenwirkung („Creates a new task list on the account's server …“). API-Referenz
-  neu erzeugen.
+  offen (entsteht mit A.9).
 - Nicht Teil: Umbenennen, Farbe ändern, Löschen einer Aufgabenliste (eigene Aufgabe, wenn gewünscht).
 - Abnahme: Tests mit aufgezeichneten CalDAV-Antworten (Anfrage-Körper, Pfad-Kollision, Fehler), Handler-Test
   (Liste danach in `list_lists`), Rechte (Client ohne `write` → `forbidden`, neue Liste nicht in `Only`-Auswahl),
@@ -448,8 +450,9 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 ### G.9 GitHub: Repos, Labels, Meilensteine und Personen lesen
 - [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.2 · **Dateien:** `crates/torro-pim-github/src/{api,graphql}.rs`,
-  `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
-  `docs/api-reference.md`
+  `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`;
+  zusätzlich geändert: `crates/torro-ipc/src/pim.rs`, `crates/torro-pim/src/demo.rs`, `crates/torro-gui/src/source.rs`,
+  `crates/torroworkplace/src/{audit,daemon}.rs`. Offen: `docs/api-reference.md` (entsteht mit A.9).
 - Die Lese-Requests, die G.4 noch fehlten („eine Auswahl aus GitHub bräuchte einen eigenen Lese-Request“):
   - `Request::ListGithubRepos { account }` · `tasks.list_github_repos` · Read · Bereich `Github`: die Repos, die
     das angemeldete Konto erreicht (GraphQL `viewer.repositories`, Zugehörigkeit Eigentümer, Mitarbeiter,
@@ -461,6 +464,36 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
   (wie nicht vorhanden). Der Token verlässt den Kern nie. Protokoll nur mit Konto und `owner/repo`.
 - Antworten kurz zwischenspeichern (bis zum nächsten Abgleich), damit der Dialog nicht bei jedem Öffnen fragt.
 - Abnahme: Tests aus aufgezeichneten GraphQL-Antworten (Fixtures), Rechte-Fälle, MCP-Tools bauen die Requests.
+
+### G.9b Aufgabenliste und GitHub-Lesen absichern (aus der API-Prüfung von G.7 und G.9)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** G.7, G.9 · **Dateien:** `crates/torro-pim-caldav/src/write.rs`,
+  `crates/torroworkplace/src/{pim,core}.rs`, `crates/torro-pim-github/src/lib.rs`, `crates/torro-ipc/src/api.rs`,
+  `docs/tasks/github.md`
+- **403 auf `MKCALENDAR` ist kein `auth` (mittel):** `made` reicht heute alles außer 405/409 an `status_error`, dort
+  wird 403 zu `ProviderError::Auth`, und `PimService::failed` startet die Remote-Wipe-Prüfung („sign in again“).
+  Ein 403 heißt hier aber „an dieser Stelle darf keine Liste entstehen“, das Passwort gilt. Fix: in `made` nur 401
+  als `Auth`, 403 als `ProviderError::Other("the server does not allow new task lists here (HTTP 403)")`.
+- **Zwischenspeicher: Rennen und verwaister Slot (mittel):** `list_github_repos` und `describe_github_repo`
+  schreiben nach der GitHub-Abfrage über `filter_slot_mut`, das einen fehlenden `FilterSlot` neu anlegt. Wird das
+  Konto währenddessen entfernt, bleibt ein verwaister Slot; läuft ein Refresh dazwischen, steht die ältere Antwort
+  wieder drin. Fix: Generation je Slot (fortlaufend im Kern, neu bei jedem Refresh und jedem neuen Slot); vor der
+  Abfrage merken, nur zurückschreiben, wenn der Slot noch da ist (suchen, nicht anlegen) und die Generation gleich.
+- **`describe`-Speicher begrenzen (niedrig):** höchstens 64 Repos je Konto, das älteste fällt heraus; ein Agent mit
+  `github_repos: All` kann sonst beliebig viele öffentliche Repos beschreiben lassen. Katalogtext von
+  `tasks.describe_github_repo`: jedes Repo, das der Token lesen kann, nicht nur die aus `list_github_repos`.
+- **Gleiche Meldung (niedrig):** Ein Repo außerhalb der Auswahl eines Clients antwortet wie eines, das es nicht gibt:
+  `no repository "x"` (`no_repo`), nicht `no collection "x"`.
+- **Kleinigkeiten (niedrig):** verrutschter Doc-Kommentar über `GITHUB_READ_FAILED` zurück an `no_filter_list`;
+  `GITHUB_READ_FAILED` nach `torro-pim-github` neben `GITHUB_FAILED`/`CHANGE_FAILED`, `read_message` gebaut wie
+  `change_message` (Ergebnis unverändert); `tasks.list_github_repos` nennt „at most 1,000 repositories“.
+- **Doku:** G.7 und G.9 berichtigt (Protokoll, zusätzlich geänderte Dateien, `docs/api-reference.md` offen bis A.9).
+- **Oberfläche/API/MCP:** keine neuen Requests; nur Katalogtexte.
+- **Später (nicht Teil):** Sync-Sperre je Konto statt global während `create_task_list`; optionales
+  `truncated: bool` in den Antworten von `list_github_repos`/`describe_github_repo`.
+- Abnahme: Tests – 403 auf `MKCALENDAR` ist `error` und löst keine Wipe-Prüfung aus (401 schon); Konto entfernt
+  bzw. Refresh während der Abfrage → nichts zurückgeschrieben, kein Slot angelegt; Grenze 64 mit dem ältesten
+  heraus; Rechte-Test vergleicht die Meldung `no repository …`.
 
 ### G.10 Rückmeldung: Chips, Segmente und Knöpfe zeigen ihren Zustand
 - [x] erledigt

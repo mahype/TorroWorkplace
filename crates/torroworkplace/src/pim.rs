@@ -73,9 +73,11 @@
 //!   people ([`PimService::describe_github_repo`]), read with the account's token and kept in its
 //!   [`FilterSlot`] until the next refresh of its filter lists. A client sees only the
 //!   repositories it reaches; one outside them is `not-found` before GitHub is asked, and
-//!   GitHub's own words never reach it ([`GITHUB_READ_FAILED`]).
+//!   GitHub's own words never reach it ([`torro_pim_github::GITHUB_READ_FAILED`]). An answer is
+//!   kept only when no refresh and no removal of the account came in between, and at most
+//!   [`MAX_DESCRIBED`] repositories' details per account (task G.9b).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -244,6 +246,9 @@ struct State {
     signing_in: Option<(String, String)>,
     /// The filter lists of the GitHub accounts the core knows (task G.2).
     filters: Vec<FilterSlot>,
+    /// The last [`FilterSlot::generation`] handed out; it only grows, so a slot made again after
+    /// its account was removed never has the number of the old one (task G.9b).
+    read_generations: u64,
     /// What GitHub last reported about the items the tasks of the accounts link to (task G.6),
     /// by [`link_key`]. For everyone; a client reads it only through [`Reach::with_details`].
     links: HashMap<String, item::Item>,
@@ -289,22 +294,47 @@ impl State {
         self.filters.iter_mut().flat_map(|slot| &mut slot.lists).find(|list| list.collection.id == collection)
     }
 
+    /// The [`FilterSlot`] of `account`, made (in a new generation) when there is none yet. Only
+    /// for what the core does on its own account – refreshing, creating a list – never to keep a
+    /// GitHub answer that may have outlived the account ([`PimService::read_through`]).
     fn filter_slot_mut(&mut self, account: &str) -> &mut FilterSlot {
         match self.filters.iter().position(|slot| slot.account == account) {
             Some(at) => &mut self.filters[at],
             None => {
+                let generation = self.next_read_generation();
                 self.filters.push(FilterSlot {
                     account: account.to_string(),
                     lists: Vec::new(),
                     repos: None,
-                    described: HashMap::new(),
+                    described: VecDeque::new(),
+                    generation,
                 });
                 let last = self.filters.len() - 1;
                 &mut self.filters[last]
             }
         }
     }
+
+    fn next_read_generation(&mut self) -> u64 {
+        self.read_generations += 1;
+        self.read_generations
+    }
+
+    /// Drops what the filter list dialog read for `account` and starts a new generation of it, so
+    /// an answer GitHub gives to a question asked before is not kept (task G.9b).
+    fn renew_reads(&mut self, account: &str) {
+        let generation = self.next_read_generation();
+        let slot = self.filter_slot_mut(account);
+        slot.repos = None;
+        slot.described.clear();
+        slot.generation = generation;
+    }
 }
+
+/// How many repositories' details ([`FilterSlot::described`]) the core keeps per GitHub account:
+/// a dialog needs a few, and a client reaching every repository must not grow the cache without
+/// end (task G.9b).
+const MAX_DESCRIBED: usize = 64;
 
 /// The filter lists of one GitHub account (task G.2), and what its filter list dialog last read
 /// from GitHub (task G.9).
@@ -319,8 +349,28 @@ struct FilterSlot {
     /// than one refresh period.
     repos: Option<Vec<GitHubRepo>>,
     /// What `tasks.describe_github_repo` last read, by repository as asked for in lower case
-    /// (GitHub ignores case); dropped like `repos`.
-    described: HashMap<String, GitHubRepoDetails>,
+    /// (GitHub ignores case), the oldest first and at most [`MAX_DESCRIBED`]; dropped like `repos`.
+    described: VecDeque<(String, GitHubRepoDetails)>,
+    /// Which refresh `repos` and `described` belong to ([`State::renew_reads`]): an answer is kept
+    /// only in the generation it was asked in (task G.9b).
+    generation: u64,
+}
+
+impl FilterSlot {
+    /// What [`FilterSlot::described`] holds for `key` (lower case).
+    fn described(&self, key: &str) -> Option<GitHubRepoDetails> {
+        self.described.iter().find(|(held, _)| held == key).map(|(_, details)| details.clone())
+    }
+
+    /// Keeps `details` for `key` (lower case) as the newest entry; the oldest goes when there are
+    /// more than [`MAX_DESCRIBED`].
+    fn describe(&mut self, key: String, details: GitHubRepoDetails) {
+        self.described.retain(|(held, _)| *held != key);
+        self.described.push_back((key, details));
+        while self.described.len() > MAX_DESCRIBED {
+            self.described.pop_front();
+        }
+    }
 }
 
 /// One filter list: its definition, how `tasks.list_lists` shows it and what GitHub last found.
@@ -568,6 +618,13 @@ impl PimService {
         PimService { filters_file: Some(filters_file), ..PimService::with_settings(settings) }
     }
 
+    /// Whether the GitHub account `account` has its [`FilterSlot`] (its first refresh ran), for
+    /// tests that must not race that refresh.
+    #[cfg(test)]
+    pub async fn has_filter_slot(&self, account: &str) -> bool {
+        self.state.read().await.filters.iter().any(|slot| slot.account == account)
+    }
+
     /// The settings this service reads; the core uses the same ones.
     pub fn settings(&self) -> &SettingsStore {
         &self.settings
@@ -746,8 +803,10 @@ impl PimService {
             // The handler leaves out the repositories outside the client's; one it names is
             // `not-found` before GitHub is asked (task G.9).
             Request::ListGithubRepos { .. } => return None,
+            // Named as the handler names it, so both answers read the same (task G.9b).
             Request::DescribeGithubRepo { repo, .. } => {
-                return (!reach.reaches_repo(repo.trim())).then(|| repo.clone());
+                let repo = repo.trim();
+                return (!reach.reaches_repo(repo)).then(|| repo.to_string());
             }
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
@@ -1747,13 +1806,9 @@ impl PimService {
     /// cache and fetches each from GitHub with `api`. Without `api` (no token) the lists keep
     /// what they had and show a problem. A file that cannot be read changes nothing.
     pub async fn refresh_filter_lists(&self, account: &str, api: Option<&Api>) {
-        // What the filter list dialog read is kept until here (task G.9).
-        {
-            let mut state = self.state.write().await;
-            let slot = state.filter_slot_mut(account);
-            slot.repos = None;
-            slot.described.clear();
-        }
+        // What the filter list dialog read is kept until here (task G.9), and an answer to a
+        // question asked before is not kept either (G.9b).
+        self.state.write().await.renew_reads(account);
         let file = match self.read_filters() {
             Ok(file) => file,
             Err(err) => {
@@ -2056,30 +2111,59 @@ impl PimService {
     /// kept. Answered as `reach` may see it: a client only the repositories it reaches
     /// ([`Reach::reaches_repo`]), and its failures with fixed messages ([`read_message`]).
     pub async fn list_github_repos(&self, account: &str, api: &Api, reach: Reach<'_>) -> Response {
-        let cached = self
-            .state
-            .read()
-            .await
-            .filters
-            .iter()
-            .find(|slot| slot.account == account)
-            .and_then(|slot| slot.repos.clone());
-        let repos = match cached {
-            Some(repos) => repos,
-            None => match api.repos().await {
-                Ok(repos) => {
-                    self.state.write().await.filter_slot_mut(account).repos = Some(repos.clone());
-                    repos
-                }
-                Err(err) => return error(err.code(), read_message(reach, &err)),
+        let read = self.read_through(
+            account,
+            |slot| slot.repos.clone(),
+            || api.repos(),
+            |slot, repos| slot.repos = Some(repos),
+        );
+        match read.await {
+            Ok(repos) => Response::GithubRepos {
+                repos: repos.into_iter().filter(|repo| reach.reaches_repo(&repo.repo)).collect(),
             },
+            Err(err) => error(err.code(), read_message(reach, &err)),
+        }
+    }
+
+    /// What the filter list dialog reads of GitHub for `account` (task G.9): `held` from its
+    /// [`FilterSlot`] when that has it, else `fetch`ed and given to `keep` – but only when the slot
+    /// is still there in the generation it had before GitHub was asked (task G.9b,
+    /// [`FilterSlot::generation`]). A refresh meanwhile would otherwise get an answer older than
+    /// itself back, and an account removed meanwhile its slot. Without a slot (the account's first
+    /// refresh has not run yet) nothing is kept.
+    async fn read_through<T, Fut>(
+        &self,
+        account: &str,
+        held: impl FnOnce(&FilterSlot) -> Option<T>,
+        fetch: impl FnOnce() -> Fut,
+        keep: impl FnOnce(&mut FilterSlot, T),
+    ) -> Result<T, torro_pim_github::Error>
+    where
+        T: Clone,
+        Fut: Future<Output = Result<T, torro_pim_github::Error>>,
+    {
+        let generation = {
+            let state = self.state.read().await;
+            let slot = state.filters.iter().find(|slot| slot.account == account);
+            if let Some(held) = slot.and_then(held) {
+                return Ok(held);
+            }
+            slot.map(|slot| slot.generation)
         };
-        Response::GithubRepos { repos: repos.into_iter().filter(|repo| reach.reaches_repo(&repo.repo)).collect() }
+        let fetched = fetch().await?;
+        let mut state = self.state.write().await;
+        let same = state.filters.iter_mut().find(|slot| slot.account == account && Some(slot.generation) == generation);
+        if let Some(slot) = same {
+            keep(slot, fetched.clone());
+        }
+        Ok(fetched)
     }
 
     /// `tasks.describe_github_repo` for the repository `repo` (`owner/name`) of the GitHub
     /// account `account`, which the core knows: what [`FilterSlot::described`] holds since the
-    /// last refresh, else asked of GitHub with `api` (one call) and kept.
+    /// last refresh, else asked of GitHub with `api` (one call) and kept ([`PimService::read_through`],
+    /// at most [`MAX_DESCRIBED`] repositories). Any repository the token reads, not only those of
+    /// [`PimService::list_github_repos`].
     ///
     /// A repository outside the reach of a client is `not-found` before GitHub is asked (the core
     /// checked that already, [`PimService::out_of_reach`]; again here for an approved run), and so
@@ -2092,21 +2176,16 @@ impl PimService {
             return no_repo(repo);
         }
         let key = repo.to_ascii_lowercase();
-        let cached = {
-            let state = self.state.read().await;
-            let slot = state.filters.iter().find(|slot| slot.account == account);
-            slot.and_then(|slot| slot.described.get(&key).cloned())
-        };
-        let details = match cached {
-            Some(details) => details,
-            None => match api.describe_repo(repo).await {
-                Ok(details) => {
-                    self.state.write().await.filter_slot_mut(account).described.insert(key, details.clone());
-                    details
-                }
-                Err(torro_pim_github::Error::NotFound) => return no_repo(repo),
-                Err(err) => return error(err.code(), read_message(reach, &err)),
-            },
+        let read = self.read_through(
+            account,
+            |slot| slot.described(&key),
+            || api.describe_repo(repo),
+            |slot, details| slot.describe(key.clone(), details),
+        );
+        let details = match read.await {
+            Ok(details) => details,
+            Err(torro_pim_github::Error::NotFound) => return no_repo(repo),
+            Err(err) => return error(err.code(), read_message(reach, &err)),
         };
         if !reach.reaches_repo(&details.repo) {
             return no_repo(repo);
@@ -2639,27 +2718,24 @@ fn change_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
     }
 }
 
-/// The answer for a collection that is no filter list: `not-found`.
-/// What a client reads when reading repositories from GitHub failed (task G.9): GitHub's own words
-/// could name repositories it may not see.
-pub const GITHUB_READ_FAILED: &str = "GitHub could not be read. Try again later.";
-
-/// The message of a failure to read repositories from GitHub for `reach`: the whole of it for the
-/// suite, for a client [`GITHUB_READ_FAILED`] instead of GitHub's own words; the core's fixed
-/// texts (token refused, offline, a name that is not `owner/name`) for both.
+/// The message of a failure to read repositories from GitHub for `reach`: GitHub's own words for
+/// the suite; for a client the fixed text of its code, [`torro_pim_github::GITHUB_READ_FAILED`] in
+/// place of GitHub's words, which may name repositories it may not see.
 fn read_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
     match (reach, err) {
-        (Reach::Client(_), torro_pim_github::Error::Github(_)) => GITHUB_READ_FAILED.to_string(),
-        _ => err.to_string(),
+        (Reach::Suite, err) => err.to_string(),
+        (Reach::Client(_), torro_pim_github::Error::Github(_)) => torro_pim_github::GITHUB_READ_FAILED.into(),
+        (Reach::Client(_), err) => err.public_message(),
     }
 }
 
 /// The answer for a repository GitHub does not have, the token does not reach or a client may not
-/// see: the same `not-found` for all three.
-fn no_repo(repo: &str) -> Response {
+/// see: the same `not-found` for all three (the core answers the last one with it too, task G.9b).
+pub(crate) fn no_repo(repo: &str) -> Response {
     error("not-found", format!("no repository {repo:?}"))
 }
 
+/// The answer for a collection that is no filter list: `not-found`.
 fn no_filter_list(collection: &str) -> Response {
     error("not-found", format!("no filter list {collection:?}"))
 }
@@ -4649,5 +4725,138 @@ pub(crate) mod tests {
         assert_eq!(code_of(&offline), "offline", "{offline:?}");
         let collections = cached(&service).await;
         assert_eq!(collections.len(), 2, "work and home only: {collections:?}");
+    }
+
+    /// Whether the fake server was asked for the remote wipe check.
+    fn wipe_checked_on(record: &std::sync::Mutex<Vec<Seen>>) -> bool {
+        lines(record).iter().any(|line| line.contains("/core/wipe/check"))
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_new_task_list_is_no_sign_in_problem() {
+        // With a network client, so a refused app password would ask the server about a wipe.
+        let with_network = |base: &str| {
+            let http = reqwest::Client::builder().no_proxy().build().expect("http client");
+            let service =
+                Arc::new(PimService { http: Some(http), ..PimService::with_settings(SettingsStore::without_file()) });
+            let slot = slot_on(base);
+            (service, slot)
+        };
+
+        // 403: the app password works, the place takes no new list (task G.9b).
+        let (base, record) = fake_server(making_lists(0, 403)).await;
+        let (service, slot) = with_network(&base);
+        service.state.write().await.accounts.push(slot);
+        let refused = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(
+            refused,
+            error("error", torro_pim_caldav::write::NO_NEW_LISTS_HERE.into()),
+            "no `auth`, so no \"sign in again\""
+        );
+        assert!(!wipe_checked_on(&record), "no remote wipe check: {:?}", lines(&record));
+        assert!(!service.state.read().await.accounts[0].wipe_checked);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1, "the account stays");
+
+        // 401 refuses the app password: that one asks.
+        let (base, record) = fake_server(making_lists(0, 401)).await;
+        let (service, slot) = with_network(&base);
+        service.state.write().await.accounts.push(slot);
+        let refused = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&refused), "auth", "{refused:?}");
+        assert!(wipe_checked_on(&record), "the remote wipe check ran: {:?}", lines(&record));
+    }
+
+    // What the filter list dialog reads of GitHub (task G.9b).
+
+    const GITHUB_ACCOUNT: &str = "github:mahype";
+
+    fn repo_list(name: &str) -> Vec<GitHubRepo> {
+        vec![GitHubRepo { repo: name.into(), private: false }]
+    }
+
+    /// Reads the repositories of [`GITHUB_ACCOUNT`] through the cache, with `fetch` as GitHub.
+    async fn read_repos<Fut>(service: &PimService, fetch: impl FnOnce() -> Fut) -> Vec<GitHubRepo>
+    where
+        Fut: Future<Output = Result<Vec<GitHubRepo>, torro_pim_github::Error>>,
+    {
+        service
+            .read_through(GITHUB_ACCOUNT, |slot| slot.repos.clone(), fetch, |slot, repos| slot.repos = Some(repos))
+            .await
+            .expect("repositories")
+    }
+
+    /// The repositories the cache holds for [`GITHUB_ACCOUNT`]; `None` without a slot too.
+    async fn held_repos(service: &PimService) -> Option<Vec<GitHubRepo>> {
+        let state = service.state.read().await;
+        state.filters.iter().find(|slot| slot.account == GITHUB_ACCOUNT).and_then(|slot| slot.repos.clone())
+    }
+
+    #[tokio::test]
+    async fn a_github_answer_from_before_a_refresh_is_not_kept() {
+        let service = service();
+        service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+
+        let old = read_repos(&service, || async {
+            // The filter lists are refreshed while GitHub answers.
+            service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+            Ok(repo_list("mahype/old"))
+        })
+        .await;
+        assert_eq!(old, repo_list("mahype/old"), "the asker still gets its answer");
+        assert_eq!(held_repos(&service).await, None, "older than the refresh, so not kept");
+
+        let new = read_repos(&service, || async { Ok(repo_list("mahype/new")) }).await;
+        assert_eq!(new, repo_list("mahype/new"));
+        assert_eq!(held_repos(&service).await, Some(repo_list("mahype/new")), "kept when nothing came between");
+        let held = read_repos(&service, || async { panic!("GitHub is not asked again") }).await;
+        assert_eq!(held, repo_list("mahype/new"));
+    }
+
+    #[tokio::test]
+    async fn a_github_answer_for_a_removed_account_leaves_no_slot_behind() {
+        let service = service();
+        service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+        read_repos(&service, || async {
+            service.forget_filter_lists(GITHUB_ACCOUNT).await;
+            Ok(repo_list("mahype/old"))
+        })
+        .await;
+        assert!(!service.has_filter_slot(GITHUB_ACCOUNT).await, "no slot made again for a removed account");
+
+        // Removed and connected again meanwhile: a new slot, which the old answer does not reach.
+        service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+        read_repos(&service, || async {
+            service.forget_filter_lists(GITHUB_ACCOUNT).await;
+            service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+            Ok(repo_list("mahype/old"))
+        })
+        .await;
+        assert_eq!(held_repos(&service).await, None);
+
+        // Before the account's first refresh there is no slot: answered, nothing kept.
+        let service = self::service();
+        assert_eq!(read_repos(&service, || async { Ok(repo_list("mahype/x")) }).await, repo_list("mahype/x"));
+        assert!(!service.has_filter_slot(GITHUB_ACCOUNT).await);
+    }
+
+    #[test]
+    fn at_most_so_many_repositories_are_described_the_oldest_go_first() {
+        let mut state = State::default();
+        let slot = state.filter_slot_mut(GITHUB_ACCOUNT);
+        let details = |n: usize| GitHubRepoDetails { repo: format!("o/r{n}"), ..GitHubRepoDetails::default() };
+        for n in 0..=MAX_DESCRIBED {
+            slot.describe(format!("o/r{n}"), details(n));
+        }
+        assert_eq!(slot.described.len(), MAX_DESCRIBED);
+        assert_eq!(slot.described("o/r0"), None, "the oldest went");
+        assert_eq!(slot.described("o/r1"), Some(details(1)));
+        assert_eq!(slot.described(&format!("o/r{MAX_DESCRIBED}")), Some(details(MAX_DESCRIBED)));
+
+        // Described again: newest, and still once.
+        slot.describe("o/r1".into(), details(1));
+        slot.describe("o/new".into(), details(0));
+        assert_eq!(slot.described.len(), MAX_DESCRIBED);
+        assert_eq!(slot.described("o/r1"), Some(details(1)), "kept as the newest");
+        assert_eq!(slot.described("o/r2"), None);
     }
 }

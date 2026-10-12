@@ -1091,9 +1091,10 @@ static LIST_GITHUB_REPOS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists the repositories a GitHub account (`github:<login>`) reaches: its own, those it \
                   collaborates on and those of its organisations, without archived ones, the most recently \
-                  changed first, each as `owner/name` with whether it is private. Use a `repo` from here in \
-                  describe_github_repo and in the `repo:` of a filter list's search. A key limited to some \
-                  repositories sees only those. Kept until the next refresh (five minutes or accounts.sync).",
+                  changed first and at most 1,000 repositories, each as `owner/name` with whether it is private. \
+                  Use a `repo` from here in describe_github_repo and in the `repo:` of a filter list's search. A \
+                  key limited to some repositories sees only those. Kept until the next refresh (five minutes or \
+                  accounts.sync).",
 };
 
 static DESCRIBE_GITHUB_REPO: Command = Command {
@@ -1103,8 +1104,9 @@ static DESCRIBE_GITHUB_REPO: Command = Command {
     mcp: Mcp::Tool,
     description: "Returns what can be picked in one repository (`owner/name`) of a GitHub account: its labels \
                   with their colours, its open milestones and the logins issues can be assigned to, at most 100 \
-                  of each, for the `label:`, `milestone:` and `assignee:` of a filter list's search. A repository \
-                  GitHub does not have, or one outside a key's repositories, is `not-found`.",
+                  of each, for the `label:`, `milestone:` and `assignee:` of a filter list's search. Works for \
+                  any repository the account's token can read, not only those list_github_repos returns. A \
+                  repository GitHub does not have, or one outside a key's repositories, is `not-found`.",
 };
 
 static UNPIN_ISSUE: Command = Command {
