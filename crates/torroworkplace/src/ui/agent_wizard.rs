@@ -9,8 +9,9 @@
 //!    found, faded with "Not found". Detection runs in the shell ([`client_setup::Job::Detect`]);
 //!    until it answers the step says it is looking.
 //! 2. **Rights:** "Read only", "Read and write" (chosen at first) or "Full access", and the note
-//!    that areas, calendars, lists, inbox sources and approvals can be narrowed on the agent's page
-//!    afterwards. A script also needs a name: it is its inbox source (`script:<name>`), so it must
+//!    that areas, calendars, lists, inbox sources, mail accounts and approvals can be narrowed on
+//!    the agent's page afterwards, and that sending mail asks first whichever template is chosen
+//!    ([`Outbound::WithApproval`] in all of them). A script also needs a name: it is its inbox source (`script:<name>`), so it must
 //!    differ from every other script and from `cli` – checked here first (the message shows after
 //!    the first "Create key", `torro-design` 5) and by the core. For Claude Code, Codex and Gemini
 //!    CLI a check box "Report to Inbox when waiting or done", ticked at first (task E2.3).
@@ -46,6 +47,8 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::{dialog, style, typo, widgets};
 use torro_inbox::AgentKind;
+#[cfg(doc)]
+use torro_ipc::api::Outbound;
 use torro_ipc::api::{HOOK_CLIENT, RightsTemplate};
 use torro_ipc::{IssuedKey, Request, Response};
 
@@ -481,13 +484,24 @@ fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             pressable(row, Some(Message::Template(template)))
         })
         .collect();
-    let footer =
-        tr("Areas, calendars, lists, inbox sources and what needs your approval can be narrowed on its page later.");
-    page = page.push(widgets::group(tr("Access"), rows, Some(footer.to_string())));
+    page = page.push(widgets::group(tr("Access"), rows, Some(rights_footer())));
     match state.choice {
         Some(Choice::Agent(target)) if target.agent().is_some() => page.push(inbox_group(state)).into(),
         _ => page.into(),
     }
+}
+
+/// The sentence under the templates: what can be narrowed later, and that no template lets an
+/// agent send mail unasked (task M3.4: every template leaves "Send on my behalf" at "Ask me each
+/// time"; "Full access" would otherwise suggest the opposite).
+fn rights_footer() -> String {
+    format!(
+        "{} {}",
+        tr(
+            "Areas, calendars, lists, inbox sources, mail accounts and what needs your approval can be narrowed on its page later."
+        ),
+        tr("Sending mail always asks you first.")
+    )
 }
 
 /// The check box "Report to Inbox when waiting or done"; the whole row ticks it.
@@ -691,6 +705,16 @@ mod tests {
             rights: RightsTemplate::ReadAndWrite.rights(),
             agent: None,
         }
+    }
+
+    #[test]
+    fn every_template_sends_mail_only_after_asking_and_the_step_says_so() {
+        for template in RightsTemplate::ALL {
+            assert_eq!(template.rights().outbound, torro_ipc::api::Outbound::WithApproval, "{template:?}");
+        }
+        assert!(rights_footer().contains(tr("Sending mail always asks you first.")));
+        let state = detected();
+        drop(rights_step(&state, &Data::default()));
     }
 
     fn key_answer(id: &str, name: &str, kind: &str) -> Result<Response, String> {

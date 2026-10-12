@@ -362,7 +362,7 @@ ihre Texte im Bericht.
   nachgeholt; Empfänger stehen nicht im Protokoll.
 
 ### M3.4 Agents & API: Mail-Rechte
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.1 · **Dateien:** `crates/torroworkplace/src/ui/{agents,agent_wizard}.rs`
 - **Oberfläche:** Auf der Karte je Agent der Bereich „Mail“ (none/read/write/full) mit Auswahl der Konten wie bei
   Kalendern; darunter „Send on my behalf“: Never / Ask me each time / Always. Bei „Always“ ein Hinweis: Mails können
