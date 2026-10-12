@@ -651,7 +651,10 @@ impl PimService {
             | Request::CreateClient { .. }
             | Request::UpdateClient { .. }
             | Request::NewClientKey { .. }
-            | Request::RemoveClient { .. } => return None,
+            | Request::RemoveClient { .. }
+            | Request::ListApprovals
+            | Request::ApprovalStatus { .. }
+            | Request::DecideApproval { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

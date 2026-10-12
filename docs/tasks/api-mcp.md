@@ -136,7 +136,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Katalog- und Vertragstests grün.
 
 ### A.3 Freigaben
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** A.2, A.4 · **Dateien:** `crates/torroworkplace/src/approvals.rs` (neu), `crates/torroworkplace/src/mcp.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/account.rs`
 - Offene Freigaben in `approvals.json`, Ablauf nach 10 Minuten, `pending`-Antwort mit
   Zusammenfassung, `approvals.list/status/decide` (decide nur App-Schlüssel), Benachrichtigung mit

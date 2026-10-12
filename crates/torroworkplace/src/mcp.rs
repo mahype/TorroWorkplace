@@ -23,6 +23,12 @@
 //! Errors of the core come back as tool errors (`isError: true`) with its `code` and `message`,
 //! so the agent reads them; only an unknown tool is a protocol error.
 //!
+//! A command that waits for a person's approval (`pending`) is not answered at once: the tool asks
+//! the core every second with `approvals.approval_status` for up to 60 seconds and then returns the
+//! command's answer, or `denied`/`expired` as a tool error. Without a decision by then it returns
+//! the tool error `pending` ("waiting for approval") with the approval's id, so the agent can ask
+//! later with `approvals_approval_status`. The tool never decides: only a person can.
+//!
 //! The server starts the core like the apps do, but only in a desktop session
 //! ([`desktop_session`]): a core started from an SSH login or a container would run without
 //! the window manager and tray the person expects.
@@ -45,7 +51,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use torro_ipc::api::{Access, Area, CATALOGUE, Command, Mcp};
-use torro_ipc::{IpcError, Key, Request, Response, client, socket_path};
+use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response, client, socket_path};
 use torro_pim::{Event, EventTime, Todo};
 
 /// The environment variable that holds the agent's client key.
@@ -60,6 +66,12 @@ const KEY_HINT: &str = "Torro Workplace needs a client key for this agent: creat
 /// no second one is started.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a tool waits for a person to decide on its command (`docs/api.md`, "Freigaben").
+const APPROVAL_WAIT: Duration = Duration::from_secs(60);
+
+/// How often a waiting tool asks the core whether a person decided.
+const APPROVAL_POLL: Duration = Duration::from_secs(1);
+
 /// The answer when no core runs and none may be started here.
 const NO_DESKTOP: &str = "cannot reach the Torro Workplace core: start Torro Workplace in your desktop session";
 
@@ -69,8 +81,10 @@ const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, task
                             key: `forbidden` means the rights do not cover it (ask the person to change them in \
                             Torro Workplace, Agents & API), `not-found` also stands for calendars and task lists \
                             this agent may not see. GitHub filter lists show only issues and pull requests of the \
-                            repositories granted to this agent. Until people can approve single commands, admin tools \
-                            (accounts, settings) and deleting are refused for agents with `forbidden`. To change \
+                            repositories granted to this agent. Commands the person wants to approve first (always \
+                            the admin tools for accounts and settings, often deleting) wait for their decision: \
+                            the tool waits up to a minute, then answers `pending` with the approval's id; ask \
+                            later with approvals_approval_status. Only the person can approve. To change \
                             an event or a task, pass the full item as list_events or list_todos returned it, with \
                             your changes; the short forms of save_event and save_todo only create.";
 
@@ -135,6 +149,8 @@ pub struct TorroMcp {
     start_core: bool,
     /// When this server last started the core, so a burst of calls starts it once.
     started: Mutex<Option<Instant>>,
+    /// How long a call waits for a person's decision ([`APPROVAL_WAIT`]; shorter in tests).
+    approval_wait: Duration,
 }
 
 impl TorroMcp {
@@ -143,7 +159,14 @@ impl TorroMcp {
     /// ([`TorroMcp::start_core`]) and waits for it up to 10 seconds; without, it answers that
     /// the person should start Torro Workplace in their desktop session.
     pub fn new(socket: PathBuf, key: Option<Key>, start_core: bool) -> TorroMcp {
-        TorroMcp { socket, key, start_core, started: Mutex::new(None) }
+        TorroMcp { socket, key, start_core, started: Mutex::new(None), approval_wait: APPROVAL_WAIT }
+    }
+
+    /// The server waiting `wait` instead of a minute for a person's decision.
+    #[cfg(test)]
+    fn with_approval_wait(mut self, wait: Duration) -> TorroMcp {
+        self.approval_wait = wait;
+        self
     }
 
     /// Starts the core unless it runs ([`torro_gui::source::ensure_core`]), but only when
@@ -170,6 +193,7 @@ impl TorroMcp {
 
     /// One tool call: builds the request, sends it, turns the answer into a tool result. `Err`
     /// only for a tool that does not exist; bad input and every answer of the core are `Ok`.
+    /// An answer `pending` waits for the person's decision first ([`TorroMcp::wait_for_decision`]).
     pub async fn call(&self, name: &str, arguments: JsonObject) -> Result<CallToolResult, McpError> {
         let request = match request_for(name, arguments, &Local) {
             Ok(request) => request,
@@ -179,10 +203,47 @@ impl TorroMcp {
             Err(ToolError::Input(message)) => return Ok(failure("error", &format!("invalid input: {message}"))),
         };
         Ok(match self.send(&request).await {
+            Ok(Response::Pending { approval }) => self.wait_for_decision(approval).await,
             Ok(response) => result_of(response),
             Err(IpcError::NotRunning) if !self.start_core => failure("error", NO_DESKTOP),
             Err(err) => failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
         })
+    }
+
+    /// Asks the core every second whether a person decided on `approval`, for up to
+    /// [`APPROVAL_WAIT`]: the command's answer once it ran, a tool error when it was denied or
+    /// expired, and the tool error `pending` with the id when nobody decided in time. Only reads
+    /// (`approvals.approval_status` with the agent's own key); it never decides.
+    async fn wait_for_decision(&self, approval: ApprovalInfo) -> CallToolResult {
+        let deadline = tokio::time::Instant::now() + self.approval_wait;
+        let mut latest = approval;
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return waiting(&latest);
+            }
+            tokio::time::sleep(APPROVAL_POLL.min(deadline - now)).await;
+            let status = Request::ApprovalStatus { id: latest.id.clone() };
+            match self.send(&status).await {
+                Ok(Response::Approval { approval }) => match approval.state {
+                    ApprovalState::Pending | ApprovalState::Running => latest = approval,
+                    ApprovalState::Done { response } => return result_of(*response),
+                    ApprovalState::Denied => {
+                        return failure("forbidden", "a person denied this command; it did not run");
+                    }
+                    ApprovalState::Expired => {
+                        return failure(
+                            "error",
+                            "nobody approved this command within ten minutes; it did not run. Call the tool again if \
+                             it is still needed.",
+                        );
+                    }
+                },
+                // The key was revoked meanwhile, say, or the approval is gone.
+                Ok(other) => return result_of(other),
+                Err(err) => return failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
+            }
+        }
     }
 
     /// Sends `request` with the agent's key; when the core is not running and may be started
@@ -283,7 +344,8 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   events and tasks, which overwrite the item on the server when they change it.
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
-///   `apps`); calendar, tasks and accounts talk to servers, so their hint is left open.
+///   `apps`, `approvals`); calendar, tasks and accounts talk to servers, so their hint is left
+///   open.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -293,7 +355,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         .destructive(destructive)
         .idempotent(read_only || IDEMPOTENT.contains(&command.name));
     match command.area {
-        Area::System | Area::Workspaces | Area::Settings | Area::Apps => hints.open_world(false),
+        Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals => hints.open_world(false),
         _ => hints,
     }
 }
@@ -401,6 +463,22 @@ pub fn result_of(response: Response) -> CallToolResult {
             Err(err) => failure("error", &format!("cannot read the core's answer: {err}")),
         },
     }
+}
+
+/// The tool error for a command that still waits for a person: code `pending`, with the approval
+/// so the agent can ask again with its id.
+fn waiting(approval: &ApprovalInfo) -> CallToolResult {
+    let message = format!(
+        "waiting for approval: a person has to allow \"{}\" in Torro Workplace. It has not run yet. Ask later with \
+         approvals_approval_status and id {:?}; it expires at {}.",
+        approval.summary,
+        approval.id,
+        approval.expires.to_rfc3339()
+    );
+    let mut result =
+        CallToolResult::structured_error(json!({ "code": "pending", "message": message, "approval": approval }));
+    result.content = vec![ContentBlock::text(format!("pending: {message}"))];
+    result
 }
 
 /// A tool error the agent reads: `code: message` as text, `{code, message}` as structured content.
@@ -699,7 +777,8 @@ mod tests {
             if matches!(command.access, Access::Delete | Access::Admin) {
                 assert_eq!(hints.destructive_hint, Some(true), "{}", tool.name);
             }
-            let local = matches!(command.area, Area::System | Area::Workspaces | Area::Settings | Area::Apps);
+            let local =
+                matches!(command.area, Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
@@ -1071,19 +1150,23 @@ mod tests {
         }
 
         /// A core over `dir` listening on `dir/core.sock`, with two clients: read and write, and read
-        /// only. Nothing of the user's: templates, settings, keys and keychain live in `dir`.
+        /// only. Nothing of the user's: templates, settings, keys, keychain and approvals live in
+        /// `dir`, and approvals show no notification.
         async fn start_core(dir: &std::path::Path) -> (PathBuf, Key, Key) {
             let clients = crate::clients::tests::open_in(dir);
             let (_, writer) =
                 clients.add("Writer", "claude-code", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
             let (_, reader) = clients.add("Reader", "script", RightsTemplate::ReadOnly.rights()).await.expect("added");
             let settings = SettingsStore::at(dir.join("config").join("settings.json"));
-            let core = Arc::new(Core::new(
-                Backend::Unsupported { name: "test".into() },
-                Store::at(dir.to_path_buf()),
-                Arc::new(PimService::with_settings(settings)),
-                clients,
-            ));
+            let core = Arc::new(
+                Core::new(
+                    Backend::Unsupported { name: "test".into() },
+                    Store::at(dir.to_path_buf()),
+                    Arc::new(PimService::with_settings(settings)),
+                    clients,
+                )
+                .with_approvals(crate::approvals::tests::quiet_in(dir)),
+            );
             let socket = dir.join("core.sock");
             let path = socket.clone();
             tokio::spawn(async move {
@@ -1189,15 +1272,89 @@ mod tests {
             assert_eq!(written["isError"], false, "{written}");
             assert_eq!(written["structuredContent"]["template"]["name"], "Focus");
 
-            // Deleting needs a person's approval with these rights, which the core cannot ask for yet.
-            let delete = session.call("workspaces_delete_template", json!({"id": "dev"})).await;
-            assert_eq!(delete["isError"], true, "{delete}");
-            assert_eq!(delete["structuredContent"]["code"], "forbidden");
-
             let mut read_only = Session::start(TorroMcp::new(socket, Some(reader), false)).await;
             let refused = read_only.call("workspaces_rename_template", json!({"id": "dev", "name": "Mine"})).await;
             assert_eq!(refused["isError"], true, "{refused}");
             assert_eq!(refused["structuredContent"]["code"], "forbidden");
+        }
+
+        /// What the app key, i.e. a person in the control centre, decides on `id`.
+        async fn person_decides(dir: &std::path::Path, socket: &std::path::Path, id: &str, allow: bool) -> Response {
+            let app_key = crate::clients::tests::app_key(dir);
+            let request = Request::DecideApproval { id: id.into(), allow };
+            client::call_with_key(socket, Some(&app_key), &request).await.expect("the core answers")
+        }
+
+        #[tokio::test]
+        async fn a_tool_waiting_for_approval_answers_pending_with_the_id_and_the_outcome_comes_later() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            save_template(dir.path(), "dev", "Dev");
+            let (socket, writer, _) = start_core(dir.path()).await;
+            let server =
+                TorroMcp::new(socket.clone(), Some(writer), false).with_approval_wait(Duration::from_millis(300));
+            let mut session = Session::start(server).await;
+
+            // Deleting needs a person's approval with these rights; nobody decides in time.
+            let delete = session.call("workspaces_delete_template", json!({"id": "dev"})).await;
+            assert_eq!(delete["isError"], true, "{delete}");
+            assert_eq!(delete["structuredContent"]["code"], "pending", "{delete}");
+            let id = delete["structuredContent"]["approval"]["id"].as_str().expect("the approval's id").to_string();
+            assert!(delete["content"][0]["text"].as_str().is_some_and(|text| text.contains(&id)), "{delete}");
+
+            // The agent's own tool cannot decide; there is none.
+            let unknown =
+                session.request("tools/call", json!({"name": "approvals_decide_approval", "arguments": {}})).await;
+            assert!(unknown.get("error").is_some(), "{unknown}");
+
+            assert!(matches!(person_decides(dir.path(), &socket, &id, true).await, Response::Approval { .. }));
+            let status = session.call("approvals_approval_status", json!({"id": id})).await;
+            assert_eq!(status["isError"], false, "{status}");
+            assert_eq!(status["structuredContent"]["approval"]["state"], "done");
+            assert_eq!(status["structuredContent"]["approval"]["response"]["result"], "ok");
+            let listed = session.call("workspaces_list_templates", json!({})).await;
+            assert_eq!(listed["structuredContent"]["templates"], json!([]), "deleted once allowed");
+        }
+
+        #[tokio::test]
+        async fn a_tool_returns_the_answer_when_a_person_decides_while_it_waits() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            save_template(dir.path(), "dev", "Dev");
+            save_template(dir.path(), "focus", "Focus");
+            let (socket, writer, _) = start_core(dir.path()).await;
+            let server = TorroMcp::new(socket.clone(), Some(writer), false).with_approval_wait(Duration::from_secs(20));
+            let mut session = Session::start(server).await;
+
+            // A person allows whatever waits, as soon as it shows up.
+            let decide_all = |allow: bool| {
+                let (dir, socket) = (dir.path().to_path_buf(), socket.clone());
+                tokio::spawn(async move {
+                    let app_key = crate::clients::tests::app_key(&dir);
+                    for _ in 0..200 {
+                        let listed = client::call_with_key(&socket, Some(&app_key), &Request::ListApprovals).await;
+                        if let Ok(Response::Approvals { approvals }) = listed
+                            && let Some(open) = approvals.iter().find(|a| a.state == ApprovalState::Pending)
+                        {
+                            person_decides(&dir, &socket, &open.id, allow).await;
+                            return;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+            };
+
+            let deciding = decide_all(true);
+            let delete = session.call("workspaces_delete_template", json!({"id": "dev"})).await;
+            deciding.await.expect("decided");
+            assert_eq!(delete["isError"], false, "{delete}");
+            assert_eq!(delete["structuredContent"]["result"], "ok", "the command's own answer");
+
+            let deciding = decide_all(false);
+            let denied = session.call("workspaces_delete_template", json!({"id": "focus"})).await;
+            deciding.await.expect("decided");
+            assert_eq!(denied["isError"], true, "{denied}");
+            assert_eq!(denied["structuredContent"]["code"], "forbidden");
+            let listed = session.call("workspaces_list_templates", json!({})).await;
+            assert_eq!(listed["structuredContent"]["templates"][0]["id"], "focus", "denied: still there");
         }
 
         #[tokio::test]

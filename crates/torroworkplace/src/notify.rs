@@ -1,9 +1,12 @@
 //! Desktop notifications for template commands: "Template saved", "Template loaded" and
 //! the failures (translated with `torro_core::i18n`). [`message`] decides what to say, [`show`] puts it on the desktop without
 //! ever blocking the daemon.
+//!
+//! And the question to the person when an agent's command waits for approval ([`ask`]): the
+//! summary with "Allow" and "Deny" (task A.3).
 
 use torro_core::i18n::{tr, trf};
-use torro_ipc::Response;
+use torro_ipc::{ApprovalInfo, Response};
 
 /// The app name shown with each notification.
 const APP_NAME: &str = "Torro Workplace";
@@ -54,6 +57,73 @@ pub fn show(summary: String, body: String) {
             eprintln!("torroworkplace: cannot show notification: {err}");
         }
     });
+}
+
+/// The title and body of the question for `approval`: who asks, and what would happen. Both hold
+/// text the client chose (its name, the titles in the summary): [`ask`] shows them as plain text.
+pub fn question(approval: &ApprovalInfo) -> (String, String) {
+    (trf("{client} asks for approval", &[("client", &approval.client_name)]), approval.summary.clone())
+}
+
+/// Asks the person about `approval` on a thread of its own and calls `decide` with their answer:
+/// `true` for "Allow", `false` for "Deny". Closing the notification, or clicking it anywhere else,
+/// decides nothing; the approval then waits in the control centre until it expires, and so does
+/// the notification.
+///
+/// Linux and the BSDs show the buttons. macOS and Windows show the question without them (their
+/// notifications need an app bundle or identity for buttons), so the person decides in the control
+/// centre there.
+pub fn ask(approval: &ApprovalInfo, decide: impl FnOnce(bool) + Send + 'static) {
+    let (summary, body) = question(approval);
+    let lasts = (approval.expires - chrono::Utc::now()).to_std().unwrap_or_default();
+    std::thread::spawn(move || {
+        if let Err(err) = send_question(&summary, &body, lasts, decide) {
+            eprintln!("torroworkplace: cannot show notification: {err}");
+        }
+    });
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn send_question(
+    summary: &str,
+    body: &str,
+    lasts: std::time::Duration,
+    decide: impl FnOnce(bool),
+) -> notify_rust::error::Result<()> {
+    let millis = u32::try_from(lasts.as_millis()).unwrap_or(u32::MAX);
+    notify_rust::Notification::new()
+        .appname(APP_NAME)
+        // The summary is plain text by the specification; only the body may carry markup.
+        .summary(summary)
+        .body(&plain(body))
+        .action("allow", tr("Allow"))
+        .action("deny", tr("Deny"))
+        .timeout(notify_rust::Timeout::Milliseconds(millis))
+        .show()?
+        .wait_for_action(|action| match action {
+            "allow" => decide(true),
+            "deny" => decide(false),
+            // "default" (a click on the notification itself) and "__closed" decide nothing.
+            _ => {}
+        });
+    Ok(())
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn send_question(
+    summary: &str,
+    body: &str,
+    _lasts: std::time::Duration,
+    _decide: impl FnOnce(bool),
+) -> notify_rust::error::Result<()> {
+    send(summary, body)
+}
+
+/// `text` for a notification server that may read markup in the body (`<b>`, `<a href>`): `&`,
+/// `<` and `>` as entities, so a client's text shows as written and never becomes a link.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn plain(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn send(summary: &str, body: &str) -> notify_rust::error::Result<()> {
@@ -135,6 +205,32 @@ mod tests {
     fn queries_get_no_notification() {
         assert_eq!(message("ping", &Response::Pong { version: "0.0.1".into(), api: torro_ipc::API_VERSION }), None);
         assert_eq!(message("list", &Response::Templates { templates: vec![] }), None);
+    }
+
+    #[test]
+    fn the_question_names_the_client_and_what_would_happen() {
+        let at = chrono::Utc::now();
+        let approval = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "c1".into(),
+            client_name: "Claude Code".into(),
+            command: "workspaces.delete_template".into(),
+            summary: "Delete template \"dev\"".into(),
+            created: at,
+            expires: at,
+            decided: None,
+            state: torro_ipc::ApprovalState::Pending,
+        };
+        assert_eq!(
+            question(&approval),
+            (trf("{client} asks for approval", &[("client", &"Claude Code")]), "Delete template \"dev\"".to_string())
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn client_text_never_becomes_markup() {
+        assert_eq!(plain("<a href=\"x\">Tom & Jerry</a>"), "&lt;a href=\"x\"&gt;Tom &amp; Jerry&lt;/a&gt;");
     }
 
     /// Shows one real notification. Run by hand: `cargo test -p torroworkplace -- --ignored`.

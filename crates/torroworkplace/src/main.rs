@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use torro_core::AppId;
 
 mod account;
+mod approvals;
 mod apps;
 mod cli;
 mod clients;

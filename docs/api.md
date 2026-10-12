@@ -93,6 +93,10 @@ Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur 
 `accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)
 ermittelt künftig der Dienst, nicht mehr die Steuerzentrale.
 
+`approvals` hat wie `system` keine Stufe in den Rechten: Jeder gültige Schlüssel liest seine
+**eigenen** Freigaben (ein Agent muss erfahren können, wie sein Befehl ausging), der App-Schlüssel
+alle. Entscheiden kann nur der App-Schlüssel.
+
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine
 Sammlung einblendet, erweitert, was Agenten sehen.
@@ -112,7 +116,9 @@ Neue Bereiche kommen mit ihren Funktionen dazu (`github`, `slack`, `contacts` �
 - MCP-Tools dürfen bequemere Eingaben haben als der Request (z. B. `calendar_create_event` mit
   Titel, Beginn, Ende statt eines ganzen `Event`), solange sie auf **einen** Request abbilden.
 - Fehler behalten die festen `code`s (`not-found`, `conflict` …). Neu: `unauthorized` (kein oder
-  falscher Schlüssel), `forbidden` (Recht fehlt), `pending` (wartet auf Freigabe).
+  falscher Schlüssel), `forbidden` (Recht fehlt). Ein Befehl, der auf eine Freigabe wartet, ist
+  kein Fehler: Er wird mit `result: "pending"` und der Freigabe (Kennung, Zusammenfassung, Ablauf)
+  beantwortet (A.3).
 
 ## Anmeldung
 
@@ -211,7 +217,13 @@ freigeben. Das machen wir anders:
    Abschnitt „Approvals“ der Steuerzentrale. Nur der App-Schlüssel kann entscheiden.
 4. Das MCP-Tool wartet bis zu 60 Sekunden auf die Entscheidung und gibt dann das Ergebnis zurück.
    Dauert es länger, antwortet es „waiting for approval“ mit der Kennung; der Agent fragt später
-   mit `approvals_status` nach.
+   mit `approvals_approval_status` nach.
+5. Bei „Allow“ prüft der Dienst Rechte und Reichweite des Clients **zum Zeitpunkt der
+   Entscheidung** erneut und führt den Befehl dann aus; die Antwort steht danach in der Freigabe.
+   Entschiedene und abgelaufene Freigaben bleiben einen Tag lesbar. Ein Client kann höchstens zehn
+   Freigaben gleichzeitig offen haben (sonst `busy`), damit er den Menschen nicht mit
+   Benachrichtigungen überschüttet. Befehle aus „Was nie nach außen geht“ werden nie zu einer
+   Freigabe.
 
 Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](app-catalog.md).
 

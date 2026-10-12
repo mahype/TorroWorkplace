@@ -122,9 +122,10 @@ pub enum Refused {
     /// A known client whose rights do not cover the command, or a `clients` command from a
     /// client key: error code `forbidden`.
     Forbidden { command: &'static str },
-    /// The rights cover the command, but it must wait for a person's approval
-    /// ([`Rights::needs_approval`]). Until approvals exist (A.3) the core cannot ask, so the
-    /// command is refused with `forbidden`; A.3 answers `pending` instead.
+    /// The rights cover the command and it must wait for a person's approval
+    /// ([`Rights::needs_approval`]), but the core could not record the approval
+    /// (`approvals.json` cannot be written): error code `forbidden`, nothing runs. Normally the
+    /// core answers `pending` instead ([`crate::approvals`]).
     NeedsApproval { command: &'static str },
 }
 
@@ -135,7 +136,7 @@ impl Refused {
             Refused::Unauthorized { command } => ("unauthorized", format!("{command} needs a valid key")),
             Refused::Forbidden { command } => ("forbidden", format!("this client may not use {command}")),
             Refused::NeedsApproval { command } => {
-                ("forbidden", format!("{command} needs a person's approval, which this core cannot ask for yet"))
+                ("forbidden", format!("{command} needs a person's approval, which the core cannot ask for now"))
             }
         };
         Response::Error { code: code.into(), message }
@@ -779,7 +780,7 @@ fn read_clients(file: &Path) -> Result<Vec<Entry>, ClientsError> {
 }
 
 /// Writes `bytes` to `path` atomically, readable and writable only by the owner on Unix.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), ClientsError> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), ClientsError> {
     let tmp = write_temporary(path, bytes)?;
     fs::rename(&tmp, path).map_err(|err| {
         let _ = fs::remove_file(&tmp);
@@ -815,7 +816,7 @@ fn write_temporary(path: &Path, bytes: &[u8]) -> Result<PathBuf, ClientsError> {
 }
 
 /// Creates `dir` and its missing parents; on Unix the ones it creates are for the owner only.
-fn create_private_dir(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -1099,8 +1100,8 @@ pub(crate) mod tests {
                     let allowed = match (command.area, command.access) {
                         // Kept from agents means for the app key only (`Rights::allows`).
                         _ if command.mcp == Mcp::Never => false,
-                        (Area::System, Access::Admin) => false,
-                        (Area::System, _) => true,
+                        (Area::System | Area::Approvals, Access::Admin) => false,
+                        (Area::System | Area::Approvals, _) => true,
                         (Area::Clients, _) => false,
                         (_, Access::Admin) => admin,
                         (_, Access::Read) => level != Level::NoAccess,

@@ -2,10 +2,12 @@
 //! centre, the apps, scripts and agents) and the tray menu. Each [`Request`] gets one
 //! [`Response`]; the logic exists only here. Requests from the socket pass the key and rights
 //! check first ([`Core::handle_from`]); the tray menu runs inside the core and needs none.
+//! A client's command that needs a person's approval waits as an open approval
+//! ([`crate::approvals`]) and runs when the app key allows it (`approvals.decide_approval`).
 
 use std::sync::Arc;
 
-use chrono::Local;
+use chrono::{Local, Utc};
 use tokio::sync::Mutex;
 use torro_core::AppId;
 use torro_core::settings::ListOrderEntry;
@@ -19,6 +21,7 @@ use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
+use crate::approvals::{Approvals, ApprovalsError, Decision};
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
@@ -76,7 +79,8 @@ pub struct Snapshot {
 }
 
 /// The core's state: window manager, template store, settings, the keys that may talk to it,
-/// the GitHub accounts, and a lock so only one save or load runs at a time.
+/// the approvals they wait for, the GitHub accounts, and a lock so only one save or load runs at
+/// a time.
 pub struct Core {
     backend: Backend,
     store: Store,
@@ -84,6 +88,9 @@ pub struct Core {
     pim: Arc<PimService>,
     settings: SettingsStore,
     clients: Clients,
+    /// Client commands that wait for a person (task A.3): the user's `approvals.json`
+    /// ([`Approvals::system`]); tests keep theirs in a temporary directory.
+    approvals: Approvals,
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
@@ -96,7 +103,8 @@ impl Core {
     /// The core over `backend` and `store`. The settings are the ones `pim` reads
     /// ([`PimService::settings`]), so hiding a collection and filtering it use the same file.
     /// `clients` decides which keys get in ([`Core::handle_from`]). The GitHub accounts are the
-    /// user's ([`GithubAccounts::system`]), loaded only by [`Core::start`].
+    /// user's ([`GithubAccounts::system`]), loaded only by [`Core::start`]; so are the approvals
+    /// ([`Approvals::system`]), read on first use.
     pub fn new(backend: Backend, store: Store, pim: Arc<PimService>, clients: Clients) -> Core {
         let settings = pim.settings().clone();
         Core {
@@ -106,9 +114,17 @@ impl Core {
             pim,
             settings,
             clients,
+            approvals: Approvals::system(),
             github: Arc::new(GithubAccounts::system()),
             start_accounts: start_accounts_page,
         }
+    }
+
+    /// The core with `approvals` instead of the user's, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn with_approvals(mut self, approvals: Approvals) -> Core {
+        self.approvals = approvals;
+        self
     }
 
     /// Starts the background work [`Core::new`] leaves out: loads the GitHub accounts and checks
@@ -144,10 +160,14 @@ impl Core {
     /// 1. key and rights of the area ([`Clients::admit`]): `unauthorized` or `forbidden`;
     /// 2. for a client key, the collections a write or `set_collection_shown` touches: outside
     ///    its reach the answer is `not-found`, as if they did not exist;
-    /// 3. approval ([`torro_ipc::api::Rights::needs_approval`]): refused as
-    ///    [`Refused::NeedsApproval`] (`forbidden`) until approvals exist (A.3);
+    /// 3. approval ([`torro_ipc::api::Rights::needs_approval`]): the command is kept as an open
+    ///    approval and answered with [`Response::Pending`]; it has not run. When the approval
+    ///    cannot be stored, [`Refused::NeedsApproval`] (`forbidden`);
     /// 4. the command, which for a client key reads only what it may see
     ///    ([`Core::handle_within`]).
+    ///
+    /// A client's `approvals.list_approvals` and `approvals.approval_status` are answered after
+    /// step 1, with its own approvals only.
     ///
     /// `Err` when it was refused; the caller sends [`Refused::response`] and must not treat it as
     /// a command that ran (no notification, no refresh). A `not-found` from step 2 is an `Ok`
@@ -155,23 +175,98 @@ impl Core {
     ///
     /// Rights are read anew for every request: a change of rights, a new key or a removed client
     /// applies from the next request on, also in the middle of an agent's session. A request
-    /// that already passed runs with the rights it was admitted with.
-    ///
-    /// For A.3: when an approved command finally runs, steps 1 and 2 must be checked again with
-    /// the rights and collections of that moment, since both may have changed while it waited.
+    /// that already passed runs with the rights it was admitted with. An approved command runs
+    /// with the rights and collections of the moment a person allows it ([`Core::run_approved`]).
     pub async fn handle_from(&self, key: Option<&Key>, request: Request) -> Result<Response, Refused> {
-        let Caller::Client { rights, .. } = self.clients.admit(key, &request)? else {
+        let Caller::Client { id, rights } = self.clients.admit(key, &request)? else {
             return Ok(self.handle(request).await);
         };
+        // Which approvals there are depends on who asks, not on what it may see.
+        match &request {
+            Request::ListApprovals => return Ok(self.list_approvals(Some(&id)).await),
+            Request::ApprovalStatus { id: approval } => return Ok(self.approval_status(Some(&id), approval).await),
+            _ => {}
+        }
         let reach = Reach::Client(&rights);
         if let Some(collection) = self.out_of_reach(reach, &request).await {
             return Ok(no_collection(&collection));
         }
         let operation = request.operation();
         if rights.needs_approval(operation.access) {
-            return Err(Refused::NeedsApproval { command: operation.name() });
+            return self.ask_approval(&id, request).await;
         }
         Ok(self.handle_within(request, reach).await)
+    }
+
+    /// Keeps `request` of the client `client` as an open approval and answers `pending`; the
+    /// person is asked by notification ([`Approvals::open`]). `busy` when the client has too many
+    /// open already; refused with `forbidden` when the approval cannot be stored: the command
+    /// never runs without a person's yes.
+    async fn ask_approval(&self, client: &str, request: Request) -> Result<Response, Refused> {
+        let command = request.operation().name();
+        let name = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.name);
+        let summary = crate::approvals::summary(&request);
+        match self.approvals.open(client, &name.unwrap_or_default(), request, summary, Utc::now()).await {
+            Ok(approval) => Ok(Response::Pending { approval }),
+            Err(err @ ApprovalsError::TooMany) => Ok(err.response()),
+            Err(err) => {
+                eprintln!("torroworkplace: cannot ask for approval of {command}: {err}");
+                Err(Refused::NeedsApproval { command })
+            }
+        }
+    }
+
+    /// The approvals `client` may see: its own, or all for the app key (`None`).
+    async fn list_approvals(&self, client: Option<&str>) -> Response {
+        match self.approvals.list(client, Utc::now()).await {
+            Ok(approvals) => Response::Approvals { approvals },
+            Err(err) => err.response(),
+        }
+    }
+
+    async fn approval_status(&self, client: Option<&str>, id: &str) -> Response {
+        match self.approvals.status(client, id, Utc::now()).await {
+            Ok(approval) => Response::Approval { approval },
+            Err(err) => err.response(),
+        }
+    }
+
+    /// A person's decision (`approvals.decide_approval`, app key only). Allowed, the command runs
+    /// now ([`Core::run_approved`]) and its answer is kept in the approval.
+    async fn decide_approval(&self, id: &str, allow: bool) -> Response {
+        let (client, request) = match self.approvals.decide(id, allow, Utc::now()).await {
+            Ok(Decision::Run { client, request }) => (client, *request),
+            Ok(Decision::Denied(approval)) => return Response::Approval { approval },
+            Err(err) => return err.response(),
+        };
+        let response = self.run_approved(&client, request).await;
+        match self.approvals.finish(id, response, Utc::now()).await {
+            Ok(approval) => Response::Approval { approval },
+            Err(err) => err.response(),
+        }
+    }
+
+    /// Runs an allowed request of the client `client` with its rights and collections of now,
+    /// not of when it asked: steps 1 and 2 of [`Core::handle_from`] once more, since a person may
+    /// have narrowed the rights, removed the client or hidden a collection meanwhile. The approval
+    /// itself is not asked for again.
+    async fn run_approved(&self, client: &str, request: Request) -> Response {
+        let command = request.operation().name();
+        let rights = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.rights);
+        let Some(rights) = rights else {
+            let message = format!("the client that asked for {command} was removed meanwhile");
+            return Response::Error { code: "forbidden".into(), message };
+        };
+        if !rights.allows(request.operation()) {
+            return Refused::Forbidden { command }.response();
+        }
+        let reach = Reach::Client(&rights);
+        if let Some(collection) = self.out_of_reach(reach, &request).await {
+            return no_collection(&collection);
+        }
+        // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
+        // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
+        Box::pin(self.handle_within(request, reach)).await
     }
 
     /// Answers `request` without a key check, with all rights: for the tray menu inside the
@@ -332,6 +427,16 @@ impl Core {
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => done(self.clients.remove(&id).await),
+            // A client's own approvals are answered in `handle_from`, which knows who asks; here a
+            // client sees none, and it never decides.
+            Request::ListApprovals if client => Response::Approvals { approvals: Vec::new() },
+            Request::ApprovalStatus { id } if client => ApprovalsError::NotFound(id).response(),
+            Request::DecideApproval { .. } if client => {
+                Refused::Forbidden { command: "approvals.decide_approval" }.response()
+            }
+            Request::ListApprovals => self.list_approvals(None).await,
+            Request::ApprovalStatus { id } => self.approval_status(None, &id).await,
+            Request::DecideApproval { id, allow } => self.decide_approval(&id, allow).await,
         }
     }
 
@@ -615,7 +720,8 @@ mod tests {
 
     /// Templates in `dir`, settings in `dir/config/settings.json`, keys in `dir/state/app.key`
     /// and `dir/config/clients.json` with a keychain in memory, filter lists in
-    /// `dir/config/filter-lists.json`: nothing of the user's.
+    /// `dir/config/filter-lists.json`, approvals in `dir/state/approvals.json` without
+    /// notifications: nothing of the user's.
     fn core(dir: &std::path::Path) -> Core {
         let settings = SettingsStore::at(settings_file(dir));
         Core::new(
@@ -624,6 +730,7 @@ mod tests {
             Arc::new(PimService::with_filter_file(settings, filters_file(dir))),
             crate::clients::tests::open_in(dir),
         )
+        .with_approvals(crate::approvals::tests::quiet_in(dir))
     }
 
     /// What a client on the socket gets back for `request` with `key`.
@@ -763,31 +870,203 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&app_key), nameless).await), "error");
     }
 
+    /// The approval a `pending` answer names; panics on any other answer.
+    fn waits(response: Response) -> torro_ipc::ApprovalInfo {
+        match response {
+            Response::Pending { approval } => approval,
+            other => panic!("expected pending, got {other:?}"),
+        }
+    }
+
+    /// The approval an answer of `approval_status` or `decide_approval` names.
+    fn approval(response: Response) -> torro_ipc::ApprovalInfo {
+        match response {
+            Response::Approval { approval } => approval,
+            other => panic!("expected an approval, got {other:?}"),
+        }
+    }
+
+    /// The template `id` in the core's store, with no windows.
+    fn save_template(core: &Core, id: &str) {
+        let now = chrono::Utc::now();
+        core.store
+            .save(&torro_setups::Template {
+                schema_version: torro_setups::SCHEMA_VERSION,
+                id: id.into(),
+                name: id.into(),
+                wm: "hyprland".into(),
+                created: now,
+                updated: now,
+                source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
+                tree: None,
+                windows: vec![],
+            })
+            .expect("saved");
+    }
+
+    fn decide(id: &str, allow: bool) -> Request {
+        Request::DecideApproval { id: id.into(), allow }
+    }
+
     #[tokio::test]
     async fn deleting_waits_for_approval_unless_confirm_says_never() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
+        save_template(&core, "dev");
         let delete = || Request::DeleteTemplate { id: "dev".into() };
-        let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
-        let Err(refused) = core.handle_from(Some(&key), delete()).await else { panic!("refused") };
-        assert_eq!(refused, Refused::NeedsApproval { command: "workspaces.delete_template" });
-        assert_eq!(code(&refused.response()), "forbidden");
+        let (id, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let asked = waits(ask(&core, Some(&key), delete()).await);
+        assert_eq!((asked.client.as_str(), asked.command.as_str()), (id.as_str(), "workspaces.delete_template"));
+        assert_eq!(asked.client_name, "Claude Code");
+        assert_eq!(asked.summary, crate::approvals::summary(&delete()));
+        assert_eq!(asked.expires - asked.created, crate::approvals::LIFETIME);
+        assert!(core.store.load("dev").is_ok(), "nothing ran yet");
 
         let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
-        assert_eq!(code(&ask(&core, Some(&key), delete()).await), "not-found", "runs: no template dev");
+        assert_eq!(ask(&core, Some(&key), delete()).await, Response::Ok, "runs without asking");
     }
 
     #[tokio::test]
-    async fn admin_commands_of_a_client_always_wait_for_approval() {
+    async fn admin_commands_of_a_client_wait_for_approval_even_with_confirm_never() {
         let dir = tempfile::tempdir().expect("temp dir");
         let core = core(dir.path());
         let mut rights = RightsTemplate::FullAccess.rights();
+        assert_eq!(rights.confirm, torro_ipc::api::Confirm::Never);
         rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
         let (_, key) = client(&core, rights).await;
         let set = Request::SetSetting { key: torro_ipc::SettingKey::StartAtLogin, value: serde_json::json!(true) };
-        let refused = core.handle_from(Some(&key), set).await;
-        assert_eq!(refused, Err(Refused::NeedsApproval { command: "settings.set_setting" }));
+        let asked = waits(ask(&core, Some(&key), set).await);
+        assert_eq!(asked.command, "settings.set_setting");
         assert!(!settings_file(dir.path()).exists(), "nothing written");
+
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(settings(&core).await.start_at_login, "runs once a person allows it");
+    }
+
+    #[tokio::test]
+    async fn an_agent_cannot_approve_itself_and_sees_only_its_own_approvals() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        // Even full access with the admin switch of every area does not let it decide.
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let asked = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await);
+        for allow in [true, false] {
+            assert_eq!(code(&ask(&core, Some(&key), decide(&asked.id, allow)).await), "forbidden");
+        }
+        let status = || Request::ApprovalStatus { id: asked.id.clone() };
+        assert_eq!(approval(ask(&core, Some(&key), status()).await), asked, "still open");
+        assert_eq!(
+            ask(&core, Some(&key), Request::ListApprovals).await,
+            Response::Approvals { approvals: vec![asked.clone()] }
+        );
+
+        // Another client sees nothing of it.
+        let (_, other) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        assert_eq!(ask(&core, Some(&other), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
+        assert_eq!(code(&ask(&core, Some(&other), status()).await), "not-found");
+
+        // The person denies it: it never runs, and the agent reads that.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::ListApprovals).await,
+            Response::Approvals { approvals: vec![asked.clone()] }
+        );
+        let denied = approval(ask(&core, Some(&app_key), decide(&asked.id, false)).await);
+        assert_eq!(denied.state, torro_ipc::ApprovalState::Denied);
+        assert_eq!(approval(ask(&core, Some(&key), status()).await), denied);
+        assert_eq!(code(&ask(&core, Some(&app_key), decide(&asked.id, true)).await), "conflict", "decided once");
+        assert!(core.store.load("dev").is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_approval_survives_a_restart_and_runs_when_allowed_then() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core_before = core(dir.path());
+        save_template(&core_before, "dev");
+        let (_, key) = client(&core_before, RightsTemplate::ReadAndWrite.rights()).await;
+        let asked = waits(ask(&core_before, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await);
+        drop(core_before);
+
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(core.store.load("dev").is_err(), "deleted");
+        let status = Request::ApprovalStatus { id: asked.id.clone() };
+        assert_eq!(approval(ask(&core, Some(&key), status).await), allowed, "the agent reads the outcome");
+    }
+
+    #[tokio::test]
+    async fn rights_and_reach_changed_while_waiting_are_honoured() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        save_template(&core, "dev");
+        let (client_id, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+
+        // Narrowed to reading: the allowed delete is refused when it runs, and nothing is deleted.
+        let asked = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await);
+        let narrowed = Request::UpdateClient { id: client_id.clone(), rights: RightsTemplate::ReadOnly.rights() };
+        assert_eq!(ask(&core, Some(&app_key), narrowed).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "forbidden");
+        assert!(core.store.load("dev").is_ok(), "nothing deleted");
+
+        // A calendar hidden meanwhile is out of reach when it runs.
+        let widened = Request::UpdateClient { id: client_id.clone(), rights: RightsTemplate::ReadAndWrite.rights() };
+        assert_eq!(ask(&core, Some(&app_key), widened).await, Response::Ok);
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/"))]).await;
+        let delete = Request::DeleteEvent { event: event_in(&id("/cal/work/"), Some("/cal/work/u.ics")) };
+        let asked = waits(ask(&core, Some(&key), delete).await);
+        let hide = Request::SetCollectionShown { collection: id("/cal/work/"), shown: false };
+        assert_eq!(ask(&core, Some(&app_key), hide).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "not-found");
+
+        // A removed client's approval does not run either.
+        let asked = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await);
+        assert_eq!(ask(&core, Some(&app_key), Request::RemoveClient { id: client_id }).await, Response::Ok);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = allowed.state else { panic!("ran: {allowed:?}") };
+        assert_eq!(code(&response), "forbidden");
+        assert!(core.store.load("dev").is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_secret_taking_request_never_creates_an_approval() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let token = Request::SetGithubToken { token: torro_ipc::Secret::new("ghp_coreSECRET") };
+        assert_eq!(code(&ask(&core, Some(&key), token).await), "forbidden");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(ask(&core, Some(&app_key), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
+    }
+
+    #[tokio::test]
+    async fn an_approval_that_cannot_be_stored_refuses_the_command() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path()).with_approvals(crate::approvals::Approvals::system());
+        save_template(&core, "dev");
+        let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let refused = core.handle_from(Some(&key), Request::DeleteTemplate { id: "dev".into() }).await;
+        assert_eq!(refused, Err(Refused::NeedsApproval { command: "workspaces.delete_template" }));
+        assert_eq!(code(&Refused::NeedsApproval { command: "x" }.response()), "forbidden");
+        assert!(core.store.load("dev").is_ok());
     }
 
     /// A client with full access to everything, without approvals, limited to the calendar
@@ -834,7 +1113,7 @@ mod tests {
         }
         // Inside the selection the request gets as far as the approval admin commands need.
         let shown = Request::SetCollectionShown { collection: id("/cal/work/"), shown: false };
-        assert_eq!(code(&ask(&core, Some(&key), shown).await), "forbidden");
+        waits(ask(&core, Some(&key), shown).await);
         assert!(!settings_file(dir.path()).exists());
     }
 
@@ -919,7 +1198,7 @@ mod tests {
         };
         assert_eq!(settings.list_orders.keys().cloned().collect::<Vec<_>>(), [id("/tasks/work/")]);
         assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/home/")).await), "not-found");
-        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden", "admin: approval");
+        waits(ask(&core, Some(&key), manual("/tasks/work/")).await);
         let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
         assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
     }
@@ -943,8 +1222,8 @@ mod tests {
             key: SettingKey::ListOrder,
             value: serde_json::json!({"list": id(path), "order": "manual"}),
         };
-        // Admin needs an approval ("forbidden") for a list it sees; the others never get that far.
-        assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/work/")).await), "forbidden");
+        // Admin needs an approval for a list it sees; the others never get that far.
+        waits(ask(&core, Some(&key), manual("/tasks/work/")).await);
         assert_eq!(code(&ask(&core, Some(&key), manual("/tasks/secret/")).await), "not-found", "hidden list");
         assert_eq!(code(&ask(&core, Some(&key), manual("/cal/work/")).await), "not-found", "a calendar");
     }
@@ -1219,8 +1498,9 @@ mod tests {
         let mut admin = RightsTemplate::FullAccess.rights();
         admin.areas.insert(Area::Accounts, AreaRights { level: Level::Full, admin: true });
         let (_, key) = client(&core, admin).await;
-        let refused = core.handle_from(Some(&key), Request::ConnectGithub).await;
-        assert_eq!(refused, Err(Refused::NeedsApproval { command: "accounts.connect_github" }));
+        let asked = waits(ask(&core, Some(&key), Request::ConnectGithub).await);
+        assert_eq!(asked.command, "accounts.connect_github");
+        assert_eq!(ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1, "nothing opened yet");
     }
 
     static FAKE_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -1642,7 +1922,7 @@ mod tests {
         }
         // A list it sees gets as far as the approval an admin command needs.
         let shown = Request::SetCollectionShown { collection: mine.id.clone(), shown: false };
-        assert_eq!(code(&ask(&core, Some(&key), shown).await), "forbidden");
+        waits(ask(&core, Some(&key), shown).await);
         assert!(!settings_file(dir.path()).exists(), "nothing hidden");
     }
 

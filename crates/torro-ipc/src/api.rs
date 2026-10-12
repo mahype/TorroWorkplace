@@ -50,11 +50,14 @@ pub enum Area {
     /// The agents and scripts that may use the API, their keys and rights. Only the app key may
     /// use it, whatever a client's rights say: no agent may give itself more rights.
     Clients,
+    /// Commands that wait for a person's approval. Every key reads its own (an agent must be able
+    /// to ask how its command went); only the app key decides, so no agent approves itself.
+    Approvals,
 }
 
 impl Area {
     /// Every area, in the order of the enum.
-    pub const ALL: [Area; 9] = [
+    pub const ALL: [Area; 10] = [
         Area::System,
         Area::Workspaces,
         Area::Calendar,
@@ -64,13 +67,14 @@ impl Area {
         Area::Settings,
         Area::Apps,
         Area::Clients,
+        Area::Approvals,
     ];
 
-    /// Rights for this area can be granted to a client. `system` is open to every valid key, except
-    /// its admin commands, and `clients` to the app key only, so neither has a level in
-    /// [`Rights::areas`].
+    /// Rights for this area can be granted to a client. `system` and `approvals` are open to every
+    /// valid key, except their admin commands, and `clients` to the app key only, so none of them
+    /// has a level in [`Rights::areas`].
     pub fn grantable(self) -> bool {
-        !matches!(self, Area::System | Area::Clients)
+        !matches!(self, Area::System | Area::Clients | Area::Approvals)
     }
 
     /// The name in rights: `calendar`. Every command name starts with it, except those of
@@ -86,6 +90,7 @@ impl Area {
             Area::Settings => "settings",
             Area::Apps => "apps",
             Area::Clients => "clients",
+            Area::Approvals => "approvals",
         }
     }
 }
@@ -251,7 +256,8 @@ pub enum Confirm {
 #[serde(rename_all = "camelCase")]
 pub struct Rights {
     /// Level and admin switch per area. An area not listed has no access, so areas added later
-    /// start closed. Entries for `system` and `clients` are ignored ([`Area::grantable`]).
+    /// start closed. Entries for `system`, `clients` and `approvals` are ignored
+    /// ([`Area::grantable`]).
     pub areas: BTreeMap<Area, AreaRights>,
     /// The calendars the client sees and may write to.
     pub calendars: Selection,
@@ -278,9 +284,10 @@ impl Rights {
         self.areas.get(&area).copied().unwrap_or(AreaRights::NONE)
     }
 
-    /// Whether level and admin switch allow `operation`. Every `system` command is allowed except
-    /// the admin ones (`system.quit`), and no `clients` command: those are for the app key only,
-    /// so no client can switch the service off or give itself rights.
+    /// Whether level and admin switch allow `operation`. Every `system` and `approvals` command is
+    /// allowed except the admin ones (`system.quit`, `approvals.decide_approval`), and no `clients`
+    /// command: those are for the app key only, so no client can switch the service off, approve
+    /// its own commands or give itself rights. (The core shows a client only its own approvals.)
     ///
     /// No command kept from agents ([`Mcp::Never`]) is allowed either, whatever the rights say:
     /// they are for the app key only, so a script key with admin rights cannot hand the core a
@@ -292,7 +299,7 @@ impl Rights {
             return false;
         }
         match operation.area() {
-            Area::System => operation.access != Access::Admin,
+            Area::System | Area::Approvals => operation.access != Access::Admin,
             Area::Clients => false,
             area => self.area(area).allows(operation.access),
         }
@@ -301,8 +308,8 @@ impl Rights {
     /// Whether a command that needs `access` must wait for a person's approval: every admin
     /// command, deleting unless [`Confirm::Never`], every change with [`Confirm::OnEveryChange`].
     ///
-    /// Until approvals exist (A.3 in `docs/tasks/api-mcp.md`) the core refuses these commands
-    /// with `forbidden` instead of running them without asking.
+    /// The core then keeps the command as an open approval and answers `pending`; it runs only
+    /// once a person allows it, after [`Rights::allows`] and the collections were checked again.
     pub fn needs_approval(&self, access: Access) -> bool {
         match access {
             Access::Admin => true,
@@ -547,6 +554,9 @@ impl Request {
             Request::UpdateClient { .. } => &UPDATE_CLIENT,
             Request::NewClientKey { .. } => &NEW_KEY,
             Request::RemoveClient { .. } => &REMOVE_CLIENT,
+            Request::ListApprovals => &LIST_APPROVALS,
+            Request::ApprovalStatus { .. } => &APPROVAL_STATUS,
+            Request::DecideApproval { .. } => &DECIDE_APPROVAL,
         };
         let access = match self {
             // Replacing closes the windows on the workspace: nothing brings them back.
@@ -613,6 +623,9 @@ pub static CATALOGUE: &[&Command] = &[
     &UPDATE_CLIENT,
     &NEW_KEY,
     &REMOVE_CLIENT,
+    &LIST_APPROVALS,
+    &APPROVAL_STATUS,
+    &DECIDE_APPROVAL,
 ];
 
 static PING: Command = Command {
@@ -1027,6 +1040,39 @@ static REMOVE_CLIENT: Command = Command {
     description: "Removes a client and its key from this device. The key stops working at once.",
 };
 
+// Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). Every key reads its own; deciding
+// is never an MCP tool and only for the app key ("Was nie nach außen geht", 3): an agent must never
+// approve its own commands.
+
+static LIST_APPROVALS: Command = Command {
+    name: "approvals.list_approvals",
+    area: Area::Approvals,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists this key's commands that wait for a person's approval, and those decided or expired within \
+                  the last day with their outcome, newest first. An approval expires after ten minutes.",
+};
+
+static APPROVAL_STATUS: Command = Command {
+    name: "approvals.approval_status",
+    area: Area::Approvals,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Tells whether a command that answered `pending` still waits for a person (`pending`), was \
+                  denied, expired after ten minutes, or ran (`done`, with the command's answer in `response`). \
+                  Pass the id of the pending answer. Only a person can approve; ask them to decide in Torro \
+                  Workplace.",
+};
+
+static DECIDE_APPROVAL: Command = Command {
+    name: "approvals.decide_approval",
+    area: Area::Approvals,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Allows or denies a command that waits for a person's approval. Allowed, it runs now with the \
+                  client's rights of this moment and the approval keeps its answer. Only the app key may use it.",
+};
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -1146,6 +1192,9 @@ mod tests {
             Request::UpdateClient { id: "3fa9c1d2".into(), rights: RightsTemplate::ReadOnly.rights() },
             Request::NewClientKey { id: "3fa9c1d2".into() },
             Request::RemoveClient { id: "3fa9c1d2".into() },
+            Request::ListApprovals,
+            Request::ApprovalStatus { id: "9c1f0a7e3b2d4c58".into() },
+            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true },
         ]
     }
 
@@ -1214,8 +1263,8 @@ mod tests {
             assert!(!command.description.is_empty() && command.description.ends_with('.'), "{}", command.name);
             // Rule from docs/api.md, "Was nie nach außen geht": clients, approvals, quitting the
             // service and taking secrets in are kept from agents.
-            let kept_back =
-                command.area == Area::Clients || matches!(command.name, "system.quit" | "accounts.set_github_token");
+            let kept_back = command.area == Area::Clients
+                || matches!(command.name, "system.quit" | "accounts.set_github_token" | "approvals.decide_approval");
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.
             if command.area == Area::Clients {
@@ -1310,8 +1359,8 @@ mod tests {
                     let expected = match (command.area, command.access) {
                         // Kept from agents means for the app key only.
                         _ if command.mcp == Mcp::Never => false,
-                        (Area::System, Access::Admin) => false,
-                        (Area::System, _) => true,
+                        (Area::System | Area::Approvals, Access::Admin) => false,
+                        (Area::System | Area::Approvals, _) => true,
                         (Area::Clients, _) => false,
                         (_, Access::Admin) => admin,
                         (_, Access::Read) => level != Level::NoAccess,
@@ -1340,6 +1389,24 @@ mod tests {
             assert!(!template.rights().allows(Request::Quit.operation()), "{template:?}");
         }
         assert!(RightsTemplate::ReadOnly.rights().allows(Request::Status.operation()));
+    }
+
+    #[test]
+    fn every_key_reads_its_approvals_and_only_the_app_key_decides() {
+        // Not even the admin switch of every area lets a client approve its own commands.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let decide = Request::DecideApproval { id: "a".into(), allow: true };
+        assert!(!rights.allows(decide.operation()));
+        assert_eq!(decide.operation().command.mcp, Mcp::Never);
+        // Reading needs no rights at all: an agent must learn how its command went.
+        let mut none = RightsTemplate::ReadOnly.rights();
+        none.areas.clear();
+        assert!(none.allows(Request::ListApprovals.operation()));
+        assert!(none.allows(Request::ApprovalStatus { id: "a".into() }.operation()));
+        assert!(!Area::Approvals.grantable());
     }
 
     #[test]

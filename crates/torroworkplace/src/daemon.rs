@@ -302,6 +302,9 @@ fn describe(request: &Request) -> String {
         Request::UpdateClient { id, .. } => format!("update client {id}"),
         Request::NewClientKey { id } => format!("new key for client {id}"),
         Request::RemoveClient { id } => format!("remove client {id}"),
+        Request::ListApprovals => "approvals".into(),
+        Request::ApprovalStatus { id } => format!("approval {id}"),
+        Request::DecideApproval { id, allow } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
     }
 }
 
@@ -316,6 +319,7 @@ fn report(what: &str, response: &Response) {
             }
         }
         Response::Saved { template } => eprintln!("torroworkplace: saved {:?} ({})", template.name, template.id),
+        Response::Pending { approval } => eprintln!("torroworkplace: {what}: waits for approval {}", approval.id),
         _ => eprintln!("torroworkplace: {what}: ok"),
     }
     if let Some((summary, body)) = crate::notify::message(what, response) {

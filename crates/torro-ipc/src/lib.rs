@@ -387,6 +387,34 @@ pub enum Request {
     /// [`Response::Ok`]; an unknown id is `not-found`.
     #[serde(rename = "clients.remove_client")]
     RemoveClient { id: String },
+
+    // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). A client command that needs
+    // a person's approval is answered with [`Response::Pending`]; the core keeps it in
+    // `approvals.json` (state directory, 0600) for ten minutes.
+    /// The approvals of the caller ([`Response::Approvals`]): open ones and those decided or expired
+    /// within the last day, newest first. A client key sees only its own; the app key sees all.
+    #[serde(rename = "approvals.list_approvals")]
+    ListApprovals,
+    /// One approval ([`Response::Approval`]): whether it still waits, was denied or expired, or
+    /// ran, then with the command's answer. `not-found` for an unknown id, one of another client,
+    /// or one gone after a day.
+    #[serde(rename = "approvals.approval_status")]
+    ApprovalStatus {
+        /// The id from the `pending` answer or from `approvals.list_approvals`.
+        id: String,
+    },
+    /// A person allows or denies an approval. Allowed, the command runs now with the client's
+    /// rights and collections of this moment (they may have changed while it waited), and its
+    /// answer is kept in the approval. Answered with [`Response::Approval`] as decided; `not-found`
+    /// for an unknown id, `conflict` for one that is no longer open (decided or expired). Only the
+    /// app key may send it: a client key gets `forbidden`, so no agent approves itself.
+    #[serde(rename = "approvals.decide_approval")]
+    DecideApproval {
+        /// The id of the approval.
+        id: String,
+        /// `true` runs the command, `false` drops it.
+        allow: bool,
+    },
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -500,6 +528,19 @@ pub enum Response {
         /// The first matches (at most 20) as tasks of no list (`collection` empty).
         todos: Vec<Todo>,
     },
+    /// The command waits for a person's approval and has not run yet (`result: "pending"`). Ask
+    /// later with `approvals.approval_status` and the approval's `id`; it expires at `expires`.
+    Pending {
+        approval: ApprovalInfo,
+    },
+    /// The approvals the caller may see ([`Request::ListApprovals`]).
+    Approvals {
+        approvals: Vec<ApprovalInfo>,
+    },
+    /// One approval ([`Request::ApprovalStatus`], [`Request::DecideApproval`]).
+    Approval {
+        approval: ApprovalInfo,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -514,10 +555,13 @@ pub enum Response {
     ///   or the item changed there meanwhile,
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
     /// - `forbidden`: the client's rights do not cover the command, it is for the app key only
-    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`), or it would need a
-    ///   person's approval, which the core cannot ask for yet,
-    /// - `pending`: the command waits for a person to approve it,
+    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`,
+    ///   `approvals.decide_approval`), or it needs a person's approval that the core could not
+    ///   record (`approvals.json` cannot be written),
     /// - `error`: anything else.
+    ///
+    /// A command that waits for a person's approval is no error: it is answered with
+    /// [`Response::Pending`] (`result: "pending"`).
     Error {
         code: String,
         message: String,
@@ -582,6 +626,58 @@ pub struct ClientInfo {
     /// The last request with its key, to the minute.
     pub last_used: Option<DateTime<Utc>>,
     pub rights: Rights,
+}
+
+/// One approval: a client's command that waits for a person, or did.
+///
+/// `summary` says in words what would happen (`Delete event "Team meeting" on Tue, 14 Oct`), in
+/// the language of the core. It holds text the client sent (titles, names), so front ends show it
+/// as plain text and never interpret it (no markup, no links).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalInfo {
+    /// Random id, 16 hex digits: `9c1f0a7e3b2d4c58`.
+    pub id: String,
+    /// The id of the client that sent the command ([`ClientInfo::id`]).
+    pub client: String,
+    /// Its name when it asked: `Claude Code`.
+    pub client_name: String,
+    /// The command's catalogue name: `calendar.delete_event`.
+    pub command: String,
+    pub summary: String,
+    pub created: DateTime<Utc>,
+    /// Ten minutes after `created`; an approval still open then expires.
+    pub expires: DateTime<Utc>,
+    /// When a person decided it or it expired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub state: ApprovalState,
+}
+
+/// Where an approval stands; in JSON the field `state`, with `response` once it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "state")]
+pub enum ApprovalState {
+    /// Waits for a person.
+    Pending,
+    /// Allowed; the command runs now.
+    Running,
+    /// Allowed and run. `response` is the command's answer, which can be an error too (for
+    /// `forbidden` when the client's rights no longer cover it, `not-found` for a collection it
+    /// no longer reaches).
+    Done { response: Box<Response> },
+    /// A person said no; the command did not run.
+    Denied,
+    /// Nobody decided within ten minutes; the command did not run.
+    Expired,
+}
+
+impl ApprovalState {
+    /// Still waiting for a person.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, ApprovalState::Pending)
+    }
 }
 
 /// A client key handed out by [`Response::ClientKey`].
@@ -751,6 +847,37 @@ mod tests {
         assert_eq!(key, IssuedKey::new(Key::new("torro_c1_secret")));
         assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secreT")));
         assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secret2")));
+    }
+
+    #[test]
+    fn approvals_carry_their_state_and_the_answer_once_run() {
+        let at = DateTime::parse_from_rfc3339("2026-10-14T09:00:00Z").expect("time").with_timezone(&Utc);
+        let approval = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "c1".into(),
+            client_name: "Claude Code".into(),
+            command: "workspaces.delete_template".into(),
+            summary: "Delete template \"dev\"".into(),
+            created: at,
+            expires: at + chrono::Duration::minutes(10),
+            decided: None,
+            state: ApprovalState::Pending,
+        };
+        let pending = serde_json::to_value(Response::Pending { approval: approval.clone() }).expect("json");
+        assert_eq!(pending["result"], "pending");
+        assert_eq!(pending["approval"]["state"], "pending");
+        assert_eq!(pending["approval"]["clientName"], "Claude Code");
+        assert!(pending["approval"].get("decided").is_none());
+
+        let done = ApprovalInfo {
+            decided: Some(at),
+            state: ApprovalState::Done { response: Box::new(Response::Ok) },
+            ..approval
+        };
+        let json = serde_json::to_value(Response::Approval { approval: done.clone() }).expect("json");
+        assert_eq!(json["approval"]["state"], "done");
+        assert_eq!(json["approval"]["response"], serde_json::json!({"result": "ok"}));
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), Response::Approval { approval: done });
     }
 
     #[test]
