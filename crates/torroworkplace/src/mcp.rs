@@ -248,8 +248,9 @@ impl TorroMcp {
                     ApprovalState::Expired => {
                         return failure(
                             "error",
-                            "nobody approved this command within ten minutes; it did not run. Call the tool again if \
-                             it is still needed.",
+                            "nobody approved this command before it expired (ten minutes; a permission question \
+                             expires after about half a minute); it did not run. Call the tool again if it is still \
+                             needed.",
                         );
                     }
                 },
