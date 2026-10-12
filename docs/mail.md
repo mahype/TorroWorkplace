@@ -90,6 +90,9 @@ allen Apps gleich.
 
 ## Die Mail-App
 
+> **Entschieden 2026-10-12:** keine eigene App. Was hier steht (Größenklassen, Schreibfenster,
+> Einladungen), gilt für die Mail-Tiefe im Eingang `torroinbox` ([eingang.md](eingang.md)).
+
 Arbeitsname `torromail` (siehe offene Entscheidungen). Eigener Prozess, Iced, `torro_gui::shell`,
 spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
 
@@ -209,8 +212,8 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
-| Verschieben / Archiv | Liste, Lesebereich | `mail.move_message` · Write | `mail_move_message` |
-| Löschen | Liste, Lesebereich | `mail.delete_message` · Delete | `mail_delete_message` |
+| Verschieben / Archiv | Liste, Lesebereich | `mail.move_messages` · Write (nach Trash: Delete) | `mail_move_messages` |
+| Löschen | Liste, Lesebereich | `mail.delete_messages` · Delete | `mail_delete_messages` |
 | Entwurf senden | Schreibfenster | `mail.send_draft` · Write + Senden-Schalter | `mail_send_draft` (antwortet ggf. `pending`) |
 | Einladung beantworten | Lesebereich, Kalender | `calendar.respond_invitation` · Write | `calendar_respond_invitation` |
 | Freigabe entscheiden | Steuerzentrale › Approvals, Benachrichtigung | `approvals.decide` · Admin | **Never** (Liste Punkt 3) |
@@ -223,8 +226,8 @@ oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agent
 
 | Weg | Folge |
 |---|---|
-| A: getrennt weiterführen | Zwei Kontenspeicher, zwei Rechtemodelle, zwei MCP-Server. Genau das, was die Suite vermeiden will |
-| **B: Suite übernimmt (Empfehlung)** | Mail kommt in den Kern, `torroworkplace mcp` bietet die `mail_*`-Tools. TorroMail bekommt nur noch Fehlerbehebungen und wird eingestellt, sobald die Suite auf macOS läuft |
+| **A: getrennt weiterführen (entschieden 2026-10-12)** | TorroMail bleibt eigenständig mit eigenem MCP-Server. Die Suite hat Mail im Kern, `torroworkplace mcp` bietet eigene `mail_*`-Tools. Zwei Kontenspeicher, zwei Rechtemodelle, bewusst getrennt |
+| B: Suite übernimmt | Mail kommt in den Kern, TorroMail wird eingestellt |
 | C: TorroMail-Crates als Bibliothek | Synchroner Client, eigenes Rechtemodell, eigene Pfade: passt nicht zum Kern, bindet zwei Repos aneinander |
 
 **Übernahme:** Findet die Steuerzentrale `~/.local/state/torromail/state.json` (macOS
@@ -232,7 +235,8 @@ oder auf eine Freigabe wartet, entscheidet der Dienst nach den Rechten des Agent
 TorroMail?“. Übernommen werden Server, Benutzer, Anzeigename. Das Passwort holt der Kern nach
 Zustimmung aus dem Schlüsselbund-Eintrag `TorroMail/<id>` und legt es unter `torroworkplace` ab.
 Agenten werden **nicht** übernommen, sondern über den Assistenten (A.7) neu gekoppelt, damit
-jeder mit Rechten nach dem neuen Modell startet.
+jeder mit Rechten nach dem neuen Modell startet. TorroMail behält seine Konten; nichts dort wird
+geändert oder gelöscht.
 
 ## Reihenfolge
 
@@ -252,13 +256,20 @@ Aus jedem Schritt werden Aufgaben in `docs/tasks/mail.md` (Präfix `M`), wenn da
 freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
 [tasks/mail.md](tasks/mail.md).
 
-## Offene Entscheidungen
+## Entscheidungen (2026-10-12)
 
-1. ~~Kontenleiste~~: entschieden, keine Leiste (siehe oben).
-2. **Name und Zuschnitt der App:** offen. Mail könnte statt einer eigenen App eine Quelle im
-   gemeinsamen Eingang werden, siehe [eingang.md](eingang.md).
-3. **TorroMail:** Weg B (Suite übernimmt, TorroMail läuft aus)?
-4. **Fehlende Ordner anlegen** statt Versand zu verweigern?
-5. **Senden** als eigener Schalter mit „with approval“ als Voreinstellung in allen Vorlagen?
-6. **Lesen für Agenten** nur ja/nein je Konto, ohne „nur Kopfzeilen“?
-7. **Bibliotheken** für IMAP/SMTP/MIME statt TorroMails eigenem Client?
+1. ~~Kontenleiste~~: keine Leiste (siehe oben).
+2. **Zuschnitt:** Mail ist eine Quelle im Eingang (`torroinbox`), keine eigene App (Weg A in
+   [eingang.md](eingang.md)). Ordner, Lesen und Schreiben kommen in den Eingang.
+3. **TorroMail läuft parallel weiter.** Die Suite bekommt eine eigene, vollständig integrierte
+   Mail-Anbindung (Kern, `mail_*`-Tools in `torroworkplace mcp`). TorroMail bleibt eigenständig mit
+   eigenem MCP-Server; es gibt keinen gemeinsamen Code. Die Übernahme der Konten (M7.4) ist eine
+   Abkürzung beim Einrichten, kein Abschied von TorroMail.
+4. **Fehlende Ordner legt der Kern an**; ein Auswahlfeld nur bei zwei Kandidaten mit Inhalt.
+5. **Senden** über den Schalter „Nach außen“ (never / with approval / free), Voreinstellung
+   „with approval“ in allen Vorlagen. `Rights`, `Area` und `AccountKind` werden dafür erweitert
+   (freigegeben).
+6. **Lesen für Agenten** ja/nein je Konto (Stufe im Bereich Mail), ohne „nur Kopfzeilen“.
+7. **Bibliotheken:** `async-imap` (tokio), `mail-parser`, `mail-builder`, `lettre`, alles über rustls.
+
+Aufgaben: [tasks/mail.md](tasks/mail.md) (M2–M5, E4).
