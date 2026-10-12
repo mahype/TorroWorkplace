@@ -1,19 +1,16 @@
 //! Tray icon for Linux, built on ksni (StatusNotifierItem over D-Bus; Omarchy's bar,
-//! Waybar and KDE show it). The menu is built from a [`Snapshot`] of the core and turns
-//! clicks into the same [`Request`]s the socket takes. The icon comes from `icon.rs`.
+//! Waybar and KDE show it). It only draws the shared menu from `menu.rs`, built from a
+//! [`Snapshot`] of the core; clicks run the entries' actions on the [`Daemon`]. The icon comes
+//! from `icon.rs`.
 
 use std::fmt;
 use std::sync::Arc;
 
 use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
-use torro_core::AppId;
-use torro_core::i18n::{tr, trf};
-use torro_ipc::Request;
-use torro_pim::AccountState;
-use torro_setups::LoadMode;
 
 use super::icon;
+use super::menu::{self, Item};
 use crate::core::Snapshot;
 use crate::daemon::Daemon;
 
@@ -72,149 +69,36 @@ impl ksni::Tray for Tray {
     }
 }
 
-/// The menu from docs/core.md for one snapshot.
-///
-/// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
-/// text off with an ellipsis.
+/// The menu from docs/core.md for one snapshot ([`menu::build`]), as ksni items.
 fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
-    let mut menu = Vec::new();
-    if let Some(name) = &snapshot.unsupported {
-        menu.push(info(trf("{name} not supported yet", &[("name", name)])));
-        menu.push(MenuItem::Separator);
-    } else {
-        let load = per_template(snapshot, |t| {
-            let id = &t.id;
-            vec![
-                action_if(
-                    tr("Load here"),
-                    snapshot.workspace_windows == 0,
-                    Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
-                ),
-                action(tr("Add"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
-                action(tr("Replace"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
-            ]
-        });
-        menu.push(submenu(tr("Load template"), load));
-        menu.push(action(tr("Save workspace"), Request::SaveTemplate { name: None }));
-        let update = per_template_action(snapshot, |id| Request::UpdateTemplate { id });
-        menu.push(submenu(tr("Update"), update));
-        let delete = per_template_action(snapshot, |id| Request::DeleteTemplate { id });
-        menu.push(submenu(tr("Delete"), delete));
-        menu.push(MenuItem::Separator);
-    }
-    menu.push(open("Calendar", AppId::CALENDAR));
-    menu.push(open("Tasks", AppId::TASKS));
-    menu.push(MenuItem::Separator);
-    menu.push(info(info_line(snapshot)));
-    if let Some(line) = account_line(snapshot) {
-        menu.push(info(line));
-    }
-    menu.push(MenuItem::Separator);
-    menu.push(
-        StandardItem {
-            label: tr("Settings…").into(),
-            activate: Box::new(|tray: &mut Tray| {
-                tray.daemon.run(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string() })
+    menu::build(snapshot).into_iter().map(ksni_item).collect()
+}
+
+/// One item of the shared menu as ksni draws it. An entry without an action is greyed out.
+fn ksni_item(item: Item) -> MenuItem<Tray> {
+    match item {
+        Item::Entry { label, action } => StandardItem {
+            label,
+            enabled: action.is_some(),
+            activate: Box::new(move |tray: &mut Tray| {
+                if let Some(action) = &action {
+                    action.perform(&tray.daemon);
+                }
             }),
             ..Default::default()
         }
         .into(),
-    );
-    menu.push(
-        StandardItem {
-            label: tr("Quit").into(),
-            activate: Box::new(|tray: &mut Tray| tray.daemon.run(Request::Quit)),
-            ..Default::default()
+        Item::Submenu { label, items } => {
+            SubMenu { label, submenu: items.into_iter().map(ksni_item).collect(), ..Default::default() }.into()
         }
-        .into(),
-    );
-    menu
-}
-
-/// `Workspace 3 · hyprland`, or what is going on instead.
-fn info_line(snapshot: &Snapshot) -> String {
-    if snapshot.busy {
-        return tr("Busy …").into();
+        Item::Separator => MenuItem::Separator,
     }
-    if let Some(problem) = &snapshot.problem {
-        return problem.clone();
-    }
-    match &snapshot.workspace {
-        Some(workspace) => {
-            trf("Workspace {workspace} · {backend}", &[("workspace", workspace), ("backend", &snapshot.backend)])
-        }
-        None => snapshot.backend.clone(),
-    }
-}
-
-/// The Nextcloud status: who is connected, a sign-in in progress, or a sync problem.
-fn account_line(snapshot: &Snapshot) -> Option<String> {
-    Some(match snapshot.account.as_ref()? {
-        AccountState::NotConnected => tr("Not connected to Nextcloud").to_string(),
-        AccountState::SigningIn { .. } => tr("Signing in to Nextcloud …").to_string(),
-        AccountState::Connected { problem: Some(problem), .. } => trf("Nextcloud: {problem}", &[("problem", problem)]),
-        AccountState::Connected { login_name, server, .. } => {
-            let host = server.split("://").nth(1).unwrap_or(server);
-            trf("Nextcloud: {account}", &[("account", &format!("{login_name}@{host}"))])
-        }
-    })
-}
-
-/// An entry that opens or focuses one of the suite's apps.
-fn open(label: &'static str, app: AppId) -> MenuItem<Tray> {
-    StandardItem {
-        label: tr(label).into(),
-        activate: Box::new(move |tray: &mut Tray| tray.daemon.open_app(app)),
-        ..Default::default()
-    }
-    .into()
-}
-
-/// One submenu per template, or a disabled hint when there are none.
-fn per_template(
-    snapshot: &Snapshot,
-    items: impl Fn(&torro_setups::TemplateSummary) -> Vec<MenuItem<Tray>>,
-) -> Vec<MenuItem<Tray>> {
-    if snapshot.templates.is_empty() {
-        return vec![info(tr("No templates yet").into())];
-    }
-    snapshot.templates.iter().map(|t| submenu(&t.name, items(t))).collect()
-}
-
-/// One entry per template that sends `request(id)`.
-fn per_template_action(snapshot: &Snapshot, request: impl Fn(String) -> Request) -> Vec<MenuItem<Tray>> {
-    if snapshot.templates.is_empty() {
-        return vec![info(tr("No templates yet").into())];
-    }
-    snapshot.templates.iter().map(|t| action(&t.name, request(t.id.clone()))).collect()
-}
-
-fn submenu(label: &str, submenu: Vec<MenuItem<Tray>>) -> MenuItem<Tray> {
-    SubMenu { label: label.into(), submenu, ..Default::default() }.into()
-}
-
-fn action(label: &str, request: Request) -> MenuItem<Tray> {
-    action_if(label, true, request)
-}
-
-fn action_if(label: &str, enabled: bool, request: Request) -> MenuItem<Tray> {
-    StandardItem {
-        label: label.into(),
-        enabled,
-        activate: Box::new(move |tray: &mut Tray| tray.daemon.run(request.clone())),
-        ..Default::default()
-    }
-    .into()
-}
-
-/// A greyed-out line that only informs.
-fn info(label: String) -> MenuItem<Tray> {
-    StandardItem { label, enabled: false, ..Default::default() }.into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torro_core::i18n::{tr, trf};
     use torro_setups::TemplateSummary;
 
     fn labels(menu: &[MenuItem<Tray>]) -> Vec<String> {
@@ -288,6 +172,44 @@ mod tests {
         let menu = labels(&build_menu(&snapshot));
         assert_eq!(menu[0], format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])));
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
+    }
+
+    /// The shared model as the same text as [`labels`], recursively, to compare with ksni.
+    fn model_tree(items: &[Item]) -> Vec<String> {
+        items
+            .iter()
+            .flat_map(|item| match item {
+                Item::Submenu { label, items } => {
+                    let mut lines = vec![format!("{label} ▸")];
+                    lines.extend(model_tree(items).into_iter().map(|line| format!("  {line}")));
+                    lines
+                }
+                Item::Entry { label, action: Some(_) } => vec![label.clone()],
+                Item::Entry { label, action: None } => vec![format!("({label})")],
+                Item::Separator => vec!["-".into()],
+            })
+            .collect()
+    }
+
+    fn ksni_tree(items: &[MenuItem<Tray>]) -> Vec<String> {
+        items
+            .iter()
+            .flat_map(|item| match item {
+                MenuItem::SubMenu(sub) => {
+                    let mut lines = vec![format!("{} ▸", sub.label)];
+                    lines.extend(ksni_tree(&sub.submenu).into_iter().map(|line| format!("  {line}")));
+                    lines
+                }
+                other => labels(std::slice::from_ref(other)),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ksni_draws_the_shared_menu_entry_for_entry() {
+        for snapshot in [snapshot(), Snapshot { workspace_windows: 0, ..snapshot() }, Snapshot::default()] {
+            assert_eq!(ksni_tree(&build_menu(&snapshot)), model_tree(&menu::build(&snapshot)));
+        }
     }
 
     #[test]

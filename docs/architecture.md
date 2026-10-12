@@ -93,7 +93,12 @@ Zusätzlich kann unter Omarchy später ein eigenes Leistenwidget auf `status --j
 ### Apps als Clients
 
 - Die Apps sprechen über `torro-ipc` mit dem Kern (Unix-Socket `core.sock` im State-Verzeichnis
-  des Kerns, unter Windows eine Named Pipe). Läuft kein Kern, startet die App ihn.
+  des Kerns). Läuft kein Kern, startet die App ihn.
+- Unter Windows ist es die Named Pipe `\\.\pipe\torro-workplace-<SID>`: Zugriffsliste nur für den
+  eigenen Benutzer (SDDL), erste Instanz exklusiv, keine Remote-Clients. Der Client prüft vor dem
+  Senden, dass der Server-Prozess der Pipe demselben Benutzer gehört, damit ein fremder Prozess, der
+  den Namen besetzt, weder Anfragen noch den App-Schlüssel bekommt (Einzelheiten in
+  [api.md](api.md#transport)).
 - Sie lesen Daten, schreiben Änderungen und bekommen Änderungsmeldungen, damit z. B. eine im
   Kalender angelegte Aufgabe sofort in der Aufgaben-App erscheint.
 - Jede App hat zusätzlich `status --json` und `ctl`.

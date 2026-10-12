@@ -207,8 +207,7 @@ Was Windows bis zur vollen Unterstützung fehlt (Named Pipes, Konsolenfenster, T
 [tasks/plattformen.md](tasks/plattformen.md).
 
 
-- [ ] Entscheiden: unsigniert lassen oder Azure Artifact Signing einrichten (Konto, Identitätsprüfung,
-      Zertifikatsprofil, OIDC-Verknüpfung, Environment `release`).
+- [x] Entschieden (2026-10-12): unsigniert. Gründe und Alternativen: [tasks/plattformen.md](tasks/plattformen.md), X.10.
 - [ ] Repository `mahype/scoop-torro` anlegen, wenn Windows unterstützt wird.
 
 ## Offene Fragen

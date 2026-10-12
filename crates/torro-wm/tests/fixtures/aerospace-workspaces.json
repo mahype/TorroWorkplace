@@ -1,0 +1,22 @@
+[
+  {
+    "monitor-id" : 1,
+    "workspace" : "1",
+    "workspace-is-visible" : true
+  },
+  {
+    "monitor-id" : 2,
+    "workspace" : "2",
+    "workspace-is-visible" : true
+  },
+  {
+    "monitor-id" : 2,
+    "workspace" : "3",
+    "workspace-is-visible" : false
+  },
+  {
+    "monitor-id" : 1,
+    "workspace" : "4",
+    "workspace-is-visible" : false
+  }
+]

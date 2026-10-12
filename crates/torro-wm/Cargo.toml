@@ -5,12 +5,28 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Tiling window managers behind one trait: Hyprland first, AeroSpace and GlazeWM to follow."
+description = "Tiling window managers behind one trait: Hyprland (Linux), AeroSpace (macOS), GlazeWM (Windows)."
 
-[lints]
-workspace = true
+# The workspace lints, with one difference: `unsafe_code` is `deny` instead of `forbid`. `forbid` cannot be lifted
+# locally, and finding the process of a window handle on Windows (`glazewm/pid.rs`, X.8) needs one FFI call behind a
+# single `#[allow(unsafe_code)]`. Keep the rest in sync with `[workspace.lints]` in the root `Cargo.toml` (Cargo does
+# not allow `workspace = true` next to overrides).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+# WebSocket client for GlazeWM. On every system, not only Windows: the backend compiles everywhere
+# so its tests against a fake server run in every CI job. Pure Rust, no TLS.
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

@@ -1,0 +1,7 @@
+{
+  "messageType": "client_response",
+  "clientMessage": "command --id 0f9e8d7c-6b5a-4938-8271-6a5b4c3d2eff close",
+  "data": null,
+  "error": "No container found with the given ID '0f9e8d7c-6b5a-4938-8271-6a5b4c3d2eff'.",
+  "success": false
+}

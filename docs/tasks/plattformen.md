@@ -29,7 +29,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
 ## Aufgaben
 
 ### X.1 Windows: Apps und Dienst sprechen über Named Pipes
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Sicherheit, Nebenläufigkeit) · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,client,server}.rs`,
   `crates/torro-ipc/Cargo.toml`, `Cargo.toml` (nur `[workspace.dependencies]`)
 - Heute geben `client::call_with_key` und `server::serve_with_key` außerhalb von Unix `IpcError::Unsupported`
@@ -49,8 +49,28 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   oder in der CI: `torroworkplace daemon --headless`, dann `torroworkplace status`, dann `torrocalendar` ohne
   `--demo` mit Konto.
 
+### X.1b Windows: Client prüft den Besitzer der Pipe
+- [x] erledigt
+- **Modell:** Opus (Sicherheit, FFI) · **Braucht:** X.1 · **Dateien:** `crates/torro-ipc/src/{lib,client}.rs`,
+  `crates/torro-ipc/Cargo.toml`, `Cargo.toml` (nur `[workspace.dependencies]`), `docs/api.md`, `docs/architecture.md`
+- Der Client verbindet sich mit `\\.\pipe\torro-workplace-<SID>` und schickt dann den App-Schlüssel. Läuft der
+  Kern nicht, könnte ein Prozess eines anderen Benutzers den Namen besetzt haben und Anfrage samt Schlüssel
+  empfangen. Darum prüft der Client vor dem Senden, wem der Server-Prozess der Pipe gehört:
+  `GetNamedPipeServerProcessId` auf dem Client-Handle → SID dieses Prozesses (`sysinfo`) → Vergleich mit der
+  eigenen SID. Stimmt sie nicht oder ist sie nicht feststellbar: nichts senden, `IpcError::Io` mit
+  `PermissionDenied` (wie der Kern, wenn ein fremdes Programm den Namen hält).
+- `interprocess` liefert die Server-PID zwar sicher, öffnet die Pipe aber ohne Security-QoS (der Server dürfte
+  den Benutzer imitieren); der Client bleibt deshalb bei tokio, und die PID kommt über einen einzigen
+  FFI-Aufruf (`windows-sys`). Dafür hat `torro-ipc` eine eigene Lint-Tabelle mit `unsafe_code = "deny"` und
+  genau eine `#[allow(unsafe_code)]`-Stelle mit `// SAFETY:`, nur unter Windows.
+- `docs/api.md` und `docs/architecture.md`: Windows nutzt Named Pipes (Name, Zugriffsliste nur für den
+  Benutzer, erste Instanz exklusiv, keine Remote-Clients, Client prüft den Besitzer).
+- Abnahme: Vergleichslogik als plattformneutrale Funktion mit Test (gleiche SID ja; fremde, fehlende oder
+  leere SID nein). Windows-Test (CI): Verbindung zum eigenen Server besteht die Prüfung. `cargo clippy -p
+  torro-ipc --all-targets --target x86_64-pc-windows-msvc -- -D warnings` grün.
+
 ### X.2 Windows: kein Konsolenfenster neben den Apps
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Weiche für den Kern) · **Braucht:** – · **Dateien:** `crates/torrocalendar/src/main.rs`,
   `crates/torrotasks/src/main.rs`, `crates/torroworkplace/src/main.rs`, `Cargo.toml` und
   `crates/torroworkplace/Cargo.toml` (falls `windows-sys` nötig)
@@ -65,7 +85,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   `initialize`, wenn ein Programm es über Pipes startet. Linux und macOS unverändert.
 
 ### X.3 Start beim Anmelden auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** – · **Dateien:** `crates/torroworkplace/src/settings_service.rs`
 - „Start at login“ ist heute nur ein XDG-Autostart-Eintrag (Linux). macOS: LaunchAgent
   `~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist` (`RunAtLoad`, Programm `torroworkplace daemon`,
@@ -76,7 +96,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   löschen, eigener Testschlüssel statt `Run`). Einmal von Hand: einschalten, ab- und anmelden, der Dienst läuft.
 
 ### X.4 Tray auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Ereignisschleife, Threads) · **Braucht:** X.1 (für Windows; macOS kann vorher) · **Dateien:**
   `crates/torroworkplace/src/tray/{mod,linux,desktop}.rs` (neu: `desktop.rs`), `crates/torroworkplace/src/tray/icon.rs`,
   `crates/torroworkplace/src/daemon.rs`, `crates/torroworkplace/Cargo.toml`, `Cargo.toml`
@@ -96,7 +116,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   Hinweis sehen, Steuerzentrale öffnen, Beenden.
 
 ### X.5 Benachrichtigungen auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** X.4 · **Dateien:** `crates/torroworkplace/src/notify.rs`, ggf.
   `packaging/macos/Info.plist.in` (nennen)
 - `notify-rust` nutzt auf macOS das Benachrichtigungssystem nur sauber aus einem Bündel mit Bundle-ID, auf
@@ -106,7 +126,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   Namen; ohne Berechtigung (macOS) fällt der Dienst nicht um.
 
 ### X.6 Fenstermanager AeroSpace (macOS)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-wm/src/aerospace/` (neu), `crates/torro-wm/src/{lib,detect}.rs`,
   `crates/torro-wm/tests/fixtures/aerospace-*.json` (neu)
 - Neues Backend neben `hyprland/`, das `WindowManager` umsetzt. AeroSpace wird über seine Kommandozeile
@@ -123,7 +143,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   speichern und laden auf einem Mac mit AeroSpace.
 
 ### X.7 Fenstermanager GlazeWM (Windows)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – (für den Dienst unter Windows: X.1) · **Dateien:** `crates/torro-wm/src/glazewm/` (neu),
   `crates/torro-wm/src/{lib,detect}.rs`, `crates/torro-wm/tests/fixtures/glazewm-*.json` (neu), `crates/torro-wm/Cargo.toml`,
   `Cargo.toml`
@@ -138,7 +158,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   Fehler, Ereignisse). Von Hand auf Windows mit GlazeWM: Vorlage speichern und laden.
 
 ### X.8 Startbefehle für Fenster auf macOS und Windows
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** X.6, X.7 · **Dateien:** `crates/torro-setups/src/launch/{mod,macos,windows}.rs` (neu: `macos.rs`,
   `windows.rs`)
 - `command_for(window)` ist heute nur für Linux echt (liest `/proc`). Damit gespeicherte Vorlagen fehlende
@@ -148,7 +168,7 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   einem geschlossenen Programm laden, es startet und landet am richtigen Platz.
 
 ### X.9 Windows-Paket: Symbol und Versionsangaben in der `.exe`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/{torroworkplace,torrocalendar,torrotasks}/build.rs` (neu),
   deren `Cargo.toml`, `packaging/windows/` (neu: `.ico` aus `packaging/linux/icons/*.svg`), `Cargo.toml`
 - Jede `.exe` bekommt Symbol, Produktname, Version und Hersteller als Windows-Ressource (z. B. mit
@@ -158,16 +178,15 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   und macOS-Build unverändert.
 
 ### X.10 Windows-Signatur
-- [ ] erledigt
-- **Modell:** Opus, mit dem Maintainer · **Braucht:** X.1, X.2, X.4 · **Dateien:** `dist-workspace.toml`,
-  `.github/workflows/release.yml` (nur über `dist generate`), `docs/release.md`
-- Erst, wenn Windows benutzbar ist. Entscheiden und einrichten: Azure Artifact Signing (Monatsabo; `dist` ab
-  0.33, also `cargo-dist-version` anheben; vorher prüfen, ob es für Einzelentwickler in Deutschland offen ist)
-  oder klassisches OV-Zertifikat (Schlüssel in Hardware oder Cloud; `dist` 0.32 kann SSL.com eSigner).
-- Auch mit Signatur warnt SmartScreen, bis die Dateien genug Downloads gesammelt haben; das in
-  `docs/release.md` festhalten.
-- Abnahme: Ein Release-Kandidat liefert signierte `.exe` (`signtool verify /pa` bzw. Eigenschaften →
-  Digitale Signaturen); Checkliste in `docs/release.md` abgehakt.
+- [x] erledigt (entschieden 2026-10-12: **unsigniert**)
+- **Entscheidung:** Windows wird unsigniert ausgeliefert. Eine Signatur ist zum Bauen und Ausliefern nicht nötig;
+  sie unterdrückt nur die SmartScreen-Meldung beim ersten Start einer im Browser geladenen Datei. Der
+  PowerShell-Installer von `dist` löst diese Meldung nicht aus.
+- Recherche (2026-10-11), falls es später doch eine Signatur sein soll: Azure Artifact Signing ist für
+  Einzelpersonen nur in den USA und Kanada offen (`dist` ab 0.33); SignPath Foundation signiert Open Source
+  kostenlos (Herausgeber „SignPath Foundation“, Prüfung dauert Wochen); Certum Open Source etwa 49 €/Jahr, für CI
+  nur über inoffizielle Werkzeuge; SSL.com eSigner etwa 310 $/Jahr. Auch mit Signatur warnt SmartScreen, bis die
+  Dateien genug Downloads gesammelt haben.
 
 ### X.11 Abnahme auf echten Rechnern und Doku
 - [ ] erledigt
