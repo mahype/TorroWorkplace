@@ -73,7 +73,7 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
   Fehlermeldung, Protokoll oder `approvals.json`; API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
 ### M7.2 Steuerzentrale: Mail-Anbieter im Assistenten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M7.1, M1.2 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts}.rs`
 - **Oberfläche:** Im Assistenten neben „Nextcloud“ der Anbieter „Mail provider (calendar and tasks)“.
   Schritt 1: E-Mail-Adresse → `accounts.discover_services`; gefundener Anbieter mit Logo-freiem Namen,
