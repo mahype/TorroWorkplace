@@ -1434,4 +1434,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This account has no calendar address. Connect it again with one.",
         "Dieses Konto hat keine Kalenderadresse. Verbinde es erneut mit einer.",
     ),
+    // Mail as a source of the inbox (E4.1)
+    ("(no subject)", "(kein Betreff)"),
+    ("Mark {entry} as done and its mail as read", "{entry} als erledigt markieren und die Mail als gelesen"),
+    (
+        "Move {entry} to {lane} and send later mail from {sender} there too",
+        "{entry} nach {lane} verschieben und spätere Mails von {sender} ebenfalls dorthin",
+    ),
+    (
+        "Stop sending mail from {sender} of {source} to {lane}",
+        "Mails von {sender} aus {source} nicht mehr nach {lane} einsortieren",
+    ),
 ];
