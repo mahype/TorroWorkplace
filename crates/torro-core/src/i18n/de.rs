@@ -653,6 +653,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Change the setting {key} to {value}", "Einstellung {key} auf {value} ändern"),
     ("Replace all settings", "Alle Einstellungen ersetzen"),
     ("Create filter list \"{name}\"", "Filterliste „{name}“ anlegen"),
+    ("Create task list \"{name}\" in {account}", "Aufgabenliste „{name}“ in {account} anlegen"),
     ("Change filter list \"{name}\"", "Filterliste „{name}“ ändern"),
     ("Run {command}", "{command} ausführen"),
     // Approvals: summaries from the core, ctl approvals (A.3b)
