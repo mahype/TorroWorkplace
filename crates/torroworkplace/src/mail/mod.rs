@@ -5,6 +5,7 @@
 //! - [`service`]: the mail accounts of the core, each with its IDLE connection, its command
 //!   connection and its store (task M2.6); the commands (M3.1 to M3.3) start there.
 //! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
+//! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -32,6 +33,7 @@ use torro_core::paths::AppPaths;
 pub mod service;
 pub mod store;
 pub mod sync;
+pub mod write;
 
 /// Fetched attachments are deleted after this long (task M2.5).
 pub const ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);

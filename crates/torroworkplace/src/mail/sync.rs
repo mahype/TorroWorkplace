@@ -364,8 +364,9 @@ fn new_message(
 }
 
 /// The conversation of a message: the first message it refers to (`References:`, else
-/// `In-Reply-To:`), else itself, as a short hash. `None` without any `Message-ID`.
-fn thread_id(read: &ReadMessage) -> Option<String> {
+/// `In-Reply-To:`), else itself, as a short hash. `None` without any `Message-ID`. Drafts the
+/// core saves itself (task M3.2, [`super::write`]) are threaded the same way.
+pub(super) fn thread_id(read: &ReadMessage) -> Option<String> {
     let root = read.references.first().or(read.in_reply_to.as_ref()).or(read.message_id.as_ref())?;
     let hash: String = Sha256::digest(root.as_bytes()).iter().take(12).map(|byte| format!("{byte:02x}")).collect();
     Some(format!("t:{hash}"))
@@ -395,7 +396,9 @@ fn unreadable() -> ReadMessage {
 /// `tests/imap_support`, but answering from a small world of folders and messages instead of a
 /// fixed script, so a sync can run against it as against a real server: sign-in (`LOGIN`), `LIST`
 /// with SPECIAL-USE, `SELECT` with CONDSTORE, `UID SEARCH`, `UID FETCH` (headers, flags with
-/// `CHANGEDSINCE`, whole messages), `IDLE` with push, `NOOP`, `LOGOUT`. Tests change the world
+/// `CHANGEDSINCE`, whole messages), `IDLE` with push, `NOOP`, `LOGOUT`, and for the mail commands
+/// (task M3.2) `STATUS`, `APPEND`, `UID STORE`, `UID COPY` and `EXPUNGE` (no MOVE, no UIDPLUS: the
+/// client takes its fallbacks). Tests change the world
 /// ([`FakeImap::add`], [`FakeImap::set_flags`], …) and cut connections; idling clients hear of
 /// every change.
 ///
@@ -607,6 +610,30 @@ pub(crate) mod fake {
             self.changed();
         }
 
+        /// Adds an empty folder at `path` with the `LIST` attributes `attributes` (`\Trash`).
+        pub(crate) fn add_folder(&self, path: &str, attributes: &str, uidvalidity: u32) {
+            self.world().folders.push(Folder {
+                path: path.into(),
+                attributes: attributes.into(),
+                uidvalidity,
+                next_uid: 1,
+                modseq: 1,
+                messages: Vec::new(),
+            });
+            self.changed();
+        }
+
+        /// The messages of `folder` as the server holds them: UID, flags and the raw message.
+        pub(crate) fn messages(&self, folder: &str) -> Vec<(u32, Vec<String>, String)> {
+            let mut world = self.world();
+            world
+                .folder(folder)
+                .messages
+                .iter()
+                .map(|m| (m.uid, m.flags.iter().cloned().collect(), String::from_utf8_lossy(&m.raw).into_owned()))
+                .collect()
+        }
+
         /// Ends every open connection, as a network that went away.
         pub(crate) fn drop_connections(&self) {
             self.cuts.send_modify(|count| *count += 1);
@@ -671,6 +698,12 @@ pub(crate) mod fake {
                         answer
                     }
                     "UID" => self.uid(&tag, &rest["UID ".len()..], selected.as_deref()),
+                    "STATUS" => self.status(&tag, &quoted(&rest["STATUS ".len()..])),
+                    "EXPUNGE" => self.expunge_deleted(&tag, selected.as_deref()),
+                    "APPEND" => match self.append(&mut reader, &mut writer, &tag, &rest).await {
+                        Some(answer) => answer,
+                        None => return,
+                    },
                     "IDLE" => {
                         if write(&mut writer, "+ idling").await.is_err() {
                             return;
@@ -749,8 +782,138 @@ pub(crate) mod fake {
             )
         }
 
+        /// `STATUS`: counts, UIDNEXT, UIDVALIDITY and HIGHESTMODSEQ of `path`.
+        fn status(&self, tag: &str, path: &str) -> String {
+            let world = self.world();
+            let Some(folder) = world.folders.iter().find(|folder| folder.path == path) else {
+                return format!("{tag} NO [NONEXISTENT] no such folder");
+            };
+            let unseen = folder.messages.iter().filter(|m| !m.flags.contains("\\Seen")).count();
+            format!(
+                "* STATUS \"{path}\" (MESSAGES {} UNSEEN {unseen} UIDNEXT {} UIDVALIDITY {} HIGHESTMODSEQ {})\r\n\
+                 {tag} OK Status completed",
+                folder.messages.len(),
+                folder.next_uid,
+                folder.uidvalidity,
+                folder.modseq
+            )
+        }
+
+        /// `APPEND "path" (flags) {n}`: asks for the literal, reads it and files it. `None` when
+        /// the connection broke.
+        async fn append<R, W>(&self, reader: &mut R, writer: &mut W, tag: &str, rest: &str) -> Option<String>
+        where
+            R: tokio::io::AsyncBufRead + Unpin,
+            W: AsyncWrite + Unpin,
+        {
+            use tokio::io::AsyncReadExt;
+            let arguments = &rest["APPEND ".len()..];
+            let path = quoted(arguments);
+            let size: usize = arguments.rsplit_once('{')?.1.trim_end_matches('}').parse().ok()?;
+            let flags: BTreeSet<String> = arguments
+                .split_once('(')
+                .and_then(|(_, after)| after.split_once(')'))
+                .map(|(list, _)| list.split_whitespace().map(str::to_string).collect())
+                .unwrap_or_default();
+            write(writer, "+ go ahead").await.ok()?;
+            let mut raw = vec![0u8; size];
+            reader.read_exact(&mut raw).await.ok()?;
+            let mut end = String::new();
+            reader.read_line(&mut end).await.ok()?;
+            {
+                let mut world = self.world();
+                let modseq = world.bump();
+                let Some(folder) = world.folders.iter_mut().find(|folder| folder.path == path) else {
+                    return Some(format!("{tag} NO [TRYCREATE] no such folder"));
+                };
+                let uid = folder.next_uid;
+                folder.next_uid += 1;
+                folder.modseq = modseq;
+                folder.messages.push(Message { uid, flags, modseq, raw, received: Utc::now() });
+            }
+            self.changed();
+            Some(format!("{tag} OK APPEND completed"))
+        }
+
+        /// `EXPUNGE`: removes the messages marked `\Deleted` from the open folder.
+        fn expunge_deleted(&self, tag: &str, selected: Option<&str>) -> String {
+            let Some(path) = selected else { return format!("{tag} BAD no folder selected") };
+            {
+                let mut world = self.world();
+                let modseq = world.bump();
+                let folder = world.folder(path);
+                folder.modseq = modseq;
+                folder.messages.retain(|message| !message.flags.contains("\\Deleted"));
+            }
+            self.changed();
+            format!("{tag} OK Expunge completed")
+        }
+
+        /// `UID STORE set ±FLAGS.SILENT (…)` in the open folder.
+        fn store_flags(&self, tag: &str, path: &str, arguments: &str) -> String {
+            let mut parts = arguments.splitn(3, ' ');
+            let (Some(set), Some(change), Some(list)) = (parts.next(), parts.next(), parts.next()) else {
+                return format!("{tag} BAD broken STORE");
+            };
+            let flags: Vec<String> =
+                list.trim_matches(|c| c == '(' || c == ')').split_whitespace().map(str::to_string).collect();
+            {
+                let mut world = self.world();
+                let modseq = world.bump();
+                let folder = world.folder(path);
+                folder.modseq = modseq;
+                for message in folder.messages.iter_mut().filter(|message| in_set(set, message.uid)) {
+                    for flag in &flags {
+                        if change.starts_with('+') {
+                            message.flags.insert(flag.clone());
+                        } else {
+                            message.flags.remove(flag);
+                        }
+                    }
+                    message.modseq = modseq;
+                }
+            }
+            self.changed();
+            format!("{tag} OK Store completed")
+        }
+
+        /// `UID COPY set "target"` from the open folder: copies under new UIDs, in UID order.
+        fn copy(&self, tag: &str, path: &str, arguments: &str) -> String {
+            let (set, target) = arguments.split_once(' ').unwrap_or((arguments, ""));
+            let target = quoted(target);
+            {
+                let mut world = self.world();
+                if !world.folders.iter().any(|folder| folder.path == target) {
+                    return format!("{tag} NO [TRYCREATE] no such folder");
+                }
+                let modseq = world.bump();
+                let copies: Vec<(BTreeSet<String>, Vec<u8>, DateTime<Utc>)> = world
+                    .folder(path)
+                    .messages
+                    .iter()
+                    .filter(|message| in_set(set, message.uid))
+                    .map(|message| (message.flags.clone(), message.raw.clone(), message.received))
+                    .collect();
+                let folder = world.folder(&target);
+                folder.modseq = modseq;
+                for (flags, raw, received) in copies {
+                    let uid = folder.next_uid;
+                    folder.next_uid += 1;
+                    folder.messages.push(Message { uid, flags, modseq, raw, received });
+                }
+            }
+            self.changed();
+            format!("{tag} OK Copy completed")
+        }
+
         fn uid(&self, tag: &str, rest: &str, selected: Option<&str>) -> String {
             let Some(path) = selected else { return format!("{tag} BAD no folder selected") };
+            if let Some(arguments) = rest.strip_prefix("STORE ") {
+                return self.store_flags(tag, path, arguments);
+            }
+            if let Some(arguments) = rest.strip_prefix("COPY ") {
+                return self.copy(tag, path, arguments);
+            }
             let mut world = self.world();
             let folder = world.folder(path);
             let mut lines = Vec::new();
