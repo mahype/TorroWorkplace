@@ -82,6 +82,7 @@ use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
 
 use crate::account::github::GithubAccounts;
 use crate::approvals::{Approvals, InboxFacts};
+use crate::mail::service::MailService;
 use crate::pim::PimService;
 
 /// The file in the core's state directory.
@@ -1424,20 +1425,23 @@ pub async fn file_approvals(inbox: &Inbox, approvals: &Approvals, now: DateTime<
 }
 
 /// The routine of the source `suite` at `now`: files the open approvals ([`file_approvals`]) and
-/// the accounts of the calendar service and the GitHub accounts that need the user
-/// ([`Inbox::file_account_problems`]). The list counts as complete only once both services loaded
-/// their accounts. The core runs it when it starts and every [`SUITE_EVERY`].
+/// the accounts of the calendar service, the GitHub accounts and the mail accounts (task M2.6)
+/// that need the user ([`Inbox::file_account_problems`]). The list counts as complete only once
+/// all three services loaded their accounts. The core runs it when it starts and every
+/// [`SUITE_EVERY`].
 pub async fn tend_suite(
     inbox: &Inbox,
     approvals: &Approvals,
     pim: &PimService,
     github: &GithubAccounts,
+    mail: &MailService,
     now: DateTime<Utc>,
 ) {
     file_approvals(inbox, approvals, now).await;
-    let (nextcloud, github) = (pim.account_checks(now).await, github.account_checks().await);
-    let complete = nextcloud.is_some() && github.is_some();
-    let checks: Vec<AccountCheck> = nextcloud.into_iter().chain(github).flatten().collect();
+    let (nextcloud, github, mail) =
+        (pim.account_checks(now).await, github.account_checks().await, mail.account_checks(now).await);
+    let complete = nextcloud.is_some() && github.is_some() && mail.is_some();
+    let checks: Vec<AccountCheck> = nextcloud.into_iter().chain(github).chain(mail).flatten().collect();
     if let Err(err) = inbox.file_account_problems(&checks, complete, now) {
         eprintln!("torroworkplace: inbox: cannot file the account problems: {err}");
     }

@@ -107,6 +107,7 @@ CREATE TABLE drafts (
 /// drafts, so the core remembers the author of each one. A draft nobody registered (written in
 /// another mail program) belongs to the person: [`MailStore::draft_author`] gives `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "used from drafts, task M3.2")]
 pub enum DraftAuthor {
     /// The person, through the app key (Inbox app, control centre).
     App,
@@ -114,6 +115,7 @@ pub enum DraftAuthor {
     Client(String),
 }
 
+#[allow(dead_code, reason = "used from drafts, task M3.2")]
 impl DraftAuthor {
     fn to_column(&self) -> String {
         match self {
@@ -147,6 +149,7 @@ pub struct FolderRef {
 
 /// What a message id resolves to: where the message is on the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "used from mail.get_message, task M3.1")]
 pub struct MessageRef {
     /// The message's id (`m:…`).
     pub id: String,
@@ -215,6 +218,7 @@ pub struct Body {
 /// A search over the cache; every field narrows the result (`mail.search_messages`). All `None`
 /// lists everything, newest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
 pub struct SearchQuery {
     /// Only this folder (an id from [`MailStore::folders`]).
     pub folder: Option<String>,
@@ -264,6 +268,7 @@ impl MailStore {
 
     /// Deletes the store of `account`: its file and the `-wal`/`-shm` files. Close the store first
     /// (drop it). Nothing there is nothing to do. Called when the account is removed.
+    #[allow(dead_code, reason = "used from accounts.remove_account, task M2.7")]
     pub fn remove(dirs: &MailDirs, account: &str) -> Result<(), MailStoreError> {
         let path = file_for(dirs, account);
         for file in [path.clone(), side_file(&path, "-wal"), side_file(&path, "-shm")] {
@@ -277,6 +282,7 @@ impl MailStore {
     }
 
     /// The account this store belongs to (`mail:<address>`).
+    #[allow(dead_code, reason = "used from the mail commands, task M3.1")]
     pub fn account(&self) -> &str {
         &self.account
     }
@@ -332,6 +338,7 @@ impl MailStore {
 
     /// All folders, ordered by role (inbox first) and then path. `unread` and `total` are counted
     /// from the stored headers.
+    #[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
     pub fn folders(&self) -> Result<Vec<Folder>, MailStoreError> {
         let mut statement = self.db.prepare(&format!("{FOLDER_SELECT} ORDER BY {FOLDER_ORDER}"))?;
         let rows = statement.query_map([], |row| folder_from_row(&self.account, row))?;
@@ -339,12 +346,14 @@ impl MailStore {
     }
 
     /// One folder by id.
+    #[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
     pub fn folder(&self, id: &str) -> Result<Option<Folder>, MailStoreError> {
         let sql = format!("{FOLDER_SELECT} WHERE f.id = ?1");
         Ok(self.db.query_row(&sql, [id], |row| folder_from_row(&self.account, row)).optional()?)
     }
 
     /// The folder with this role, if the account has one.
+    #[allow(dead_code, reason = "used from mail.move_messages, task M3.2")]
     pub fn folder_by_role(&self, role: Role) -> Result<Option<Folder>, MailStoreError> {
         let sql = format!("{FOLDER_SELECT} WHERE f.role = ?1 ORDER BY f.path LIMIT 1");
         Ok(self.db.query_row(&sql, [role_name(role)], |row| folder_from_row(&self.account, row)).optional()?)
@@ -449,6 +458,7 @@ impl MailStore {
     }
 
     /// Sets the flags of a message to exactly `flags`. `false`: no such message.
+    #[allow(dead_code, reason = "used from mail.set_flags, task M3.2")]
     pub fn set_flags(&self, id: &str, flags: &[Flag]) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("UPDATE messages SET flags = ?2 WHERE id = ?1", params![id, flag_bits(flags)])? > 0)
     }
@@ -500,6 +510,7 @@ impl MailStore {
     /// Moves a message to another folder under its UID there; the id stays (a client may hold on
     /// to it). `uidvalidity` is the target folder's, as for [`upsert_message`](Self::upsert_message).
     /// `false`: no such message.
+    #[allow(dead_code, reason = "used from mail.move_messages and drafts, task M3.2")]
     pub fn relocate_message(&self, id: &str, folder: &str, uidvalidity: u32, uid: u32) -> Result<bool, MailStoreError> {
         self.check_uidvalidity(folder, uidvalidity)?;
         // A row already at the target UID would be a leftover of an older sync; the moved
@@ -514,6 +525,7 @@ impl MailStore {
 
     /// Removes one message with its text and index entry (`false`: no such message). A draft's
     /// author stays until [`forget_draft`](Self::forget_draft).
+    #[allow(dead_code, reason = "used from mail.delete_messages, task M3.2")]
     pub fn delete_message(&self, id: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("DELETE FROM messages WHERE id = ?1", [id])? > 0)
     }
@@ -534,6 +546,7 @@ impl MailStore {
 
     /// Resolves a message id to where it is on the server (`None`: this account does not have it,
     /// or the sync dropped it).
+    #[allow(dead_code, reason = "used from the mail commands, task M3.1")]
     pub fn resolve_message(&self, id: &str) -> Result<Option<MessageRef>, MailStoreError> {
         let sql = "SELECT m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id
                    FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.id = ?1";
@@ -578,6 +591,7 @@ impl MailStore {
     /// A whole message. `text` is `None` while the text is not stored (never fetched, or older
     /// than [`BODY_RETENTION_DAYS`]): the caller fetches it from the server with `BODY.PEEK` and
     /// stores it with [`set_body`](Self::set_body).
+    #[allow(dead_code, reason = "used from mail.get_message, task M3.1")]
     pub fn message(&self, id: &str) -> Result<Option<Message>, MailStoreError> {
         let sql = format!(
             "SELECT {SUMMARY_COLUMNS}, m.cc_json, m.reply_to_json, m.list_id, m.list_unsubscribe, m.precedence,
@@ -610,6 +624,7 @@ impl MailStore {
     }
 
     /// The messages of a folder, newest first; `limit` and `offset` page through them.
+    #[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
     pub fn list_messages(&self, folder: &str, limit: u32, offset: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
         let query = SearchQuery { folder: Some(folder.to_string()), ..SearchQuery::default() };
         self.search(&query, limit, offset)
@@ -617,6 +632,7 @@ impl MailStore {
 
     /// Searches the cache, newest first; `limit` and `offset` page through the result. A search
     /// whose words hold nothing searchable (only punctuation) finds nothing.
+    #[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
     pub fn search(&self, query: &SearchQuery, limit: u32, offset: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
         let mut from = "messages m".to_string();
         let mut conditions: Vec<&str> = Vec::new();
@@ -657,6 +673,7 @@ impl MailStore {
 
     /// All messages of a conversation (any folder), oldest first. The thread of a message is
     /// `summary(id)?.thread_id`.
+    #[allow(dead_code, reason = "used from mail.get_thread, task M3.1")]
     pub fn thread(&self, thread_id: &str) -> Result<Vec<MessageSummary>, MailStoreError> {
         let sql = format!("SELECT {SUMMARY_COLUMNS} FROM messages m WHERE m.thread_id = ?1 ORDER BY m.date, m.seq");
         let mut statement = self.db.prepare(&sql)?;
@@ -669,6 +686,7 @@ impl MailStore {
     /// Reserves the id of a new draft and remembers its `author`. The id is a message id: build
     /// the message in the drafts folder with [`NewMessage::id`] set to it. To replace a draft,
     /// [`relocate_message`](Self::relocate_message) it to its new UID so the id stays.
+    #[allow(dead_code, reason = "used from drafts, task M3.2")]
     pub fn new_draft_id(&self, author: &DraftAuthor) -> Result<String, MailStoreError> {
         let id = self.fresh_id("m:", "messages")?;
         self.db.execute(
@@ -680,6 +698,7 @@ impl MailStore {
 
     /// Who wrote the draft. `None`: nobody registered it, so it is the person's (written in
     /// another program) and a client key may not touch it (`not-found`).
+    #[allow(dead_code, reason = "used from drafts, task M3.2")]
     pub fn draft_author(&self, id: &str) -> Result<Option<DraftAuthor>, MailStoreError> {
         let author: Option<String> =
             self.db.query_row("SELECT author FROM drafts WHERE id = ?1", [id], |row| row.get(0)).optional()?;
@@ -687,6 +706,7 @@ impl MailStore {
     }
 
     /// Forgets the author of a draft that was sent or deleted. `false`: it was not registered.
+    #[allow(dead_code, reason = "used from drafts, task M3.2")]
     pub fn forget_draft(&self, id: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("DELETE FROM drafts WHERE id = ?1", [id])? > 0)
     }
@@ -751,12 +771,14 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
 
 // ----- SQL pieces -----
 
+#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 const FOLDER_SELECT: &str = "SELECT f.id, f.name, f.path, f.role,
         (SELECT count(*) FROM messages m WHERE m.folder_id = f.id AND m.flags & 1 = 0),
         (SELECT count(*) FROM messages m WHERE m.folder_id = f.id)
     FROM folders f";
 
 /// Inbox, drafts, sent, archive, junk, trash, then folders without a role; by path inside each.
+#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 const FOLDER_ORDER: &str =
     "CASE f.role WHEN 'inbox' THEN 0 WHEN 'drafts' THEN 1 WHEN 'sent' THEN 2 WHEN 'archive' THEN 3
         WHEN 'junk' THEN 4 WHEN 'trash' THEN 5 ELSE 6 END, f.path";
@@ -827,6 +849,7 @@ fn refresh_index(db: &Connection, seq: i64) -> Result<(), MailStoreError> {
 
 /// Every word as a quoted prefix term, all required. Words without a letter or digit are left
 /// out (the tokenizer would make an empty phrase of them); `None` when nothing is left.
+#[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
 fn match_expression(text: &str) -> Option<String> {
     let terms: Vec<String> = text
         .split_whitespace()
@@ -838,6 +861,7 @@ fn match_expression(text: &str) -> Option<String> {
 
 // ----- rows -----
 
+#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 fn folder_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<Folder> {
     let role: Option<String> = row.get(3)?;
     Ok(Folder {
@@ -912,6 +936,7 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
+#[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
 fn role_from_name(name: &str) -> Option<Role> {
     [Role::Inbox, Role::Drafts, Role::Sent, Role::Archive, Role::Junk, Role::Trash]
         .into_iter()

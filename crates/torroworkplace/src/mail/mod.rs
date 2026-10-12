@@ -2,6 +2,9 @@
 //!
 //! - [`store`]: one SQLite file per account (folders, message headers, texts, full-text index,
 //!   who wrote which draft) and the opaque ids (`f:…`, `m:…`) that clients hold on to.
+//! - [`service`]: the mail accounts of the core, each with its IDLE connection, its command
+//!   connection and its store (task M2.6); the commands (M3.1 to M3.3) start there.
+//! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -16,11 +19,6 @@
 //!
 //! **Files** (security rule 5 of task M2.1): `<data>/mail/` and `<cache>/mail-attachments/` are
 //! 0700, every file in them (the SQLite files with `-wal` and `-shm`, fetched attachments) 0600.
-//!
-//! Nothing here is called yet: the sync (M2.6) and the commands (M3.1, M3.2) come next.
-
-// The whole module waits for its first caller (M2.6); remove this line with that task.
-#![allow(dead_code)]
 
 use std::fmt;
 use std::fs;
@@ -31,12 +29,15 @@ use std::time::{Duration, SystemTime};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+pub mod service;
 pub mod store;
+pub mod sync;
 
 /// Fetched attachments are deleted after this long (task M2.5).
 pub const ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// The longest file name an attachment is stored under, in bytes.
+#[allow(dead_code, reason = "used from attachments of mail.get_attachment, task M3.1")]
 const FILE_NAME_MAX: usize = 120;
 
 /// Where mail files live. Tests pass a temporary directory; the core uses [`MailDirs::for_workplace`].
@@ -168,6 +169,7 @@ impl AttachmentCache {
     }
 
     /// The managed folder.
+    #[allow(dead_code, reason = "used from attachments of mail.get_attachment and drafts, tasks M3.1 and M3.2")]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -175,6 +177,7 @@ impl AttachmentCache {
     /// Writes `bytes` as a new file named after `file_name` (made safe by [`safe_file_name`]) and
     /// returns its absolute path. The folders are 0700, the file 0600. The caller enforces the
     /// size limit (50 MiB for `mail.get_attachment`).
+    #[allow(dead_code, reason = "used from attachments of mail.get_attachment, task M3.1")]
     pub fn store(&self, file_name: &str, bytes: &[u8]) -> Result<PathBuf, MailStoreError> {
         use std::io::Write;
         crate::clients::create_private_dir(&self.dir)?;
@@ -196,6 +199,7 @@ impl AttachmentCache {
     /// `path` is a regular file inside the managed folder: not a symbolic link, and not outside
     /// after the system resolved `..` and links on the way. A path that is not there is not
     /// inside.
+    #[allow(dead_code, reason = "used from attachments of drafts, task M3.2")]
     pub fn contains(&self, path: &Path) -> bool {
         let is_file = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file());
         let inside = match (path.canonicalize(), self.dir.canonicalize()) {
@@ -241,6 +245,7 @@ impl AttachmentCache {
 /// A file name from the outside made safe to store: only the last part after `/` or `\`, no
 /// control or invisible characters, characters Windows refuses replaced by `_`, no leading dots or
 /// spaces (so never `.` or `..`), at most 120 bytes; `attachment` when nothing is left.
+#[allow(dead_code, reason = "used from attachments of mail.get_attachment, task M3.1")]
 pub fn safe_file_name(name: &str) -> String {
     let last = name.rsplit(['/', '\\']).next().unwrap_or("");
     let cleaned: String = last
@@ -257,6 +262,7 @@ pub fn safe_file_name(name: &str) -> String {
 }
 
 /// Zero-width and bidi characters, which change what a person reads without showing.
+#[allow(dead_code, reason = "used from attachments of mail.get_attachment, task M3.1")]
 fn is_invisible(c: char) -> bool {
     matches!(c, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}')

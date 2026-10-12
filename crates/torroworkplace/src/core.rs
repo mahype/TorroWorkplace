@@ -31,6 +31,7 @@ use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
+use crate::mail::service::MailService;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 use crate::ui::Section;
@@ -385,6 +386,9 @@ pub struct Core {
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
+    /// The mail accounts (task M2.6): their sync, command connections and stores. The user's
+    /// ([`MailService::system`]), loaded only by [`Core::start`]; tests use their own.
+    mail: Arc<MailService>,
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
@@ -418,6 +422,7 @@ impl Core {
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
             github: Arc::new(GithubAccounts::system()),
+            mail: Arc::new(MailService::system()),
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
             mail_discovery: OnceLock::new(),
@@ -460,6 +465,13 @@ impl Core {
         self
     }
 
+    /// The core with `mail` instead of the user's mail accounts, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_mail(mut self, mail: MailService) -> Core {
+        self.mail = Arc::new(mail);
+        self
+    }
+
     /// The core with `inbox` instead of the user's, for tests in other modules.
     #[cfg(test)]
     pub(crate) fn with_inbox(mut self, inbox: Inbox) -> Core {
@@ -483,14 +495,15 @@ impl Core {
     /// approvals still open (their notifications went with the core before, task A.3b), loads the
     /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
     /// five minutes (task G.2), and files approvals and account problems in the inbox now and
-    /// every minute (task E2.1, [`crate::inbox::tend_suite`]). The daemon calls it once, next to
+    /// every minute (task E2.1, [`crate::inbox::tend_suite`]). Starts the sync of the mail
+    /// accounts (task M2.6, [`MailService::start`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(&self) {
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
-        let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
+        let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {
             loop {
-                crate::inbox::tend_suite(&inbox, &approvals, &pim, &github, Utc::now()).await;
+                crate::inbox::tend_suite(&inbox, &approvals, &pim, &github, &mail, Utc::now()).await;
                 tokio::time::sleep(crate::inbox::SUITE_EVERY).await;
             }
         });
@@ -501,6 +514,7 @@ impl Core {
             }
         });
         self.github.start();
+        self.mail.start();
         let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
         tokio::spawn(async move {
             // The tokens come from the keychain in the background; the first refresh waits for
@@ -1278,17 +1292,20 @@ impl Core {
         }
     }
 
-    /// Every account as `reach` may see it: the calendar service's accounts, then the GitHub
-    /// accounts with their filter lists as collections (never with their secrets), and a sign-in
-    /// that runs last, as `accounts.list_accounts` promises.
+    /// Every account as `reach` may see it: the calendar service's accounts, then the mail
+    /// accounts (a client's only as far as its rights reach), then the GitHub accounts with their
+    /// filter lists as collections (never with their secrets), and a sign-in that runs last, as
+    /// `accounts.list_accounts` promises.
     async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
         let mut accounts = self.pim.accounts_within(reach).await;
         let mut github = self.github.infos().await;
         for account in &mut github {
             account.collections = self.pim.filter_lists_within(&account.id, reach).await;
         }
+        let mut others = self.mail.infos(reach).await;
+        others.extend(github);
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
-        accounts.splice(at..at, github);
+        accounts.splice(at..at, others);
         accounts
     }
 
@@ -1311,21 +1328,24 @@ impl Core {
         answer
     }
 
-    /// Syncs the calendar accounts, then checks the GitHub tokens again. Neither stops the
-    /// other; the answer is the first failure. Without a Nextcloud account but with a GitHub
-    /// one there is something to sync, so the calendar service's `not-connected` does not count.
+    /// Syncs the calendar accounts and the mail accounts side by side, then checks the GitHub
+    /// tokens again. None stops the others; the answer is the first failure, in that order. A
+    /// client syncs only the mail accounts its rights reach and hears only of their failures.
+    /// Without a calendar account but with a GitHub or mail account there is something to sync,
+    /// so the calendar service's `not-connected` does not count then (a mail account without a
+    /// password answers `auth` instead).
     async fn sync(&self, reach: Reach<'_>) -> Response {
-        let pim = self.pim.handle_within(Request::Sync, reach).await;
+        let (pim, mail) = tokio::join!(self.pim.handle_within(Request::Sync, reach), self.mail.sync_all(reach));
         let github = self.github.check_all().await;
         // A list that fails keeps its items and shows its problem; it does not fail the sync.
         refresh_filter_lists(&self.pim, &self.github).await;
-        let only_github = matches!(&pim, Response::Error { code, .. } if code == "not-connected")
-            && !self.github.infos().await.is_empty();
-        match (pim, github) {
-            (_, Err(err)) if only_github => github_error(&err),
-            (_, Ok(())) if only_github => Response::Ok,
-            (Response::Ok, Err(err)) => github_error(&err),
-            (pim, _) => pim,
+        let no_calendars = matches!(&pim, Response::Error { code, .. } if code == "not-connected")
+            && (!self.github.infos().await.is_empty() || self.mail.syncs_any(reach).await);
+        let pim = if no_calendars { Response::Ok } else { pim };
+        match (pim, mail, github) {
+            (Response::Ok, Err(err), _) => err.response(),
+            (Response::Ok, Ok(()), Err(err)) => github_error(&err),
+            (pim, _, _) => pim,
         }
     }
 
@@ -2708,6 +2728,73 @@ mod tests {
         let asked = waits(ask(&core, Some(&key), Request::ConnectGithub).await);
         assert_eq!(asked.command, "accounts.connect_github");
         assert_eq!(ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1, "nothing opened yet");
+    }
+
+    /// Task M2.6: `accounts.sync` syncs the mail accounts too and answers with a refused password;
+    /// `accounts.list_accounts` lists them with their problem, and a client only those its rights
+    /// reach.
+    #[tokio::test]
+    async fn mail_accounts_are_synced_listed_and_kept_from_clients_that_do_not_reach_them() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::{self, FakeImap};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (good, bad) = (FakeImap::start(PASSWORD).await, FakeImap::start("another password").await);
+        good.add("INBOX", &fake::mail("Hello", 0, None), &[]);
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &good.endpoint);
+        let bernd = mail_account("bernd@example.org", &bad.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, PASSWORD), (&bernd, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        let core = core(dir.path()).with_mail(mail);
+
+        let answer = core.handle(Request::Sync).await;
+        assert_eq!(answer, Response::Error { code: "auth".into(), message: tr("Password was refused").into() });
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        let states: Vec<(&str, &str, bool, Option<&str>)> = accounts
+            .iter()
+            .map(|account| match &account.state {
+                AccountState::Connected { last_sync, problem, .. } => {
+                    (account.id.as_str(), account.kind.as_str(), last_sync.is_some(), problem.as_deref())
+                }
+                other => panic!("connected, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                (anna.id.as_str(), "mail", true, None),
+                (bernd.id.as_str(), "mail", false, Some(tr("Password was refused")))
+            ]
+        );
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![anna.id.clone()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let Response::Accounts { accounts } = ask(&core, Some(&key), Request::Accounts).await else {
+            panic!("accounts")
+        };
+        let ids: Vec<&str> = accounts.iter().map(|account| account.id.as_str()).collect();
+        assert_eq!(ids, [anna.id.as_str()], "Bernd's account is as if it did not exist");
+        // Nor does its sync run for the client, or its refused password answer it.
+        let logins = bad.logins();
+        assert_eq!(core.handle_within(Request::Sync, Reach::Client(&rights)).await, Response::Ok);
+        assert_eq!(bad.logins(), logins);
+
+        // The refused password becomes an entry of the suite in the inbox (task E2.1).
+        crate::inbox::tend_suite(&core.inbox, &core.approvals, &core.pim, &core.github, &core.mail, Utc::now()).await;
+        let suite = Request::ListItems {
+            lane: None,
+            source: Some(torro_inbox::SourceRef::suite()),
+            state: None,
+            since: None,
+            limit: None,
+        };
+        let Response::Items { items } = core.handle(suite).await else { panic!("items") };
+        let titles: Vec<(torro_inbox::Kind, &str)> =
+            items.iter().map(|item| (item.kind, item.title.as_str())).collect();
+        let refused = trf("Sign-in to {account} was refused", &[("account", &"bernd@example.org")]);
+        assert_eq!(titles, [(torro_inbox::Kind::AccountProblem, refused.as_str())]);
     }
 
     /// The sections test cores and [`show_control_centre`] started a control centre on.
