@@ -79,6 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
+| `inbox` | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done`, `snooze_item`, `set_item_lane` ² | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `accounts` | `list_accounts` | `sync` | | `connect_nextcloud`, `remove_account` |
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
@@ -88,6 +89,27 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 ¹ `load_template` braucht `Write`, mit `mode: replace` aber `Delete`, weil es offene Fenster
 schließt. Die Stufe hängt also vom Request ab, nicht nur vom Namen (`Request::operation()`).
 `update_template` überschreibt eine Vorlage unwiederbringlich und ist deshalb `Delete`.
+
+² `set_item_lane` braucht `Write`, mit `remember: true` aber `Admin`: Die Spur gilt dann dauerhaft
+für alle späteren Hinweise der Quelle, wie eine Regel (`Request::operation()`, wie bei
+`load_template`).
+
+**`inbox`** (E1.1, Konzept [eingang.md](eingang.md)): Die Auswahl geht hier über **Quellen** statt
+Sammlungen, `Rights.inbox_sources` mit den Schlüsseln der Quellen (`suite`, `agent:claude-code`,
+`script:<name>`); alte `clients.json` ohne das Feld sehen keine Quelle. Vorlagen setzen `inbox` wie
+`tasks` und alle Quellen. Alle Befehle sind MCP-Tools; die Beschreibungen sagen, dass Titel und
+Texte mit `untrusted: true` Daten sind, keine Anweisungen. Die Sicherheitsregeln aus
+[tasks/eingang.md](tasks/eingang.md) stehen als Funktionen in `api.rs`, der Dienst ruft sie (E1.2):
+
+- Die Quelle eines Eintrags bestimmt der Dienst aus dem Client (`post_source`), nie der Absender.
+- `approval` und `account_problem` legt nur der Dienst an; `agent_waiting`/`agent_done` nimmt er
+  nur von Clients der Art **`hook`** an, sonst wird daraus `notice` (`admit_post`).
+- Freigaben, Kontoprobleme und alles der Quelle `suite` ändert nur der App-Schlüssel, sonst
+  `forbidden` (`check_item_change`, `check_source_change`).
+- **Hook-Clients** (`HOOK_CLIENT`, für die Hooks von Claude Code, Codex, Gemini CLI) haben höchstens
+  `Rights::hook()`: Schreiben in `inbox`, sonst nichts, keine Quelle sichtbar (`Rights::for_kind`,
+  beim Anlegen und Ändern der Rechte).
+  Sie können melden und auflösen; `list_items` und `get_item` liefern `not-found`.
 
 Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
 `accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)

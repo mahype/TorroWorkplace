@@ -101,7 +101,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   der Demo-Quelle; serde-Rundreise; fmt/clippy/test grün, auch mit `TORRO_LANG=de`.
 
 ### E1.1 Gerüst: Modell, Requests, Katalog
-- [ ] erledigt
+- [x] erledigt (Handler antworten bis E1.2 mit `unsupported`; `docs/api-reference.md` gibt es noch nicht, A.9)
 - **Modell:** Opus · **Braucht:** E1.1a, A.3 · **Dateien:**
   `crates/torro-inbox/src/*` (nur falls das Wire-Format Ergänzungen braucht, nennen),
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-ipc/Cargo.toml`, `crates/torroworkplace/src/{clients,core,mcp}.rs`

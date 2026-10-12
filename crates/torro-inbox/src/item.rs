@@ -316,9 +316,48 @@ pub struct SourceInfo {
     pub muted: bool,
 }
 
+/// A lasting rule of the inbox, as `inbox.list_rules` lists it: a lane remembered for a source
+/// (`inbox.set_item_lane` with `remember`) or a muted source (`inbox.mute_source`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Rule {
+    /// Opaque id given by the core; pass it to `inbox.remove_rule`.
+    pub id: String,
+    /// The source the rule is about.
+    pub source: SourceRef,
+    pub effect: RuleEffect,
+    /// When the user made the rule.
+    pub created: DateTime<Utc>,
+}
+
+/// What a [`Rule`] does to the new reports of its source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RuleEffect {
+    /// New notices of the source go to `lane`. Kinds with a fixed lane keep it
+    /// ([`crate::rules::placement`]).
+    Lane { lane: Lane },
+    /// New reports of the source are dropped; entries already there stay.
+    Muted,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rules_name_their_effect() {
+        let at = DateTime::parse_from_rfc3339("2026-10-12T08:00:00Z").expect("time").with_timezone(&Utc);
+        let rule = Rule {
+            id: "r1".into(),
+            source: SourceRef::script("ci"),
+            effect: RuleEffect::Lane { lane: Lane::Info },
+            created: at,
+        };
+        let value = json(&rule);
+        assert_eq!(value["effect"], serde_json::json!({ "kind": "lane", "lane": "info" }));
+        assert_eq!(json(RuleEffect::Muted), serde_json::json!({ "kind": "muted" }));
+        assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), rule);
+    }
 
     #[test]
     fn source_keys_round_trip() {

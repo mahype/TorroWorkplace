@@ -655,6 +655,18 @@ impl PimService {
             | Request::ListApprovals
             | Request::ApprovalStatus { .. }
             | Request::DecideApproval { .. } => return None,
+            // No collection: the inbox filters by the client's sources itself (task E1.2).
+            Request::ListItems { .. }
+            | Request::GetItem { .. }
+            | Request::ListSources
+            | Request::PostItem { .. }
+            | Request::ResolveItems { .. }
+            | Request::SetItemDone { .. }
+            | Request::SnoozeItem { .. }
+            | Request::SetItemLane { .. }
+            | Request::MuteSource { .. }
+            | Request::ListRules
+            | Request::RemoveRule { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

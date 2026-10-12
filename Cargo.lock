@@ -4545,6 +4545,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "torro-core",
+ "torro-inbox",
  "torro-pim",
  "torro-setups",
 ]

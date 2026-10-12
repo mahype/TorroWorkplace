@@ -464,7 +464,8 @@ impl Clients {
             key_sha256: hex(&hash),
             created: Utc::now(),
             last_used: None,
-            rights,
+            // A hook client never holds more than `Rights::hook`, whatever template it was given.
+            rights: rights.for_kind(kind),
         };
         let info = record.info();
         self.lock().clients.push(Entry { record, hash, locked: false });
@@ -484,7 +485,8 @@ impl Clients {
     /// A selection that names a collection by a bare URL, as before several accounts existed, is
     /// refused ([`ClientsError::Invalid`]) and nothing changes (task M1.4): old selections were
     /// rewritten once when the core started, and a bare URL now would reach no collection. So is
-    /// a GitHub selection with anything but `owner/name` and `owner` in it (task G.2).
+    /// a GitHub selection with anything but `owner/name` and `owner` in it (task G.2). A hook
+    /// client keeps at most [`Rights::hook`] ([`Rights::for_kind`], task E1.1).
     pub async fn update(&self, id: &str, rights: Rights) -> Result<(), ClientsError> {
         if has_legacy_selection(&rights) {
             return Err(ClientsError::Invalid(
@@ -497,8 +499,11 @@ impl Clients {
             ));
         }
         let _changing = self.shared.changing.lock().await;
-        let new = rights.clone();
-        let old = self.with_client(id, |record| std::mem::replace(&mut record.rights, rights))?;
+        // Narrowed to what the client's kind may hold (a hook client: `Rights::hook`).
+        let (old, new) = self.with_client(id, |record| {
+            let new = rights.for_kind(&record.kind);
+            (std::mem::replace(&mut record.rights, new.clone()), new)
+        })?;
         if let Err(err) = self.persist().await {
             // Fail safe: neither the old nor the new rights may be wider than what the person
             // wants now, so only what both allow stays in force until a write succeeds.
@@ -1241,6 +1246,46 @@ pub(crate) mod tests {
         assert_eq!(record.rights.github_repos, Selection::Only(vec![]));
         let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
         assert!(!record.rights.allows(preview.operation()));
+    }
+
+    #[tokio::test]
+    async fn a_hook_client_never_holds_more_than_posting_to_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let full = RightsTemplate::FullAccess.rights();
+        let (hook, _) = clients.add("Claude Code hooks", "hook", full.clone()).await.expect("added");
+        assert_eq!(hook.rights, full.for_kind(torro_ipc::api::HOOK_CLIENT));
+        assert!(!hook.rights.allows(Request::CalendarCollections.operation()), "no calendar");
+        assert_eq!(hook.rights.inbox_sources, Selection::Only(vec![]), "no source to see");
+        clients.update(&hook.id, everywhere(Level::Full, true)).await.expect("updated");
+        let rights = clients.list()[0].rights.clone();
+        assert!(!rights.allows(Request::Todos.operation()));
+        assert!(!rights.area(Area::Inbox).admin && rights.area(Area::Inbox).level == Level::Write);
+        // Other kinds keep what they were given.
+        let (script, _) = clients.add("Script", "script", full.clone()).await.expect("added");
+        assert_eq!(script.rights, full);
+    }
+
+    #[test]
+    fn a_clients_file_from_before_the_inbox_loads_without_inbox_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = clients_file(dir.path());
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let old = format!(
+            r#"{{"clients":[{{"id":"a1b2c3d4","name":"Claude Code","kind":"claude-code","keySha256":"{}",
+            "created":"2026-10-11T08:00:00Z","rights":{{"areas":{{"tasks":{{"level":"full","admin":false}}}},
+            "calendars":"all","taskLists":"all","githubRepos":"all","confirm":"on_delete"}}}}]}}"#,
+            "1".repeat(64)
+        );
+        fs::write(&file, old).expect("write");
+        let clients = open_in(dir.path());
+        let listed = clients.list();
+        assert_eq!(listed.len(), 1, "an older file is not damaged");
+        let rights = &listed[0].rights;
+        assert_eq!(rights.inbox_sources, Selection::Only(vec![]));
+        assert_eq!(rights.github_repos, Selection::All, "the rest stays as stored");
+        assert!(!rights.allows(Request::ListSources.operation()), "no inbox area yet");
+        assert!(!rights.inbox_sources.contains("agent:claude-code"));
     }
 
     #[tokio::test]

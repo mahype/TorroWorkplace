@@ -305,6 +305,18 @@ fn describe(request: &Request) -> String {
         Request::ListApprovals => "approvals".into(),
         Request::ApprovalStatus { id } => format!("approval {id}"),
         Request::DecideApproval { id, allow } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
+        // Ids only, never a title, a body or a thread key (security rule 7 of the inbox).
+        Request::ListItems { .. } => "inbox items".into(),
+        Request::GetItem { id } => format!("inbox item {id}"),
+        Request::ListSources => "inbox sources".into(),
+        Request::PostItem { .. } => "post to inbox".into(),
+        Request::ResolveItems { .. } => "resolve inbox items".into(),
+        Request::SetItemDone { id, .. } => format!("set inbox item {id} done"),
+        Request::SnoozeItem { id, .. } => format!("snooze inbox item {id}"),
+        Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
+        Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
+        Request::ListRules => "inbox rules".into(),
+        Request::RemoveRule { id } => format!("remove inbox rule {id}"),
     }
 }
 

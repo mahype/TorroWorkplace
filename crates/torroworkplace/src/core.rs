@@ -437,6 +437,24 @@ impl Core {
             Request::ListApprovals => self.list_approvals(None).await,
             Request::ApprovalStatus { id } => self.approval_status(None, &id).await,
             Request::DecideApproval { id, allow } => self.decide_approval(&id, allow).await,
+            // The core keeps the inbox from task E1.2 on.
+            request @ (Request::ListItems { .. }
+            | Request::GetItem { .. }
+            | Request::ListSources
+            | Request::PostItem { .. }
+            | Request::ResolveItems { .. }
+            | Request::SetItemDone { .. }
+            | Request::SnoozeItem { .. }
+            | Request::SetItemLane { .. }
+            | Request::MuteSource { .. }
+            | Request::ListRules
+            | Request::RemoveRule { .. }) => Response::Error {
+                code: "unsupported".into(),
+                message: format!(
+                    "{} is not available yet: the inbox comes with a later version",
+                    request.operation().name()
+                ),
+            },
         }
     }
 
