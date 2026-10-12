@@ -84,6 +84,7 @@ pub const DEBUG_VAR: &str = "TORRO_HOOK_DEBUG";
 const SMALL_FILE_MAX: u64 = 4096;
 
 /// The most parent processes collected; deeper chains are cut, nearest kept.
+#[cfg(target_os = "linux")]
 const PARENTS_MAX: usize = 32;
 
 /// The option that names the file holding the hook client's key (task E2.3b).
@@ -123,8 +124,10 @@ pub enum KeyFileError {
     /// The file is missing or cannot be opened or read.
     Unreadable(io::Error),
     /// Group or others have some access to the file (Unix); `mode` is its permission bits.
+    #[cfg_attr(not(unix), allow(dead_code))]
     TooOpen { mode: u32 },
     /// The file belongs to another user (Linux).
+    #[cfg_attr(not(unix), allow(dead_code))]
     NotOwner,
     /// Not a regular file, longer than [`KEY_FILE_MAX`], not UTF-8 or blank.
     NoKey,

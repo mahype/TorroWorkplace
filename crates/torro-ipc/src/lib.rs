@@ -3,8 +3,8 @@
 //! `torroworkplace daemon` owns the window manager connection, the templates and, later,
 //! accounts and sync. Every client — `torroworkplace ctl`, hotkeys, later the control
 //! centre and the apps — sends [`Request`]s over a local socket and gets one [`Response`]
-//! each: `core.sock` in the core's state directory (a Unix domain socket; Windows named
-//! pipes follow with the GlazeWM backend).
+//! each: `core.sock` in the core's state directory (a Unix domain socket) or, on Windows, a
+//! named pipe of the user ([`socket_path`]).
 //!
 //! Wire format: one JSON object per line in each direction, one request per connection. A
 //! client sends an [`Envelope`] with the API version, its [`Key`] and the [`Request`], whose
@@ -44,16 +44,88 @@ use torro_setups::restore::RestoreReport;
 
 use crate::api::{Rights, RightsTemplate};
 
-/// Where the core listens: `core.sock` in its state directory.
+/// Where the core listens; [`client`] and [`server`] take this path.
+///
+/// - Unix: `core.sock` in the core's state directory, `None` without a home directory.
+/// - Windows: the named pipe `\\.\pipe\torro-workplace-<SID>`, fixed per user (the SID of the
+///   account this process runs as), `None` when the SID cannot be found out. It is not a file:
+///   the pipe's access list, not a directory, keeps other users out (see [`server`]).
 pub fn socket_path() -> Option<PathBuf> {
-    AppPaths::for_app(AppId::WORKPLACE).map(|p| p.state.join("core.sock"))
+    #[cfg(windows)]
+    {
+        pipe::user_sid().map(|sid| PathBuf::from(format!("{}torro-workplace-{sid}", pipe::PREFIX)))
+    }
+    #[cfg(not(windows))]
+    {
+        AppPaths::for_app(AppId::WORKPLACE).map(|p| p.state.join("core.sock"))
+    }
 }
 
-/// The app key of the core listening at `socket`: `app.key` next to it, in the core's state
-/// directory. The core creates it on its first start (mode 0600); the suite's own programs read
-/// it with [`client::call`] and never handle it themselves.
+/// The app key of the core listening at `socket`, always a file in the core's state directory.
+/// The core creates it on its first start (mode 0600 on Unix; on Windows the state directory in
+/// the user profile is the user's alone); the suite's own programs read it with
+/// [`client::call`] and never handle it themselves.
+///
+/// For a socket file that is `app.key` next to it. For a named pipe (Windows, any name under
+/// `\\.\pipe\`) it is `app.key` in the state directory of [`AppPaths`], because a file next to
+/// a pipe name would be another pipe; without a home directory it is the empty path, which no
+/// file operation accepts, so the key is then neither read nor written.
 pub fn app_key_path(socket: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if pipe::is_pipe_name(socket) {
+        return AppPaths::for_app(AppId::WORKPLACE).map(|p| p.state.join("app.key")).unwrap_or_default();
+    }
     socket.with_file_name("app.key")
+}
+
+/// Named pipe names on Windows, where the core listens on a pipe instead of a socket file.
+#[cfg(windows)]
+pub(crate) mod pipe {
+    use std::path::Path;
+    use std::sync::OnceLock;
+
+    /// The namespace of all local named pipes; a path is a pipe name only below it.
+    pub(crate) const PREFIX: &str = r"\\.\pipe\";
+
+    /// Whether `path` names a local named pipe (`\\.\pipe\<name>`), not a file.
+    pub(crate) fn is_pipe_name(path: &Path) -> bool {
+        let Some(path) = path.to_str() else { return false };
+        path.len() > PREFIX.len() && path.get(..PREFIX.len()).is_some_and(|start| start.eq_ignore_ascii_case(PREFIX))
+    }
+
+    /// The SID of the account this process runs as (`S-1-5-21-…`), looked up once per process.
+    pub(crate) fn user_sid() -> Option<&'static str> {
+        static SID: OnceLock<Option<String>> = OnceLock::new();
+        SID.get_or_init(look_up_user_sid).as_deref()
+    }
+
+    /// Reads the user SID from this process's token.
+    fn look_up_user_sid() -> Option<String> {
+        process_sid(sysinfo::get_current_pid().ok()?.as_u32())
+    }
+
+    /// The SID of the account the process `pid` runs as, `None` when the process is gone or its
+    /// token cannot be read (as for most processes of other users). `sysinfo` does the token
+    /// calls, so this crate needs no `unsafe` for them.
+    pub(crate) fn process_sid(pid: u32) -> Option<String> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+        let pid = Pid::from_u32(pid);
+        let mut system = System::new();
+        let only_the_user = ProcessRefreshKind::nothing().with_user(UpdateKind::Always);
+        system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, only_the_user);
+        let sid = system.process(pid)?.user_id()?.to_string();
+        is_sid(&sid).then_some(sid)
+    }
+
+    /// Whether `text` looks like a SID in string form: `S-`, then digits separated by single
+    /// dashes. Checked because the SID goes into the pipe name and into the access list (SDDL),
+    /// where anything else could change their meaning.
+    pub(crate) fn is_sid(text: &str) -> bool {
+        text.strip_prefix("S-").is_some_and(|rest| {
+            rest.split('-').all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        })
+    }
 }
 
 /// The API version this crate speaks, `v` in every [`Envelope`]. New commands and new optional
@@ -1120,7 +1192,7 @@ pub enum IpcError {
     AlreadyRunning,
     /// No core listens on the socket.
     NotRunning,
-    /// Not available on this system yet (Windows).
+    /// Not available on this system (neither Unix nor Windows).
     Unsupported,
     Io(std::io::Error),
     /// A line that is not a request/response.
@@ -1262,5 +1334,39 @@ mod tests {
     #[test]
     fn app_key_lies_next_to_the_socket() {
         assert_eq!(app_key_path(Path::new("/run/torro/core.sock")), Path::new("/run/torro/app.key"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_pipe_is_named_after_the_user_sid() {
+        let path = socket_path().expect("the SID of the test user is known");
+        let name = path.to_str().expect("a pipe name is text");
+        let sid = name.strip_prefix(r"\\.\pipe\torro-workplace-").expect("a pipe of the suite");
+        assert!(pipe::is_sid(sid), "{name}");
+        assert!(pipe::is_pipe_name(&path));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_app_key_of_a_pipe_lies_in_the_state_directory() {
+        let pipe = Path::new(r"\\.\pipe\torro-workplace-S-1-5-21-1-2-3-1001");
+        let key = app_key_path(pipe);
+        let state = AppPaths::for_app(AppId::WORKPLACE).expect("a home directory").state;
+        assert_eq!(key, state.join("app.key"));
+        assert!(!pipe::is_pipe_name(&key), "{}", key.display());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_sids_and_pipe_names_pass_the_checks() {
+        assert!(pipe::is_sid("S-1-5-21-3623811015-3361044348-30300820-1013"));
+        for text in ["", "S-", "S-1-", "S-1--5", "s-1-5", "S-1-5)(A;;GA;;;WD", "S-1-5 "] {
+            assert!(!pipe::is_sid(text), "{text:?}");
+        }
+        assert!(pipe::is_pipe_name(Path::new(r"\\.\pipe\x")));
+        assert!(pipe::is_pipe_name(Path::new(r"\\.\PIPE\x")));
+        for path in [r"\\.\pipe\", r"C:\state\core.sock", "core.sock", r"\\server\pipe\x"] {
+            assert!(!pipe::is_pipe_name(Path::new(path)), "{path}");
+        }
     }
 }
