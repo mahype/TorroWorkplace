@@ -3333,6 +3333,7 @@ pub(crate) mod tests {
             client_name: "Codex hooks".into(),
             command: crate::approvals::QUESTION_COMMAND.into(),
             summary: "Codex wants to use Bash: ls".into(),
+            details: Vec::new(),
             created: at,
             expires: at + crate::approvals::QUESTION_LIFETIME,
             decided: None,

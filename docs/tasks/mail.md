@@ -414,7 +414,9 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten.
 
 ### M3.5 Nacharbeit Senden und Kontoseite (aus den Berichten von M3.3/M5.2)
-- [ ] erledigt
+- [x] erledigt (dazu: neu `ui/server_fields.rs`; `ui/mod.rs` Modul, Haken im `Loaded`-Handler und Demo-Kennung im
+  Test; Demo in `ui/launch.rs`; `details: Vec::new()` in `ApprovalInfo`-Literalen der Tests von `notify.rs`,
+  `hook.rs`, `cli.rs`, `inbox.rs`, `torro-ipc/src/inbox.rs`)
 - **Modell:** Opus · **Braucht:** M3.3, M5.2 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torroworkplace/src/mail/{send,service}.rs`,
   `crates/torroworkplace/src/ui/{approvals,accounts,wizard}.rs`, `docs/api.md`

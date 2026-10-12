@@ -316,20 +316,22 @@ pub fn demo_data() -> Data {
             scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
             mail: None,
         },
-        // A mail provider's calendars and tasks (task M7.2).
+        // A mail provider's calendars and tasks (task M7.2). Another sign-in than the mail accounts
+        // below: the core never lists a CalDAV account beside the mail account of the same
+        // sign-in, it takes it over (task M3.5).
         AccountInfo {
-            id: "caldav:anna@mailbox.org@dav.mailbox.org".into(),
+            id: "caldav:anna@posteo.de@posteo.de".into(),
             kind: "caldav".into(),
-            label: "anna@mailbox.org".into(),
+            label: "anna@posteo.de".into(),
             state: AccountState::Connected {
-                server: "https://dav.mailbox.org/".into(),
-                login_name: "anna@mailbox.org".into(),
+                server: "https://posteo.de:8443/".into(),
+                login_name: "anna@posteo.de".into(),
                 last_sync: Some(now - Duration::minutes(9)),
                 problem: None,
             },
             collections: vec![
-                team("demo:/mailbox/calendars/private/", "Private", CollectionKind::Events, "#3FB984"),
-                team("demo:/mailbox/tasks/inbox/", "Inbox", CollectionKind::Todos, "#A78BFA"),
+                team("demo:/posteo/calendars/private/", "Private", CollectionKind::Events, "#3FB984"),
+                team("demo:/posteo/tasks/inbox/", "Inbox", CollectionKind::Todos, "#A78BFA"),
             ],
             scopes: None,
             mail: None,
@@ -453,7 +455,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
 
 /// The first demo mail account: mail, calendars and tasks all on and synced, a signature, only
 /// mail "For me" in the inbox, and the question which folder holds sent mail with two candidates.
-/// (The CalDAV account of the same provider above is the same sign-in; the demo lists both.)
+/// Its calendars are its own: no CalDAV account of the same sign-in stands beside it (task M3.5).
 fn mailbox_account(now: DateTime<Utc>) -> AccountInfo {
     let mut account = mail_account("anna@mailbox.org", "imap.mailbox.org", now - Duration::minutes(2));
     if let Some(mail) = account.mail.as_mut() {
@@ -761,8 +763,46 @@ fn demo_activity(client: &ClientInfo, now: DateTime<Utc>) -> Vec<ActivityEntry> 
     }
 }
 
+/// Summary and details of the demo's mail that waits to be sent (task M3.5), built by the core's
+/// own functions from a draft as its store would hold it: two recipients, a Cc and a Bcc, two
+/// attachments and a text.
+fn demo_send() -> (String, Vec<String>) {
+    use crate::approvals::{DraftFacts, Facts, FileFact, MailFacts};
+    let who = |name: Option<&str>, address: &str| torro_mail::MailAddress {
+        name: name.map(str::to_string),
+        address: address.into(),
+    };
+    let draft = DraftFacts {
+        subject: "Offsite agenda".into(),
+        first_recipient: Some("bernd@example.com".into()),
+        recipients: 4,
+        attachments: 2,
+        text_start: "Hi Bernd, hi Dora, here is the agenda for Thursday. Please add what is missing before \
+                     Wednesday noon, then I will send it to everyone."
+            .into(),
+        bcc: vec!["carla@example.net".into()],
+        to: vec![who(Some("Bernd Example"), "bernd@example.com"), who(Some("Dora Example"), "dora@example.com")],
+        cc: vec![who(None, "team@example.org")],
+        files: vec![
+            FileFact { name: "agenda.pdf".into(), size: 182_000 },
+            FileFact { name: "venue-map.png".into(), size: 2_400_000 },
+        ],
+    };
+    let facts = Facts {
+        mail: Some(MailFacts {
+            account: Some("anna@mailbox.org".into()),
+            count: 1,
+            draft: Some(draft),
+            ..MailFacts::default()
+        }),
+        ..Facts::default()
+    };
+    let send = Request::SendDraft { id: "m:demo".into() };
+    (crate::approvals::summary(&send, &facts), crate::approvals::details(&send, &facts))
+}
+
 /// The demo's approvals: summaries as the core builds them (the same texts, so they are translated
-/// too), from two agents.
+/// too), from two agents; sending a mail with its details (task M3.5).
 fn demo_approvals(now: chrono::DateTime<Utc>) -> Vec<ApprovalInfo> {
     let approval = |id: &str, client: (&str, &str), summary: String, age: Duration, state: ApprovalState| {
         let created = now - age;
@@ -777,6 +817,7 @@ fn demo_approvals(now: chrono::DateTime<Utc>) -> Vec<ApprovalInfo> {
             client_name: client.1.into(),
             command: "calendar.delete_event".into(),
             summary,
+            details: Vec::new(),
             created,
             expires: created + Duration::minutes(10),
             decided,
@@ -794,6 +835,12 @@ fn demo_approvals(now: chrono::DateTime<Utc>) -> Vec<ApprovalInfo> {
         code: "forbidden".into(),
         message: "The client may not write to this calendar anymore".into(),
     };
+    let (send_summary, send_details) = demo_send();
+    let send = ApprovalInfo {
+        command: "mail.send_draft".into(),
+        details: send_details,
+        ..approval("3e8b5d1a9c7f2b64", claude, send_summary, Duration::minutes(1), ApprovalState::Pending)
+    };
     vec![
         approval(
             "9c1f0a7e3b2d4c58",
@@ -802,6 +849,7 @@ fn demo_approvals(now: chrono::DateTime<Utc>) -> Vec<ApprovalInfo> {
             Duration::minutes(2),
             ApprovalState::Pending,
         ),
+        send,
         approval(
             "4b7d2e9a0c1f3a66",
             codex,
@@ -1059,6 +1107,29 @@ mod tests {
         for (name, state) in [("mail-detail", Open::MailDetail), ("mail-servers", Open::MailServers)] {
             assert!(Open::ALL.contains(&(name, state)), "{name}");
         }
+    }
+
+    /// Task M3.5: the demo shows what the core would list: no CalDAV account beside the mail
+    /// account of the same sign-in, and a mail waiting to be sent with its details.
+    #[test]
+    fn the_demo_lists_no_sign_in_twice_and_a_send_with_details() {
+        let data = demo_data();
+        let caldav_server = |account: &AccountInfo| match &account.state {
+            AccountState::Connected { server, login_name, .. } => Some((server.clone(), login_name.clone())),
+            _ => None,
+        };
+        for mail in data.accounts.iter().filter_map(|account| account.mail.as_ref()) {
+            let Some(url) = &mail.caldav else { continue };
+            let same = data
+                .accounts
+                .iter()
+                .filter(|account| account.kind == "caldav")
+                .filter_map(caldav_server)
+                .any(|(server, login)| server == *url && login == mail.address);
+            assert!(!same, "{} is listed twice", mail.address);
+        }
+        let send = data.approvals.iter().find(|approval| approval.command == "mail.send_draft").expect("a send");
+        assert!(send.state.is_pending() && send.details.len() > 4, "{:?}", send.details);
     }
 
     #[test]

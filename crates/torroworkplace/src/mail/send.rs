@@ -23,7 +23,9 @@
 //! (`accepted`) or may have taken (`unknown`) is never sent again by itself: sending the same draft
 //! again answers that outcome without asking the server. Only "not accepted" may be tried again.
 //! After an acceptance the draft is removed from the drafts folder; after `unknown` it stays, and
-//! the person decides (saving it again makes it a new send).
+//! the person decides (saving it again makes it a new send). An accepted entry whose draft could
+//! not be removed stays until its draft is gone; the core clears such entries when it starts
+//! ([`forget_finished`], task M3.5).
 //!
 //! **Copies that wait.** The journal keeps no message, so the copy's bytes are kept under
 //! `<data>/mail/sent-copies/` (directory 0700, files 0600, first line the account) from just
@@ -68,7 +70,7 @@ use super::service::{MailError, MailService};
 use super::store::{DraftAuthor, MessageRef};
 use super::write::{WriteError, locate};
 use super::{MailDirs, MailStoreError, make_private, safe_file_name};
-use crate::approvals::{DraftFacts, MailFacts};
+use crate::approvals::{DraftFacts, FileFact, MailFacts};
 use crate::pim::Reach;
 
 /// How often the copies that wait are tried again.
@@ -406,8 +408,7 @@ impl Prepared {
 
     /// The send's id in the journal: the same draft (account and `Message-ID`) is the same send.
     fn send_id(&self) -> String {
-        let digest = Sha256::digest(format!("{}\n{}", self.draft.account, self.message_id).as_bytes());
-        format!("send:{}", &hex(&digest)[..40])
+        send_id_of(&self.draft.account, &self.message_id)
     }
 
     /// The copy for the Sent folder: the sent bytes with the `Bcc:` header in front when there are
@@ -488,6 +489,13 @@ pub(crate) async fn prepare(
         attachments: outgoing.attachments.len(),
         text_start: read.snippet(),
         bcc: outgoing.bcc.iter().map(|address| address.address.trim().to_string()).collect(),
+        to: outgoing.to.clone(),
+        cc: outgoing.cc.clone(),
+        files: outgoing
+            .attachments
+            .iter()
+            .map(|file| FileFact { name: file.filename.clone(), size: file.bytes.len() as u64 })
+            .collect(),
     };
     Ok(Prepared {
         draft,
@@ -584,6 +592,13 @@ fn plain_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 250
         && !id.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>'))
+}
+
+/// The journal's id of sending the draft with `message_id` from `account`: the same draft is the
+/// same send ([`Prepared::send_id`]).
+fn send_id_of(account: &str, message_id: &str) -> String {
+    let digest = Sha256::digest(format!("{account}\n{message_id}").as_bytes());
+    format!("send:{}", &hex(&digest)[..40])
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -831,9 +846,84 @@ pub(crate) async fn copy_pending(mail: &MailService) -> usize {
     filed
 }
 
-/// [`copy_pending`] now and every minute, for as long as the core runs
-/// (`MailService::start`).
+/// Forgets the journal entries of sends that are done with but were left behind (task M3.5):
+/// accepted, the Sent copy filed or not needed, and no draft of theirs left in any account. They
+/// stay when removing the draft or forgetting the entry failed after the send, and nothing else
+/// would ever clear them. Returns how many were forgotten.
+///
+/// An entry names its send by a hash of the account and the draft's `Message-ID` only, so the
+/// drafts of every account are looked up in the stores ([`send_id_of`]). Whenever that cannot be
+/// told for sure, nothing is forgotten: a mail account in `accounts.json` without a store (mail
+/// off, not loaded), a store without a drafts folder (not synced yet) or a draft without a usable
+/// `Message-ID`. Forgetting the entry of a draft that is still there would let it be sent twice.
+pub(crate) async fn forget_finished(mail: &MailService) -> usize {
+    let Ok(outbox) = mail.outbox().await else { return 0 };
+    let finished: Vec<String> = match outbox.journal.entries() {
+        Ok(entries) => entries
+            .into_iter()
+            .filter(|entry| entry.submission == Submission::Accepted && entry.copy != CopyStatus::Pending)
+            .map(|entry| entry.id)
+            .collect(),
+        Err(err) => {
+            eprintln!("torroworkplace: cannot read the send journal: {err}");
+            return 0;
+        }
+    };
+    if finished.is_empty() {
+        return 0;
+    }
+    let Some(drafts) = draft_sends(mail).await else { return 0 };
+    let mut forgotten = 0;
+    for id in finished.into_iter().filter(|id| !drafts.contains(id)) {
+        match outbox.journal.forget(&id) {
+            Ok(()) => forgotten += 1,
+            Err(err) => eprintln!("torroworkplace: cannot clear send {id} from the journal: {err}"),
+        }
+    }
+    forgotten
+}
+
+/// The send ids of every draft of every mail account ([`send_id_of`]); `None` when one of them
+/// cannot be told (see [`forget_finished`]).
+async fn draft_sends(mail: &MailService) -> Option<std::collections::HashSet<String>> {
+    let stored = mail.stored_accounts().await.ok()?;
+    let stores = mail.stores(Reach::Suite).await;
+    let every_store = stored
+        .iter()
+        .filter(|account| account.kind == torro_core::account::AccountKind::Mail)
+        .all(|account| stores.iter().any(|(id, _)| *id == account.id));
+    if !every_store {
+        return None;
+    }
+    let mut sends = std::collections::HashSet::new();
+    for (account, store) in stores {
+        let ids = store
+            .run(|store| {
+                let Some(drafts) = store.folder_by_role(Role::Drafts)? else { return Ok(None) };
+                let mut ids = Vec::new();
+                for summary in store.list_messages(&drafts.id, u32::MAX, 0)? {
+                    let message_id = store.resolve_message(&summary.id)?.and_then(|found| found.rfc_message_id);
+                    match message_id.filter(|id| plain_id(id)) {
+                        Some(id) => ids.push(id),
+                        None => return Ok(None),
+                    }
+                }
+                Ok(Some(ids))
+            })
+            .await
+            .ok()??;
+        sends.extend(ids.iter().map(|id| send_id_of(&account, id)));
+    }
+    Some(sends)
+}
+
+/// [`forget_finished`] once, then [`copy_pending`] now and every minute, for as long as the core
+/// runs (`MailService::start`).
 pub(crate) async fn keep_copying(mail: Arc<MailService>) {
+    let forgotten = forget_finished(&mail).await;
+    if forgotten > 0 {
+        eprintln!("torroworkplace: cleared {forgotten} finished sends from the send journal");
+    }
     loop {
         copy_pending(&mail).await;
         tokio::time::sleep(COPY_EVERY).await;
@@ -1101,6 +1191,53 @@ pub(crate) mod tests {
         assert_eq!(client_refusal(&room.mail, "c1", Reach::Suite, &Request::SendDraft { id: own.clone() }).await, None);
         let sent = send_draft(&room.mail, Reach::Suite, &agent, &own, None).await;
         assert_eq!(sent, Response::MailSent { delivery: Delivery::Accepted });
+    }
+
+    /// Writes a journal entry for `id` as a send the fake answers with `answer` would leave it.
+    async fn journal_entry(room: &Room, id: &str, answer: Submitted, plan: CopyPlan) {
+        let outbox = room.mail.outbox().await.expect("outbox");
+        let envelope = Envelope { from: "anna@example.org".into(), recipients: vec!["bernd@example.com".into()] };
+        room.smtp.answer(answer);
+        let smtp = Submitter::Fake(Arc::clone(&room.smtp));
+        smtp::send(&outbox.journal, id, &envelope, b"Subject: x\r\n\r\nx\r\n", &smtp, plan).await.expect("noted");
+    }
+
+    /// Task M3.5: at start, the journal forgets accepted sends whose copy is filed (or not needed)
+    /// and whose draft is gone; a draft still there, a copy still missing and an unknown outcome
+    /// keep their entries, and so does everything while an account's drafts cannot be told.
+    #[tokio::test]
+    async fn finished_sends_without_a_draft_leave_the_journal_at_start() {
+        let room = room().await;
+        let live = lunch(&room, DraftAuthor::App).await;
+        let live = prepare(&room.mail, Reach::Suite, &DraftAuthor::App, &live).await.expect("prepared").send_id();
+        journal_entry(&room, "send:orphan", Submitted::Accepted, CopyPlan::ProviderKeepsIt).await;
+        journal_entry(&room, &live, Submitted::Accepted, CopyPlan::ProviderKeepsIt).await;
+        journal_entry(&room, "send:copy-missing", Submitted::Accepted, CopyPlan::Append).await;
+        journal_entry(&room, "send:unknown", Submitted::Unknown(SmtpError::Offline), CopyPlan::Append).await;
+        let outbox = room.mail.outbox().await.expect("outbox");
+        let ids = || {
+            let mut ids: Vec<String> = outbox.journal.entries().expect("journal").into_iter().map(|e| e.id).collect();
+            ids.sort();
+            ids
+        };
+
+        // An account whose drafts the core cannot see (mail switched off) keeps everything.
+        let off = room.mail.update(ANNA, |account| {
+            account.mail_settings.get_or_insert_with(Default::default).services.mail = false;
+        });
+        off.await.expect("stored").expect("an account");
+        assert_eq!(forget_finished(&room.mail).await, 0);
+        assert_eq!(ids().len(), 4);
+        let on = room.mail.update(ANNA, |account| {
+            account.mail_settings.get_or_insert_with(Default::default).services.mail = true;
+        });
+        on.await.expect("stored").expect("an account");
+
+        assert_eq!(forget_finished(&room.mail).await, 1);
+        let mut kept = vec![live, "send:copy-missing".to_string(), "send:unknown".to_string()];
+        kept.sort();
+        assert_eq!(ids(), kept);
+        assert_eq!(forget_finished(&room.mail).await, 0, "nothing more to clear");
     }
 
     #[test]

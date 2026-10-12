@@ -26,6 +26,13 @@
 //! password lives in the dialog as a [`Secret`] until it is sent). Everything else goes through
 //! `UpdateMailAccount`, which changes settings only.
 //!
+//! Task M3.5: "Server settings" always has the calendar address (CalDAV), so an account connected
+//! for mail only (a TorroMail import, for one) gets calendars and tasks later: their switches open
+//! that dialog while the account has no address, and saving it switches the service on with the
+//! address. The sender name and signature follow changes from outside while nothing is typed
+//! into them ([`loaded`], called by the shell on every reload). Both mail servers are typed as in
+//! the add-account dialog (`server_fields.rs`).
+//!
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
 //! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the settings of a mail
 //! account, and `SetCollectionShown { collection, shown }` for the switches. The pure parts
@@ -39,7 +46,7 @@ use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{Space, column, container, pick_list, row, text, text_editor, toggler};
-use iced::{Alignment, Element, Fill, FillPortion, Theme};
+use iced::{Alignment, Element, Fill, Theme};
 use torro_core::account::Secret;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
@@ -50,9 +57,10 @@ use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
 use torro_gui::{style, typo};
 use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request, Response, ServiceState};
-use torro_mail::{Endpoint, Notify, Role, Security, Services};
+use torro_mail::{Notify, Role, Security, Services};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
+use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row, wizard};
 
 #[derive(Debug, Default)]
@@ -88,22 +96,34 @@ pub struct MailDraft {
     account: String,
     sender_name: String,
     signature: text_editor::Content,
+    /// The sender name and signature stored when the draft was made (signature without trailing
+    /// white space). While the draft still holds them, nothing was typed, and a change from
+    /// outside replaces the draft ([`loaded`], task M3.5).
+    stored: (String, String),
 }
 
 impl MailDraft {
     /// The stored values of `account`; `None` for an account that is not a mail account.
     fn of(account: &AccountInfo) -> Option<MailDraft> {
         let mail = account.mail.as_ref()?;
+        let signature = mail.settings.signature.as_deref().unwrap_or_default();
         Some(MailDraft {
             account: account.id.clone(),
             sender_name: mail.sender_name.clone(),
-            signature: text_editor::Content::with_text(mail.settings.signature.as_deref().unwrap_or_default()),
+            signature: text_editor::Content::with_text(signature),
+            stored: (mail.sender_name.clone(), signature.trim_end().to_string()),
         })
     }
 
     /// The signature as sent: line breaks as `\n` whatever the platform, no trailing white space.
     fn signature_text(&self) -> String {
         self.signature.text().replace("\r\n", "\n").trim_end().to_string()
+    }
+
+    /// The draft holds `stored` (a sender name and signature as [`MailDraft::stored`] keeps them),
+    /// as saving would compare them.
+    fn holds(&self, (sender_name, signature): &(String, String)) -> bool {
+        self.sender_name.trim() == sender_name.trim() && self.signature_text() == *signature
     }
 
     /// Only what differs from `mail`, so that saving asks for no more than the person changed.
@@ -146,58 +166,22 @@ impl MailChange {
     }
 }
 
-/// The "Server settings" dialog: both mail servers as they are stored, the calendar address where
-/// the account has one, and the password, which the servers are checked with. The password
-/// is a [`Secret`], so even a `Debug` of the dialog shows none, and it is taken when sent.
+/// The "Server settings" dialog: both mail servers as they are stored, the calendar address
+/// (always, empty for an account without one, so calendars and tasks can be added later, task
+/// M3.5), and the password, which the servers are checked with. The password is a [`Secret`], so
+/// even a `Debug` of the dialog shows none, and it is taken when sent.
 #[derive(Debug)]
 pub struct ServerSettings {
     imap: ServerFields,
     smtp: ServerFields,
-    /// The calendar address; `None` for an account without one, which has no field for it.
-    caldav: Option<String>,
+    /// The calendar address as typed; empty keeps the stored one (or none).
+    caldav: String,
+    /// The service whose switch opened the dialog because the account has no calendar address
+    /// (task M3.5): it is switched on with the address. `None` for "Server settings…".
+    adding: Option<MailService>,
     password: Secret,
     error: Option<String>,
     sending: bool,
-}
-
-/// One mail server as typed: the port stays text until it is sent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ServerFields {
-    host: String,
-    port: String,
-    security: Security,
-}
-
-impl ServerFields {
-    fn of(endpoint: &Endpoint) -> ServerFields {
-        ServerFields { host: endpoint.host.clone(), port: endpoint.port.to_string(), security: endpoint.security }
-    }
-
-    /// The server for the request; `None` without a host or with a port that is no port.
-    fn endpoint(&self) -> Option<Endpoint> {
-        let host = self.host.trim();
-        let port = self.port.trim().parse::<u16>().ok().filter(|port| *port > 0)?;
-        (!host.is_empty()).then(|| Endpoint { host: host.to_string(), port, security: self.security })
-    }
-
-    /// Another security: a port that was the usual one of the old security follows to the usual
-    /// one of the new, so switching to STARTTLS does not leave port 993 behind.
-    fn set_security(&mut self, server: wizard::Server, security: Security) {
-        if self.port.trim() == default_port(server, self.security).to_string() {
-            self.port = default_port(server, security).to_string();
-        }
-        self.security = security;
-    }
-}
-
-/// The usual port of `server` with `security`: IMAP 993 (TLS) or 143, SMTP 465 or 587.
-fn default_port(server: wizard::Server, security: Security) -> u16 {
-    match (server, security) {
-        (wizard::Server::Imap, Security::Tls) => 993,
-        (wizard::Server::Imap, Security::StartTls) => 143,
-        (wizard::Server::Smtp, Security::Tls) => 465,
-        (wizard::Server::Smtp, Security::StartTls) => 587,
-    }
 }
 
 impl ServerSettings {
@@ -205,23 +189,34 @@ impl ServerSettings {
         ServerSettings {
             imap: ServerFields::of(&mail.imap),
             smtp: ServerFields::of(&mail.smtp),
-            caldav: mail.caldav.clone(),
+            caldav: mail.caldav.clone().unwrap_or_default(),
+            adding: None,
             password: Secret::default(),
             error: None,
             sending: false,
         }
     }
 
-    fn server_mut(&mut self, server: wizard::Server) -> &mut ServerFields {
+    fn server_mut(&mut self, server: Server) -> &mut ServerFields {
         match server {
-            wizard::Server::Imap => &mut self.imap,
-            wizard::Server::Smtp => &mut self.smtp,
+            Server::Imap => &mut self.imap,
+            Server::Smtp => &mut self.smtp,
         }
     }
 
-    /// Both servers are valid and the password is typed: the servers can be checked.
+    /// The calendar address to send; `None` when the field is empty.
+    fn caldav_address(&self) -> Option<String> {
+        Some(self.caldav.trim().to_string()).filter(|address| !address.is_empty())
+    }
+
+    /// Both servers are valid and the password is typed, and a service to add has its address:
+    /// the servers can be checked.
     fn can_send(&self) -> bool {
-        !self.sending && !self.password.is_blank() && self.imap.endpoint().is_some() && self.smtp.endpoint().is_some()
+        !self.sending
+            && !self.password.is_blank()
+            && self.imap.endpoint().is_some()
+            && self.smtp.endpoint().is_some()
+            && (self.adding.is_none() || self.caldav_address().is_some())
     }
 }
 
@@ -272,9 +267,9 @@ pub enum Message {
     },
     /// "Server settings…" on a mail account's page.
     ChangeServers,
-    ServerHost(wizard::Server, String),
-    ServerPort(wizard::Server, String),
-    ServerSecurity(wizard::Server, Security),
+    ServerHost(Server, String),
+    ServerPort(Server, String),
+    ServerSecurity(Server, Security),
     CaldavEdited(String),
     /// The password the servers are checked with. A [`Secret`], so that `Debug` shows none.
     ServersPasswordEdited(Secret),
@@ -382,6 +377,14 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::SetNotify(notify) => with_mail(state, data, |mail| {
             (notify != mail.settings.notify).then(|| MailChange { notify: Some(notify), ..MailChange::default() })
         }),
+        // Calendars and tasks of an account without a calendar address (task M3.5): the switch
+        // asks for the address in "Server settings", which switches the service on with it.
+        Message::SetService(which, true) if which.needs_caldav() && open_mail_lacks_caldav(state, data) => {
+            state.password = None;
+            state.servers = selected_mail(state, data)
+                .map(|(_, mail)| ServerSettings { adding: Some(which), ..ServerSettings::of(mail) });
+            Action::None
+        }
         Message::SetService(which, on) => with_mail(state, data, |mail| {
             let mut services = mail.settings.services;
             match which {
@@ -419,7 +422,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::CaldavEdited(address) => {
-            edit_servers(state, |dialog| dialog.caldav = Some(address));
+            edit_servers(state, |dialog| dialog.caldav = address);
             Action::None
         }
         Message::ServersPasswordEdited(password) => {
@@ -438,6 +441,29 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 fn selected_mail<'a>(state: &State, data: &'a Data) -> Option<(&'a AccountInfo, &'a MailView)> {
     let account = selected(state, data)?;
     Some((account, account.mail.as_ref()?))
+}
+
+/// The open page is a mail account without a calendar address.
+fn open_mail_lacks_caldav(state: &State, data: &Data) -> bool {
+    selected_mail(state, data).is_some_and(|(_, mail)| mail.caldav.is_none())
+}
+
+/// The shell reloaded `data` (task M3.5): the sender name and signature of the open mail account
+/// follow changes from outside (an agent, the API, another window) as long as nothing is typed
+/// into them; what the person typed stays until they save it.
+pub fn loaded(state: &mut State, data: &Data) {
+    let Some(fresh) = selected(state, data).and_then(MailDraft::of) else { return };
+    match state.mail.as_mut().filter(|draft| draft.account == fresh.account) {
+        // Typed into: it stays, and once it is what is stored (saved), it follows again.
+        Some(draft) if !draft.holds(&draft.stored) => {
+            if draft.holds(&fresh.stored) {
+                draft.stored = fresh.stored;
+            }
+        }
+        // Untouched and up to date: the cursor stays where it is.
+        Some(draft) if draft.stored == fresh.stored => {}
+        _ => state.mail = Some(fresh),
+    }
 }
 
 /// Sends the change `make` finds for the open mail account, if there is one.
@@ -489,14 +515,17 @@ fn login_name(account: &AccountInfo, mail: &MailView) -> String {
 }
 
 /// Sends the servers as typed with the password, which checks them (`ConnectMail` for an account
-/// that exists keeps its settings and, with an empty sender name, its sender name). The dialog
-/// keeps no copy of the password.
+/// that exists keeps its settings and, with an empty sender name, its sender name). The calendar
+/// address goes along when one is typed (an empty field keeps the stored one); the service the
+/// dialog was opened for is switched on with it (task M3.5). The dialog keeps no copy of the
+/// password.
 fn submit_servers(state: &mut State, data: &Data) -> Action {
     let Some((account, mail)) = selected_mail(state, data) else { return Action::None };
     let Some(dialog) = state.servers.as_mut().filter(|dialog| dialog.can_send()) else { return Action::None };
     let (Some(imap), Some(smtp)) = (dialog.imap.endpoint(), dialog.smtp.endpoint()) else { return Action::None };
     dialog.sending = true;
     dialog.error = None;
+    let services = mail.settings.services;
     Action::Send(Request::ConnectMail {
         address: mail.address.clone(),
         sender_name: String::new(),
@@ -504,9 +533,9 @@ fn submit_servers(state: &mut State, data: &Data) -> Action {
         smtp,
         login_name: login_name(account, mail),
         password: std::mem::take(&mut dialog.password),
-        calendars: mail.settings.services.calendars,
-        tasks: mail.settings.services.tasks,
-        caldav: dialog.caldav.as_deref().map(str::trim).filter(|address| !address.is_empty()).map(str::to_string),
+        calendars: services.calendars || dialog.adding == Some(MailService::Calendars),
+        tasks: services.tasks || dialog.adding == Some(MailService::Tasks),
+        caldav: dialog.caldav_address(),
     })
 }
 
@@ -627,8 +656,8 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         return Some(password_dialog(change, account));
     }
     if let Some(dialog) = &state.servers {
-        let (account, _) = selected_mail(state, data)?;
-        return Some(servers_dialog(dialog, account));
+        let (account, mail) = selected_mail(state, data)?;
+        return Some(servers_dialog(dialog, account, mail));
     }
     if !state.confirm_remove {
         return None;
@@ -1158,24 +1187,22 @@ fn inbox_group(mail: &MailView) -> Element<'_, Message> {
     widgets::group(tr("Inbox"), vec![row], Some(footer.to_string()))
 }
 
-/// The services as switches. Calendars and tasks need the CalDAV address the account was
-/// connected with; without one their switches are off for good and the footer says why.
+/// The services as switches. Calendars and tasks need the account's calendar address; without
+/// one their switches open "Server settings" to ask for it (task M3.5), and the footer says so.
 fn services_group(mail: &MailView) -> Element<'_, Message> {
     let rows = MailService::ALL
         .into_iter()
         .map(|which| {
-            let available = !which.needs_caldav() || mail.caldav.is_some();
             let switch = toggler(which.is_on(mail.settings.services))
                 .size(style::CHECK_SIZE)
                 .style(style::toggler)
-                .on_toggle_maybe(available.then_some(move |on| Message::SetService(which, on)));
+                .on_toggle(move |on| Message::SetService(which, on));
             setting_row(None, which.name(), Some(which.summary().to_string()), switch)
         })
         .collect();
-    let footer = mail
-        .caldav
-        .is_none()
-        .then(|| tr("This account has no calendar address, so calendars and tasks are not available.").to_string());
+    let footer = mail.caldav.is_none().then(|| {
+        tr("Calendars and tasks need the calendar address of this account. Switching them on asks for it.").to_string()
+    });
     widgets::group(tr("Services"), rows, footer)
 }
 
@@ -1197,34 +1224,59 @@ fn mail_connection_group<'a>(account: &'a AccountInfo, mail: &'a MailView) -> El
     widgets::group(tr("Connection"), rows, Some(footer.to_string()))
 }
 
-/// "Server settings": the two mail servers as stored, the calendar address if the account has
-/// one, and the password they are checked with. A refusal of the servers stands in the foot.
-fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo) -> Element<'a, Message> {
+/// The sentence under the title of "Server settings": what the password is for. Opened by the
+/// switch of calendars or tasks, it says that these are added.
+fn servers_purpose(form: &ServerSettings, account: &AccountInfo) -> String {
+    let account: [(&str, &dyn fmt::Display); 1] = [("account", &account.label)];
+    match form.adding {
+        Some(MailService::Calendars) => {
+            trf("Enter the calendar address and the password of {account} to add its calendars.", &account)
+        }
+        Some(MailService::Tasks) => {
+            trf("Enter the calendar address and the password of {account} to add its tasks.", &account)
+        }
+        _ => trf("Enter the password of {account} to check the servers.", &account),
+    }
+}
+
+/// "Server settings": the two mail servers as stored, the calendar address (always: calendars and
+/// tasks can be added later, task M3.5) and the password they are checked with. Opened by the
+/// switch of calendars or tasks, the calendar address comes first. A refusal of the servers stands
+/// in the foot.
+fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo, mail: &MailView) -> Element<'a, Message> {
     let submit = form.can_send().then_some(Message::SubmitServers);
     let head = column![
         typo::text(typo::TITLE, tr("Server settings")),
-        typo::text(
-            typo::BODY,
-            trf("Enter the password of {account} to check the servers.", &[("account", &account.label)]),
-        )
-        .style(theme::text_2),
+        typo::text(typo::BODY, servers_purpose(form, account)).style(theme::text_2),
     ]
     .spacing(space::XS);
     let password = wizard::field("", form.password.expose())
         .secure(true)
         .on_input(|password| Message::ServersPasswordEdited(Secret::new(password)))
         .on_submit_maybe(submit.clone());
-    let mut body = column![
-        server_group(wizard::Server::Imap, &form.imap, tr("Incoming mail (IMAP)"), "imap.example.org", submit.clone()),
-        server_group(wizard::Server::Smtp, &form.smtp, tr("Outgoing mail (SMTP)"), "smtp.example.org", submit.clone()),
-    ]
-    .spacing(space::XL);
-    if let Some(caldav) = &form.caldav {
-        let field = wizard::field("https://dav.example.org", caldav)
-            .on_input(Message::CaldavEdited)
-            .on_submit_maybe(submit.clone());
-        body = body.push(widgets::group(tr("Calendars and tasks (CalDAV)"), vec![row_frame(field, false)], None));
-    }
+    let server = |which: Server, fields, titles| {
+        server_group(
+            fields,
+            titles,
+            move |host| Message::ServerHost(which, host),
+            move |port| Message::ServerPort(which, port),
+            move |security| Message::ServerSecurity(which, security),
+            submit.clone(),
+        )
+    };
+    let caldav = wizard::field("https://dav.example.org", &form.caldav)
+        .on_input(Message::CaldavEdited)
+        .on_submit_maybe(submit.clone());
+    // Without a stored address the field may stay empty: the account stays mail only.
+    let caldav_footer = (mail.caldav.is_none() && form.adding.is_none())
+        .then(|| tr("Leave empty to use this account for mail only.").to_string());
+    let caldav = widgets::group(tr("Calendars and tasks (CalDAV)"), vec![row_frame(caldav, false)], caldav_footer);
+    let servers = [server(Server::Imap, &form.imap, imap_titles()), server(Server::Smtp, &form.smtp, smtp_titles())];
+    let mut body = column![].spacing(space::XL);
+    body = match form.adding {
+        Some(_) => body.push(caldav).extend(servers),
+        None => body.extend(servers).push(caldav),
+    };
     body = body.push(widgets::group(tr("Password"), vec![row_frame(password, false)], None));
     let error: Element<'_, Message> = match &form.error {
         Some(error) => typo::text(typo::BODY, error.as_str())
@@ -1243,42 +1295,10 @@ fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo) -> Ele
     dialog(dialog_frame(head, body, foot, space::XL), size::FORM_MAX, Message::CloseServers)
 }
 
-/// How the width of the host and port fields relate: a port is a few digits, a host a name.
-const HOST_SHARE: u16 = 3;
-const PORT_SHARE: u16 = 1;
-
-/// One mail server: host and port in one row, the security in the next. Enter in a field sends.
-fn server_group<'a>(
-    server: wizard::Server,
-    fields: &'a ServerFields,
-    title: &'static str,
-    host_placeholder: &'static str,
-    submit: Option<Message>,
-) -> Element<'a, Message> {
-    let host = wizard::field(host_placeholder, &fields.host)
-        .on_input(move |host| Message::ServerHost(server, host))
-        .on_submit_maybe(submit.clone())
-        .width(FillPortion(HOST_SHARE));
-    let port = wizard::field(tr("Port"), &fields.port)
-        .on_input(move |port| Message::ServerPort(server, port))
-        .on_submit_maybe(submit)
-        .width(FillPortion(PORT_SHARE));
-    // TLS and STARTTLS are the protocols' names, the same in every language.
-    let security = widgets::segmented(
-        [
-            ("TLS", Message::ServerSecurity(server, Security::Tls)),
-            ("STARTTLS", Message::ServerSecurity(server, Security::StartTls)),
-        ],
-        usize::from(fields.security == Security::StartTls),
-    );
-    let rows =
-        vec![row_frame(row![host, port].spacing(space::S), false), setting_row(None, tr("Security"), None, security)];
-    widgets::group(title, rows, None)
-}
-
 /// A text button moved left by its own padding, so its label stands on the page's content axis
 /// (the name, the groups) instead of 10 to the right of it; the hover surface reaches into the margin.
-fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+/// The approvals page uses it for "Show details" (task M3.5).
+pub(super) fn on_axis<'a, M: 'a>(button: Element<'a, M>) -> Element<'a, M> {
     row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
 }
 
@@ -1426,6 +1446,7 @@ fn value_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
 mod tests {
     use chrono::TimeDelta;
     use torro_core::account::Secret;
+    use torro_mail::Endpoint;
 
     use super::*;
 
@@ -1985,11 +2006,11 @@ mod tests {
         update(&mut state, Message::ChangeServers, &data);
         assert!(matches!(update(&mut state, Message::SubmitServers, &data), Action::None), "no password yet");
         update(&mut state, Message::ServersPasswordEdited(Secret::new("pw")), &data);
-        update(&mut state, Message::ServerHost(wizard::Server::Imap, " mail.example.org ".into()), &data);
+        update(&mut state, Message::ServerHost(Server::Imap, " mail.example.org ".into()), &data);
         // STARTTLS brings the usual port along, a port typed by hand stays.
-        update(&mut state, Message::ServerSecurity(wizard::Server::Imap, Security::StartTls), &data);
-        update(&mut state, Message::ServerPort(wizard::Server::Smtp, "2525".into()), &data);
-        update(&mut state, Message::ServerSecurity(wizard::Server::Smtp, Security::Tls), &data);
+        update(&mut state, Message::ServerSecurity(Server::Imap, Security::StartTls), &data);
+        update(&mut state, Message::ServerPort(Server::Smtp, "2525".into()), &data);
+        update(&mut state, Message::ServerSecurity(Server::Smtp, Security::Tls), &data);
         update(&mut state, Message::CaldavEdited(" https://dav.example.org ".into()), &data);
         let action = update(&mut state, Message::SubmitServers, &data);
         assert!(!format!("{action:?}").contains("\"pw\"") && !format!("{state:?}").contains("\"pw\""));
@@ -2009,7 +2030,7 @@ mod tests {
         assert!(answered(&mut state, &Err(tr("Password was refused").into())));
         let dialog = state.servers.as_ref().expect("the dialog stays");
         assert_eq!((dialog.error.as_deref(), dialog.sending), (Some(tr("Password was refused")), false));
-        update(&mut state, Message::ServerHost(wizard::Server::Smtp, "smtp.example.org".into()), &data);
+        update(&mut state, Message::ServerHost(Server::Smtp, "smtp.example.org".into()), &data);
         assert!(state.servers.as_ref().is_some_and(|dialog| dialog.error.is_none()));
         drop(overlay(&state, &data));
     }
@@ -2019,21 +2040,81 @@ mod tests {
         let (mut state, data) = open_mail(MAILBOX);
         update(&mut state, Message::ChangeServers, &data);
         update(&mut state, Message::ServersPasswordEdited(Secret::new("pw")), &data);
-        for (server, port) in [(wizard::Server::Imap, "0"), (wizard::Server::Imap, "abc"), (wizard::Server::Smtp, "")] {
+        for (server, port) in [(Server::Imap, "0"), (Server::Imap, "abc"), (Server::Smtp, "")] {
             update(&mut state, Message::ServerPort(server, port.into()), &data);
             assert!(matches!(update(&mut state, Message::SubmitServers, &data), Action::None), "{port:?}");
             update(&mut state, Message::ServerPort(server, "993".into()), &data);
         }
-        update(&mut state, Message::ServerHost(wizard::Server::Imap, "  ".into()), &data);
+        update(&mut state, Message::ServerHost(Server::Imap, "  ".into()), &data);
         assert!(matches!(update(&mut state, Message::SubmitServers, &data), Action::None), "no host");
-        // A mail-only account has no CalDAV field and sends none.
+        // A mail-only account has an empty CalDAV field (task M3.5) and sends none while it stays
+        // empty, nor switches anything on.
         let mut state = State::default();
         update(&mut state, Message::Open("mail:anna@work.example.net".into()), &data);
         update(&mut state, Message::ChangeServers, &data);
-        assert!(state.servers.as_ref().is_some_and(|dialog| dialog.caldav.is_none()));
+        assert!(state.servers.as_ref().is_some_and(|dialog| dialog.caldav.is_empty() && dialog.adding.is_none()));
+        drop(overlay(&state, &data));
         update(&mut state, Message::ServersPasswordEdited(Secret::new("pw")), &data);
         let request = sent(update(&mut state, Message::SubmitServers, &data));
-        assert!(matches!(request, Request::ConnectMail { caldav: None, .. }), "{request:?}");
+        assert!(
+            matches!(request, Request::ConnectMail { caldav: None, calendars: false, tasks: false, .. }),
+            "{request:?}"
+        );
+    }
+
+    /// Task M3.5: without a calendar address, switching calendars or tasks on opens "Server
+    /// settings" for it instead of sending anything; saving sends the address with that service
+    /// switched on, and only once an address is typed.
+    #[test]
+    fn a_switch_without_a_calendar_address_asks_for_it() {
+        let work = "mail:anna@work.example.net";
+        let (mut state, data) = open_mail(work);
+        let off = update(&mut state, Message::SetService(MailService::Tasks, false), &data);
+        assert!(matches!(off, Action::None) && state.servers.is_none(), "already off: nothing to do");
+        let on = update(&mut state, Message::SetService(MailService::Tasks, true), &data);
+        assert!(matches!(on, Action::None), "nothing is sent yet");
+        assert_eq!(state.servers.as_ref().and_then(|dialog| dialog.adding), Some(MailService::Tasks));
+        drop(overlay(&state, &data));
+        update(&mut state, Message::ServersPasswordEdited(Secret::new("pw")), &data);
+        assert!(matches!(update(&mut state, Message::SubmitServers, &data), Action::None), "no address yet");
+        update(&mut state, Message::CaldavEdited(" https://dav.example.net/ ".into()), &data);
+        match sent(update(&mut state, Message::SubmitServers, &data)) {
+            Request::ConnectMail { calendars, tasks, caldav, .. } => {
+                assert_eq!((calendars, tasks), (false, true), "the switch that was pressed");
+                assert_eq!(caldav.as_deref(), Some("https://dav.example.net/"));
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+        // With an address the switch changes the setting right away.
+        let (mut state, data) = open_mail(MAILBOX);
+        let request = sent(update(&mut state, Message::SetService(MailService::Calendars, false), &data));
+        assert!(matches!(request, Request::UpdateMailAccount { services: Some(_), .. }), "{request:?}");
+        assert!(state.servers.is_none());
+    }
+
+    /// Task M3.5: the sender name and signature follow a change from outside while nothing is
+    /// typed into them; what the person typed stays, and follows again once it is saved.
+    #[test]
+    fn the_page_takes_changes_from_outside_while_nothing_is_typed() {
+        let (mut state, mut data) = open_mail(MAILBOX);
+        let renamed = |data: &mut Data, name: &str| {
+            data.accounts[0].mail.as_mut().expect("mail").sender_name = name.into();
+        };
+        renamed(&mut data, "Anna from elsewhere");
+        loaded(&mut state, &data);
+        assert_eq!(state.mail.as_ref().map(|draft| draft.sender_name.as_str()), Some("Anna from elsewhere"));
+
+        update(&mut state, Message::SenderNameEdited("Anna typed".into()), &data);
+        renamed(&mut data, "Anna again from elsewhere");
+        loaded(&mut state, &data);
+        assert_eq!(state.mail.as_ref().map(|draft| draft.sender_name.as_str()), Some("Anna typed"), "typed stays");
+
+        // Saved: the reload brings what was typed back, and from then on it follows again.
+        renamed(&mut data, "Anna typed");
+        loaded(&mut state, &data);
+        renamed(&mut data, "Anna, later");
+        loaded(&mut state, &data);
+        assert_eq!(state.mail.as_ref().map(|draft| draft.sender_name.as_str()), Some("Anna, later"));
     }
 
     #[test]
@@ -2068,7 +2149,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mail_account_without_a_calendar_address_builds_with_disabled_switches() {
+    fn a_mail_account_builds_with_and_without_a_calendar_address() {
         let (state, mut data) = open_mail("mail:anna@work.example.net");
         assert!(data.accounts[1].mail.as_ref().is_some_and(|mail| mail.caldav.is_none()));
         drop(view(&state, &data));

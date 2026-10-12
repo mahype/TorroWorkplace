@@ -45,6 +45,7 @@ mod glance;
 mod inbox;
 mod launch;
 mod overview;
+mod server_fields;
 mod wizard;
 mod workspaces;
 
@@ -624,6 +625,8 @@ impl Ui {
                 }
                 self.data.settings.zoom = self.zoom.level();
                 agents::loaded(&mut self.agents);
+                // A mail account's page follows changes from outside while nothing is typed.
+                accounts::loaded(&mut self.accounts, &self.data);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
@@ -1514,7 +1517,7 @@ mod tests {
             assert!(mail.accounts.wizard.is_some() && mail.page_overlay().is_some(), "{state}: the dialog is open");
         }
         let password = started(&["--demo", "--open", "change-password"]);
-        assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@mailbox.org@dav.mailbox.org"));
+        assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@posteo.de@posteo.de"));
         assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));

@@ -312,21 +312,24 @@ pub enum Request {
     /// `calendars` or `tasks` the CalDAV address `caldav` of the same sign-in.
     ///
     /// The core checks that every server's host is on the public internet, then the IMAP sign-in
-    /// (listing the folders), the SMTP sign-in (without sending anything) and, for calendars or
-    /// tasks, the CalDAV sign-in; a refusal stops there. Then it keeps the password in the system
-    /// keychain only, under the account id `mail:<address>` (`torro_mail::account_id`), adds the
-    /// account and starts its sync; with calendars or tasks the account syncs them too.
+    /// (listing the folders), the SMTP sign-in (without sending anything) and the CalDAV sign-in
+    /// for calendars or tasks, or for a `caldav` address that is new; a refusal stops there. Then
+    /// it keeps the password in the system keychain only, under the account id `mail:<address>`
+    /// (`torro_mail::account_id`), adds the account and starts its sync; with calendars or tasks
+    /// the account syncs them too.
     ///
-    /// Connecting an account that exists already replaces only servers and password: settings
-    /// (`calendars` and `tasks` are ignored then; change them with `accounts.update_mail_account`),
-    /// hidden collections and rights stay, without `caldav` the stored CalDAV address stays, and
-    /// with an empty `sender_name` the stored sender name stays (so changing the password keeps
-    /// it; `accounts.update_mail_account` with an empty `sender_name` removes it).
-    /// A CalDAV address is kept only while calendars or tasks are on, so that only an address that
-    /// took the password is ever stored. A CalDAV account (`accounts.connect_caldav`) of the same
-    /// sign-in (same login name at the same CalDAV host) is taken over: it leaves the account
-    /// list, its hidden collections and the clients' selections of its calendars and task lists
-    /// name them by their new ids, and the same collections are never synced twice.
+    /// Connecting an account that exists already replaces servers and password and changes
+    /// nothing else but this (task M3.5): `calendars` and `tasks` switch those services on, never
+    /// off (that is `accounts.update_mail_account`), which is how calendars and tasks are added to
+    /// an account connected for mail only; they need a CalDAV address, given or stored. Settings,
+    /// hidden collections and rights stay; without `caldav` the stored CalDAV address stays, also
+    /// while calendars and tasks are off, and with an empty `sender_name` the stored sender name
+    /// stays (so changing the password keeps it; `accounts.update_mail_account` with an empty
+    /// `sender_name` removes it). Only a CalDAV address that took the password is ever stored.
+    /// Once the account syncs calendars or tasks, a CalDAV account (`accounts.connect_caldav`) of
+    /// the same sign-in (same login name at the same CalDAV host) is taken over: it leaves the
+    /// account list, its hidden collections and the clients' selections of its calendars and task
+    /// lists name them by their new ids, and the same collections are never synced twice.
     ///
     /// Answered with [`Response::MailConnected`], never with the password. Error codes: `error`
     /// for an address `torro_mail::account_id` refuses (empty, without one `@`, with `/`, white
@@ -357,12 +360,13 @@ pub enum Request {
         /// system keychain only and is never part of an answer, an error message, a log or an
         /// approval.
         password: Secret,
-        /// Show the calendars of `caldav` in the suite.
+        /// Show the calendars of `caldav` in the suite. At an account that exists: switch them on
+        /// (`false` leaves them as they are).
         calendars: bool,
-        /// Show the task lists of `caldav` in the suite.
+        /// Show the task lists of `caldav` in the suite; at an account that exists as `calendars`.
         tasks: bool,
         /// The CalDAV address of the same sign-in (from `accounts.discover_services`); leave out
-        /// for a mail-only account.
+        /// for a mail-only account, or to keep the address an account has.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caldav: Option<String>,
     },
@@ -1651,6 +1655,15 @@ pub struct ApprovalInfo {
     /// The command's catalogue name: `calendar.delete_event`.
     pub command: String,
     pub summary: String,
+    /// What the summary leaves out, one line each, in the language of the core (task M3.5): for
+    /// `mail.send_draft` every recipient (To, Cc and Bcc, each address with its name), every
+    /// attachment with its file name and size, and the start of the text, all from the draft as
+    /// the core stores it, never from the request. Empty for every other command and in approvals
+    /// stored before. Like `summary` it holds text from outside (names, file names, the text),
+    /// made harmless and shortened by the core; front ends show it as plain text. Only the client
+    /// that asked and the app key see it, as they see the approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<String>,
     pub created: DateTime<Utc>,
     /// Ten minutes after `created` (a question of `approvals.ask_permission`: about half a
     /// minute); an approval still open then expires.
@@ -2021,6 +2034,7 @@ mod tests {
             client_name: "Claude Code".into(),
             command: "workspaces.delete_template".into(),
             summary: "Delete template \"dev\"".into(),
+            details: Vec::new(),
             created: at,
             expires: at + chrono::Duration::minutes(10),
             decided: None,
@@ -2031,6 +2045,14 @@ mod tests {
         assert_eq!(pending["approval"]["state"], "pending");
         assert_eq!(pending["approval"]["clientName"], "Claude Code");
         assert!(pending["approval"].get("decided").is_none());
+        assert!(pending["approval"].get("details").is_none(), "no details, no field");
+        // An approval stored before task M3.5 has no `details`.
+        let stored = serde_json::from_value::<ApprovalInfo>(pending["approval"].clone()).expect("parses");
+        assert!(stored.details.is_empty());
+        let detailed = ApprovalInfo { details: vec!["To: bernd@example.com".into()], ..approval.clone() };
+        let json = serde_json::to_value(&detailed).expect("json");
+        assert_eq!(json["details"], serde_json::json!(["To: bernd@example.com"]));
+        assert_eq!(serde_json::from_value::<ApprovalInfo>(json).expect("parses"), detailed);
 
         let done = ApprovalInfo {
             decided: Some(at),
