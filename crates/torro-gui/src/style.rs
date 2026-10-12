@@ -27,6 +27,12 @@
 //! [`button::primary`]. Iced 0.14 gives keyboard focus only to text inputs and text editors, so only
 //! those have a focus state here; buttons, checkboxes and pick lists cannot be focused yet.
 //!
+//! Framed controls on `raised` ([`button::secondary`], [`button::boxed`], [`button::chip`],
+//! [`button::choice_chip`] and [`pick_list`]) also draw their border in `line_selected` while hovered,
+//! pressed or open: in dark mode `hover` is almost the colour of `raised` (#16171A on #141518), so the
+//! surface alone would give no feedback. A *chosen* chip or segment is `selected` with the same
+//! `line_selected` border; the fill (and a chip's check mark) tells it from a hovered one.
+//!
 //! Sizes (height, padding) are not part of a style in Iced; the constants below and the size tokens
 //! in [`crate::theme::size`] carry them. The building blocks in `torro_gui::widgets` (F.5) put style
 //! and size together; apps should prefer those.
@@ -153,6 +159,16 @@ pub mod button {
         Rest { background: faded(rest.background), text: faded(rest.text), border: faded(rest.border), ..rest }.style()
     }
 
+    /// A [`neutral`] button with a frame on `raised`: hovered and pressed also draw the border in
+    /// `line_selected`, because `hover` on `raised` is almost invisible in dark mode (module docs).
+    fn framed(p: &Palette, status: Status, rest: Rest, active_text: Color) -> Style {
+        let style = neutral(p, status, rest, active_text);
+        match status {
+            Status::Hovered | Status::Pressed => Style { border: style.border.color(p.line_selected), ..style },
+            Status::Active | Status::Disabled => style,
+        }
+    }
+
     /// The one primary action of a window ("New event", "Save"): Torro red with white text.
     ///
     /// At most one per window – red is the brand, never selection or status. Hover and pressed
@@ -169,11 +185,11 @@ pub mod button {
     }
 
     /// A secondary action with a frame ("Today", "Filter"): `raised` with a `line_strong` border
-    /// and `text`.
+    /// and `text`; hovered and pressed the border turns `line_selected` (module docs).
     pub fn secondary(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
         let rest = Rest { background: p.raised, text: p.text, border: p.line_strong, radius: radius::SM };
-        neutral(p, status, rest, p.text)
+        framed(p, status, rest, p.text)
     }
 
     /// The default button in header bars: no surface, `text_2`; on hover `hover` and `text`.
@@ -207,14 +223,16 @@ pub mod button {
     }
 
     /// One segment of a segmented control (Day · Week · Month), inside
-    /// [`super::container::segmented`]. Label `CAPTION` in `text_3`; the `active` segment is
-    /// `selected` with a `line_strong` edge and `text`. Radius [`radius::XS`], padding
-    /// [`super::BUTTON_PADDING`], height `CONTROL_SM − 2 × SEGMENT_INSET − 2` (the frame's border).
+    /// [`super::container::segmented`]. Label `CAPTION` in `text_3`, on hover `hover` and `text`;
+    /// the `active` segment is `selected` with a `line_selected` edge and `text` – the edge makes
+    /// the choice readable also in light mode, where `selected` is close to the frame's `bg`.
+    /// Radius [`radius::XS`], padding [`super::BUTTON_PADDING`], height
+    /// `CONTROL_SM − 2 × SEGMENT_INSET − 2` (the frame's border).
     pub fn segment(active: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
         move |theme, status| {
             let p = palette(theme);
             if active {
-                let rest = Rest { background: p.selected, text: p.text, border: p.line_strong, radius: radius::XS };
+                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::XS };
                 chosen(status, rest)
             } else {
                 let rest = Rest {
@@ -226,6 +244,49 @@ pub mod button {
                 neutral(p, status, rest, p.text)
             }
         }
+    }
+
+    /// A property chip that opens an editor ("Today, 16:00" under a title,
+    /// `widgets::chip` with a message): the look of [`super::container::chip`] – `raised`,
+    /// `line_strong` border, radius [`radius::XS`], `text` – with the states of a [`secondary`]
+    /// button: hover `hover`, pressed `selected`, both with a `line_selected` border.
+    pub fn chip(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest = Rest { background: p.raised, text: p.text, border: p.line_strong, radius: radius::XS };
+        framed(p, status, rest, p.text)
+    }
+
+    /// A chip that can be chosen (a filter template, a label, a person, a milestone –
+    /// `widgets::choice_chip`), [`crate::theme::size::CONTROL_SM`] high, radius [`radius::SM`],
+    /// label `CAPTION`.
+    ///
+    /// Not chosen: `raised`, `line_strong` border, `text_2`; hover `hover` and `text`, pressed
+    /// `selected` and `text`, both with a `line_selected` border. Chosen (`on`): `selected`,
+    /// `line_selected` border and `text` in every state – hovering must not make a choice look
+    /// undone; the widget adds a check mark, so the choice does not rest on the fill alone.
+    /// Disabled: the normal look at 40 %. Neutral, never red.
+    pub fn choice_chip(on: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
+        move |theme, status| {
+            let p = palette(theme);
+            if on {
+                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::SM };
+                chosen(status, rest)
+            } else {
+                let rest = Rest { background: p.raised, text: p.text_2, border: p.line_strong, radius: radius::SM };
+                framed(p, status, rest, p.text)
+            }
+        }
+    }
+
+    /// `style` while the action it started is running ("Creating…"): the button has no message
+    /// (it takes no second press), yet it keeps the full look of `style` at rest instead of the
+    /// faded disabled look, so it reads as working, not as unavailable. No hover either.
+    ///
+    /// ```ignore
+    /// button(content).style(style::button::busy(style::button::primary)) // no .on_press
+    /// ```
+    pub fn busy(style: fn(&Theme, Status) -> Style) -> impl Fn(&Theme, Status) -> Style + Copy {
+        move |theme, _| style(theme, Status::Active)
     }
 
     /// A row in the sidebar (navigation, lists, calendars), 28 high
@@ -429,24 +490,25 @@ pub fn text_editor(theme: &Theme, status: widget::text_editor::Status) -> widget
 
 /// A pick list (`pick_list(…).style(style::pick_list).menu_style(style::pick_list_menu)`): looks
 /// like [`button::secondary`] – `raised`, `line_strong` border, radius [`radius::SM`], text
-/// `text`, arrow and placeholder `text_3`. Hover `hover`, open `selected`.
+/// `text`, arrow and placeholder `text_3`. Hover `hover`, open `selected`; both with a
+/// `line_selected` border like the other framed controls (module docs).
 ///
 /// Text [`crate::typo::CAPTION`] (size, font *and* `text_line_height`) with padding
 /// [`PICK_LIST_PADDING`] gives the height [`crate::theme::size::CONTROL_SM`]. Iced 0.14 pick lists
 /// have no disabled state.
 pub fn pick_list(theme: &Theme, status: widget::pick_list::Status) -> widget::pick_list::Style {
     let p = palette(theme);
-    let background = match status {
-        widget::pick_list::Status::Active => p.raised,
-        widget::pick_list::Status::Hovered => p.hover,
-        widget::pick_list::Status::Opened { .. } => p.selected,
+    let (background, border) = match status {
+        widget::pick_list::Status::Active => (p.raised, p.line_strong),
+        widget::pick_list::Status::Hovered => (p.hover, p.line_selected),
+        widget::pick_list::Status::Opened { .. } => (p.selected, p.line_selected),
     };
     widget::pick_list::Style {
         text_color: p.text,
         placeholder_color: p.text_3,
         handle_color: p.text_3,
         background: Background::Color(background),
-        border: outline(p.line_strong, radius::SM),
+        border: outline(border, radius::SM),
     }
 }
 
@@ -697,6 +759,9 @@ mod tests {
             ("list_row(selected)", Box::new(button::list_row(true))),
             ("menu_item", Box::new(button::menu_item(false))),
             ("menu_item(highlighted)", Box::new(button::menu_item(true))),
+            ("chip", Box::new(button::chip)),
+            ("choice_chip", Box::new(button::choice_chip(false))),
+            ("choice_chip(on)", Box::new(button::choice_chip(true))),
         ]
     }
 
@@ -779,6 +844,64 @@ mod tests {
             // On a menu the highlight must stand out; `hover` would not in dark mode.
             assert!(p.selected.relative_contrast(p.menu) > p.hover.relative_contrast(p.menu));
             assert_eq!(text_input(&theme, widget::text_input::Status::Hovered).background, Background::Color(p.hover));
+        }
+    }
+
+    #[test]
+    fn framed_controls_strengthen_their_border_on_hover_and_press() {
+        for (mode, theme, p) in modes() {
+            let framed: [(&str, ButtonStyle); 4] = [
+                ("secondary", Box::new(button::secondary)),
+                ("boxed", Box::new(button::boxed)),
+                ("chip", Box::new(button::chip)),
+                ("choice_chip", Box::new(button::choice_chip(false))),
+            ];
+            for (name, style) in framed {
+                assert_eq!(style(&theme, Status::Active).border.color, p.line_strong, "{mode}: {name} at rest");
+                for status in [Status::Hovered, Status::Pressed] {
+                    assert_eq!(style(&theme, status).border.color, p.line_selected, "{mode}: {name} {status:?}");
+                }
+            }
+            let hovered = pick_list(&theme, widget::pick_list::Status::Hovered);
+            assert_eq!(hovered.border.color, p.line_selected, "{mode}: pick list hover");
+            assert_eq!(pick_list(&theme, widget::pick_list::Status::Active).border.color, p.line_strong);
+        }
+    }
+
+    #[test]
+    fn a_choice_reads_as_chosen_in_every_state() {
+        for (mode, theme, p) in modes() {
+            let chosen: [(&str, ButtonStyle); 2] = [
+                ("choice_chip(on)", Box::new(button::choice_chip(true))),
+                ("segment(active)", Box::new(button::segment(true))),
+            ];
+            for (name, style) in chosen {
+                for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                    let s = style(&theme, status);
+                    assert!(same(bg(&s), p.selected), "{mode}: {name} {status:?} fill");
+                    assert_eq!(s.border.color, p.line_selected, "{mode}: {name} {status:?} edge");
+                    assert_eq!(s.text_color, p.text, "{mode}: {name} {status:?} text");
+                }
+            }
+            // Not chosen: quieter text at rest, full text under the pointer.
+            let off = button::choice_chip(false);
+            assert_eq!(off(&theme, Status::Active).text_color, p.text_2, "{mode}");
+            assert_eq!(off(&theme, Status::Hovered).text_color, p.text, "{mode}");
+            assert_eq!(button::choice_chip(true)(&theme, Status::Active).border.radius, radius::SM.into());
+        }
+    }
+
+    #[test]
+    fn a_busy_button_keeps_its_look_and_is_not_faded() {
+        for (mode, theme, p) in modes() {
+            let busy = button::busy(button::primary);
+            for status in BUTTON_STATES {
+                let s = busy(&theme, status);
+                assert!(same(bg(&s), p.accent), "{mode}: busy primary {status:?} is not plain red");
+                assert_eq!(s.text_color, p.on_accent, "{mode}: busy text {status:?}");
+            }
+            let secondary = button::busy(button::secondary)(&theme, Status::Disabled);
+            assert!(same(bg(&secondary), p.raised), "{mode}: busy secondary");
         }
     }
 
