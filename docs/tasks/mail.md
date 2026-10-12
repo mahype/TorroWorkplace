@@ -334,6 +334,23 @@ ihre Texte im Bericht.
 - **Oberfläche/API/MCP:** keine neuen Befehle.
 - **Abnahme:** Tests für alle vier Punkte; `torro-api-review` ohne Befund.
 
+### M2.8 Mail-Konto lesen (Lücke aus M5.2)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,account}.rs`, `crates/torroworkplace/src/mail/service.rs`, `docs/api.md`
+- Die Kontoseite (M5.2) kann heute nichts von einem Mail-Konto lesen. `AccountInfo` bekommt das optionale Feld
+  `mail: Option<MailView>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`, verträglich):
+  `MailView { address, sender_name, imap: Endpoint, smtp: Endpoint, caldav: Option<String>, settings: MailSettings,
+  open_roles: Vec<OpenRoleView { role, candidates: Vec<FolderChoice { name, path }> }>, mail: ServiceState,
+  calendars: Option<ServiceState> }` mit `ServiceState { last_sync, problem }` je Dienst. Nie ein Geheimnis.
+- **Erneut verbinden ändert nur, was die Anfrage nennt:** `ConnectMail` mit leerem `sender_name` behält den
+  gespeicherten; Doc-Kommentar und Test. (Sonst löscht „Change password…“ den Absendernamen.)
+- **API:** `accounts.list_accounts` (Read) liefert das Feld nur für Mail-Konten, die der Client erreicht;
+  Beschreibung um einen Satz ergänzen. **MCP:** dasselbe Tool. **Oberfläche:** M5.2.
+- **Abnahme:** Test: Mail-Konto in `list_accounts` mit Einstellungen, Servern, offener Rolle samt Kandidaten,
+  Zustand je Dienst; Client ohne Freigabe sieht es nicht; kein Passwort in der Antwort; erneutes Verbinden mit
+  leerem Absendernamen behält ihn; `torro-api-review` ohne Befund.
+
 ### M3.1 Mail lesen: Befehle und MCP
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,mcp}.rs`,
@@ -456,7 +473,7 @@ ihre Texte im Bericht.
 
 ### M5.2 Steuerzentrale: Kontoseite Mail
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
+- **Modell:** Sonnet · **Braucht:** M2.7, M2.8 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
 - **Oberfläche** (Einstellungen nach dem Vorbild TorroMail, ohne dessen Rechte und Cache-Stufen): Status je Dienst
   (Mail, Calendars, Tasks) mit letztem Abgleich; Absendername; Signatur (mehrzeilig); „Show new mail in Inbox“:
   All / Only „For me“ / Off; Dienste an/aus; „Change password…“ und „Server settings…“ (beide über
