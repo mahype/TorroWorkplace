@@ -97,7 +97,7 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
 - **API/MCP:** keine.
 
 ### M7.4 Aus TorroMail übernehmen
-- [ ] erledigt
+- [x] erledigt (nur Mail: kein CalDAV beim Import, Kalender auf der Kontoseite mit M3.5; `docs/api-reference.md` gibt es noch nicht, A.9)
 - **Hinweis 2026-10-12:** TorroMail läuft parallel weiter; die Übernahme kopiert nur, TorroMail behält alles.
   Nach M2.7 übernimmt sie auch IMAP/SMTP (`imapHost`, `imapPort`, `imapSecurity`, `smtp*`, `username`, `name`,
   `email` aus `state.json`) und legt ein Mail-Konto (`accounts.connect_mail`) statt nur CalDAV an.

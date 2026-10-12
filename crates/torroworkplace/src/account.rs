@@ -25,6 +25,9 @@
 //! Task M2.7: a mail account with a CalDAV address and calendars or tasks switched on syncs them
 //! like a CalDAV account ([`syncs_calendars`]), with the same password. Connecting it takes over
 //! the CalDAV account of the same sign-in in one write of the list ([`store_taking_over`]).
+//!
+//! Task M7.4: the accounts of the separate TorroMail app are read in [`torromail`], only read:
+//! its `state.json` and, for the account a person takes over, its keychain entry.
 
 use std::future::Future;
 use std::path::Path;
@@ -38,6 +41,8 @@ use torro_pim_caldav::nextcloud::{self, Credentials, LoginFlow};
 use torro_pim_caldav::{CalDavAccount, CalDavClient};
 
 use self::github::TokenStore;
+
+pub mod torromail;
 
 /// How often the sign-in is polled while the user is in the browser.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);

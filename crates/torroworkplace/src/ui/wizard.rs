@@ -32,6 +32,17 @@
 //! 5. **Done:** "Your calendars and task lists are ready." (Nextcloud), "Signed in to GitHub as
 //!    …" (GitHub) or what the mail account's servers have, and "Done".
 //!
+//! **TorroMail** (task M7.4): the dialog opens with `Request::TorroMailAccounts` ([`State::open`]).
+//! When the separate TorroMail app has accounts, the catalog starts with "Use accounts from
+//! TorroMail?": one row per account with its address and servers and "Use", which sends
+//! `Request::ImportTorroMailAccount` for mail only (pressing it is the consent to copy the password); accounts the
+//! suite cannot take (OAuth, JMAP) are greyed out with the reason, those it has already say
+//! "Connected". A take-over runs on the catalog itself, one at a time; when it fails (TorroMail's
+//! keychain entry cannot be read, a server refuses), the row shows why and "Enter password", which
+//! opens the mail path at the password step, filled with TorroMail's servers and user name. After a
+//! take-over the catalog ends with "Done". Without TorroMail, or when the list cannot be read, the
+//! catalog is as before.
+//!
 //! How a step learns that it is over:
 //!
 //! - The shell hands every answer to a request to [`answered`] while the dialog is open. GitHub's
@@ -60,7 +71,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{dialog, style, typo, widgets};
-use torro_ipc::{AccountInfo, Request, Response};
+use torro_ipc::{AccountInfo, Request, Response, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_pim::AccountState;
 
@@ -226,6 +237,36 @@ pub struct State {
     error: Option<String>,
     /// What the mail provider path has asked for and learned so far.
     mail: Mail,
+    /// TorroMail's accounts on the catalog (task M7.4).
+    torromail: Offer,
+}
+
+/// TorroMail's accounts on the catalog (task M7.4): asked for when the dialog opens
+/// ([`State::open`]), each taken over with one press, one at a time.
+#[derive(Debug, Default)]
+struct Offer {
+    /// The list was asked for and has not come back yet.
+    asking: bool,
+    /// As the core listed them; empty when TorroMail has none or the list failed.
+    accounts: Vec<TorroMailAccount>,
+    /// TorroMail's id of the account being taken over.
+    importing: Option<String>,
+    /// The take-over that failed last: TorroMail's id and the core's message.
+    failed: Option<(String, String)>,
+    /// An account was taken over in this dialog: the catalog ends with "Done".
+    imported: bool,
+}
+
+impl Offer {
+    /// "Use" on `id` sends something: TorroMail's account can be taken over and is not yet, and no
+    /// other take-over runs.
+    fn can_use(&self, id: &str) -> bool {
+        self.importing.is_none()
+            && self
+                .accounts
+                .iter()
+                .any(|account| account.id == id && account.unsupported.is_none() && !account.connected)
+    }
 }
 
 /// The two mail servers of an account.
@@ -541,6 +582,14 @@ impl State {
         State { step: first_step(), ..State::default() }
     }
 
+    /// A new dialog and the request that asks for TorroMail's accounts (task M7.4), whose answer
+    /// fills the top of the catalog ([`answered`]). How the accounts page opens the dialog.
+    pub fn open() -> (State, Action) {
+        let mut state = State::new();
+        state.torromail.asking = true;
+        (state, Action::Send(Request::TorroMailAccounts))
+    }
+
     /// A sign-in or a check runs; the shell reloads more often.
     pub fn busy(&self) -> bool {
         self.step == Step::Checking || self.sign_in.is_some()
@@ -593,6 +642,10 @@ pub enum Message {
     ToggleService(Service),
     /// "Create an app password".
     OpenPasswordHelp,
+    /// "Use" on a TorroMail account, by TorroMail's id (task M7.4).
+    UseTorroMail(String),
+    /// "Enter password" on a TorroMail account whose take-over failed: the mail path, filled in.
+    EnterTorroMailPassword(String),
 }
 
 /// Follows a Nextcloud sign-in through a reload of `data` and ends it as the module doc says.
@@ -650,6 +703,9 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         }
         other => other,
     };
+    if let Some(taken) = offer_answered(state, result) {
+        return taken;
+    }
     match (state.step, result) {
         (
             Step::MailSearching,
@@ -754,6 +810,70 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
     }
 }
 
+/// The answers to TorroMail's requests (task M7.4): the list whenever it comes, the outcome of a
+/// take-over while one runs, and a list that failed while the dialog is still on the catalog –
+/// silently, since the offer is a shortcut and the catalog works without it. `None` for every
+/// other answer, which the steps take.
+fn offer_answered(state: &mut State, result: &Result<Response, String>) -> Option<bool> {
+    let offer = &mut state.torromail;
+    if let Ok(Response::TorroMailAccounts { accounts }) = result {
+        offer.asking = false;
+        offer.accounts = accounts.clone();
+        return Some(true);
+    }
+    if let Some(id) = offer.importing.take() {
+        match result {
+            Ok(Response::MailConnected { .. }) => {
+                if let Some(account) = offer.accounts.iter_mut().find(|account| account.id == id) {
+                    account.connected = true;
+                }
+                offer.failed = None;
+                offer.imported = true;
+            }
+            Ok(_) => offer.failed = Some((id, tr("Torro Workplace did not answer as expected. Try again.").into())),
+            Err(message) => offer.failed = Some((id, message.clone())),
+        }
+        return Some(true);
+    }
+    if offer.asking && state.step == Step::Provider && result.is_err() {
+        offer.asking = false;
+        return Some(true);
+    }
+    None
+}
+
+/// The mail path at the password step, filled with what TorroMail has for `account`: the way on
+/// when its take-over failed (task M7.4). Back leads to the address step with TorroMail's servers
+/// as found; a CalDAV address can be added there under "Advanced".
+fn fill_from_torromail(state: &mut State, account: &TorroMailAccount) {
+    let (Some(imap), Some(smtp)) = (&account.imap, &account.smtp) else { return };
+    // TorroMail's generic label says nothing; a provider's name ("iCloud") finds its app password help.
+    let name = match account.provider.as_str() {
+        "" | "IMAP/SMTP" => domain_of(&account.address).to_string(),
+        provider => provider.to_string(),
+    };
+    let found = Found {
+        name,
+        caldav: None,
+        imap: Some(imap.clone()),
+        smtp: Some(smtp.clone()),
+        login_hint: Some(account.login_name.clone()).filter(|login| !login.trim().is_empty()),
+        app_password: false,
+        note: None,
+    };
+    state.mail = Mail {
+        address: account.address.clone(),
+        found: Some(found),
+        imap: ServerFields::of(imap),
+        smtp: ServerFields::of(smtp),
+        sender_name: account.sender_name.clone(),
+        ..Mail::default()
+    };
+    state.provider = Provider::Mail;
+    state.torromail.failed = None;
+    go(state, Step::MailPassword);
+}
+
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     // Every message first looks at the latest data, so a finished sign-in is noticed at once.
     observe(state, data);
@@ -769,8 +889,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             Action::None
         }
+        // While a TorroMail account is taken over, the catalog waits for it.
         Message::ChooseProvider(provider) => {
-            if state.step == Step::Provider && provider.is_enabled() {
+            if state.step == Step::Provider && provider.is_enabled() && state.torromail.importing.is_none() {
                 state.provider = provider;
                 state.step = provider.first_step();
             }
@@ -865,6 +986,19 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::OpenTokenPage => Action::OpenUrl(NEW_TOKEN_URL.to_string()),
+        Message::UseTorroMail(id) if state.step == Step::Provider && state.torromail.can_use(&id) => {
+            state.torromail.importing = Some(id.clone());
+            state.torromail.failed = None;
+            state.error = None;
+            Action::Send(Request::ImportTorroMailAccount { id })
+        }
+        Message::EnterTorroMailPassword(id) if state.step == Step::Provider && state.torromail.importing.is_none() => {
+            if let Some(account) = state.torromail.accounts.iter().find(|account| account.id == id).cloned() {
+                fill_from_torromail(state, &account);
+            }
+            Action::None
+        }
+        Message::UseTorroMail(_) | Message::EnterTorroMailPassword(_) => Action::None,
         Message::UseGithubCli | Message::PasteToken | Message::AddressChanged(_) => Action::None,
     }
 }
@@ -984,7 +1118,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     ]
     .spacing(space::XS);
     let body = match state.step {
-        Step::Provider => provider_step(),
+        Step::Provider => provider_step(state),
         Step::Server => server_step(state),
         Step::SigningIn => signing_in_step(data),
         Step::Github => github_step(),
@@ -1028,27 +1162,114 @@ fn done_text(state: &State) -> String {
     }
 }
 
-/// The catalog: a group with one row per provider, the disabled ones marked "Coming soon".
-fn provider_step() -> Element<'static, Message> {
+/// The catalog: TorroMail's accounts first when it has some ([`offer_group`]), then a group with
+/// one row per provider, the disabled ones marked "Coming soon". While a TorroMail account is
+/// taken over, the providers wait.
+fn provider_step(state: &State) -> Element<'_, Message> {
+    let open = state.torromail.importing.is_none();
     let rows = vec![
-        provider_row(Provider::Nextcloud, "Nextcloud", tr("Calendars and tasks")),
-        provider_row(Provider::Mail, tr("Mail account"), tr("Mail, calendars and tasks")),
-        provider_row(Provider::GitHub, "GitHub", tr("Issues and projects")),
-        provider_row(Provider::Slack, "Slack", tr("Mentions and messages")),
-        provider_row(Provider::Ai, tr("AI providers"), tr("Summaries and agents")),
+        provider_row(Provider::Nextcloud, "Nextcloud", tr("Calendars and tasks"), open),
+        provider_row(Provider::Mail, tr("Mail account"), tr("Mail, calendars and tasks"), open),
+        provider_row(Provider::GitHub, "GitHub", tr("Issues and projects"), open),
+        provider_row(Provider::Slack, "Slack", tr("Mentions and messages"), open),
+        provider_row(Provider::Ai, tr("AI providers"), tr("Summaries and agents"), open),
     ];
-    widgets::group(tr("Services"), rows, None)
+    let services = widgets::group(tr("Services"), rows, None);
+    match offer_group(&state.torromail) {
+        Some(offer) => column![offer, services].spacing(space::XL).into(),
+        None => services,
+    }
 }
 
-/// A provider: name and what it brings; the available one is a row to press with a chevron, the
-/// others are plain rows with a tag.
-fn provider_row(provider: Provider, name: &'static str, summary: &'static str) -> Element<'static, Message> {
+/// A provider: name and what it brings; the available one is a row to press with a chevron (drawn
+/// disabled unless `open`), the others are plain rows with a tag.
+fn provider_row(
+    provider: Provider,
+    name: &'static str,
+    summary: &'static str,
+    open: bool,
+) -> Element<'static, Message> {
     if provider.is_enabled() {
         let row = setting_row(None, name, Some(summary.to_string()), chevron());
-        pressable(row, Some(Message::ChooseProvider(provider)))
+        pressable(row, open.then_some(Message::ChooseProvider(provider)))
     } else {
         coming_soon_row(None, name, summary, tr("Coming soon"))
     }
+}
+
+/// "Use accounts from TorroMail?" (task M7.4): one row per account of the separate TorroMail app;
+/// `None` when it has none, so the catalog is as before.
+fn offer_group(offer: &Offer) -> Option<Element<'_, Message>> {
+    if offer.accounts.is_empty() {
+        return None;
+    }
+    let rows = offer.accounts.iter().map(|account| offer_row(offer, account)).collect();
+    let footer = tr("Copies the mail servers, user name and password. TorroMail keeps its accounts.");
+    Some(widgets::group(tr("Use accounts from TorroMail?"), rows, Some(footer.to_string())))
+}
+
+/// One TorroMail account: its address and servers, and what can be done with it – "Use", taking
+/// over ("Connecting…"), "Connected", greyed out with the reason it cannot be taken, or the reason
+/// a take-over failed with "Enter password".
+fn offer_row<'a>(offer: &'a Offer, account: &'a TorroMailAccount) -> Element<'a, Message> {
+    if let Some(why) = &account.unsupported {
+        return unavailable_row(&account.address, why, tr("Not supported"));
+    }
+    let open = offer.importing.is_none();
+    if let Some((_, message)) = offer.failed.as_ref().filter(|(id, _)| *id == account.id) {
+        let error = |t: &Theme| text::Style { color: Some(palette(t).error_text) };
+        let lines = column![
+            one_line(typo::text(typo::BODY, account.address.as_str())),
+            typo::text(typo::META, message.as_str()).style(error),
+        ];
+        let way_on = widgets::text_button(
+            None,
+            tr("Enter password"),
+            style::button::secondary,
+            open.then(|| Message::EnterTorroMailPassword(account.id.clone())),
+        );
+        return wrapping_row(lines, way_on);
+    }
+    let control: Element<'a, Message> = if account.connected {
+        widgets::pill(None, tr("Connected"))
+    } else if offer.importing.as_deref() == Some(account.id.as_str()) {
+        typo::text(typo::META, tr("Connecting…")).style(theme::text_2).into()
+    } else {
+        let press = offer.can_use(&account.id).then(|| Message::UseTorroMail(account.id.clone()));
+        widgets::text_button(None, tr("Use"), style::button::secondary, press)
+    };
+    setting_row(None, account.address.as_str(), Some(servers_of(account)), control)
+}
+
+/// "imap.mailbox.org · smtp.mailbox.org", or the one host when both servers share it.
+fn servers_of(account: &TorroMailAccount) -> String {
+    let hosts: Vec<&str> =
+        [&account.imap, &account.smtp].into_iter().flatten().map(|server| server.host.as_str()).collect();
+    match hosts.as_slice() {
+        [imap, smtp] if imap.eq_ignore_ascii_case(smtp) => imap.to_string(),
+        hosts => hosts.join(" · "),
+    }
+}
+
+/// A row whose second line wraps (a reason or an error, in any language), with `control` at its end.
+fn wrapping_row<'a>(lines: iced::widget::Column<'a, Message>, control: Element<'a, Message>) -> Element<'a, Message> {
+    container(row![lines.width(Fill), control].spacing(space::L).align_y(Alignment::Center))
+        .width(Fill)
+        .padding([space::M, space::L])
+        .into()
+}
+
+/// A TorroMail account the suite cannot take: address, the reason below it (wrapping) and `tag`,
+/// all at the disabled opacity like [`coming_soon_row`].
+fn unavailable_row<'a>(name: &'a str, reason: &'a str, tag: &'static str) -> Element<'a, Message> {
+    let faded = |colour: fn(&Palette) -> Color| {
+        move |t: &Theme| text::Style { color: Some(colour(palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
+    };
+    let lines = column![
+        one_line(typo::text(typo::BODY, name).style(faded(|p| p.text))),
+        typo::text(typo::META, reason).style(faded(|p| p.text_2)),
+    ];
+    wrapping_row(lines, widgets::pill_disabled(None, tag))
 }
 
 /// Something that is not available yet: the whole row – `mark`, name, summary and `tag` – at the
@@ -1456,9 +1677,13 @@ fn footer(state: &State) -> Element<'_, Message> {
     let back =
         matches!(state.step, Step::Github | Step::Token | Step::MailAddress | Step::MailPassword | Step::MailServices)
             .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
-    let cancel = widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close));
+    // A TorroMail account taken over on the catalog is done, not cancelled.
+    let taken_over = state.step == Step::Provider && state.torromail.imported;
+    let cancel =
+        (!taken_over).then(|| widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Close)));
     let primary = |label, message| Some(widgets::text_button(None, label, style::button::primary, message));
     let next = match state.step {
+        Step::Provider if taken_over => primary(tr("Done"), Some(Message::Close)),
         Step::Provider
         | Step::SigningIn
         | Step::Github
@@ -1510,13 +1735,31 @@ pub enum Demo {
     MailOnly,
     /// Connected: what the servers have.
     Done,
+    /// The catalog after "Use" on TorroMail's Fastmail account, whose password could not be read
+    /// (task M7.4): the reason and "Enter password".
+    TorroMailFailed,
+    /// "Enter password" pressed there: the password step, filled with TorroMail's servers.
+    TorroMailPassword,
+    /// The catalog after TorroMail's Posteo account was taken over: "Connected" and "Done".
+    TorroMailDone,
 }
 
 /// The messages that lead to `demo` the way a person would get there. The demo's answers to the
 /// requests come from `launch::demo_answer`; the passwords "wrong" (IMAP) and "wrong-smtp" are the
 /// ones it refuses.
 pub fn demo_messages(demo: Demo) -> Vec<Message> {
+    // TorroMail's accounts are on the catalog once the dialog is open (`launch::demo_torromail`).
+    match demo {
+        Demo::TorroMailFailed => return vec![Message::UseTorroMail("tm-fastmail".into())],
+        Demo::TorroMailPassword => {
+            let id = "tm-fastmail".to_string();
+            return vec![Message::UseTorroMail(id.clone()), Message::EnterTorroMailPassword(id)];
+        }
+        Demo::TorroMailDone => return vec![Message::UseTorroMail("tm-posteo".into())],
+        _ => {}
+    }
     let address = match demo {
+        Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
         Demo::Address => None,
         Demo::Unsupported => Some("anna@outlook.com"),
         Demo::Gmail => Some("anna@gmail.com"),
@@ -1547,6 +1790,8 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
             }
         }
         Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
+        // Returned above.
+        Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
     }
     steps
 }
@@ -2450,5 +2695,154 @@ mod tests {
         update(&mut searching, Message::Continue, &Data::default());
         assert_eq!(searching.step, Step::MailSearching);
         drop(view(&searching, &Data::default()));
+    }
+
+    // TorroMail (task M7.4).
+
+    fn torromail_account(id: &str, address: &str) -> TorroMailAccount {
+        let server = |host: &str, port, security| Some(Endpoint { host: host.into(), port, security });
+        TorroMailAccount {
+            id: id.into(),
+            address: address.into(),
+            sender_name: "Anna Example".into(),
+            provider: "IMAP/SMTP".into(),
+            imap: server("imap.example.org", 993, Security::Tls),
+            smtp: server("smtp.example.org", 587, Security::StartTls),
+            login_name: "anna".into(),
+            unsupported: None,
+            connected: false,
+        }
+    }
+
+    /// A dialog opened as the accounts page opens it, with TorroMail's `accounts` listed.
+    fn with_torromail(accounts: Vec<TorroMailAccount>) -> State {
+        let (mut state, ask) = State::open();
+        assert!(matches!(ask, Action::Send(Request::TorroMailAccounts)), "the dialog asks as it opens");
+        assert!(answered(&mut state, &Ok(Response::TorroMailAccounts { accounts })));
+        state
+    }
+
+    #[test]
+    fn torromail_accounts_are_taken_over_one_at_a_time_and_end_with_done() {
+        let data = Data::default();
+        let mut gmail = torromail_account("g", "anna@gmail.com");
+        gmail.unsupported = Some("Signs in with Google".into());
+        let mut known = torromail_account("k", "anna@mailbox.org");
+        known.connected = true;
+        let accounts =
+            vec![torromail_account("p", "anna@posteo.de"), torromail_account("f", "anna@fastmail.com"), gmail, known];
+        let mut state = with_torromail(accounts);
+        drop(view(&state, &data));
+        let press = |id: &str, state: &mut State| update(state, Message::UseTorroMail(id.into()), &data);
+        assert!(matches!(press("g", &mut state), Action::None), "not supported");
+        assert!(matches!(press("k", &mut state), Action::None), "connected already");
+        let action = press("p", &mut state);
+        assert!(matches!(action, Action::Send(Request::ImportTorroMailAccount { ref id }) if id == "p"), "{action:?}");
+        assert!(matches!(press("f", &mut state), Action::None), "one at a time");
+        update(&mut state, Message::ChooseProvider(Provider::Mail), &data);
+        assert_eq!(state.step, Step::Provider, "the catalog waits for the take-over");
+        drop(view(&state, &data));
+
+        let done = Response::MailConnected {
+            account: account("mail:anna@posteo.de", connected()),
+            calendars: false,
+            tasks: false,
+            open_roles: Vec::new(),
+        };
+        assert!(answered(&mut state, &Ok(done)));
+        assert!(state.torromail.accounts[0].connected && state.torromail.imported);
+        assert_eq!((state.step, state.error.as_deref()), (Step::Provider, None));
+        assert!(matches!(press("f", &mut state), Action::Send(Request::ImportTorroMailAccount { .. })), "the next one");
+        drop(view(&state, &data));
+    }
+
+    #[test]
+    fn a_failed_take_over_offers_the_password_with_torromails_servers() {
+        let data = Data::default();
+        let mut state = with_torromail(vec![torromail_account("f", "anna@fastmail.com")]);
+        update(&mut state, Message::UseTorroMail("f".into()), &data);
+        let message = "The password could not be read from TorroMail. Enter it to connect.";
+        assert!(answered(&mut state, &Err(message.into())));
+        assert_eq!(state.torromail.failed, Some(("f".to_string(), message.to_string())));
+        assert_eq!((state.step, state.error.as_deref()), (Step::Provider, None), "the row says it, not the footer");
+        drop(view(&state, &data));
+
+        update(&mut state, Message::EnterTorroMailPassword("f".into()), &data);
+        assert_eq!((state.step, state.provider), (Step::MailPassword, Provider::Mail));
+        update(&mut state, Message::PasswordChanged(Secret::new("typed")), &data);
+        update(&mut state, Message::Continue, &data);
+        assert_eq!(state.step, Step::MailServices);
+        match update(&mut state, Message::Continue, &data) {
+            Action::Send(Request::ConnectMail {
+                address,
+                sender_name,
+                imap,
+                smtp,
+                login_name,
+                caldav,
+                password,
+                ..
+            }) => {
+                assert_eq!(
+                    (address.as_str(), sender_name.as_str(), login_name.as_str()),
+                    ("anna@fastmail.com", "Anna Example", "anna")
+                );
+                assert_eq!((imap.host.as_str(), smtp.port, caldav), ("imap.example.org", 587, None));
+                assert_eq!(password.expose(), "typed");
+            }
+            other => panic!("expected ConnectMail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn without_torromail_the_catalog_is_as_before() {
+        let (mut state, _) = State::open();
+        assert!(answered(&mut state, &Err("TorroMail's state.json is not valid JSON".into())), "taken quietly");
+        assert_eq!(state.error, None);
+        assert!(offer_group(&state.torromail).is_none());
+        assert!(!answered(&mut state, &Err("no template".into())), "afterwards the steps take their answers");
+        let empty = with_torromail(Vec::new());
+        assert!(offer_group(&empty.torromail).is_none(), "no TorroMail accounts, no question");
+    }
+
+    #[test]
+    fn the_torromail_demos_lead_where_they_say() {
+        for (demo, step) in [
+            (Demo::TorroMailFailed, Step::Provider),
+            (Demo::TorroMailPassword, Step::MailPassword),
+            (Demo::TorroMailDone, Step::Provider),
+        ] {
+            let messages = demo_messages(demo);
+            assert!(matches!(messages.first(), Some(Message::UseTorroMail(_))), "{demo:?}");
+            let mut state = with_torromail(vec![
+                torromail_account("tm-posteo", "anna.example@posteo.de"),
+                torromail_account("tm-fastmail", "anna@fastmail.com"),
+            ]);
+            for message in messages {
+                let sent = update(&mut state, message, &Data::default());
+                if let Action::Send(Request::ImportTorroMailAccount { id }) = sent {
+                    let answer = match id.as_str() {
+                        "tm-fastmail" => Err("refused".to_string()),
+                        _ => Ok(Response::MailConnected {
+                            account: account("mail:anna.example@posteo.de", connected()),
+                            calendars: false,
+                            tasks: false,
+                            open_roles: Vec::new(),
+                        }),
+                    };
+                    answered(&mut state, &answer);
+                }
+            }
+            assert_eq!(state.step, step, "{demo:?}");
+            drop(view(&state, &Data::default()));
+        }
+    }
+
+    #[test]
+    fn servers_name_a_shared_host_once() {
+        let mut posteo = torromail_account("p", "anna@posteo.de");
+        assert_eq!(servers_of(&posteo), "imap.example.org · smtp.example.org");
+        posteo.smtp = posteo.imap.clone();
+        assert_eq!(servers_of(&posteo), "imap.example.org");
     }
 }

@@ -267,6 +267,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         // subject, a recipient, a file or a folder name. The account as for collections; message,
         // draft and folder ids only hashed, so lines can be matched but not with a mailbox.
         Request::ConnectMail { .. } => Vec::new(),
+        // TorroMail's accounts (task M7.4): no address, and no id of another app's keychain.
+        Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }

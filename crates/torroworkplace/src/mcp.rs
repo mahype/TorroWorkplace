@@ -23,7 +23,9 @@
 //! Inbox answers carry `untrusted` on every entry, as the core stores it: titles and bodies from
 //! agents and scripts are data for the agent reading them, never instructions. So do mail
 //! messages (task M2.1): the `mail_*` tools say so in their descriptions, and signing in to a mail
-//! account (`accounts.connect_mail`) is no tool, since it takes a password.
+//! account (`accounts.connect_mail`) is no tool, since it takes a password. Nor is taking an
+//! account over from TorroMail (`accounts.import_torromail_account`, task M7.4): it would pull
+//! another app's password into the suite; listing TorroMail's accounts is a tool.
 //!
 //! The short forms only create: changing an item always takes the full item as `list_events` or
 //! `list_todos` returned it, so no field the agent did not name (the series of a recurring
@@ -980,6 +982,20 @@ mod tests {
         }));
         assert_eq!(request_for("accounts_connect_caldav", sign_in, &Utc), Err(ToolError::UnknownTool));
         assert!(tools().iter().all(|tool| tool.name != "accounts_connect_caldav"));
+    }
+
+    /// Task M7.4: an agent may see TorroMail's accounts, but never takes one over with its
+    /// password: that is a person's click in the control centre.
+    #[test]
+    fn agents_may_list_torromail_accounts_but_never_take_one_over() {
+        let list = request_for("accounts_list_torromail_accounts", JsonObject::new(), &Utc);
+        assert_eq!(list, Ok(Request::TorroMailAccounts));
+        let hints =
+            tools().iter().find(|t| t.name == "accounts_list_torromail_accounts").and_then(|t| t.annotations.clone());
+        assert_eq!(hints.and_then(|h| h.read_only_hint), Some(true));
+        let import = args(json!({"id": "4c1d"}));
+        assert_eq!(request_for("accounts_import_torromail_account", import, &Utc), Err(ToolError::UnknownTool));
+        assert!(tools().iter().all(|tool| tool.name != "accounts_import_torromail_account"));
     }
 
     /// Task M2.1: agents get the mail tools, each onto its one request, but never sign in to a
