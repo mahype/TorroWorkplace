@@ -1116,4 +1116,32 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("While you were in “{event}”: {n} for you", "Während „{event}“: {n} für dich"),
     ("While you were in busy events: {n} for you", "Während deiner Termine: {n} für dich"),
     ("Open the inbox to see them.", "Im Eingang ansehen."),
+    // Control centre: inbox page (E3.7)
+    ("Quiet during busy events", "Ruhe während belegter Termine"),
+    (
+        "Only urgent entries pop up while a busy event runs; a summary follows.",
+        "Während ein belegter Termin läuft, erscheint nur Dringendes; danach kommt eine Zusammenfassung.",
+    ),
+    ("Notifications", "Benachrichtigungen"),
+    (
+        "Approvals and waiting agents always come through. Events marked as free and all-day events keep the inbox as it is.",
+        "Freigaben und wartende Agenten kommen immer durch. Als frei markierte und ganztägige Termine ändern nichts.",
+    ),
+    ("Rules", "Regeln"),
+    (
+        "Rules appear here when you move notices to a lane for good or mute a source in the Inbox.",
+        "Regeln erscheinen hier, wenn du im Eingang Meldungen dauerhaft in eine Spur verschiebst oder eine Quelle stummschaltest.",
+    ),
+    (
+        "Rules apply to new notices. Removing one leaves the entries in the Inbox as they are.",
+        "Regeln gelten für neue Meldungen. Entfernen ändert nichts an den Einträgen im Eingang.",
+    ),
+    ("Notices of {source} go to “{lane}”", "Meldungen von {source} landen in „{lane}“"),
+    ("{source} is muted", "{source} ist stummgeschaltet"),
+    ("Remove", "Entfernen"),
+    ("App", "App"),
+    (
+        "Entries are handled in the Inbox: mark them done, snooze them, move them or mute their source.",
+        "Einträge bearbeitest du im Eingang: erledigen, vertagen, verschieben oder ihre Quelle stummschalten.",
+    ),
 ];
