@@ -623,7 +623,7 @@ pub enum Request {
     },
     /// Mutes the source (its new reports are dropped from then on) or unmutes it; entries already
     /// there stay. A lasting rule. Answered with [`Response::Ok`]; `not-found` for a source the
-    /// client may not see, `forbidden` for `suite` (rule 1).
+    /// client may not see, `not-found` for `suite`, which no client key sees (rule 1).
     #[serde(rename = "inbox.mute_source")]
     MuteSource {
         /// The source, as `inbox.list_sources` lists it.
@@ -637,7 +637,7 @@ pub enum Request {
     ListRules,
     /// Removes a rule; a removed mute lets the source's reports in again. Answered with
     /// [`Response::Ok`]; `not-found` for an unknown id or a rule of a source the client may not
-    /// see, `forbidden` for a rule about `suite` (rule 1).
+    /// see, `not-found` for a rule about `suite`, which no client key sees (rule 1).
     #[serde(rename = "inbox.remove_rule")]
     RemoveRule {
         /// The rule's id from `inbox.list_rules`.
