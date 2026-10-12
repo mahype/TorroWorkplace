@@ -1083,7 +1083,7 @@ fn is_app_of_the_suite(app: &str) -> bool {
 fn agent_title(kind: Kind, agent: Option<AgentKind>) -> Option<String> {
     let name = agent?.label();
     match kind {
-        Kind::AgentWaiting => Some(trf("{agent} is waiting for your permission", &[("agent", &name)])),
+        Kind::AgentWaiting => Some(trf("{agent} is waiting for you", &[("agent", &name)])),
         Kind::AgentDone => Some(trf("{agent} finished", &[("agent", &name)])),
         Kind::Notice | Kind::Approval | Kind::AccountProblem => None,
     }
@@ -1997,7 +1997,7 @@ pub(crate) mod tests {
         let waiting = item(inbox.handle(Request::GetItem { id: id.clone() }, None, at(8, 2)));
         assert_eq!(waiting.source, SourceRef::agent("claude-code"));
         assert_eq!((waiting.kind, waiting.lane, waiting.urgent), (Kind::AgentWaiting, Lane::ForMe, true));
-        assert_eq!(waiting.title, trf("{agent} is waiting for your permission", &[("agent", &"Claude Code")]));
+        assert_eq!(waiting.title, trf("{agent} is waiting for you", &[("agent", &"Claude Code")]));
         assert_eq!(waiting.body.as_deref(), Some("Claude needs your permission to use Bash"));
         assert_eq!((waiting.link, waiting.agent.map(|a| a.pids)), (Some(Link::Window), Some(vec![42])));
         assert!(waiting.untrusted, "the body is the agent's text");
@@ -2331,7 +2331,7 @@ pub(crate) mod tests {
         posted(inbox.handle(agent_post(Kind::AgentWaiting, "w", AgentKind::Gemini), Some(&gemini), at(7, 0)));
         let titles =
             |request| items(inbox.handle(request, None, at(9, 0))).into_iter().map(|i| i.title).collect::<Vec<_>>();
-        let waiting = trf("{agent} is waiting for your permission", &[("agent", &"Gemini CLI")]);
+        let waiting = trf("{agent} is waiting for you", &[("agent", &"Gemini CLI")]);
         assert_eq!(
             titles(Request::ListItems { lane: Some(Lane::ForMe), source: None, state: None, since: None, limit: None }),
             [waiting.as_str(), "newer", "older"]

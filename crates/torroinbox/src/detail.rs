@@ -7,9 +7,9 @@
 //! message with – right under it – a quiet note that the text comes from outside the suite, and a
 //! link to open when it is safe ([`openable`]). Every link opens through the core
 //! (`inbox.open_item`), the window of a coding agent included.
-//! Footer: "Mark as done" / "Reopen"; approvals show "Allow" and "Deny" instead, which stay
-//! disabled until the core decides approvals from here (E1.1/E2.1), with a note saying so right
-//! above them – an approval resolves itself once decided, so it has no "Mark as done".
+//! Footer: "Mark as done" / "Reopen"; approvals show "Allow" and "Deny" instead, which send
+//! `approvals.decide_approval` (task E3.8; disabled while a decision is on its way) – an approval
+//! resolves itself once decided, so it has no "Mark as done".
 //!
 //! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
 //! opens the snooze menu, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
@@ -25,7 +25,7 @@
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
-use iced::{Alignment, Element, Fill};
+use iced::{Alignment, Element};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -59,6 +59,8 @@ pub struct Footer {
     pub anchors: Anchors,
     /// The entry's source is muted: the mute button unmutes.
     pub muted: bool,
+    /// A decision of an approval is on its way: Allow and Deny are disabled until it is answered.
+    pub deciding: bool,
     /// Narrow windows (the panel fills the window): "Move to …" shows only its icon, with the
     /// words as tooltip; wider panels show icon and words.
     pub compact: bool,
@@ -103,18 +105,7 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         body = body.push(panel::inset(note));
     }
     panel::panel(path, panel::title(list::plain(&item.title)), body, Message::CloseDetail)
-        .footer(footer_view(item, &footer))
-}
-
-/// The footer's content: the [`buttons`] in a row; for an approval with the note that Allow and
-/// Deny cannot be used yet right above them, where the eye goes when they do not react.
-fn footer_view<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
-    let buttons = buttons(item, footer);
-    if !is_approval(item) {
-        return buttons;
-    }
-    let buttons = row(buttons).spacing(space::S).align_y(Alignment::Center);
-    vec![column![note(tr("Allow and Deny are not available here yet.")), buttons].spacing(space::S).width(Fill).into()]
+        .footer(buttons(item, &footer))
 }
 
 /// Status, lane, source, time and – from two on – the number of merged reports.
@@ -197,11 +188,11 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     )
 }
 
-/// The buttons below the line: Allow/Deny for an approval (disabled for now), else done or reopen;
+/// The buttons below the line: Allow/Deny for an approval, else done or reopen;
 /// then "Snooze" for an entry that is not done and "Make task" for one that is no approval, and at
 /// the right "Move to …" and "Mute …".
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
-    let mut buttons = decide(item);
+    let mut buttons = decide(item, footer.deciding);
     if !matches!(item.state, State::Done { .. }) {
         let snooze = widgets::text_button(
             Some(Icon::Clock),
@@ -248,20 +239,21 @@ fn lane_label(lane: Lane) -> &'static str {
     }
 }
 
-/// How the entry is closed: Allow/Deny for an approval (disabled for now), else done or reopen.
-fn decide<'a>(item: &'a Item) -> Vec<Element<'a, Message>> {
+/// How the entry is closed: Allow/Deny for an approval – disabled while a decision is on its way
+/// (`deciding`) and once the entry is done –, else done or reopen.
+fn decide(item: &Item, deciding: bool) -> Vec<Element<'_, Message>> {
     if is_approval(item) {
-        // Deciding needs `approvals.decide_approval`, which no `InboxSource` offers; the core
-        // wires it with E1.1/E2.1. Until then the buttons say what is coming, honestly disabled.
+        let open = item.state.is_open() && !deciding;
         return item
             .actions
             .iter()
             .map(|action| {
-                let icon = match action {
-                    Action::Allow { .. } => Icon::Check,
-                    Action::Deny { .. } => Icon::X,
+                let (icon, approval, allow) = match action {
+                    Action::Allow { approval } => (Icon::Check, approval, true),
+                    Action::Deny { approval } => (Icon::X, approval, false),
                 };
-                widgets::text_button(Some(icon), action.label(), style::button::secondary, None)
+                let decide = open.then(|| Message::Decide { approval: approval.clone(), allow });
+                widgets::text_button(Some(icon), action.label(), style::button::secondary, decide)
             })
             .collect();
     }
@@ -354,13 +346,13 @@ mod tests {
     fn approvals_offer_allow_and_deny_but_no_done() {
         let approval = sample("demo-3");
         assert!(is_approval(&approval));
-        assert_eq!(decide(&approval).len(), 2, "Allow and Deny");
+        assert_eq!(decide(&approval, false).len(), 2, "Allow and Deny");
         assert!(!is_approval(&sample("demo-1")));
-        assert_eq!(decide(&sample("demo-1")).len(), 1, "Mark as done");
+        assert_eq!(decide(&sample("demo-1"), false).len(), 1, "Mark as done");
     }
 
     fn footer(muted: bool) -> Footer {
-        Footer { anchors: Anchors::default(), muted, compact: false }
+        Footer { anchors: Anchors::default(), muted, deciding: false, compact: false }
     }
 
     #[test]
@@ -371,14 +363,6 @@ mod tests {
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
         // Reopen, Make task, the gap, Move to, Mute: a done entry is not snoozed.
         assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
-    }
-
-    #[test]
-    fn the_approval_note_sits_with_its_buttons() {
-        // One block: the note over the row of buttons.
-        assert_eq!(footer_view(&sample("demo-3"), &footer(false)).len(), 1);
-        // Other entries keep the plain row.
-        assert_eq!(footer_view(&sample("demo-1"), &footer(false)).len(), 6);
     }
 
     #[test]

@@ -492,6 +492,33 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **API/MCP:** nutzt `inbox.list_rules`, `inbox.remove_rule`, `settings.*`.
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel); Tests der Nachrichten.
 
+### E3.8 Freigaben in der Inbox entscheiden, Rückfragen richtig zeigen
+- [x] erledigt (Sichtprüfung `--demo --open approval` in 1300×800 und 480×800, hell und dunkel; API-Prüfung
+  freigegeben, ihre Doku-Hinweise sind eingearbeitet)
+- **Modell:** Opus · **Braucht:** E2.1, E2.5, E3.1 · **Dateien:** `crates/torro-inbox/src/{source,demo,hook}.rs`,
+  `crates/torro-inbox/tests/fixtures/hooks/` (neue Nutzlast), `crates/torro-ipc/src/inbox.rs`,
+  `crates/torroinbox/src/{app,detail,empty,list}.rs`, `crates/torroworkplace/src/{inbox,hook}.rs` (nur der Titel),
+  `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,eingang}.md`, Doc-Kommentar in
+  `crates/torroworkplace/src/client_setup.rs` (aus der API-Prüfung)
+- Rückmeldung 2026-10-12: In der Inbox stehen „Allow“ und „Deny“ ausgegraut mit „not available here yet“.
+  Der Eintrag war ein `AskUserQuestion` von Claude Code, als Freigabe mit rohem JSON.
+- **Entscheiden:** `InboxSource::decide_approval(approval, allow)` schickt `approvals.decide_approval` mit dem
+  App-Schlüssel (die App ist der Mensch, Sicherheitsregel 1). Die Knöpfe sind aktiv, solange die Entscheidung nicht
+  unterwegs ist; danach Hinweis „Allowed“/„Denied“ und neu laden. Schon entschieden oder abgelaufen (`conflict`):
+  Hinweis „This was decided already or has expired.“ Keine Taste dafür: ein verirrter Tastendruck soll nichts
+  erlauben.
+- **Rückfragen ohne Erlaubnis:** `AskUserQuestion` ist keine Freigabe, sondern eine Frage im Terminal. Der Hook
+  stellt sie nicht als `approvals.ask_permission`, sondern meldet „wartet“ mit den Fragen und Antworten als Text.
+  Der Titel von `agent_waiting` heißt allgemein „{agent} is waiting for you“ (auch für Eingabe und Auswahl).
+- **Abgelaufen heißt erledigt – gibt es schon:** Der Kern erledigt den Eintrag einer Rückfrage beim Ablauf
+  (E2.5, `file_when_expired`; im Fall der Rückmeldung 24 ms danach). „1 min ago“ heißt „vor weniger als zwei
+  Minuten“ (`ago` zeigt mindestens 1): Das Bild entstand noch innerhalb der 32 s. Nichts zu ändern.
+- **Oberfläche:** Inbox, Paneel. **API:** `approvals.decide_approval` (gibt es, Admin, nur App-Schlüssel).
+  **MCP:** Never (Freigaben entscheidet nur der Mensch, `api.md`).
+- **Abnahme:** Tests: Entscheiden über Demo- und Socket-Quelle, `conflict` wird zum eigenen Fehler; App-Nachrichten
+  (Knöpfe gesperrt während der Entscheidung, Hinweise); `AskUserQuestion` wird keine Frage, sondern „wartet“ mit
+  Text. Sichtprüfung des Paneels mit `--demo --open approval`.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

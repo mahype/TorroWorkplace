@@ -44,7 +44,7 @@ use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::{style, typo, widgets};
+use torro_gui::{dialog, style, typo, widgets};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{HOOK_CLIENT, RightsTemplate};
 use torro_ipc::{IssuedKey, Request, Response};
@@ -378,7 +378,8 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::Done => done_step(state),
         Step::Key => key_step(state),
     };
-    column![header, body, footer(state, data)].spacing(space::XL).into()
+    // Head and foot stay in the window; the steps scroll between them when it is low (D.12).
+    dialog::frame(header, body, footer(state, data), space::XL)
 }
 
 /// "Claude Code", or the script's name.

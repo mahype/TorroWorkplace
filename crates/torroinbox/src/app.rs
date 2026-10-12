@@ -59,7 +59,9 @@ use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Place
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::source::TaskList;
-use torro_inbox::{InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter};
+use torro_inbox::{
+    InboxError, InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter,
+};
 
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
@@ -350,6 +352,8 @@ pub enum Sent {
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
+    /// `approvals.decide_approval`: the approval, allowed or not.
+    Decide(String, bool),
     /// The task lists were asked for (the dialog of "Make task" opened).
     Lists,
     /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day.
@@ -717,6 +721,9 @@ pub struct App<S> {
     last_list: Option<String>,
     /// The hint after the last change, with its undo.
     hint: Option<Hint>,
+    /// The approval whose decision is on its way (task E3.8): its Allow and Deny are disabled
+    /// until the core answered, so a second click cannot decide it twice.
+    deciding: Option<String>,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -787,6 +794,14 @@ pub enum Message {
     OpenItem(String),
     /// The source's answer to `inbox.open_item`.
     ItemOpened(Result<(), String>),
+    /// From the panel of an approval: "Allow" (`allow: true`) or "Deny" for the approval with this
+    /// id (task E3.8).
+    Decide {
+        approval: String,
+        allow: bool,
+    },
+    /// The source's answer to deciding, with the decision for the hint.
+    Decided(Result<(), InboxError>, bool),
     /// From the panel or `t`: the dialog that makes a task of the entry with this id.
     AskTask(String),
     /// The task lists for the dialog, or why they could not be read.
@@ -889,6 +904,7 @@ impl<S: InboxSource + 'static> App<S> {
             lists: None,
             last_list: None,
             hint: None,
+            deciding: None,
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -1062,6 +1078,8 @@ impl<S: InboxSource + 'static> App<S> {
             Message::ItemOpened(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the entry."), err));
             }
+            Message::Decide { approval, allow } => return self.decide(approval, allow),
+            Message::Decided(result, allow) => return self.decided(result, allow),
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
@@ -1149,6 +1167,34 @@ impl<S: InboxSource + 'static> App<S> {
         self.sent.push(Sent::Open(item.id.clone()));
         let (inbox, id) = (self.inbox.clone(), item.id.clone());
         Task::perform(async move { inbox.open_item(id).await.map_err(|err| err.to_string()) }, Message::ItemOpened)
+    }
+
+    /// Allows or denies `approval` through the source (`approvals.decide_approval`, task E3.8).
+    /// Nothing while a decision is on its way; the panel's buttons are disabled then anyway.
+    fn decide(&mut self, approval: String, allow: bool) -> Task<Message> {
+        if self.deciding.is_some() {
+            return Task::none();
+        }
+        self.deciding = Some(approval.clone());
+        #[cfg(test)]
+        self.sent.push(Sent::Decide(approval.clone(), allow));
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.decide_approval(approval, allow).await }, move |result| {
+            Message::Decided(result, allow)
+        })
+    }
+
+    /// The source's answer to [`App::decide`]: a hint with the decision, or with why there was
+    /// none, and the list again – the approval's entry is done now, or soon (the core files it).
+    /// An approval decided elsewhere or expired is no failure, only a hint.
+    fn decided(&mut self, result: Result<(), InboxError>, allow: bool) -> Task<Message> {
+        self.deciding = None;
+        match result {
+            Ok(()) => self.note(if allow { tr("Allowed") } else { tr("Denied") }.to_owned()),
+            Err(InboxError::Settled) => self.note(InboxError::Settled.to_string()),
+            Err(err) => self.error = Some(Failure::new(tr("Couldn't decide."), err.to_string())),
+        }
+        self.load()
     }
 
     /// Opens a web page in the browser, for `--demo` only (without it the core opens pages). Only
@@ -1670,6 +1716,7 @@ impl<S: InboxSource + 'static> App<S> {
             let footer = detail::Footer {
                 anchors: anchors.clone(),
                 muted: self.is_muted(&item.source),
+                deciding: self.deciding.is_some(),
                 // The panel fills narrow windows: no room for the words of "Move to …".
                 compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
             };
@@ -2594,6 +2641,10 @@ mod tests {
                 let result = block_on(app.inbox.open_item(id)).map_err(|err| err.to_string());
                 let _ = app.update(Message::ItemOpened(result));
             }
+            Some(Sent::Decide(approval, allow)) => {
+                let result = block_on(app.inbox.decide_approval(approval, allow));
+                let _ = app.update(Message::Decided(result, allow));
+            }
             other => panic!("no call to deliver: {other:?}"),
         }
         load(app);
@@ -2971,6 +3022,57 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
         let _ = app.update(Message::SetDone("demo-6".into(), true));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, Some(_)))), "with undo");
+    }
+
+    // ----- Deciding approvals (E3.8) ----------------------------------------------------------
+
+    /// The approval of the demo, opened in the panel.
+    fn with_approval() -> (App<DemoSource>, String) {
+        let app = loaded(&["--open", "approval"]);
+        let detail = app.detail.as_ref().expect("the approval in the panel");
+        let approval = detail.actions.iter().find_map(|action| match action {
+            torro_inbox::Action::Allow { approval } => Some(approval.clone()),
+            torro_inbox::Action::Deny { .. } => None,
+        });
+        (app, approval.expect("an approval carries Allow"))
+    }
+
+    #[test]
+    fn allow_decides_once_then_the_entry_is_done_with_a_hint() {
+        let (mut app, approval) = with_approval();
+        let entry = app.detail.as_ref().map(|item| item.id.clone()).expect("panel");
+        let _ = app.update(Message::Decide { approval: approval.clone(), allow: true });
+        assert_eq!(app.deciding.as_deref(), Some(approval.as_str()), "the buttons wait for the answer");
+        // A second click before the answer sends nothing.
+        let _ = app.update(Message::Decide { approval: approval.clone(), allow: false });
+        assert_eq!(app.sent, [Sent::Decide(approval.clone(), true)]);
+        deliver(&mut app);
+        assert_eq!(app.deciding, None);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Allowed")));
+        assert!(!ids(&app).contains(&entry.as_str()), "decided, the approval left For me");
+    }
+
+    #[test]
+    fn deny_says_denied_and_a_settled_approval_is_only_a_hint() {
+        let (mut app, approval) = with_approval();
+        let _ = app.update(Message::Decide { approval: approval.clone(), allow: false });
+        deliver(&mut app);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Denied")));
+
+        let _ = app.update(Message::Decide { approval, allow: true });
+        deliver(&mut app);
+        let settled = InboxError::Settled.to_string();
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(settled));
+        assert!(app.error.is_none(), "decided elsewhere or expired is no failure");
+    }
+
+    #[test]
+    fn a_failed_decision_is_an_error_and_frees_the_buttons() {
+        let (mut app, approval) = with_approval();
+        let _ = app.update(Message::Decide { approval, allow: true });
+        let _ = app.update(Message::Decided(Err(InboxError::Offline), true));
+        assert_eq!(app.deciding, None);
+        assert!(app.error.is_some());
     }
 
     // ----- Make task (E3.5) ------------------------------------------------------------------

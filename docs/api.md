@@ -128,7 +128,10 @@ dringend; passt sie nicht in den Titel, steht sie ganz im Text. Das Protokoll ne
 und keinen Inhalt, nur die Freigabe. Den Hook richtet der Assistent ein
 (`torroworkplace hook claude-code|codex --key-file <datei> --answer`, Timeout 40 s); ohne
 Entscheidung gibt er nichts aus, und der Agent fragt wie gewohnt im Terminal. Gemini CLI hat keinen
-Hook, der eine Antwort annimmt.
+Hook, der eine Antwort annimmt. Claude Codes `AskUserQuestion` kommt ebenfalls als `PermissionRequest`,
+ist aber keine Erlaubnis, sondern eine Auswahl im Terminal, die „Allow“/„Deny“ nicht beantworten kann:
+Der Hook stellt sie nicht als Rückfrage, sondern meldet „wartet“ mit den Fragen und Antworten als Text
+(E3.8).
 
 ⁶ `discover_services { address }` (M7.1) sucht ohne Anmeldung den CalDAV-Dienst eines Mail-Anbieters:
 DNS SRV `_caldavs._tcp.<domain>` (mit TXT `path=`), dann `/.well-known/caldav` auf `<domain>` und
@@ -261,8 +264,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    „Script“ einmal zum Kopieren zeigt. Danach kennt ihn nur noch der Client.
 2. **Agenten und ihre Rechte verwalten** (`clients.*`): nur mit dem App-Schlüssel. Sonst könnte
    sich ein Agent selbst mehr Rechte geben.
-3. **Freigaben entscheiden** (`approvals.decide`): nur mit dem App-Schlüssel, also nur durch
-   einen Menschen in der Oberfläche oder per Benachrichtigung.
+3. **Freigaben entscheiden** (`approvals.decide_approval`): nur mit dem App-Schlüssel, also nur
+   durch einen Menschen in der Oberfläche oder per Benachrichtigung.
 4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
@@ -328,8 +331,8 @@ freigeben. Das machen wir anders:
    der Kennung, die dann auch nichts findet. Jeder Text wird vorher entschärft: eine Zeile, keine
    unsichtbaren Format-Zeichen (Unicode Cf: Zero-Width, Bidi-Steuerung), keine Anführungszeichen,
    keine Platzhalter, höchstens 60 Zeichen.
-3. Der Mensch sieht sie als **Benachrichtigung mit „Allow“/„Deny“**, als Zahl am Tray-Icon und im
-   Abschnitt „Approvals“ der Steuerzentrale; bis dahin und auf Systemen ohne Knöpfe in
+3. Der Mensch sieht sie als **Benachrichtigung mit „Allow“/„Deny“**, als Zahl am Tray-Icon, im
+   Abschnitt „Approvals“ der Steuerzentrale und als Eintrag der Inbox mit „Allow“/„Deny“ (E3.8); bis dahin und auf Systemen ohne Knöpfe in
    Benachrichtigungen mit `torroworkplace ctl approvals` und `ctl allow|deny <id>`. Nur der
    App-Schlüssel kann entscheiden. Nach einer Entscheidung, gleich auf welchem Weg, schließt die
    Benachrichtigung; spätestens beim Ablauf auch. Startet der Dienst neu, fragt er zu den noch
