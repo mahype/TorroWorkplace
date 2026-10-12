@@ -275,6 +275,20 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests mit Konfigurationen unter `tests/fixtures/` (vorhandene fremde Hooks bleiben,
   zweimal einrichten = einmal, Entfernen sauber), kein echtes Home-Verzeichnis.
 
+### E2.3b Hook-Schlüssel aus einer Datei statt aus der Befehlszeile
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E2.3 · **Dateien:** `crates/torroworkplace/src/{hook,client_setup}.rs`,
+  `crates/torroworkplace/tests/fixtures/client_setup/*`
+- Heute steht der Hook-Schlüssel in der Hook-Befehlszeile (`TORRO_TOKEN='…' torroworkplace hook …`) und damit
+  während jedes Aufrufs in `ps` sowie in der Agenten-Konfiguration. Stattdessen: Der Assistent legt den Schlüssel
+  in eine eigene Datei (0600, im Konfigurationsverzeichnis des Kerns, je Hook-Client), der Hook-Befehl nennt nur
+  die Datei (`torroworkplace hook claude-code --key-file <pfad>` oder `TORRO_TOKEN_FILE`), `hook.rs` liest sie
+  (höchstens wenige hundert Bytes, Rechte prüfen: von anderen lesbar → nichts tun). „Trennen…“ löscht die Datei.
+  Bestehende Einträge mit Schlüssel in der Befehlszeile werden beim erneuten Verbinden ersetzt.
+- **API/MCP:** keine.
+- **Abnahme:** Tests: Hook liest die Datei, zu offene Rechte → nichts, fehlende Datei → nichts (Exit 0, keine
+  Ausgabe); Konfiguration enthält keinen Schlüssel mehr; Entfernen löscht die Datei.
+
 ### E2.4 Ins Fenster des Agenten springen
 - [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9)
 - **Modell:** Opus · **Braucht:** E2.2 · **Dateien:** `crates/torroworkplace/src/{inbox,core,mcp}.rs`,
