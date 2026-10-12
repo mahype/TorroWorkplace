@@ -429,7 +429,7 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
   MCP-Tool baut den richtigen Request.
 
 ### G.8 Oberfläche: „New list…“ mit Auswahl und Aufgabenliste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.7 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs`,
   `crates/torrotasks/src/new_list.rs` (neu), ggf. `crates/torro-gui/src/widgets.rs` (Auswahlkarte)
 - Ein Eintrag „New list…“ (Icon `Plus`) unter allen Listen der Seitenleiste und im Navigationsmenü, statt

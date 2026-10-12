@@ -1,5 +1,6 @@
 //! The dialog of a GitHub filter list (task G.4 in `docs/tasks/github.md`, concept "Filterliste" in
-//! `docs/github.md`): "New filter list…", "Edit filter…" and the question before "Delete list…".
+//! `docs/github.md`): a new filter list ("New list…" › "GitHub filter list", `new_list.rs`), "Edit
+//! filter…" and the question before "Delete list…".
 //!
 //! **The search is the truth.** A filter list is saved GitHub searches; everything in the dialog
 //! only helps to write them. On top a field takes a pasted search or the address of an issue list
@@ -526,7 +527,7 @@ impl Search {
 /// How the app opens the dialog (sidebar, the list's "…" menu, `--open`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Open {
-    /// "New filter list…" of the GitHub account with this id.
+    /// A new filter list of the GitHub account with this id ("New list…" › "GitHub filter list").
     New(String),
     /// "Edit filter…" of the filter list with this collection id.
     Edit(String),
@@ -1046,36 +1047,16 @@ impl Editor {
     }
 
     /// The default colour, the five list colours of the suite, and the list's own colour when it
-    /// is none of them. The chosen one is marked by its surface, not only by its colour.
+    /// is none of them.
     fn colors(&self) -> Element<'_, Message> {
         let mut choices: Vec<Option<String>> = vec![None];
-        choices.extend(Palette::dark().calendar.iter().map(|&c| Some(hex(c))));
+        choices.extend(list_colors().into_iter().map(Some));
         if let Some(own) = &self.color
             && !choices.iter().flatten().any(|c| c.eq_ignore_ascii_case(own))
         {
             choices.push(Some(own.clone()));
         }
-        let swatches = choices.into_iter().map(|choice| {
-            let chosen = match (&choice, &self.color) {
-                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                (None, None) => true,
-                _ => false,
-            };
-            // The default is a ring in the default colour: it is no colour of its own, and a dot
-            // would look like a sixth blue.
-            let dot = match &choice {
-                Some(hex) => widgets::color_dot(collection_color(Some(hex)), icon::SIZE_SM),
-                None => ring(collection_color(None)),
-            };
-            button(container(dot).center(Fill))
-                .width(size::CONTROL)
-                .height(size::CONTROL)
-                .padding(0)
-                .style(style::button::segment(chosen))
-                .on_press(Message::Color(choice))
-                .into()
-        });
-        labelled(tr("Color"), row(swatches).spacing(space::XS), None).into()
+        labelled(tr("Color"), swatches(choices, self.color.as_deref(), Message::Color), None).into()
     }
 
     fn templates(&self) -> Element<'_, Message> {
@@ -1307,7 +1288,7 @@ impl Delete {
 // ---------------------------------------------------------------------------------------------
 
 /// A text field in the look of the suite: `BODY`, 32 high.
-fn field<'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, Message> {
+pub(crate) fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, M> {
     text_input(placeholder, value)
         .size(typo::BODY.size)
         .line_height(typo::BODY.line_height)
@@ -1318,11 +1299,11 @@ fn field<'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, Messag
 }
 
 /// `label` (`META`, `text_2`) 4 above `control`, and the `problem` under it in the error colour.
-fn labelled<'a>(
+pub(crate) fn labelled<'a, M: 'a>(
     label: &'a str,
-    control: impl Into<Element<'a, Message>>,
+    control: impl Into<Element<'a, M>>,
     problem: Option<&'a str>,
-) -> Column<'a, Message> {
+) -> Column<'a, M> {
     let mut column = column![typo::text(typo::META, label).style(theme::text_2), control.into()].spacing(space::XS);
     if let Some(problem) = problem {
         column = column.push(
@@ -1340,8 +1321,45 @@ fn dialog_height(window_height: f32) -> f32 {
     (window_height - 2.0 * space::L).clamp(0.0, MAX_HEIGHT)
 }
 
+/// The five list colours of the suite as `#RRGGBB`, as the core stores them: a new list takes one
+/// of them.
+pub(crate) fn list_colors() -> Vec<String> {
+    Palette::dark().calendar.iter().map(|&c| hex(c)).collect()
+}
+
+/// A row of colour swatches, one per `choices` (`None`: the default colour, drawn as a ring), each
+/// 32 × 32 with a dot; the one equal to `chosen` (case does not matter) is marked by its surface,
+/// not only by its colour. A click sends `pick` with the swatch's colour.
+pub(crate) fn swatches<'a, M: Clone + 'a>(
+    choices: Vec<Option<String>>,
+    chosen: Option<&str>,
+    pick: impl Fn(Option<String>) -> M,
+) -> Element<'a, M> {
+    let swatches = choices.into_iter().map(|choice| {
+        let on = match (choice.as_deref(), chosen) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+            (None, None) => true,
+            _ => false,
+        };
+        // The default is a ring in the default colour: it is no colour of its own, and a dot
+        // would look like a sixth blue.
+        let dot = match &choice {
+            Some(hex) => widgets::color_dot(collection_color(Some(hex)), icon::SIZE_SM),
+            None => ring(collection_color(None)),
+        };
+        button(container(dot).center(Fill))
+            .width(size::CONTROL)
+            .height(size::CONTROL)
+            .padding(0)
+            .style(style::button::segment(on))
+            .on_press(pick(choice))
+            .into()
+    });
+    row(swatches).spacing(space::XS).into()
+}
+
 /// A ring of `colour` as large as a colour dot of the swatches, drawn like a list's ring.
-fn ring<'a>(colour: Color) -> Element<'a, Message> {
+fn ring<'a, M: 'a>(colour: Color) -> Element<'a, M> {
     container(Space::new().width(icon::SIZE_SM).height(icon::SIZE_SM))
         .style(move |_: &Theme| container::Style {
             border: iced::border::rounded(icon::SIZE_SM / 2.0).color(colour).width(style::CHECK_BORDER),
@@ -1409,7 +1427,7 @@ fn problem_text(err: &ProviderError) -> String {
 }
 
 /// `color` as `#RRGGBB`, as the core stores colours.
-fn hex(color: Color) -> String {
+pub(crate) fn hex(color: Color) -> String {
     let [r, g, b, _] = color.into_rgba8();
     format!("#{r:02X}{g:02X}{b:02X}")
 }

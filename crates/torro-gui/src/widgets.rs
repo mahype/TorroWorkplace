@@ -69,6 +69,11 @@ pub type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
 pub const MENU_WIDTH: f32 = size::SIDEBAR;
 /// Width of a floating card ([`popover`]).
 pub const POPOVER_WIDTH: f32 = 320.0;
+/// Width of a small dialog over the window ([`modal`]) that asks one thing or holds a short form:
+/// "New list" with its [`choice_cards`] and the form "New task list" after it. One width for
+/// both steps, so the dialog does not jump when it goes from one to the other. Larger forms (a
+/// GitHub filter list) take [`size::FORM_MAX`].
+pub const DIALOG_WIDTH: f32 = 560.0;
 /// Gap between the anchor and a floating card below it.
 const BELOW_GAP: f32 = space::XS;
 /// Gap between the anchor and a floating card beside it, and the least margin to the window edge.
@@ -1106,6 +1111,99 @@ fn choice_chip_with<'a, M: Clone + 'a>(
         .style(style::button::choice_chip(on))
         .on_press_maybe(on_press)
         .into()
+}
+
+/// One large choice of [`choice_cards`]: what to make ("Task list" / "GitHub filter list" in "New
+/// list").
+#[derive(Debug, Clone)]
+pub struct ChoiceCard<'a, M> {
+    /// The symbol (16) on a [`size::CONTROL`] square of `selected` at the top left.
+    pub icon: Icon,
+    /// The name of the choice, `BODY_STRONG`.
+    pub title: &'a str,
+    /// One or two sentences under the title, `META` in `text_2`, wrapping. For a choice that is
+    /// off: why, and what to do ("Connect a GitHub account in Settings first.").
+    pub text: &'a str,
+    /// The key that picks it ("1"), shown at the top right as [`kbd`]. The caller listens for it.
+    pub key: &'a str,
+    /// `None`: the choice is off.
+    pub on_press: Option<M>,
+}
+
+/// Large choices in a dialog, side by side and all as high as the highest – or, `stacked`, one
+/// under the other where they do not fit side by side. [`space::M`] between them.
+///
+/// Each card is a button as wide as its share, `raised` with a `line_strong` frame, radius
+/// [`radius::MD`], [`space::L`] inside: on top the icon on its square and the key hint, below the
+/// title and the text. States as a [`crate::style::button::secondary`] button: hover `hover` and
+/// pressed `selected`, both with a `line_selected` frame. A card that is off (no `on_press`) shows
+/// icon, title and frame at 40 % and no key hint – the key does nothing then –, while its `text`
+/// stays at full strength, so the reason can be read.
+///
+/// ```ignore
+/// let cards = vec![
+///     ChoiceCard { icon: Icon::ListChecks, title: tr("Task list"), text: tr("Your own tasks …"), key: "1", on_press: Some(Message::Pick(Kind::TaskList)) },
+///     ChoiceCard { icon: Icon::Github, title: tr("GitHub filter list"), text: tr("Connect a GitHub account in Settings first."), key: "2", on_press: None },
+/// ];
+/// widgets::choice_cards(cards, narrow)
+/// ```
+pub fn choice_cards<'a, M: Clone + 'a>(cards: Vec<ChoiceCard<'a, M>>, stacked: bool) -> Element<'a, M> {
+    if stacked {
+        return column(cards.into_iter().map(|card| choice_card(card, Length::Shrink))).spacing(space::M).into();
+    }
+    // Equal heights: an invisible copy of the cards at their own heights sizes the stack, and the
+    // real cards fill it. (A row cannot give its children the height of the highest one when its
+    // own height is open, as inside a scrolling dialog.)
+    let ghosts = row(cards.iter().map(choice_ghost)).spacing(space::M);
+    let real = row(cards.into_iter().map(|card| choice_card(card, Fill))).spacing(space::M);
+    stack![ghosts, real].into()
+}
+
+/// One card of [`choice_cards`], `height` high.
+fn choice_card<'a, M: Clone + 'a>(card: ChoiceCard<'a, M>, height: Length) -> Element<'a, M> {
+    let on = card.on_press.is_some();
+    // Disabled parts at the disabled opacity, drawn by hand: Iced fades only the button's surface.
+    let fade = move |colour: Color| if on { colour } else { Color { a: colour.a * style::DISABLED_ALPHA, ..colour } };
+    let symbol: Element<'a, M> =
+        icon(card.icon, icon::SIZE).style(move |t, _| svg::Style { color: Some(fade(palette(t).text)) }).into();
+    let tile: Element<'a, M> = container(symbol)
+        .center(size::CONTROL)
+        .style(move |t| container::Style {
+            background: Some(Background::Color(fade(palette(t).selected))),
+            border: border::rounded(radius::MD),
+            ..container::Style::default()
+        })
+        .into();
+    let mut top = row![tile, blank::horizontal()].align_y(Alignment::Center);
+    if on {
+        top = top.push(kbd(card.key));
+    }
+    let title = typo::text(typo::BODY_STRONG, card.title)
+        .style(move |t: &Theme| iced::widget::text::Style { color: Some(fade(palette(t).text)) });
+    let content = column![top, title, typo::text(typo::META, card.text).style(theme::text_2)].spacing(space::M);
+    button(content)
+        .width(Fill)
+        .height(height)
+        .padding(space::L)
+        .style(|t, status| {
+            let base = style::button::secondary(t, status);
+            button::Style { border: base.border.rounded(radius::MD), ..base }
+        })
+        .on_press_maybe(card.on_press)
+        .into()
+}
+
+/// The invisible copy of a card that gives [`choice_cards`] its height: the same parts and spaces,
+/// drawn in no colour and taking no input.
+fn choice_ghost<'a, M: 'a>(card: &ChoiceCard<'a, M>) -> Element<'a, M> {
+    let unseen = |_: &Theme| iced::widget::text::Style { color: Some(Color::TRANSPARENT) };
+    let content = column![
+        blank().width(size::CONTROL).height(size::CONTROL),
+        typo::text(typo::BODY_STRONG, card.title).style(unseen),
+        typo::text(typo::META, card.text).style(unseen),
+    ]
+    .spacing(space::M);
+    container(content).width(Fill).padding(space::L).into()
 }
 
 /// A list label in a row ("● Work"): 20 high, round, `line_strong` frame, dot 6 in `colour`,
