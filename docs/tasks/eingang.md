@@ -227,7 +227,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   „nichts“; Branch aus `ref: refs/heads/x` und aus einer losgelösten Commit-Kennung.
 
 ### E2.2 `torroworkplace hook`: Agenten melden sich
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E1.3, E2.2a · **Dateien:** `crates/torroworkplace/src/hook.rs` (neu),
   `crates/torroworkplace/src/{cli,main}.rs`
 - Nutzt die Übersetzung aus E2.2a; hier kommen stdin, `.git/HEAD` lesen, Elternprozesse, Schlüssel und
@@ -252,7 +252,12 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   läuft der Dienst nicht, passiert nichts (kein Start des Dienstes).
 - Unter Linux die Kette der Elternprozesse (`/proc/<pid>/stat`, höchstens 32 Stufen) als `agent.pids`
   mitschicken, für E2.4. Auf macOS und Windows leer (`#[cfg(target_os = "linux")]`).
-- Bis E2.3 steht, legt man den Hook-Client von Hand an (`torroworkplace ctl`, App-Schlüssel).
+- Bis E2.3 steht, legt man den Hook-Client von Hand an (`torroworkplace ctl`, App-Schlüssel):
+  `torroworkplace ctl clients add "Claude Code hooks" --kind hook` gibt den Schlüssel einmal aus; der
+  Kern schneidet die Rechte auf `Rights::hook()` zu (nur `inbox` schreiben, keine Quellen sehen). Der
+  Hook läuft dann z. B. als `TORRO_TOKEN=<Schlüssel> torroworkplace hook claude-code`.
+  Umgesetzt: stdin höchstens 1 MiB (größer → nichts) mit höchstens 500 ms Warten, 500 ms für Verbindung und
+  Antwort zusammen; stderr bleibt still, außer bei falschem Aufruf oder mit `TORRO_HOOK_DEBUG=1` (eine Zeile).
 - **API/MCP:** nutzt E1.1.
 - **Abnahme:** Fixture-Tests je Ereignis → richtiger Request; unbekanntes Ereignis → nichts; kein
   Byte auf stdout; ohne Dienst Exit-Code 0 in unter 500 ms.

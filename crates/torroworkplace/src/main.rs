@@ -4,6 +4,8 @@
 //!   connection and the workspace templates, and the socket clients talk to; later also
 //!   accounts, sync and the app registry. `--headless` runs it without a tray icon.
 //! - `status --json`, `ctl`: for bars, hotkeys and scripts; `notify`: a notice to the inbox.
+//! - `hook claude-code|codex|gemini`: run by the hooks of coding agents; reports waiting and
+//!   finished sessions to the inbox, silently and always with exit code 0 (see `hook`).
 //! - `ui` (also without a command): the control centre, an Iced window for accounts,
 //!   workspaces, apps and general settings. `ui --demo [--open <state>]` shows sample data without
 //!   the service (see `ui::Launch`); `--section` and `--appearance light|dark|system` work too.
@@ -21,6 +23,7 @@ mod cli;
 mod clients;
 mod core;
 mod daemon;
+mod hook;
 mod inbox;
 mod mcp;
 mod notify;
@@ -53,13 +56,14 @@ fn main() -> ExitCode {
             }
         }
         Some("ctl" | "status" | "notify") => cli::from_args(&std::env::args().skip(1).collect::<Vec<_>>()),
+        Some("hook") => hook::from_args(&std::env::args().skip(2).collect::<Vec<_>>()),
         Some("mcp") => mcp::run(),
         Some("--version") | Some("-V") => {
             println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         Some(other) => {
-            eprintln!("{}: unknown command {other:?}; try daemon, status, ctl, notify or mcp", APP.binary);
+            eprintln!("{}: unknown command {other:?}; try daemon, status, ctl, notify, hook or mcp", APP.binary);
             ExitCode::from(64)
         }
     }

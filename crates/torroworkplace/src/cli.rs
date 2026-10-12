@@ -37,7 +37,7 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups delete <id> [--json]
   torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]
   torroworkplace ctl clients list [--json]
-  torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script]
+  torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script|hook]
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
   torroworkplace ctl clients new-key <id> [--json]
@@ -45,7 +45,8 @@ const USAGE: &str = "usage:
   torroworkplace ctl allow <id> [--json]
   torroworkplace ctl deny <id> [--json]
   torroworkplace ctl quit [--json]
-  torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]";
+  torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
+  torroworkplace hook claude-code|codex|gemini   (run by an agent's hooks; reads stdin, prints nothing)";
 
 /// The kind of a client added without `--kind`.
 const DEFAULT_KIND: &str = "script";
