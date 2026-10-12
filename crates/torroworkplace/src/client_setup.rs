@@ -694,7 +694,7 @@ fn hook_file_in_home(agent: AgentKind) -> &'static str {
 
 /// The events the hook of `agent` listens to, in the order they are written: the ones the table
 /// in task E2.2 gives a meaning, and Claude Code's `PermissionRequest`, which only the answering
-/// hook takes (task E2.5).
+/// hook takes (task E2.5); for `AskUserQuestion` that hook reports "waiting" instead (task E3.8).
 fn hook_events(agent: AgentKind) -> &'static [&'static str] {
     match agent {
         AgentKind::ClaudeCode => {

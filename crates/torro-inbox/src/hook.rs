@@ -14,6 +14,7 @@
 //! | Claude Code | `Notification` with `permission_prompt`, `agent_needs_input`, `elicitation_dialog` | report `agent_waiting` |
 //! | Claude Code | `Stop` | report `agent_done` |
 //! | Claude Code | `UserPromptSubmit`, `PostToolUse` | resolve waiting |
+//! | Claude Code | `PermissionRequest` for `AskUserQuestion` | report `agent_waiting` with the questions |
 //! | Codex | `PermissionRequest` | report `agent_waiting` (observed only, never answered) |
 //! | Codex | `Stop` | report `agent_done` |
 //! | Codex | `UserPromptSubmit`, `PostToolUse` | resolve waiting |
@@ -29,6 +30,11 @@
 //! `PermissionRequest` of Claude Code and Codex to the person as a question
 //! ([`permission_question`]) and, once the person decided, prints the agent's decision JSON
 //! ([`permission_answer`]). Gemini CLI has no hook that takes an answer, so it gets none.
+//!
+//! **A question is no permission** (task E3.8): Claude Code asks its `AskUserQuestion` through a
+//! `PermissionRequest` too, but the answer is a choice in its terminal, which Allow or Deny cannot
+//! give. So [`permission_question`] leaves it out, and [`interpret`] reports "waiting" with the
+//! questions and their choices as text ([`questions_text`]).
 
 use std::path::Path;
 
@@ -97,6 +103,10 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
         body: body.map(str::trim).filter(|body| !body.is_empty()).map(String::from),
     };
     match (agent, event) {
+        (AgentKind::ClaudeCode, "PermissionRequest") if text(&json, "tool_name") == Some(ASK_TOOL) => {
+            let questions = json.get("tool_input").map(questions_text).unwrap_or_default();
+            report(Kind::AgentWaiting, Some(&questions))
+        }
         (AgentKind::ClaudeCode, "Notification") => match text(&json, "notification_type") {
             Some("permission_prompt" | "agent_needs_input" | "elicitation_dialog") => {
                 report(Kind::AgentWaiting, text(&json, "message"))
@@ -126,6 +136,28 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
     }
 }
 
+/// Claude Code's tool that asks the person questions in its terminal (`AskUserQuestion`): no
+/// permission, so never a question for Allow or Deny (task E3.8).
+pub const ASK_TOOL: &str = "AskUserQuestion";
+
+/// The questions of an `AskUserQuestion` input as text for the inbox: each question on a line,
+/// its choices below it as `- label`, questions apart by an empty line. Empty when there are none.
+pub fn questions_text(tool_input: &Value) -> String {
+    let questions = tool_input.get("questions").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    questions
+        .iter()
+        .filter_map(|question| {
+            let mut lines = vec![text(question, "question")?.trim().to_string()];
+            let options = question.get("options").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+            lines.extend(
+                options.iter().filter_map(|option| text(option, "label")).map(|label| format!("- {}", label.trim())),
+            );
+            Some(lines.join("\n"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 /// A coding agent's request for permission to use a tool, as a question for the person (task
 /// E2.5, request `approvals.ask_permission`). Built by [`permission_question`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,8 +173,9 @@ pub struct PermissionQuestion {
 }
 
 /// The question in the `PermissionRequest` payload `payload` of `agent`; `None` for every other
-/// event, for Gemini CLI (it has no `PermissionRequest` hook to answer), for broken JSON and
-/// without a non-empty `tool_name`. Never fails and never panics.
+/// event, for Gemini CLI (it has no `PermissionRequest` hook to answer), for Claude Code's
+/// [`ASK_TOOL`] (a question, no permission), for broken JSON and without a non-empty `tool_name`.
+/// Never fails and never panics.
 ///
 /// Both agents send `tool_name` and `tool_input` (Claude Code: hooks reference, "PermissionRequest
 /// input"; Codex: hooks reference, "PermissionRequest"); `session_id` is not needed, a question
@@ -156,6 +189,9 @@ pub fn permission_question(agent: AgentKind, payload: &str) -> Option<Permission
         return None;
     }
     let tool = text(&json, "tool_name")?.to_string();
+    if agent == AgentKind::ClaudeCode && tool == ASK_TOOL {
+        return None;
+    }
     let details = json.get("tool_input").map(permission_details).unwrap_or_default();
     Some(PermissionQuestion { tool, details, project: text(&json, "cwd").and_then(project_from_cwd) })
 }
@@ -305,6 +341,27 @@ mod tests {
     fn claude_code_session_end_resolves_the_session() {
         let expected = HookIntent::ResolveSession { thread_key: "claude-code:abc123".into() };
         assert_eq!(run(AgentKind::ClaudeCode, "claude-code-session-end"), expected);
+    }
+
+    #[test]
+    fn claude_code_asking_questions_waits_with_the_questions_and_is_no_permission() {
+        let body = "Where should the fix be committed?\n- Own branch (Recommended)\n- Current branch\n\n\
+                    Open a pull request?\n- Yes\n- No";
+        assert_eq!(
+            run(AgentKind::ClaudeCode, "claude-code-ask-user-question"),
+            report(AgentKind::ClaudeCode, "abc123", Kind::AgentWaiting, body)
+        );
+        assert_eq!(permission_question(AgentKind::ClaudeCode, &fixture("claude-code-ask-user-question")), None);
+        // Any other tool's request stays a question, and its plain hook reports nothing.
+        assert!(permission_question(AgentKind::ClaudeCode, &fixture("claude-code-permission-request")).is_some());
+        assert_eq!(run(AgentKind::ClaudeCode, "claude-code-permission-request"), HookIntent::Nothing);
+    }
+
+    #[test]
+    fn questions_without_choices_or_text_stay_readable() {
+        let input = serde_json::json!({ "questions": [{ "question": " Go on? " }, { "header": "no question" }] });
+        assert_eq!(questions_text(&input), "Go on?");
+        assert_eq!(questions_text(&serde_json::json!({})), "");
     }
 
     #[test]

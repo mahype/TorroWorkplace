@@ -192,10 +192,11 @@ Benachrichtigungs-Apps.
   „Öffnen“ heißt: **in dieses Fenster springen**, nicht „irgendein Terminal öffnen“.
 - Einträge erledigen sich selbst: Wartet Claude auf Freigabe und es geht weiter (nächster
   `UserPromptSubmit`/`PostToolUse`-Hook), verschwindet der Eintrag.
-- **Später, zur Diskussion:** Claude Code und Codex haben einen `PermissionRequest`-Hook, der
-  Erlauben/Ablehnen zurückgeben kann. Damit ließen sich deren Rückfragen direkt im Eingang
-  beantworten, ohne ins Terminal zu wechseln. Mächtig, aber heikel: Es darf nur der Mensch über den
-  App-Schlüssel entscheiden, genau wie bei den Torro-Freigaben.
+- **Rückfragen beantworten (E2.5, E3.8):** Claude Code und Codex haben einen `PermissionRequest`-Hook,
+  der Erlauben/Ablehnen zurückgeben kann. Ihre Rückfragen lassen sich so direkt im Eingang
+  beantworten, ohne ins Terminal zu wechseln. Entscheiden darf nur der Mensch über den App-Schlüssel,
+  genau wie bei den Torro-Freigaben. Fragen an den Menschen (`AskUserQuestion`) sind keine Erlaubnis:
+  Sie erscheinen als „wartet“ mit dem Fragetext.
 
 **Als Nutzer über MCP:**
 
@@ -316,7 +317,7 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 | **E5 Nextcloud, GitHub, ntfy** | drei Quellen ohne Firmenfreigabe | E1 |
 | **E6 Ruhe und Ordnung** | Screener, Lernen, Fokus mit dem Kalender, Sammelmeldung, Zusammenführen über Quellen | E4 |
 | **E7 Slack** | Assistent „eigene Slack-App“, Socket Mode | E1 |
-| später | Mitlesen von Desktop-Benachrichtigungen (Linux), Beeper, GitLab/Linear, Teams, `PermissionRequest` beantworten, Zusammenfassungen durch ein Modell, Tagesplan | |
+| später | Mitlesen von Desktop-Benachrichtigungen (Linux), Beeper, GitLab/Linear, Teams, Zusammenfassungen durch ein Modell, Tagesplan | |
 
 E1 bis E3 brauchen weder Mail noch eine fremde Anmeldung und machen schon den Agenten-Alltag
 übersichtlicher. Das wäre ein guter erster Schritt, auch um das Gefühl zu prüfen, bevor Mail

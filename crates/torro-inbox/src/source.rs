@@ -81,6 +81,13 @@ pub trait InboxSource: Send + Sync {
         title: Option<String>,
         due: Option<NaiveDate>,
     ) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// Allows (`allow`) or denies the approval `approval` – the id an approval entry carries in its
+    /// [`crate::Action::Allow`] / [`crate::Action::Deny`] – (`approvals.decide_approval`, task E3.8).
+    /// Only the app key may: the window is the person (security rule 1). Allowed, the core runs the
+    /// command now; either way the approval's entry is done afterwards. [`InboxError::Settled`]
+    /// when it was decided already or expired, [`InboxError::NotFound`] for an unknown approval.
+    fn decide_approval(&self, approval: String, allow: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
 }
 
 /// A task list a task can be made in ([`InboxSource::list_task_lists`]): its id as
@@ -174,6 +181,8 @@ pub enum InboxError {
     /// Nothing that may be opened, or the agent's window was not found (`unsupported`,
     /// [`InboxSource::open_item`]).
     Unsupported,
+    /// The approval was decided already or expired ([`InboxSource::decide_approval`], `conflict`).
+    Settled,
     /// The core does not answer.
     Offline,
     /// Anything else, with the message of the core (`error`).
@@ -187,6 +196,7 @@ impl fmt::Display for InboxError {
             InboxError::Forbidden => f.write_str(tr("Only you can change this entry, in the Inbox app.")),
             InboxError::Busy => f.write_str(tr("Too many entries at once. Try again later.")),
             InboxError::Unsupported => f.write_str(tr("Can't open this from here. The window may have closed.")),
+            InboxError::Settled => f.write_str(tr("This was decided already or has expired.")),
             InboxError::Offline => f.write_str(tr("Torro Workplace isn't responding. It may still be starting.")),
             InboxError::Other(message) => f.write_str(message),
         }
