@@ -578,7 +578,7 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
             Some(_) => {}
         }
     }
-    let cache = mail.attachments().ok_or_else(no_attachment_folder)?;
+    let cache = mail.attachment_cache().ok_or_else(no_attachment_folder)?;
     let raw = fetch_raw(mail, &located).await?;
     let attachment = mime::attachment(&raw, part).map_err(|err| match err {
         MimeError::NoSuchPart => no_attachment(),
@@ -895,7 +895,7 @@ mod tests {
         let fetched = answer(&service, Reach::Suite, request).await;
         let Response::MailAttachment { path, size, content_type } = fetched else { panic!("a file, got {fetched:?}") };
         let path = std::path::PathBuf::from(path);
-        let managed = service.attachments().expect("a folder").dir().to_path_buf();
+        let managed = service.attachment_cache().expect("a folder").dir().to_path_buf();
         assert!(path.starts_with(&managed), "{path:?}");
         assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("evil.txt"));
         assert_eq!(std::fs::read(&path).expect("written"), b"hello attachment");

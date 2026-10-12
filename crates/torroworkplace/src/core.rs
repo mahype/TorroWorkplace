@@ -35,6 +35,7 @@ use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
 use crate::mail::service::{MailService, Service, SignInError};
+use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 use crate::ui::Section;
@@ -631,6 +632,18 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Changing mail (task M3.2): message and folder ids in reachable accounts only, a client's
+        // own drafts and files from the managed folder only; a move into a trash folder is
+        // deleting, and the rights are checked again for that.
+        if let Some(refused) =
+            crate::mail::write::client_refusal(&self.mail, &id, Reach::Client(&rights), &request).await
+        {
+            return Ok(refused);
+        }
+        let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
+        if !rights.allows(request.operation()) {
+            return Err(Refused::Forbidden { command: request.operation().name() });
+        }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
         // the tasks rights and the list come first (task E3.5).
         if let Request::CreateTaskFromItem { collection, .. } = &request
@@ -697,6 +710,10 @@ impl Core {
             },
             _ => None,
         };
+        // A draft is the client's (security rule 2 of task M2.1): the core remembers who wrote it.
+        if let Request::SaveDraft { draft } = request {
+            return Ok(self.save_draft(draft, reach, DraftAuthor::Client(id)).await);
+        }
         Ok(self.handle_within(request, reach).await)
     }
 
@@ -819,6 +836,9 @@ impl Core {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *id).map(|a| a.label), ..Facts::default() }
             }
+            request if crate::mail::write::changes_mail(request) => {
+                Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
+            }
             request => self.pim.facts(request).await,
         }
     }
@@ -904,6 +924,12 @@ impl Core {
         }
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
+        }
+        if let Some(refused) = crate::mail::write::client_refusal(&self.mail, client, reach, &request).await {
+            return refused;
+        }
+        if let Request::SaveDraft { draft } = request {
+            return self.save_draft(draft, reach, DraftAuthor::Client(client.to_string())).await;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -1155,11 +1181,11 @@ impl Core {
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }) => crate::mail::read::answer(&self.mail, reach, request).await,
+            request @ Request::SendDraft { .. } => mail_not_yet(&request),
             request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
-            | Request::SaveDraft { .. }
-            | Request::SendDraft { .. }) => mail_not_yet(&request),
+            | Request::SaveDraft { .. }) => self.change_mail(request, reach).await,
         }
     }
 
@@ -1366,6 +1392,44 @@ impl Core {
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
         accounts.splice(at..at, others);
         accounts
+    }
+
+    /// The changing mail commands (task M3.2, [`crate::mail::write`]): `mail.set_flags`,
+    /// `mail.move_messages`, `mail.delete_messages`, and `mail.save_draft` of the app key (a
+    /// client's draft goes through [`Core::save_draft`] with its id). The limits first
+    /// ([`torro_ipc::mail::limit_refusal`]), as for a client; `reach` decides which accounts the ids
+    /// are looked up in.
+    async fn change_mail(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        match request {
+            Request::SetMailFlags { ids, add, remove } => {
+                crate::mail::write::set_flags(&self.mail, reach, &ids, &add, &remove).await
+            }
+            Request::MoveMail { ids, to } => crate::mail::write::move_messages(&self.mail, reach, &ids, &to).await,
+            Request::DeleteMail { ids, permanent } => {
+                crate::mail::write::delete_messages(&self.mail, reach, &ids, permanent).await
+            }
+            // Only the suite writes as the person; a client's draft never reaches here unnamed.
+            Request::SaveDraft { draft } => match reach {
+                Reach::Suite => self.save_draft(draft, reach, DraftAuthor::App).await,
+                Reach::Client(_) => {
+                    refusal("forbidden", "a client's draft is saved with its own id as the author".into())
+                }
+            },
+            other => mail_not_yet(&other),
+        }
+    }
+
+    /// `mail.save_draft` written by `author` (security rule 2 of task M2.1), after the limits.
+    async fn save_draft(&self, draft: torro_mail::Draft, reach: Reach<'_>, author: DraftAuthor) -> Response {
+        let request = Request::SaveDraft { draft };
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        let Request::SaveDraft { draft } = request else { return mail_not_yet(&request) };
+        crate::mail::write::save_draft(&self.mail, reach, draft, author).await
     }
 
     /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
@@ -5633,14 +5697,16 @@ mod tests {
         let unknown = crate::mail::service::MailError::NotFound.response();
         assert_eq!(ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await, unknown);
 
-        // Deleting waits for a person with `confirm: on_delete`, but not over the limit.
+        // Over the limit is `error`; a message no reachable store knows is `not-found` before
+        // anyone is asked (task M3.2; waiting for a person: `changing_mail_waits_…`).
         let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
         let delete = |n| Request::DeleteMail { ids: ids(n), permanent: false };
         assert_eq!(code(&ask(&core, Some(&key), delete(101)).await), "error");
-        waits(ask(&core, Some(&key), delete(1)).await);
+        assert_eq!(code(&ask(&core, Some(&key), delete(1)).await), "not-found");
         let to_trash =
             Request::MoveMail { ids: ids(1), to: torro_ipc::mail::MoveTarget::Role(torro_ipc::mail::MoveRole::Trash) };
-        waits(ask(&core, Some(&key), to_trash.clone()).await);
+        assert_eq!(code(&ask(&core, Some(&key), to_trash.clone()).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
 
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Write, admin: false });
         let (_, writer) = client(&core, rights).await;
@@ -6149,5 +6215,137 @@ mod tests {
         assert!(mail_text_refusal(Some("Anna\nBcc: x"), None).is_some());
         assert!(mail_text_refusal(None, Some(&"x".repeat(SIGNATURE_MAX + 1))).is_some());
         assert_eq!(mail_text_refusal(Some("Anna Example"), Some("-- \nAnna")), None);
+    }
+
+    // Changing mail (task M3.2): a fake IMAP server with Anna's account, synced once; the clients
+    // work through the core as agents do.
+
+    use crate::mail::write::tests::{ANNA, draft, id_of, mail_server, on_server, saved as saved_draft};
+
+    /// A core with Anna's mail account on a fake server, synced, and the app key.
+    async fn changing_mail_core(dir: &std::path::Path) -> (Core, crate::mail::sync::fake::FakeImap, Key) {
+        let secrets = MemoryTokens::default();
+        let server = mail_server(dir, &secrets).await;
+        let (core, _) = mail_core(dir, &secrets, MAIL_PASSWORD);
+        core.mail.reload().await;
+        core.mail.sync_all(Reach::Suite).await.expect("synced");
+        (core, server, crate::clients::tests::app_key(dir))
+    }
+
+    fn with_mail_level(level: Level) -> Rights {
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Mail, AreaRights { level, admin: false });
+        rights
+    }
+
+    /// `confirm: on_delete` makes deleting wait; the summary names what the store holds, never
+    /// what the client says; after the person's yes it runs.
+    #[tokio::test]
+    async fn deleting_mail_waits_for_a_person_and_names_what_the_store_holds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let (_, key) = client(&core, with_mail_level(Level::Full)).await;
+        let hello = id_of(&core.mail, "Hello").await;
+        let delete = Request::DeleteMail { ids: vec![hello.clone()], permanent: false };
+
+        let asked = waits(ask(&core, Some(&key), delete.clone()).await);
+        let facts = crate::approvals::MailFacts {
+            account: Some("anna@example.org".into()),
+            count: 1,
+            subjects: vec!["Hello".into()],
+            ..Default::default()
+        };
+        let expected = crate::approvals::summary(&delete, &Facts { mail: Some(facts), ..Facts::default() });
+        assert_eq!(asked.summary, expected);
+        assert!(asked.summary.contains("\"Hello\""), "{}", asked.summary);
+        assert!(on_server(&server, "INBOX").contains(&"Hello".to_string()), "nothing ran yet");
+
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        assert!(on_server(&server, "Trash").contains(&"Hello".to_string()));
+        assert!(!on_server(&server, "INBOX").contains(&"Hello".to_string()));
+    }
+
+    /// Into a trash folder by its id is deleting: write access is not enough. Archiving is.
+    /// Messages of an account the client does not reach are `not-found`.
+    #[tokio::test]
+    async fn moving_into_a_trash_folder_needs_delete_access() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let (_, writer) = client(&core, with_mail_level(Level::Write)).await;
+        let hello = id_of(&core.mail, "Hello").await;
+        let store = core.mail.store(ANNA).await.expect("store");
+        let trash = store
+            .run(|store| Ok(store.folder_by_role(torro_mail::Role::Trash)?.map(|f| f.id)))
+            .await
+            .expect("read")
+            .expect("a trash folder");
+        let into_trash = Request::MoveMail { ids: vec![hello.clone()], to: torro_ipc::mail::MoveTarget::Folder(trash) };
+        assert_eq!(code(&ask(&core, Some(&writer), into_trash).await), "forbidden");
+        assert!(on_server(&server, "INBOX").contains(&"Hello".to_string()));
+        let archive = torro_ipc::mail::MoveTarget::Role(torro_ipc::mail::MoveRole::Archive);
+        let archived = Request::MoveMail { ids: vec![hello.clone()], to: archive.clone() };
+        assert_eq!(ask(&core, Some(&writer), archived).await, Response::Ok);
+        assert!(on_server(&server, "Archive").contains(&"Hello".to_string()));
+
+        // With delete access it waits for the person, as deleting does, and then lands in the trash.
+        let (_, full) = client(&core, with_mail_level(Level::Full)).await;
+        let invoice = id_of(&core.mail, "Invoice").await;
+        let trash_folder = torro_ipc::mail::MoveTarget::Folder(
+            store
+                .run(|store| Ok(store.folder_by_role(torro_mail::Role::Trash)?.map(|f| f.id)))
+                .await
+                .expect("read")
+                .expect("a trash folder"),
+        );
+        let asked = waits(ask(&core, Some(&full), Request::MoveMail { ids: vec![invoice], to: trash_folder }).await);
+        assert_eq!(asked.command, "mail.move_messages");
+        approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(on_server(&server, "Trash").contains(&"Invoice".to_string()));
+
+        let mut elsewhere = with_mail_level(Level::Full);
+        elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, outsider) = client(&core, elsewhere).await;
+        let flags = Request::SetMailFlags { ids: vec![hello], add: vec![torro_mail::Flag::Seen], remove: Vec::new() };
+        assert_eq!(code(&ask(&core, Some(&outsider), flags.clone()).await), "not-found");
+        assert_eq!(ask(&core, Some(&writer), flags).await, Response::Ok);
+    }
+
+    /// Security rules 1 and 2 of task M2.1 through the core: a client replaces only its own
+    /// drafts (the person's are `not-found`, before anyone is asked) and attaches files only from
+    /// the managed folder.
+    #[tokio::test]
+    async fn a_client_keeps_to_its_own_drafts_and_the_managed_folder() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let (_, key) = client(&core, with_mail_level(Level::Full)).await;
+        let persons =
+            saved_draft(ask(&core, Some(&app_key), Request::SaveDraft { draft: draft("The person's") }).await);
+
+        let takeover = torro_mail::Draft { id: persons.id.clone(), ..draft("Hijacked") };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveDraft { draft: takeover }).await), "not-found");
+        // A careful client asks for every change, but not for a draft in an account that is none.
+        let careful = Rights { confirm: torro_ipc::api::Confirm::OnEveryChange, ..with_mail_level(Level::Full) };
+        let (_, careful) = client(&core, careful).await;
+        let nowhere = torro_mail::Draft { account: "mail:nobody@example.org".into(), ..draft("Nowhere") };
+        assert_eq!(code(&ask(&core, Some(&careful), Request::SaveDraft { draft: nowhere }).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        let outside = dir.path().join("contract.pdf");
+        std::fs::write(&outside, b"%PDF").expect("written");
+        let with_file = torro_mail::Draft {
+            attachments: vec![torro_mail::DraftAttachment::File { path: outside.display().to_string() }],
+            ..draft("With a file")
+        };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveDraft { draft: with_file }).await), "forbidden");
+
+        let own = saved_draft(ask(&core, Some(&key), Request::SaveDraft { draft: draft("The agent's") }).await);
+        let replace = torro_mail::Draft { id: own.id.clone(), ..draft("The agent's, better") };
+        // Replacing overwrites: with `confirm: on_delete` it waits, then runs as the client.
+        let asked = waits(ask(&core, Some(&key), Request::SaveDraft { draft: replace }).await);
+        assert!(asked.summary.contains("The agent's"), "{}", asked.summary);
+        approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let mut drafts = on_server(&server, "Drafts");
+        drafts.sort();
+        assert_eq!(drafts, ["The agent's, better", "The person's"]);
     }
 }

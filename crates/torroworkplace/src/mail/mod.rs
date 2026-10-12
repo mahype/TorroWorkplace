@@ -9,6 +9,7 @@
 //! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
 //! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
 //!   E4.1).
+//! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -38,6 +39,7 @@ pub mod read;
 pub mod service;
 pub mod store;
 pub mod sync;
+pub mod write;
 
 /// Fetched attachments are deleted after this long (task M2.5).
 pub const ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);

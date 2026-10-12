@@ -280,14 +280,19 @@ pub struct Facts {
 ///   <first recipient>`, then ` and <n> more` when there are more recipients (Cc and Bcc counted),
 ///   then `, <n> attachments` when there are any. The full list of recipients belongs in the
 ///   approval's detail view. Without the draft: "Send an unknown draft".
-/// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages to
-///   "<folder>", among them "<first subject>"` for several; a role is named by its word ("Archive").
-///   Messages the store does not hold count as unknown ("Move 2 unknown messages to …").
-/// - `mail.delete_messages`: as moving, with "Delete" and, for `permanent`, "for good" at the end.
-/// - `mail.set_flags` (only with `confirm: on_every_change`): `Mark "<subject>" read` and the like,
-///   or `Change the flags of <n> messages`.
-/// - `mail.save_draft`: a new draft `Save a draft "<subject>" in <account>`; replacing one
-///   `Replace the draft "<subject as stored>"`.
+/// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages,
+///   among them "<first subject>", to "<folder>"` for several; the folder by the name the store
+///   has, a role without a folder by its word ("Archive"). Messages the store does not hold count
+///   as unknown ("Move 2 unknown messages to …"). An empty subject is "(no subject)".
+/// - `mail.delete_messages`: as moving, `Delete …` and, for `permanent`, `Delete … for good`.
+/// - `mail.set_flags` (only with `confirm: on_every_change`): `Mark "<subject>" as read, not
+///   flagged` and the like.
+/// - `mail.save_draft`: a new draft `Save a draft "<subject>" in <account>` (the subject the client
+///   sent, since that is what will be written); replacing one `Replace the draft "<subject as
+///   stored>"`, or "Replace an unknown draft".
+///
+/// Task M3.2 fills [`DraftFacts::subject`] only (replacing a draft); M3.3 counts the recipients
+/// with Bcc and the attachments of the stored draft for sending.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MailFacts {
     /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
@@ -945,6 +950,41 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 false => trf("Add a link to {item} to \"{list}\"", &args),
             }
         }
+        Request::SetMailFlags { ids, add, remove } => trf(
+            "Mark {messages} as {flags}",
+            &[("messages", &mail_messages(facts.mail.as_ref(), ids.len())), ("flags", &flag_words(add, remove))],
+        ),
+        Request::MoveMail { ids, to } => {
+            // The folder as the store names it; for a role the core found no folder for, its word.
+            let folder = match (facts.mail.as_ref().and_then(|mail| mail.folder.as_deref()), to) {
+                (Some(folder), _) => quote(folder),
+                (None, torro_ipc::mail::MoveTarget::Role(role)) => role_word(role.role()).to_string(),
+                (None, torro_ipc::mail::MoveTarget::Folder(id)) => quote(id),
+            };
+            trf(
+                "Move {messages} to \"{folder}\"",
+                &[("messages", &mail_messages(facts.mail.as_ref(), ids.len())), ("folder", &folder)],
+            )
+        }
+        Request::DeleteMail { ids, permanent } => {
+            let messages = mail_messages(facts.mail.as_ref(), ids.len());
+            match permanent {
+                true => trf("Delete {messages} for good", &[("messages", &messages)]),
+                false => trf("Delete {messages}", &[("messages", &messages)]),
+            }
+        }
+        Request::SaveDraft { draft } => match (&draft.id, facts.mail.as_ref().and_then(|mail| mail.draft.as_ref())) {
+            (Some(_), Some(stored)) => trf("Replace the draft {subject}", &[("subject", &subject(&stored.subject))]),
+            (Some(_), None) => tr("Replace an unknown draft").to_string(),
+            // A new draft: what will be written is the client's text, in the account the core knows.
+            (None, _) => {
+                let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or(&draft.account);
+                trf(
+                    "Save a draft {subject} in {account}",
+                    &[("subject", &subject(&draft.subject)), ("account", &quote(account))],
+                )
+            }
+        },
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
@@ -1271,6 +1311,44 @@ fn mail_account_changes(
         return tr("nothing").to_string();
     }
     changes.join(", ")
+}
+
+/// The messages a mail command names, from what the store holds ([`MailFacts`]): one known
+/// message by its subject, several by their number and the first subject, else "an unknown
+/// message" or "<n> unknown messages". `count` is how many ids the request names.
+fn mail_messages(facts: Option<&MailFacts>, count: usize) -> String {
+    let first = facts.and_then(|facts| facts.subjects.first());
+    match (count, first) {
+        (1, Some(first)) => subject(first),
+        (_, Some(first)) => trf("{n} messages, among them {subject}", &[("n", &count), ("subject", &subject(first))]),
+        (1, None) => tr("an unknown message").to_string(),
+        (_, None) => trf("{n} unknown messages", &[("n", &count)]),
+    }
+}
+
+/// A subject quoted for a summary ([`quote`]); "(no subject)" for an empty one.
+fn subject(text: &str) -> String {
+    match quote(text) {
+        empty if empty.is_empty() => tr("(no subject)").to_string(),
+        quoted => format!("\"{quoted}\""),
+    }
+}
+
+/// What `mail.set_flags` does, in words: "read, not flagged". "unchanged" when nothing changes.
+fn flag_words(add: &[torro_mail::Flag], remove: &[torro_mail::Flag]) -> String {
+    use torro_mail::Flag;
+    let set = add.iter().map(|flag| match flag {
+        Flag::Seen => tr("read"),
+        Flag::Flagged => tr("flagged"),
+        Flag::Answered => tr("answered"),
+    });
+    let cleared = remove.iter().map(|flag| match flag {
+        Flag::Seen => tr("unread"),
+        Flag::Flagged => tr("not flagged"),
+        Flag::Answered => tr("not answered"),
+    });
+    let words: Vec<&str> = set.chain(cleared).collect();
+    if words.is_empty() { tr("unchanged").to_string() } else { words.join(", ") }
 }
 
 /// The word for a folder role, as the inbox app names the folders.
@@ -1817,6 +1895,78 @@ pub(crate) mod tests {
 
     /// Task M2.1: the account by the name the core knows, the fields that change, the start of a
     /// new signature, and the services by what is switched on.
+    #[test]
+    fn changing_mail_is_summed_up_from_the_store() {
+        use torro_ipc::mail::{MoveRole, MoveTarget};
+        use torro_mail::Flag;
+        let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
+        let held = |subjects: &[&str], folder: Option<&str>| Facts {
+            mail: Some(MailFacts {
+                account: Some("anna@mailbox.org".into()),
+                count: subjects.len(),
+                subjects: subjects.iter().map(|s| s.to_string()).collect(),
+                folder: folder.map(str::to_string),
+                draft: None,
+            }),
+            ..Facts::default()
+        };
+        let hello = subject("Hello");
+        assert_eq!(hello, "\"Hello\"");
+        let delete = |n, permanent| Request::DeleteMail { ids: ids(n), permanent };
+        assert_eq!(
+            summary(&delete(1, false), &held(&["Hello"], None)),
+            trf("Delete {messages}", &[("messages", &hello)])
+        );
+        let two = trf("{n} messages, among them {subject}", &[("n", &2), ("subject", &hello)]);
+        assert_eq!(
+            summary(&delete(2, true), &held(&["Hello", "Bye"], None)),
+            trf("Delete {messages} for good", &[("messages", &two)])
+        );
+        let unknown = trf("{n} unknown messages", &[("n", &3)]);
+        assert_eq!(summary(&delete(3, false), &Facts::default()), trf("Delete {messages}", &[("messages", &unknown)]));
+        assert_eq!(subject(" "), tr("(no subject)"));
+
+        let to_archive = Request::MoveMail { ids: ids(1), to: MoveTarget::Role(MoveRole::Archive) };
+        let named = trf("Move {messages} to \"{folder}\"", &[("messages", &hello), ("folder", &"Archiv")]);
+        assert_eq!(summary(&to_archive, &held(&["Hello"], Some("Archiv"))), named);
+        let by_role = trf("Move {messages} to \"{folder}\"", &[("messages", &hello), ("folder", &tr("Archive"))]);
+        assert_eq!(summary(&to_archive, &held(&["Hello"], None)), by_role);
+
+        let flags = Request::SetMailFlags { ids: ids(1), add: vec![Flag::Seen], remove: vec![Flag::Flagged] };
+        let words = format!("{}, {}", tr("read"), tr("not flagged"));
+        let marked = trf("Mark {messages} as {flags}", &[("messages", &hello), ("flags", &words)]);
+        assert_eq!(summary(&flags, &held(&["Hello"], None)), marked);
+
+        // A new draft names the client's subject (what will be written), a replaced one the stored.
+        let draft = |id: Option<&str>| torro_mail::Draft {
+            id: id.map(str::to_string),
+            account: "mail:anna@mailbox.org".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Claimed \"title\"".into(),
+            body: String::new(),
+            in_reply_to: None,
+            attachments: Vec::new(),
+        };
+        let new = summary(&Request::SaveDraft { draft: draft(None) }, &held(&[], None));
+        let said = trf(
+            "Save a draft {subject} in {account}",
+            &[("subject", &"\"Claimed 'title'\""), ("account", &"anna@mailbox.org")],
+        );
+        assert_eq!(new, said);
+        let stored = Facts {
+            mail: Some(MailFacts {
+                draft: Some(DraftFacts { subject: "Stored".into(), ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Facts::default()
+        };
+        let replace = Request::SaveDraft { draft: draft(Some("m:1")) };
+        assert_eq!(summary(&replace, &stored), trf("Replace the draft {subject}", &[("subject", &"\"Stored\"")]));
+        assert_eq!(summary(&replace, &Facts::default()), tr("Replace an unknown draft"));
+    }
+
     #[test]
     fn changing_a_mail_account_names_it_and_what_changes() {
         let update = |signature: Option<&str>, services| Request::UpdateMailAccount {

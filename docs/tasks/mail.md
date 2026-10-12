@@ -366,7 +366,7 @@ ihre Texte im Bericht.
   `../` landet im verwalteten Ordner; `get_message` setzt kein `\Seen`; Protokoll ohne Suchbegriff, Ordnername und Dateiname.
 
 ### M3.2 Mail ändern: Flags, Verschieben, Löschen, Entwürfe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,mcp,approvals}.rs`,
   `crates/torroworkplace/src/mail/{service,write}.rs`
 - `mail.set_flags`, `mail.move_messages` (Rolle → Ordner des Kontos; nur innerhalb eines Kontos, sonst

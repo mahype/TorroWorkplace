@@ -1251,9 +1251,29 @@ impl MailService {
             .collect()
     }
 
-    /// The managed folder for fetched attachments (`mail.get_attachment`, task M3.1); `None`
-    /// without a home directory.
-    pub fn attachments(&self) -> Option<AttachmentCache> {
+    /// The ids (`mail:<address>`) of the mail accounts whose mail is on and that `reach` sees, in
+    /// the order of `accounts.json` (task M3.2): where the opaque ids of a request (`m:…`, `f:…`)
+    /// are looked up, one store after the other. A client never learns of the others.
+    pub async fn accounts_within(&self, reach: Reach<'_>) -> Vec<String> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .map(|entry| entry.mailbox.id().to_string())
+            .collect()
+    }
+
+    /// The servers, address and sender name of `account` (task M3.2: the sender of a draft). It
+    /// holds no password. [`MailError::NotFound`] for an unknown account or one whose mail is off.
+    pub async fn config(&self, account: &str) -> Result<MailAccountConfig, MailError> {
+        Ok(self.mailbox_of(account).await?.config.clone())
+    }
+
+    /// The managed folder for attachments ([`AttachmentCache`]): where `mail.get_attachment` puts
+    /// files (task M3.1) and the only place a client key may attach files from (security rule 1
+    /// of task M2.1). `None` without a home directory; then a client key attaches no file at all.
+    pub fn attachment_cache(&self) -> Option<AttachmentCache> {
         self.dirs.as_ref().map(AttachmentCache::new)
     }
 
