@@ -813,4 +813,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Calendars and tasks show what was synced last. Check the connection, or open Accounts.",
         "Kalender und Aufgaben zeigen den zuletzt synchronisierten Stand. Prüfe die Verbindung oder öffne Konten.",
     ),
+    // Inbox: open an entry (E2.4)
+    ("Show {entry} on the screen", "{entry} auf dem Bildschirm zeigen"),
+    (
+        "Can't open this from here. The window may have closed.",
+        "Lässt sich von hier nicht öffnen. Das Fenster ist vielleicht geschlossen.",
+    ),
+    ("Couldn't open the entry.", "Der Eintrag ließ sich nicht öffnen."),
 ];
