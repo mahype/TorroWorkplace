@@ -226,7 +226,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** Tests mit Konfigurationen unter `tests/fixtures/`, kein echtes Home-Verzeichnis.
 
 ### A.7b Assistent und Agenten-Seite: Nacharbeit aus der Design-Prüfung
-- [ ] erledigt
+- [x] erledigt (offen, nur Soll: in Schmal Name doppelt in Kopf und Titel; Schlüssel in Schmal mit „Copy“ in eigener Zeile; in Breit Lücke rechts neben kurzen Segmenten)
 - **Modell:** Sonnet · **Braucht:** A.6b, E2.3 · **Dateien:** `crates/torroworkplace/src/ui/{agent_wizard,agents}.rs`
 - Aus der Abnahme von A.6b am 2026-10-12:
   - **Muss:** Assistent, Schritt „Access“ in Schmal: Untertitel der Optionen hart abgeschnitten
