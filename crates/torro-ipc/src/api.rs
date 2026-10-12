@@ -1133,8 +1133,8 @@ static GET_SETTINGS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Returns the suite-wide settings: language, appearance, start at login, zoom, the night of the \
-                  calendar, the hidden calendars and task lists, and the task lists ordered by hand \
-                  (`listOrders`).",
+                  calendar, the hidden calendars and task lists, the task lists ordered by hand \
+                  (`listOrders`) and whether inbox popups stay quiet during busy events (`quietWhenBusy`).",
 };
 
 static SET_SETTING: Command = Command {
@@ -1148,7 +1148,8 @@ static SET_SETTING: Command = Command {
                   ({\"from\": \"22:00\", \"to\": \"06:00\"}, times on the quarter hour; the calendar's timeline and \
                   radar fold or shade it and do not count it as free time; the same time twice means no night) or \
                   `list_order` ({\"list\": \"<the id from tasks.list_lists>\", \"order\": \"manual\"} to order a \
-                  task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again).",
+                  task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again) or \
+                  `quiet_when_busy` (true, false; while on, only urgent inbox entries pop up during a busy event).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -1466,6 +1467,7 @@ mod tests {
             location: None,
             description: None,
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         }
     }
 
@@ -1989,7 +1991,10 @@ mod tests {
         let keys =
             schema.as_value().pointer("/properties/key/oneOf").and_then(|k| k.as_array()).expect("key is an enum");
         let keys: Vec<_> = keys.iter().filter_map(|k| k.get("const")).collect();
-        assert_eq!(keys, ["language", "appearance", "start_at_login", "zoom", "night", "list_order"]);
+        assert_eq!(
+            keys,
+            ["language", "appearance", "start_at_login", "zoom", "night", "list_order", "quiet_when_busy"]
+        );
 
         let schema = MOVE_TODO.input_schema().expect("schema");
         assert_eq!(schema.get("required"), Some(&serde_json::json!(["href", "etag"])));
@@ -2040,7 +2045,16 @@ mod tests {
             }
         }
         let settings = fields(&UPDATE_SETTINGS, "/properties/settings/properties");
-        for field in ["language", "appearance", "startAtLogin", "hiddenCollections", "zoom", "night", "listOrders"] {
+        for field in [
+            "language",
+            "appearance",
+            "startAtLogin",
+            "hiddenCollections",
+            "zoom",
+            "night",
+            "listOrders",
+            "quietWhenBusy",
+        ] {
             assert!(settings.get(field).is_some(), "update_settings lacks {field}");
         }
     }

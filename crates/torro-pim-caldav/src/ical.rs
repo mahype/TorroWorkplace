@@ -7,7 +7,7 @@
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use torro_pim::model::Link;
-use torro_pim::{Event, EventTime, Todo};
+use torro_pim::{Event, EventTime, Todo, Transparency};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
 pub(crate) struct Property<'a> {
@@ -172,7 +172,17 @@ pub(crate) fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event
         end,
         location: get("LOCATION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
+        transparency: transparency(get("TRANSP")),
     })
+}
+
+/// Free or busy from `TRANSP`: only `TRANSPARENT` is free; a missing property or any other value
+/// (RFC 5545 knows only these two) counts as `OPAQUE`, the default.
+fn transparency(prop: Option<&Property<'_>>) -> Transparency {
+    match prop {
+        Some(prop) if prop.value.trim().eq_ignore_ascii_case("TRANSPARENT") => Transparency::Transparent,
+        _ => Transparency::Opaque,
+    }
 }
 
 fn add(time: EventTime, duration: Duration) -> EventTime {
@@ -301,6 +311,23 @@ mod tests {
         let day = &events[1];
         assert!(day.all_day());
         assert_eq!(day.end, NaiveDate::from_ymd_opt(2026, 10, 13).map(EventTime::Date));
+    }
+
+    #[test]
+    fn transp_tells_free_from_busy() {
+        let wrap = |extra: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nDTSTART:20261011T080000Z\r\n{extra}END:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        let read = |extra: &str| parse_events(&wrap(extra), "/cal/").remove(0).transparency;
+        assert_eq!(read(""), Transparency::Opaque, "missing means busy");
+        assert_eq!(read("TRANSP:OPAQUE\r\n"), Transparency::Opaque);
+        assert_eq!(read("TRANSP:TRANSPARENT\r\n"), Transparency::Transparent);
+        assert_eq!(read("transp: transparent\r\n"), Transparency::Transparent, "any case, spaces trimmed");
+        assert_eq!(read("TRANSP:X-MAYBE\r\n"), Transparency::Opaque, "unknown values are busy");
+        let alarm = "BEGIN:VALARM\r\nTRANSP:TRANSPARENT\r\nEND:VALARM\r\n";
+        assert_eq!(read(alarm), Transparency::Opaque, "an alarm's TRANSP is not the event's");
     }
 
     #[test]

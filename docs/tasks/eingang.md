@@ -447,7 +447,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Test der Tray-Zahl.
 
 ### E3.4 Desktop-Benachrichtigungen und Ruhe
-- [ ] erledigt
+- [x] erledigt (Popups in `inbox_notify.rs`; Freigaben fragen weiter nur über `approvals.rs`; Klick öffnet `torroinbox`, zum Eintrag springen fehlt noch ein Kanal zur App; `Event::transparency` aus `TRANSP`; Einstellung `quiet_when_busy` über `settings.set_setting`)
 - **Modell:** Opus · **Braucht:** E1.2, E2.1 (Feld `TRANSP` freigegeben 2026-10-12) · **Dateien:** `crates/torroworkplace/src/{notify,inbox}.rs`,
   `crates/torro-core/src/settings.rs`, bei Punkt 2 zusätzlich `crates/torro-pim/src/*` und
   `crates/torro-pim-caldav/src/ical.rs` (nennen)

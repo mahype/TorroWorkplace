@@ -254,6 +254,7 @@ mod tests {
             location: None,
             description: None,
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         }
     }
 

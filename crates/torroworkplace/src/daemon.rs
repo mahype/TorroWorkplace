@@ -124,6 +124,8 @@ async fn serve(headless: bool) -> Result<(), String> {
     let core = Arc::new(Core::new(backend, store, pim, clients));
     core.start();
     tokio::spawn(tend_inbox(Arc::clone(&core)));
+    // Popups for new entries "for me" (task E3.4), also when headless: they need no tray.
+    tokio::spawn(crate::inbox_notify::run(Arc::clone(&core), Arc::new(crate::inbox_notify::SystemDesktop)));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();

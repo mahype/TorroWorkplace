@@ -15,8 +15,8 @@
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{ApprovalInfo, Response};
 
-/// The app name shown with each notification.
-const APP_NAME: &str = "Torro Workplace";
+/// The app name shown with each notification (also the inbox popups, `inbox_notify`).
+pub(crate) const APP_NAME: &str = "Torro Workplace";
 
 /// The summary and body for a finished command, or `None` when there is nothing to tell.
 ///
@@ -159,7 +159,7 @@ async fn send_question(
 /// `text` for a notification server that may read markup in the body (`<b>`, `<a href>`): `&`,
 /// `<` and `>` as entities, so a client's text shows as written and never becomes a link.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn plain(text: &str) -> String {
+pub(crate) fn plain(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 

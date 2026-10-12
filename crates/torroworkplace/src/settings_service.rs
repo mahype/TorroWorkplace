@@ -153,6 +153,7 @@ enum Change {
     Night(Night),
     /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
     ListOrder(ListOrderEntry),
+    QuietWhenBusy(bool),
 }
 
 impl Change {
@@ -174,6 +175,7 @@ impl Change {
             // Strict as well: the file's reading falls back to 22:00–06:00 instead.
             SettingKey::Night => Change::Night(Night::from_value(value)?),
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
         })
     }
 
@@ -186,6 +188,7 @@ impl Change {
             Change::Zoom(zoom) => settings.zoom = zoom,
             Change::Night(night) => settings.night = night,
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
+            Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
         }
     }
 }
@@ -437,6 +440,7 @@ mod tests {
         Change::parse(SettingKey::Zoom, &json!(1.25)).expect("valid zoom").apply(&mut settings);
         let night = json!({"from": "23:30", "to": "07:00"});
         Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
+        Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -447,8 +451,10 @@ mod tests {
                 zoom: Zoom::nearest(1.25),
                 night: Night::from_value(&night).expect("valid night"),
                 list_orders: Default::default(),
+                quiet_when_busy: false,
             }
         );
+        assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
     }
 
     #[test]

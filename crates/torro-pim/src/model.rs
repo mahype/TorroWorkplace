@@ -108,6 +108,11 @@ pub struct Event {
     /// One occurrence of a recurring series. Editing series is not supported yet, so the
     /// apps show these read-only.
     pub recurring: bool,
+    /// Whether the event blocks the time (iCalendar `TRANSP`): `opaque` (busy) or
+    /// `transparent` (free, e.g. a reminder or "working from home"). Missing means `opaque`, as
+    /// RFC 5545 says; send the value back as read so a change of other fields keeps it.
+    #[serde(default)]
+    pub transparency: Transparency,
 }
 
 impl Event {
@@ -115,6 +120,23 @@ impl Event {
     pub fn all_day(&self) -> bool {
         matches!(self.start, EventTime::Date(_))
     }
+
+    /// The event makes its time busy: opaque and not all-day. All-day entries (holidays,
+    /// birthdays) and transparent ones leave the time free, whatever they say.
+    pub fn busy(&self) -> bool {
+        self.transparency == Transparency::Opaque && !self.all_day()
+    }
+}
+
+/// Free or busy (iCalendar `TRANSP`, RFC 5545 section 3.8.2.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Transparency {
+    /// The time is busy (`TRANSP:OPAQUE`); also when the event says nothing.
+    #[default]
+    Opaque,
+    /// The time stays free (`TRANSP:TRANSPARENT`).
+    Transparent,
 }
 
 /// A task (VTODO).
@@ -292,6 +314,24 @@ pub enum ChecksState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_event_from_an_older_client_is_busy_and_free_ones_round_trip() {
+        let json = r#"{"uid":"e","collection":"a/https://x/cal/","href":null,"etag":null,"summary":"Call",
+            "start":{"datetime":"2026-10-12T09:00:00Z"},"end":{"datetime":"2026-10-12T10:00:00Z"},
+            "location":null,"description":null,"recurring":false}"#;
+        let event: Event = serde_json::from_str(json).expect("old event");
+        assert_eq!(event.transparency, Transparency::Opaque, "missing TRANSP means busy (RFC 5545)");
+        assert!(event.busy());
+        let free = Event { transparency: Transparency::Transparent, ..event.clone() };
+        let json = serde_json::to_string(&free).expect("json");
+        assert!(json.contains(r#""transparency":"transparent""#), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).expect("back"), free);
+        assert!(!free.busy(), "free time is not busy");
+        let day = NaiveDate::from_ymd_opt(2026, 10, 12).expect("date");
+        let all_day = Event { start: EventTime::Date(day), end: None, ..event };
+        assert!(!all_day.busy(), "all-day entries never make the time busy");
+    }
 
     #[test]
     fn a_task_from_an_older_client_reads_without_the_new_fields() {

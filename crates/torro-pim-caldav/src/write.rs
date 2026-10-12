@@ -29,7 +29,7 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{StatusCode, Url};
 use roxmltree::Node;
-use torro_pim::{Event, EventTime, ProviderError, Todo};
+use torro_pim::{Event, EventTime, ProviderError, Todo, Transparency};
 
 use crate::CalDavClient;
 use crate::ical::{self, Property};
@@ -429,6 +429,16 @@ fn event_fields(event: &Event, before: Option<&Event>, now: DateTime<Utc>) -> Ve
             differs(|a, b| non_empty(&a.description) == non_empty(&b.description)),
             optional_text("DESCRIPTION", &event.description),
         ),
+        // Busy is the default (RFC 5545), so only free time needs a line; a stored
+        // `TRANSP:OPAQUE` stays while the event stays busy.
+        Field::new(
+            &["TRANSP"],
+            differs(|a, b| a.transparency == b.transparency),
+            (event.transparency == Transparency::Transparent)
+                .then(|| "TRANSP:TRANSPARENT".to_string())
+                .into_iter()
+                .collect(),
+        ),
     ]
 }
 
@@ -819,6 +829,7 @@ mod tests {
             location: None,
             description: None,
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         }
     }
 
@@ -1277,6 +1288,41 @@ mod tests {
         ];
         let new = with_stamps(&["DTSTART:20261014T080000Z", "DTEND:20261014T090000Z"]);
         assert_rewritten(THUNDERBIRD_EVENT, &written, &replaced, &new);
+    }
+
+    #[test]
+    fn free_or_busy_round_trips_and_changes_only_transp() {
+        let stored = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:f\r\nDTSTART:20261011T080000Z\r\n\
+DTEND:20261011T090000Z\r\nSUMMARY:Focus\r\nTRANSP:TRANSPARENT\r\nX-FOO:bar\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let mut focus = read_event(stored);
+        assert_eq!(focus.transparency, Transparency::Transparent);
+
+        // Another field changes: the stored TRANSP stays as it was.
+        focus.summary = "Deep work".into();
+        let renamed = event_onto(stored, &focus, later());
+        assert_rewritten(stored, &renamed, &["SUMMARY:Focus"], &with_stamps(&["SUMMARY:Deep work"]));
+        assert_eq!(read_event(&renamed), focus);
+
+        // Busy again: TRANSP goes, as missing means opaque.
+        let busy = Event { transparency: Transparency::Opaque, ..read_event(stored) };
+        let written = event_onto(stored, &busy, later());
+        assert_rewritten(stored, &written, &["TRANSP:TRANSPARENT"], &with_stamps(&[]));
+        assert_eq!(read_event(&written).transparency, Transparency::Opaque);
+
+        // A stored explicit OPAQUE stays while the event stays busy; free writes TRANSPARENT.
+        let opaque = stored.replace("TRANSP:TRANSPARENT", "TRANSP:OPAQUE");
+        let mut meeting = read_event(&opaque);
+        meeting.summary = "Meeting".into();
+        assert!(unfolded_lines(&event_onto(&opaque, &meeting, later())).contains(&"TRANSP:OPAQUE".to_string()));
+        meeting.transparency = Transparency::Transparent;
+        let free = event_onto(&opaque, &meeting, later());
+        assert_eq!(read_event(&free), meeting);
+
+        // New objects: a line only for free time.
+        let new_busy = unfolded_lines(&event_ics(&event(), now()));
+        assert!(!new_busy.iter().any(|line| line.starts_with("TRANSP")), "{new_busy:?}");
+        let new_free = Event { transparency: Transparency::Transparent, ..event() };
+        assert!(unfolded_lines(&event_ics(&new_free, now())).contains(&"TRANSP:TRANSPARENT".to_string()));
     }
 
     #[test]

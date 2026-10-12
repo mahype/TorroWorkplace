@@ -27,6 +27,7 @@ mod core;
 mod daemon;
 mod hook;
 mod inbox;
+mod inbox_notify;
 mod mcp;
 mod notify;
 mod pim;

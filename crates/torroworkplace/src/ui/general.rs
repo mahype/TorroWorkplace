@@ -238,6 +238,7 @@ mod tests {
                 zoom: torro_core::settings::Zoom::MAX,
                 night: Night::none_at(Quarter::new(6, 0).expect("quarter")),
                 list_orders: Default::default(),
+                quiet_when_busy: false,
             },
             ..Data::default()
         };

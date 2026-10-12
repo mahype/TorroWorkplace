@@ -669,6 +669,10 @@ pub enum SettingKey {
     /// comes from `tasks.list_lists`; one the core does not know is `not-found`
     /// (`torro_core::settings::ListOrderEntry`).
     ListOrder,
+    /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
+    /// up during a busy event of a shown calendar only when they are urgent; the others are
+    /// told in one message when the event ends.
+    QuietWhenBusy,
 }
 
 /// The core's answer to one [`Request`].

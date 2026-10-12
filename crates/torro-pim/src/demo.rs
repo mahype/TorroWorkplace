@@ -186,6 +186,7 @@ fn event(collection: &str, uid: &str, summary: &str, start: EventTime, end: Even
         location: None,
         description: None,
         recurring: false,
+        transparency: crate::Transparency::Opaque,
     }
 }
 
@@ -1157,6 +1158,7 @@ mod tests {
             location: None,
             description: None,
             recurring: false,
+            transparency: crate::Transparency::Opaque,
         };
         let mut saved = source.save_event(new).await.unwrap();
         assert!(saved.href.is_some() && saved.etag.is_some());

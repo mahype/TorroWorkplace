@@ -467,6 +467,7 @@ pub(crate) mod tests {
             location: Some("Secret place".into()),
             description: None,
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         };
         let ids = ids(&Request::DeleteEvent { event });
         assert_eq!(ids[0], format!("collection:nextcloud:anna@cloud.example.org/{}", hashed("cal/work/")));
