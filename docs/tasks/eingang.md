@@ -397,7 +397,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** `torro-design-review` für Mini und Leiste, hell und dunkel; Tests der Nachrichten.
 
 ### E3.3b Tray-Zahl
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E1.2, A.8 (gleiche Tray-Datei) · **Dateien:**
   `crates/torroworkplace/src/tray/linux.rs`
 - Tray: **eine** Zahl für offene Einträge „für mich“ (Freigaben sind jetzt Einträge, die Zahl aus A.8

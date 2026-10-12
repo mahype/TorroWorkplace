@@ -6,7 +6,8 @@
 //!   agents; every request there passes the key check ([`Core::handle_from`]),
 //! - the tray icon (Linux: ksni; it runs its own D-Bus task on the same runtime),
 //! - a refresher that rebuilds the tray menu after every command, on window manager events and
-//!   when the open approvals change (debounced; [`watch_approvals`]),
+//!   when the open approvals change ([`watch_approvals`]) or anything is written to the inbox
+//!   ([`watch_inbox`]), all debounced into one refresh,
 //! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
 //!   ([`tend_inbox`]),
 //!
@@ -65,17 +66,6 @@ impl Daemon {
         self.runtime.spawn(async move {
             if let Err(err) = core.open_app(app).await {
                 eprintln!("torroworkplace: cannot open {}: {err}", app.binary);
-            }
-        });
-    }
-
-    /// Shows the open approvals: focuses the control centre, or starts it on its approvals
-    /// ([`Core::show_approvals`]).
-    pub fn show_approvals(&self) {
-        let core = Arc::clone(&self.core);
-        self.runtime.spawn(async move {
-            if let Err(err) = core.show_approvals().await {
-                eprintln!("torroworkplace: cannot show the approvals: {err}");
             }
         });
     }
@@ -179,11 +169,14 @@ async fn serve(headless: bool) -> Result<(), String> {
         refresh: refresh_tx.clone(),
         quit: quit_tx,
     });
-    // Taken before the first snapshot, so an approval opened in between still refreshes the menu.
+    // Taken before the first snapshot, so an approval opened or an entry posted in between still
+    // refreshes the menu.
     let approval_changes = core.approval_changes();
+    let inbox_changes = core.inbox().changes();
     let front = Front::start(&daemon, headless, core.snapshot().await).await?;
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
+    tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
 
     match core.events().await {
         Ok(mut events) => {
@@ -262,13 +255,26 @@ async fn refresher(core: Arc<Core>, mut requests: mpsc::UnboundedReceiver<()>, f
 
 /// Asks for a new menu whenever the count of open approvals may have changed: one was opened (by a
 /// client from the socket) or decided (control centre, `ctl`, notification), or one expired by the
-/// clock ([`Core::approvals_changed`]). So "Approvals (n)" follows without asking the socket.
+/// clock ([`Core::approvals_changed`]). Their inbox entries (task E2.1) mostly tell the tray
+/// themselves ([`watch_inbox`]); this keeps [`Snapshot::approvals_waiting`] right to the second.
 async fn watch_approvals(
     core: Arc<Core>,
     mut changes: tokio::sync::watch::Receiver<()>,
     refresh: mpsc::UnboundedSender<()>,
 ) {
     while core.approvals_changed(&mut changes).await {
+        if refresh.send(()).is_err() {
+            return;
+        }
+    }
+}
+
+/// Asks for a new menu whenever something was written to the inbox (task E3.3b,
+/// [`crate::inbox::Inbox::changes`]): a post from a client, a change in the Inbox app, waking, the
+/// clean-up, the suite's approvals and account problems. So "Inbox (n)" follows without polling;
+/// the refresher collapses bursts into one new menu.
+async fn watch_inbox(mut changes: tokio::sync::watch::Receiver<()>, refresh: mpsc::UnboundedSender<()>) {
+    while changes.changed().await.is_ok() {
         if refresh.send(()).is_err() {
             return;
         }

@@ -56,7 +56,7 @@ fn control_centre_command(program: String, section: Section) -> Vec<String> {
 }
 
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
-/// client asked for (`accounts.connect_github`), or the approvals the tray counts.
+/// client asked for (`accounts.connect_github`).
 fn start_control_centre(section: Section) -> Result<(), String> {
     let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
     SystemLauncher.spawn(&control_centre_command(program, section)).map(|_| ()).map_err(|err| err.to_string())
@@ -135,9 +135,34 @@ pub struct Snapshot {
     pub problem: Option<String>,
     /// The accounts as one state (`torro_pim::combined_state`), for the status line.
     pub account: Option<AccountState>,
-    /// Approvals still waiting for a person (`ApprovalState::Pending`), for "Approvals (n)". 0 when
-    /// the approvals cannot be read; their own commands report why.
+    /// Approvals still waiting for a person (`ApprovalState::Pending`). The tray no longer shows
+    /// them apart: each is an inbox entry (task E2.1), counted in [`Snapshot::inbox_for_me`]. 0
+    /// when the approvals cannot be read; their own commands report why.
     pub approvals_waiting: usize,
+    /// Open inbox entries "for me" (task E3.3b), as the app key sees them: everything. Open
+    /// approvals are entries too (task E2.1), so this is the tray's one number. 0 when the inbox
+    /// cannot be read; its own commands report why.
+    pub inbox_for_me: usize,
+    /// How many of [`Snapshot::inbox_for_me`] are urgent (approvals, agents waiting).
+    pub inbox_urgent: usize,
+    /// The most recently updated of [`Snapshot::inbox_for_me`], newest first, at most
+    /// [`TRAY_NEWEST`].
+    pub inbox_newest: Vec<InboxLine>,
+}
+
+/// How many of the newest inbox entries the tray lists.
+pub const TRAY_NEWEST: usize = 5;
+
+/// One inbox entry in the tray menu (task E3.3b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxLine {
+    /// The entry's id, for jumping to it once the Inbox app can be told to.
+    pub id: String,
+    /// The entry's title as stored. Foreign text (`untrusted`): the tray shows it as plain text
+    /// only, never as markup and without mnemonics.
+    pub title: String,
+    /// Who reported it, as the Inbox app names it ([`torro_inbox::SourceRef::label`]).
+    pub source: String,
 }
 
 /// The core's state: window manager, template store, settings, the keys that may talk to it,
@@ -850,6 +875,14 @@ impl Core {
         }
         snapshot.account = Some(self.pim.account_state().await);
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
+        let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
+        snapshot.inbox_for_me = for_me.open;
+        snapshot.inbox_urgent = for_me.urgent;
+        snapshot.inbox_newest = for_me
+            .newest
+            .into_iter()
+            .map(|item| InboxLine { source: item.source.label(), id: item.id, title: item.title })
+            .collect();
         snapshot
     }
 
@@ -867,7 +900,7 @@ impl Core {
 
     /// Waits until the count of open approvals may have changed: one was opened or decided
     /// (`changes`, from [`Core::approval_changes`]), or the next open one expired by the clock.
-    /// The daemon then refreshes the tray menu, whose [`Snapshot::approvals_waiting`] counts anew.
+    /// The daemon then refreshes the tray menu, whose snapshot counts anew.
     /// `false` when the approvals are gone (the core is shutting down).
     pub async fn approvals_changed(&self, changes: &mut tokio::sync::watch::Receiver<()>) -> bool {
         let now = Utc::now();
@@ -883,12 +916,6 @@ impl Core {
             changed = changes.changed() => changed.is_ok(),
             () = expired => true,
         }
-    }
-
-    /// Shows the approvals for "Approvals (n)" in the tray: an open control centre comes to the
-    /// front (and stays on its page, [`show_control_centre`]), else one starts on its approvals.
-    pub async fn show_approvals(&self) -> Result<(), String> {
-        show_control_centre(&self.backend, Section::Approvals, self.start_control_centre).await
     }
 
     /// Brings the app's window to the front, or starts the app when it has none.
@@ -1967,12 +1994,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_approvals_in_the_tray_start_the_control_centre_on_them() {
+    async fn the_control_centre_starts_on_a_section_or_comes_to_the_front() {
         let dir = tempfile::tempdir().expect("temp dir");
         // The test backend lists no windows, so no control centre is open and one starts.
-        let core = Core { start_control_centre: record_start, ..core(dir.path()) };
+        let core = core(dir.path());
         let before = started(Section::Approvals);
-        assert_eq!(core.show_approvals().await, Ok(()));
+        assert_eq!(show_control_centre(&core.backend, Section::Approvals, record_start).await, Ok(()));
         assert_eq!(started(Section::Approvals), before + 1);
 
         // An open one only comes to the front.
@@ -2000,6 +2027,45 @@ mod tests {
 
         core.approvals.decide(&first.id, false, now).await.expect("denied");
         assert_eq!(core.snapshot().await.approvals_waiting, 1);
+    }
+
+    /// Task E3.3b: the tray's one number counts the open entries "for me", approvals included,
+    /// and lists the newest with their source.
+    #[tokio::test]
+    async fn the_snapshot_counts_the_inbox_for_me_with_its_approvals() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let snapshot = core.snapshot().await;
+        assert_eq!((snapshot.inbox_for_me, snapshot.inbox_urgent, snapshot.inbox_newest), (0, 0, Vec::new()));
+
+        let now = Utc::now();
+        let notice = |title: &str, lane| Request::PostItem {
+            kind: torro_inbox::Kind::Notice,
+            title: title.into(),
+            body: None,
+            link: None,
+            lane: Some(lane),
+            thread_key: None,
+            agent: None,
+        };
+        // A minute before the approval, so the approval is the newest; the app key posts as `cli`.
+        let earlier = now - chrono::TimeDelta::minutes(1);
+        let posted = core.inbox.handle(notice("Backup failed", torro_inbox::Lane::ForMe), None, earlier);
+        assert!(matches!(posted, Response::Posted { id: Some(_) }), "{posted:?}");
+        core.inbox.handle(notice("Backup finished", torro_inbox::Lane::Info), None, now);
+        let delete = Request::DeleteTemplate { id: "a".into() };
+        let asked = core.approvals.open("c1", "One", delete, "a".into(), now).await.expect("opened");
+        crate::inbox::file_approvals(&core.inbox, &core.approvals, now).await;
+
+        let snapshot = core.snapshot().await;
+        assert_eq!((snapshot.approvals_waiting, snapshot.inbox_for_me, snapshot.inbox_urgent), (1, 2, 1));
+        let lines: Vec<(&str, &str)> =
+            snapshot.inbox_newest.iter().map(|line| (line.title.as_str(), line.source.as_str())).collect();
+        assert_eq!(lines, [(asked.summary.as_str(), tr("Suite")), ("Backup failed", "cli")]);
+
+        core.approvals.decide(&asked.id, false, now).await.expect("denied");
+        crate::inbox::file_approvals(&core.inbox, &core.approvals, now).await;
+        assert_eq!(core.snapshot().await.inbox_for_me, 1, "a decided approval leaves the count");
     }
 
     #[tokio::test]

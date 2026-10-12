@@ -2,13 +2,20 @@
 //! Waybar and KDE show it). The menu is built from a [`Snapshot`] of the core and turns
 //! clicks into the same [`Request`]s the socket takes. The icon comes from `icon.rs`.
 //!
-//! What waits for the person ([`Waiting`], task A.8: the open approvals) shows as an entry
-//! "Approvals (2)" at the top of the menu, which opens the control centre on its approvals, as the
-//! tooltip, and as the item status `NeedsAttention`, which bars use to highlight the icon. A number
-//! drawn onto the icon is left out: the protocol's overlay icon is only another pixmap, so the
-//! digits would have to be rasterised here, and many bars ignore it. The count is part of the
-//! [`Snapshot`] (task A.8b); the daemon hands over a new one whenever an approval is opened,
-//! decided or expires, so the tray never asks the socket itself.
+//! What waits for the person ([`Waiting`], task E3.3b) is **one** number: the open inbox entries
+//! "for me". Open approvals are such entries since E2.1, so the "Approvals (n)" of task A.8 went
+//! into it; the approvals page stays in the control centre ("Settings…"). While something waits,
+//! the menu starts with "Inbox (n)", the five newest entries and "Open Inbox", all opening the
+//! Inbox app (it cannot be told yet which entry to show: that needs a channel into the running
+//! app). The tooltip says only how many ("3 for you"), never a title: bars may read the
+//! description as markup, and titles of foreign sources are `untrusted`. The item status is
+//! `NeedsAttention`, which bars use to highlight the icon, only while something urgent waits (an
+//! approval, an agent waiting); notices and finished agents count but stay calm.
+//!
+//! A number drawn onto the icon is left out: the protocol's overlay icon is only another pixmap,
+//! so the digits would have to be rasterised here, and many bars ignore it. The counts are part of
+//! the [`Snapshot`]; the daemon hands over a new one whenever something is written to the inbox
+//! or an approval changes, so the tray never asks the socket itself and nothing polls.
 
 use std::fmt;
 use std::sync::Arc;
@@ -22,7 +29,7 @@ use torro_pim::AccountState;
 use torro_setups::LoadMode;
 
 use super::icon;
-use crate::core::Snapshot;
+use crate::core::{InboxLine, Snapshot};
 use crate::daemon::Daemon;
 
 /// Errors of the tray icon.
@@ -51,24 +58,25 @@ pub struct Tray {
     daemon: Arc<Daemon>,
 }
 
-/// What waits for a decision of the person, counted in the tray. Today the open approvals; the
-/// inbox (task E3.3b) adds its own count here, and [`Waiting::total`] and the menu entry merge
-/// them into one.
+/// What waits for the person, counted in the tray (task E3.3b): the open inbox entries "for me",
+/// approvals included (task E2.1), so they are never counted twice.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Waiting {
-    /// Approvals still open (`ApprovalState::Pending`).
-    pub approvals: usize,
+    /// Open inbox entries "for me" ([`Snapshot::inbox_for_me`]).
+    pub for_me: usize,
+    /// How many of them are urgent ([`Snapshot::inbox_urgent`]).
+    pub urgent: usize,
 }
 
 impl Waiting {
     /// What waits according to `snapshot`.
     pub fn of(snapshot: &Snapshot) -> Waiting {
-        Waiting { approvals: snapshot.approvals_waiting }
+        Waiting { for_me: snapshot.inbox_for_me, urgent: snapshot.inbox_urgent }
     }
 
     /// Everything that waits, as one number.
     pub fn total(self) -> usize {
-        self.approvals
+        self.for_me
     }
 }
 
@@ -90,7 +98,7 @@ impl ksni::Tray for Tray {
         "Torro Workplace".into()
     }
 
-    /// Bars highlight an item that needs attention; nothing waiting is the normal, active state.
+    /// Bars highlight an item that needs attention: only while something urgent waits.
     fn status(&self) -> ksni::Status {
         item_status(Waiting::of(&self.snapshot))
     }
@@ -117,41 +125,36 @@ impl ksni::Tray for Tray {
     }
 }
 
-/// `NeedsAttention` while something waits, else `Active`.
+/// `NeedsAttention` while something urgent waits (an approval, an agent waiting), else `Active`.
+/// Notices and finished agents count in the number but do not make the icon stand out: the tray
+/// stays calm for what can wait.
 fn item_status(waiting: Waiting) -> ksni::Status {
-    if waiting.total() > 0 { ksni::Status::NeedsAttention } else { ksni::Status::Active }
+    if waiting.urgent > 0 { ksni::Status::NeedsAttention } else { ksni::Status::Active }
 }
 
-/// "2 requests wait for your approval", or nothing when none waits.
+/// "3 for you", or nothing when nothing waits. Only the count: the bar may read the description
+/// as markup.
 fn waiting_line(waiting: Waiting) -> String {
     match waiting.total() {
         0 => String::new(),
-        1 => tr("1 request waits for your approval").into(),
-        n => trf("{n} requests wait for your approval", &[("n", &n)]),
+        n => trf("{n} for you", &[("n", &n)]),
     }
 }
 
-/// The menu from docs/core.md for one snapshot, with "Approvals (n)" on top while something
-/// waits ([`Waiting::of`]).
+/// The longest title of an entry in the menu, in characters, before it ends in "…"; with the
+/// source after it, that is about what Omarchy's bar shows of a line.
+const TITLE_IN_MENU: usize = 28;
+
+/// The longest source name of an entry in the menu, in characters.
+const SOURCE_IN_MENU: usize = 16;
+
+/// The menu from docs/core.md for one snapshot, with the inbox on top while something waits
+/// ([`inbox_section`]).
 ///
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
-    let waiting = Waiting::of(snapshot);
-    let mut menu = Vec::new();
-    if waiting.total() > 0 {
-        menu.push(
-            StandardItem {
-                label: trf("Approvals ({n})", &[("n", &waiting.total())]),
-                // The control centre comes to the front, or starts on its approvals; its sidebar
-                // counts the open approvals too.
-                activate: Box::new(|tray: &mut Tray| tray.daemon.show_approvals()),
-                ..Default::default()
-            }
-            .into(),
-        );
-        menu.push(MenuItem::Separator);
-    }
+    let mut menu = inbox_section(snapshot);
     if let Some(name) = &snapshot.unsupported {
         menu.push(info(trf("{name} not supported yet", &[("name", name)])));
         menu.push(MenuItem::Separator);
@@ -204,6 +207,52 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
         .into(),
     );
     menu
+}
+
+/// While something waits: "Inbox (n)", the newest entries ("title · source") and "Open Inbox",
+/// then a separator. Empty when nothing waits; the Inbox app is still among the apps below.
+/// Every entry opens the Inbox app; jumping to one entry needs a channel into the app.
+fn inbox_section(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
+    let waiting = Waiting::of(snapshot);
+    if waiting.total() == 0 {
+        return Vec::new();
+    }
+    let mut section = vec![open_inbox(trf("Inbox ({n})", &[("n", &waiting.total())]))];
+    section.extend(snapshot.inbox_newest.iter().map(|line| open_inbox(entry_label(line))));
+    section.push(open_inbox(trf("Open {app}", &[("app", &tr("Inbox"))])));
+    section.push(MenuItem::Separator);
+    section
+}
+
+/// An entry labelled `label` that opens or focuses the Inbox app.
+fn open_inbox(label: String) -> MenuItem<Tray> {
+    StandardItem {
+        label,
+        activate: Box::new(|tray: &mut Tray| tray.daemon.open_app(AppId::INBOX)),
+        ..Default::default()
+    }
+    .into()
+}
+
+/// "Title · Source" for one entry, both as [`plain`] text.
+fn entry_label(line: &InboxLine) -> String {
+    format!("{} · {}", plain(&line.title, TITLE_IN_MENU), plain(&line.source, SOURCE_IN_MENU))
+}
+
+/// `text` from outside the suite, cut to `max` characters, so that it shows exactly as written in
+/// a menu label: control characters (line breaks, tabs) become spaces, and the invisible marks
+/// that turn the direction of text are dropped, so a title cannot make the line read differently.
+/// Labels are no markup, but DBusMenu takes an underscore as the mark of an access key, so each
+/// one is doubled to show as itself.
+fn plain(text: &str, max: usize) -> String {
+    let flat: String =
+        text.chars().filter(|c| !turns_direction(*c)).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    crate::inbox::cap(flat.trim(), max).replace('_', "__")
+}
+
+/// The Unicode marks that embed, override or isolate a direction of text, and the plain marks.
+fn turns_direction(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// `Workspace 3 · hyprland`, or what is going on instead.
@@ -366,23 +415,69 @@ mod tests {
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 
+    fn line(title: &str, source: &str) -> InboxLine {
+        InboxLine { id: format!("id-{title}"), title: title.into(), source: source.into() }
+    }
+
+    /// Task E3.3b: one number for everything "for me", approvals included.
     #[test]
-    fn waiting_approvals_lead_the_menu_and_mark_the_item() {
+    fn the_inbox_leads_the_menu_with_one_number() {
         let none = Waiting::of(&snapshot());
         assert_eq!(none, Waiting::default());
         assert_eq!((item_status(none), waiting_line(none)), (ksni::Status::Active, String::new()));
         assert_eq!(labels(&build_menu(&snapshot()))[0], format!("{} ▸", tr("Load template")));
 
-        let waiting = Snapshot { approvals_waiting: 2, ..snapshot() };
-        let two = Waiting::of(&waiting);
-        assert_eq!((two, two.total()), (Waiting { approvals: 2 }, 2), "the count comes from the snapshot");
+        // An approval and two notices; the snapshot still knows the approval apart, the tray not.
+        let waiting = Snapshot {
+            approvals_waiting: 1,
+            inbox_for_me: 3,
+            inbox_urgent: 1,
+            inbox_newest: vec![line("Delete event", "Suite"), line("Backup failed", "backup")],
+            ..snapshot()
+        };
+        let three = Waiting::of(&waiting);
+        assert_eq!((three, three.total()), (Waiting { for_me: 3, urgent: 1 }, 3), "approvals are not counted twice");
         let menu = build_menu(&waiting);
-        assert_eq!(labels(&menu)[..2], [trf("Approvals ({n})", &[("n", &2)]), "-".to_string()]);
-        assert!(matches!(&menu[0], MenuItem::Standard(entry) if entry.enabled), "the entry can be clicked");
-        assert_eq!(labels(&menu)[2], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
-        assert_eq!(item_status(two), ksni::Status::NeedsAttention);
-        assert_eq!(waiting_line(two), trf("{n} requests wait for your approval", &[("n", &2)]));
-        assert_eq!(waiting_line(Waiting { approvals: 1 }), tr("1 request waits for your approval"));
+        assert_eq!(
+            labels(&menu)[..5],
+            [
+                trf("Inbox ({n})", &[("n", &3)]),
+                "Delete event · Suite".to_string(),
+                "Backup failed · backup".to_string(),
+                trf("Open {app}", &[("app", &tr("Inbox"))]),
+                "-".to_string(),
+            ]
+        );
+        assert!(
+            menu[..4].iter().all(|item| matches!(item, MenuItem::Standard(entry) if entry.enabled)),
+            "every inbox line can be clicked"
+        );
+        assert_eq!(labels(&menu)[5], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
+        assert!(!labels(&menu).contains(&trf("Approvals ({n})", &[("n", &1)])), "no second number for approvals");
+        assert_eq!(item_status(three), ksni::Status::NeedsAttention);
+        assert_eq!(waiting_line(three), trf("{n} for you", &[("n", &3)]));
+    }
+
+    #[test]
+    fn only_something_urgent_makes_the_icon_stand_out() {
+        let calm = Waiting { for_me: 4, urgent: 0 };
+        assert_eq!(item_status(calm), ksni::Status::Active, "notices count but stay calm");
+        assert_eq!(waiting_line(calm), trf("{n} for you", &[("n", &4)]));
+        assert_eq!(item_status(Waiting { for_me: 4, urgent: 1 }), ksni::Status::NeedsAttention);
+    }
+
+    /// Titles come from agents and scripts: shown as written, never as a mnemonic, a line break
+    /// or turned text, and short enough for the bar.
+    #[test]
+    fn foreign_titles_show_as_plain_text() {
+        let label = |title: &str, source: &str| entry_label(&line(title, source));
+        assert_eq!(label("fix_build", "my_script"), "fix__build · my__script", "underscores show as themselves");
+        assert_eq!(label("two\nlines\there", "x"), "two lines here · x");
+        assert_eq!(label("\u{202E}gnp.exe", "x"), "gnp.exe · x", "no turned text");
+        assert_eq!(label("<b>bold</b> &amp;", "x"), "<b>bold</b> &amp; · x", "markup stays text");
+        let long = "A very long title from an agent that goes on";
+        let cut: String = long.chars().take(TITLE_IN_MENU - 1).collect();
+        assert_eq!(label(long, "x"), format!("{cut}… · x"));
     }
 
     #[test]

@@ -45,6 +45,11 @@
 //! what stands now ([`reconcile`]) after an approval opened or was decided, when it starts and
 //! every [`SUITE_EVERY`] ([`tend_suite`]): that is how an expired approval, a fixed account or a
 //! restart are caught up with. Only the app key changes these entries (security rule 1).
+//!
+//! **The tray** (task E3.3b) counts the open entries "for me" and lists the newest
+//! ([`Inbox::for_me`]). It hears of every change through [`Inbox::changes`]: whatever writes to
+//! the file (a post, a merge, resolving, done, snooze, lane, waking, the clean-up, the suite's
+//! reconciliation, rules) marks it, so no write path can forget to and nothing polls.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -179,6 +184,20 @@ pub struct Inbox {
     /// The open database; `None` until first used or after opening failed, then tried again.
     /// Requests are short local queries, so they run under this lock on the caller's thread.
     db: Mutex<Option<Connection>>,
+    /// Marked after every piece of work that wrote to the file ([`Inbox::with`]), for the tray.
+    changed: tokio::sync::watch::Sender<()>,
+}
+
+/// The open entries "for me" as the tray shows them (task E3.3b, [`Inbox::for_me`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ForMe {
+    /// Open entries (new or seen; snoozed and done ones are not) in the lane "for me".
+    pub open: usize,
+    /// How many of them are urgent: approvals and agents waiting ([`rules::placement`]).
+    pub urgent: usize,
+    /// The most recently updated of them, newest first. Titles of foreign sources are
+    /// `untrusted` text: whoever shows them must not let them read as markup or mnemonics.
+    pub newest: Vec<Item>,
 }
 
 impl Inbox {
@@ -187,17 +206,51 @@ impl Inbox {
     /// rather than touching the user's state.
     pub fn system() -> Inbox {
         if cfg!(test) {
-            return Inbox { file: None, db: Mutex::new(None) };
+            return Inbox::in_file(None);
         }
-        let file = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join(FILE));
-        Inbox { file, db: Mutex::new(None) }
+        Inbox::in_file(AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join(FILE)))
+    }
+
+    fn in_file(file: Option<PathBuf>) -> Inbox {
+        Inbox { file, db: Mutex::new(None), changed: tokio::sync::watch::channel(()).0 }
     }
 
     /// The inbox in `file`, created with its directory on first use. For tests; the core uses
     /// [`Inbox::system`].
     #[cfg(test)]
     pub(crate) fn at(file: PathBuf) -> Inbox {
-        Inbox { file: Some(file), db: Mutex::new(None) }
+        Inbox::in_file(Some(file))
+    }
+
+    /// Marked as changed each time something was written to the inbox, after it was stored: an
+    /// entry posted, merged, resolved, done, snoozed, moved, woken or removed, the suite's entries
+    /// brought in line, a rule kept or removed. Reading changes nothing, unless it woke a snoozed
+    /// entry. The daemon refreshes the tray on it, whose count reads [`Inbox::for_me`] anew.
+    pub fn changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changed.subscribe()
+    }
+
+    /// The open entries "for me" at `now` as the app key sees them (everything), with the
+    /// `newest` most recently updated, for the tray (task E3.3b). Wakes snoozed entries that are
+    /// due first, as listing does. `Err` holds the message for the log.
+    pub fn for_me(&self, now: DateTime<Utc>, newest: usize) -> Result<ForMe, String> {
+        self.with(|db| {
+            wake_due(db, now)?;
+            let open = "lane = 'for_me' AND state IN ('new', 'seen')";
+            let (count, urgent): (i64, i64) = db.query_row(
+                &format!("SELECT COUNT(*), COALESCE(SUM(urgent), 0) FROM items WHERE {open}"),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let limit = vec![Value::Integer(i64::try_from(newest).unwrap_or(i64::MAX))];
+            let rows = read_items(db, &Scope::All, open, limit, " ORDER BY updated DESC, id LIMIT ?")?;
+            Ok(ForMe {
+                open: usize::try_from(count).unwrap_or_default(),
+                urgent: usize::try_from(urgent).unwrap_or_default(),
+                newest: rows.into_iter().map(|stored| stored.item).collect(),
+            })
+        })
+        .map_err(|failure| failure.to_string())
     }
 
     /// Answers one `inbox.*` request of `client` (`None` for the app key) at `now`.
@@ -348,17 +401,27 @@ impl Inbox {
         self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, now)).map_err(|f| f.to_string())
     }
 
-    /// Runs `work` on the open database, opening it first if needed.
+    /// Runs `work` on the open database, opening it first if needed, and marks
+    /// [`Inbox::changes`] when it wrote rows. SQLite counts every row inserted, updated or deleted
+    /// on the connection, so each write path is covered without marking it by hand; work that
+    /// failed and rolled back may mark it too, which costs only a needless refresh.
     fn with<T>(&self, work: impl FnOnce(&mut Connection) -> Result<T, Failure>) -> Result<T, Failure> {
         let mut db = self.lock();
         if db.is_none() {
             let file = self.file.as_deref().ok_or(StoreError::NoHome)?;
             *db = Some(open(file)?);
         }
-        match db.as_mut() {
-            Some(db) => work(db),
-            None => Err(StoreError::NoHome.into()),
+        let Some(connection) = db.as_mut() else {
+            return Err(StoreError::NoHome.into());
+        };
+        let before = connection.total_changes();
+        let result = work(connection);
+        let wrote = connection.total_changes() != before;
+        drop(db);
+        if wrote {
+            self.changed.send_replace(());
         }
+        result
     }
 
     fn lock(&self) -> MutexGuard<'_, Option<Connection>> {
@@ -2634,5 +2697,114 @@ pub(crate) mod tests {
         let items = suite(&inbox, at(8, 2));
         assert_eq!(items.len(), 1, "{items:?}");
         assert_eq!(account_entry(&items, "anna").state, State::Done { at: at(8, 2) });
+    }
+
+    /// A notice "for me" from `client` at `now` in thread `key`.
+    fn for_me_notice(inbox: &Inbox, title: &str, key: &str, now: DateTime<Utc>) -> String {
+        let request = Request::PostItem {
+            kind: Kind::Notice,
+            title: title.into(),
+            body: None,
+            link: None,
+            lane: Some(Lane::ForMe),
+            thread_key: Some(key.into()),
+            agent: None,
+        };
+        posted(inbox.handle(request, Some(&script()), now))
+    }
+
+    /// Task E3.3b: the tray hears of every write, and of nothing else.
+    #[test]
+    fn every_write_tells_the_tray_and_reading_does_not() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let mut changes = inbox.changes();
+        let mut wrote = || {
+            let changed = changes.has_changed().expect("the inbox is alive");
+            changes.mark_unchanged();
+            changed
+        };
+
+        inbox.handle(all(), None, at(8, 0));
+        assert!(!wrote(), "listing changes nothing");
+        let id = for_me_notice(&inbox, "Build failed", "build", at(8, 0));
+        assert!(wrote(), "a post");
+        for_me_notice(&inbox, "Build failed again", "build", at(8, 1));
+        assert!(wrote(), "a merge");
+        inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) }, None, at(8, 2));
+        assert!(wrote(), "a snooze");
+        inbox.handle(all(), None, at(8, 30));
+        assert!(!wrote(), "listing before the entry is due wakes nothing");
+        assert_eq!(inbox.for_me(at(9, 1), 5).map(|for_me| for_me.open), Ok(1));
+        assert!(wrote(), "the tray's own read woke the entry");
+        inbox.handle(Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false }, None, at(9, 2));
+        assert!(wrote(), "a lane");
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: true }, None, at(9, 3));
+        assert!(wrote(), "done");
+
+        for_me_notice(&inbox, "Deploy waits", "deploy", at(9, 4));
+        wrote();
+        let resolve = Request::ResolveItems { thread_key: "deploy".into() };
+        assert_eq!(inbox.handle(resolve.clone(), Some(&script()), at(9, 5)), Response::Ok);
+        assert!(wrote(), "resolving");
+        inbox.handle(resolve, Some(&script()), at(9, 6));
+        assert!(!wrote(), "resolving what is done already writes nothing");
+
+        file_from_core(&inbox, &approval(at(9, 7)));
+        wrote();
+        let done = Request::SetItemDone { id: "approval-1".into(), done: true };
+        assert_eq!(code(&inbox.handle(done, Some(&script()), at(9, 8))), "forbidden");
+        assert!(!wrote(), "a refused change");
+
+        let later = at(9, 9) + TimeDelta::days(KEEP_DONE_DAYS + 1);
+        assert_eq!(inbox.tend(later, true), Ok((0, 2)));
+        assert!(wrote(), "the clean-up");
+        assert_eq!(inbox.tend(later, true), Ok((0, 0)));
+        assert!(!wrote(), "a clean-up that removes nothing");
+    }
+
+    /// Task E2.1 meets E3.3b: the suite's reconciliation tells the tray only when it changed
+    /// something, so its minute routine does not refresh the menu for nothing.
+    #[test]
+    fn the_suite_tells_the_tray_only_of_real_changes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let mut changes = inbox.changes();
+        let anna = [check("anna", problem(Trouble::SignInNeeded, at(8, 0)))];
+        inbox.file_account_problems(&anna, true, at(8, 0)).expect("filed");
+        assert!(changes.has_changed().expect("alive"), "a new account problem");
+        changes.mark_unchanged();
+        inbox.file_account_problems(&anna, true, at(8, 1)).expect("filed");
+        assert!(!changes.has_changed().expect("alive"), "the same problem again");
+        inbox.file_account_problems(&[check("anna", Health::Fine)], true, at(8, 2)).expect("filed");
+        assert!(changes.has_changed().expect("alive"), "the account is fine again");
+    }
+
+    /// Task E3.3b: the tray counts the open entries "for me", the urgent among them, and lists
+    /// the newest first; info, snoozed and done entries are not counted.
+    #[test]
+    fn the_tray_counts_open_entries_for_me_and_lists_the_newest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.for_me(at(8, 0), 5), Ok(ForMe::default()));
+
+        file_from_core(&inbox, &approval(at(8, 0)));
+        for minute in 1..=6 {
+            for_me_notice(&inbox, &format!("Notice {minute}"), &format!("n{minute}"), at(8, minute));
+        }
+        posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 10)));
+        let snoozed = for_me_notice(&inbox, "Later", "later", at(8, 11));
+        inbox.handle(Request::SnoozeItem { id: snoozed, until: Some(at(12, 0)) }, None, at(8, 11));
+        let done = for_me_notice(&inbox, "Done", "done", at(8, 12));
+        inbox.handle(Request::SetItemDone { id: done, done: true }, None, at(8, 12));
+
+        let for_me = inbox.for_me(at(8, 20), 5).expect("read");
+        assert_eq!((for_me.open, for_me.urgent), (7, 1), "six notices and the approval");
+        let titles: Vec<&str> = for_me.newest.iter().map(|item| item.title.as_str()).collect();
+        assert_eq!(titles, ["Notice 6", "Notice 5", "Notice 4", "Notice 3", "Notice 2"]);
+        assert_eq!(for_me.newest[0].source, SourceRef::script("script aa01"));
+
+        let woken = inbox.for_me(at(12, 1), 1).expect("read");
+        assert_eq!((woken.open, woken.newest[0].title.as_str()), (8, "Later"), "woken entries count again");
     }
 }
