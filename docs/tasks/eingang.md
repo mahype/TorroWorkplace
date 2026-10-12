@@ -64,8 +64,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 3. **Sicherheitsteil von E2.5** (Rückfragen beantworten) vor Beginn freigeben; dazu gehört eine
    Erweiterung von Punkt 3 in „Was nie nach außen geht“ ([api.md](../api.md)) auf Antworten auf
    Rückfragen.
-4. **A.6 (Agents & API)** braucht auf der Detailseite zusätzlich die Auswahl der Inbox-Quellen. Wird
-   in A.6 mit erledigt, sobald E1.1 steht.
+4. ~~A.6 (Agents & API): Auswahl der Inbox-Quellen auf der Detailseite~~, erledigt mit A.6.
 
 ## E1 Kern
 
