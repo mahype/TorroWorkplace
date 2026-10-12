@@ -1469,4 +1469,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Shown next to your address in the mail you send. Optional.",
         "Wird in gesendeten E-Mails neben deiner Adresse angezeigt. Optional.",
     ),
+    // Reading mail (M3.1)
+    ("Attachments cannot be kept on this device.", "Anhänge können auf diesem Gerät nicht gespeichert werden."),
+    ("No such folder.", "Diesen Ordner gibt es nicht."),
+    ("No such message.", "Diese Nachricht gibt es nicht."),
+    ("The attachment is larger than 50 MiB.", "Der Anhang ist größer als 50 MiB."),
+    ("The message could not be read.", "Die Nachricht konnte nicht gelesen werden."),
+    ("The message has no such attachment.", "Die Nachricht hat keinen solchen Anhang."),
+    ("This cursor is not valid. Search again without it.", "Dieser Cursor ist ungültig. Suche ohne ihn erneut."),
 ];
