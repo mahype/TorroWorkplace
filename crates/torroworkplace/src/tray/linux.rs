@@ -5,7 +5,7 @@
 //! What waits for the person ([`Waiting`], task E3.3b) is **one** number: the open inbox entries
 //! "for me". Open approvals are such entries since E2.1, so the "Approvals (n)" of task A.8 went
 //! into it; the approvals page stays in the control centre ("Settings…"). While something waits,
-//! the menu starts with "Inbox (n)", the five newest entries and "Open Inbox", all opening the
+//! the menu starts with "Inbox (n)" and the five newest entries, all opening the
 //! Inbox app (it cannot be told yet which entry to show: that needs a channel into the running
 //! app). The tooltip says only how many ("3 for you"), never a title: bars may read the
 //! description as markup, and titles of foreign sources are `untrusted`. The item status is
@@ -209,8 +209,8 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     menu
 }
 
-/// While something waits: "Inbox (n)", the newest entries ("title · source") and "Open Inbox",
-/// then a separator. Empty when nothing waits; the Inbox app is still among the apps below.
+/// While something waits: "Inbox (n)" and the newest entries ("title · source"), then a
+/// separator. Empty when nothing waits; the Inbox app is still among the apps below.
 /// Every entry opens the Inbox app; jumping to one entry needs a channel into the app.
 fn inbox_section(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     let waiting = Waiting::of(snapshot);
@@ -219,7 +219,6 @@ fn inbox_section(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     }
     let mut section = vec![open_inbox(trf("Inbox ({n})", &[("n", &waiting.total())]))];
     section.extend(snapshot.inbox_newest.iter().map(|line| open_inbox(entry_label(line))));
-    section.push(open_inbox(trf("Open {app}", &[("app", &tr("Inbox"))])));
     section.push(MenuItem::Separator);
     section
 }
@@ -439,20 +438,19 @@ mod tests {
         assert_eq!((three, three.total()), (Waiting { for_me: 3, urgent: 1 }, 3), "approvals are not counted twice");
         let menu = build_menu(&waiting);
         assert_eq!(
-            labels(&menu)[..5],
+            labels(&menu)[..4],
             [
                 trf("Inbox ({n})", &[("n", &3)]),
                 "Delete event · Suite".to_string(),
                 "Backup failed · backup".to_string(),
-                trf("Open {app}", &[("app", &tr("Inbox"))]),
                 "-".to_string(),
             ]
         );
         assert!(
-            menu[..4].iter().all(|item| matches!(item, MenuItem::Standard(entry) if entry.enabled)),
+            menu[..3].iter().all(|item| matches!(item, MenuItem::Standard(entry) if entry.enabled)),
             "every inbox line can be clicked"
         );
-        assert_eq!(labels(&menu)[5], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
+        assert_eq!(labels(&menu)[4], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
         assert!(!labels(&menu).contains(&trf("Approvals ({n})", &[("n", &1)])), "no second number for approvals");
         assert_eq!(item_status(three), ksni::Status::NeedsAttention);
         assert_eq!(waiting_line(three), trf("{n} for you", &[("n", &3)]));
