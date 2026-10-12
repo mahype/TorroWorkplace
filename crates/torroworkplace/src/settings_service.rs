@@ -11,7 +11,9 @@
 //!
 //! The file is not looked up here but handed in ([`SettingsStore`]): the daemon uses the user's
 //! `settings.json`, tests a file in a temp directory, so no test reads or writes the real one
-//! (task A.0d).
+//! (task A.0d). Likewise only the daemon's store applies "start at login" to the system: a test
+//! store keeps the setting in its file only, so no test points the user's login item at a test
+//! program (task X.12).
 //!
 //! Changes go through one lock: requests run concurrently, and two targeted changes
 //! ([`SettingsStore::set`], [`SettingsStore::set_collection_shown`]) must not lose each other in
@@ -36,26 +38,31 @@ static WRITING: Mutex<()> = Mutex::new(());
 pub struct SettingsStore {
     /// `None` without a home directory: reads give the defaults, changes fail.
     file: Option<PathBuf>,
+    /// Whether a change of `start_at_login` is applied to the system's login item. Only the
+    /// daemon's store does: the entry points at the running program, and from a test that is the
+    /// test binary, which the next login would start instead of the daemon (task X.12).
+    applies_login_item: bool,
 }
 
 impl SettingsStore {
     /// The user's `settings.json` (`torro_core::settings::settings_file`), as the daemon uses it.
+    /// Changing `start_at_login` here writes or removes the system's login item.
     pub fn system() -> SettingsStore {
-        SettingsStore { file: settings::settings_file() }
+        SettingsStore { file: settings::settings_file(), applies_login_item: true }
     }
 
-    /// The settings in `file`, for tests. Turning `start_at_login` on would still write the real
-    /// autostart entry, so tests leave that setting alone.
+    /// The settings in `file`, for tests. `start_at_login` is only stored in `file`; the
+    /// system's login item is never touched, so tests may switch it freely.
     #[cfg(test)]
     pub fn at(file: PathBuf) -> SettingsStore {
-        SettingsStore { file: Some(file) }
+        SettingsStore { file: Some(file), applies_login_item: false }
     }
 
     /// No file at all, for tests that do not look at the settings: reads give the defaults,
-    /// changes fail.
+    /// changes fail. Like [`SettingsStore::at`], it never touches the system's login item.
     #[cfg(test)]
     pub fn without_file() -> SettingsStore {
-        SettingsStore { file: None }
+        SettingsStore { file: None, applies_login_item: false }
     }
 
     /// The settings as stored now; the defaults when there is no file or it cannot be read.
@@ -140,10 +147,18 @@ impl SettingsStore {
         }
         let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
         save_to(file, &new)?;
-        if old.start_at_login != new.start_at_login {
-            apply_start_at_login(new.start_at_login)?;
+        if let Some(enabled) = self.login_item_change(&old, &new) {
+            apply_start_at_login(enabled)?;
         }
         Ok(())
+    }
+
+    /// The state the system's login item must be switched to after `old` became `new`, or
+    /// `None` when it stays as it is: the setting did not change, or this store must not touch
+    /// the system (a test store, see [`SettingsStore::at`]). Kept apart from [`Self::change`] so
+    /// tests can check the decision without the system call.
+    fn login_item_change(&self, old: &Settings, new: &Settings) -> Option<bool> {
+        (self.applies_login_item && old.start_at_login != new.start_at_login).then_some(new.start_at_login)
     }
 }
 
@@ -884,6 +899,33 @@ mod tests {
         let (_dir, store) = store();
         store.forget_collections(&["work".into()]).expect("nothing to forget");
         assert!(!file_exists(&store));
+    }
+
+    #[test]
+    fn a_test_store_switches_start_at_login_without_touching_the_login_item() {
+        let (_dir, store) = store();
+        let (off, on) = (Settings::default(), Settings { start_at_login: true, ..Settings::default() });
+        assert_eq!(store.login_item_change(&off, &on), None, "a test store never reaches the system");
+        assert_eq!(SettingsStore::without_file().login_item_change(&off, &on), None);
+
+        // Through the real path of a change: stored in the file, nothing else.
+        store.set(SettingKey::StartAtLogin, &json!(true)).expect("on");
+        assert!(store.current().start_at_login);
+        store.set(SettingKey::StartAtLogin, &json!(false)).expect("off");
+        assert!(!store.current().start_at_login);
+    }
+
+    #[test]
+    fn the_daemons_store_applies_only_a_changed_start_at_login() {
+        // Built like `system()` but on a temp file, so the decision is checked without a call.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore { file: Some(dir.path().join("settings.json")), applies_login_item: true };
+        assert!(SettingsStore::system().applies_login_item);
+        let (off, on) = (Settings::default(), Settings { start_at_login: true, ..Settings::default() });
+        assert_eq!(store.login_item_change(&off, &on), Some(true));
+        assert_eq!(store.login_item_change(&on, &off), Some(false));
+        let german = Settings { language: Language::German, ..on.clone() };
+        assert_eq!(store.login_item_change(&on, &german), None, "start at login did not change");
     }
 
     #[test]
