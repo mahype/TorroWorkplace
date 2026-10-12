@@ -110,6 +110,10 @@ pub struct Palette {
     pub line: Color,
     /// Borders of buttons, inputs, chips and menus (translucent).
     pub line_strong: Color,
+    /// The border of a chosen chip and of the active segment (translucent): clearly stronger than
+    /// [`Palette::line_strong`], so a choice reads at a glance, and weaker than
+    /// [`Palette::focus_ring`], so "chosen" never looks like "focused". Neutral, never red.
+    pub line_selected: Color,
     /// Keyboard focus: a 2-px ring with 1 px gap (translucent, never red).
     pub focus_ring: Color,
     /// Torro red: only the primary button, today, the now line and the app logo.
@@ -220,6 +224,7 @@ const DARK: Palette = Palette {
     text_3: hex(0x8A8F98),
     line: white(0.06),
     line_strong: white(0.10),
+    line_selected: white(0.28),
     focus_ring: white(0.35),
     accent: color(TORRO_RED),
     on_accent: Color::WHITE,
@@ -249,6 +254,7 @@ const LIGHT: Palette = Palette {
     text_3: hex(0x62666D),
     line: black(0.07),
     line_strong: black(0.11),
+    line_selected: black(0.32),
     focus_ring: black(0.5),
     accent: color(TORRO_RED),
     on_accent: Color::WHITE,
@@ -566,6 +572,25 @@ mod tests {
         assert_eq!((dark.tint, light.tint), (0.18, 0.14));
         assert_eq!((dark.line.a, dark.line_strong.a, dark.focus_ring.a), (0.06, 0.10, 0.35));
         assert_eq!((light.line.a, light.line_strong.a, light.focus_ring.a), (0.07, 0.11, 0.5));
+        assert_eq!((dark.line_selected.a, light.line_selected.a), (0.28, 0.32));
+    }
+
+    #[test]
+    fn a_chosen_edge_is_stronger_than_a_frame_and_weaker_than_focus() {
+        // The edge of a chosen chip sits on `selected`, the chip on `panel` or `menu` (dialogs).
+        // "Stronger" is measured as the distance from 1:1 (no difference at all): at least three
+        // times that of a plain frame.
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            for (name, surface) in [("selected", p.selected), ("panel", p.panel), ("menu", p.menu)] {
+                let ratio = |edge: Color| over(edge, surface).relative_contrast(surface);
+                let (frame, chosen, focus) = (ratio(p.line_strong), ratio(p.line_selected), ratio(p.focus_ring));
+                assert!(
+                    chosen - 1.0 >= 3.0 * (frame - 1.0),
+                    "{mode}: chosen edge on {name} {chosen:.2} vs frame {frame:.2}"
+                );
+                assert!(chosen < focus, "{mode}: chosen edge on {name} reads like focus");
+            }
+        }
     }
 
     #[test]

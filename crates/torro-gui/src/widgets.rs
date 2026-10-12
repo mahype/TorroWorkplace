@@ -1,6 +1,7 @@
-//! Building blocks of a Linear-style window: buttons, sidebar rows, list rows, group heads, menus,
-//! floating cards, chips, property rows (also with the name in front), label chips, state pills,
-//! progress bars, settings groups and the empty, loading and error states.
+//! Building blocks of a Linear-style window: buttons (also busy), sidebar rows, list rows, group
+//! heads, menus, floating cards, chips (also to choose), property rows (also with the name in
+//! front), label chips, state pills, progress bars, settings groups and the empty, loading and
+//! error states.
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -275,6 +276,37 @@ pub fn text_button<'a, M: Clone + 'a>(
         .padding(style::BUTTON_PADDING)
         .style(style)
         .on_press_maybe(on_press)
+        .into()
+}
+
+/// A [`text_button`] while the action it started runs ("Creating…", "Saving…"): the same size and
+/// `style` (usually `style::button::primary`), the label `label` from the caller, led by the
+/// [`Icon::RefreshCw`] arrows (14) as a quiet "working" sign. It has no message, so a second click
+/// does nothing, yet it keeps the full look of `style` (`style::button::busy`) instead of the faded
+/// disabled one, so it reads as working, not as unavailable. Nothing moves (the design skill: no
+/// spinners); the label says what is happening.
+///
+/// Show it instead of the normal button while the request is out, and the normal one again when
+/// the answer is there:
+///
+/// ```ignore
+/// if self.saving {
+///     widgets::busy_button(tr("Creating…"), style::button::primary)
+/// } else {
+///     widgets::text_button(None, tr("Create list"), style::button::primary, Some(Message::Save))
+/// }
+/// ```
+pub fn busy_button<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, style: ButtonStyle) -> Element<'a, M> {
+    let content = row![
+        button_icon(Icon::RefreshCw, icon::SIZE_SM, style),
+        typo::text(typo::CAPTION, label).wrapping(Wrapping::None)
+    ]
+    .spacing(ICON_GAP)
+    .align_y(Alignment::Center);
+    button(container(content).center_y(Fill))
+        .height(size::CONTROL_SM)
+        .padding(style::BUTTON_PADDING)
+        .style(style::button::busy(style))
         .into()
 }
 
@@ -934,7 +966,9 @@ pub fn popover<'a, M: 'a>(
 
 /// A property chip under a title in the medium layout ("○ Open", "📅 Today, 16:00"): 26 high,
 /// `raised` with a `line_strong` frame, `mark` 14 in `text_3`, label `META`. `on_press` opens the
-/// property's editor. An empty label gives an icon-only chip ("…").
+/// property's editor; such a chip is a button with hover and pressed states
+/// (`style::button::chip`), without one it is a plain label. An empty label gives an icon-only
+/// chip ("…"). For a chip that is *chosen* or not (filters, labels), use [`choice_chip`].
 pub fn chip<'a, M: Clone + 'a>(
     mark: Option<Mark>,
     label: impl IntoFragment<'a>,
@@ -970,17 +1004,108 @@ fn chip_with<'a, M: Clone + 'a>(
     if !label.is_empty() {
         content = content.push(typo::text(typo::META, label).wrapping(Wrapping::None));
     }
-    let chip =
-        container(content).center_y(style::CHIP_HEIGHT).padding(style::CHIP_PADDING).style(style::container::chip);
     match on_press {
-        Some(message) => mouse_area(chip).on_press(message).interaction(mouse::Interaction::Pointer).into(),
-        None => chip.into(),
+        // A button, not a mouse area around a container: only a button shows hover and press,
+        // and without them a click on a chip seemed to do nothing (task G.10).
+        Some(message) => button(container(content).center_y(Fill))
+            .height(style::CHIP_HEIGHT)
+            .padding(style::CHIP_PADDING)
+            .style(style::button::chip)
+            .on_press(message)
+            .into(),
+        None => container(content)
+            .center_y(style::CHIP_HEIGHT)
+            .padding(style::CHIP_PADDING)
+            .style(style::container::chip)
+            .into(),
     }
 }
 
 /// Chips side by side with 6 between them, wrapping onto more lines when they do not fit.
 pub fn chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
     row(chips).spacing(ICON_GAP).wrap().vertical_spacing(ICON_GAP).into()
+}
+
+/// A chip that is chosen or not: a filter template ("Bugs"), an assignee ("Me"), a milestone, one
+/// of several labels. 28 high ([`size::CONTROL_SM`]), radius 6, `mark` in front, `label` in
+/// `CAPTION`; look and states from `style::button::choice_chip(on)`.
+///
+/// - Not chosen: `raised`, `line_strong` frame, `text_2`; hover `hover` + `text`, pressed
+///   `selected`, both with the stronger `line_selected` frame.
+/// - Chosen (`on`): `selected`, `line_selected` frame, `text`, and a check mark (14) before the
+///   label. An icon mark ([`Mark::Icon`]) gives its place to the check, so the chip keeps its width
+///   and the row does not reflow; any other mark (a colour dot, a ring) stays after the check,
+///   because its colour carries meaning.
+/// - `None` for `on_press`: disabled, 40 %. Neutral in every state, never red.
+///
+/// Marks: an icon at 14, a [`Mark::Dot`] at 8 (a label's colour, use [`label_choice`] for GitHub
+/// labels), rings and check boxes at 12. Lay several out with [`chip_row`]. Single or multiple
+/// choice is the caller's business: it decides `on` and what `on_press` does.
+///
+/// ```ignore
+/// let chips = Template::ALL.iter().map(|&t| {
+///     widgets::choice_chip(t.label(), Some(Mark::Icon(t.icon())), self.template == Some(t), Some(Message::Template(t)))
+/// });
+/// widgets::chip_row(chips.collect())
+/// ```
+pub fn choice_chip<'a, M: Clone + 'a>(
+    label: impl IntoFragment<'a>,
+    mark: Option<Mark>,
+    on: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let tone = if on { Tone::Text } else { Tone::Text2 };
+    let mark = match mark {
+        // The check takes the place of a decorative icon: same width, so the row does not reflow.
+        Some(Mark::Icon(_)) if on => None,
+        Some(Mark::Dot(colour)) => Some(color_dot(colour, Scale::Row.dot())),
+        Some(other) => Some(mark_view(other, Scale::Small, tone)),
+        None => None,
+    };
+    choice_chip_with(mark, label, on, on_press)
+}
+
+/// A [`choice_chip`] for a GitHub label: the label's colour as an 8-px dot, then the name. `hex`
+/// is `#RRGGBB` or GitHub's `d73a4a` without `#`; an unreadable one gives a neutral dot in `text_3`.
+/// The colour is only the dot, the name carries the meaning (as in [`label_chip`]); chosen adds the
+/// check mark in front of the dot. For "with label" and "without label" pass the same chip twice
+/// with different messages; the caller keeps which labels are chosen.
+///
+/// ```ignore
+/// widgets::chip_row(repo.labels.iter().map(|l| {
+///     widgets::label_choice(&l.color, &l.name, self.labels.contains(&l.name), Some(Message::Label(l.name.clone())))
+/// }).collect())
+/// ```
+pub fn label_choice<'a, M: Clone + 'a>(
+    hex: &str,
+    name: impl IntoFragment<'a>,
+    on: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    choice_chip_with(Some(label_dot(hex, Scale::Row.dot())), name, on, on_press)
+}
+
+/// The chip of [`choice_chip`] with `lead` (already drawn) after the check mark of a chosen chip.
+fn choice_chip_with<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    on: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
+    if on {
+        content = content.push(toned(Icon::Check, icon::SIZE_SM, Tone::Text));
+    }
+    if let Some(lead) = lead {
+        content = content.push(lead);
+    }
+    content = content.push(typo::text(typo::CAPTION, label).wrapping(Wrapping::None));
+    button(container(content).center_y(Fill))
+        .height(size::CONTROL_SM)
+        .padding(style::CHIP_PADDING)
+        .style(style::button::choice_chip(on))
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// A list label in a row ("● Work"): 20 high, round, `line_strong` frame, dot 6 in `colour`,
@@ -1152,17 +1277,7 @@ fn prop_text<'a, M: 'a>(
 /// widgets::label_chip_row(issue.labels.iter().map(|l| widgets::label_chip(&l.color, &l.name)).collect())
 /// ```
 pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<'a, M> {
-    let edge = Scale::Small.dot();
-    let dot: Element<'a, M> = match label_colour(hex) {
-        Some(colour) => color_dot(colour, edge),
-        None => container(blank().width(edge).height(edge))
-            .style(move |t| container::Style {
-                background: Some(Background::Color(palette(t).text_3)),
-                border: border::rounded(edge / 2.0),
-                ..container::Style::default()
-            })
-            .into(),
-    };
+    let dot = label_dot(hex, Scale::Small.dot());
     let content = row![dot, typo::text(typo::CAPTION, name).wrapping(Wrapping::None)]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
@@ -1184,6 +1299,21 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
 /// fit (the value of a "Labels" [`prop_line`]).
 pub fn label_chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
     row(chips).spacing(space::XS).wrap().vertical_spacing(space::XS).into()
+}
+
+/// A dot of `edge` in the colour of a label (`hex` with or without `#`); an unreadable colour gives
+/// a neutral dot in `text_3` of the current mode.
+fn label_dot<'a, M: 'a>(hex: &str, edge: f32) -> Element<'a, M> {
+    match label_colour(hex) {
+        Some(colour) => color_dot(colour, edge),
+        None => container(blank().width(edge).height(edge))
+            .style(move |t| container::Style {
+                background: Some(Background::Color(palette(t).text_3)),
+                border: border::rounded(edge / 2.0),
+                ..container::Style::default()
+            })
+            .into(),
+    }
 }
 
 /// The colour of a label from its `hex`, with or without `#`.
@@ -1677,6 +1807,14 @@ mod tests {
                 vec![text_button(None, "Open", style::button::secondary, None)],
             ),
             chip_row(vec![chip(Some(Mark::Icon(Icon::Calendar)), "Today, 16:00", Some(Msg::Go))]),
+            chip_row(vec![
+                choice_chip("Bugs", Some(Mark::Icon(Icon::Bug)), true, Some(Msg::Go)),
+                choice_chip("Me", None, false, Some(Msg::Go)),
+                choice_chip("Work", Some(Mark::Dot(p.calendar[0])), true, None),
+                label_choice("d73a4a", "bug", true, Some(Msg::Go)),
+                label_choice("not a colour", "ui", false, None),
+            ]),
+            busy_button("Creating…", style::button::primary),
             pill(Some(p.calendar[1]), "Personal"),
             prop_row(Some(Mark::Icon(Icon::Bell)), typo::text(typo::BODY, "15:45"), Some(Msg::Go)),
             prop_section("Properties", vec![]),

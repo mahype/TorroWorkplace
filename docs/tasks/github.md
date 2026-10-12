@@ -463,7 +463,7 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 - Abnahme: Tests aus aufgezeichneten GraphQL-Antworten (Fixtures), Rechte-Fälle, MCP-Tools bauen die Requests.
 
 ### G.10 Rückmeldung: Chips, Segmente und Knöpfe zeigen ihren Zustand
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{style,widgets}.rs`,
   `crates/torro-gui/examples/gallery.rs`
 - Befund vom Nutzer: Im Filterlisten-Dialog merkt man beim Klicken nicht, dass etwas passiert. Zuerst per
