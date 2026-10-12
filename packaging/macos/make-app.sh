@@ -21,7 +21,10 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/$bin"
 chmod +x "$app/Contents/MacOS/$bin"
 
-sed -e "s|@TITLE@|$title|g" -e "s|@BIN@|$bin|g" -e "s|@APPID@|$appid|g" -e "s|@VERSION@|$version|g" \
+# CFBundleVersion and CFBundleShortVersionString allow only digits and dots: 0.2.0-rc.1 becomes 0.2.0.
+bundle_version="${version%%-*}"
+
+sed -e "s|@TITLE@|$title|g" -e "s|@BIN@|$bin|g" -e "s|@APPID@|$appid|g" -e "s|@VERSION@|$bundle_version|g" \
   "$here/Info.plist.in" > "$app/Contents/Info.plist"
 
 # Optional icon: a 1024x1024 PNG becomes an .icns through sips + iconutil (both ship with macOS).
