@@ -308,6 +308,10 @@ pub fn demo_data() -> Data {
             ],
             scopes: None,
         },
+        // Two mail accounts (task M3.4), so the agents' "Mail accounts" have something to choose
+        // from. Their ids are `mail:<address>`, as the core makes them.
+        mail_account("anna@mailbox.org", "imap.mailbox.org", now - Duration::minutes(2)),
+        mail_account("anna@work.example.net", "imap.work.example.net", now - Duration::minutes(6)),
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
         id: id.into(),
@@ -388,6 +392,23 @@ pub fn demo_data() -> Data {
     }
 }
 
+/// A connected mail account of the demo: no calendars or lists, as long as it is mail only.
+fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> AccountInfo {
+    AccountInfo {
+        id: format!("mail:{address}"),
+        kind: "mail".into(),
+        label: address.into(),
+        state: AccountState::Connected {
+            server: format!("https://{server}"),
+            login_name: address.into(),
+            last_sync: Some(last_sync),
+            problem: None,
+        },
+        collections: Vec::new(),
+        scopes: None,
+    }
+}
+
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
 /// and the nightly build muted, as the demo's sources list has it.
 fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
@@ -425,6 +446,10 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     set(&mut codex, Area::Accounts, Level::NoAccess, false);
     set(&mut codex, Area::Settings, Level::NoAccess, false);
     set(&mut codex, Area::Inbox, Level::Write, true);
+    // Mail from one account, which it may send from without asking: the page's warning shows.
+    set(&mut codex, Area::Mail, Level::Write, false);
+    codex.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
+    codex.outbound = Outbound::Free;
     codex.calendars = Selection::Only(first_calendar.into_iter().collect());
     codex.github_repos = Selection::Only(vec!["anna-dev/torro-workplace".into(), "acme".into()]);
     codex.inbox_sources = Selection::Only(vec!["agent:codex".into(), "script:backup".into()]);
@@ -762,6 +787,20 @@ mod tests {
             demo_answer(&connect("anything"), &data),
             Some(Response::Connected { calendars: true, tasks: true, .. })
         ));
+    }
+
+    #[test]
+    fn the_demo_has_two_mail_accounts_and_an_agent_that_sends_freely() {
+        let data = demo_data();
+        let mail: Vec<&str> =
+            data.accounts.iter().filter(|account| account.kind == "mail").map(|account| account.id.as_str()).collect();
+        assert_eq!(mail, ["mail:anna@mailbox.org", "mail:anna@work.example.net"]);
+        assert!(mail.iter().all(|id| torro_mail::is_account_id(id)), "ids as the core makes them");
+        let codex = data.clients.iter().find(|client| client.kind == "codex").expect("Codex");
+        assert!(super::super::agents::sends_freely(&codex.rights));
+        assert!(codex.rights.reaches_mail_account(mail[0]) && !codex.rights.reaches_mail_account(mail[1]));
+        let default = data.clients.iter().find(|client| client.kind == "claude-code").expect("Claude Code");
+        assert_eq!(default.rights.outbound, Outbound::WithApproval, "the templates ask");
     }
 
     #[test]
