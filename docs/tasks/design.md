@@ -535,7 +535,7 @@ R.1 ─┬─ R.2 ─┐
 - Abnahme: Icon-Test (alle Lucide, Strich 1.75) grün, Kontrasttest für `merged`, Galerie-Screenshot.
 
 ### R.2 Aufgaben-App: Aufbau, Kopf, Schnelleingabe, Liste
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** R.1 · **Dateien:** `crates/torrotasks/src/{app,list,glance}.rs`, `crates/torro-pim/src/demo.rs`
   (GitHub-Beispieleinträge mit `link`/`GitHubDetails`)
 - **Aufbau:** Breit (Inhalt ≥ 1320) drei Spalten: Liste `LIST` 460 **linksbündig** | Detail (Inhalt max. 640,

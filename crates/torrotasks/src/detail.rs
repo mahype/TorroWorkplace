@@ -17,7 +17,8 @@
 //! └──────────────────────────────┴────────────────┘ └────────────────────────────┘
 //! ```
 //!
-//! - [`Detail::head`]: 44 high with the path "List › Parent" (only the real hierarchy), ↑ ↓ to the
+//! - [`Detail::head`]: the row in the window's header bar (44, line below, split from the
+//!   list's head by the app) with the path "List › Parent" (only the real hierarchy), ↑ ↓ to the
 //!   previous/next task, "…" (Copy link, Open on GitHub / Open link, Delete task – never for a
 //!   GitHub item) and ✕; in narrow windows "‹ <list view>" instead of path and ✕.
 //! - [`Detail::main_column`]: title with check or GitHub state, for GitHub the line "state ·
@@ -29,8 +30,6 @@
 //!   Account, Repo, Assignees, Milestone, "Open on GitHub ↗". Values the model does not know yet
 //!   (reminder, repeat) are not shown, and nothing that cannot be set gets a placeholder row.
 //! - [`Detail::layer`]: the open property editor or the "…" menu, floating over the window.
-//! - [`Detail::panel`]: the older side panel of `torro_gui::panel`, built from the same pieces,
-//!   until the app places the pieces itself.
 //!
 //! Editing is as before: a click on a property opens its editor as a floating menu or card (due:
 //! Today, Tomorrow, Next week, No date and a field for any date such as `11.10.2026`, `today`).
@@ -54,7 +53,7 @@ use iced::widget::{button, checkbox, column, container, row, rule, scrollable, s
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::panel::{self, Panel};
+use torro_gui::panel;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{datetime, style, typo};
@@ -81,7 +80,6 @@ const INDENT: f32 = TITLE_MARK + space::M;
 const SECTION_GAP: f32 = space::XL + space::XS;
 
 /// How the detail is laid out; the app picks it from the window (`layout::of` and the room left).
-#[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then only the panel uses Chips"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
     /// Wide with room for three columns (list | main | properties): the properties stand in
@@ -851,8 +849,10 @@ impl Detail {
     // Views
     // -----------------------------------------------------------------------------------------
 
-    /// The head of the detail, 44 high with its 1-px line below (like the window's header bar),
-    /// over the main column and – in [`Fit::Columns`] – the properties column next to it.
+    /// The head of the detail: the row that stands in the window's header bar over the main
+    /// column and – in [`Fit::Columns`] – the properties column next to it. The app puts it there
+    /// (`app.rs`, R.2), so the header bar gives it its 44 height, its padding (16 left, 12 right;
+    /// 8 in narrow windows) and the line below, in line with the head of the list beside it.
     ///
     /// Left the path "○ Work › Parent task" (the list, or a GitHub item's repository, then the
     /// parent if there is one), right ↑ ↓ ([`Action::Previous`] / [`Action::Next`]), "…" (the
@@ -860,23 +860,6 @@ impl Detail {
     /// and ✕ give way to "‹ `back`" (closes, back to the list); `back` is the name of the list
     /// view the detail was opened from ("Today"). `anchor` is the one passed to
     /// [`Detail::layer`].
-    ///
-    /// ```ignore
-    /// let anchor = Anchor::new();
-    /// let p = palette(&self.theme());
-    /// let back = self.filter_name(&self.filter);
-    /// let main = d.main_column(fit, p, &anchor).map(Message::Detail);
-    /// let body: Element<_> = if fit == Fit::Columns {
-    ///     let account = torro_pim::account::account_of(&d.original.collection, &self.accounts, |a| a.id.as_str());
-    ///     let props = d.properties_column(account.map(|a| a.label.clone()), &anchor).map(Message::Detail);
-    ///     row![main, rule::vertical(1).style(style::rule), props].into()
-    /// } else {
-    ///     main
-    /// };
-    /// column![d.head(fit, back, &anchor).map(Message::Detail), body]
-    /// // and d.layer(&anchor) into the shell's overlay, as before.
-    /// ```
-    #[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then the panel is used"))]
     pub fn head<'a>(&'a self, fit: Fit, back: String, anchor: &Anchor) -> Element<'a, Message> {
         let narrow = fit == Fit::Narrow;
         let mut bar = if narrow {
@@ -889,18 +872,7 @@ impl Detail {
         if !narrow {
             bar = bar.push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Close)));
         }
-        // Padded like the window's header bar (16 left, 12 right; 8 in narrow windows), so the
-        // buttons line up with the ones above the list.
-        let padding = if narrow {
-            Padding::new(0.0).left(space::S).right(space::S)
-        } else {
-            Padding::new(0.0).left(space::L).right(space::M)
-        };
-        let bar = container(bar.spacing(space::S).align_y(Alignment::Center))
-            .width(Fill)
-            .center_y(size::HEADER - LINE)
-            .padding(padding);
-        column![bar, rule::horizontal(LINE).style(style::rule)].into()
+        bar.spacing(space::S).align_y(Alignment::Center).into()
     }
 
     /// The main column of the detail, filling its room and scrolling: 32 around (16 in
@@ -911,7 +883,6 @@ impl Detail {
     /// `fit` is [`Fit::Columns`]; the notes; "Sub-tasks" with progress, "Hide completed" and
     /// "Add sub-task"; for pull requests "Checks" and "Reviews". `palette` is the current
     /// theme's (`palette(&self.theme())`), for the coloured state icons in chips and pill.
-    #[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then the panel is used"))]
     pub fn main_column<'a>(&'a self, fit: Fit, palette: &'static Palette, anchor: &Anchor) -> Element<'a, Message> {
         let content = column![self.title_block(), self.body(fit, Some(palette), anchor)].max_width(size::FORM_MAX);
         let around = if fit == Fit::Narrow { space::L } else { space::XXL };
@@ -932,7 +903,6 @@ impl Detail {
     /// title, `torro_pim::account::account_of`); `None` leaves the row out. A click on Status,
     /// Priority, Due, List or Parent edits it; the editors float in [`Detail::layer`] next to
     /// `anchor`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "R.2 places the pieces; until then the panel is used"))]
     pub fn properties_column<'a>(&'a self, account: Option<String>, anchor: &Anchor) -> Element<'a, Message> {
         let mut blocks = column![];
         for (i, (title, props)) in self.property_blocks(account.is_some()).into_iter().enumerate() {
@@ -980,23 +950,6 @@ impl Detail {
             Editor::More => (self.more_menu(), Align::End),
         };
         Some(widgets::floating(anchor, Placement::Below(align), card, Message::CloseEditor))
-    }
-
-    /// The task as the older side panel (`torro_gui::panel`), built from the same pieces as
-    /// [`Detail::main_column`] (with chips) and with ↑ ↓ "…" next to its ✕; no footer. The path
-    /// is "List › Parent" as in [`Detail::head`]; `_filter` is no longer shown and only kept so
-    /// callers build unchanged. Without the theme at hand, chips and pill show neutral icons.
-    /// `wrap` turns this module's messages into the app's.
-    pub fn panel<'a, M: Clone + 'a>(
-        &'a self,
-        _filter: Option<String>,
-        anchor: &Anchor,
-        wrap: fn(Message) -> M,
-    ) -> Panel<'a, M> {
-        let actions = self.head_buttons(anchor).into_iter().map(|button| button.map(wrap)).collect();
-        let body = panel::inset(self.body(Fit::Chips, None, anchor));
-        panel::panel(self.path().map(wrap), self.title_block().map(wrap), body.map(wrap), wrap(Message::Close))
-            .actions(actions)
     }
 
     /// "○ Work › Parent task": the place and, for a sub-task, its parent.
@@ -1764,8 +1717,6 @@ mod tests {
     use std::sync::Arc;
 
     use chrono::NaiveDateTime;
-    use iced::widget::Space;
-    use torro_gui::layout::SizeClass;
     use torro_pim::CollectionKind;
     use torro_pim::model::GitHubLabel;
 
@@ -2415,19 +2366,6 @@ mod tests {
             let _ = detail.properties_column(Some("anna@cloud.example.org".into()), &anchor);
             let _ = detail.property_chips(Palette::dark(), &anchor);
             assert!(detail.layer(&anchor).is_some(), "the \"…\" menu floats");
-        }
-    }
-
-    #[test]
-    fn the_panel_is_the_same_for_every_size_and_closes_with_its_x() {
-        let child = Todo { parent: Some("t1".into()), ..todo("c", "Child") };
-        let mut detail = detail(&todo("t1", "a"), &[child]);
-        detail.update(Message::Open(Editor::List));
-        let anchor = Anchor::new();
-        for class in [SizeClass::Mini, SizeClass::Strip, SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
-            let panel = detail.panel(Some("Today".into()), &anchor, |message| message);
-            let placed = panel::place(class, Space::new(), Some(panel), detail.layer(&anchor));
-            assert!(placed.overlay.is_some(), "{class:?}: the open editor is always on top");
         }
     }
 

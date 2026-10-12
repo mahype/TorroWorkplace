@@ -8,8 +8,14 @@
 //!   first, then today, then by due date – as many as fit, each with its round check, title and
 //!   due date (an overdue one with the dot in front). The rest is counted as "+4 more". Nothing
 //!   open: a calm "All done for today".
+//!   A tall tile (room for [`HEADS_FROM`] rows or more) sets the rows apart with quiet heads –
+//!   "Overdue", "Today", "Upcoming" – where the queue spans more than one of them
+//!   ([`mini_lines`]).
 //! - **Strip** ([`strip`]): the same numbers at the left, the same tasks as chips (check and
-//!   title) filling the rest in as many lines as the height allows; what does not fit is "+4".
+//!   title) on one line; what does not fit is "+4".
+//!
+//! GitHub issues and pull requests show their type symbol in the colour of their state instead of
+//! the check (as in the list, `list::github_mark`): GitHub items are not ticked off here.
 //!
 //! Both are displays, not small apps: no header, sidebar, menu, form or dialog. The one thing to
 //! do is the purpose of the tile – tick a task off by its check (`Message::ToggleDone`, the same
@@ -35,7 +41,7 @@ use torro_gui::{style, widgets};
 use torro_pim::{EventTime, Todo};
 
 use crate::app::Message;
-use crate::list::due_text;
+use crate::list::{self, due_text};
 
 /// A chip is never wider than this, so one long title does not push the others out.
 const CHIP_MAX: f32 = size::SIDEBAR;
@@ -51,6 +57,8 @@ const FIGURE_LEVELS: [typo::Level; 2] = [typo::DISPLAY.tabular(), typo::TITLE.ta
 const DOT: f32 = space::S;
 /// The height of a row of the mini tile: a control, so the check is a 28-high click target.
 const ROW: f32 = size::CONTROL_SM;
+/// A mini tile with room for this many rows is tall: it sets its rows apart with quiet heads.
+pub const HEADS_FROM: usize = 6;
 
 /// What the glance gets to draw.
 pub struct GlanceData<'a> {
@@ -137,6 +145,72 @@ pub fn queue(todos: &[Todo], today: NaiveDate) -> Vec<Pick> {
             .then_with(|| todos[a].summary.to_lowercase().cmp(&todos[b].summary.to_lowercase()))
     });
     picks.into_iter().map(|(index, due)| Pick { index, overdue: due.date() < today }).collect()
+}
+
+/// Where a task of the queue stands: the quiet heads of a tall mini tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Band {
+    Overdue,
+    Today,
+    Upcoming,
+}
+
+impl Band {
+    /// The band of a task with a due date; a task without one counts as upcoming (the queue has
+    /// none).
+    pub fn of(todo: &Todo, today: NaiveDate) -> Band {
+        match todo.due.map(|due| local(due).date().cmp(&today)) {
+            Some(Ordering::Less) => Band::Overdue,
+            Some(Ordering::Equal) => Band::Today,
+            _ => Band::Upcoming,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Band::Overdue => tr("Overdue"),
+            Band::Today => tr("Today"),
+            Band::Upcoming => tr("Upcoming"),
+        }
+    }
+}
+
+/// A line of the mini tile below the numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MiniLine {
+    /// The quiet head of a band.
+    Head(Band),
+    /// The task at this place of the queue.
+    Row(usize),
+}
+
+/// The lines of a mini tile with room for `fit` lines, for a queue whose tasks fall into `bands`
+/// (in queue order), and how many tasks are left out for "+4 more" (which takes a line of its
+/// own). With `heads` every band gets a head in front of its first row – never a head without a
+/// row after it –; without, it is [`shown_rows`].
+pub fn mini_lines(bands: &[Band], fit: usize, heads: bool) -> (Vec<MiniLine>, Option<usize>) {
+    let with_heads = |shown: usize| {
+        let mut lines = Vec::new();
+        for (n, band) in bands.iter().take(shown).enumerate() {
+            if heads && (n == 0 || bands[n - 1] != *band) {
+                lines.push(MiniLine::Head(*band));
+            }
+            lines.push(MiniLine::Row(n));
+        }
+        lines
+    };
+    if !heads {
+        let (shown, more) = shown_rows(bands.len(), fit);
+        return (with_heads(shown), more);
+    }
+    for shown in (0..=bands.len()).rev() {
+        let lines = with_heads(shown);
+        let more = bands.len() - shown;
+        if lines.len() + usize::from(more > 0) <= fit {
+            return (lines, (more > 0).then_some(more));
+        }
+    }
+    (Vec::new(), (!bands.is_empty()).then_some(bands.len()))
 }
 
 /// The parts of the numbers line as `(text, overdue)`: "3 overdue", "5 today"; a part that is
@@ -246,6 +320,28 @@ fn check(index: usize, color: Color, above: f32, left: f32, right: f32) -> Eleme
         .on_toggle(move |_| Message::ToggleDone(index));
     let target = container(circle).padding(Padding { top: above, right, bottom: above, left });
     mouse_area(target).on_press(Message::ToggleDone(index)).interaction(mouse::Interaction::Pointer).into()
+}
+
+/// What leads a task: a GitHub item's type symbol in the colour of its state (not a button), else
+/// the [`check`]; both take the same room.
+fn lead(index: usize, todo: &Todo, color: Color, above: f32, left: f32, right: f32) -> Element<'static, Message> {
+    match list::github_of(todo) {
+        Some(details) => {
+            let (which, tone) = list::github_mark(details);
+            container(list::toned(which, style::CHECK_SIZE, tone))
+                .padding(Padding { top: above, right, bottom: above, left })
+                .into()
+        }
+        None => check(index, color, above, left, right),
+    }
+}
+
+/// A quiet head of a tall mini tile: the band's name in `CAPTION` and `text_3`, as high as a row.
+fn band_head(band: Band) -> Element<'static, Message> {
+    container(typo::text(typo::CAPTION, band.label()).style(theme::text_3).wrapping(Wrapping::None))
+        .height(ROW)
+        .align_bottom(ROW)
+        .into()
 }
 
 /// A line in `META` and `text_3`, never wrapped.
@@ -365,7 +461,7 @@ fn compact_dates(shown: &[Pick], data: &GlanceData<'_>, width: f32) -> bool {
 fn row_view(pick: Pick, data: &GlanceData<'_>, width: f32, compact: bool) -> Element<'static, Message> {
     let todo = &data.todos[pick.index];
     let above = (ROW - style::CHECK_SIZE) / 2.0;
-    let check = check(pick.index, color_of(data, todo), above, 0.0, space::S);
+    let check = lead(pick.index, todo, color_of(data, todo), above, 0.0, space::S);
     let due = todo.due.map(|due| due_label(due, data.today, compact));
     let title_width =
         due.as_deref().map_or(width - style::CHECK_SIZE - space::S, |due| title_room(width, due, pick.overdue));
@@ -403,10 +499,17 @@ pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     }
     content = content.push(Space::new().height(space::S));
 
-    let (shown, more) = shown_rows(picks.len(), rows_that_fit(size.height, data.error.is_some()));
+    let fit = rows_that_fit(size.height, data.error.is_some());
+    let bands: Vec<Band> = picks.iter().map(|pick| Band::of(&data.todos[pick.index], data.today)).collect();
+    let heads = fit >= HEADS_FROM && bands.windows(2).any(|pair| pair[0] != pair[1]);
+    let (lines, more) = mini_lines(&bands, fit, heads);
+    let shown = lines.iter().filter(|line| matches!(line, MiniLine::Row(_))).count();
     let compact = compact_dates(&picks[..shown], data, width);
-    for pick in &picks[..shown] {
-        content = content.push(row_view(*pick, data, width, compact));
+    for line in lines {
+        content = content.push(match line {
+            MiniLine::Head(band) => band_head(band),
+            MiniLine::Row(n) => row_view(picks[n], data, width, compact),
+        });
     }
     if let Some(more) = more {
         let label = trf("+{n} more", &[("n", &more)]);
@@ -431,7 +534,7 @@ pub fn chip_width(title: &str, max: f32) -> f32 {
 fn chip(pick: Pick, data: &GlanceData<'_>, width: f32) -> Element<'static, Message> {
     let todo = &data.todos[pick.index];
     let above = (style::CHIP_HEIGHT - style::CHECK_SIZE) / 2.0;
-    let check = check(pick.index, color_of(data, todo), above, style::CHIP_PADDING.left, space::XS);
+    let check = lead(pick.index, todo, color_of(data, todo), above, style::CHIP_PADDING.left, space::XS);
     let title_width = width - chip_lead() - style::CHIP_PADDING.right - 2.0 * FRAME;
     let title =
         typo::text(typo::CAPTION, ellipsize(&todo.summary, typo::CAPTION, title_width)).wrapping(Wrapping::None);
@@ -470,7 +573,7 @@ fn numbers_column(parts: &[(String, bool)], width: f32) -> Element<'static, Mess
 }
 
 /// The strip for a window of `size`: at the left the numbers (or the calm line), beside them the
-/// next open tasks as chips in as many lines as fit, and "+4" for those that do not.
+/// next open tasks as chips on one line, and "+4" for those that do not fit.
 pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     let inner = (size.width - 2.0 * space::M).max(0.0);
     let counts = counts(data.todos, data.today);
@@ -497,7 +600,8 @@ pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     let more_room = text_width(&more_label(picks.len()), typo::META) + space::S;
     let widths: Vec<f32> =
         picks.iter().map(|pick| chip_width(&data.todos[pick.index].summary, CHIP_MAX).min(avail)).collect();
-    let (lines, left_out) = flow(&widths, avail, lines_that_fit(size.height), space::XS, more_room);
+    // One line of chips: the strip is a ticker, not a wall (R.2).
+    let (lines, left_out) = flow(&widths, avail, lines_that_fit(size.height).min(1), space::XS, more_room);
 
     let mut chips = column![].spacing(space::XS);
     let last = lines.len().saturating_sub(1);
@@ -728,6 +832,61 @@ mod tests {
         let parts = count_parts(Counts { overdue: 3, today: 5 });
         assert_eq!(figure_level(&parts, 216.0), FIGURE_LEVELS[0], "a 240-wide tile has room for both");
         assert_eq!(figure_level(&parts, 100.0), FIGURE_LEVELS[1]);
+    }
+
+    #[test]
+    fn tasks_fall_into_bands_by_their_day() {
+        assert_eq!(Band::of(&due("x", 9), today()), Band::Overdue);
+        assert_eq!(Band::of(&at("x", 11, 6), today()), Band::Today, "earlier today is still today");
+        assert_eq!(Band::of(&due("x", 12), today()), Band::Upcoming);
+        assert_eq!(Band::Overdue.label(), tr("Overdue"));
+    }
+
+    #[test]
+    fn a_tall_tile_heads_each_band_and_never_ends_on_a_head() {
+        use Band::{Overdue as O, Today as T, Upcoming as U};
+        use MiniLine::{Head, Row};
+        let bands = [O, O, T, U, U];
+        // Everything fits: three heads and five rows.
+        assert_eq!(
+            mini_lines(&bands, 8, true),
+            (vec![Head(O), Row(0), Row(1), Head(T), Row(2), Head(U), Row(3), Row(4)], None)
+        );
+        // One line short: "Upcoming" would need its head, a row and the count, so its rows go.
+        assert_eq!(mini_lines(&bands, 7, true), (vec![Head(O), Row(0), Row(1), Head(T), Row(2)], Some(2)));
+        // A head is only there with its first row.
+        assert_eq!(mini_lines(&bands, 5, true), (vec![Head(O), Row(0), Row(1)], Some(3)));
+        assert_eq!(mini_lines(&bands, 0, true), (vec![], Some(5)));
+        assert_eq!(mini_lines(&[], 6, true), (vec![], None));
+        // Without heads it is the plain rows of `shown_rows`.
+        assert_eq!(mini_lines(&bands, 3, false), (vec![Row(0), Row(1)], Some(3)));
+        assert_eq!(mini_lines(&bands, 5, false), ((0..5).map(Row).collect(), None));
+    }
+
+    #[test]
+    fn github_items_build_with_their_symbol_in_mini_and_strip() {
+        use torro_pim::model::{GitHubDetails, GitHubKind, GitHubState, Link};
+        let details = GitHubDetails {
+            kind: GitHubKind::PullRequest,
+            state: GitHubState::Open,
+            labels: Vec::new(),
+            assignees: Vec::new(),
+            milestone: None,
+            milestone_due: None,
+            draft: false,
+            review: None,
+            checks: None,
+            conflict: false,
+        };
+        let pull = Todo {
+            link: Some(Link { github: Some(details), ..Link::github("mahype/TorroWorkplace", 131) }),
+            ..due("Add workspace templates to the tray menu", 11)
+        };
+        let todos = vec![pull, due("late", 9), due("later", 14)];
+        for size in [Size::new(240.0, 160.0), Size::new(320.0, 480.0), Size::new(1200.0, 200.0)] {
+            let _ = mini(&data(&todos), size);
+            let _ = strip(&data(&todos), size);
+        }
     }
 
     fn data(todos: &[Todo]) -> GlanceData<'_> {

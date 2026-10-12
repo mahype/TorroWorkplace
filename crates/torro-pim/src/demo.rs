@@ -4,13 +4,18 @@
 //! closes. The sample content (task K.2 in `docs/tasks/kalender-aufgaben.md`) is built
 //! around "today", so the week view is never empty. It spreads over two accounts (task M1.1),
 //! a work and a home Nextcloud, so the apps can show calendars and lists grouped by account.
+//!
+//! The list "Tasks" also holds GitHub issues and pull requests of `mahype/TorroWorkplace` as
+//! linked tasks with what GitHub reports about them (task R.2 in `docs/tasks/design.md`): open
+//! and closed issues, an open pull request with a review asked for and its checks running, a
+//! draft and a merged one – so every state a row can show is there with `--demo`.
 
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{account_of, local_id};
-use crate::model::Link;
+use crate::model::{ChecksState, GitHubDetails, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
 use crate::source::{PimSource, move_plan};
 use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
@@ -63,7 +68,8 @@ fn url_of(collection: &str) -> &str {
 }
 
 /// The sample content: five collections in two accounts, 27 events for this week and the two
-/// after it, and 18 tasks. Dates are relative to `today`; a week runs Monday to Sunday.
+/// after it, and 24 tasks (six of them GitHub items). Dates are relative to `today`; a week runs
+/// Monday to Sunday.
 pub fn sample(today: NaiveDate) -> (Vec<Collection>, Vec<Event>, Vec<Todo>) {
     let monday = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
     let collections = vec![
@@ -131,6 +137,147 @@ fn todo(collection: &str, uid: &str, summary: &str, due: Option<EventTime>) -> T
         sort_order: None,
         link: None,
     }
+}
+
+/// The repository the GitHub items of the sample belong to.
+const REPO: &str = "mahype/TorroWorkplace";
+
+/// A task in "Tasks" that stands for issue or pull request `number` of [`REPO`], with what GitHub
+/// reports about it: `kind`, `state` and the `labels` as `(name, colour)`. The labels are the
+/// task's tags as well, as the core keeps them. Set the rest with struct update syntax, the
+/// details with [`with_details`].
+fn github(
+    uid: &str,
+    number: u64,
+    (kind, state): (GitHubKind, GitHubState),
+    labels: &[(&str, &str)],
+    summary: &str,
+    due: Option<EventTime>,
+) -> Todo {
+    let details = GitHubDetails {
+        kind,
+        state,
+        labels: labels
+            .iter()
+            .map(|(name, color)| GitHubLabel { name: (*name).into(), color: Some((*color).into()) })
+            .collect(),
+        assignees: Vec::new(),
+        milestone: None,
+        milestone_due: None,
+        draft: false,
+        review: None,
+        checks: None,
+        conflict: false,
+    };
+    let link = Link { github: Some(details), ..Link::github(REPO, number) };
+    Todo {
+        completed: state != GitHubState::Open,
+        url: link.web_url(),
+        categories: labels.iter().map(|(name, _)| (*name).to_string()).collect(),
+        link: Some(link),
+        ..todo(TASKS, uid, summary, due)
+    }
+}
+
+/// `todo` with its GitHub details changed by `change`.
+fn with_details(mut todo: Todo, change: impl FnOnce(&mut GitHubDetails)) -> Todo {
+    if let Some(details) = todo.link.as_mut().and_then(|link| link.github.as_mut()) {
+        change(details);
+    }
+    todo
+}
+
+/// The GitHub items of the sample, in "Tasks": an overdue open issue, an open pull request due
+/// today with a review asked for and its checks running, a merged one, a draft, an issue for
+/// later and a closed one.
+fn github_todos(today: NaiveDate) -> Vec<Todo> {
+    let before = |offset: u64| today - Days::new(offset);
+    let after = |offset: u64| today + Days::new(offset);
+    let (issue, pull) = (GitHubKind::Issue, GitHubKind::PullRequest);
+    let (bug, ui, linux, enhancement) =
+        (("bug", "#D73A4A"), ("ui", "#3B82F6"), ("linux", "#D4A72C"), ("enhancement", "#2DA44E"));
+    vec![
+        with_details(
+            Todo {
+                priority: Some(3),
+                description: Some(
+                    "After suspend and resume the tray icon is gone until torroworkplace restarts.".into(),
+                ),
+                ..github(
+                    "github-issue@torro-demo",
+                    123,
+                    (issue, GitHubState::Open),
+                    &[bug, ui, linux],
+                    "Tray icon disappears after resuming from sleep",
+                    Some(EventTime::Date(before(1))),
+                )
+            },
+            |details| {
+                details.assignees = vec!["mahype".into()];
+                details.milestone = Some("v0.4".into());
+            },
+        ),
+        with_details(
+            Todo {
+                description: Some("Shows the saved workspace templates directly in the tray menu.".into()),
+                ..github(
+                    "github-pr-131@torro-demo",
+                    131,
+                    (pull, GitHubState::Open),
+                    &[ui],
+                    "Add workspace templates to the tray menu",
+                    Some(at(today, 17, 0)),
+                )
+            },
+            |details| {
+                details.review = Some(ReviewState::Required);
+                details.checks = Some(ChecksState::Pending);
+                details.assignees = vec!["anna".into()];
+                details.milestone = Some("v0.4".into());
+            },
+        ),
+        with_details(
+            github(
+                "github-pr-127@torro-demo",
+                127,
+                (pull, GitHubState::Merged),
+                &[linux],
+                "Parse Hyprland clients with the new Lua API",
+                Some(EventTime::Date(today)),
+            ),
+            |details| details.checks = Some(ChecksState::Success),
+        ),
+        with_details(
+            github(
+                "github-pr-134@torro-demo",
+                134,
+                (pull, GitHubState::Open),
+                &[ui],
+                "Sidebar rail: show list names as tooltips",
+                Some(EventTime::Date(after(3))),
+            ),
+            |details| {
+                details.draft = true;
+                details.checks = Some(ChecksState::Success);
+            },
+        ),
+        github(
+            "github-issue-125@torro-demo",
+            125,
+            (issue, GitHubState::Open),
+            &[ui, enhancement],
+            "Display menu: add “Sync now” and the last sync time",
+            Some(EventTime::Date(after(9))),
+        ),
+        github(
+            "github-issue-119@torro-demo",
+            119,
+            (issue, GitHubState::Closed),
+            &[bug],
+            "Week view jumps when the clock changes",
+            Some(EventTime::Date(before(5))),
+        ),
+    ]
 }
 
 /// Events from Monday to Sunday of this week and of the two weeks after it.
@@ -236,8 +383,9 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
     events
 }
 
-/// Tasks due before, on and after `today` and some without a date, two parents with three
-/// and two subtasks, three completed tasks, one with tags and one linked to a GitHub issue.
+/// Tasks due before, on and after `today` and some without a date, three parents with three
+/// and two subtasks, three completed tasks, one with tags, and the GitHub items of
+/// [`github_todos`].
 fn sample_todos(today: NaiveDate) -> Vec<Todo> {
     let before = |offset: u64| today - Days::new(offset);
     let after = |offset: u64| today + Days::new(offset);
@@ -245,19 +393,12 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
     const WEEKLY_SHOP: &str = "weekly-shop@torro-demo";
     const VACATION: &str = "prepare-vacation@torro-demo";
 
-    vec![
+    let mut todos = vec![
         Todo {
             priority: Some(1),
             description: Some("Sort receipts for 2025 by category, keep trade invoices separate.".into()),
             categories: vec!["Finance".into(), "Paperwork".into()],
             ..todo(TASKS, "tax-documents@torro-demo", "Sort tax documents", Some(at(before(4), 18, 0)))
-        },
-        Todo {
-            priority: Some(5),
-            description: Some("The detail should show tags and a link.".into()),
-            url: Some("https://github.com/mahype/TorroWorkplace/issues/123".into()),
-            link: Some(Link::github("mahype/TorroWorkplace", 123)),
-            ..todo(TASKS, "github-issue@torro-demo", "Review task detail layout", Some(EventTime::Date(after(2))))
         },
         Todo {
             priority: Some(5),
@@ -297,7 +438,7 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
             ..todo(GROCERIES, "groceries-bread@torro-demo", "Wholegrain bread", None)
         },
         Todo { parent: Some(WEEKLY_SHOP.into()), ..todo(GROCERIES, "groceries-yogurt@torro-demo", "Yogurt", None) },
-        Todo { priority: Some(1), ..todo(FAMILY, "gift-mum@torro-demo", "Buy Mum's present", Some(at(today, 18, 0))) },
+        Todo { priority: Some(2), ..todo(FAMILY, "gift-mum@torro-demo", "Buy Mum's present", Some(at(today, 18, 0))) },
         Todo {
             priority: Some(5),
             description: Some("Sort everything out before the holiday house.".into()),
@@ -313,7 +454,9 @@ fn sample_todos(today: NaiveDate) -> Vec<Todo> {
             ..todo(FAMILY, "vacation-tickets@torro-demo", "Book train tickets", Some(EventTime::Date(today)))
         },
         todo(FAMILY, "pediatrician@torro-demo", "Book pediatrician appointment", Some(EventTime::Date(after(10)))),
-    ]
+    ];
+    todos.extend(github_todos(today));
+    todos
 }
 
 /// Start and end of an event as UTC instants; all-day dates count from local midnight.
@@ -531,10 +674,10 @@ mod tests {
         assert_eq!(events_in(FAMILY), 4);
         assert_eq!(events.len(), 27);
         let todos_in = |id: &str| todos.iter().filter(|t| t.collection == id).count();
-        assert_eq!(todos_in(TASKS), 9);
+        assert_eq!(todos_in(TASKS), 14);
         assert_eq!(todos_in(GROCERIES), 5);
         assert_eq!(todos_in(FAMILY), 5);
-        assert_eq!(todos.len(), 19);
+        assert_eq!(todos.len(), 24);
 
         for e in &events {
             assert!(collections.iter().any(|c| c.id == e.collection && c.kind.has_events()), "{}", e.summary);
@@ -657,7 +800,7 @@ mod tests {
     fn tasks_cover_overdue_today_later_and_undated() {
         let (_, _, todos) = sample(sunday());
         let open = || todos.iter().filter(|t| !t.completed);
-        assert_eq!(todos.iter().filter(|t| t.completed).count(), 3);
+        assert_eq!(todos.iter().filter(|t| t.completed).count(), 5, "three tasks, a merged PR, a closed issue");
         assert!(open().any(|t| t.due.is_some_and(|due| local_date(due) < sunday())), "overdue");
         assert!(open().any(|t| t.due.is_some_and(|due| local_date(due) == sunday())), "due today");
         assert!(open().any(|t| t.due.is_some_and(|due| local_date(due) > sunday())), "later");
@@ -668,13 +811,32 @@ mod tests {
     }
 
     #[test]
-    fn one_task_has_tags_and_one_a_link() {
+    fn one_task_has_tags_and_the_github_items_cover_every_state() {
         let (_, _, todos) = sample(sunday());
-        assert!(todos.iter().any(|t| t.categories.len() > 1), "a task with tags");
-        let linked: Vec<&Todo> = todos.iter().filter(|t| t.link.is_some()).collect();
-        assert_eq!(linked.len(), 1);
-        assert!(linked[0].link.as_ref().and_then(Link::github_ref).is_some(), "a GitHub link");
-        assert!(linked[0].url.as_deref().is_some_and(|url| url.starts_with("https://github.com/")));
+        assert!(todos.iter().any(|t| t.categories.len() > 1 && t.link.is_none()), "a task with tags");
+        let github: Vec<(&GitHubDetails, &Todo)> =
+            todos.iter().filter_map(|t| Some((t.link.as_ref()?.github.as_ref()?, t))).collect();
+        assert_eq!(github.len(), 6);
+        for (details, todo) in &github {
+            let link = todo.link.as_ref().expect("linked");
+            assert_eq!(link.github_ref().map(|(repo, _)| repo), Some(REPO), "{}", todo.summary);
+            assert_eq!(todo.url, link.web_url(), "the url opens the item");
+            assert_eq!(todo.completed, details.state != GitHubState::Open, "{}: done when closed", todo.summary);
+            assert!(!details.labels.is_empty() && details.labels.iter().all(|l| l.color.is_some()));
+        }
+        let has = |kind, state, extra: fn(&GitHubDetails) -> bool| {
+            github.iter().any(|(d, _)| d.kind == kind && d.state == state && extra(d))
+        };
+        assert!(has(GitHubKind::Issue, GitHubState::Open, |_| true), "an open issue");
+        assert!(has(GitHubKind::Issue, GitHubState::Closed, |_| true), "a closed issue");
+        assert!(
+            has(GitHubKind::PullRequest, GitHubState::Open, |d| d.review == Some(ReviewState::Required)
+                && d.checks == Some(ChecksState::Pending)
+                && !d.draft),
+            "an open pull request waiting for a review, checks running"
+        );
+        assert!(has(GitHubKind::PullRequest, GitHubState::Open, |d| d.draft), "a draft");
+        assert!(has(GitHubKind::PullRequest, GitHubState::Merged, |_| true), "a merged pull request");
     }
 
     #[tokio::test]

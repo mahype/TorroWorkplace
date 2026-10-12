@@ -1,50 +1,62 @@
 //! The tasks window: state, loading, quick add, saving, and the Linear window around it (task
 //! T.1): `torro_gui::shell` with the sidebar (filters, lists, "Open Calendar", "Settings") in the
-//! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. In the
-//! wide layout the sidebar collapses to a rail of icons (U.2: panel button or `[`, remembered in
-//! `ui.json`); the medium layout always shows that rail. The
-//! list (`list.rs`) and the detail panel (`detail.rs`) only render and report clicks as
-//! [`Message`]s.
+//! wide layout and a navigation menu ("Today ▾") plus drawer in the narrow one. In the wide layout
+//! the sidebar collapses to a rail of icons (U.2: panel button or `[`, remembered in `ui.json`);
+//! the medium layout always shows that rail. The list (`list.rs`) and the detail (`detail.rs`)
+//! only render and report clicks as [`Message`]s.
 //!
-//! The detail (T.4, U.5) is the side panel of `torro_gui::panel`: beside the list in the wide
-//! layout (where it takes the place of the properties column), over the list in the medium and
-//! narrow ones (full width in narrow); the list keeps its width. It has no Save button: it hands
-//! out saves as it changes, and while title or notes wait to be saved a one-second timer sends
-//! `Flush` ([`AUTOSAVE`]).
+//! The columns (redesign R.2 in `docs/tasks/design.md`, mock-up
+//! `docs/prototypes/tasks/redesign.html`) – see [`Columns`]: without an open task the list stands
+//! alone at the left, at most [`size::CONTENT_MAX`] wide. With one open, wide windows whose content
+//! is at least [`THREE_COLUMNS_FROM`] wide show three columns – the list ([`size::LIST`]), the
+//! detail and the properties ([`size::PROPS`]) –, narrower wide and medium windows the list
+//! ([`size::LIST_MEDIUM`]) and the detail, narrow windows the detail instead of the list. A
+//! line separates the columns. Each column has its own head in the window's header bar: the list's
+//! (filter, "{n} open", Display, "New task") over the list, the detail's (path, ↑ ↓, close) over
+//! detail and properties; the header line runs under both.
 //!
-//! The header (T.2) has one primary button, "New task", that focuses the quick add row (the same
-//! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
-//! is no filter function yet, so no "Filter" button.
+//! Detail and properties come from `detail.rs` (task R.3) and are put in at three places:
+//! [`App::detail_head`] (in the header bar), [`App::detail_column`] and
+//! [`App::properties_column`]; [`App::fit`] tells the detail which layout it is in. Its editors
+//! and its "…" menu float over the window like the app's menus.
+//!
+//! The detail has no Save button: it hands out saves as it changes, and while title or notes wait
+//! to be saved a one-second timer sends `Flush` ([`AUTOSAVE`]).
+//!
+//! The list head has one primary button, "New task", that focuses the quick add row (the same
+//! message as "New" at the app switcher). The Display menu groups the list (due date, list,
+//! priority, none), shows or hides completed tasks and syncs ("Sync now", with the time of the
+//! last sync). There is no filter function yet, so no "Filter" button, and no "Refresh" button:
+//! syncing lives in the Display menu and on `R`.
 //!
 //! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
 //! glances without any frame (`glance.rs`: the numbers "3 overdue · 5 today" and the next open
-//! tasks, to be ticked off and nothing else); narrow is the list with "Today ▾" in the header and
-//! the detail over the list; medium and wide are as described above. The size is kept in the
-//! state ([`Message::Resized`]), so the keys can be switched off in a glance; filter, selection,
-//! open detail and quick add text survive every change of size.
+//! tasks, to be ticked off and nothing else); narrow, medium and wide are as described above. The
+//! size is kept in the state ([`Message::Resized`]), so the keys can be switched off in a glance;
+//! filter, selection, open detail, folded groups and quick add text survive every change of size.
 //!
-//! The keyboard (T.3): ↑/↓ move a cursor through the rows as the list shows them (groups and
-//! subtasks included), Enter opens the task under it, Space ticks it, N focuses the quick add
-//! row, Escape closes menu, drawer or detail (see [`Message::Escape`]). The cursor is the
-//! highlighted row; the list scrolls to keep it in view. Plain keys are ignored while a text
-//! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
+//! The keyboard (T.3): ↑/↓ or j/k move a cursor through the rows as the list shows them (groups
+//! and subtasks included) – with a task open they open the next one –, Enter opens the task under
+//! it, Space ticks it, N focuses the quick add row, R syncs, Escape closes menu, drawer or detail
+//! (see [`Message::Escape`]). The cursor is the highlighted row; the list scrolls to keep it in
+//! view. Plain keys are ignored while a text field has the focus ([`shortcut`], [`typing`]) or a
+//! menu is open.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Local, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, row, stack, svg, text, text_input};
-use iced::{Alignment, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
+use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::panel;
 use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
@@ -53,10 +65,11 @@ use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Place
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
+use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, EventTime, PimAccount, PimSource, Todo};
 
-use crate::detail::{self, Detail};
+use crate::detail::{self, Detail, Fit};
 use crate::glance::{self, GlanceData};
 use crate::list::{self, ListData};
 
@@ -231,12 +244,127 @@ const DEMO_ERROR: &str = "The server did not answer (demo)";
 
 /// The id of the quick add field, so "New" can focus it.
 const QUICK_ADD: &str = "quick-add";
-/// Where the quick add text starts: past the "+" icon, which sits 12 in from the edge.
-const QUICK_ADD_START: f32 = space::M + icon::SIZE_SM + space::S;
-/// Where the quick add text ends: before the key hint.
-const QUICK_ADD_END: f32 = space::XXL + space::S;
+/// Where the quick add text starts: on the axis of the rows' titles – past the leading symbol
+/// (16 in, 16 wide, 12 after it) and the priority column (14, 8 after it).
+const QUICK_ADD_START: f32 = space::L + icon::SIZE + space::M + icon::SIZE_SM + space::S;
+/// Where the quick add text ends: before the key hint "N" at the right.
+const QUICK_ADD_END: f32 = space::L + space::XL + space::S;
+/// Wide windows show the properties column beside the detail from this content width on (the
+/// panel next to the sidebar or rail): list 460 + detail + properties 300 (mock-up).
+pub const THREE_COLUMNS_FROM: f32 = 1320.0;
+/// The list head keeps the label of "Display" from this list width on; narrower it is an icon
+/// with a tooltip (mock-up: `@container list (max-width:439px)`).
+const HEAD_LABELS_FROM: f32 = 440.0;
+/// The one-pixel lines between the columns.
+const LINE: f32 = size::HAIRLINE;
 /// How long after the last keystroke typed title or notes are saved.
 const AUTOSAVE: Duration = Duration::from_secs(1);
+
+/// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Columns {
+    /// No task open: the list alone at the left, at most [`size::CONTENT_MAX`] wide (narrow
+    /// windows: the full width).
+    List,
+    /// Narrow windows with a task open: the detail instead of the list.
+    Detail,
+    /// The list ([`size::LIST_MEDIUM`]) and the detail; the properties are chips in the detail.
+    ListDetail,
+    /// The list ([`size::LIST`]), the detail and the properties column ([`size::PROPS`]).
+    ListDetailProps,
+}
+
+/// The columns for a window of `class` whose content (the panel beside sidebar or rail; the whole
+/// window in narrow ones) is `content` wide, with a task open in the detail or not. Mini and strip
+/// show a glance and no columns; they count as narrow here.
+pub fn columns(class: SizeClass, content: f32, detail_open: bool) -> Columns {
+    match (class, detail_open) {
+        (_, false) => Columns::List,
+        (SizeClass::Wide, true) if content >= THREE_COLUMNS_FROM => Columns::ListDetailProps,
+        (SizeClass::Wide | SizeClass::Medium, true) => Columns::ListDetail,
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, true) => Columns::Detail,
+    }
+}
+
+/// The width of the content for a window `width` wide in `class`: the window less the sidebar
+/// (`sidebar`: expanded or rail) and the inset margin in the wide and medium layouts, the whole
+/// window otherwise.
+pub fn content_width(class: SizeClass, sidebar: SidebarMode, width: f32) -> f32 {
+    let side = match (class, sidebar) {
+        (SizeClass::Wide, SidebarMode::Expanded) => size::SIDEBAR,
+        (SizeClass::Wide, SidebarMode::Rail) | (SizeClass::Medium, _) => shell::RAIL,
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, _) => return width,
+    };
+    (width - side - size::INSET).max(0.0)
+}
+
+/// The width of the list column in `columns`, inside a content `content` wide: alone at most
+/// [`size::CONTENT_MAX`] (inside the panel's border; the whole panel when less than
+/// [`space::XXL`] would be left beside it) – the whole width in narrow windows –, beside
+/// the detail [`size::LIST`] or [`size::LIST_MEDIUM`]. Rows shorten after it ([`list::RowParts`]).
+pub fn list_width(class: SizeClass, columns: Columns, content: f32) -> f32 {
+    match columns {
+        Columns::List if matches!(class, SizeClass::Wide | SizeClass::Medium) => {
+            let inner = content - 2.0 * LINE;
+            // A sliver of empty panel beside the list would only look like a mistake: then the
+            // list takes the whole panel.
+            if inner - size::CONTENT_MAX < space::XXL { inner } else { size::CONTENT_MAX }
+        }
+        Columns::List | Columns::Detail => content,
+        Columns::ListDetail => size::LIST_MEDIUM,
+        Columns::ListDetailProps => size::LIST,
+    }
+}
+
+/// What quick add gives a new task when "+" of `group` was pressed (`None`: the quick add row
+/// itself): `(due, priority, list)`. A due group sets its day – yesterday for "Overdue", today,
+/// tomorrow for "Upcoming", none for "No date" –, a priority group its priority, a list group its
+/// list. Otherwise a task added under "Today" is due today, as before.
+pub fn quick_add_fields(
+    group: Option<&list::Group>,
+    filter: &Filter,
+    today: NaiveDate,
+) -> (Option<EventTime>, Option<u8>, Option<String>) {
+    use list::{Group, Prio};
+    let day = |date: Option<NaiveDate>| date.map(EventTime::Date);
+    let by_filter = day((*filter == Filter::Today).then_some(today));
+    match group {
+        Some(Group::Overdue) => (day(today.pred_opt()), None, None),
+        Some(Group::Today) => (day(Some(today)), None, None),
+        Some(Group::Upcoming) => (day(today.succ_opt()), None, None),
+        Some(Group::NoDate) => (None, None, None),
+        Some(Group::List(id)) => (by_filter, None, Some(id.clone())),
+        Some(Group::Priority(prio)) => {
+            let priority = match prio {
+                Prio::Urgent => Some(1),
+                Prio::High => Some(3),
+                Prio::Medium => Some(5),
+                Prio::Low => Some(9),
+                Prio::None => None,
+            };
+            (by_filter, priority, None)
+        }
+        Some(Group::Completed | Group::All) | None => (by_filter, None, None),
+    }
+}
+
+/// Minutes in an hour and in a day, for [`ago`].
+const HOUR: i64 = 60;
+const DAY: i64 = 24 * HOUR;
+
+/// How long ago `then` was, for "Synced 2 min ago": "just now", "5 min ago", "3 h ago", "2 d ago".
+pub fn ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let minutes = (now - then).num_minutes();
+    if minutes < 1 {
+        tr("just now").into()
+    } else if minutes < HOUR {
+        trf("{n} min ago", &[("n", &minutes)])
+    } else if minutes < DAY {
+        trf("{n} h ago", &[("n", &(minutes / HOUR))])
+    } else {
+        trf("{n} d ago", &[("n", &(minutes / DAY))])
+    }
+}
 
 pub struct App {
     source: Source,
@@ -258,6 +386,12 @@ pub struct App {
     todos: Vec<Todo>,
     filter: Filter,
     show_completed: bool,
+    /// How the list groups its rows (Display menu). Window state, nothing is stored.
+    group_by: list::GroupBy,
+    /// Groups folded away in the list. Window state.
+    collapsed: HashSet<list::Group>,
+    /// The group whose "+" was pressed: the next quick add task goes there ([`quick_add_fields`]).
+    quick_group: Option<list::Group>,
     /// Whether tasks have been loaded once; until then the list shows loading (or the error).
     loaded: bool,
     quick_add: String,
@@ -303,6 +437,12 @@ pub enum Message {
     ToggleDone(usize),
     /// From the list: open `todos[index]` in the detail panel.
     Select(usize),
+    /// A group head: fold or unfold the group.
+    ToggleGroup(list::Group),
+    /// "+" in a group head: the next quick add task goes into this group ([`quick_add_fields`]).
+    AddInGroup(list::Group),
+    /// The Display menu: group the list like this.
+    SetGroupBy(list::GroupBy),
     Detail(detail::Message),
     Saved(Result<Todo, String>),
     Deleted(Result<(), String>),
@@ -358,6 +498,8 @@ pub enum Shortcut {
     Toggle,
     /// N: a new task, in the quick add row.
     New,
+    /// R: sync now ("Sync now" in the Display menu).
+    Sync,
     /// `[`: collapse or expand the sidebar ([`Message::ToggleSidebar`]).
     Sidebar,
 }
@@ -377,11 +519,12 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
         return None;
     }
     let shortcut = match key.as_ref() {
-        Name::Named(Named::ArrowUp) => Shortcut::Up,
-        Name::Named(Named::ArrowDown) => Shortcut::Down,
+        Name::Named(Named::ArrowUp) | Name::Character("k") => Shortcut::Up,
+        Name::Named(Named::ArrowDown) | Name::Character("j") => Shortcut::Down,
         Name::Named(Named::Enter) => Shortcut::Open,
         Name::Named(Named::Space) => Shortcut::Toggle,
         Name::Character("n") => Shortcut::New,
+        Name::Character("r") => Shortcut::Sync,
         _ => return None,
     };
     Some(Message::Shortcut(shortcut))
@@ -414,6 +557,9 @@ impl App {
             todos: Vec::new(),
             filter: Filter::Today,
             show_completed: false,
+            group_by: list::GroupBy::default(),
+            collapsed: HashSet::new(),
+            quick_group: None,
             loaded: false,
             quick_add: String::new(),
             selected: None,
@@ -541,6 +687,7 @@ impl App {
                 self.filter = filter;
                 self.cursor = None;
                 self.scroll = None;
+                self.quick_group = None;
                 self.close_menus();
                 return self.close_detail();
             }
@@ -548,7 +695,9 @@ impl App {
             Message::QuickAddChanged(value) => self.quick_add = value,
             Message::QuickAddSubmit => {
                 let summary = self.quick_add.trim().to_string();
-                let Some(collection) = self.target_list() else {
+                let (due, priority, list) = quick_add_fields(self.quick_group.as_ref(), &self.filter, self.today);
+                let writable = list.filter(|id| self.writable_lists().iter().any(|c| &c.id == id));
+                let Some(collection) = writable.or_else(|| self.target_list()) else {
                     self.error = Some(tr("No task list yet").into());
                     return Task::none();
                 };
@@ -556,14 +705,15 @@ impl App {
                     return Task::none();
                 }
                 self.quick_add.clear();
+                self.quick_group = None;
                 let todo = Todo {
                     uid: String::new(),
                     collection,
                     href: None,
                     etag: None,
                     summary,
-                    due: (self.filter == Filter::Today).then_some(EventTime::Date(self.today)),
-                    priority: None,
+                    due,
+                    priority,
                     completed: false,
                     parent: None,
                     description: None,
@@ -580,6 +730,24 @@ impl App {
                 }
             }
             Message::Select(index) => return self.select(index),
+            Message::ToggleGroup(group) => {
+                if !self.collapsed.remove(&group) {
+                    self.collapsed.insert(group);
+                }
+            }
+            Message::AddInGroup(group) => {
+                self.quick_group = Some(group);
+                self.close_menus();
+                return operation::focus(QUICK_ADD);
+            }
+            Message::SetGroupBy(group_by) => {
+                self.group_by = group_by;
+                // Folds and the "+" group belong to the old groups.
+                self.collapsed.clear();
+                self.quick_group = None;
+                self.scroll = None;
+                self.menu = None;
+            }
             Message::Detail(message) => {
                 let Some(detail) = self.detail.as_mut() else { return Task::none() };
                 let action = detail.update(message);
@@ -607,6 +775,8 @@ impl App {
                 Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
             },
             Message::Refresh => {
+                // "Sync now" in the Display menu: the menu has done its job.
+                self.menu = None;
                 let source = self.source.clone();
                 let sync =
                     Task::perform(async move { source.sync().await.map_err(|e| e.to_string()) }, |_| Message::Tick);
@@ -714,6 +884,7 @@ impl App {
             },
             // The same as "New task" in the header.
             Shortcut::New => self.update(Message::Switcher(Switcher::New)),
+            Shortcut::Sync => self.update(Message::Refresh),
             Shortcut::Sidebar => self.toggle_sidebar(),
         }
     }
@@ -757,8 +928,20 @@ impl App {
         self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect()
     }
 
-    /// What the list shows, without the colours and names only drawing needs.
-    fn list_data(&self, show_list: bool) -> ListData<'_> {
+    /// The columns the window shows now.
+    fn columns(&self) -> Columns {
+        let class = self.class();
+        columns(class, content_width(class, self.sidebar, self.size.width), self.detail.is_some())
+    }
+
+    /// The width of the list column now.
+    fn list_width(&self) -> f32 {
+        let class = self.class();
+        list_width(class, self.columns(), content_width(class, self.sidebar, self.size.width))
+    }
+
+    /// What the list shows. Rows name their list (pill or dot) unless the filter is one list.
+    fn list_data(&self) -> ListData<'_> {
         ListData {
             todos: &self.todos,
             colors: self.colors(),
@@ -767,8 +950,11 @@ impl App {
             show_completed: self.show_completed,
             today: self.today,
             selected: self.cursor_index(),
-            show_list,
-            attention: palette(&self.theme()).attention_text,
+            show_list: !matches!(self.filter, Filter::List(_)),
+            group_by: self.group_by,
+            collapsed: &self.collapsed,
+            width: self.list_width(),
+            palette: palette(&self.theme()),
         }
     }
 
@@ -781,21 +967,22 @@ impl App {
     /// Where the cursor row is among the shown rows.
     fn cursor_place(&self) -> Option<usize> {
         let index = self.cursor_index()?;
-        list::order(&self.list_data(false)).iter().position(|&i| i == index)
+        list::order(&self.list_data()).iter().position(|&i| i == index)
     }
 
     /// After a reload: a cursor whose task is gone (ticked off, deleted elsewhere) moves to the row
     /// that took its place, so ticking tasks one after the other with Space just works.
     fn keep_cursor(&mut self, place: Option<usize>) {
         let (Some(place), true) = (place, self.cursor_index().is_none()) else { return };
-        let order = list::order(&self.list_data(false));
+        let order = list::order(&self.list_data());
         self.cursor = order.get(place.min(order.len().saturating_sub(1))).map(|&i| self.todos[i].uid.clone());
     }
 
     /// Moves the cursor one row down or up, and stops at the first and last row. With no cursor
-    /// yet, ↓ chooses the first row and ↑ the last.
+    /// yet, ↓ chooses the first row and ↑ the last. With a task open in the detail, the detail
+    /// follows the cursor (Linear's j/k).
     fn step(&mut self, forward: bool) -> Task<Message> {
-        let order = list::order(&self.list_data(false));
+        let order = list::order(&self.list_data());
         let Some(last) = order.len().checked_sub(1) else { return Task::none() };
         let next = match (self.cursor_place(), forward) {
             (None, true) => 0,
@@ -804,13 +991,18 @@ impl App {
             (Some(place), false) => place.saturating_sub(1),
         };
         self.cursor = Some(self.todos[order[next]].uid.clone());
-        self.reveal(order[next])
+        let reveal = self.reveal(order[next]);
+        let opened = self.detail.as_ref().is_some_and(|detail| detail.original.uid != self.todos[order[next]].uid);
+        if opened {
+            return Task::batch([self.select(order[next]), reveal]);
+        }
+        reveal
     }
 
     /// Scrolls the list the least that shows `todos[index]` completely.
     fn reveal(&mut self, index: usize) -> Task<Message> {
         let Some((offset, height)) = self.scroll else { return Task::none() };
-        let Some((top, bottom)) = list::row_span(&self.list_data(false), index) else { return Task::none() };
+        let Some((top, bottom)) = list::row_span(&self.list_data(), index) else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -880,7 +1072,8 @@ impl App {
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher));
-        let header = self.header(class, &nav, &display);
+        let columns = self.columns();
+        let header = self.header(class, columns, [&nav, &display, &property]);
         let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
                 &switcher,
@@ -893,124 +1086,228 @@ impl App {
                 widgets::floating(&display, Placement::Below(Align::End), self.display_menu(), Message::CloseMenu)
             }
         });
+        // The property editors and the "…" menu of the detail.
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
-        let layer = menu.or_else(editor);
-        let detail =
-            self.detail.as_ref().map(|detail| detail.panel(self.crumb_filter(detail), &property, Message::Detail));
-        // The panel takes the place of the properties column while it is beside the list.
-        let placed = panel::place(class, self.body(class), detail, layer);
-        shell::shell(class, sidebar, header, placed.body, None)
+        // The properties column is part of the body ([`App::body`]), not the shell's: the detail
+        // brings its own, scrolling on its own.
+        shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(placed.overlay)
+            .overlay(menu.or_else(editor))
             .into()
     }
 
-    /// The header: the filter's title (wide) or the navigation menu (medium, narrow), then Display,
-    /// refresh and the one primary button "New task" ("+" alone in the narrow layouts).
-    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, display: &Anchor) -> Element<'a, Message> {
+    /// The window's header bar, split like the columns below it: the list's head over the list
+    /// (with a line at the list's edge), the detail's head over detail and properties. Narrow
+    /// windows show one of the two.
+    /// The anchors are those of the navigation menu, the Display menu and the detail's editors.
+    fn header<'a>(&'a self, class: SizeClass, columns: Columns, anchors: [&Anchor; 3]) -> Element<'a, Message> {
+        let [nav, display, property] = anchors;
+        let list_width = self.list_width();
+        if columns == Columns::Detail {
+            return self.detail_head(columns, property);
+        }
+        let list_head = self.list_head(class, list_width, nav, display);
+        let content = content_width(class, self.sidebar, self.size.width);
+        // A list that fills the panel needs no line at its edge: the panel's border is there.
+        if !matches!(class, SizeClass::Wide | SizeClass::Medium) || list_width >= content - 2.0 * LINE {
+            return list_head;
+        }
+        // The header bar pads 16 at the left; the list head keeps 12 at its right before the line.
+        let mut split = row![
+            container(list_head).width(list_width - space::L - space::M),
+            Space::new().width(space::M),
+            rule::vertical(LINE).style(style::rule),
+        ]
+        .align_y(Alignment::Center);
+        if self.detail.is_some() {
+            split = split.push(Space::new().width(space::L)).push(self.detail_head(columns, property));
+        }
+        split.into()
+    }
+
+    /// The head of the list: the filter's icon, name and "{n} open" – in narrow windows the
+    /// navigation menu ("Today ▾") after the drawer button –, then Display (its label only where the
+    /// list is at least [`HEAD_LABELS_FROM`] wide) and the one primary button "New task" ("+" alone
+    /// in narrow windows).
+    fn list_head<'a>(&'a self, class: SizeClass, width: f32, nav: &Anchor, display: &Anchor) -> Element<'a, Message> {
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
         let icon = filter_icon(&self.filter);
         let new_task = Message::Switcher(Switcher::New);
-        let (show_display, new_button) = match class {
-            SizeClass::Wide => (
-                widgets::text_button(
-                    Some(Icon::SlidersHorizontal),
-                    tr("Display"),
-                    style::button::ghost,
-                    Some(Message::ToggleDisplay),
-                ),
-                widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task)),
-            ),
-            SizeClass::Medium => (
-                widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay)),
-                widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task)),
-            ),
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => (
-                widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay)),
-                widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task)),
-            ),
+        let show_display = if width >= HEAD_LABELS_FROM {
+            widgets::text_button(
+                Some(Icon::SlidersHorizontal),
+                tr("Display"),
+                style::button::ghost,
+                Some(Message::ToggleDisplay),
+            )
+        } else {
+            widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay))
         };
-        let trailing = [
-            widgets::anchored(display, show_display),
-            widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)),
-            new_button,
-        ];
-        match class {
-            SizeClass::Wide => shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing),
-            SizeClass::Medium => {
-                let menu = widgets::menu_button(nav, icon, name, Message::ToggleNav);
-                let title =
-                    row![menu, typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None)]
-                        .spacing(space::S)
-                        .align_y(Alignment::Center);
-                // The rail at the left has the panel button.
-                shell::header_bar([], title, trailing)
-            }
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
-                [shell::sidebar_toggle(Message::ShowDrawer)],
-                widgets::menu_button(nav, icon, name, Message::ToggleNav),
-                trailing,
-            ),
+        let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
+        let new_button = if narrow {
+            widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task))
+        } else {
+            widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task))
+        };
+        let trailing = [widgets::anchored(display, show_display), new_button];
+        if !narrow {
+            // Wide and medium have the sidebar or the rail for the navigation.
+            return shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing);
+        }
+        let title = row![
+            widgets::menu_button(nav, icon, name, Message::ToggleNav),
+            typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None),
+        ]
+        .spacing(space::XS)
+        .align_y(Alignment::Center);
+        shell::header_bar([shell::sidebar_toggle(Message::ShowDrawer)], title, trailing)
+    }
+
+    /// How the detail lays itself out in `columns`: beside the properties column, with its
+    /// properties as chips, or in place of the list.
+    fn fit(columns: Columns) -> Fit {
+        match columns {
+            Columns::ListDetailProps => Fit::Columns,
+            Columns::List | Columns::ListDetail => Fit::Chips,
+            Columns::Detail => Fit::Narrow,
         }
     }
 
-    /// The Display menu: "Show completed" as a check, the choice that used to be a switch.
-    fn display_menu(&self) -> Element<'_, Message> {
-        let check = Mark::Check(palette(&self.theme()).text_2, self.show_completed);
-        widgets::menu(vec![MenuSection::new(vec![MenuItem::new(
-            check,
-            tr("Show completed"),
-            Message::ShowCompleted(!self.show_completed),
-        )])])
+    /// The head of the detail (`detail.rs`, [`Detail::head`]) in the header bar, over the main
+    /// column and the properties: the path, ↑ ↓, "…" and close; in narrow windows "‹ <filter>"
+    /// back to the list. `anchor` is the one of the detail's editors and menu.
+    fn detail_head<'a>(&'a self, columns: Columns, anchor: &Anchor) -> Element<'a, Message> {
+        let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
+        detail.head(Self::fit(columns), self.filter_name(&self.filter), anchor).map(Message::Detail)
     }
 
-    /// The content below the header: the list at its own width, whatever the detail does; the
-    /// detail is the side panel `window` places beside or over it.
-    fn body(&self, class: SizeClass) -> Element<'_, Message> {
-        widgets::content(size::CONTENT_MAX, self.list(class))
+    /// The detail's main column (`detail.rs`, [`Detail::main_column`]): title, notes, sub-tasks,
+    /// for pull requests checks and reviews; the properties as chips under the title unless the
+    /// properties column is there.
+    fn detail_column<'a>(&'a self, columns: Columns, anchor: &Anchor) -> Element<'a, Message> {
+        let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
+        detail.main_column(Self::fit(columns), palette(&self.theme()), anchor).map(Message::Detail)
+    }
+
+    /// The properties column of wide windows with [`Columns::ListDetailProps`] (`detail.rs`,
+    /// [`Detail::properties_column`], [`size::PROPS`] wide), with the name of the account the
+    /// task's list belongs to.
+    fn properties_column<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
+        let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
+        let account = account_of(&detail.original.collection, &self.accounts, |a| a.id.as_str());
+        detail.properties_column(account.map(|a| a.label.clone()), anchor).map(Message::Detail)
+    }
+
+    /// The Display menu: how to group the list, "Show completed", and "Sync now" (`R`) under the
+    /// time of the last sync.
+    fn display_menu(&self) -> Element<'_, Message> {
+        use list::GroupBy;
+        let group = |mark: Icon, label: &'static str, by: GroupBy| {
+            MenuItem::new(mark, label, Message::SetGroupBy(by)).current(self.group_by == by)
+        };
+        let check = Mark::Check(palette(&self.theme()).text_2, self.show_completed);
+        let sync = vec![MenuItem::new(Icon::RefreshCw, tr("Sync now"), Message::Refresh).trail(Trail::Kbd("R"))];
+        let synced = match self.last_sync() {
+            Some(at) => MenuSection::titled(trf("Synced {when}", &[("when", &ago(at, Utc::now()))]), sync),
+            None => MenuSection::new(sync),
+        };
+        widgets::menu(vec![
+            MenuSection::titled(
+                tr("Group by"),
+                vec![
+                    group(Icon::Calendar, tr("Due date"), GroupBy::Due),
+                    group(Icon::List, tr("List"), GroupBy::List),
+                    group(Icon::SignalHigh, tr("Priority"), GroupBy::Priority),
+                    group(Icon::Minus, tr("None"), GroupBy::None),
+                ],
+            ),
+            MenuSection::new(vec![MenuItem::new(
+                check,
+                tr("Show completed"),
+                Message::ShowCompleted(!self.show_completed),
+            )]),
+            synced,
+        ])
+    }
+
+    /// When the accounts last synced: the latest of them, as the core reports it.
+    fn last_sync(&self) -> Option<DateTime<Utc>> {
+        self.accounts
+            .iter()
+            .filter_map(|account| match &account.state {
+                AccountState::Connected { last_sync, .. } => *last_sync,
+                _ => None,
+            })
+            .max()
+    }
+
+    /// The content below the header bar in `columns`: the list alone at its width (a line at its
+    /// right where it does not fill the panel), the detail instead of it, or list and detail side by
+    /// side with a line between them, and the properties column after another line.
+    fn body(&self, class: SizeClass, columns: Columns, anchor: &Anchor) -> Element<'_, Message> {
+        let width = self.list_width();
+        let line = || rule::vertical(LINE).style(style::rule);
+        match columns {
+            Columns::Detail => self.detail_column(columns, anchor),
+            Columns::List => {
+                let content = content_width(class, self.sidebar, self.size.width);
+                if !matches!(class, SizeClass::Wide | SizeClass::Medium) || width >= content - 2.0 * LINE {
+                    return self.list();
+                }
+                row![container(self.list()).width(width), line(), Space::new().width(Fill)].into()
+            }
+            Columns::ListDetail => {
+                row![container(self.list()).width(width), line(), self.detail_column(columns, anchor)].into()
+            }
+            Columns::ListDetailProps => row![
+                container(self.list()).width(width),
+                line(),
+                self.detail_column(columns, anchor),
+                line(),
+                self.properties_column(anchor),
+            ]
+            .into(),
+        }
     }
 
     /// The quick add row, an error line if there is one, and the grouped list; loading and the
     /// error of a first load stand in for all three.
-    fn list(&self, class: SizeClass) -> Element<'_, Message> {
+    fn list(&self) -> Element<'_, Message> {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
-        let mut top = column![self.quick_add_row()].spacing(space::S);
+        let mut content = column![self.quick_add_row()];
         if let Some(err) = &self.error {
-            top = top.push(
-                typo::text(typo::META, err.clone())
-                    .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
-            );
+            let line = typo::text(typo::META, err.clone())
+                .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) });
+            content = content.push(container(line).padding([space::S, space::L]));
         }
-        let show_list = matches!(class, SizeClass::Wide | SizeClass::Medium) && !matches!(self.filter, Filter::List(_));
-        let data = self.list_data(show_list);
-        column![container(top).padding(Padding::new(space::S).bottom(space::XS)), list::view(data)]
-            .width(Fill)
-            .height(Fill)
-            .into()
+        content.push(list::view(self.list_data())).width(Fill).height(Fill).into()
     }
 
-    /// The quick add row: a calm line like a list row ("+ New task …", the key hint "N" at the
-    /// end) that is a text input underneath. The icon and the hint lie over it, so the input keeps
-    /// its hover and focus states; the hint goes away as soon as something is typed.
+    /// The quick add row: a list row (40 with its line) that is a text input underneath – no box,
+    /// "+" on the axis of the rows' leading symbols, the text on the axis of their titles, the key
+    /// hint "N" at the right. The icon and the hint lie over the input, so it keeps its hover and
+    /// focus states (focused: `selected` with the focus ring); the hint goes away as soon as
+    /// something is typed.
     fn quick_add_row(&self) -> Element<'_, Message> {
-        let input = text_input(tr("New task …"), &self.quick_add)
+        let height = size::ROW - LINE;
+        let above = (height - typo::line_height(typo::BODY)) / 2.0;
+        let input = text_input(tr("Add a task or paste a GitHub link…"), &self.quick_add)
             .id(QUICK_ADD)
             .on_input(Message::QuickAddChanged)
             .on_submit(Message::QuickAddSubmit)
-            .padding(Padding { top: space::S, bottom: space::S, left: QUICK_ADD_START, right: QUICK_ADD_END })
-            .style(style::text_input);
-        let plus = icon::icon(Icon::Plus, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
+            .padding(Padding { top: above, bottom: above, left: QUICK_ADD_START, right: QUICK_ADD_END })
+            .style(quick_add_style);
+        let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
         let mut over =
-            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::M]);
+            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::L]);
         if self.quick_add.is_empty() {
             over = over.push(widgets::kbd("N"));
         }
-        // 8 above and below the 20-high text make the row `CONTROL_LG` (36) high.
-        stack![input, over].height(size::CONTROL_LG).into()
+        column![stack![input, over].height(height), rule::horizontal(LINE).style(style::rule)].into()
     }
 
     /// The filters with their icon and open count, then one entry per task list (ring, count).
@@ -1116,15 +1413,6 @@ impl App {
         widgets::menu(sections)
     }
 
-    /// The filter name for the detail's crumb ("Work › Today"); none when the filter is the
-    /// task's own list, which the crumb already names.
-    fn crumb_filter(&self, detail: &Detail) -> Option<String> {
-        match &self.filter {
-            Filter::List(id) if *id == detail.original.collection => None,
-            filter => Some(self.filter_name(filter)),
-        }
-    }
-
     /// Opens `todos[index]` in the detail, saving what the open detail still holds.
     fn select(&mut self, index: usize) -> Task<Message> {
         let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
@@ -1178,18 +1466,8 @@ impl App {
             // R.3: a new sub-task, "Copy link" and ↑ ↓ in the detail's head.
             detail::Action::Create(todo) => self.save(todo),
             detail::Action::CopyLink(url) => iced::clipboard::write(url),
-            detail::Action::Previous => self.show_neighbour(false),
-            detail::Action::Next => self.show_neighbour(true),
-        }
-    }
-
-    /// ↑ ↓ in the detail's head: moves the cursor as the keys do and shows that task in the
-    /// detail; at the first or last row nothing changes.
-    fn show_neighbour(&mut self, forward: bool) -> Task<Message> {
-        let reveal = self.step(forward);
-        match self.cursor_index() {
-            Some(index) if Some(index) != self.selected => Task::batch([reveal, self.select(index)]),
-            _ => reveal,
+            detail::Action::Previous => self.step(false),
+            detail::Action::Next => self.step(true),
         }
     }
 
@@ -1251,7 +1529,7 @@ impl App {
             return Task::none();
         }
         let Some(open @ (Open::Detail | Open::Due)) = self.launch.open else { return Task::none() };
-        let Some(first) = list::order(&self.list_data(false)).first().copied() else { return Task::none() };
+        let Some(first) = list::order(&self.list_data()).first().copied() else { return Task::none() };
         let select = self.select(first);
         if open == Open::Due {
             let card = self.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
@@ -1311,6 +1589,18 @@ fn filter_icon(filter: &Filter) -> Option<Icon> {
         Filter::Planned => Some(Icon::CalendarClock),
         Filter::All => Some(Icon::Layers),
         Filter::List(_) => None,
+    }
+}
+
+/// The quick add field, built on `style::text_input`: no frame at rest and on hover (it is a list
+/// row, not a box), and `selected` with the focus ring while focused.
+fn quick_add_style(t: &Theme, status: text_input::Status) -> text_input::Style {
+    let base = style::text_input(t, status);
+    match status {
+        text_input::Status::Focused { .. } => {
+            text_input::Style { background: Background::Color(palette(t).selected), ..base }
+        }
+        _ => text_input::Style { border: base.border.width(0), ..base },
     }
 }
 
@@ -1570,9 +1860,9 @@ mod tests {
     #[test]
     fn the_cursor_row_is_the_highlighted_row() {
         let mut app = app_with_rows();
-        assert_eq!(app.list_data(false).selected, None);
+        assert_eq!(app.list_data().selected, None);
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.list_data(false).selected.map(|i| app.todos[i].uid.as_str()), Some("overdue"));
+        assert_eq!(app.list_data().selected.map(|i| app.todos[i].uid.as_str()), Some("overdue"));
         let _ = app.update(Message::Select(0));
         assert_eq!(cursor(&app), Some("later"), "clicking a row moves the cursor there");
     }
@@ -1645,6 +1935,9 @@ mod tests {
             (Key::Named(Named::Enter), Shortcut::Open),
             (Key::Named(Named::Space), Shortcut::Toggle),
             (Key::Character("n".into()), Shortcut::New),
+            (Key::Character("j".into()), Shortcut::Down),
+            (Key::Character("k".into()), Shortcut::Up),
+            (Key::Character("r".into()), Shortcut::Sync),
         ];
         for (key, expected) in keys {
             let got = shortcut(press(key.clone(), Modifiers::empty()), Status::Ignored, id);
@@ -1681,16 +1974,16 @@ mod tests {
     #[test]
     fn the_list_scrolls_the_least_that_shows_the_cursor_row() {
         let mut app = app_with_rows();
-        // Heads are 36 high (the first only 31: it has no gap and no line above), rows 40: overdue 31–71,
-        // child 71–111, then the "Today" head.
+        // Heads are 32 high and flush with the rows, rows 40: overdue 32–72, child 72–112, then the
+        // "Today" head 112–144 and its row.
         let _ = app.update(Message::Scrolled(0.0, 100.0));
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.scroll, Some((11.0, 100.0)), "child ends at 111, so 11 scrolls it in");
+        assert_eq!(app.scroll, Some((12.0, 100.0)), "child ends at 112, so 12 scrolls it in");
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.scroll, Some((87.0, 100.0)), "today ends at 187");
+        assert_eq!(app.scroll, Some((84.0, 100.0)), "today ends at 184");
         let _ = press(&mut app, Shortcut::Up);
-        assert_eq!(app.scroll, Some((71.0, 100.0)), "child starts at 71, above the view");
+        assert_eq!(app.scroll, Some((72.0, 100.0)), "child starts at 72, above the view");
         let _ = press(&mut app, Shortcut::Up);
         assert_eq!(app.scroll, Some((0.0, 100.0)), "the first row brings its group head along");
         let _ = app.update(Message::Scrolled(0.0, 400.0));
@@ -1823,19 +2116,130 @@ mod tests {
     }
 
     #[test]
-    fn the_detail_leaves_the_list_its_width_in_every_layout() {
+    fn the_columns_follow_the_window_and_the_open_task() {
         let mut app = app_with_rows();
         connected(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!((app.columns(), app.list_width()), (Columns::List, size::CONTENT_MAX), "nothing open");
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Open);
         let _ = app.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
-        for size in [WIDE, MEDIUM, NARROW] {
+        for (size, sidebar, expected, list) in [
+            (WIDE, SidebarMode::Expanded, Columns::ListDetailProps, size::LIST),
+            (Size::new(1280.0, 840.0), SidebarMode::Expanded, Columns::ListDetail, size::LIST_MEDIUM),
+            (Size::new(1400.0, 840.0), SidebarMode::Rail, Columns::ListDetailProps, size::LIST),
+            (MEDIUM, SidebarMode::Rail, Columns::ListDetail, size::LIST_MEDIUM),
+            (NARROW, SidebarMode::Expanded, Columns::Detail, NARROW.width),
+        ] {
+            let _ = app.update(Message::UiState(UiState { sidebar }));
             let _ = app.update(Message::Resized(size));
-            assert_eq!(panel::mode_for(app.class()) == panel::PanelMode::Beside, size == WIDE, "{size:?}");
-            // The panel, the list and the open card are built from the one state.
+            assert_eq!((app.columns(), app.list_width()), (expected, list), "{size:?} {sidebar:?}");
+            // Header, list, detail, properties and the open card are built from the one state.
             let _ = app.view();
         }
-        assert!(app.detail.is_some(), "a resize does not close the panel");
+        assert!(app.detail.is_some(), "a resize does not close the detail");
+    }
+
+    #[test]
+    fn three_columns_need_a_content_of_1320() {
+        assert_eq!(content_width(SizeClass::Wide, SidebarMode::Expanded, 1600.0), 1360.0);
+        assert_eq!(content_width(SizeClass::Wide, SidebarMode::Rail, 1600.0), 1540.0);
+        assert_eq!(content_width(SizeClass::Medium, SidebarMode::Expanded, 1000.0), 940.0, "medium has the rail");
+        assert_eq!(content_width(SizeClass::Narrow, SidebarMode::Expanded, 480.0), 480.0);
+        assert_eq!(columns(SizeClass::Wide, 1320.0, true), Columns::ListDetailProps);
+        assert_eq!(columns(SizeClass::Wide, 1319.0, true), Columns::ListDetail);
+        assert_eq!(columns(SizeClass::Medium, 1320.0, true), Columns::ListDetail, "medium never has three");
+        assert_eq!(columns(SizeClass::Narrow, 480.0, true), Columns::Detail);
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            assert_eq!(columns(class, 1400.0, false), Columns::List, "{class:?}");
+        }
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 540.0), 538.0, "inside the border of a small panel");
+        assert_eq!(list_width(SizeClass::Narrow, Columns::List, 480.0), 480.0, "narrow: the whole width");
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 740.0), 738.0, "no sliver of 18 beside the list");
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 940.0), size::CONTENT_MAX);
+    }
+
+    #[test]
+    fn quick_add_puts_the_task_where_the_plus_was() {
+        use list::{Group, Prio};
+        let today = NaiveDate::from_ymd_opt(2026, 10, 11).expect("valid date");
+        let date = |d: u32| Some(EventTime::Date(NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")));
+        let fields = |group: Option<Group>, filter: Filter| quick_add_fields(group.as_ref(), &filter, today);
+        assert_eq!(fields(None, Filter::Today), (date(11), None, None), "under Today: due today, as before");
+        assert_eq!(fields(None, Filter::All), (None, None, None));
+        assert_eq!(fields(Some(Group::Overdue), Filter::All), (date(10), None, None));
+        assert_eq!(fields(Some(Group::Today), Filter::All), (date(11), None, None));
+        assert_eq!(fields(Some(Group::Upcoming), Filter::Today), (date(12), None, None));
+        assert_eq!(fields(Some(Group::NoDate), Filter::Today), (None, None, None));
+        assert_eq!(fields(Some(Group::List("home".into())), Filter::All), (None, None, Some("home".into())));
+        assert_eq!(fields(Some(Group::Priority(Prio::Urgent)), Filter::Today), (date(11), Some(1), None));
+        assert_eq!(fields(Some(Group::Priority(Prio::Low)), Filter::All), (None, Some(9), None));
+    }
+
+    #[test]
+    fn group_heads_fold_add_and_regroup() {
+        use list::{Group, GroupBy};
+        let mut app = app_with_rows();
+        let rows = list::order(&app.list_data()).len();
+        let _ = app.update(Message::ToggleGroup(Group::Overdue));
+        assert_eq!(list::order(&app.list_data()).len(), rows - 2, "overdue and its subtask fold away");
+        let _ = app.update(Message::ToggleGroup(Group::Overdue));
+        assert_eq!(list::order(&app.list_data()).len(), rows);
+        assert!(app.update(Message::AddInGroup(Group::Upcoming)).units() > 0, "the quick add row gets the focus");
+        assert_eq!(app.quick_group, Some(Group::Upcoming));
+        let _ = app.update(Message::ToggleGroup(Group::Today));
+        let _ = app.update(Message::ToggleDisplay);
+        let _ = app.update(Message::SetGroupBy(GroupBy::Priority));
+        assert_eq!(app.group_by, GroupBy::Priority);
+        assert!(app.collapsed.is_empty() && app.quick_group.is_none() && app.menu.is_none(), "a fresh start");
+        let _ = app.update(Message::AddInGroup(Group::Today));
+        let _ = app.update(Message::SetFilter(Filter::Planned));
+        assert_eq!(app.quick_group, None, "another filter forgets the group");
+    }
+
+    #[test]
+    fn with_a_task_open_the_arrows_open_the_next_one() {
+        let mut app = app_with_rows();
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("child"), "↓ opens the next row");
+        let _ = app.update(Message::Detail(detail::Message::Next));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("today"), "so does ↓ in its head");
+        let _ = app.update(Message::Detail(detail::Message::Previous));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("child"));
+        assert_eq!(cursor(&app), Some("child"), "the highlighted row follows");
+        let _ = app.update(Message::Escape);
+        let _ = press(&mut app, Shortcut::Down);
+        assert!(app.detail.is_none(), "without an open task the arrows only move the cursor");
+    }
+
+    #[test]
+    fn sync_times_read_like_a_clock() {
+        let now = Utc::now();
+        assert_eq!(ago(now, now), tr("just now"));
+        assert_eq!(ago(now - chrono::Duration::minutes(2), now), trf("{n} min ago", &[("n", &2)]));
+        assert_eq!(ago(now - chrono::Duration::hours(3), now), trf("{n} h ago", &[("n", &3)]));
+        assert_eq!(ago(now - chrono::Duration::days(2), now), trf("{n} d ago", &[("n", &2)]));
+    }
+
+    #[test]
+    fn the_demo_builds_in_every_layout_grouping_and_theme() {
+        use list::GroupBy;
+        let mut app = launched(&["--demo", "--open", "detail"]);
+        let _ = app.update(Message::ShowCompleted(true));
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let _ = app.update(Message::Appearance(Ok(appearance)));
+            for group_by in [GroupBy::Due, GroupBy::List, GroupBy::Priority, GroupBy::None] {
+                let _ = app.update(Message::SetGroupBy(group_by));
+                for size in [WIDE, Size::new(1280.0, 840.0), MEDIUM, NARROW, MINI, Size::new(320.0, 480.0), STRIP] {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.update(Message::ToggleDisplay);
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseMenu);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1960,7 +2364,7 @@ mod tests {
     fn the_detail_states_open_the_first_task_once() {
         let detail = launched(&["--demo", "--open", "detail"]);
         let open = detail.detail.as_ref().expect("the detail is open");
-        let first = list::order(&detail.list_data(false))[0];
+        let first = list::order(&detail.list_data())[0];
         assert_eq!(open.original.uid, detail.todos[first].uid);
         assert!(open.layer(&Anchor::new()).is_none(), "no property editor");
 
