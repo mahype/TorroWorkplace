@@ -484,7 +484,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** App startet aus dem Tray; Vorlage mit `--lane info` stellt das Fenster wieder her.
 
 ### E3.7 Steuerzentrale: Seite „Inbox“
-- [ ] erledigt
+- [x] erledigt (zusätzlich `ui/launch.rs` für Demo-Regeln und `--open inbox|inbox-empty`; „Remove“ ohne Rückfrage, weil nichts verloren geht und die Regel in der Inbox mit einem Griff wiederkommt)
 - **Modell:** Sonnet · **Braucht:** E1.2, E3.4 · **Dateien:** `crates/torroworkplace/src/ui/inbox.rs` (neu),
   `crates/torroworkplace/src/ui/mod.rs`
 - **Oberfläche:** Gruppe „Notifications“ mit „Quiet during busy events“; Gruppe „Rules“ mit gemerkten

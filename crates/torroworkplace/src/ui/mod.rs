@@ -1,5 +1,5 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
-//! whole suite (accounts, workspaces, apps, agents, approvals, general settings). Concept: `docs/settings.md`,
+//! whole suite (accounts, workspaces, apps, agents, approvals, inbox, general settings). Concept: `docs/settings.md`,
 //! tasks: `docs/tasks/steuerzentrale.md`.
 //!
 //! A separate Iced process (app id `torro-workplace`) that talks to the daemon over the
@@ -42,6 +42,7 @@ mod approvals;
 mod apps;
 mod general;
 mod glance;
+mod inbox;
 mod launch;
 mod overview;
 mod wizard;
@@ -65,7 +66,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
-use torro_inbox::SourceInfo;
+use torro_inbox::{Rule, SourceInfo};
 use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, Status, client};
 use torro_pim::Collection;
 use torro_setups::TemplateSummary;
@@ -83,17 +84,20 @@ pub enum Section {
     Agents,
     /// What agents wait for and what was decided (task A.8).
     Approvals,
+    /// How loud the inbox is and its lasting rules (task E3.7).
+    Inbox,
     General,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Overview,
         Section::Accounts,
         Section::Workspaces,
         Section::Apps,
         Section::Agents,
         Section::Approvals,
+        Section::Inbox,
         Section::General,
     ];
 
@@ -111,6 +115,7 @@ impl Section {
             Section::Apps => tr("Apps"),
             Section::Agents => tr("Agents & API"),
             Section::Approvals => tr("Approvals"),
+            Section::Inbox => tr("Inbox"),
             Section::General => tr("General"),
         }
     }
@@ -126,6 +131,8 @@ impl Section {
             Section::Agents => Icon::Sparkles,
             // A person who confirms: the agent asks, the person decides.
             Section::Approvals => Icon::UserCheck,
+            // The same tray as the Inbox app's "For me".
+            Section::Inbox => Icon::Inbox,
             Section::General => Icon::Settings,
         }
     }
@@ -139,6 +146,7 @@ impl Section {
             Section::Apps => "apps",
             Section::Agents => "agents",
             Section::Approvals => "approvals",
+            Section::Inbox => "inbox",
             Section::General => "general",
         }
     }
@@ -170,6 +178,8 @@ pub struct Data {
     pub task_lists: Vec<Collection>,
     /// The inbox sources with entries or muted (`inbox.list_sources`), for the agents' selections.
     pub sources: Vec<SourceInfo>,
+    /// The lasting rules of the inbox (`inbox.list_rules`): remembered lanes and muted sources.
+    pub rules: Vec<Rule>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -272,6 +282,7 @@ pub struct Ui {
     apps: apps::State,
     agents: agents::State,
     approvals: approvals::State,
+    inbox: inbox::State,
     general: general::State,
 }
 
@@ -313,6 +324,7 @@ pub enum Message {
     Apps(apps::Message),
     Agents(agents::Message),
     Approvals(approvals::Message),
+    Inbox(inbox::Message),
     General(general::Message),
 }
 
@@ -355,6 +367,7 @@ impl Ui {
             apps: apps::State::default(),
             agents: agents::State::default(),
             approvals: approvals::State::default(),
+            inbox: inbox::State::default(),
             general: general::State::default(),
         };
         if demo {
@@ -455,6 +468,12 @@ impl Ui {
                     _ => {}
                 }
                 messages
+            }
+            Open::Inbox => vec![Message::Select(Section::Inbox)],
+            // No rules, so the rules group says where they come from.
+            Open::InboxEmpty => {
+                self.data.rules.clear();
+                vec![Message::Select(Section::Inbox)]
             }
             // No clients, so the page shows its empty state.
             Open::AgentsEmpty => {
@@ -577,6 +596,7 @@ impl Ui {
                 // The add-account dialog shows the outcome of its own requests itself.
                 let in_dialog = accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
+                inbox::answered(&mut self.inbox);
                 // The "Connect agent" dialog shows its errors itself, and may go on with a job.
                 let next = agents::answered(&mut self.agents, &result);
                 self.notice = if in_dialog || next.is_some() { None } else { result.err() };
@@ -613,6 +633,7 @@ impl Ui {
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
             Message::Agents(m) => agents::update(&mut self.agents, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
+            Message::Inbox(m) => inbox::update(&mut self.inbox, m, &self.data),
             Message::General(m) => general::update(&mut self.general, m, &self.data),
         };
         self.perform(action)
@@ -870,6 +891,7 @@ impl Ui {
             Section::Apps => apps::view(&self.apps, &self.data).map(Message::Apps),
             Section::Agents => agents::view(&self.agents, &self.data).map(Message::Agents),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
+            Section::Inbox => inbox::view(&self.inbox, &self.data).map(Message::Inbox),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
@@ -1061,6 +1083,9 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
+            }
+            if let Ok(Response::Rules { rules }) = client::call(&socket, &Request::ListRules).await {
+                data.rules = rules;
             }
             data
         },
@@ -1287,6 +1312,30 @@ mod tests {
     }
 
     #[test]
+    fn the_inbox_section_shows_rules_and_sends_its_requests_to_the_core() {
+        let demo = started(&["--demo", "--section", "inbox"]);
+        assert_eq!(demo.section, Section::Inbox);
+        assert!(!demo.data.rules.is_empty(), "the demo has rules to show");
+        for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+            let _ = demo.window(class);
+        }
+        let open = started(&["--demo", "--open", "inbox"]);
+        assert_eq!((open.section, open.data.rules.len()), (Section::Inbox, demo.data.rules.len()));
+        let empty = started(&["--demo", "--open", "inbox-empty"]);
+        assert_eq!((empty.section, empty.data.rules.len()), (Section::Inbox, 0));
+
+        let mut real = ui(Section::Inbox);
+        for message in
+            [inbox::Message::QuietWhenBusy(false), inbox::Message::Remove("r1".into()), inbox::Message::OpenInbox]
+        {
+            let text = format!("{message:?}");
+            assert_eq!(real.update(Message::Inbox(message)).units(), 1, "{text}: outside the demo it is a request");
+        }
+        let _ = real.update(Message::Sent(Err("not-found".into())));
+        assert_eq!(real.update(Message::Inbox(inbox::Message::Remove("r1".into()))).units(), 1, "the answer frees it");
+    }
+
+    #[test]
     fn the_agents_section_opens_details_and_answers_in_the_demo() {
         let demo = started(&["--demo", "--section", "agents"]);
         assert_eq!(demo.section, Section::Agents);
@@ -1437,12 +1486,16 @@ mod tests {
             Message::Workspaces(workspaces::Message::AskDelete(demo.data.templates[0].id.clone())),
             Message::Workspaces(workspaces::Message::ConfirmDelete),
             Message::Approvals(approvals::Message::Decide { id: demo.data.approvals[0].id.clone(), allow: true }),
+            Message::Inbox(inbox::Message::QuietWhenBusy(false)),
+            Message::Inbox(inbox::Message::Remove(demo.data.rules[0].id.clone())),
+            Message::Inbox(inbox::Message::OpenInbox),
         ];
         for message in messages {
             let text = format!("{message:?}");
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
         assert_eq!(demo.data.accounts.len(), 3, "removing an account in the demo changes nothing");
+        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 3, "nor do the inbox's controls");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");

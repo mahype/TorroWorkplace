@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Local, Utc};
 use torro_core::AppId;
 use torro_core::i18n::trf;
 use torro_core::settings::Settings;
-use torro_inbox::{AgentKind, SourceInfo, SourceRef};
+use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Rights, RightsTemplate, Selection};
 use torro_ipc::{
     AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, IssuedKey, Key, Request, Response,
@@ -72,10 +72,14 @@ pub enum Open {
     AgentWizardDone,
     /// "Connect agent" with the key of a new script, shown once.
     AgentWizardKey,
+    /// The inbox page with the demo's rules (task E3.7).
+    Inbox,
+    /// The inbox page without any rules: the group says where they come from.
+    InboxEmpty,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 22] = [
+    pub const ALL: [(&'static str, Open); 24] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -98,14 +102,16 @@ impl Open {
         ("agent-wizard-rights", Open::AgentWizardRights),
         ("agent-wizard-done", Open::AgentWizardDone),
         ("agent-wizard-key", Open::AgentWizardKey),
+        ("inbox", Open::Inbox),
+        ("inbox-empty", Open::InboxEmpty),
     ];
 }
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|agents|approvals|general`: the page to start on.
+/// - `--section overview|accounts|workspaces|apps|agents|approvals|inbox|general`: the page to start on.
 ///   The states of `--open` that belong to a page choose that page themselves.
-/// - `--demo`: sample accounts, templates, settings, apps, agents and approvals in memory instead
+/// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
 ///   of the service. Nothing is sent and nothing is stored; [`demo_answer`] answers the few
 ///   requests whose answer is a state of its own.
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
@@ -202,7 +208,8 @@ impl Launch {
 /// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
 /// one failed, one denied, one expired ([`demo_approvals`]), and four clients with the calendars,
 /// lists (one a GitHub filter list) and inbox sources their selections choose from
-/// ([`demo_clients`]). Times are relative to now.
+/// ([`demo_clients`]), and inbox rules: two remembered lanes and the muted source of the sources
+/// list ([`demo_rules`]). Times are relative to now.
 pub fn demo_data() -> Data {
     let now = Utc::now();
     let (mut sample, _, _) = torro_pim::demo::sample(Local::now().date_naive());
@@ -331,6 +338,7 @@ pub fn demo_data() -> Data {
         calendars,
         task_lists,
         sources,
+        rules: demo_rules(now),
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -345,6 +353,22 @@ pub fn demo_data() -> Data {
         approvals: demo_approvals(now),
         error: None,
     }
+}
+
+/// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
+/// and the nightly build muted, as the demo's sources list has it.
+fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
+    let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
+        id: id.into(),
+        source,
+        effect,
+        created: now - age,
+    };
+    vec![
+        rule("5e0b7c2a", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }, Duration::days(6)),
+        rule("a81f3d94", SourceRef::script("nightly-build"), RuleEffect::Muted, Duration::days(3)),
+        rule("2c6e9b17", SourceRef::script("backup"), RuleEffect::Lane { lane: Lane::Info }, Duration::days(1)),
+    ]
 }
 
 /// The demo's clients: Claude Code with the default template, Codex with rights of its own
@@ -587,7 +611,8 @@ mod tests {
         }
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
-            err.to_string().ends_with("valid values: overview, accounts, workspaces, apps, agents, approvals, general"),
+            err.to_string()
+                .ends_with("valid values: overview, accounts, workspaces, apps, agents, approvals, inbox, general"),
             "{err}"
         );
         let err = Launch::parse(&args(&["--appearance", "sepia"])).expect_err("unknown appearance");
