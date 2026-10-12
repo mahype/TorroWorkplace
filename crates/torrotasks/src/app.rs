@@ -59,8 +59,15 @@
 //! sidebar, the "…" menu in the head of a filter list has "Edit filter…" and "Delete list…". The
 //! dialog itself is `filter.rs`; the app only opens it, runs its tasks and acts on its
 //! [`filter::Outcome`] (show the saved list, leave a deleted one, reload after a conflict).
+//!
+//! Manual order (task P.3b): a single writable list can be ordered by hand – Display › Order "Due
+//! date" / "Manual", stored per list in the suite settings (`settings.set_setting` `list_order`,
+//! read with the settings on every tick; `--demo` keeps it in the process). In "Manual" the list
+//! has no groups (`list.rs`); Alt+↑/↓ moves the task under the cursor one step among the tasks it is
+//! ordered with, and a row can be dragged by its grip. A move shows at once and goes to the core's
+//! `tasks.move_todo` ([`Moving`], one at a time); an error puts the list back, says so and reloads.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -72,6 +79,7 @@ use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_i
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::ListOrder;
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -82,11 +90,12 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
-use torro_ipc::{Request, Response};
+use torro_ipc::{Request, Response, SettingKey};
 use torro_pim::account::{GITHUB_KIND, account_of, combined_state_for};
 use torro_pim::demo::DemoSource;
 use torro_pim::model::{GitHubFilter, GitHubKind, GitHubState, Link};
-use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, Todo};
+use torro_pim::source::move_plan;
+use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, ProviderError, Todo};
 
 use crate::detail::{self, Detail, Fit};
 use crate::filter;
@@ -145,6 +154,12 @@ pub enum Open {
     FilterList,
     /// The first item pinned in a filter list, in the detail with its "…" menu open (Unpin).
     Pinned,
+    /// The first writable task list in manual order (task P.3b): one run of rows, no groups.
+    Manual,
+    /// The same with the Display menu open on its "Order" section.
+    Order,
+    /// The same with its first row being dragged and the marker two places further down.
+    Drag,
     /// The dialog "New filter list" of the first GitHub account.
     FilterNew,
     /// The dialog "Edit filter list" of the first filter list, shown behind it.
@@ -160,7 +175,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 16] = [
+    const ALL: [(&'static str, Open); 19] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -171,6 +186,9 @@ impl Open {
         ("more", Open::More),
         ("filter", Open::FilterList),
         ("pinned", Open::Pinned),
+        ("manual", Open::Manual),
+        ("order", Open::Order),
+        ("drag", Open::Drag),
         ("filter-new", Open::FilterNew),
         ("filter-edit", Open::FilterEdit),
         ("filter-delete", Open::FilterDelete),
@@ -321,6 +339,27 @@ struct Notice {
     todo: Todo,
     /// When it was closed; the card goes after [`NOTICE_FOR`] ([`Message::NoticeTick`]).
     since: iced::time::Instant,
+}
+
+/// Moves of a list in manual order on their way to the core (task P.3b), sent one at a time: a
+/// move names its tasks by `href` and needs their current etags, which the answer to the one
+/// before brings. Each move shows at once ([`App::move_task`]).
+#[derive(Debug, Clone)]
+struct Moving {
+    /// The tasks as they were before the first move not answered yet: what an error goes back to.
+    undo: Vec<Todo>,
+    /// Moves behind the one in flight, oldest first: the task and the one it goes in front of
+    /// (`None`: the end of its level), by `href`.
+    queued: VecDeque<(String, Option<String>)>,
+}
+
+/// A row being dragged by its grip (task P.3b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Drag {
+    /// The uid of the dragged task, so a reload during the drag does not mix up rows.
+    uid: String,
+    /// Where the marker stands: a place of [`list::drop_places`]; `None` until the pointer moved.
+    place: Option<usize>,
 }
 
 /// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
@@ -477,6 +516,16 @@ pub struct App {
     notice: Option<Notice>,
     /// The dialog of a GitHub filter list, while it is open (task G.4).
     filter_dialog: Option<filter::Dialog>,
+    /// How the task lists are ordered (Display › Order, task P.3b), by list id; a list not named
+    /// here is ordered by due date. From the suite settings; `--demo` keeps it in the process.
+    list_orders: BTreeMap<String, ListOrder>,
+    /// Changes of `list_orders` on their way to the core; until they are answered, the settings
+    /// fetched meanwhile are older than what the window shows and are not taken.
+    orders_saving: usize,
+    /// Moves of a list in manual order the core has not answered yet.
+    moving: Option<Moving>,
+    /// The row being dragged by its grip, if any.
+    drag: Option<Drag>,
 }
 
 // A message may carry a whole task; two kinds do (`Saved`, `IssueChanged`), so Clippy no longer
@@ -563,6 +612,24 @@ pub enum Message {
     Filter(filter::Message),
     /// Open or close the "…" menu in the head of a filter list.
     ToggleListMenu,
+    /// Display › Order: order the list shown like this (task P.3b). Only a single writable list
+    /// has an order of its own.
+    SetListOrder(ListOrder),
+    /// The orders of the task lists as stored in the suite settings; an error keeps the ones we have.
+    ListOrders(Result<BTreeMap<String, ListOrder>, String>),
+    /// The core's answer to storing an order ([`Message::SetListOrder`]).
+    ListOrderSaved(Result<(), String>),
+    /// The grip of `todos[index]` was pressed: the drag begins.
+    DragStart(usize),
+    /// The pointer is at this height in the list's content while a row is dragged.
+    DragMove(f32),
+    /// The mouse button was released while a row is dragged: the task goes where the marker is.
+    DragEnd,
+    /// The core's answer to a move in manual order: the tasks it wrote, with their new etags.
+    Moved(Result<Vec<Todo>, ProviderError>),
+    /// A failed move, said again once the reload it started has come back (a reload clears the
+    /// error line).
+    MoveFailed(String),
 }
 
 /// What a plain key does in the list.
@@ -582,10 +649,15 @@ pub enum Shortcut {
     Sync,
     /// `[`: collapse or expand the sidebar ([`Message::ToggleSidebar`]).
     Sidebar,
+    /// Alt+↑: move the task under the cursor one step up (a list in manual order).
+    MoveUp,
+    /// Alt+↓: move it one step down.
+    MoveDown,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
-/// text field, Enter in quick add) are ignored, and so is anything with Ctrl, Alt or the logo key.
+/// text field, Enter in quick add) are ignored, and so is anything with Ctrl, Alt or the logo key –
+/// except Alt+↑/↓, which move a task in manual order.
 fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     use iced::keyboard::{Event as Key, Key as Name, key::Named};
     if status == iced::event::Status::Captured {
@@ -594,6 +666,13 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
     let iced::Event::Keyboard(Key::KeyPressed { key, modifiers, .. }) = event else { return None };
     if shell::is_sidebar_key(&key, modifiers) {
         return Some(Message::Shortcut(Shortcut::Sidebar));
+    }
+    if modifiers.alt() && !modifiers.control() && !modifiers.logo() {
+        return match key.as_ref() {
+            Name::Named(Named::ArrowUp) => Some(Message::Shortcut(Shortcut::MoveUp)),
+            Name::Named(Named::ArrowDown) => Some(Message::Shortcut(Shortcut::MoveDown)),
+            _ => None,
+        };
     }
     if modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
@@ -615,6 +694,15 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
 /// not tell that someone is typing; the fields are asked instead. A new text field in this window
 /// belongs here. (The title and notes editors take every key they get, so they need no entry.)
 const TEXT_FIELDS: [&str; 3] = [QUICK_ADD, detail::DUE_INPUT, detail::SUBTASK_INPUT];
+
+/// The end of a drag: the left mouse button released anywhere in the window, inside the list or
+/// not (the list only hears what happens over it).
+fn drag_release(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::DragEnd),
+        _ => None,
+    }
+}
 
 /// Whether one of [`TEXT_FIELDS`] has the focus. A field that is not on screen does not answer.
 fn typing() -> Task<bool> {
@@ -652,7 +740,7 @@ impl App {
             system_mode: Mode::None,
             menu: match open {
                 Some(Open::Menu) => Some(Menu::Nav),
-                Some(Open::Display) => Some(Menu::Display),
+                Some(Open::Display | Open::Order) => Some(Menu::Display),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
@@ -664,12 +752,17 @@ impl App {
             opened: false,
             notice: None,
             filter_dialog: None,
+            list_orders: BTreeMap::new(),
+            orders_saving: 0,
+            moving: None,
+            drag: None,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
+            app.fetch_list_orders(),
             app.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             size,
@@ -694,8 +787,17 @@ impl App {
         // like Space must not tick off a task nobody sees.)
         if !self.is_glance() {
             // Escape closes an open menu, drawer, dialog or the detail; nothing listens while none is open.
-            if self.menu.is_some() || self.drawer || self.detail.is_some() || self.filter_dialog.is_some() {
+            if self.menu.is_some()
+                || self.drawer
+                || self.detail.is_some()
+                || self.filter_dialog.is_some()
+                || self.drag.is_some()
+            {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
+            }
+            // Only while a row is dragged: the release ends it wherever it happens.
+            if self.drag.is_some() {
+                subscriptions.push(iced::event::listen_with(drag_release));
             }
             // The keys of the list are not for a list behind a dialog.
             if self.connected() && self.filter_dialog.is_none() {
@@ -931,7 +1033,11 @@ impl App {
             }
             Message::Tick => {
                 self.today = self.launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date());
-                let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
+                let appearance = Task::batch([
+                    self.fetch_appearance(),
+                    self.fetch_list_orders(),
+                    self.zoom.fetch().map(Message::Zoom),
+                ]);
                 // The accounts come with every tick: one may have been added or removed.
                 let accounts = self.fetch_account();
                 if !self.connected() {
@@ -981,6 +1087,8 @@ impl App {
             Message::Escape if self.filter_dialog.is_some() => {
                 return self.update(Message::Filter(filter::Message::Cancel));
             }
+            // Escape drops the dragged row where it was.
+            Message::Escape if self.drag.is_some() => self.drag = None,
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
@@ -1008,6 +1116,23 @@ impl App {
             Message::OpenFilterDialog(open) => return self.open_filter_dialog(open),
             Message::Filter(message) => return self.filter_message(message),
             Message::ToggleListMenu => self.toggle_menu(Menu::List),
+            Message::SetListOrder(order) => return self.set_list_order(order),
+            Message::ListOrders(Ok(orders)) if self.orders_saving == 0 => self.list_orders = orders,
+            // Older than a change on its way, or the core is not answering: keep what we have.
+            Message::ListOrders(_) => {}
+            Message::ListOrderSaved(result) => {
+                self.orders_saving = self.orders_saving.saturating_sub(1);
+                if let Err(err) = result {
+                    self.error = Some(trf("Couldn't save the order: {error}", &[("error", &err)]));
+                    // What is stored comes back with the next fetch.
+                    return self.fetch_list_orders();
+                }
+            }
+            Message::DragStart(index) => self.start_drag(index),
+            Message::DragMove(y) => self.drag_to(y),
+            Message::DragEnd => return self.drop_dragged(),
+            Message::Moved(result) => return self.moved(result),
+            Message::MoveFailed(text) => self.error = Some(text),
             Message::ShortcutChecked(key, typing) => {
                 // `[` works wherever the sidebar is (it also closes the drawer it opened).
                 if !typing && key == Shortcut::Sidebar {
@@ -1039,6 +1164,8 @@ impl App {
             Shortcut::New => self.update(Message::Switcher(Switcher::New)),
             Shortcut::Sync => self.update(Message::Refresh),
             Shortcut::Sidebar => self.toggle_sidebar(),
+            Shortcut::MoveUp => self.move_step(true),
+            Shortcut::MoveDown => self.move_step(false),
         }
     }
 
@@ -1143,6 +1270,8 @@ impl App {
             palette: palette(&self.theme()),
             read_only: self.shown_filter_list().is_some(),
             issue_lists: self.issue_lists(),
+            manual: self.manual(),
+            drag: self.drag.as_ref().and_then(|drag| Some((self.uid_index(&drag.uid)?, drag.place))),
         }
     }
 
@@ -1406,8 +1535,10 @@ impl App {
         detail.properties_column(account.map(account_title), anchor).map(Message::Detail)
     }
 
-    /// The Display menu: how to group the list, "Show completed", and "Sync now" (`R`) under the
-    /// time of the last sync. A GitHub filter list groups by repository or not at all.
+    /// The Display menu: how to group the list, how to order it (a single writable list: "Due
+    /// date" or "Manual", task P.3b), "Show completed", and "Sync now" (`R`) under the time of the
+    /// last sync. A GitHub filter list groups by repository or not at all; a list in manual order
+    /// has no groups, so it offers none.
     fn display_menu(&self) -> Element<'_, Message> {
         use list::GroupBy;
         let grouping = self.grouping();
@@ -1433,15 +1564,29 @@ impl App {
             Some(at) => MenuSection::titled(trf("Synced {when}", &[("when", &ago(at, Utc::now()))]), sync),
             None => MenuSection::new(sync),
         };
-        widgets::menu(vec![
-            MenuSection::titled(tr("Group by"), groups),
-            MenuSection::new(vec![MenuItem::new(
-                check,
-                tr("Show completed"),
-                Message::ShowCompleted(!self.show_completed),
-            )]),
-            synced,
-        ])
+        let mut sections = Vec::new();
+        if !self.manual() {
+            sections.push(MenuSection::titled(tr("Group by"), groups));
+        }
+        if let Some(current) = self.list_order() {
+            let order = |mark: Icon, label: &'static str, order: ListOrder| {
+                MenuItem::new(mark, label, Message::SetListOrder(order)).current(current == order)
+            };
+            sections.push(MenuSection::titled(
+                tr("Order"),
+                vec![
+                    order(Icon::CalendarClock, tr("Due date"), ListOrder::DueDate),
+                    order(Icon::GripVertical, tr("Manual"), ListOrder::Manual),
+                ],
+            ));
+        }
+        sections.push(MenuSection::new(vec![MenuItem::new(
+            check,
+            tr("Show completed"),
+            Message::ShowCompleted(!self.show_completed),
+        )]));
+        sections.push(synced);
+        widgets::menu(sections)
     }
 
     /// The "…" menu of the filter list shown: "Edit filter…" and "Delete list…".
@@ -1861,6 +2006,10 @@ impl App {
         if let Some(open) = dialog {
             return self.open_filter_dialog(open);
         }
+        if matches!(self.launch.open, Some(Open::Manual | Open::Order | Open::Drag)) {
+            self.open_manual();
+            return Task::none();
+        }
         let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
         else {
             return Task::none();
@@ -2082,6 +2231,225 @@ impl App {
         };
         let layer = container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL);
         stack![window, layer].width(Fill).height(Fill).into()
+    }
+}
+
+/// Ordering a list by hand (task P.3b).
+impl App {
+    /// How the list shown is ordered: `None` where it has no order of its own (the smart lists
+    /// Today, Planned and All, a GitHub filter list, a list that is read-only).
+    fn list_order(&self) -> Option<ListOrder> {
+        let Filter::List(id) = &self.filter else { return None };
+        let writable = self.collections.iter().any(|c| &c.id == id && c.writable && c.kind.has_todos());
+        (writable && self.filter_source(id).is_none()).then(|| self.list_orders.get(id).copied().unwrap_or_default())
+    }
+
+    /// The list shown is in manual order.
+    fn manual(&self) -> bool {
+        self.list_order() == Some(ListOrder::Manual)
+    }
+
+    /// Index into `todos` of the task `uid`, in the list shown first (the same item can be in a
+    /// filter list too).
+    fn uid_index(&self, uid: &str) -> Option<usize> {
+        let shown = |t: &Todo| t.uid == uid && matches!(&self.filter, Filter::List(id) if *id == t.collection);
+        self.todos.iter().position(shown).or_else(|| self.todos.iter().position(|t| t.uid == uid))
+    }
+
+    /// Display › Order: orders the list shown by `order`, at once in this window, then in the suite
+    /// settings (`--demo` stores nothing). Folds, the "+" group and the scroll belong to the old
+    /// order. Nothing happens where the list has no order of its own.
+    fn set_list_order(&mut self, order: ListOrder) -> Task<Message> {
+        let (Some(_), Filter::List(id)) = (self.list_order(), &self.filter) else { return Task::none() };
+        let id = id.clone();
+        match order {
+            ListOrder::DueDate => self.list_orders.remove(&id),
+            ListOrder::Manual => self.list_orders.insert(id.clone(), order),
+        };
+        self.menu = None;
+        self.drag = None;
+        self.collapsed.clear();
+        self.quick_group = None;
+        self.scroll = None;
+        let Source::Core(client) = &self.source else { return Task::none() };
+        self.orders_saving += 1;
+        let socket = client.socket.clone();
+        Task::perform(save_list_order(socket, list_order_request(id, order)), Message::ListOrderSaved)
+    }
+
+    /// Asks the core for the orders of the lists. Done with the appearance on every tick, so a
+    /// change in another window reaches this one within a minute. `--demo` has none to ask.
+    fn fetch_list_orders(&self) -> Task<Message> {
+        let Source::Core(client) = &self.source else { return Task::none() };
+        Task::perform(stored_list_orders(client.socket.clone()), Message::ListOrders)
+    }
+
+    /// Alt+↑ (`up`) or Alt+↓: moves the task under the cursor one step among the tasks it is
+    /// ordered with ([`list::step_target`]); nothing at the edge or outside manual order.
+    fn move_step(&mut self, up: bool) -> Task<Message> {
+        if !self.manual() {
+            return Task::none();
+        }
+        let Some(index) = self.cursor.as_deref().and_then(|uid| self.uid_index(uid)) else { return Task::none() };
+        match list::step_target(&self.list_data(), index, up) {
+            Some(before) => self.move_task(index, before),
+            None => Task::none(),
+        }
+    }
+
+    /// The grip of `todos[index]` was pressed: it becomes the cursor row and is dragged.
+    fn start_drag(&mut self, index: usize) {
+        let Some(uid) = self.todos.get(index).map(|t| t.uid.clone()).filter(|_| self.manual()) else { return };
+        self.cursor = Some(uid.clone());
+        self.drag = Some(Drag { uid, place: None });
+    }
+
+    /// The pointer is at `y` in the list's content: the marker goes to the nearest place the
+    /// dragged task may go ([`list::drop_places`]).
+    fn drag_to(&mut self, y: f32) {
+        let Some(index) = self.drag.as_ref().and_then(|drag| self.uid_index(&drag.uid)) else { return };
+        let place = list::nearest_place(&list::drop_places(&self.list_data(), index), y).map(|(place, _)| place);
+        if let Some(drag) = self.drag.as_mut() {
+            drag.place = place;
+        }
+    }
+
+    /// The button was released: the dragged task goes where the marker stands (nothing before the
+    /// pointer moved).
+    fn drop_dragged(&mut self) -> Task<Message> {
+        let Some(drag) = self.drag.take() else { return Task::none() };
+        let (Some(index), Some(place)) = (self.uid_index(&drag.uid), drag.place) else { return Task::none() };
+        let places = list::drop_places(&self.list_data(), index);
+        match places.into_iter().find(|&(at, _)| at == place) {
+            Some((_, before)) => self.move_task(index, before),
+            None => Task::none(),
+        }
+    }
+
+    /// Puts `todos[index]` in front of `todos[before]` (to the end of its level with `None`): at
+    /// once here, renumbered like the core does it ([`move_plan`]), then through the core's
+    /// `tasks.move_todo` – right away, or after the moves still on their way ([`Moving`]). The
+    /// cursor stays on the task and the list scrolls to keep it in view. Nothing when the task is
+    /// there already or has never been stored.
+    fn move_task(&mut self, index: usize, before: Option<usize>) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        let before = before.and_then(|i| self.todos.get(i)).cloned();
+        let Some(href) = todo.href.clone() else { return Task::none() };
+        let plan = move_plan(&self.todos, &todo, before.as_ref()).unwrap_or_default();
+        if plan.is_empty() {
+            return Task::none();
+        }
+        let undo = self.todos.clone();
+        for planned in plan {
+            if let Some(shown) = self.todos.iter_mut().find(|t| t.href == planned.href) {
+                shown.sort_order = planned.sort_order;
+            }
+        }
+        self.cursor = Some(todo.uid.clone());
+        let step = (href, before.and_then(|b| b.href));
+        let reveal = self.reveal(index);
+        if let Some(moving) = self.moving.as_mut() {
+            moving.queued.push_back(step);
+            return reveal;
+        }
+        self.moving = Some(Moving { undo, queued: VecDeque::new() });
+        Task::batch([self.send_move(step), reveal])
+    }
+
+    /// Sends one move to the core with the tasks as this window holds them now (their latest
+    /// etags). A task that is gone meanwhile fails the move like the core would.
+    fn send_move(&self, (href, before): (String, Option<String>)) -> Task<Message> {
+        let find = |href: &str| self.todos.iter().find(|t| t.href.as_deref() == Some(href)).cloned();
+        let before = match before {
+            Some(before) => find(&before).map(Some),
+            None => Some(None),
+        };
+        let (Some(todo), Some(before)) = (find(&href), before) else {
+            return Task::done(Message::Moved(Err(ProviderError::Other(tr("The task is gone").into()))));
+        };
+        let source = self.source.clone();
+        Task::perform(async move { source.move_todo(todo, before).await }, Message::Moved)
+    }
+
+    /// The core's answer to a move. Written tasks keep the place this window gave them and take
+    /// their new etags; the next move waiting goes out, and after the last one the list is
+    /// loaded again. An error puts the list back as it was before the moves still unanswered, says
+    /// what happened (a `conflict`: changed elsewhere) and reloads.
+    fn moved(&mut self, result: Result<Vec<Todo>, ProviderError>) -> Task<Message> {
+        let written = match result {
+            Ok(written) => written,
+            Err(err) => {
+                if let Some(moving) = self.moving.take() {
+                    self.todos = moving.undo;
+                }
+                let text = move_failed(&err);
+                self.error = Some(text.clone());
+                return self.load().chain(Task::done(Message::MoveFailed(text)));
+            }
+        };
+        for stored in written {
+            if let Some(shown) = self.todos.iter_mut().find(|t| t.href.is_some() && t.href == stored.href) {
+                shown.etag = stored.etag;
+            }
+        }
+        match self.moving.as_mut().and_then(|moving| moving.queued.pop_front()) {
+            Some(next) => self.send_move(next),
+            None => {
+                self.moving = None;
+                self.load()
+            }
+        }
+    }
+
+    /// `--open manual | order | drag`: the first writable task list in manual order, for pictures
+    /// of it; `drag` with its first row dragged and the marker two places further down.
+    fn open_manual(&mut self) {
+        let Some(id) = self.writable_lists().first().map(|list| list.id.clone()) else { return };
+        self.filter = Filter::List(id.clone());
+        self.list_orders.insert(id, ListOrder::Manual);
+        if self.launch.open != Some(Open::Drag) {
+            return;
+        }
+        let Some(&first) = list::order(&self.list_data()).first() else { return };
+        let place = list::drop_places(&self.list_data(), first).get(2).map(|&(place, _)| place);
+        self.cursor = Some(self.todos[first].uid.clone());
+        self.drag = Some(Drag { uid: self.todos[first].uid.clone(), place });
+    }
+}
+
+/// The request that stores how the list `list` is ordered (`settings.set_setting` with
+/// `list_order`, task P.3a).
+fn list_order_request(list: String, order: ListOrder) -> Request {
+    Request::SetSetting { key: SettingKey::ListOrder, value: serde_json::json!({ "list": list, "order": order }) }
+}
+
+/// Sends `request` (from [`list_order_request`]) to the core at `socket`.
+async fn save_list_order(socket: std::path::PathBuf, request: Request) -> Result<(), String> {
+    match torro_ipc::client::call(&socket, &request).await {
+        Ok(Response::Ok) => Ok(()),
+        Ok(Response::Error { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// How the task lists are ordered, as the suite settings at the core `socket` say.
+async fn stored_list_orders(socket: std::path::PathBuf) -> Result<BTreeMap<String, ListOrder>, String> {
+    match torro_ipc::client::call(&socket, &Request::Settings).await {
+        Ok(Response::Settings { settings }) => Ok(settings.list_orders),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// What the error line says when a move failed. A conflict means the list changed elsewhere (in
+/// Nextcloud, another app): it is loaded again, so moving once more works.
+fn move_failed(err: &ProviderError) -> String {
+    match err {
+        ProviderError::Conflict { .. } => {
+            tr("The list changed elsewhere and was reloaded. Move the task again.").to_string()
+        }
+        other => trf("Couldn't move the task: {error}", &[("error", other)]),
     }
 }
 
@@ -3325,5 +3693,300 @@ mod tests {
         let _ = app.update(Message::OpenFilterDialog(filter::Open::Edit("nope".into())));
         assert!(app.filter_dialog.is_none());
         assert_eq!(app.github_accounts().count(), 1);
+    }
+
+    /// The demo on the list "Tasks" in manual order (`--open manual`).
+    fn manual_app() -> App {
+        let app = launched(&["--demo", "--open", "manual"]);
+        assert!(app.manual(), "the first writable list, by hand");
+        app
+    }
+
+    /// The uids of the rows as the list shows them.
+    fn rows(app: &App) -> Vec<String> {
+        list::order(&app.list_data()).into_iter().map(|i| app.todos[i].uid.clone()).collect()
+    }
+
+    /// The uids of the top-level open rows, in the order shown.
+    fn top_rows(app: &App) -> Vec<String> {
+        let data = app.list_data();
+        let top = |&(i, depth): &(usize, usize)| (depth == 0 && !app.todos[i].completed).then_some(i);
+        list::arrange(&data).iter().filter_map(top).map(|i| app.todos[i].uid.clone()).collect()
+    }
+
+    fn put_cursor(app: &mut App, uid: &str) {
+        app.cursor = Some(uid.to_string());
+    }
+
+    #[test]
+    fn the_order_is_offered_for_a_single_writable_list_only() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        assert_eq!(app.list_order(), None, "Today has no order of its own");
+        for filter in [Filter::Planned, Filter::All, Filter::List(torro_pim::demo::NEEDS_ME.into())] {
+            let _ = app.update(Message::SetFilter(filter.clone()));
+            assert_eq!(app.list_order(), None, "{filter:?}");
+            assert_eq!(app.update(Message::SetListOrder(ListOrder::Manual)).units(), 0);
+            assert!(app.list_orders.is_empty(), "nothing is set for {filter:?}");
+        }
+        let tasks = app.writable_lists().first().map(|list| list.id.clone()).expect("a writable list");
+        let _ = app.update(Message::SetFilter(Filter::List(tasks.clone())));
+        assert_eq!(app.list_order(), Some(ListOrder::DueDate), "by due date until set otherwise");
+        let _ = app.update(Message::ToggleDisplay);
+        assert_eq!(app.update(Message::SetListOrder(ListOrder::Manual)).units(), 0, "the demo keeps it in the process");
+        assert_eq!(app.list_orders.get(&tasks), Some(&ListOrder::Manual));
+        assert!(app.manual() && app.menu.is_none(), "chosen, the menu closes");
+        assert_eq!(list::grouped(&app.list_data()).len(), 1, "no due groups");
+        let _ = app.update(Message::SetListOrder(ListOrder::DueDate));
+        assert!(app.list_orders.is_empty(), "the default is not kept");
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            for order in [ListOrder::DueDate, ListOrder::Manual] {
+                let _ = app.update(Message::SetListOrder(order));
+                let _ = app.update(Message::ToggleDisplay);
+                let _ = app.view();
+                let _ = app.update(Message::CloseMenu);
+            }
+        }
+    }
+
+    #[test]
+    fn the_menu_writes_the_setting_through_the_core() {
+        assert_eq!(
+            list_order_request("work".into(), ListOrder::Manual),
+            Request::SetSetting {
+                key: SettingKey::ListOrder,
+                value: serde_json::json!({ "list": "work", "order": "manual" }),
+            }
+        );
+        assert_eq!(
+            list_order_request("work".into(), ListOrder::DueDate),
+            Request::SetSetting {
+                key: SettingKey::ListOrder,
+                value: serde_json::json!({ "list": "work", "order": "due_date" }),
+            }
+        );
+        // A core that is never asked here: the tasks are built, not run.
+        let core = Source::Core(torro_ipc::pim::PimClient { socket: "no-core.sock".into() });
+        let (mut app, _) = App::new(core, Launch::default());
+        connected(&mut app);
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        let tasks = app.writable_lists().first().map(|list| list.id.clone()).expect("a writable list");
+        let _ = app.update(Message::SetFilter(Filter::List(tasks.clone())));
+        assert_eq!(app.update(Message::SetListOrder(ListOrder::Manual)).units(), 1, "set_setting goes out");
+        assert_eq!(app.orders_saving, 1);
+        let _ = app.update(Message::ListOrders(Ok(BTreeMap::new())));
+        assert!(app.manual(), "settings read before the change are not taken");
+        let _ = app.update(Message::ListOrderSaved(Ok(())));
+        let _ = app.update(Message::ListOrders(Ok(BTreeMap::from([(tasks.clone(), ListOrder::Manual)]))));
+        assert!(app.manual() && app.error.is_none());
+        let _ = app.update(Message::ListOrders(Ok(BTreeMap::new())));
+        assert!(!app.manual(), "changed in another window: followed");
+        let _ = app.update(Message::SetListOrder(ListOrder::Manual));
+        assert!(app.update(Message::ListOrderSaved(Err("core is not running".into()))).units() > 0, "fetched again");
+        let said = trf("Couldn't save the order: {error}", &[("error", &"core is not running")]);
+        assert_eq!(app.error, Some(said));
+    }
+
+    #[test]
+    fn alt_arrows_move_the_task_in_manual_order_and_stop_at_the_edges() {
+        let mut app = manual_app();
+        assert_eq!(press(&mut app, Shortcut::MoveDown).units(), 0, "nothing without a cursor");
+        let before = top_rows(&app);
+        assert!(before.len() >= 3, "the sample has tasks to order: {before:?}");
+        put_cursor(&mut app, &before[0]);
+        assert_eq!(press(&mut app, Shortcut::MoveUp).units(), 0, "the first stays first");
+        assert_eq!(top_rows(&app), before);
+        assert!(app.moving.is_none());
+
+        assert!(press(&mut app, Shortcut::MoveDown).units() > 0, "the move goes to the core");
+        let mut expected = before.clone();
+        expected.swap(0, 1);
+        assert_eq!(top_rows(&app), expected, "shown at once");
+        assert_eq!(cursor(&app), Some(before[0].as_str()), "the cursor stays on the task");
+        assert!(app.moving.as_ref().is_some_and(|moving| moving.queued.is_empty()));
+
+        // A second move waits for the answer to the first, then goes out.
+        let _ = press(&mut app, Shortcut::MoveDown);
+        expected.swap(1, 2);
+        assert_eq!(top_rows(&app), expected);
+        assert_eq!(app.moving.as_ref().map(|moving| moving.queued.len()), Some(1));
+        assert!(app.update(Message::Moved(Ok(Vec::new()))).units() > 0, "the next one is sent");
+        assert!(app.moving.as_ref().is_some_and(|moving| moving.queued.is_empty()));
+        assert!(app.update(Message::Moved(Ok(Vec::new()))).units() > 0, "after the last one: reload");
+        assert!(app.moving.is_none());
+
+        let last = expected.last().cloned().expect("a last row");
+        put_cursor(&mut app, &last);
+        assert_eq!(press(&mut app, Shortcut::MoveDown).units(), 0, "the last stays last");
+        assert!(press(&mut app, Shortcut::MoveUp).units() > 0);
+        let n = expected.len();
+        expected.swap(n - 2, n - 1);
+        assert_eq!(top_rows(&app), expected);
+    }
+
+    #[test]
+    fn subtasks_move_under_their_parent_and_parents_take_them_along() {
+        let mut app = manual_app();
+        let shown = rows(&app);
+        let parent_of = |uid: &str| app.todos.iter().find(|t| t.uid == uid).and_then(|t| t.parent.clone());
+        let first_kid = shown.iter().find(|uid| parent_of(uid).is_some()).expect("the sample has subtasks");
+        let parent = parent_of(first_kid).expect("a parent");
+        let kids: Vec<String> = shown.iter().filter(|uid| parent_of(uid).as_ref() == Some(&parent)).cloned().collect();
+        assert!(kids.len() >= 2, "a task with two subtasks or more");
+        let block = |rows: &[String]| {
+            let at = rows.iter().position(|uid| *uid == parent).expect("the parent is shown");
+            rows[at..=at + kids.len()].to_vec()
+        };
+        let mut family = block(&shown);
+        assert_eq!(&family[1..], &kids[..], "the subtasks follow their parent");
+
+        put_cursor(&mut app, &kids[0]);
+        assert_eq!(press(&mut app, Shortcut::MoveUp).units(), 0, "the first subtask stays under its parent");
+        assert!(press(&mut app, Shortcut::MoveDown).units() > 0);
+        family.swap(1, 2);
+        assert_eq!(block(&rows(&app)), family, "moved among its siblings, still under the parent");
+        put_cursor(&mut app, family.last().expect("a last subtask"));
+        let _ = app.update(Message::Moved(Ok(Vec::new())));
+        let last = rows(&app);
+        assert_eq!(press(&mut app, Shortcut::MoveDown).units(), 0, "the last subtask does not leave its parent");
+        assert_eq!(rows(&app), last);
+
+        // The parent moves with its subtasks.
+        put_cursor(&mut app, &parent);
+        let top = top_rows(&app);
+        let up = top.iter().position(|uid| *uid == parent).is_some_and(|at| at > 0);
+        let _ = press(&mut app, if up { Shortcut::MoveUp } else { Shortcut::MoveDown });
+        assert_eq!(block(&rows(&app)), family, "the subtasks come along");
+        assert_ne!(top_rows(&app), top);
+    }
+
+    #[test]
+    fn a_failed_move_goes_back_says_so_and_reloads() {
+        let mut app = manual_app();
+        let before = rows(&app);
+        let orders: Vec<Option<i64>> = app.todos.iter().map(|t| t.sort_order).collect();
+        let first = top_rows(&app)[0].clone();
+        put_cursor(&mut app, &first);
+        let _ = press(&mut app, Shortcut::MoveDown);
+        let _ = press(&mut app, Shortcut::MoveDown);
+        assert_ne!(rows(&app), before);
+        let reload = app.update(Message::Moved(Err(ProviderError::Conflict { uid: String::new() })));
+        assert!(reload.units() > 0, "loaded again");
+        assert_eq!(rows(&app), before, "back as before the first unanswered move");
+        assert_eq!(app.todos.iter().map(|t| t.sort_order).collect::<Vec<_>>(), orders);
+        assert!(app.moving.is_none(), "the waiting move is dropped");
+        let conflict = tr("The list changed elsewhere and was reloaded. Move the task again.");
+        assert_eq!(app.error.as_deref(), Some(conflict));
+        // The reload clears the error line; the message brings it back.
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        let _ = app.update(Message::MoveFailed(conflict.into()));
+        assert_eq!(app.error.as_deref(), Some(conflict));
+
+        let _ = press(&mut app, Shortcut::MoveDown);
+        let _ = app.update(Message::Moved(Err(ProviderError::Offline)));
+        let said = trf("Couldn't move the task: {error}", &[("error", &ProviderError::Offline)]);
+        assert_eq!(app.error, Some(said));
+        assert_eq!(rows(&app), before);
+    }
+
+    #[test]
+    fn a_move_reaches_the_demo_source_and_a_stale_one_is_a_conflict() {
+        let mut app = manual_app();
+        let top = top_rows(&app);
+        let index = |app: &App, uid: &str| app.uid_index(uid).expect("shown");
+        let (first, second) = (app.todos[index(&app, &top[0])].clone(), app.todos[index(&app, &top[1])].clone());
+        // What the core answers when the first task goes behind the second (the third is in front).
+        let third = app.todos[index(&app, &top[2])].clone();
+        let written = iced::futures::executor::block_on(app.source.move_todo(first.clone(), Some(third)));
+        let written = written.expect("the demo moves it");
+        assert!(!written.is_empty());
+        let stale = iced::futures::executor::block_on(app.source.move_todo(first, Some(second)));
+        assert!(matches!(stale, Err(ProviderError::Conflict { .. })), "{stale:?}");
+        assert_eq!(move_failed(&ProviderError::Conflict { uid: String::new() }), app_conflict_text());
+        let _ = app.update(Message::Moved(Ok(written)));
+    }
+
+    fn app_conflict_text() -> String {
+        tr("The list changed elsewhere and was reloaded. Move the task again.").to_string()
+    }
+
+    #[test]
+    fn a_row_is_dragged_by_its_grip_to_the_marker() {
+        let mut app = manual_app();
+        let top = top_rows(&app);
+        let first = app.uid_index(&top[0]).expect("shown");
+        let idle = app.subscription().units();
+        let _ = app.update(Message::DragStart(first));
+        assert_eq!(app.drag, Some(Drag { uid: top[0].clone(), place: None }));
+        assert_eq!(cursor(&app), Some(top[0].as_str()), "the dragged row is the cursor row");
+        assert_eq!(app.subscription().units(), idle + 2, "Escape and the release listen while dragging");
+        assert_eq!(app.update(Message::DragEnd).units(), 0, "released before it moved: nothing");
+        assert!(app.drag.is_none());
+
+        let _ = app.update(Message::DragStart(first));
+        let places = list::drop_places(&app.list_data(), first);
+        let (place, _) = places[2];
+        let _ = app.update(Message::DragMove(place as f32 * size::ROW + 3.0));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.place), Some(place), "the marker snaps to the place");
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        assert!(app.update(Message::DragEnd).units() > 0, "dropped: the move goes out");
+        let mut expected = top.clone();
+        expected.swap(0, 1);
+        assert_eq!(top_rows(&app), expected, "in front of the third, behind the second");
+
+        // Escape lets go without moving.
+        let _ = app.update(Message::Moved(Ok(Vec::new())));
+        let now = rows(&app);
+        let _ = app.update(Message::DragStart(first));
+        let _ = app.update(Message::DragMove(0.0));
+        let _ = app.update(Message::Escape);
+        assert!(app.drag.is_none());
+        assert_eq!(app.update(Message::DragEnd).units(), 0);
+        assert_eq!(rows(&app), now);
+    }
+
+    #[test]
+    fn the_drag_state_starts_with_the_marker_shown() {
+        let app = launched(&["--demo", "--open", "drag"]);
+        assert!(app.manual());
+        assert!(app.drag.as_ref().is_some_and(|drag| drag.place.is_some()));
+        let order = launched(&["--demo", "--open", "order"]);
+        assert_eq!(order.menu, Some(Menu::Display));
+        assert!(order.manual());
+    }
+
+    #[test]
+    fn alt_with_the_arrows_moves_and_nothing_else() {
+        use iced::event::Status;
+        use iced::keyboard::{Event, Key, Location, Modifiers, key::Named, key::Physical};
+        let press = |key: Key, modifiers: Modifiers| {
+            iced::Event::Keyboard(Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+                location: Location::Standard,
+                modifiers,
+                text: None,
+                repeat: false,
+            })
+        };
+        let id = iced::window::Id::unique();
+        let up = shortcut(press(Key::Named(Named::ArrowUp), Modifiers::ALT), Status::Ignored, id);
+        assert!(matches!(up, Some(Message::Shortcut(Shortcut::MoveUp))));
+        let down = shortcut(press(Key::Named(Named::ArrowDown), Modifiers::ALT), Status::Ignored, id);
+        assert!(matches!(down, Some(Message::Shortcut(Shortcut::MoveDown))));
+        assert!(shortcut(press(Key::Character("j".into()), Modifiers::ALT), Status::Ignored, id).is_none());
+        let both = Modifiers::ALT | Modifiers::CTRL;
+        assert!(shortcut(press(Key::Named(Named::ArrowUp), both), Status::Ignored, id).is_none());
+        assert!(shortcut(press(Key::Named(Named::ArrowUp), Modifiers::ALT), Status::Captured, id).is_none());
+        // Outside manual order Alt+↓ does nothing.
+        let mut app = app_with_rows();
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Down, false));
+        assert_eq!(app.update(Message::ShortcutChecked(Shortcut::MoveDown, false)).units(), 0);
     }
 }

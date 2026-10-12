@@ -32,14 +32,21 @@
 //! For the keyboard (T.3) [`order`] gives the visible order of the rows and [`row_span`] where a
 //! row lies in the scrolled content, so `app.rs` can step through the rows and keep the chosen
 //! one in view; the scrollable reports its viewport as `Message::Scrolled`.
+//!
+//! **Manual order** (task P.3b, [`ListData::manual`]): one run of rows without group heads, sorted
+//! as the user put them ([`manual_order`]; open before done, subtasks under their parent). A row
+//! shows a grip in its left inner margin on hover; pressing it starts a drag
+//! (`Message::DragStart`), the list reports the pointer's height (`Message::DragMove`) and shows a
+//! 2-px marker in `text_2` where the task would go. [`drop_places`] says where a task may go – only
+//! among the tasks it is ordered with ([`same_level`]) – and [`step_target`] where Alt+↑/↓ takes it.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::{
-    Space, button, center, checkbox, column, container, mouse_area, responsive, rich_text, row, rule, scrollable, span,
-    svg, text,
+    Column, Space, button, center, checkbox, column, container, hover, mouse_area, responsive, rich_text, row, rule,
+    scrollable, span, stack, svg, text,
 };
 use iced::{Alignment, Background, Color, Element, Fill, Length, Padding, Theme, border, mouse};
 use torro_core::i18n::{tr, trf};
@@ -48,6 +55,7 @@ use torro_gui::theme::{self, Palette, palette, radius, size, space};
 use torro_gui::typo::{self, ellipsize, text_width};
 use torro_gui::{datetime, style, widgets};
 use torro_pim::model::{ChecksState, GitHubDetails, GitHubKind, GitHubState, Link, ReviewState};
+use torro_pim::source::{manual_order, same_level};
 use torro_pim::{EventTime, Todo};
 
 use crate::app::{Filter, Message};
@@ -84,19 +92,33 @@ pub struct ListData<'a> {
     /// check of [`issue_check`], locked where this is `false`; their pull requests none. A GitHub
     /// item in any other list is a link (task G.6) and gets that check, never locked.
     pub issue_lists: HashMap<String, bool>,
+    /// The list is in "Manual order" (Display › Order, task P.3b): one run without group heads,
+    /// sorted by [`manual_order`] (open before done, subtasks under their parent), each row with a
+    /// grip in its left inner margin on hover to drag it. Only a single writable list is.
+    pub manual: bool,
+    /// While a row is dragged by its grip: the task (index into `todos`) and the place in [`order`]
+    /// the marker stands above (`order.len()`: under the last row; `None` until the pointer moved).
+    pub drag: Option<(usize, Option<usize>)>,
 }
 
 /// The tasks to show as `(index into todos, depth)`: `depth` 0 for top-level tasks, 1 for
 /// their subtasks and so on. Filter: `Today` = due today or earlier; `Planned` = with a due
 /// date; `All`; `List(id)` = that collection. Completed ones only with `show_completed`.
 /// Order: open before done, then by due date (none last), then priority (1 first, none
-/// last), then title; subtasks follow their parent in the same order. A subtask whose
-/// parent is filtered out is shown at depth 0.
+/// last), then title – in [`ListData::manual`] by [`manual_order`] instead; subtasks follow their
+/// parent in the same order. A subtask whose parent is filtered out is shown at depth 0.
 pub fn arrange(data: &ListData<'_>) -> Vec<(usize, usize)> {
     let todos = data.todos;
     let mut shown: Vec<usize> =
         (0..todos.len()).filter(|&i| is_shown(&todos[i], data.filter, data.show_completed, data.today)).collect();
-    shown.sort_by(|&a, &b| compare(&todos[a], &todos[b]));
+    if data.manual {
+        // Done tasks are a level of their own (`same_level`), so they stay below the open ones.
+        shown.sort_by(|&a, &b| {
+            todos[a].completed.cmp(&todos[b].completed).then_with(|| manual_order(&todos[a], &todos[b]))
+        });
+    } else {
+        shown.sort_by(|&a, &b| compare(&todos[a], &todos[b]));
+    }
 
     // Sorting first means the roots and every children list come out in display order.
     let uids: HashSet<&str> = shown.iter().map(|&i| todos[i].uid.as_str()).collect();
@@ -423,13 +445,15 @@ impl Group {
 
 /// [`arrange`]'s tasks split into their [`Group`]s for [`ListData::group_by`], in display order
 /// and without empty groups. A top-level task decides the group; its subtasks stay with it, so a
-/// tree is never split. Within a group the rows keep [`arrange`]'s order.
+/// tree is never split. Within a group the rows keep [`arrange`]'s order. A list in manual order
+/// has one group without a head ([`Group::All`]).
 pub fn grouped(data: &ListData<'_>) -> Vec<(Group, Vec<(usize, usize)>)> {
+    let by = if data.manual { GroupBy::None } else { data.group_by };
     let mut groups: Vec<(Group, Vec<(usize, usize)>)> = Vec::new();
     let mut current = 0;
     for (index, depth) in arrange(data) {
         if depth == 0 {
-            let group = Group::of(&data.todos[index], data.group_by, data.today);
+            let group = Group::of(&data.todos[index], by, data.today);
             current = match groups.iter().position(|(known, _)| *known == group) {
                 Some(position) => position,
                 None => {
@@ -494,6 +518,57 @@ pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Manual order
+// ---------------------------------------------------------------------------------------------
+
+/// Where `todos[index]` may go in a list in manual order, top to bottom, as `(place, before)`: the
+/// marker stands above the row at `place` in [`order`] (`order.len()`: under the last row), and the
+/// task goes in front of `todos[before]`, or to the end of its level with `None`. Only the tasks it
+/// is ordered with are places ([`same_level`]: same list, same parent, both open or both done), so a
+/// subtask stays under its parent and a task takes its subtasks along. The task's own place is
+/// among them (dropping it there changes nothing). Empty when the task is not shown.
+pub fn drop_places(data: &ListData<'_>, index: usize) -> Vec<(usize, Option<usize>)> {
+    let rows = arrange(data);
+    let Some(todo) = data.todos.get(index).filter(|_| rows.iter().any(|&(i, _)| i == index)) else {
+        return Vec::new();
+    };
+    let mut places = Vec::new();
+    let mut end = None;
+    for (place, &(i, depth)) in rows.iter().enumerate() {
+        if same_level(&data.todos[i], todo) {
+            places.push((place, Some(i)));
+            // The end of the level lies behind the subtasks of its last task.
+            let subtasks = rows[place + 1..].iter().take_while(|&&(_, d)| d > depth).count();
+            end = Some(place + 1 + subtasks);
+        }
+    }
+    places.extend(end.map(|end| (end, None)));
+    places
+}
+
+/// The place of `places` ([`drop_places`]) whose marker is nearest to `y`, the pointer's height in
+/// the list's content (rows are [`size::ROW`] high; a list in manual order has no heads).
+pub fn nearest_place(places: &[(usize, Option<usize>)], y: f32) -> Option<(usize, Option<usize>)> {
+    let distance = |place: usize| (place as f32 * size::ROW - y).abs();
+    places.iter().copied().min_by(|a, b| distance(a.0).total_cmp(&distance(b.0)))
+}
+
+/// Where Alt+↑ (`up`) or Alt+↓ takes `todos[index]` in a list in manual order: one step among the
+/// tasks it is ordered with ([`drop_places`]). `Some(Some(i))` in front of `todos[i]`, `Some(None)`
+/// to the end of its level, `None` when it is the first (↑) or last (↓) there already or not shown.
+pub fn step_target(data: &ListData<'_>, index: usize, up: bool) -> Option<Option<usize>> {
+    let places = drop_places(data, index);
+    let at = places.iter().position(|&(_, before)| before == Some(index))?;
+    if up {
+        return at.checked_sub(1).map(|previous| places[previous].1);
+    }
+    // The place after the next task: in front of the one behind it, or the end. The last task
+    // has only the end behind it.
+    places.get(at + 1)?.1?;
+    places.get(at + 2).map(|&(_, before)| before)
+}
+
+// ---------------------------------------------------------------------------------------------
 // Shortening by width
 // ---------------------------------------------------------------------------------------------
 
@@ -548,8 +623,11 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     }
     let parts = RowParts::for_width(data.width);
     let subtasks = subtask_counts(data.todos);
+    let held = data.drag.map(|(index, _)| index);
     let mut list = column![].width(Fill);
     let mut after_head = false;
+    // Rows and the depth of the dragged one, for the marker of a list in manual order.
+    let (mut rows, mut held_depth) = (0, 0);
     for (group, items) in groups {
         let folded = data.collapsed.contains(&group);
         if group != Group::All {
@@ -566,17 +644,75 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
         }
         let under_today = group == Group::Today;
         for (index, depth) in items {
-            list = list.push(row_view(&data, index, depth, parts, &subtasks, under_today));
+            let line = row_view(&data, index, depth, parts, &subtasks, under_today);
+            list = list.push(if data.manual { with_grip(line, index, held == Some(index)) } else { line });
+            if held == Some(index) {
+                held_depth = depth;
+            }
+            rows += 1;
             after_head = false;
         }
     }
-    scrollable(list)
+    let content = if data.manual { manual_content(list, &data, rows, held_depth) } else { list.into() };
+    scrollable(content)
         .id(SCROLL)
         .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Fill)
         .height(Fill)
+        .into()
+}
+
+/// A row of a list in manual order with its grip: in the 16 left of the leading symbol, shown while
+/// the pointer is over the row (and always on the row being dragged, `held`). Pressing it starts a
+/// drag ([`Message::DragStart`]); the press stays with the grip, so the row does not open.
+fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool) -> Element<'a, Message> {
+    let mark =
+        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(space::L).center_y(size::ROW - LINE);
+    let grip = mouse_area(widgets::with_tooltip(mark, tr("Drag to reorder")))
+        .on_press(Message::DragStart(index))
+        .interaction(mouse::Interaction::Grab);
+    if held { stack![line, grip].into() } else { hover(line, grip) }
+}
+
+/// The rows of a list in manual order, with the marker over them where a dragged task would go.
+/// The pointer's height is reported ([`Message::DragMove`]) only while a row is dragged, so merely
+/// moving the pointer over the list costs nothing. The same widgets with and without a drag, so
+/// starting one keeps the rows' state.
+fn manual_content<'a>(
+    rows: Column<'a, Message>,
+    data: &ListData<'a>,
+    count: usize,
+    depth: usize,
+) -> Element<'a, Message> {
+    let marker = match data.drag {
+        Some((_, Some(place))) => drop_marker(place, count, depth),
+        _ => Space::new().into(),
+    };
+    let area = mouse_area(stack![rows, marker].width(Fill));
+    match data.drag {
+        Some(_) => area.on_move(|point| Message::DragMove(point.y)).interaction(mouse::Interaction::Grabbing).into(),
+        None => area.into(),
+    }
+}
+
+/// How thick the drop marker is.
+const MARKER: f32 = 2.0 * size::HAIRLINE;
+
+/// The drop marker: a 2-px line in `text_2` on the line above the row at `place` (under the last
+/// of `rows` at the end), from the indent of the dragged task's level (`depth`) to the right edge.
+fn drop_marker<'a>(place: usize, rows: usize, depth: usize) -> Element<'a, Message> {
+    let bottom = rows as f32 * size::ROW;
+    let top = (place as f32 * size::ROW - MARKER / 2.0).clamp(0.0, (bottom - MARKER).max(0.0));
+    let line = container(Space::new().width(Fill).height(MARKER)).style(|t: &Theme| container::Style {
+        background: Some(Background::Color(palette(t).text_2)),
+        border: border::rounded(MARKER / 2.0),
+        ..container::Style::default()
+    });
+    let indent = space::L + depth as f32 * space::XL;
+    column![Space::new().height(top), container(line).padding(Padding::new(0.0).left(indent).right(space::L))]
+        .width(Fill)
         .into()
 }
 
@@ -1109,6 +1245,8 @@ mod tests {
             palette: palette(&Theme::Dark),
             read_only: false,
             issue_lists: HashMap::new(),
+            manual: false,
+            drag: None,
         }
     }
 
@@ -1577,5 +1715,89 @@ mod tests {
         assert_eq!(Group::Repo("mahype/torro-design".into()).label(&d.names), "mahype/torro-design");
         assert_eq!(Group::Repo(String::new()).label(&d.names), tr("No repository"));
         assert!(!Group::Repo("mahype/torro-design".into()).can_add(), "nothing is added to GitHub here");
+    }
+
+    /// A task of the list "work" stored at its own href, with a number for manual order.
+    fn placed(uid: &str, sort_order: i64) -> Todo {
+        Todo { href: Some(format!("work/{uid}.ics")), sort_order: Some(sort_order), ..todo(uid, uid) }
+    }
+
+    /// The list "work" in manual order: a (with subtasks a1, a2), b, c – and, done, d.
+    fn manual_list() -> Vec<Todo> {
+        vec![
+            Todo { due: due(9), ..placed("c", 30) },
+            placed("b", 20),
+            Todo { parent: Some("a".into()), ..placed("a2", 2) },
+            placed("a", 10),
+            Todo { parent: Some("a".into()), ..placed("a1", 1) },
+            Todo { completed: true, ..placed("d", 5) },
+        ]
+    }
+
+    fn index_of(todos: &[Todo], uid: &str) -> usize {
+        todos.iter().position(|t| t.uid == uid).expect("a task of the sample")
+    }
+
+    #[test]
+    fn manual_order_is_one_run_by_hand_with_subtasks_under_their_parent() {
+        let todos = manual_list();
+        let filter = Filter::List("work".into());
+        let d = ListData { manual: true, ..data(&todos, &filter, true) };
+        assert_eq!(
+            shown_manual(&todos, &d),
+            [("a", 0), ("a1", 1), ("a2", 1), ("b", 0), ("c", 0), ("d", 0)],
+            "by number, not by due date; done ones last"
+        );
+        let groups: Vec<Group> = grouped(&d).into_iter().map(|(group, _)| group).collect();
+        assert_eq!(groups, [Group::All], "no heads, not even Overdue for c");
+        assert_eq!(row_span(&d, index_of(&todos, "b")), Some((3.0 * size::ROW, 4.0 * size::ROW)));
+        let _ = view(ListData { drag: Some((index_of(&todos, "b"), Some(1))), ..d });
+    }
+
+    fn shown_manual<'a>(todos: &'a [Todo], d: &ListData<'a>) -> Vec<(&'a str, usize)> {
+        arrange(d).into_iter().map(|(i, depth)| (todos[i].uid.as_str(), depth)).collect()
+    }
+
+    #[test]
+    fn a_task_may_only_go_among_the_tasks_it_is_ordered_with() {
+        let todos = manual_list();
+        let filter = Filter::List("work".into());
+        let d = ListData { manual: true, ..data(&todos, &filter, true) };
+        let at = |uid: &str| Some(index_of(&todos, uid));
+        // Rows: a 0, a1 1, a2 2, b 3, c 4, d 5.
+        assert_eq!(
+            drop_places(&d, index_of(&todos, "b")),
+            [(0, at("a")), (3, at("b")), (4, at("c")), (5, None)],
+            "a top-level task goes above a, b or c, or below c – never between a and its subtasks"
+        );
+        assert_eq!(drop_places(&d, index_of(&todos, "a2")), [(1, at("a1")), (2, at("a2")), (3, None)]);
+        assert_eq!(drop_places(&d, index_of(&todos, "d")), [(5, at("d")), (6, None)], "done ones among themselves");
+        let hidden = ListData { show_completed: false, ..data(&todos, &filter, false) };
+        assert!(drop_places(&ListData { manual: true, ..hidden }, index_of(&todos, "d")).is_empty());
+
+        let places = drop_places(&d, index_of(&todos, "b"));
+        assert_eq!(nearest_place(&places, 0.0), Some((0, at("a"))));
+        assert_eq!(nearest_place(&places, 1.4 * size::ROW), Some((0, at("a"))), "nearer a than b");
+        assert_eq!(nearest_place(&places, 4.6 * size::ROW), Some((5, None)));
+        assert_eq!(nearest_place(&[], 10.0), None);
+    }
+
+    #[test]
+    fn alt_arrows_step_among_the_tasks_of_the_level_and_stop_at_its_edges() {
+        let todos = manual_list();
+        let filter = Filter::List("work".into());
+        let d = ListData { manual: true, ..data(&todos, &filter, true) };
+        let step = |uid: &str, up: bool| step_target(&d, index_of(&todos, uid), up);
+        let before = |uid: &str| Some(Some(index_of(&todos, uid)));
+        assert_eq!(step("b", true), before("a"));
+        assert_eq!(step("b", false), Some(None), "below c: the end");
+        assert_eq!(step("a", false), before("c"), "past b, with its subtasks");
+        assert_eq!(step("a", true), None, "the first stays");
+        assert_eq!(step("c", false), None, "the last stays");
+        assert_eq!(step("c", true), before("b"));
+        assert_eq!(step("a1", false), Some(None), "a subtask stays under its parent");
+        assert_eq!(step("a2", true), before("a1"));
+        assert_eq!(step("a1", true), None);
+        assert_eq!((step("d", true), step("d", false)), (None, None), "alone among the done ones");
     }
 }

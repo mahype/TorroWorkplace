@@ -138,7 +138,7 @@ K.21 (frei)
   Rechte (Client ohne die Liste → `not-found`), MCP-Tool baut den richtigen Request.
 
 ### P.3b Reihenfolge von Hand: Oberfläche
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** P.3a, Redesign der Aufgaben-App · **Dateien:** `crates/torrotasks/src/{app,list}.rs`
 - In „Manual order“ Griff beim Hover im linken Innenrand, Ziehen mit Platzhalterzeile, Alt+↑/↓; Liste › Menü
   „Display“ › „Order“. Nutzt `tasks.move_todo` und `settings.set_setting` aus P.3a.
