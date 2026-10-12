@@ -264,6 +264,19 @@ K.21 (frei)
   mit Sammlungen der jeweiligen Art zählen.
 - Abnahme: Sichtprüfung `--demo` in allen Größenklassen (`torro-design-review`).
 
+### G.3b Filterlisten: Kleinigkeiten aus G.3
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** G.3 · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`, `crates/torro-gui/src/icon.rs`
+  (+ `assets/icons/pin-off.svg`), ggf. `crates/torroworkplace/src/pim.rs` (Reihenfolge)
+- **Dasselbe Issue in zwei Filterlisten:** Der Kern nimmt die Link-Kennung als `uid`; die App findet Cursor und
+  offenes Detail nur über `uid` und kann so auf der falschen Kopie landen. Cursor/Detail über (`collection`, `uid`).
+- **Reihenfolge in Filterlisten** wie die Sortierung der Suche (`sort:updated-desc` usw.), nicht nach
+  Fälligkeit/Priorität/Titel (`docs/github.md`, „Anzeige“) – der Kern liefert die Treffer in Suchreihenfolge,
+  `sort_order` oder ein Index trägt sie zur App.
+- **Symbol für „Unpin“:** Lucide `pin-off` (0.469.0) statt X.
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Test mit demselben Issue in zwei Listen (Cursor, Detail), Test der Reihenfolge, Sichtprüfung.
+
 ### G.4 Dialog: Filterliste anlegen und bearbeiten
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** G.3 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs` (`filter.rs` neu)
