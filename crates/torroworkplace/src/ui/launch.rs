@@ -64,10 +64,18 @@ pub enum Open {
     Disconnect,
     /// The agents page without any clients: its empty state.
     AgentsEmpty,
+    /// "Connect agent" at its first step: the clients the demo found.
+    AgentWizard,
+    /// "Connect agent" at the rights of Claude Code.
+    AgentWizardRights,
+    /// "Connect agent" done: Claude Code connected (nothing is written).
+    AgentWizardDone,
+    /// "Connect agent" with the key of a new script, shown once.
+    AgentWizardKey,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 18] = [
+    pub const ALL: [(&'static str, Open); 22] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -86,6 +94,10 @@ impl Open {
         ("new-key", Open::NewKey),
         ("disconnect", Open::Disconnect),
         ("agents-empty", Open::AgentsEmpty),
+        ("agent-wizard", Open::AgentWizard),
+        ("agent-wizard-rights", Open::AgentWizardRights),
+        ("agent-wizard-done", Open::AgentWizardDone),
+        ("agent-wizard-key", Open::AgentWizardKey),
     ];
 }
 
@@ -383,8 +395,9 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
 }
 
 /// The sample answer `--demo` gives to a request whose answer is a state of its own: an agent's
-/// activity and a new key (a made-up one, never a working key). Every other request gets none
-/// and is dropped, so the demo changes nothing.
+/// activity, a new key and a new client of "Connect agent" (made-up keys, never working ones; the
+/// new client is not added to the list). Every other request gets none and is dropped, so the
+/// demo changes nothing.
 pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
     let client_of = |id: &str| data.clients.iter().find(|client| client.id == id);
     match request {
@@ -395,6 +408,20 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         Request::NewClientKey { id } => {
             let client = client_of(id)?.clone();
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "5f2c9a1e7b3d4086".repeat(4))));
+            Some(Response::ClientKey { client, key })
+        }
+        Request::CreateClient { name, kind, template, agent } => {
+            let id = "9d4b7e21";
+            let client = ClientInfo {
+                id: id.into(),
+                name: name.clone(),
+                kind: kind.clone(),
+                created: Utc::now(),
+                last_used: None,
+                rights: template.rights().for_kind(kind),
+                agent: *agent,
+            };
+            let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "a3e81c0f6d2b9754".repeat(4))));
             Some(Response::ClientKey { client, key })
         }
         _ => None,

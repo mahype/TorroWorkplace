@@ -4,8 +4,8 @@
 //!
 //! - **List:** one settings group per kind of client (agents, hooks, scripts), a row per client
 //!   with its name, what it is, its rights in words ([`rights_summary`]) and when it was last
-//!   used; the row opens the detail page. Without clients a sentence about connecting one (the
-//!   "Connect agent" assistant comes with task A.7).
+//!   used; the row opens the detail page. Without clients a sentence about connecting one. The
+//!   header's "Connect agent" opens the assistant of task A.7 (`agent_wizard.rs`).
 //! - **Detail:** the rights per grantable area as a segmented control that offers only the levels
 //!   that make a difference there ([`levels`], read from the command catalogue), with an admin
 //!   switch below every area that has admin commands ([`has_admin`]); "Ask first" (never, on
@@ -22,8 +22,14 @@
 //! `clients.update_client` with the whole rights. The draft stays on screen until the core answered
 //! and the reload after it arrived ([`answered`], [`loaded`]), so no control jumps back for a moment.
 //!
+//! "Disconnect…" also takes Torro Workplace out of the agent's configuration when the assistant
+//! put it there: once the core confirmed `clients.remove_client`, the shell runs
+//! [`Job::Disconnect`], which looks up what the assistant noted for that client and does nothing
+//! for any other. A failure shows above the list.
+//!
 //! Requests: `clients.update_client` (every control of the rights), `clients.activity` (opening a
-//! detail page), `clients.new_key` and `clients.remove_client`. The clients come from
+//! detail page), `clients.new_key`, `clients.remove_client` and, from the assistant,
+//! `clients.create_client`. The clients come from
 //! `clients.list_clients`, the candidates of the selections from `calendar.list_calendars`,
 //! `tasks.list_lists` (whose GitHub filter lists also name repositories) and `inbox.list_sources`,
 //! all loaded by the shell into [`Data`]. Only the app key may send `clients.*`; the control centre
@@ -35,10 +41,10 @@ use chrono::{DateTime, Local, Utc};
 use iced::time::Instant;
 use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, checkbox, column, container, row, text_input, toggler};
+use iced::widget::{Space, checkbox, column, container, row, svg, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Subscription, Theme};
 use torro_core::i18n::{tr, trf};
-use torro_gui::icon::Icon;
+use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status};
@@ -50,7 +56,8 @@ use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
 use torro_pim::Collection;
 
 use super::accounts::relative_time;
-use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row};
+use super::{Action, Data, Header, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
+use crate::client_setup::{Job, Outcome};
 
 /// How long after the last change the rights are saved (`docs/settings.md`, "Speichern
 /// automatisch").
@@ -79,6 +86,12 @@ pub struct State {
     issued: Option<Issued>,
     /// What is typed into "Add repository".
     repo_input: String,
+    /// The "Connect agent" dialog while it is open.
+    pub wizard: Option<agent_wizard::State>,
+    /// The client whose removal was sent; once the core confirms it, its configuration entry goes.
+    removing: Option<String>,
+    /// Why taking Torro Workplace out of an agent's configuration failed, shown above the list.
+    problem: Option<String>,
 }
 
 /// Rights the page changed, on their way to the core.
@@ -224,6 +237,12 @@ pub enum Message {
     Disconnect,
     /// "Cancel" or Escape in a confirmation.
     CloseDialog,
+    /// "Connect agent" in the header: opens the assistant.
+    Connect,
+    Wizard(agent_wizard::Message),
+    /// A job the shell ran for the page ([`Action::Setup`]): detection and writing for the
+    /// assistant, removing an entry after "Disconnect…".
+    Setup(Outcome),
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
@@ -308,13 +327,43 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             if state.draft.as_ref().is_some_and(|draft| draft.id == id) {
                 state.draft = None;
             }
+            state.removing = Some(id.clone());
             Action::Send(Request::RemoveClient { id })
         }
         Message::CloseDialog => {
             state.dialog = None;
             Action::None
         }
+        Message::Connect => {
+            state.wizard = Some(agent_wizard::State::new());
+            state.problem = None;
+            Action::Setup(Job::Detect)
+        }
+        Message::Wizard(message) => wizard(state, message, data),
+        Message::Setup(Outcome::Disconnected(result)) => {
+            state.problem = result.err();
+            Action::None
+        }
+        Message::Setup(outcome) => match state.wizard.as_mut() {
+            Some(wizard) => agent_wizard::update(wizard, agent_wizard::Message::Setup(outcome), data),
+            None => Action::None,
+        },
     }
+}
+
+/// A message of the assistant: Cancel, Done and Escape close it unless it is creating the client,
+/// a click next to it only on the steps that hold nothing to lose.
+fn wizard(state: &mut State, message: agent_wizard::Message, data: &Data) -> Action {
+    let Some(open) = state.wizard.as_mut() else { return Action::None };
+    let close = match message {
+        agent_wizard::Message::Close => agent_wizard::closable(open),
+        agent_wizard::Message::Dismiss => agent_wizard::dismissable(open),
+        message => return agent_wizard::update(open, message, data),
+    };
+    if close {
+        state.wizard = None;
+    }
+    Action::None
 }
 
 /// Opens `dialog` for the client on the detail page; without one there is nothing to confirm.
@@ -360,12 +409,22 @@ fn tick(selection: &mut Selection, id: String, on: bool) {
 
 /// The answer to a request the shell sent (it calls this for every answer, then reloads):
 ///
+/// - the assistant's own answers ([`agent_wizard::answered`]): its new client's key,
 /// - `ok` while the draft is on its way: saved, it goes with the next reload ([`loaded`]); an error
 ///   then drops it, so the page shows what the core holds and the shell shows the error.
 /// - the activity asked for when the detail page opened,
-/// - a new key ([`Response::ClientKey`]): shown once.
-pub fn answered(state: &mut State, result: &Result<Response, String>) {
-    if state.draft.as_ref().is_some_and(|draft| draft.phase == Phase::Sending) {
+/// - a new key ([`Response::ClientKey`]): shown once,
+/// - `ok` after "Disconnect…": the client is gone, so its configuration entry goes too
+///   ([`Job::Disconnect`]); an error forgets the removal.
+///
+/// Returns `Some` with what to do next when the answer was the assistant's (the shell then shows
+/// no notice of its own; the assistant shows the error) or confirmed a removal; `None` otherwise.
+pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
+    if let Some(next) = state.wizard.as_mut().and_then(|wizard| agent_wizard::answered(wizard, result)) {
+        return Some(next);
+    }
+    let for_draft = state.draft.as_ref().is_some_and(|draft| draft.phase == Phase::Sending);
+    if for_draft {
         match result {
             Ok(Response::Ok) => {
                 if let Some(draft) = state.draft.as_mut() {
@@ -373,6 +432,13 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
                 }
             }
             Err(_) => state.draft = None,
+            Ok(_) => {}
+        }
+    }
+    if !for_draft && state.removing.is_some() {
+        match result {
+            Ok(Response::Ok) => return state.removing.take().map(|client| Action::Setup(Job::Disconnect { client })),
+            Err(_) => state.removing = None,
             Ok(_) => {}
         }
     }
@@ -387,6 +453,7 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) {
         }
         _ => {}
     }
+    None
 }
 
 /// The shell loaded [`Data`] anew: a saved draft is in it now.
@@ -405,8 +472,12 @@ pub fn subscription(state: &State) -> Subscription<Message> {
     }
 }
 
-/// What Escape means on this page right now: close the key dialog or the confirmation.
+/// What Escape means on this page right now: close the assistant (unless it is creating the
+/// client), the key dialog or the confirmation.
 pub fn escape(state: &State) -> Option<Message> {
+    if let Some(wizard) = &state.wizard {
+        return agent_wizard::closable(wizard).then_some(Message::Wizard(agent_wizard::Message::Close));
+    }
     if state.issued.is_some() {
         Some(Message::CloseKey)
     } else if state.dialog.is_some() {
@@ -416,17 +487,29 @@ pub fn escape(state: &State) -> Option<Message> {
     }
 }
 
-/// The header bar: on a detail page the client's name with a back button to the list. The list
-/// has no actions yet; "Connect agent" comes with its assistant (task A.7).
-pub fn header<'a>(state: &'a State, data: &'a Data, _class: SizeClass) -> Header<'a, Message> {
-    match selected_client(state, data) {
-        Some(client) => Header { sub_page: Some((client.name.clone(), Message::Back)), actions: Vec::new() },
-        None => Header::default(),
+/// The header bar: on a detail page the client's name with a back button to the list; on the list
+/// "Connect agent", only its icon in narrow windows.
+pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    if let Some(client) = selected_client(state, data) {
+        return Header { sub_page: Some((client.name.clone(), Message::Back)), actions: Vec::new() };
     }
+    let connect = match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::Plus), tr("Connect agent"), style::button::primary, Some(Message::Connect))
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::Plus, tr("Connect agent"), style::button::primary, Some(Message::Connect))
+        }
+    };
+    Header { sub_page: None, actions: vec![connect] }
 }
 
-/// The page's dialog over the whole window: the new key, else a confirmation.
+/// The page's dialog over the whole window: the assistant, the new key, else a confirmation.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(wizard) = &state.wizard {
+        let content = agent_wizard::view(wizard, data).map(Message::Wizard);
+        return Some(dialog(content, size::FORM_MAX, Message::Wizard(agent_wizard::Message::Dismiss)));
+    }
     if let Some(issued) = &state.issued {
         return Some(key_dialog(issued));
     }
@@ -823,13 +906,13 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 }
 
 fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+    let problem = state.problem.as_deref().map(problem_line);
     if data.clients.is_empty() {
-        return widgets::empty_state(
+        let empty = widgets::empty_state(
             tr("No agents connected."),
-            tr(
-                "Connect agent will set up Claude Code, Codex or a script here. Until then, run “torroworkplace ctl clients add” in a terminal.",
-            ),
+            tr("Connect agent sets up Claude Code, Codex, Claude Desktop or Cursor, or creates a key for a script."),
         );
+        return column![].push(problem).push(empty).spacing(space::L).into();
     }
     let groups = Category::ALL.into_iter().filter_map(|category| {
         let rows: Vec<Element<'a, Message>> = data
@@ -840,7 +923,17 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
             .collect();
         (!rows.is_empty()).then(|| widgets::group(category.title(), rows, Some(category.footer().to_string())))
     });
-    column(groups).spacing(space::XL).into()
+    column![].push(problem).extend(groups).spacing(space::XL).into()
+}
+
+/// Why an agent's configuration still holds its entry: an alert icon in the error colour and the
+/// sentence in `text`, the colour only in the icon.
+fn problem_line(problem: &str) -> Element<'_, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    let text =
+        trf("Torro Workplace could not be taken out of the agent's configuration: {problem}", &[("problem", &problem)]);
+    row![alert, typo::text(typo::BODY, text)].spacing(space::S).align_y(Alignment::Center).into()
 }
 
 /// A client in the list: name, then what it is, its rights in words and when it was last used;
@@ -1301,6 +1394,47 @@ mod tests {
         let _ = update(&mut cancelled, Message::AskDisconnect, &data);
         let _ = update(&mut cancelled, Message::CloseDialog, &data);
         assert!(cancelled.dialog.is_none() && cancelled.selected.is_some());
+    }
+
+    #[test]
+    fn connect_agent_opens_the_assistant_and_asks_for_detection() {
+        let data = data();
+        let mut state = State::default();
+        assert_eq!(header(&state, &data, SizeClass::Wide).actions.len(), 1, "Connect agent");
+        assert!(matches!(update(&mut state, Message::Connect, &data), Action::Setup(Job::Detect)));
+        assert!(state.wizard.is_some() && overlay(&state, &data).is_some());
+        assert!(matches!(escape(&state), Some(Message::Wizard(agent_wizard::Message::Close))));
+        let _ = update(&mut state, Message::Wizard(agent_wizard::Message::Dismiss), &data);
+        assert!(state.wizard.is_none(), "a click next to the first step closes it");
+        assert!(header_of_detail_has_no_actions(&data));
+    }
+
+    fn header_of_detail_has_no_actions(data: &Data) -> bool {
+        let state = opened("c1", data);
+        header(&state, data, SizeClass::Narrow).actions.is_empty()
+    }
+
+    #[test]
+    fn disconnect_removes_the_configuration_entry_once_the_core_confirmed() {
+        let data = data();
+        let mut state = opened("c1", &data);
+        let _ = update(&mut state, Message::AskDisconnect, &data);
+        let _ = update(&mut state, Message::Disconnect, &data);
+        let next = answered(&mut state, &Ok(Response::Ok));
+        assert!(matches!(next, Some(Action::Setup(Job::Disconnect { ref client })) if client == "c1"));
+        assert!(answered(&mut state, &Ok(Response::Ok)).is_none(), "once");
+
+        let mut failed = opened("c1", &data);
+        let _ = update(&mut failed, Message::Disconnect, &data);
+        assert!(answered(&mut failed, &Err("not-found".into())).is_none(), "the shell shows the error");
+        assert!(answered(&mut failed, &Ok(Response::Ok)).is_none(), "and the entry stays");
+
+        let _ = update(&mut state, Message::Setup(Outcome::Disconnected(Err("~/.cursor/mcp.json".into()))), &data);
+        assert!(state.problem.is_some());
+        drop(view(&state, &data));
+        drop(view(&state, &Data::default()));
+        let _ = update(&mut state, Message::Setup(Outcome::Disconnected(Ok(None))), &data);
+        assert!(state.problem.is_none());
     }
 
     #[test]

@@ -36,6 +36,7 @@
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
 
 mod accounts;
+mod agent_wizard;
 mod agents;
 mod approvals;
 mod apps;
@@ -192,6 +193,9 @@ pub enum Action {
     Zoom(zoom::Step),
     /// Put this text on the clipboard (a new key, task A.6).
     Copy(String),
+    /// Find, connect or disconnect a coding agent's MCP entry (task A.7) on a blocking thread;
+    /// the outcome goes to the agents page. The demo answers it itself and touches nothing.
+    Setup(crate::client_setup::Job),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -457,6 +461,28 @@ impl Ui {
                 self.data.clients.clear();
                 vec![Message::Select(Section::Agents)]
             }
+            // The steps of "Connect agent", with the demo's detection: Claude Code to connect, or
+            // a script named "nightly-backup" whose key is shown.
+            Open::AgentWizard | Open::AgentWizardRights | Open::AgentWizardDone | Open::AgentWizardKey => {
+                use agent_wizard::{Choice, Message as Step};
+                let wizard = |message| Message::Agents(agents::Message::Wizard(message));
+                let mut messages = vec![Message::Select(Section::Agents), Message::Agents(agents::Message::Connect)];
+                match open {
+                    Open::AgentWizardRights | Open::AgentWizardDone => {
+                        let claude = Choice::Agent(crate::client_setup::Target::ClaudeCode);
+                        messages.push(wizard(Step::Choose(claude)));
+                    }
+                    Open::AgentWizardKey => {
+                        messages.push(wizard(Step::Choose(Choice::Script)));
+                        messages.push(wizard(Step::Name("nightly-backup".into())));
+                    }
+                    _ => {}
+                }
+                if matches!(open, Open::AgentWizardDone | Open::AgentWizardKey) {
+                    messages.push(wizard(Step::Connect));
+                }
+                messages
+            }
         };
         for message in messages {
             let _ = self.update(message);
@@ -551,9 +577,11 @@ impl Ui {
                 // The add-account dialog shows the outcome of its own requests itself.
                 let in_dialog = accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
-                agents::answered(&mut self.agents, &result);
-                self.notice = if in_dialog { None } else { result.err() };
-                return self.reload();
+                // The "Connect agent" dialog shows its errors itself, and may go on with a job.
+                let next = agents::answered(&mut self.agents, &result);
+                self.notice = if in_dialog || next.is_some() { None } else { result.err() };
+                let next = next.map_or_else(Task::none, |action| self.perform(action));
+                return Task::batch([next, self.reload()]);
             }
             Message::SystemMode(mode) => {
                 self.system_mode = mode;
@@ -637,6 +665,9 @@ impl Ui {
                 None => Task::none(),
             },
             Action::OpenUrl(_) | Action::Copy(_) if self.launch.demo => Task::none(),
+            Action::Setup(job) if self.launch.demo => {
+                self.update(Message::Agents(agents::Message::Setup(crate::client_setup::demo(&job))))
+            }
             Action::Send(request) => send(request),
             Action::OpenUrl(url) => {
                 if let Err(err) = webbrowser::open(&url) {
@@ -650,6 +681,9 @@ impl Ui {
             }
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
             Action::Copy(text) => iced::clipboard::write(text),
+            Action::Setup(job) => Task::perform(crate::client_setup::perform(job), |outcome| {
+                Message::Agents(agents::Message::Setup(outcome))
+            }),
         }
     }
 
@@ -1284,6 +1318,21 @@ mod tests {
         let empty = started(&["--demo", "--open", "agents-empty"]);
         assert_eq!((empty.section, empty.data.clients.len()), (Section::Agents, 0));
         assert_eq!(empty.trail(Section::Agents), Trail::None);
+    }
+
+    #[test]
+    fn connect_agent_runs_through_the_demo_without_touching_anything() {
+        for state in ["agent-wizard", "agent-wizard-rights", "agent-wizard-done", "agent-wizard-key"] {
+            let mut ui = started(&["--demo", "--open", state]);
+            assert_eq!(ui.section, Section::Agents, "{state}");
+            assert!(ui.agents.wizard.is_some() && ui.page_overlay().is_some(), "{state}: the dialog is open");
+            assert_eq!(ui.data.clients.len(), 4, "{state}: the demo changes nothing");
+            let _ = ui.update(Message::Escape);
+            assert!(ui.agents.wizard.is_none(), "{state}: Escape closes it");
+        }
+        let mut real = ui(Section::Agents);
+        let detect = real.update(Message::Agents(agents::Message::Connect));
+        assert_eq!(detect.units(), 1, "outside the demo detection is a job of its own");
     }
 
     #[test]

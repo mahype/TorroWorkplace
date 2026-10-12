@@ -21,6 +21,7 @@ mod approvals;
 mod apps;
 mod audit;
 mod cli;
+mod client_setup;
 mod clients;
 mod core;
 mod daemon;

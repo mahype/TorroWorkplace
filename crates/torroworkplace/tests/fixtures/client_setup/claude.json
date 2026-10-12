@@ -1,0 +1,15 @@
+{
+  "numStartups": 42,
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    }
+  },
+  "projects": {
+    "/home/anna/torro": {
+      "allowedTools": ["Bash"],
+      "mcpServers": {}
+    }
+  }
+}

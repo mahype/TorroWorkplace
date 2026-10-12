@@ -1,0 +1,14 @@
+# Codex settings of Anna
+model = "o4-mini"
+approval_policy = "on-request"
+
+[mcp_servers.docs]
+command = "npx"
+args = ["-y", "docs-mcp"]
+
+# A server whose name starts like ours must survive.
+[mcp_servers.torroworkplace-old]
+command = "/usr/bin/false"
+
+[profiles.fast]
+model = "o4-mini"

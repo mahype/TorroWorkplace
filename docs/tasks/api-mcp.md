@@ -219,7 +219,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** `torro-design-review` ohne neue Muss-Befunde.
 
 ### A.7 Assistent „Connect agent“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** A.6 · **Dateien:** `crates/torroworkplace/src/ui/agent_wizard.rs` (neu), `crates/torroworkplace/src/client_setup.rs` (neu)
 - Clients erkennen, Schlüssel eintragen (Claude Code per `claude mcp add`, Codex per CLI, JSON
   atomar mit 0600), „Script“: einmal anzeigen.
