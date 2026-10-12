@@ -1240,4 +1240,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This list was deleted elsewhere.", "Diese Liste wurde anderswo gelöscht."),
     ("Close GitHub issue \"{title}\" ({issue})", "GitHub-Issue „{title}“ ({issue}) schließen"),
     ("Reopen GitHub issue \"{title}\" ({issue})", "GitHub-Issue „{title}“ ({issue}) wieder öffnen"),
+    ("Paste a GitHub link to pin…", "GitHub-Link zum Anheften einfügen…"),
+    (
+        "Only links to GitHub issues and pull requests can be pinned here",
+        "Hier lassen sich nur Links auf GitHub-Issues und Pull Requests anheften",
+    ),
+    ("Couldn't add the link: {error}", "Link konnte nicht hinzugefügt werden: {error}"),
+    ("Add to list…", "Zu Liste hinzufügen…"),
+    ("Add to list", "Zu Liste hinzufügen"),
 ];
