@@ -445,6 +445,9 @@ pub(crate) mod fake {
         modseq: u64,
         raw: Vec<u8>,
         received: DateTime<Utc>,
+        /// `BODY.PEEK[]` answers nothing for it, as for a message gone from the server; listing and
+        /// flags still show it, so the sync keeps it in the cache.
+        withheld: bool,
     }
 
     struct Folder {
@@ -558,6 +561,7 @@ pub(crate) mod fake {
                     modseq,
                     raw: raw.as_bytes().to_vec(),
                     received: Utc::now(),
+                    withheld: false,
                 });
                 uid
             };
@@ -596,6 +600,15 @@ pub(crate) mod fake {
                 folder.messages.retain(|message| message.uid != uid);
             }
             self.changed();
+        }
+
+        /// From now on fetching the text of message `uid` in `folder` gives nothing, as for a message
+        /// gone from the server, while the sync still sees it: no race with the sync dropping it.
+        pub(crate) fn withhold_text(&self, folder: &str, uid: u32) {
+            let mut world = self.world();
+            let message =
+                world.folder(folder).messages.iter_mut().find(|m| m.uid == uid).expect("a message of the fake");
+            message.withheld = true;
         }
 
         /// Gives `folder` a new UIDVALIDITY and its messages new UIDs, as a server that rebuilt it.
@@ -810,7 +823,10 @@ pub(crate) mod fake {
                     .split_once("CHANGEDSINCE ")
                     .and_then(|(_, after)| after.trim_end_matches(')').parse::<u64>().ok());
                 for (at, message) in folder.messages.iter().enumerate() {
-                    if !in_set(set, message.uid) || since.is_some_and(|since| message.modseq <= since) {
+                    if !in_set(set, message.uid)
+                        || since.is_some_and(|since| message.modseq <= since)
+                        || (message.withheld && items.contains("BODY.PEEK[]"))
+                    {
                         continue;
                     }
                     lines.push(fetched(at + 1, message, items));

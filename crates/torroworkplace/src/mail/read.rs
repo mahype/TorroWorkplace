@@ -795,7 +795,9 @@ mod tests {
         server.add("INBOX", &fake::mail("Old reply", 200, Some("Start@example.org")), &[]);
         server.add("INBOX", &fake::mail("New reply", 1, Some("Start@example.org")), &[]);
         let service = synced(dir.path(), &server).await;
-        server.expunge("INBOX", gone);
+        // Its text cannot be fetched any more; expunging it instead would race with the sync, which
+        // could drop it from the cache before the thread is read.
+        server.withhold_text("INBOX", gone);
 
         let id = id_of(&service, "New reply").await;
         let thread = answer(&service, Reach::Suite, Request::GetMailThread { id }).await;
