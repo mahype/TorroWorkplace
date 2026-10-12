@@ -1151,6 +1151,7 @@ impl App {
                 }
             }
             Ok(groups) => {
+                let shown: Vec<&PimAccount> = groups.iter().filter_map(|group| group.account).collect();
                 for group in groups {
                     let Some(account) = group.account else {
                         items.push(widgets::sidebar_group_in(mode, tr("Calendars"), None));
@@ -1159,7 +1160,7 @@ impl App {
                     };
                     let unfolded = !self.folded.contains(&account.id);
                     let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
-                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    items.push(widgets::sidebar_group_in(mode, group_title(account, &shown), toggle));
                     // The rail has no title to unfold with, so it shows every calendar.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
@@ -1202,10 +1203,13 @@ impl App {
                 }
             }
             // A menu has no folding: every account is a section named after it.
-            Ok(groups) => sections.extend(groups.into_iter().map(|group| {
-                let title = group.account.map_or_else(|| tr("Calendars"), |account| account.label.as_str());
-                MenuSection::titled(title, group.items.into_iter().map(item).collect())
-            })),
+            Ok(groups) => {
+                let shown: Vec<&PimAccount> = groups.iter().filter_map(|group| group.account).collect();
+                sections.extend(groups.into_iter().map(|group| {
+                    let title = group.account.map_or_else(|| tr("Calendars"), |account| group_title(account, &shown));
+                    MenuSection::titled(title, group.items.into_iter().map(item).collect())
+                }))
+            }
         }
         widgets::menu(sections)
     }
@@ -1633,6 +1637,14 @@ fn same_event(a: &Event, b: &Event) -> bool {
     a.uid == b.uid && a.collection == b.collection && (!a.recurring || a.start == b.start)
 }
 
+/// The title of an account's group in the sidebar and the menu (task K.31): its host, which is
+/// short and still tells accounts apart. Only when another shown account has the same host, the
+/// full address, so the two groups stay apart. `shown` holds the accounts that have a group.
+fn group_title<'a>(account: &'a PimAccount, shown: &[&PimAccount]) -> &'a str {
+    let twin = shown.iter().any(|other| other.id != account.id && other.host() == account.host());
+    if twin { account.label.as_str() } else { account.host() }
+}
+
 /// The error state's text when the account or the events could not be loaded.
 fn load_failed(err: &str) -> String {
     trf("The calendar could not be loaded: {error}", &[("error", &err)])
@@ -1779,6 +1791,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_group_is_named_by_its_host_unless_two_shown_accounts_share_it() {
+        let anna = account("nextcloud:anna@cloud.example.org");
+        let bob = account("nextcloud:bob@imt.example.org");
+        let twin = account("nextcloud:bob@cloud.example.org");
+        assert_eq!(group_title(&anna, &[&anna, &bob]), "cloud.example.org", "other hosts: the host");
+        assert_eq!(group_title(&anna, &[&anna, &twin]), "nextcloud:anna@cloud.example.org", "same host: address");
+        assert_eq!(group_title(&twin, &[&anna, &twin]), "nextcloud:bob@cloud.example.org", "both get the address");
+        assert_eq!(group_title(&anna, &[&anna]), "cloud.example.org", "an account alone is not its own twin");
+        assert_eq!(group_title(&anna, &[]), "cloud.example.org", "no group shown: the host");
     }
 
     #[test]

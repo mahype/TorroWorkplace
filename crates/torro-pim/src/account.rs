@@ -69,6 +69,16 @@ impl PimAccount {
             _ => true,
         }
     }
+
+    /// The host of the account, the short name a sidebar shows it by (task K.31): the part of
+    /// `label` after the last `@`, `cloud.example.org` for `anna@cloud.example.org`. Without an
+    /// `@`, or with nothing after it, the whole `label`, so the name is never shown empty.
+    pub fn host(&self) -> &str {
+        match self.label.rsplit_once('@') {
+            Some((_, host)) if !host.is_empty() => host,
+            _ => &self.label,
+        }
+    }
 }
 
 /// What an app that shows one account state shows (the connect screen, the tray's status line):
@@ -192,6 +202,16 @@ mod tests {
         assert_eq!(combined_state_for(&both, CollectionKind::Todos), connected("mahype"), "the first one");
         let newer = [PimAccount { kind: "caldav".into(), ..account("caldav:x", connected("x")) }];
         assert_eq!(combined_state_for(&newer, CollectionKind::Events), connected("x"), "unknown kinds count");
+    }
+
+    #[test]
+    fn the_host_is_the_part_after_the_last_at() {
+        let host = |label: &str| account(label, connected("anna")).host().to_string();
+        assert_eq!(host("anna@cloud.example.org"), "cloud.example.org");
+        assert_eq!(host("anna@example.org@cloud.example.org"), "cloud.example.org", "the last @ counts");
+        assert_eq!(host("cloud.example.org"), "cloud.example.org", "without @ the label itself");
+        assert_eq!(host("anna@"), "anna@", "nothing after the @: the label itself, not an empty name");
+        assert_eq!(host(""), "", "an empty label stays empty");
     }
 
     #[test]
