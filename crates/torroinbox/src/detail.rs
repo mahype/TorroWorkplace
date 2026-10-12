@@ -66,10 +66,10 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
     if let Some(agent) = &item.agent {
         let mut rows = vec![value_row(Icon::Sparkles, agent.agent.label().to_owned())];
         if let Some(project) = &agent.project {
-            rows.push(value_row(Icon::Layers, list::one_line(project)));
+            rows.push(value_row(Icon::FolderGit2, list::one_line(project)));
         }
         if let Some(branch) = &agent.branch {
-            rows.push(value_row(Icon::ChartGantt, list::one_line(branch)));
+            rows.push(value_row(Icon::GitBranch, list::one_line(branch)));
         }
         body = body.push(widgets::prop_section(tr("Agent"), rows));
     }
