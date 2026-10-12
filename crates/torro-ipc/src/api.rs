@@ -950,8 +950,8 @@ static LIST_LISTS: Command = Command {
     description: "Lists the task lists of all accounts shown in the suite with id, name, colour and whether they \
                   can be written to. The id is `<account-id>/<list URL>`; tasks refer to their list by it. GitHub \
                   filter lists (`github:<login>/<list-id>`) are listed too, with their searches in `source`; they \
-                  are not writable (no new or deleted tasks); marking their tasks done is meant to close the issue on \
-                  GitHub, which save_todo does not do yet (it answers `unsupported`). A key limited to some \
+                  are not writable (no new or deleted tasks), but marking one of their issues done with save_todo \
+                  closes it on GitHub (and marking it not done reopens it). A key limited to some \
                   repositories sees only filter lists whose searches all stay inside them, and their `pinned` \
                   without items of other repositories.",
 };
@@ -977,7 +977,11 @@ static SAVE_TODO: Command = Command {
                   server and returns it as stored. Marking a task done is a change. Changing `collection` moves \
                   it to another calendar of the same account; moving to another account fails with \
                   `unsupported`. Pass the task with every field as list_todos returned it: a missing `url`, \
-                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored.",
+                  `categories`, `sort_order` or `link` clears it, and of the link only its `id` is stored. Marking \
+                  a GitHub issue in a filter list done closes it on GitHub (reopening reopens it); pull requests \
+                  are never closed; other fields of a GitHub match cannot be changed (`unsupported`). Closing needs \
+                  write access to `github` (else `forbidden`) and the issue's repository among a key's repositories \
+                  (else `not-found`); a token that may not write issues fails with `forbidden`.",
 };
 
 static DELETE_TODO: Command = Command {

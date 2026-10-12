@@ -1,0 +1,20 @@
+{
+  "data": {
+    "closeIssue": {
+      "issue": {
+        "__typename": "Issue",
+        "number": 123,
+        "title": "Calendar crashes on DST change",
+        "body": "Steps: set the clock to the last Sunday of October.",
+        "url": "https://github.com/mahype/TorroWorkplace/issues/123",
+        "state": "CLOSED",
+        "updatedAt": "2026-10-12T09:30:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [ { "name": "bug", "color": "d73a4a" } ] },
+        "assignees": { "nodes": [ { "login": "mahype" } ] },
+        "milestone": { "title": "1.0", "dueOn": "2026-11-01T00:00:00Z" },
+        "parent": { "number": 100, "repository": { "nameWithOwner": "mahype/TorroWorkplace" } }
+      }
+    }
+  }
+}

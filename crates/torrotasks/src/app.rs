@@ -35,6 +35,11 @@
 //! size is kept in the state ([`Message::Resized`]), so the keys can be switched off in a glance;
 //! filter, selection, open detail, folded groups and quick add text survive every change of size.
 //!
+//! Issues of a GitHub filter list have a check (task G.5): ticking one closes it on GitHub through
+//! the core's `save_todo` ([`Message::IssueChanged`]), and a quiet card at the bottom says "Issue
+//! closed" with "Undo" (reopens it) for [`NOTICE_FOR`]. Pull requests have none; where the
+//! account's token may not write issues ([`PimAccount::may_close_issues`]) the check is locked.
+//!
 //! The keyboard (T.3): ↑/↓ or j/k move a cursor through the rows as the list shows them (groups
 //! and subtasks included) – with a task open they open the next one –, Enter opens the task under
 //! it, Space ticks it, N focuses the quick add row, R syncs, Escape closes menu, drawer or detail
@@ -67,7 +72,7 @@ use torro_gui::{style, typo};
 use torro_ipc::{Request, Response};
 use torro_pim::account::{GITHUB_KIND, account_of, combined_state_for};
 use torro_pim::demo::DemoSource;
-use torro_pim::model::GitHubFilter;
+use torro_pim::model::{GitHubFilter, GitHubKind};
 use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, Todo};
 
 use crate::detail::{self, Detail, Fit};
@@ -280,6 +285,18 @@ const HEAD_LABELS_FROM: f32 = 440.0;
 const LINE: f32 = size::HAIRLINE;
 /// How long after the last keystroke typed title or notes are saved.
 const AUTOSAVE: Duration = Duration::from_secs(1);
+/// How long "Issue closed · Undo" stays (task G.5): long enough to reach "Undo", short enough not
+/// to linger in a tile that runs all day.
+pub const NOTICE_FOR: Duration = Duration::from_secs(8);
+
+/// The card after an issue was closed (task G.5): "Issue closed" with "Undo".
+#[derive(Debug, Clone)]
+struct Notice {
+    /// The closed issue as the core answered, for "Undo" when the list does not hold it any more.
+    todo: Todo,
+    /// When it was closed; the card goes after [`NOTICE_FOR`] ([`Message::NoticeTick`]).
+    since: iced::time::Instant,
+}
 
 /// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,13 +448,13 @@ pub struct App {
     sidebar: SidebarMode,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
+    /// "Issue closed · Undo" after ticking an issue of a filter list (task G.5).
+    notice: Option<Notice>,
 }
 
+// A message may carry a whole task; two kinds do (`Saved`, `IssueChanged`), so Clippy no longer
+// counts one variant as oversized. Boxing them would only add an allocation.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a message carries a whole task and is handled once; boxing would only add an allocation"
-)]
 pub enum Message {
     /// The window has this size (at start and after every resize).
     Resized(Size),
@@ -465,6 +482,13 @@ pub enum Message {
     Deleted(Result<(), String>),
     /// The core's answer to "Unpin" ([`detail::Action::Unpin`]).
     Unpinned(Result<(), String>),
+    /// The core's answer to closing or reopening an issue of a filter list (task G.5): the issue
+    /// as GitHub reports it now.
+    IssueChanged(Result<Todo, String>),
+    /// "Undo" in the "Issue closed" card: reopen it.
+    Undo,
+    /// The clock while the card shows; it goes after [`NOTICE_FOR`].
+    NoticeTick(iced::time::Instant),
     Refresh,
     Tick,
     /// The desktop's light/dark preference (once at start, then whenever it changes).
@@ -601,6 +625,7 @@ impl App {
             zoom,
             launch,
             opened: false,
+            notice: None,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
@@ -640,6 +665,10 @@ impl App {
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
+        }
+        // Only while "Issue closed" shows: nothing ticks in a quiet window.
+        if self.notice.is_some() {
+            subscriptions.push(iced::time::every(Duration::from_secs(1)).map(Message::NoticeTick));
         }
         Subscription::batch(subscriptions)
     }
@@ -692,10 +721,12 @@ impl App {
                     self.selected = selected_uid.and_then(|uid| self.todos.iter().position(|t| t.uid == uid));
                     let lists = self.writable_lists();
                     let pinned = self.detail.as_ref().is_some_and(|detail| self.is_pinned(&detail.original));
+                    let issue_check = self.detail.as_ref().and_then(|detail| self.issue_check(&detail.original));
                     match (self.selected, self.detail.as_mut()) {
                         (Some(_), Some(detail)) => {
                             detail.refresh(&lists, &self.todos);
                             detail.pinned = pinned;
+                            detail.issue_check = issue_check;
                         }
                         _ => self.detail = None,
                     }
@@ -751,6 +782,9 @@ impl App {
             }
             Message::ToggleDone(index) => {
                 if let Some(todo) = self.toggled(index) {
+                    if self.filter_source(&todo.collection).is_some() {
+                        return self.change_issue(todo);
+                    }
                     return self.save(todo);
                 }
             }
@@ -808,6 +842,18 @@ impl App {
                 Ok(()) => return self.load(),
                 Err(err) => self.error = Some(trf("Unpin failed: {error}", &[("error", &err)])),
             },
+            Message::IssueChanged(result) => return self.issue_changed(result),
+            Message::Undo => {
+                if let Some(todo) = self.undo() {
+                    return self.change_issue(todo);
+                }
+            }
+            Message::NoticeTick(now) => {
+                if self.notice.as_ref().is_some_and(|notice| now.saturating_duration_since(notice.since) >= NOTICE_FOR)
+                {
+                    self.notice = None;
+                }
+            }
             Message::Refresh => {
                 // "Sync now" in the Display menu: the menu has done its job.
                 self.menu = None;
@@ -950,11 +996,12 @@ impl App {
     }
 
     /// `todos[index]` with its done state flipped, ready to be saved; none if there is no such
-    /// task, or it is the match of a GitHub filter list, which cannot be ticked off yet (G.5). The
-    /// one thing a glance lets you do.
+    /// task, or it is a match of a GitHub filter list that cannot be ticked: a pull request, or an
+    /// issue whose account may not close issues ([`App::issue_check`], task G.5). The one thing a
+    /// glance lets you do.
     fn toggled(&self, index: usize) -> Option<Todo> {
         let mut todo = self.todos.get(index)?.clone();
-        if self.filter_source(&todo.collection).is_some() {
+        if self.filter_source(&todo.collection).is_some() && self.issue_check(&todo) != Some(true) {
             return None;
         }
         todo.completed = !todo.completed;
@@ -1022,6 +1069,7 @@ impl App {
             width: self.list_width(),
             palette: palette(&self.theme()),
             read_only: self.shown_filter_list().is_some(),
+            issue_lists: self.issue_lists(),
         }
     }
 
@@ -1157,11 +1205,11 @@ impl App {
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail
         // brings its own, scrolling on its own.
-        shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
+        let window = shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(menu.or_else(editor))
-            .into()
+            .overlay(menu.or_else(editor));
+        self.with_notice(window.into())
     }
 
     /// The window's header bar, split like the columns below it: the list's head over the list
@@ -1534,6 +1582,7 @@ impl App {
         self.cursor = Some(todo.uid.clone());
         let mut detail = Detail::new(&todo, &self.writable_lists(), &self.todos).on_day(self.today);
         detail.pinned = self.is_pinned(&todo);
+        detail.issue_check = self.issue_check(&todo);
         self.detail = Some(detail);
         flush
     }
@@ -1562,7 +1611,7 @@ impl App {
                     Message::Deleted,
                 )
             }
-            detail::Action::ToggleDone(uid) => match self.todos.iter().position(|t| t.uid == uid) {
+            detail::Action::ToggleDone(uid) => match self.detail_index(&uid) {
                 Some(index) => self.update(Message::ToggleDone(index)),
                 None => Task::none(),
             },
@@ -1711,6 +1760,105 @@ impl App {
             Message::Loaded,
         )
     }
+}
+
+/// Ticking issues of GitHub filter lists (task G.5).
+impl App {
+    /// Whether `todo` is an issue of a GitHub filter list, which has a check: `Some(true)` when
+    /// ticking may close it, `Some(false)` when its account's token may not write issues (the check
+    /// is locked); `None` for pull requests and every task outside a filter list.
+    fn issue_check(&self, todo: &Todo) -> Option<bool> {
+        self.filter_source(&todo.collection)?;
+        let issue = list::github_of(todo).is_some_and(|github| github.kind == GitHubKind::Issue);
+        issue.then(|| self.may_close(&todo.collection))
+    }
+
+    /// Whether the account of the filter list `id` may close issues
+    /// ([`PimAccount::may_close_issues`]); an account not listed (yet) may: the core decides.
+    fn may_close(&self, id: &str) -> bool {
+        account_of(id, &self.accounts, |a| a.id.as_str()).is_none_or(PimAccount::may_close_issues)
+    }
+
+    /// The filter lists by id, each with [`App::may_close`], for the checks of the list.
+    fn issue_lists(&self) -> HashMap<String, bool> {
+        let lists = self.collections.iter().filter(|c| c.source.is_some());
+        lists.map(|c| (c.id.clone(), self.may_close(&c.id))).collect()
+    }
+
+    /// Index into `todos` of the task `uid`, in the open detail's list first: the same issue can be
+    /// in two filter lists.
+    fn detail_index(&self, uid: &str) -> Option<usize> {
+        let list = self.detail.as_ref().map(|detail| detail.original.collection.as_str());
+        let in_list = self.todos.iter().position(|t| t.uid == uid && Some(t.collection.as_str()) == list);
+        in_list.or_else(|| self.todos.iter().position(|t| t.uid == uid))
+    }
+
+    /// "Undo": the card goes, and the issue it names is to be reopened – in the version the list
+    /// holds if it does (a reload may have brought a newer one), else as the core answered.
+    fn undo(&mut self) -> Option<Todo> {
+        let notice = self.notice.take()?;
+        let same = |t: &&Todo| t.uid == notice.todo.uid && t.collection == notice.todo.collection;
+        let closed = self.todos.iter().find(same).cloned().unwrap_or(notice.todo);
+        Some(Todo { completed: false, ..closed })
+    }
+
+    /// Closes (`todo.completed`) or reopens the issue `todo` of a filter list through the core's
+    /// `save_todo`; the answer comes as [`Message::IssueChanged`].
+    fn change_issue(&self, todo: Todo) -> Task<Message> {
+        let source = self.source.clone();
+        Task::perform(async move { source.save_todo(todo).await.map_err(|e| e.to_string()) }, Message::IssueChanged)
+    }
+
+    /// The core's answer to [`App::change_issue`]: the issue goes into the list at once (the reload
+    /// follows) and into an open detail; after closing, "Issue closed · Undo" shows. A refusal (the
+    /// token may not write issues, GitHub not reachable …) is the error line over the list.
+    fn issue_changed(&mut self, result: Result<Todo, String>) -> Task<Message> {
+        let saved = match result {
+            Ok(saved) => saved,
+            Err(err) => {
+                self.notice = None;
+                self.error = Some(trf("Couldn't change the issue: {error}", &[("error", &err)]));
+                return Task::none();
+            }
+        };
+        let same = |t: &Todo| t.uid == saved.uid && t.collection == saved.collection;
+        if let Some(shown) = self.todos.iter_mut().find(|t| same(t)) {
+            *shown = saved.clone();
+        }
+        self.notice = saved.completed.then(|| Notice { todo: saved.clone(), since: iced::time::Instant::now() });
+        let follow_up = match self.detail.as_mut() {
+            Some(detail) if same(&detail.original) => detail.stored(&saved),
+            _ => detail::Action::None,
+        };
+        Task::batch([self.detail_action(follow_up), self.load()])
+    }
+
+    /// `window` with the "Issue closed" card at the bottom centre while it shows. Always the same
+    /// two layers, so the window keeps its state (scroll, focus) when the card comes and goes.
+    fn with_notice<'a>(&'a self, window: Element<'a, Message>) -> Element<'a, Message> {
+        let card: Element<'a, Message> = match self.notice {
+            Some(_) => notice_card(),
+            None => Space::new().into(),
+        };
+        let layer = container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL);
+        stack![window, layer].width(Fill).height(Fill).into()
+    }
+}
+
+/// "Issue closed" with "Undo" (task G.5): one line on the menu surface with its border and shadow
+/// (like the zoom badge), 36 high, the violet check of a closed issue before the words.
+fn notice_card<'a>() -> Element<'a, Message> {
+    let line = row![
+        list::toned(Icon::CircleCheck, icon::SIZE, list::Tone::Merged),
+        typo::text(typo::BODY, tr("Issue closed")).wrapping(text::Wrapping::None),
+        widgets::text_button(None, tr("Undo"), style::button::ghost, Some(Message::Undo)),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    container(line)
+        .padding(Padding { top: space::XS, right: space::XS, bottom: space::XS, left: space::M })
+        .style(style::container::menu)
+        .into()
 }
 
 /// A row of the sidebar and the navigation menu.
@@ -1916,6 +2064,94 @@ mod tests {
         assert_eq!(app.filter_mark(&app.filter), Some(Icon::Bug), "the header shows it too");
     }
 
+    /// The demo app on the filter list "Torro bugs" with the accounts `accounts`, and the index of
+    /// its open issue #145.
+    fn on_torro_bugs(accounts: Vec<PimAccount>) -> (App, usize) {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(accounts)));
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::TORRO_BUGS.into())));
+        let issue = app
+            .todos
+            .iter()
+            .position(|t| t.collection == torro_pim::demo::TORRO_BUGS && t.uid == "github:mahype/TorroWorkplace#145");
+        (app, issue.expect("the sample's open bug"))
+    }
+
+    /// `todo` saved in the demo source, as the core would answer it.
+    fn stored(app: &App, todo: Todo) -> Todo {
+        iced::futures::executor::block_on(app.source.save_todo(todo)).expect("the demo closes and reopens issues")
+    }
+
+    #[test]
+    fn ticking_an_issue_closes_it_and_undo_reopens_it() {
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        assert_eq!(app.issue_check(&app.todos[issue]), Some(true));
+        assert_eq!(app.list_data().issue_lists.get(torro_pim::demo::TORRO_BUGS), Some(&true));
+        let ticked = app.toggled(issue).expect("an issue can be ticked");
+        assert!(ticked.completed);
+        assert!(app.update(Message::ToggleDone(issue)).units() > 0, "the core is asked");
+
+        let closed = stored(&app, ticked);
+        let _ = app.update(Message::IssueChanged(Ok(closed.clone())));
+        assert!(app.todos[issue].completed, "done at once, before the reload");
+        let since = app.notice.as_ref().map(|notice| notice.since).expect("Issue closed · Undo");
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+
+        // The card goes by itself after a while, and not before.
+        let _ = app.update(Message::NoticeTick(since + NOTICE_FOR - Duration::from_secs(1)));
+        assert!(app.notice.is_some());
+        let undo = app.undo().expect("Undo reopens the closed issue");
+        assert!(!undo.completed && undo.uid == closed.uid && undo.etag == closed.etag);
+        assert!(app.notice.is_none(), "the card goes with Undo");
+        let reopened = stored(&app, undo);
+        let _ = app.update(Message::IssueChanged(Ok(reopened)));
+        assert!(!app.todos[issue].completed);
+        assert!(app.notice.is_none(), "reopening says nothing");
+
+        let _ = app.update(Message::IssueChanged(Ok(closed)));
+        let since = app.notice.as_ref().map(|notice| notice.since).expect("closed again");
+        let _ = app.update(Message::NoticeTick(since + NOTICE_FOR));
+        assert!(app.notice.is_none(), "gone after {NOTICE_FOR:?}");
+        assert_eq!(app.update(Message::Undo).units(), 0, "nothing left to undo");
+    }
+
+    #[test]
+    fn the_detail_closes_an_issue_like_the_list() {
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        let _ = app.select(issue);
+        assert_eq!(app.detail.as_ref().and_then(|detail| detail.issue_check), Some(true));
+        let tick = app.update(Message::Detail(detail::Message::ToggleDone));
+        assert!(tick.units() > 0, "the tick goes to the core");
+        let closed = stored(&app, Todo { completed: true, ..app.todos[issue].clone() });
+        let _ = app.update(Message::IssueChanged(Ok(closed.clone())));
+        assert_eq!(app.detail.as_ref().map(|detail| detail.original.clone()), Some(closed), "the state follows");
+    }
+
+    #[test]
+    fn without_write_access_the_check_is_locked_and_a_refusal_is_shown() {
+        let mut reader = github_account();
+        reader.scopes = Some(vec!["read:org".into()]);
+        let mut accounts = two_accounts();
+        accounts.push(reader);
+        let (mut app, issue) = on_torro_bugs(accounts);
+        assert_eq!(app.issue_check(&app.todos[issue]), Some(false));
+        assert_eq!(app.list_data().issue_lists.get(torro_pim::demo::TORRO_BUGS), Some(&false));
+        assert!(app.toggled(issue).is_none());
+        assert_eq!(app.update(Message::ToggleDone(issue)).units(), 0, "nothing goes to GitHub");
+        let _ = app.view();
+
+        // A fine-grained token says nothing about its scopes: ticking is tried, GitHub decides.
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        assert!(app.toggled(issue).is_some());
+        let refused = "GitHub does not let this token change the issue.";
+        let _ = app.update(Message::IssueChanged(Err(refused.into())));
+        assert_eq!(app.error, Some(trf("Couldn't change the issue: {error}", &[("error", &refused)])));
+        assert!(app.notice.is_none() && !app.todos[issue].completed);
+    }
+
     #[test]
     fn a_filter_list_symbol_comes_from_its_searches() {
         let source = |queries: &[&str]| GitHubFilter {
@@ -1946,10 +2182,11 @@ mod tests {
         assert_eq!(app.list_data().group_by, GroupBy::Due, "the other views keep theirs");
         let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
         assert_eq!(app.list_data().group_by, GroupBy::None, "and the filter list keeps its own");
-        // Its matches cannot be ticked off yet (G.5): Space and a glance's check do nothing.
-        let first = list::order(&app.list_data())[0];
-        assert!(app.toggled(first).is_none());
-        assert_eq!(app.update(Message::ToggleDone(first)).units(), 0);
+        // A pull request is never ticked off (G.5): Space does nothing.
+        let pull = list::order(&app.list_data()).into_iter().find(|&i| is_open_pull_request(&app.todos[i]));
+        let pull = pull.expect("the sample's pull request");
+        assert!(app.toggled(pull).is_none());
+        assert_eq!(app.update(Message::ToggleDone(pull)).units(), 0);
         for size in [WIDE, MEDIUM, NARROW] {
             let _ = app.update(Message::Resized(size));
             let _ = app.update(Message::ToggleDisplay);
@@ -2367,7 +2604,7 @@ mod tests {
             last_sync: None,
             problem: None,
         };
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state, scopes: None }
     }
 
     /// The accounts of `--demo`: the sample spreads over two.

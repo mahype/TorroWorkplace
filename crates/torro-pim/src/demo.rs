@@ -37,10 +37,52 @@ impl Data {
     fn read_only(&self, collection: &str) -> bool {
         self.collections.iter().any(|c| c.id == collection && !c.writable)
     }
+
+    /// `tasks.save_todo` on the filter list `todo.collection` as the core answers it (task G.5),
+    /// in memory: a changed `completed` of an issue "closes" or "reopens" it – every filter list
+    /// holding it shows the new state, with a new version. A new task, a pull request, a stale
+    /// version or any other change is refused as the core refuses it.
+    fn tick_issue(&mut self, todo: Todo) -> Result<Todo, ProviderError> {
+        let held = self.todos.iter().find(|t| t.collection == todo.collection && t.uid == todo.uid).cloned();
+        let Some(held) = held.filter(|_| todo.href.is_some()) else {
+            return Err(ProviderError::Other(READ_ONLY.into()));
+        };
+        let github = held.link.as_ref().and_then(|link| link.github.as_ref());
+        if !github.is_some_and(|github| github.kind == GitHubKind::Issue) {
+            return Err(ProviderError::Other(PULL_REQUESTS.into()));
+        }
+        if held.etag != todo.etag {
+            return Err(ProviderError::Conflict { uid: todo.uid });
+        }
+        if (Todo { completed: held.completed, ..todo.clone() }) != held {
+            return Err(ProviderError::Other(READ_ONLY.into()));
+        }
+        self.next_id += 1;
+        let version = format!("\"demo-{}\"", self.next_id);
+        let state = if todo.completed { GitHubState::Closed } else { GitHubState::Open };
+        let lists: Vec<String> = self.collections.iter().filter(|c| c.source.is_some()).map(|c| c.id.clone()).collect();
+        let mut saved = None;
+        for copy in self.todos.iter_mut().filter(|t| t.uid == held.uid && lists.contains(&t.collection)) {
+            copy.completed = todo.completed;
+            copy.etag = Some(version.clone());
+            if let Some(github) = copy.link.as_mut().and_then(|link| link.github.as_mut()) {
+                github.state = state;
+            }
+            if copy.collection == todo.collection {
+                saved = Some(copy.clone());
+            }
+        }
+        saved.ok_or_else(|| ProviderError::Other(READ_ONLY.into()))
+    }
 }
 
-/// What a change of a filter list's item is answered with; the core answers `unsupported`.
-const READ_ONLY: &str = "Items of a GitHub filter list cannot be changed yet";
+/// What a change of a filter list's item other than ticking an issue is answered with; the core
+/// answers `unsupported`.
+const READ_ONLY: &str = "Of a GitHub issue in a filter list only whether it is done can be changed";
+/// What ticking a pull request in a filter list is answered with (core: `unsupported`).
+const PULL_REQUESTS: &str = "Pull requests are never closed or reopened here";
+/// What deleting a filter list's item is answered with (core: `unsupported`).
+const NOT_DELETED: &str = "The items of a GitHub filter list cannot be deleted; they live on GitHub";
 
 /// See the module docs.
 #[derive(Debug, Default)]
@@ -634,6 +676,8 @@ impl PimSource for DemoSource {
                 last_sync: Some(Utc::now()),
                 problem: None,
             },
+            // A token that may write issues, so ticking one closes it (task G.5).
+            scopes: Some(vec!["repo".into(), "read:org".into()]),
         };
         Ok(ACCOUNTS
             .iter()
@@ -649,6 +693,7 @@ impl PimSource for DemoSource {
                         last_sync: Some(Utc::now()),
                         problem: None,
                     },
+                    scopes: None,
                 }
             })
             .chain([github])
@@ -718,11 +763,12 @@ impl PimSource for DemoSource {
         if data.events.len() == before { Err(ProviderError::Other("No such event".into())) } else { Ok(()) }
     }
 
-    /// Like the core, a filter list takes no changes ([`Data::read_only`]).
+    /// Like the core, a filter list takes no changes but the tick of an issue, which closes or
+    /// reopens it ([`Data::tick_issue`]).
     async fn save_todo(&self, mut todo: Todo) -> Result<Todo, ProviderError> {
         let mut data = self.lock();
         if data.read_only(&todo.collection) {
-            return Err(ProviderError::Other(READ_ONLY.into()));
+            return data.tick_issue(todo);
         }
         data.next_id += 1;
         let version = format!("\"demo-{}\"", data.next_id);
@@ -752,7 +798,7 @@ impl PimSource for DemoSource {
     async fn delete_todo(&self, todo: Todo) -> Result<(), ProviderError> {
         let mut data = self.lock();
         if data.read_only(&todo.collection) {
-            return Err(ProviderError::Other(READ_ONLY.into()));
+            return Err(ProviderError::Other(NOT_DELETED.into()));
         }
         let before = data.todos.len();
         data.todos.retain(|t| t.href != todo.href || t.uid != todo.uid);
@@ -948,9 +994,9 @@ mod tests {
         let in_list = |todos: &[Todo]| todos.iter().any(|t| t.collection == NEEDS_ME && t.uid == pinned.id);
         let match_ = source.todos().await.expect("todos").into_iter().find(|t| t.collection == TORRO_BUGS);
         let match_ = match_.expect("a match");
-        let done = Todo { completed: true, ..match_.clone() };
-        assert_eq!(source.save_todo(done).await, Err(ProviderError::Other(READ_ONLY.into())));
-        assert_eq!(source.delete_todo(match_).await, Err(ProviderError::Other(READ_ONLY.into())));
+        let renamed = Todo { summary: "Something else".into(), ..match_.clone() };
+        assert_eq!(source.save_todo(renamed).await, Err(ProviderError::Other(READ_ONLY.into())));
+        assert_eq!(source.delete_todo(match_).await, Err(ProviderError::Other(NOT_DELETED.into())));
 
         assert!(source.unpin_issue(TORRO_BUGS.into(), pinned.id.clone()).await.is_err(), "not pinned there");
         assert!(in_list(&source.todos().await.expect("todos")));
@@ -961,6 +1007,33 @@ mod tests {
         assert_eq!(needs_me.map(|s| s.pinned.len()), Some(0));
         assert!(source.unpin_issue(NEEDS_ME.into(), pinned.id.clone()).await.is_err(), "only once");
         assert!(source.unpin_issue(TASKS.into(), pinned.id).await.is_err(), "no filter list");
+    }
+
+    #[tokio::test]
+    async fn ticking_an_issue_of_a_filter_list_closes_and_reopens_it_but_never_a_pull_request() {
+        let source = DemoSource::new(sunday());
+        let todos = source.todos().await.expect("todos");
+        let in_list = |list: &str, number: u64| {
+            let id = Link::github(REPO, number).id;
+            todos.iter().find(|t| t.collection == list && t.uid == id).cloned().expect("in the list")
+        };
+        let state = |todo: &Todo| todo.link.as_ref().and_then(|link| link.github.as_ref()).map(|g| g.state);
+        let issue = in_list(TORRO_BUGS, 145);
+        let closed = source.save_todo(Todo { completed: true, ..issue.clone() }).await.expect("closed");
+        assert!(closed.completed && closed.etag != issue.etag);
+        assert_eq!(state(&closed), Some(GitHubState::Closed));
+        let stale = source.save_todo(Todo { completed: false, ..issue }).await;
+        assert!(matches!(stale, Err(ProviderError::Conflict { .. })), "{stale:?}");
+        let reopened = source.save_todo(Todo { completed: false, ..closed }).await.expect("reopened");
+        assert_eq!((reopened.completed, state(&reopened)), (false, Some(GitHubState::Open)));
+
+        let pull = in_list(NEEDS_ME, 138);
+        let refused = source.save_todo(Todo { completed: true, ..pull }).await;
+        assert_eq!(refused, Err(ProviderError::Other(PULL_REQUESTS.into())));
+        let new = Todo { href: None, uid: String::new(), ..in_list(NEEDS_ME, 142) };
+        assert_eq!(source.save_todo(new).await, Err(ProviderError::Other(READ_ONLY.into())));
+        let accounts = source.accounts().await.expect("accounts");
+        assert!(accounts.iter().all(PimAccount::may_close_issues), "the demo's token may write issues");
     }
 
     #[test]

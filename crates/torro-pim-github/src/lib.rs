@@ -13,6 +13,8 @@
 //!   and the checks of names, colours and searches.
 //! - [`scope`]: whether a search stays inside the repositories a client was granted, checked
 //!   before GitHub is asked (task G.2b).
+//! - Closing and reopening an issue (task G.5): [`graphql::issue_id_body`] and
+//!   [`graphql::set_done_body`], sent by [`Api::set_issue_done`].
 //!
 //! Who may see which repository is not decided here: the core checks a client's searches with
 //! [`scope::confined`] and filters every [`Item`] by its repository ([`Item::repo`]) before it
@@ -45,6 +47,12 @@ pub enum Error {
     Offline,
     /// GitHub answered, but not with what was asked for (rate limit, an error in the answer).
     Github(String),
+    /// The token may not change the issue (task G.5): GitHub answered `FORBIDDEN` or
+    /// `INSUFFICIENT_SCOPES` – a classic token without `repo`/`public_repo`, a fine-grained one
+    /// without "Issues: Read and write", or no write access to the repository.
+    Forbidden,
+    /// GitHub has no such issue, or the token does not reach its repository (`NOT_FOUND`).
+    NotFound,
 }
 
 impl Error {
@@ -53,6 +61,8 @@ impl Error {
         match self {
             Error::Refused => "auth",
             Error::Offline => "offline",
+            Error::Forbidden => "forbidden",
+            Error::NotFound => "not-found",
             Error::Input(_) | Error::Github(_) => "error",
         }
     }
@@ -61,6 +71,10 @@ impl Error {
 /// What a client reads instead of GitHub's own message ([`Error::Github`]): that message may
 /// quote the search or tell about repositories the client may not see.
 pub const GITHUB_FAILED: &str = "GitHub could not run the search. Check the search, or try again later.";
+
+/// What a client reads instead of GitHub's own message when closing or reopening an issue failed
+/// ([`Error::Github`] from [`Api::set_issue_done`]; task G.5).
+pub const CHANGE_FAILED: &str = "GitHub could not change the issue. Try again later.";
 
 impl Error {
     /// The message for a client key: fixed per code. [`Error::Input`] is the core's own text and
@@ -90,6 +104,11 @@ impl fmt::Display for Error {
             Error::Input(message) | Error::Github(message) => f.write_str(message),
             Error::Refused => f.write_str("GitHub no longer accepts the token. Sign in to GitHub again."),
             Error::Offline => f.write_str("GitHub could not be reached. Check the internet connection."),
+            Error::Forbidden => f.write_str(
+                "GitHub does not let this token change the issue. Give the token write access to issues, then try \
+                 again.",
+            ),
+            Error::NotFound => f.write_str("GitHub has no such issue, or the token cannot reach its repository."),
         }
     }
 }
@@ -105,10 +124,13 @@ mod tests {
         let github = Error::Github("GitHub could not run the search: mahype/secret does not exist".into());
         assert_eq!(github.public_message(), GITHUB_FAILED);
         assert_eq!(public_problem(&github.to_string()), GITHUB_FAILED);
-        for fixed in [Error::Refused, Error::Offline] {
+        for fixed in [Error::Refused, Error::Offline, Error::Forbidden, Error::NotFound] {
             assert_eq!(fixed.public_message(), fixed.to_string());
+        }
+        for fixed in [Error::Refused, Error::Offline] {
             assert_eq!(public_problem(&fixed.to_string()), fixed.to_string());
         }
+        assert_eq!((Error::Forbidden.code(), Error::NotFound.code()), ("forbidden", "not-found"));
         let input = Error::Input("A filter list needs a name.".into());
         assert_eq!(input.public_message(), input.to_string());
     }

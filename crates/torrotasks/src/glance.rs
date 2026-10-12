@@ -15,7 +15,9 @@
 //!   title) on one line; what does not fit is "+4".
 //!
 //! GitHub issues and pull requests show their type symbol in the colour of their state instead of
-//! the check (as in the list, `list::github_mark`): GitHub items are not ticked off here.
+//! the check (as in the list, `list::github_mark`): GitHub items are not ticked off here. Ticking an
+//! issue closes it on GitHub (task G.5), which wants the "Undo" card of the window; a glance has no
+//! room for it, and a tile seen from afar is no place to close issues by a stray click.
 //!
 //! Both are displays, not small apps: no header, sidebar, menu, form or dialog. The one thing to
 //! do is the purpose of the tile – tick a task off by its check (`Message::ToggleDone`, the same

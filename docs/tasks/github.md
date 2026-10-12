@@ -290,7 +290,7 @@ K.21 (frei)
 - Abnahme: Tests Formular ↔ Anfrage (Rundreise, unbekannte Teile bleiben stehen), Sichtprüfung.
 
 ### G.5 Abhaken schließt das Issue
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.2, G.3 · **Dateien:** `crates/torro-pim-github/`, `crates/torroworkplace/src/pim.rs`,
   `crates/torrotasks/src/{app,list}.rs`
 - `tasks.save_todo` mit `completed` auf einem Issue einer Filterliste schließt es („completed“) bzw. öffnet es

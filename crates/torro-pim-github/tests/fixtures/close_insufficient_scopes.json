@@ -1,0 +1,9 @@
+{
+  "errors": [
+    {
+      "type": "INSUFFICIENT_SCOPES",
+      "locations": [ { "line": 1, "column": 22 } ],
+      "message": "Your token has not been granted the required scopes to execute this query. The 'closeIssue' field requires one of the following scopes: ['public_repo', 'repo'], but your token has only been granted the: ['read:org'] scopes. Please modify your token's scopes at: https://github.com/settings/tokens."
+    }
+  ]
+}

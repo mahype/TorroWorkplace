@@ -442,6 +442,15 @@ impl Core {
         if let Some(collection) = self.out_of_reach(reach, &request).await {
             return Ok(no_collection(&collection));
         }
+        // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
+        // to `github` as well, refused before a person is asked to approve it. The handler checks
+        // again for an approved run (`PimService::save_filter_todo`).
+        if let Request::SaveTodo { todo } = &request
+            && !rights.area(Area::Github).allows(Access::Write)
+            && self.pim.is_filter_list(&todo.collection).await
+        {
+            return Ok(Response::Error { code: "forbidden".into(), message: crate::pim::NO_GITHUB_WRITE.into() });
+        }
         let operation = request.operation();
         // The inbox needs to know who asks, not only what it may see: its own entries, its kind.
         let inbox_client = match operation.area() {
@@ -757,6 +766,11 @@ impl Core {
             Request::UnpinIssue { collection, url } => {
                 let api = self.filter_list_api(&collection).await;
                 self.pim.unpin_issue(&collection, &url, api.as_ref()).await
+            }
+            // Ticking an issue of a filter list closes it on GitHub (task G.5): with the list's token.
+            Request::SaveTodo { todo } if self.pim.is_filter_list(&todo.collection).await => {
+                let api = self.filter_list_api(&todo.collection).await;
+                self.pim.save_filter_todo(todo, api.as_ref(), reach).await
             }
             pim @ (Request::ConnectNextcloud { .. }
             | Request::CalendarCollections
@@ -2426,24 +2440,82 @@ mod tests {
     /// One issue as GitHub's GraphQL API sends it: `(repository, number, title, parent)`.
     type Issue = (&'static str, u64, &'static str, Option<(&'static str, u64)>);
 
-    fn node((repo, number, title, parent): Issue) -> serde_json::Value {
+    fn node(issue: Issue) -> serde_json::Value {
+        node_as(issue, "Issue", "OPEN", "2026-10-10T08:00:00Z")
+    }
+
+    /// [`node`] as a `typename` (`Issue`, `PullRequest`) in `state`, last changed at `updated`.
+    fn node_as((repo, number, title, parent): Issue, typename: &str, state: &str, updated: &str) -> serde_json::Value {
         serde_json::json!({
-            "__typename": "Issue", "number": number, "title": title, "body": "", "state": "OPEN",
-            "url": format!("https://github.com/{repo}/issues/{number}"), "updatedAt": "2026-10-10T08:00:00Z",
+            "__typename": typename, "number": number, "title": title, "body": "", "state": state,
+            "url": format!("https://github.com/{repo}/issues/{number}"), "updatedAt": updated,
             "repository": {"nameWithOwner": repo}, "labels": {"nodes": []}, "assignees": {"nodes": []},
             "milestone": null,
             "parent": parent.map(|(repo, number)| serde_json::json!({"number": number, "repository": {"nameWithOwner": repo}})),
         })
     }
 
-    /// The issues GitHub "has" in a test, by search: every search finds `found`, the pinned
-    /// lookup finds `pinned`. With `fail`, every search fails with that message, as GitHub's
-    /// GraphQL errors do.
+    /// The issues GitHub "has" in a test, by search: every search finds `found` (open unless their
+    /// number is in `closed`) and the pull requests `pulls`, the pinned lookup finds `pinned`. With
+    /// `fail`, every search fails with that message, as GitHub's GraphQL errors do. Closing and
+    /// reopening (task G.5) change `closed`; with `refuse` they fail with an error of that type
+    /// (`INSUFFICIENT_SCOPES`, `FORBIDDEN`), as for a token that may not write issues.
     #[derive(Default)]
     struct World {
         found: Vec<Issue>,
         pinned: Vec<Issue>,
         fail: Option<&'static str>,
+        pulls: Vec<Issue>,
+        closed: Vec<u64>,
+        refuse: Option<&'static str>,
+    }
+
+    /// When the fake GitHub last changed an issue: what it reports as `updatedAt` afterwards.
+    const CHANGED_AT: &str = "2026-10-12T09:00:00Z";
+
+    impl World {
+        /// A search's matches: the issues in their state, then the pull requests.
+        fn matches(&self) -> Vec<serde_json::Value> {
+            let issues = self.found.iter().map(|issue| match self.closed.contains(&issue.1) {
+                true => node_as(*issue, "Issue", "CLOSED", CHANGED_AT),
+                false => node(*issue),
+            });
+            let pulls = self.pulls.iter().map(|pull| node_as(*pull, "PullRequest", "OPEN", "2026-10-10T08:00:00Z"));
+            issues.chain(pulls).collect()
+        }
+
+        /// The answer to the node id lookup of issue `number` (`graphql::issue_id_body`).
+        fn issue_id(&self, number: u64) -> serde_json::Value {
+            let typename = if self.found.iter().any(|issue| issue.1 == number) {
+                "Issue"
+            } else if self.pulls.iter().any(|pull| pull.1 == number) {
+                "PullRequest"
+            } else {
+                let error = serde_json::json!({"type": "NOT_FOUND", "message": "Could not resolve to an issue."});
+                return serde_json::json!({"data": {"repository": {"issueOrPullRequest": null}}, "errors": [error]});
+            };
+            let node = serde_json::json!({"__typename": typename, "id": format!("I_{number}")});
+            serde_json::json!({"data": {"repository": {"issueOrPullRequest": node}}})
+        }
+
+        /// Closes (`done`) or reopens the issue with the node id `id` and answers as GitHub does.
+        fn set_done(&mut self, id: &str, done: bool) -> serde_json::Value {
+            let field = if done { "closeIssue" } else { "reopenIssue" };
+            if let Some(kind) = self.refuse {
+                let error = serde_json::json!({"type": kind, "path": [field], "message": "Resource not accessible"});
+                return serde_json::json!({"data": {field: null}, "errors": [error]});
+            }
+            let number: u64 = id.trim_start_matches("I_").parse().expect("a node id of the fake");
+            let Some(issue) = self.found.iter().copied().find(|issue| issue.1 == number) else {
+                return serde_json::json!({"errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a node."}]});
+            };
+            self.closed.retain(|closed| *closed != number);
+            if done {
+                self.closed.push(number);
+            }
+            let state = if done { "CLOSED" } else { "OPEN" };
+            serde_json::json!({"data": {field: {"issue": node_as(issue, "Issue", state, CHANGED_AT)}}})
+        }
     }
 
     /// Every request the fake GitHub got.
@@ -2452,13 +2524,22 @@ mod tests {
     /// A fake GitHub that knows `mahype` and answers searches and pinned lookups from `world`.
     async fn fake_world(world: Arc<std::sync::Mutex<World>>) -> (String, Asked) {
         fake_github(move |seen| {
-            let world = world.lock().expect("world");
+            let mut world = world.lock().expect("world");
+            let sent: serde_json::Value = serde_json::from_str(&seen.body).unwrap_or_default();
+            let variables = &sent["variables"];
             let body = if seen.body.contains("viewer") {
                 viewer("mahype")
+            } else if let Some(done) = [("closeIssue(", true), ("reopenIssue(", false)]
+                .into_iter()
+                .find_map(|(field, done)| seen.body.contains(field).then_some(done))
+            {
+                world.set_done(variables["id"].as_str().unwrap_or_default(), done).to_string()
+            } else if seen.body.contains("on Issue { id }") {
+                world.issue_id(variables["n"].as_u64().unwrap_or_default()).to_string()
             } else if let (true, Some(message)) = (seen.body.contains("search("), world.fail) {
                 serde_json::json!({"data": null, "errors": [{"type": "NOT_FOUND", "message": message}]}).to_string()
             } else if seen.body.contains("search(") {
-                let nodes: Vec<_> = world.found.iter().copied().map(node).collect();
+                let nodes = world.matches();
                 serde_json::json!({"data": {"search": {"issueCount": nodes.len(),
                     "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}})
                 .to_string()
@@ -2577,11 +2658,9 @@ mod tests {
         assert_eq!(todo_ids(&core, None).await, ["github:mahype/TorroWorkplace#1"]);
         assert_eq!(code(&core.handle(unpin()).await), "not-found");
 
-        // Items of a filter list are not changed through save_todo yet (G.5).
+        // Items of a filter list are never deleted; ticking them is task G.5 (tests below).
         let Response::Todos { todos } = core.handle(Request::Todos).await else { panic!("todos") };
-        let done = torro_pim::Todo { completed: true, ..todos[0].clone() };
-        assert_eq!(code(&core.handle(Request::SaveTodo { todo: done.clone() }).await), "unsupported");
-        assert_eq!(code(&core.handle(Request::DeleteTodo { todo: done }).await), "unsupported");
+        assert_eq!(code(&core.handle(Request::DeleteTodo { todo: todos[0].clone() }).await), "unsupported");
 
         let update = |revision| Request::UpdateFilterList {
             collection: list.id.clone(),
@@ -2871,6 +2950,187 @@ mod tests {
         assert!(todo_ids(&core, Some(&key)).await.is_empty());
         let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
         assert_eq!(code(&ask(&core, Some(&key), preview).await), "forbidden");
+    }
+
+    // --- Ticking an issue of a filter list closes it (task G.5) ---------------------------------
+
+    /// The tasks `key` (none: the suite) reads in the list `list`.
+    async fn todos_in(core: &Core, key: Option<&Key>, list: &str) -> Vec<torro_pim::Todo> {
+        let answer = match key {
+            Some(key) => ask(core, Some(key), Request::Todos).await,
+            None => core.handle(Request::Todos).await,
+        };
+        let Response::Todos { todos } = answer else { panic!("todos, got {answer:?}") };
+        todos.into_iter().filter(|todo| todo.collection == list).collect()
+    }
+
+    /// `todo` as the list returned it, ticked (`done`) or unticked, to be saved.
+    fn ticked(todo: &torro_pim::Todo, done: bool) -> Request {
+        Request::SaveTodo { todo: torro_pim::Todo { completed: done, ..todo.clone() } }
+    }
+
+    /// The task a save answered with.
+    fn saved(answer: Response) -> torro_pim::Todo {
+        match answer {
+            Response::Todo { todo } => todo,
+            other => panic!("a saved task, got {other:?}"),
+        }
+    }
+
+    /// GitHub's state of an item as the task carries it.
+    fn state_of(todo: &torro_pim::Todo) -> Option<torro_pim::model::GitHubState> {
+        todo.link.as_ref()?.github.as_ref().map(|github| github.state)
+    }
+
+    /// How many requests the fake GitHub has seen.
+    fn count(asked: &Asked) -> usize {
+        asked.lock().expect("asked").len()
+    }
+
+    const PULL_5: Issue = ("mahype/TorroWorkplace", 5, "Add the week view", None);
+
+    #[tokio::test]
+    async fn ticking_an_issue_closes_it_on_github_and_unticking_reopens_it() {
+        use torro_pim::model::GitHubState;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, ISSUE_2], ..World::default() }));
+        let (core, asked) = core_asking(dir.path(), &world).await;
+        let list = created(core.handle(create("Bugs", &["is:open"])).await);
+        let again = created(core.handle(create("Again", &["is:open"])).await);
+        let issue = todos_in(&core, None, &list.id).await.remove(0);
+        assert_eq!((issue.uid.as_str(), issue.completed), ("github:mahype/TorroWorkplace#1", false));
+
+        let before = count(&asked);
+        let closed = saved(core.handle(ticked(&issue, true)).await);
+        assert!(closed.completed);
+        assert_eq!(state_of(&closed), Some(GitHubState::Closed));
+        assert_eq!((closed.uid.as_str(), closed.collection.as_str()), (issue.uid.as_str(), list.id.as_str()));
+        assert_eq!(closed.etag.as_deref(), Some(CHANGED_AT), "the new version, for the next change");
+        {
+            let asked = asked.lock().expect("asked");
+            assert_eq!(asked.len(), before + 2, "the node id, then the mutation");
+            assert!(asked[before].body.contains(r#""n":1"#), "{}", asked[before].body);
+            let mutation = &asked[before + 1].body;
+            assert!(mutation.contains("closeIssue(input: { issueId: $id, stateReason: COMPLETED })"), "{mutation}");
+            assert!(mutation.contains(r#""id":"I_1""#), "{mutation}");
+            assert_eq!(asked[before + 1].authorization.as_deref(), Some(format!("Bearer {TOKEN}").as_str()));
+        }
+        // Done in both lists, until a refresh drops it from the open ones: "Undo" still finds it.
+        for list in [&list.id, &again.id] {
+            let held = todos_in(&core, None, list).await;
+            assert!(held.iter().any(|todo| todo.uid == issue.uid && todo.completed), "{list}");
+        }
+
+        // The version from before the change is stale now.
+        let before = count(&asked);
+        assert_eq!(code(&core.handle(ticked(&issue, false)).await), "conflict");
+        let reopened = saved(core.handle(ticked(&closed, false)).await);
+        assert!(!reopened.completed);
+        assert_eq!(state_of(&reopened), Some(GitHubState::Open));
+        assert!(asked.lock().expect("asked")[before + 1].body.contains("reopenIssue(input: { issueId: $id })"));
+        assert!(!world.lock().expect("world").closed.contains(&1), "open on GitHub again");
+
+        // Nothing else of a GitHub item can be changed, and nothing goes to GitHub for it.
+        let before = count(&asked);
+        let unchanged = core.handle(ticked(&reopened, false)).await;
+        assert_eq!(saved(unchanged).uid, issue.uid, "unchanged: answered from the cache");
+        let renamed = torro_pim::Todo { summary: "Fix it all".into(), completed: true, ..reopened.clone() };
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).expect("a date");
+        let due = torro_pim::Todo { due: Some(torro_pim::EventTime::Date(day)), ..reopened.clone() };
+        let new = torro_pim::Todo { href: None, etag: None, ..reopened.clone() };
+        for request in [
+            Request::SaveTodo { todo: renamed },
+            Request::SaveTodo { todo: due },
+            Request::SaveTodo { todo: new },
+            Request::DeleteTodo { todo: reopened.clone() },
+        ] {
+            assert_eq!(code(&core.handle(request.clone()).await), "unsupported", "{request:?}");
+        }
+        let unknown = torro_pim::Todo { uid: "github:mahype/TorroWorkplace#99".into(), ..reopened.clone() };
+        assert_eq!(code(&core.handle(ticked(&unknown, true)).await), "not-found");
+        assert_eq!(count(&asked), before);
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_is_never_closed_and_a_token_that_may_not_write_changes_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world =
+            Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], pulls: vec![PULL_5], ..World::default() }));
+        let (core, asked) = core_asking(dir.path(), &world).await;
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let items = todos_in(&core, None, &list.id).await;
+        let (issue, pull) = (&items[0], &items[1]);
+        assert_eq!(pull.uid, "github:mahype/TorroWorkplace#5");
+
+        let before = count(&asked);
+        let refused = core.handle(ticked(pull, true)).await;
+        assert!(
+            matches!(&refused, Response::Error { code, message } if code == "unsupported" && message.contains("pull requests"))
+        );
+        assert_eq!(count(&asked), before, "GitHub hears nothing of it");
+
+        // A classic token without `repo`, a fine-grained one without "Issues: write": forbidden.
+        for refusal in ["INSUFFICIENT_SCOPES", "FORBIDDEN"] {
+            world.lock().expect("world").refuse = Some(refusal);
+            let answer = core.handle(ticked(issue, true)).await;
+            let wanted = torro_pim_github::Error::Forbidden.to_string();
+            assert_eq!(answer, Response::Error { code: "forbidden".into(), message: wanted }, "{refusal}");
+        }
+        let held = todos_in(&core, None, &list.id).await;
+        assert!(!held[0].completed && held[0].etag == issue.etag, "the item stays as it was");
+        assert!(world.lock().expect("world").closed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_client_closes_only_issues_of_its_repositories_and_only_with_github_write() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The fake finds the private issue too; the client must not reach it.
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1, SECRET_3], ..World::default() }));
+        let (core, asked) = core_asking(dir.path(), &world).await;
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let all = todos_in(&core, None, &list.id).await;
+        let secret = all.iter().find(|todo| todo.uid == "github:mahype/secret#3").expect("the suite sees it");
+
+        let (_, key) = client(&core, repo_limited()).await;
+        let mine = todos_in(&core, Some(&key), &list.id).await;
+        assert_eq!(mine.len(), 1, "only its repository");
+        let before = count(&asked);
+        assert_eq!(code(&ask(&core, Some(&key), ticked(secret, true)).await), "not-found");
+        assert_eq!(count(&asked), before, "nothing went to GitHub");
+
+        // Tasks write is not enough: closing an issue needs write access to `github`.
+        let mut reader = repo_limited();
+        reader.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
+        reader.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, reading) = client(&core, reader).await;
+        let refused = ask(&core, Some(&reading), ticked(&mine[0], true)).await;
+        let wanted = Response::Error { code: "forbidden".into(), message: crate::pim::NO_GITHUB_WRITE.into() };
+        assert_eq!(refused, wanted, "refused before a person is asked to approve it");
+        assert_eq!(count(&asked), before);
+
+        let closed = saved(ask(&core, Some(&key), ticked(&mine[0], true)).await);
+        assert!(closed.completed);
+        assert_eq!(count(&asked), before + 2);
+
+        // GitHub's own words never reach a client.
+        world.lock().expect("world").refuse = Some("SOMETHING_ELSE");
+        let failed = ask(&core, Some(&key), ticked(&closed, false)).await;
+        assert_eq!(failed, Response::Error { code: "error".into(), message: torro_pim_github::CHANGE_FAILED.into() });
+    }
+
+    #[tokio::test]
+    async fn an_approval_to_tick_an_issue_names_the_issue_from_the_cache() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let world = Arc::new(std::sync::Mutex::new(World { found: vec![ISSUE_1], ..World::default() }));
+        let core = core_with_world(dir.path(), &world).await;
+        let list = created(core.handle(create("Mine", &[MINE])).await);
+        let mut asking = repo_limited();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, key) = client(&core, asking).await;
+        let issue = todos_in(&core, Some(&key), &list.id).await.remove(0);
+        let disguised = torro_pim::Todo { summary: "Something harmless".into(), ..issue.clone() };
+        let approval = waits(ask(&core, Some(&key), ticked(&disguised, true)).await);
+        assert!(approval.summary.contains("Fix the week view"), "{}", approval.summary);
     }
 
     #[tokio::test]

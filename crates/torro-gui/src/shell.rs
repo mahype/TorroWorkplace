@@ -631,7 +631,7 @@ mod tests {
     fn account(id: &str) -> PimAccount {
         let state =
             AccountState::Connected { server: "s".into(), login_name: "l".into(), last_sync: None, problem: None };
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state, scopes: None }
     }
 
     #[test]

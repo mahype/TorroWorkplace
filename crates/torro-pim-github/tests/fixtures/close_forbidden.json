@@ -1,0 +1,12 @@
+{
+  "data": { "closeIssue": null },
+  "errors": [
+    {
+      "type": "FORBIDDEN",
+      "path": ["closeIssue"],
+      "extensions": { "saml_failure": false },
+      "locations": [ { "line": 1, "column": 22 } ],
+      "message": "Resource not accessible by personal access token"
+    }
+  ]
+}

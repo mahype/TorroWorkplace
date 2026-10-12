@@ -183,7 +183,8 @@ pub enum Request {
     /// The task lists the suite shows, i.e. the collections with todos that are not hidden
     /// ([`Response::Collections`]). A collection with both appears in both lists. The GitHub
     /// filter lists are task lists too (`writable: false`, their definition in `source`); a
-    /// client sees them only with read access to `github`.
+    /// client sees them only with read access to `github`. Not writable means no new or deleted
+    /// tasks: ticking one of their issues still works ([`Request::SaveTodo`], task G.5).
     #[serde(rename = "tasks.list_lists")]
     TaskCollections,
     /// Events overlapping `[start, end)`.
@@ -201,6 +202,14 @@ pub enum Request {
     /// Creates (`href: None`) or updates; answered with [`Response::Todo`]. `collection` must be
     /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
     /// another calendar of the same account; moving to another account fails with `unsupported`.
+    ///
+    /// Marking a GitHub issue in a filter list done closes it on GitHub (reopening reopens it);
+    /// pull requests are never closed; other fields of a GitHub match cannot be changed (task
+    /// G.5). Those are `unsupported`, as is a new task in a filter list; a stale `etag` is
+    /// `conflict`. The answer is the issue as GitHub reports it afterwards. A client needs write
+    /// access to `github` (else `forbidden`) and the issue's repository in its selection (else
+    /// `not-found`). GitHub's refusals: `auth` (token refused), `forbidden` (the token may not
+    /// write issues), `not-found`, `offline`, `error`; without a token `not-connected`.
     #[serde(rename = "tasks.save_todo")]
     SaveTodo { todo: Todo },
     #[serde(rename = "tasks.delete_todo")]

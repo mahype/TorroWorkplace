@@ -22,7 +22,8 @@
 //!   previous/next task, "…" (Copy link, Open on GitHub / Open link, Unpin for an item pinned in
 //!   its filter list ([`Detail::pinned`], task G.3), Delete task – never for a GitHub item) and ✕;
 //!   in narrow windows "‹ <list view>" instead of path and ✕.
-//! - [`Detail::main_column`]: title with check or GitHub state, for GitHub the line "state ·
+//! - [`Detail::main_column`]: title with check or GitHub state (an issue of a filter list: its
+//!   check, which closes it, [`Detail::issue_check`], task G.5), for GitHub the line "state ·
 //!   owner/repo#123", the [`Detail::property_chips`] unless the properties column is shown, the
 //!   notes, "Sub-tasks" (always, to add one), and for pull requests "Checks" and "Reviews" (the
 //!   combined state from [`GitHubDetails`]; single checks and reviewers come with G.2).
@@ -108,6 +109,12 @@ pub struct Detail {
     /// so "…" offers "Unpin" ([`Action::Unpin`], task G.3). The app sets it when it opens the
     /// detail and after every reload; `false` for every other task.
     pub pinned: bool,
+    /// The task is an issue of a GitHub filter list (task G.5): `Some(true)` when ticking may
+    /// close it on GitHub, `Some(false)` when the account's token may not write issues (the check
+    /// shows, locked). Its check in the title and the Status row then hand the tick to the app
+    /// ([`Action::ToggleDone`]), which closes the issue and offers "Undo". `None` for everything
+    /// else. The app sets it like [`Detail::pinned`].
+    pub issue_check: Option<bool>,
     /// Today, for the due keywords and chips.
     today: NaiveDate,
     draft: Draft,
@@ -356,6 +363,7 @@ impl Detail {
             lists: lists.to_vec(),
             others: others_of(todo, all),
             pinned: false,
+            issue_check: None,
             today: Local::now().date_naive(),
             title: text_editor::Content::with_text(&draft.summary),
             notes: text_editor::Content::with_text(&draft.notes),
@@ -385,6 +393,11 @@ impl Detail {
                 self.draft.notes = self.notes.text();
             }
             Message::Flush => return self.request_save(false),
+            // An issue of a filter list is closed by the app (it offers "Undo"), not saved as a draft.
+            Message::ToggleDone if self.issue_check == Some(true) => {
+                return Action::ToggleDone(self.original.uid.clone());
+            }
+            Message::ToggleDone if self.issue_check == Some(false) => {}
             Message::ToggleDone => {
                 self.draft.completed = !self.draft.completed;
                 return self.request_save(true);
@@ -958,12 +971,15 @@ impl Detail {
     /// The title row: the check (or the GitHub state) 20 on the axis of the first line, then
     /// the title in `HEADLINE`; the hint for an empty title below it.
     fn title_block<'a>(&'a self) -> Element<'a, Message> {
-        let mark: Element<'a, Message> = match self.github() {
-            Some(details) => {
+        let mark: Element<'a, Message> = match (self.github(), self.issue_check) {
+            (Some(_), Some(may_close)) => {
+                list::issue_check(self.original.completed, TITLE_MARK, may_close.then_some(Message::ToggleDone))
+            }
+            (Some(details), None) => {
                 let look = state_look(details);
                 tinted_icon(look.icon, TITLE_MARK, look.colour)
             }
-            None => self.check(TITLE_MARK),
+            (None, _) => self.check(TITLE_MARK),
         };
         let mark = container(mark).center_x(TITLE_MARK).center_y(typo_line(typo::HEADLINE));
         let title: Element<'a, Message> = if self.editable() {
@@ -1065,9 +1081,11 @@ impl Detail {
         match prop {
             Prop::Status => {
                 let (mark, on_press) = match self.github() {
+                    // The state follows GitHub; an issue that may be closed is closed from here too.
                     Some(details) => {
                         let look = state_look(details);
-                        (tinted_icon(look.icon, icon::SIZE, look.colour), None)
+                        let tick = (self.issue_check == Some(true)).then_some(Message::ToggleDone);
+                        (tinted_icon(look.icon, icon::SIZE, look.colour), tick)
                     }
                     None => (self.check(style::CHECK_SIZE), editable.then_some(Message::ToggleDone)),
                 };
@@ -2331,6 +2349,25 @@ mod tests {
         assert!(detail.overdue());
         assert_eq!(detail.place_name(), "Work");
         assert_eq!(detail.chip_props(), [Prop::Priority, Prop::Due, Prop::List]);
+    }
+
+    #[test]
+    fn the_check_of_an_issue_in_a_filter_list_hands_the_tick_to_the_app() {
+        let issue = github_item(GitHubDetails { kind: GitHubKind::Issue, ..pull_request() });
+        let mut detail = detail_of(&issue);
+        detail.issue_check = Some(true);
+        assert_eq!(detail.update(Message::ToggleDone), Action::ToggleDone(issue.uid.clone()), "closed by the app");
+        assert!(!detail.draft.completed, "no draft is saved for it");
+        detail.issue_check = Some(false);
+        assert_eq!(detail.update(Message::ToggleDone), Action::None, "locked: the token may not write issues");
+        let anchor = Anchor::new();
+        for check in [Some(true), Some(false), None] {
+            detail.issue_check = check;
+            for fit in [Fit::Columns, Fit::Chips, Fit::Narrow] {
+                let _ = detail.main_column(fit, Palette::light(), &anchor);
+            }
+            let _ = detail.properties_column(None, &anchor);
+        }
     }
 
     #[test]

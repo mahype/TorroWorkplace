@@ -45,6 +45,13 @@
 //!   search elsewhere is `forbidden` and GitHub hears nothing of it. It sees a list only when all
 //!   its searches pass that check, and it never reads GitHub's own error messages, only fixed ones
 //!   ([`torro_pim_github::Error::public_message`]). Filtering each match stays as a second guard.
+//! - **Ticking an issue of a filter list** (task G.5, [`PimService::save_filter_todo`]) closes it on
+//!   GitHub as completed, unticking reopens it; nothing else of an item there can be changed, and
+//!   pull requests are never closed (`unsupported`). The issue is the one the cache holds under
+//!   the uid, never what the client sends. A client needs the item's repository (else
+//!   `not-found`) and write access to `github` (else `forbidden`), both checked before GitHub is
+//!   asked. The answer updates the item in every filter list that holds it, so it stays (done)
+//!   until the next refresh – and "Undo" finds it.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -57,6 +64,7 @@ use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
+use torro_pim::model::GitHubKind;
 use torro_pim::source::move_plan;
 use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, ProviderError, Todo, combined_state};
 use torro_pim_caldav::CalDavClient;
@@ -64,7 +72,7 @@ use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
 use torro_pim_github::api::{self as github_api, MAX_MATCHES};
 use torro_pim_github::lists::{self, FilterFile};
-use torro_pim_github::{Api, FilterList, address, item, scope};
+use torro_pim_github::{Api, FilterList, IssueRef, address, item, scope};
 
 use torro_core::i18n::{tr, trf};
 
@@ -567,10 +575,12 @@ impl PimService {
                 todos.extend(seen.flat_map(|list| &list.todos).filter_map(|todo| reach.todo_for(todo)));
                 Response::Todos { todos }
             }
-            Request::SaveTodo { todo } | Request::DeleteTodo { todo }
-                if self.is_filter_list(&todo.collection).await =>
-            {
-                error("unsupported", "the items of a GitHub filter list cannot be changed here yet".into())
+            // The core hands in the account's token (`crate::core`); without it GitHub cannot be asked.
+            Request::SaveTodo { todo } if self.is_filter_list(&todo.collection).await => {
+                self.save_filter_todo(todo, None, reach).await
+            }
+            Request::DeleteTodo { todo } if self.is_filter_list(&todo.collection).await => {
+                error("unsupported", "the items of a GitHub filter list cannot be deleted; they live on GitHub".into())
             }
             Request::SaveEvent { event } => match self.save_event(event).await {
                 Ok(event) => Response::Event { event },
@@ -959,7 +969,13 @@ impl PimService {
         let infos = account_infos(&*self.state.read().await);
         let accounts: Vec<PimAccount> = infos
             .into_iter()
-            .map(|info| PimAccount { id: info.id, label: info.label, kind: info.kind, state: info.state })
+            .map(|info| PimAccount {
+                id: info.id,
+                label: info.label,
+                kind: info.kind,
+                state: info.state,
+                scopes: info.scopes,
+            })
             .collect();
         combined_state(&accounts)
     }
@@ -1363,6 +1379,8 @@ impl PimService {
     ///   write resolves it ([`touched`]), and for a save that moves it the collection losing it
     ///   ([`Facts::moved_from`]); the collection written to by its display name;
     /// - `tasks.move_todo`: the task at `href` and its list, compared as `move_todo` compares;
+    /// - `tasks.save_todo` on a GitHub filter list (task G.5): the item the list holds under the
+    ///   `uid`, the one [`PimService::save_filter_todo`] closes or reopens;
     /// - `tasks.unpin_issue`: the filter list and the pinned item with the same repository and
     ///   number as `url`;
     /// - `settings.set_collection_shown`, `tasks.update_filter_list`, `tasks.delete_filter_list`:
@@ -1392,6 +1410,13 @@ impl PimService {
             }
             Request::DeleteTodo { todo } => {
                 written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, false)
+            }
+            Request::SaveTodo { todo } if state.filter(&todo.collection).is_some() => {
+                let held = state.filter(&todo.collection).and_then(|(_, list)| filter_item(list, &todo.uid));
+                Facts {
+                    item: held.map(|todo| Known { title: todo.summary.clone(), start: None }),
+                    ..named(&todo.collection)
+                }
             }
             Request::SaveTodo { todo } => {
                 written(&todo.collection, todo.href.as_deref(), todo.etag.as_deref(), Role::TaskList, true)
@@ -1489,6 +1514,10 @@ fn failing(
 
 /// A request refused before anything changed: an API error code and a message for people.
 type Refusal = (&'static str, String);
+
+/// Why a client may not tick an issue of a filter list (task G.5): `forbidden` without write
+/// access to `github`, whatever it may do with tasks.
+pub const NO_GITHUB_WRITE: &str = "closing or reopening a GitHub issue needs write access to github";
 
 /// How many matches a preview hands out.
 const PREVIEW_ITEMS: usize = 20;
@@ -1699,6 +1728,99 @@ impl PimService {
         }
     }
 
+    /// `tasks.save_todo` on an item of the GitHub filter list `todo.collection` (task G.5): a
+    /// changed `completed` closes the issue on GitHub as completed (`true`) or reopens it
+    /// (`false`) with `api` (the list's account; `None` without a token). The item is then updated
+    /// in every filter list that holds it and answered as `reach` sees it. Checked in this order,
+    /// each before GitHub is asked:
+    ///
+    /// - without `href` (a new task): `unsupported`, a filter list takes none;
+    /// - no item with this `uid` in the list, or (for a client) one outside its repositories:
+    ///   `not-found`;
+    /// - a client without write access to `github`: `forbidden`;
+    /// - a pull request: `unsupported`, pull requests are never closed here;
+    /// - another `etag` than the cached one: `conflict` (it changed on GitHub meanwhile);
+    /// - any other field changed ([`changes_more_than_done`]): `unsupported`;
+    /// - `completed` as cached: the cached item, nothing is sent;
+    /// - no token: `not-connected`.
+    ///
+    /// GitHub's refusals come as `auth` (token refused), `forbidden` (the token may not write
+    /// issues there), `not-found`, `offline` or `error`; for a client with fixed messages only
+    /// ([`change_message`]). The issue is always the one the cache holds under the `uid`.
+    pub async fn save_filter_todo(&self, todo: Todo, api: Option<&Api>, reach: Reach<'_>) -> Response {
+        if todo.href.is_none() {
+            return error("unsupported", "a GitHub filter list takes no new tasks".into());
+        }
+        let held = {
+            let state = self.state.read().await;
+            state
+                .filter(&todo.collection)
+                .and_then(|(account, list)| Some((account.to_string(), filter_item(list, &todo.uid)?.clone())))
+        };
+        // As the client may see it: a parent of another repository is left out there too.
+        let Some((account, held, shown)) = held.and_then(|(account, held)| {
+            let shown = reach.todo_for(&held)?;
+            Some((account, held, shown))
+        }) else {
+            return error("not-found", format!("the list holds no item {:?}", todo.uid));
+        };
+        if let Reach::Client(rights) = reach
+            && !rights.area(Area::Github).allows(Access::Write)
+        {
+            return error("forbidden", NO_GITHUB_WRITE.into());
+        }
+        let Some(issue) = closable_issue(&held) else {
+            return error("unsupported", "pull requests are never closed or reopened here".into());
+        };
+        if todo.etag != held.etag {
+            return error("conflict", "the issue changed on GitHub meanwhile: read it again".into());
+        }
+        if changes_more_than_done(&todo, &shown) {
+            let message = "of a GitHub issue in a filter list only whether it is done can be changed";
+            return error("unsupported", message.into());
+        }
+        if todo.completed == held.completed {
+            return Response::Todo { todo: shown };
+        }
+        let Some(api) = api else {
+            return error("not-connected", format!("{account} has no token on this device: sign in to GitHub again"));
+        };
+        let item = match api.set_issue_done(&issue, todo.completed).await {
+            Ok(item) => item,
+            Err(err) => {
+                eprintln!("torroworkplace: {} not changed on GitHub: {}", issue.link_id(), err.code());
+                return error(err.code(), change_message(reach, &err));
+            }
+        };
+        let saved = self
+            .keep_item(&todo.collection, &item)
+            .await
+            .unwrap_or_else(|| Todo { sort_order: held.sort_order, ..item.to_todo(&todo.collection, 0) });
+        match reach.todo_for(&saved) {
+            Some(todo) => Response::Todo { todo },
+            None => error("not-found", format!("the list holds no item {:?}", todo.uid)),
+        }
+    }
+
+    /// Puts `item`, as GitHub reported it after a change, into every filter list that holds it,
+    /// each copy at its place, and returns the copy of the list `collection`. Until the next
+    /// refresh it stays even where a search would no longer find it (a closed issue in an
+    /// `is:open` list), so it shows as done and can be reopened.
+    async fn keep_item(&self, collection: &str, item: &item::Item) -> Option<Todo> {
+        let id = item.id.link_id();
+        let mut state = self.state.write().await;
+        let mut kept = None;
+        for list in state.filters.iter_mut().flat_map(|slot| &mut slot.lists) {
+            for todo in list.todos.iter_mut().filter(|todo| todo.uid == id) {
+                *todo = Todo { sort_order: todo.sort_order, ..item.to_todo(&todo.collection, 0) };
+                if todo.collection == collection {
+                    kept = Some(todo.clone());
+                }
+            }
+        }
+        kept
+    }
+
     /// `tasks.preview_filter`: the searches run now, nothing is stored; one call to GitHub per
     /// search (its first [`PREVIEW_ITEMS`] matches and GitHub's count).
     ///
@@ -1824,6 +1946,46 @@ fn checked_definition(
         return Err(("forbidden", scope::OUTSIDE.into()));
     }
     Ok((name, color, queries))
+}
+
+/// The item the filter list `list` holds under `uid` (its link id).
+fn filter_item<'a>(list: &'a FilterCache, uid: &str) -> Option<&'a Todo> {
+    list.todos.iter().find(|todo| todo.uid == uid)
+}
+
+/// The issue the filter list item `todo` stands for; `None` for a pull request (or an item without
+/// what GitHub reports), which is never closed here (`docs/github.md`, "Abhaken").
+fn closable_issue(todo: &Todo) -> Option<IssueRef> {
+    let github = todo.link.as_ref()?.github.as_ref()?;
+    (github.kind == GitHubKind::Issue).then(|| address::issue_ref(&todo.uid)).flatten()
+}
+
+/// Whether `sent` changes more of an item of a filter list than whether it is done, compared with
+/// `shown`, the item as the sender may see it: title, notes, due date, priority, parent, tags, web
+/// address, where it lives (`href`) and which item it links. What only the core fills in (the
+/// link's details, `sort_order`) is not compared, so a link may come back with its id alone.
+fn changes_more_than_done(sent: &Todo, shown: &Todo) -> bool {
+    let link_id = |todo: &Todo| todo.link.as_ref().map(|link| link.id.clone());
+    sent.summary != shown.summary
+        || sent.description != shown.description
+        || sent.due != shown.due
+        || sent.priority != shown.priority
+        || sent.parent != shown.parent
+        || sent.categories != shown.categories
+        || sent.url != shown.url
+        || sent.href != shown.href
+        || link_id(sent) != link_id(shown)
+}
+
+/// The message of a failed close or reopen for `reach`: GitHub's own words for the suite; for a
+/// client the fixed text of its code, [`torro_pim_github::CHANGE_FAILED`] in place of GitHub's
+/// words, which may name repositories it may not see.
+fn change_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
+    match (reach, err) {
+        (Reach::Suite, err) => err.to_string(),
+        (Reach::Client(_), torro_pim_github::Error::Github(_)) => torro_pim_github::CHANGE_FAILED.into(),
+        (Reach::Client(_), err) => err.public_message(),
+    }
 }
 
 /// The answer for a collection that is no filter list: `not-found`.

@@ -279,7 +279,8 @@ pub fn text_button<'a, M: Clone + 'a>(
 }
 
 /// `content` with `label` as tooltip below it (a small menu-style card, after a short delay).
-fn with_tooltip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
+/// Also for a control that is locked, to say why (the locked check of an issue, task G.5).
+pub fn with_tooltip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
     tip(content, typo::text(typo::CAPTION, label).style(theme::text_2), tooltip::Position::Bottom)
 }
 

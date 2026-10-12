@@ -50,6 +50,25 @@ pub struct PimAccount {
     /// A string, not the enum, so an app keeps working when a newer core knows more kinds.
     pub kind: String,
     pub state: AccountState,
+    /// For a GitHub account the OAuth scopes of its token, as the core lists them
+    /// (`torro_ipc::AccountInfo::scopes`): `None` when GitHub does not tell (a fine-grained
+    /// token) and for every other kind. Read by [`PimAccount::may_close_issues`].
+    pub scopes: Option<Vec<String>>,
+}
+
+impl PimAccount {
+    /// Whether ticking an issue of this account's filter lists may close it on GitHub (task G.5):
+    /// a classic token or the GitHub CLI's sign-in needs the scope `repo` or `public_repo`. When the
+    /// scopes are unknown (`None`: a fine-grained token) it may: the app tries and shows GitHub's
+    /// refusal. Every other kind of account: `true`, it holds no filter lists.
+    pub fn may_close_issues(&self) -> bool {
+        match &self.scopes {
+            Some(scopes) if self.kind == GITHUB_KIND => {
+                scopes.iter().any(|scope| scope == "repo" || scope == "public_repo")
+            }
+            _ => true,
+        }
+    }
 }
 
 /// What an app that shows one account state shows (the connect screen, the tray's status line):
@@ -123,7 +142,22 @@ mod tests {
     use super::*;
 
     fn account(id: &str, state: AccountState) -> PimAccount {
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state, scopes: None }
+    }
+
+    #[test]
+    fn closing_issues_needs_a_writing_scope_unless_github_does_not_tell() {
+        let github = |scopes: Option<&[&str]>| PimAccount {
+            kind: GITHUB_KIND.into(),
+            scopes: scopes.map(|scopes| scopes.iter().map(|s| s.to_string()).collect()),
+            ..account("github:mahype", connected("mahype"))
+        };
+        assert!(github(Some(&["repo", "read:org"])).may_close_issues());
+        assert!(github(Some(&["public_repo"])).may_close_issues());
+        assert!(!github(Some(&["read:org", "repo:status"])).may_close_issues(), "reading is not enough");
+        assert!(!github(Some(&[])).may_close_issues(), "a token without scopes");
+        assert!(github(None).may_close_issues(), "fine-grained: tried, GitHub decides");
+        assert!(account("nextcloud:anna@cloud", connected("anna")).may_close_issues());
     }
 
     fn connected(login_name: &str) -> AccountState {

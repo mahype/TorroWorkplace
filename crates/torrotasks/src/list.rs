@@ -12,8 +12,10 @@
 //!   adds a task to this group (`Message::AddInGroup`). Heads only touch with a line between them
 //!   when a group is folded.
 //! - **Rows** (40, [`widgets::list_row`]): the leading symbol – a task's round check in its list's
-//!   colour (→ `ToggleDone(index)`), or for a GitHub issue or pull request its type symbol in the
-//!   colour of its state (no check) –, the priority column (only filled when set; urgent is an
+//!   colour (→ `ToggleDone(index)`), for an issue of a GitHub filter list its check in GitHub's
+//!   colours ([`issue_check`], task G.5: ticking closes the issue; locked with a tooltip when the
+//!   account's token may not write issues), for any other GitHub item (a pull request) its type
+//!   symbol in the colour of its state (no check) –, the priority column (only filled when set; urgent is an
 //!   orange square with "!"), `repo#123` for GitHub items, the title on one line with "…", hints
 //!   (sub-tasks "2/4", notes), and at the right the GitHub labels (two and "+n"), checks, a review
 //!   asked for, where the item comes from (list or repository as a pill) and the due date in
@@ -76,6 +78,10 @@ pub struct ListData<'a> {
     /// The list takes no new tasks: a GitHub filter list (task G.3). Its empty state says that
     /// nothing matches, and no group head offers "+".
     pub read_only: bool,
+    /// The GitHub filter lists by id, each with whether ticking one of its issues may close it on
+    /// GitHub (task G.5, `PimAccount::may_close_issues` of its account). Their issues get the
+    /// check of [`issue_check`], locked where this is `false`; their pull requests none.
+    pub issue_lists: HashMap<String, bool>,
 }
 
 /// The tasks to show as `(index into todos, depth)`: `depth` 0 for top-level tasks, 1 for
@@ -725,8 +731,11 @@ fn row_view<'a>(
     if depth > 0 {
         line = line.push(Space::new().width(depth as f32 * space::XL));
     }
+    let issue = github
+        .filter(|details| details.kind == GitHubKind::Issue)
+        .and_then(|_| data.issue_lists.get(&todo.collection).copied());
     line = line
-        .push(lead(todo, index, colour_of(data, &todo.collection)))
+        .push(lead(todo, index, colour_of(data, &todo.collection), issue))
         .push(Space::new().width(space::M))
         .push(container(prio_cell(todo.priority)).width(icon::SIZE_SM))
         .push(Space::new().width(space::S));
@@ -860,20 +869,52 @@ pub(crate) fn github_of(todo: &Todo) -> Option<&GitHubDetails> {
     todo.link.as_ref()?.github.as_ref()
 }
 
-/// The leading symbol of a row: a GitHub item's type symbol, else the round check in the list's
-/// colour.
-fn lead<'a>(todo: &Todo, index: usize, colour: Color) -> Element<'a, Message> {
-    match github_of(todo) {
-        Some(details) => {
+/// The leading symbol of a row: for an issue of a filter list (`issue`: whether ticking may close
+/// it) its [`issue_check`], for another GitHub item its type symbol, else the round check in the
+/// list's colour.
+fn lead<'a>(todo: &Todo, index: usize, colour: Color, issue: Option<bool>) -> Element<'a, Message> {
+    match (github_of(todo), issue) {
+        (Some(_), Some(may_close)) => {
+            issue_check(todo.completed, style::CHECK_SIZE, may_close.then_some(Message::ToggleDone(index)))
+        }
+        (Some(details), None) => {
             let (which, tone) = github_mark(details);
             container(toned(which, icon::SIZE, tone)).center(icon::SIZE).into()
         }
-        None => checkbox(todo.completed)
+        (None, _) => checkbox(todo.completed)
             .size(style::CHECK_SIZE)
             .style(style::task_check(colour))
             .on_toggle(move |_| Message::ToggleDone(index))
             .into(),
     }
+}
+
+/// The check of a GitHub issue in a filter list (task G.5), `edge` wide: open a ring in the colour
+/// of an open issue (`ok`), closed filled in `merged` with the check mark – the colours of
+/// GitHub's own issue symbols ([`github_mark`]). `on_toggle` closes or reopens it; `None` locks
+/// it (40 %, the account's token may not write issues) with a tooltip that says so.
+pub(crate) fn issue_check<'a, M: Clone + 'a>(done: bool, edge: f32, on_toggle: Option<M>) -> Element<'a, M> {
+    let check = checkbox(done).size(edge).style(issue_check_style);
+    match on_toggle {
+        Some(message) => check.on_toggle(move |_| message.clone()).into(),
+        None => widgets::with_tooltip(check, tr("This GitHub token can't close issues")),
+    }
+}
+
+/// [`style::task_check`] in the issue's colours; an open issue's ring in `ok` instead of the
+/// neutral ring of a task, so it reads as GitHub's open-issue circle.
+fn issue_check_style(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let p = palette(theme);
+    let (done, locked) = match status {
+        checkbox::Status::Active { is_checked } | checkbox::Status::Hovered { is_checked } => (is_checked, false),
+        checkbox::Status::Disabled { is_checked } => (is_checked, true),
+    };
+    let colour = if done { p.merged } else { p.ok };
+    let style = style::task_check(colour)(theme, status);
+    if done || locked {
+        return style;
+    }
+    checkbox::Style { border: style.border.color(colour), ..style }
 }
 
 /// The symbol and colour of a GitHub item's type and state: open issue `CircleDot` (ok), closed
@@ -1062,6 +1103,7 @@ mod tests {
             width: size::CONTENT_MAX,
             palette: palette(&Theme::Dark),
             read_only: false,
+            issue_lists: HashMap::new(),
         }
     }
 
@@ -1475,6 +1517,29 @@ mod tests {
             }
         }
         let _ = view(ListData { read_only: true, ..data(&[], &filter, true) });
+    }
+
+    #[test]
+    fn issues_of_a_filter_list_get_a_check_locked_without_write_access_and_pull_requests_none() {
+        let item = |uid: &str, kind: GitHubKind, state: GitHubState| Todo {
+            collection: "github:mahype/bugs".into(),
+            completed: state != GitHubState::Open,
+            link: Some(Link { github: Some(details(kind, state)), ..Link::github("mahype/TorroWorkplace", 7) }),
+            ..todo(uid, uid)
+        };
+        let todos = vec![
+            item("open", GitHubKind::Issue, GitHubState::Open),
+            item("closed", GitHubKind::Issue, GitHubState::Closed),
+            item("pull", GitHubKind::PullRequest, GitHubState::Open),
+        ];
+        let filter = Filter::List("github:mahype/bugs".into());
+        for may_close in [true, false] {
+            let lists = HashMap::from([("github:mahype/bugs".to_string(), may_close)]);
+            let _ = view(ListData { read_only: true, issue_lists: lists, ..data(&todos, &filter, true) });
+        }
+        // The check builds in both states, open and locked, as the detail uses it too.
+        let _: Element<'_, Message> = issue_check(false, style::CHECK_SIZE, Some(Message::ToggleDone(0)));
+        let _: Element<'_, Message> = issue_check(true, style::CHECK_SIZE, None);
     }
 
     #[test]

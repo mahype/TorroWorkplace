@@ -2045,7 +2045,7 @@ mod tests {
 
     /// A connected account with this id, named like it.
     fn account(id: &str) -> PimAccount {
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state: connected() }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state: connected(), scopes: None }
     }
 
     fn one_account() -> Vec<PimAccount> {

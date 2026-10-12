@@ -7,9 +7,9 @@
 //! not running → `ProviderError::Other` with the `IpcError` message, an unexpected
 //! variant → `Other("unexpected answer …")`.
 //!
-//! [`PimSource::accounts`] reads `Accounts` and leaves out the collections, which come with
-//! [`PimSource::collections`]; that one joins `CalendarCollections` and `TaskCollections`, so
-//! the apps keep one call each.
+//! [`PimSource::accounts`] reads `Accounts` (with a GitHub token's scopes) and leaves out the
+//! collections, which come with [`PimSource::collections`]; that one joins `CalendarCollections`
+//! and `TaskCollections`, so the apps keep one call each.
 
 use std::path::PathBuf;
 
@@ -89,6 +89,7 @@ impl PimSource for PimClient {
                     label: account.label,
                     kind: account.kind,
                     state: account.state,
+                    scopes: account.scopes,
                 })
                 .collect()),
             other => Err(unexpected(other)),
@@ -385,6 +386,8 @@ mod tests {
                         id: "nextcloud:bob@other.example.test".into(),
                         label: "bob@other.example.test".into(),
                         collections: vec![],
+                        // Scopes come along (task G.5: whether ticking may close an issue).
+                        scopes: Some(vec!["repo".into()]),
                         ..account_info()
                     };
                     Response::Accounts { accounts: vec![account_info(), second] }
@@ -402,12 +405,14 @@ mod tests {
                     label: "anna@cloud.example.test".into(),
                     kind: "nextcloud".into(),
                     state: account(),
+                    scopes: None,
                 },
                 PimAccount {
                     id: "nextcloud:bob@other.example.test".into(),
                     label: "bob@other.example.test".into(),
                     kind: "nextcloud".into(),
                     state: account(),
+                    scopes: Some(vec!["repo".into()]),
                 },
             ]
         );
