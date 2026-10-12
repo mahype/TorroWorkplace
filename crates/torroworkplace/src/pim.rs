@@ -1294,7 +1294,7 @@ impl PimService {
         };
         let (provider, candidates) = match self.candidates(address, server).await {
             Ok(found) => found,
-            Err(answer) => return answer,
+            Err(answer) => return *answer,
         };
         let mut failure = ("not-found", tr("No calendar service answers at this address."));
         let mut signed_in = None;
@@ -1357,18 +1357,19 @@ impl PimService {
     /// Where [`PimService::connect_caldav`] tries to sign in, with the provider's name: the typed
     /// `server` alone ([`discover::server_address`]), else every address discovery finds for
     /// `address`. `Err` is the answer to send: `unsupported` with the reason, `not-found` when
-    /// nothing was found, and the errors of [`PimService::discover`].
-    async fn candidates(&self, address: &str, server: Option<&str>) -> Result<(String, Vec<String>), Response> {
+    /// nothing was found, and the errors of [`PimService::discover`], boxed
+    /// because a [`Response`] is large.
+    async fn candidates(&self, address: &str, server: Option<&str>) -> Result<(String, Vec<String>), Box<Response>> {
         if let Some(server) = server.map(str::trim).filter(|server| !server.is_empty()) {
             let url = discover::server_address(server)
-                .map_err(|_| error("error", tr("Enter the server as an https address.").into()))?;
+                .map_err(|_| Box::new(error("error", tr("Enter the server as an https address.").into())))?;
             let provider = discover::domain_of(address).map_or_else(|| host_of(&url), |d| discover::provider_name(&d));
             return Ok((provider, vec![url]));
         }
         let Some(discoverer) = self.sign_in.discoverer() else {
-            return Err(error("error", "no HTTP client".into()));
+            return Err(Box::new(error("error", "no HTTP client".into())));
         };
-        match discoverer.discover(address).await {
+        let answer = match discoverer.discover(address).await {
             Ok(found) => match found.unsupported {
                 Some(why) => Err(error("unsupported", tr(why.reason()).into())),
                 None if found.urls.is_empty() => Err(error(
@@ -1378,7 +1379,8 @@ impl PimService {
                 None => Ok((found.provider, found.urls)),
             },
             Err(err) => Err(discover_error(err)),
-        }
+        };
+        answer.map_err(Box::new)
     }
 
     /// Syncs every account, one after the other. A failure of one account is kept in its state
