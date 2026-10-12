@@ -464,7 +464,7 @@ MCP-Tool – Agenten bekommen dieselben Termine über `list_events`; welcher Tag
 Fensterzustand. Deutsche Übersetzungen nur im Bericht nennen (die Koordination trägt sie ein und
 entfernt Einträge, die nicht mehr gebraucht werden).
 
-**Reihenfolge:** K.28 und K.30 laufen parallel (in `radar.rs` nur die genannten Stellen anfassen),
+**Reihenfolge:** K.28, K.30 und K.31 laufen parallel (in `radar.rs` nur die genannten Stellen anfassen),
 danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
 
 ### K.28 Radar: ruhige Mitte, ohne „freie Zeit“
@@ -489,9 +489,9 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   fmt, clippy, test (auch `TORRO_LANG=de`) grün; `--demo --open radar --now 2026-10-13T14:20`
   Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
 
-### K.29 Radar: kräftige Termine mit Titel, Zeiger, Tooltip und Kalendernamen
+### K.29 Radar: kräftige Termine mit Titel, Zeiger, Tooltip, Kalendernamen und Mond
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** K.28, K.30 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
+- **Modell:** Opus · **Braucht:** K.28, K.30, K.31 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
   `crates/torrocalendar/src/views/radar/layout.rs`, `crates/torrocalendar/src/views/radar/mini.rs`
   (nur die Farbe der Bögen), `crates/torrocalendar/src/app.rs` (nur die Kalendernamen an das Radar)
 - **Oberfläche:**
@@ -524,6 +524,14 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
       Zeiger bleibt `Grab`).
     - Die Namen kommen aus der Kalenderliste der App (`calendar_order` liefert heute nur Ids);
       dafür darf `app.rs` die Namen neben den Ids an `views::radar::view` geben (nur diese Stelle).
+    - Tragen zwei sichtbare Kalender denselben Namen (z. B. „Persönlich“ in zwei Konten), steht
+      hinter dem Namen der Host des Kontos (`PimAccount::host` aus K.31): „Persönlich ·
+      cloud.imt24.de“, im Tooltip immer.
+  - **Mond sichtbar machen** (Wunsch des Nutzers 2026-10-12, Screenshot: auf der dunklen Nacht kaum
+    zu sehen): Icon 16 statt `SIZE_SM`, in `TEXT_2` auf einer kleinen runden Plakette (~22, `PANEL`
+    mit `LINE`-Rand), Kontrast ≥ 3:1 gegen den Grund in hell und dunkel. Er steht an der ersten
+    halben Stunde der Nacht, die **nicht** im ausgeblendeten Viertel liegt; nur wenn die ganze
+    Nacht dort liegt, blendet er wie bisher mit aus. Ziel für Doppelklick und Tooltip wandern mit.
 - **API / MCP:** keiner.
 - **Abnahme:** Tests: Farbe/Kontrast der Füllung über hell und dunkel (feste Demo-Farben), Titel-Regel
   (Bahnbreite → Schrift/kein Titel), `mouse_interaction` über Termin/Spur/außen, Tooltip-Zustand
@@ -562,6 +570,25 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   dem des großen Radars, Bahnen bei Überschneidung, Zählung (ganztägig nicht mitgezählt), Klick →
   `GoTo` und Radar bleibt, `range` deckt 7 Tage, Spaltenzahl je Breite; fmt, clippy, test (auch
   `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
+
+### K.31 Konten in den Seitenleisten nur mit Host
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/torro-pim/src/account.rs` (neue Methode),
+  `crates/torrocalendar/src/app.rs` (nur Gruppentitel der Seitenleiste und des Kalendermenüs),
+  `crates/torrotasks/src/app.rs` (nur `account_title`)
+- Wunsch des Nutzers (2026-10-12): In der Seitenleiste steht „wagesve@nextcloud.rheinschmiede.net“ –
+  zu lang, wird abgeschnitten. Es reicht der Host.
+- **Neu:** `PimAccount::host(&self) -> &str`: der Teil von `label` nach dem letzten `@`, sonst
+  `label` (auch leer oder ohne `@`). `label` selbst bleibt unverändert (die Steuerzentrale zeigt
+  weiter die volle Adresse).
+- **Oberfläche:** Kalender und Aufgaben zeigen als Gruppentitel der Konten (Seitenleiste, Rail,
+  Menü in Mittel/Schmal) den Host: „nextcloud.rheinschmiede.net“, „cloud.imt24.de“. Haben zwei
+  gezeigte Konten denselben Host, bleibt bei diesen die volle Adresse. GitHub-Konten bleiben
+  „GitHub · login“. Der Tooltip bzw. die Beschriftung für Screenreader nennt die volle Adresse,
+  wenn der Baustein das hergibt (sonst berichten).
+- **API / MCP:** keiner – Anzeige; `label` geht unverändert über `PimAccounts`.
+- **Abnahme:** Tests: `host` (mit `@`, mehrere `@`, ohne, leer), Gruppentitel in beiden Apps mit
+  zwei Hosts und mit gleichem Host; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### Spur Kern (Nextcloud)
 
