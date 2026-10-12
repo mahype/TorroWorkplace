@@ -426,7 +426,7 @@ ihre Texte im Bericht.
   Mail-Eintrag `forbidden`.
 
 ### E4.2 Eingang: Ordner und ganze Mail
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `torroinbox/src/main.rs` (`mod mail`, Grenze `MailSource`), `torroinbox/src/list.rs` (Helfer `pub(crate)`, Mail-Symbol), `Cargo.toml` von `torro-inbox` und `torroinbox` (`torro-mail`), Lucide-Symbole in `torro-gui/assets/icons/`)
 - **Modell:** Sonnet · **Braucht:** E4.1, M3.1, M3.2 · **Dateien:** `crates/torroinbox/src/{app,list,detail,keys}.rs`,
   neu `crates/torroinbox/src/mail.rs`, `crates/torro-ipc/src/inbox.rs` (Client-Aufrufe), Demo-Daten in
   `crates/torro-inbox/src/demo.rs`
