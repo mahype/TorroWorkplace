@@ -7,11 +7,9 @@ E1–E3 bringen den Eingang **ohne Mail und ohne fremde Anmeldung**: Kern, Meldu
 Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mit E4 (Konzept
 [mail.md](../mail.md)), KI mit [ki.md](../ki.md).
 
-> **Erst anfangen, wenn M7.1 und M7.2 erledigt sind** ([tasks/mail.md](mail.md)). Dort werden gerade
-> die CalDAV- und Mail-Konten in Kern und Steuerzentrale gebaut, in denselben Dateien
-> (`torro-ipc/src/{lib,api}.rs`, `torroworkplace/src/{core,mcp,clients,pim}.rs`, `docs/api.md`,
-> `docs/api-reference.md`, Wurzel-`Cargo.toml`). Das gilt auch für E1.1, obwohl es meist neue Dateien
-> anlegt. Danach von einem frischen Stand des Arbeitszweigs aus beginnen.
+> **Entschieden 2026-10-12:** Der Kern (E1.1 ff.) wartet nicht mehr auf M7.1/M7.2, die noch niemand
+> begonnen hat. Startet M7.1 parallel, stimmen sich die beiden ab; Konflikte in `torro-ipc`, `core.rs`,
+> `mcp.rs`, `clients.rs`, `docs/api.md` und `docs/api-reference.md` werden beim Zusammenführen gelöst.
 >
 > **Auch A.3 (Freigaben) vorher abschließen.** A.3 ändert dieselben Stellen (`torro-ipc`, `core.rs`,
 > `mcp.rs`, Test `names_follow_the_rules`) und wird für E2.1 ohnehin gebraucht. Aufgaben, die den
@@ -22,7 +20,7 @@ Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mi
 E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b ── E3.2c   ← sofort möglich
        ├─ E2.2a
        │
-M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
+A.3 (api-mcp.md)
        │
        └─ E1.1 ── E1.2 ─┬─ E1.3 ── E2.2 ─┬─ E2.3 (braucht A.7)
                         │                └─ E2.4
@@ -60,8 +58,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 
 ## Offene Punkte (vor der jeweiligen Aufgabe klären)
 
-1. **Schnittstelle `Rights`** (E1.1): neues Feld `inbox_sources: Selection` (welche Quellen ein Agent
-   sieht). Neues optionales Feld, also verträglich, aber `Rights` ist festgelegt: **Freigabe nötig.**
+1. ~~Schnittstelle `Rights`~~ (E1.1): neues Feld `inbox_sources: Selection`, **freigegeben am 2026-10-12.**
 2. **Schnittstelle `Event`** (E3.4): Für „Ruhe bei belegten Terminen“ braucht das Modell Frei/Belegt
    (`TRANSP`). Fehlt heute. **Freigabe nötig**, sonst startet E3.4 ohne Ruhe und sie kommt nach.
 3. **Sicherheitsteil von E2.5** (Rückfragen beantworten) vor Beginn freigeben; dazu gehört eine
@@ -105,7 +102,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 
 ### E1.1 Gerüst: Modell, Requests, Katalog
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** E1.1a, M7.1, M7.2, A.3, offener Punkt 1 · **Dateien:**
+- **Modell:** Opus · **Braucht:** E1.1a, A.3 · **Dateien:**
   `crates/torro-inbox/src/*` (nur falls das Wire-Format Ergänzungen braucht, nennen),
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-ipc/Cargo.toml`, `crates/torroworkplace/src/{clients,core,mcp}.rs`
   (nur Stellen, die `Rights { … }` bauen, und deren Tests), `docs/api.md` (Bereich `inbox`), `docs/api-reference.md`
