@@ -621,4 +621,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't change the entry.", "Der Eintrag ließ sich nicht ändern."),
     ("Couldn't change the source.", "Die Quelle ließ sich nicht ändern."),
     ("Couldn't open the app.", "Die App ließ sich nicht öffnen."),
+    // Inbox app: glance (torroinbox, E3.3a)
+    ("{n} for you", "{n} für dich"),
+    ("{n} waiting", "{n} wartend"),
 ];
