@@ -9,6 +9,11 @@
 //! now ([`empty::EmptySource`]); the client for the core comes with task E1.3 and is chosen here.
 //! With `--demo`, `--open <state>` starts in a given state and `--now <YYYY-MM-DDTHH:MM>` fixes
 //! "now"; `--appearance light|dark|system` overrides the stored appearance (see [`app::Launch`]).
+//!
+//! One window per slice (E3.6): `--lane for-me|info` or `--source <key>` (`suite`,
+//! `agent:claude-code`, `script:backup`) starts on that view. The core opens the app without
+//! arguments (tray, control centre); a workspace template stores the window's whole command line,
+//! so `torroinbox --lane info` comes back as an "Info" window.
 
 mod app;
 mod detail;

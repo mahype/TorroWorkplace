@@ -102,6 +102,7 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
         menu.push(submenu(tr("Delete"), delete));
         menu.push(MenuItem::Separator);
     }
+    menu.push(open("Inbox", AppId::INBOX));
     menu.push(open("Calendar", AppId::CALENDAR));
     menu.push(open("Tasks", AppId::TASKS));
     menu.push(MenuItem::Separator);
@@ -254,6 +255,7 @@ mod tests {
                 sub(tr("Update")),
                 sub(tr("Delete")),
                 "-".to_string(),
+                tr("Inbox").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 "-".to_string(),

@@ -398,7 +398,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   ausgeblendete Liste → `not-found`.
 
 ### E3.6 In die Suite aufnehmen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** E3.1 · **Dateien:** `crates/torroworkplace/src/apps.rs`,
   `crates/torroinbox/src/main.rs`, `docs/app-catalog.md`
 - Startbar aus Tray und Steuerzentrale (Apps), Fensterklasse `torro-inbox`, Argumente `--lane` und

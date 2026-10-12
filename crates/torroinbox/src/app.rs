@@ -428,12 +428,17 @@ impl Open {
 ///   one. Nothing is stored.
 /// - `--now <YYYY-MM-DDTHH:MM>` (local time): a fixed "now" and demo data around it, for pictures
 ///   that can be made again; needs `--demo`.
+/// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
+///   on that lane or source, for one window per slice of the inbox (E3.6). Works without `--demo`;
+///   a workspace template stores the window's command line, so the slice comes back with it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub demo: bool,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
+    /// The view of `--lane` or `--source`; `None` starts on "For me".
+    pub view: Option<View>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, like the other apps.
@@ -447,6 +452,8 @@ pub enum LaunchError {
     NeedsDemo(&'static str),
     /// `--now` is not a date and time like `2026-10-12T10:30`.
     BadNow(String),
+    /// Two flags that each choose the start view, like `--lane` and `--source`.
+    Conflict(&'static str, &'static str),
 }
 
 impl fmt::Display for LaunchError {
@@ -460,6 +467,7 @@ impl fmt::Display for LaunchError {
             LaunchError::BadNow(value) => {
                 write!(f, "--now expects YYYY-MM-DDTHH:MM, e.g. 2026-10-12T10:30; got {value:?}")
             }
+            LaunchError::Conflict(one, other) => write!(f, "{one} and {other} cannot be used together"),
         }
     }
 }
@@ -512,12 +520,47 @@ impl Launch {
                 NaiveDateTime::parse_from_str(word, "%Y-%m-%dT%H:%M").map_err(|_| LaunchError::BadNow(word.into()))?,
             ),
         };
-        Ok(Launch { demo, open, appearance, now })
+        let view = start_view(args)?;
+        Ok(Launch { demo, open, appearance, now, view })
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
     pub fn start(&self) -> DateTime<Utc> {
         self.now.map_or_else(Utc::now, datetime::to_utc)
+    }
+}
+
+/// The view chosen by `--lane for-me|info` or `--source <key>`; `None` when neither is given.
+/// Both at once are refused: no view shows one lane of one source.
+fn start_view(args: &[String]) -> Result<Option<View>, LaunchError> {
+    let lane = match flag_value(args, "--lane")? {
+        None => None,
+        Some("for-me") => Some(View::ForMe),
+        Some("info") => Some(View::Info),
+        Some(other) => {
+            return Err(LaunchError::UnknownValue {
+                flag: "--lane",
+                value: other.to_owned(),
+                valid: "for-me, info".to_owned(),
+            });
+        }
+    };
+    let source = match flag_value(args, "--source")? {
+        None => None,
+        Some(key) => match key.parse::<SourceRef>() {
+            Ok(source) => Some(View::Source(source)),
+            Err(_) => {
+                return Err(LaunchError::UnknownValue {
+                    flag: "--source",
+                    value: key.to_owned(),
+                    valid: "suite, agent:<name>, script:<name>".to_owned(),
+                });
+            }
+        },
+    };
+    match (lane, source) {
+        (Some(_), Some(_)) => Err(LaunchError::Conflict("--lane", "--source")),
+        (lane, source) => Ok(lane.or(source)),
     }
 }
 
@@ -721,11 +764,12 @@ impl<S: InboxSource + 'static> App<S> {
             offset,
             now: Utc::now() + offset,
             size: torro_gui::window(INBOX).size,
+            // A demo state that shows a view wins over `--lane`/`--source`: it is asked for by name.
             view: match open {
                 Some(Open::Info) => View::Info,
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
-                _ => View::ForMe,
+                _ => launch.view.clone().unwrap_or(View::ForMe),
             },
             items: Vec::new(),
             for_me: Vec::new(),
@@ -1864,6 +1908,43 @@ mod tests {
         let launch = Launch::parse(&args(&["--demo", "--now", "2026-10-13T10:30"])).expect("valid");
         let local = chrono::Local.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid");
         assert_eq!(launch.start(), local.to_utc());
+    }
+
+    #[test]
+    fn lane_and_source_choose_the_start_view() {
+        let view = |words: &[&str]| Launch::parse(&args(words)).map(|launch| launch.view);
+        assert_eq!(view(&[]), Ok(None));
+        assert_eq!(view(&["--lane", "for-me"]), Ok(Some(View::ForMe)));
+        assert_eq!(view(&["--lane=info"]), Ok(Some(View::Info)));
+        assert_eq!(view(&["--source", "suite"]), Ok(Some(View::Source(SourceRef::suite()))));
+        assert_eq!(view(&["--source", "agent:claude-code"]), Ok(Some(View::Source(SourceRef::agent("claude-code")))));
+        assert_eq!(view(&["--source=script:backup"]), Ok(Some(View::Source(SourceRef::script("backup")))));
+        assert!(matches!(view(&["--lane", "later"]), Err(LaunchError::UnknownValue { flag: "--lane", .. })));
+        assert!(matches!(view(&["--source", "mailbox"]), Err(LaunchError::UnknownValue { flag: "--source", .. })));
+        assert_eq!(view(&["--lane"]), Err(LaunchError::MissingValue("--lane")));
+        assert_eq!(view(&["--lane", "info", "--source", "suite"]), Err(LaunchError::Conflict("--lane", "--source")));
+    }
+
+    /// A workspace template stores the window's command line (`/proc/<pid>/cmdline`) and starts it
+    /// again on load; the restored window must come back on the same slice.
+    #[test]
+    fn a_restored_command_line_starts_on_its_view() {
+        let stored = args(&["/usr/bin/torroinbox", "--lane", "info"]);
+        let launch = Launch::parse(&stored[1..]).expect("valid parameters");
+        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        assert_eq!(app.view, View::Info);
+        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Info"))]));
+
+        let stored = args(&["/usr/bin/torroinbox", "--source", "agent:claude-code"]);
+        let launch = Launch::parse(&stored[1..]).expect("valid parameters");
+        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        assert_eq!(app.view, View::Source(SourceRef::agent("claude-code")));
+    }
+
+    #[test]
+    fn a_demo_state_with_a_view_wins_over_the_lane() {
+        assert_eq!(demo(&["--demo", "--open", "done", "--lane", "info"]).view, View::Done);
+        assert_eq!(demo(&["--demo", "--open", "detail", "--lane", "info"]).view, View::Info);
     }
 
     #[test]

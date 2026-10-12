@@ -5,6 +5,12 @@ Status: **Kern** = Phase 1–3 · **v0.1** = erste Apps (Phase 4) · **nächste*
 
 Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerzentrale, Konten, Sync, MCP).
 
+## Eingang
+
+| App | Frage | Datenquelle | Status |
+|---|---|---|---|
+| **Inbox** (`torroinbox`) | Was ist reingekommen, und braucht es mich? | Der Eingang im Kern: wartende Agenten (Hooks), Freigaben, Kontoprobleme, Meldungen von Skripten; später Mail, Nextcloud, GitHub, ntfy, Slack. Konzept: [eingang.md](eingang.md) | **nächste**, in Arbeit ([tasks/eingang.md](tasks/eingang.md)); Fenster je Ausschnitt mit `--lane for-me\|info` oder `--source <quelle>` |
+
 ## Planen
 
 | App | Frage | Datenquelle | Status |
@@ -21,7 +27,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 |---|---|---|---|
 | **Agenten-Übersicht** | Welche Agenten laufen, wo, und wer wartet auf mich? | Claude-Code-/Codex-Sitzungen (`~/.claude/projects/*.jsonl`, Hooks), tmux | **nächste** |
 | Verbrauch & Kosten | Wie viel habe ich heute und diesen Monat verbraucht, wie nah bin ich am Limit? | lokale JSONL-Logs (Prinzip von ccusage) | Idee |
-| Freigaben-Eingang | Welche Berechtigungsanfragen von Agenten sind offen? | Claude-Code-Hooks / MCP | Idee |
+| ~~Freigaben-Eingang~~ | Welche Berechtigungsanfragen von Agenten sind offen? | Claude-Code-Hooks / MCP | aufgegangen in **Inbox** |
 | Kontext-Board | Woran arbeiten die Agenten gerade (Branch, Ticket, Plan)? | Git-Worktrees, Plan-Dateien | Idee |
 
 Gerade bei der Agenten-Übersicht und beim Verbrauch gibt es eine Lücke: Was es gibt, sind
@@ -41,8 +47,8 @@ macOS-Menüleisten-Apps oder tmux-TUIs (siehe [research.md](research.md)).
 | TorroMail | gibt es; in die Suite und den Installer aufnehmen, Fensterklasse festlegen |
 | TorroCast | gibt es; ebenso |
 | TorroEQ | gibt es; ebenso |
-| Benachrichtigungen | Idee: ein Fenster für alle Benachrichtigungen der Suite |
-| **Mail-Client der Suite** | Idee, am 2026-10-11 vorgemerkt: eigener Client mit eigener Oberfläche (Iced), spricht IMAP/SMTP direkt. Noch völlig offen, wie er aussieht, damit er ins Tiling-Schema passt (siehe [roadmap.md](roadmap.md#offene-fragen)) |
+| ~~Benachrichtigungen~~ | aufgegangen in **Inbox**: ein Fenster für alles, was die Suite und ihre Quellen melden |
+| **Mail-Client der Suite** | Entschieden (Variante A in [eingang.md](eingang.md#mail-eigene-app-oder-quelle-im-eingang)): keine eigene Mail-App, Mail wird eine Quelle der **Inbox** (Ordner in der Seitenleiste, ganze Mail im Paneel, Schreiben in eigenem Fenster). Der Mail-Kern spricht IMAP/SMTP direkt ([mail.md](mail.md)); ein Fenster nur für Mail dann mit `torroinbox --source mail` (E4) |
 | Chat (Nextcloud Talk) | Idee: erst ungelesene Nachrichten im Tray und schnell antworten, später eine schlanke Chat-App; nur Text, keine Anrufe |
 
 ## Suite-Infrastruktur
