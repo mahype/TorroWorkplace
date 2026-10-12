@@ -1258,4 +1258,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Die Liste wurde anderswo geändert und neu geladen. Verschieb die Aufgabe noch einmal.",
     ),
     ("The task is gone", "Die Aufgabe gibt es nicht mehr"),
+    ("Add a link to {item} to \"{list}\"", "Verweis auf {item} in „{list}“ anlegen"),
+    ("Pin {item} to filter list \"{list}\"", "{item} an Filterliste „{list}“ anheften"),
+    ("{change} and close GitHub issue {issue}", "{change} und GitHub-Issue {issue} schließen"),
+    ("{change} and reopen GitHub issue {issue}", "{change} und GitHub-Issue {issue} wieder öffnen"),
+    ("Added to {list}", "Zu „{list}“ hinzugefügt"),
 ];
