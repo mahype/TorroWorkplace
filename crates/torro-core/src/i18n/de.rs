@@ -973,8 +973,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ein anderes Skript heißt schon so. Wähle einen anderen Namen.",
     ),
     (
-        "Areas, calendars, lists, inbox sources and what needs your approval can be narrowed on its page later.",
-        "Bereiche, Kalender, Listen, Eingangsquellen und was deine Freigabe braucht, kannst du später auf seiner Seite einschränken.",
+        "Areas, calendars, lists, inbox sources, mail accounts and what needs your approval can be narrowed on its page later.",
+        "Bereiche, Kalender, Listen, Eingangsquellen, E-Mail-Konten und was deine Freigabe braucht, kannst du später auf seiner Seite einschränken.",
     ),
     ("Restart {name} to use Torro Workplace.", "Starte {name} neu, um Torro Workplace zu nutzen."),
     ("The configuration could not be written: {error}", "Die Konfiguration ließ sich nicht schreiben: {error}"),
@@ -1364,4 +1364,23 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("signature \"{start}\"", "Signatur „{start}“"),
     ("tasks", "Aufgaben"),
     ("{role} → \"{path}\"", "{role} → „{path}“"),
+    // Mail rights on the agents page (M3.4)
+    ("Always", "Immer"),
+    ("Ask me each time", "Jedes Mal fragen"),
+    ("Includes mail accounts added later.", "Enthält später hinzugefügte E-Mail-Konten."),
+    ("Mail accounts", "E-Mail-Konten"),
+    (
+        "Mail accounts left off don't exist for this agent.",
+        "Abgewählte E-Mail-Konten gibt es für diesen Agenten nicht.",
+    ),
+    (
+        "Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first.",
+        "E-Mails können Anweisungen an Agenten enthalten. Mit „Immer“ sendet dieser Agent, ohne vorher zu fragen.",
+    ),
+    (
+        "Messages leave your computer and can't be taken back",
+        "Nachrichten verlassen deinen Computer und lassen sich nicht zurückholen",
+    ),
+    ("Send on my behalf", "In meinem Namen senden"),
+    ("Sending mail always asks you first.", "Das Senden von E-Mails fragt immer zuerst bei dir nach."),
 ];
