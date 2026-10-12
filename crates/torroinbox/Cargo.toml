@@ -19,4 +19,9 @@ torro-ipc.workspace = true
 torro-mail.workspace = true
 chrono.workspace = true
 iced.workspace = true
+rfd.workspace = true
 webbrowser.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
