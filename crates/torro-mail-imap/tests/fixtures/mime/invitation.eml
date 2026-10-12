@@ -1,0 +1,29 @@
+From: Ben Beispiel <ben@example.org>
+To: Anna Example <anna@example.org>
+Cc: carla@example.org
+Subject: Einladung: Planung
+Date: Tue, 13 Oct 2026 08:00:00 +0000
+Message-ID: <invite-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+Du bist zur Planung eingeladen.
+
+--b1
+Content-Type: text/calendar; charset=utf-8; method=REQUEST
+
+BEGIN:VCALENDAR
+VERSION:2.0
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:planung-1@example.org
+DTSTART:20261014T090000Z
+DTEND:20261014T100000Z
+SUMMARY:Planung
+END:VEVENT
+END:VCALENDAR
+
+--b1--

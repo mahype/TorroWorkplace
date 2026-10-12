@@ -1,0 +1,19 @@
+Return-Path: <bounce@news.example.com>
+From: "Example News" <news@example.com>
+To: anna@example.org
+Subject: =?UTF-8?Q?Neuigkeiten_f=C3=BCr_dich?=
+Date: Mon, 12 Oct 2026 09:30:00 +0200
+Message-ID: <news-4711@example.com>
+List-Id: Example News <NEWS.example.com>
+List-Unsubscribe: <https://news.example.com/unsubscribe?u=4711>
+Precedence: Bulk
+Auto-Submitted: auto-generated; owner=news@example.com
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><head><style>p { color: red; }</style><script>track()</script></head>
+<body><p>Hallo Anna,</p><p>hier sind die Neuigkeiten der Woche.</p>
+<img src=3D"https://tracker.example.net/pixel.gif?u=3D4711" width=3D"1" height=3D"1">
+<p><a href=3D"https://news.example.com/read?u=3D4711">Weiterlesen</a></p>
+</body></html>

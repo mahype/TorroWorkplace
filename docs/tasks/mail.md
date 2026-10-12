@@ -251,7 +251,7 @@ ihre Texte im Bericht.
   zwei Kandidaten → offen, MOVE ohne MOVE-Capability, UIDVALIDITY-Wechsel erkannt.
 
 ### M2.4 SMTP und MIME
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.1 · **Dateien:** `crates/torro-mail-imap/src/{smtp,mime}.rs`,
   `crates/torro-mail-imap/tests/*`
 - `mime`: Nachricht lesen mit `mail-parser` (Text bevorzugt, HTML nur zu Text umgewandelt, nie Fremdinhalte
