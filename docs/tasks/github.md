@@ -138,7 +138,7 @@ K.21 (frei)
   Rechte (Client ohne die Liste → `not-found`), MCP-Tool baut den richtigen Request.
 
 ### P.3b Reihenfolge von Hand: Oberfläche
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** P.3a, Redesign der Aufgaben-App · **Dateien:** `crates/torrotasks/src/{app,list}.rs`
 - In „Manual order“ Griff beim Hover im linken Innenrand, Ziehen mit Platzhalterzeile, Alt+↑/↓; Liste › Menü
   „Display“ › „Order“. Nutzt `tasks.move_todo` und `settings.set_setting` aus P.3a.
@@ -223,7 +223,7 @@ K.21 (frei)
   nur Treffer aus `github_repos`, fremde Liste → `not-found`, neue Liste nicht in `Only`-Auswahl.
 
 ### G.2b Filterlisten: Seitenkanäle schließen (aus der API-Prüfung von G.2)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.2 · **Dateien:** `crates/torroworkplace/src/{pim,core}.rs`, `crates/torro-pim-github/src/{address,lists,lib}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`
 - **Prüfen vor dem Fragen (hoch):** Für einen Client mit eingeschränkter Repo-Auswahl (`github_repos` = nur diese)
@@ -250,22 +250,35 @@ K.21 (frei)
   unsichtbar; `update` durch Client liefert kein fremdes `pinned`; feste Meldungen; `set_collection_shown`.
 
 ### G.3 Aufgaben-App: Filterlisten zeigen
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** G.2 · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`, `crates/torro-gui/src/icon.rs`,
-  `crates/torro-pim/src/demo.rs` (Beispiel-Filterliste)
-- Seitenleiste: Filterlisten in der Gruppe des GitHub-Kontos mit eigenem Symbol. Zeile: Typ-Symbol (Issue
-  offen/geschlossen, PR Entwurf/offen/gemergt), Titel, `Repo#123`, Labels als dezente Chips, Fälligkeit; bei
-  PRs Review-Stand und CI. Gruppierung nach Repo. Detail im Paneel: Text als Markdown (nur lesen), Labels,
-  Zuständige, Meilenstein, Hauptknopf „Open on GitHub“.
-- **API/MCP:** liest über `tasks.list_lists`/`tasks.list_todos` (gibt es).
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** G.2b, R.2, R.3 (`docs/tasks/design.md`) · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`,
+  `crates/torro-gui/src/shell.rs`, `crates/torro-pim/src/{account,demo}.rs` (Beispiel-Filterliste)
+- Zeilen und Detail für Issues und PRs baut schon das Redesign (R.2, R.3). G.3 bringt die **Filterlisten** in die App:
+  Seitenleiste mit Gruppe des GitHub-Kontos und eigenem Symbol je Filterliste; Gruppierung nach Repo als Standard in
+  Filterlisten; Hinweise der Liste aus `source` (Problem beim Abruf, „Showing the first 1,000“); angeheftete Einträge
+  mit „Unpin“ im „…“-Menü (`tasks.unpin_issue`).
+- **API/MCP:** liest über `tasks.list_lists`/`tasks.list_todos`; Lösen über `tasks.unpin_issue` (gibt es).
 - **Fund aus G.1:** `shell::account_groups` zählt ein GitHub-Konto ohne Listen mit (eine Nextcloud + GitHub zeigt
   dann eine überflüssige Konto-Überschrift), und `torro_pim::account::combined_state` hält eine reine
   GitHub-Einrichtung für „verbunden“ (die Kalender-App zeigt dann nicht „No calendar account yet“). Nur Konten
   mit Sammlungen der jeweiligen Art zählen.
 - Abnahme: Sichtprüfung `--demo` in allen Größenklassen (`torro-design-review`).
 
+### G.3b Filterlisten: Kleinigkeiten aus G.3
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** G.3 · **Dateien:** `crates/torrotasks/src/{app,list,detail}.rs`, `crates/torro-gui/src/icon.rs`
+  (+ `assets/icons/pin-off.svg`), ggf. `crates/torroworkplace/src/pim.rs` (Reihenfolge)
+- **Dasselbe Issue in zwei Filterlisten:** Der Kern nimmt die Link-Kennung als `uid`; die App findet Cursor und
+  offenes Detail nur über `uid` und kann so auf der falschen Kopie landen. Cursor/Detail über (`collection`, `uid`).
+- **Reihenfolge in Filterlisten** wie die Sortierung der Suche (`sort:updated-desc` usw.), nicht nach
+  Fälligkeit/Priorität/Titel (`docs/github.md`, „Anzeige“) – der Kern liefert die Treffer in Suchreihenfolge,
+  `sort_order` oder ein Index trägt sie zur App.
+- **Symbol für „Unpin“:** Lucide `pin-off` (0.469.0) statt X.
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Test mit demselben Issue in zwei Listen (Cursor, Detail), Test der Reihenfolge, Sichtprüfung.
+
 ### G.4 Dialog: Filterliste anlegen und bearbeiten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.3 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs` (`filter.rs` neu)
 - „New filter list…“ und „Edit filter…“: Feld zum Einfügen (Anfrage oder Adresse), darunter das Formular
   (Typ, Repos, Status, Labels mit/ohne, Zuständig, Autor, Erwähnt, Review angefragt, Meilenstein, Sortierung;
@@ -277,7 +290,7 @@ K.21 (frei)
 - Abnahme: Tests Formular ↔ Anfrage (Rundreise, unbekannte Teile bleiben stehen), Sichtprüfung.
 
 ### G.5 Abhaken schließt das Issue
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** G.2, G.3 · **Dateien:** `crates/torro-pim-github/`, `crates/torroworkplace/src/pim.rs`,
   `crates/torrotasks/src/{app,list}.rs`
 - `tasks.save_todo` mit `completed` auf einem Issue einer Filterliste schließt es („completed“) bzw. öffnet es
@@ -289,8 +302,22 @@ K.21 (frei)
 - Abnahme: Tests mit aufgezeichneten Antworten (schließen, öffnen, PR abgelehnt, fehlendes Token-Recht);
   Rechte: Client ohne das Repo bzw. ohne `github`-Schreiben → `not-found` bzw. `forbidden`.
 
+### G.5b Freigabe sagt „Close GitHub issue“ (aus der API-Prüfung von G.5)
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** G.5 · **Dateien:** `crates/torroworkplace/src/{approvals,pim,core}.rs`, `crates/torro-pim-github/src/graphql.rs`
+- **Fehler (mittel):** Braucht `tasks.save_todo` auf einem Issue einer Filterliste eine Freigabe, zeigt sie heute
+  „Change task "…" in "…"“ (`approvals.rs` `todo_saved`, Facts aus `pim.rs` ~1414) – nicht, dass ein Issue auf
+  GitHub geschlossen bzw. wieder geöffnet wird, und mit dem `summary` aus der Client-Eingabe, obwohl eine
+  Titeländerung dort nie liefe. Die Zusammenfassung muss zeigen, was wirklich passiert: Facts bekommen das
+  Merkmal „GitHub-Issue“ mit `owner/repo#n`; Text „Close GitHub issue "{title}" ({repo}#{n})“ bzw. „Reopen …“,
+  Titel aus dem Cache, ohne Client-`summary`.
+- Test: Freigabe offen → GitHub-Schreibrecht entzogen → zugestimmt ⇒ `forbidden`, an GitHub geht nichts.
+- `graphql.rs` `change_error`: im Doc-Kommentar festhalten, dass nur `errors[0]` gelesen wird.
+- **Oberfläche/API/MCP:** keine neuen Requests. Neue Texte englisch mit `tr()` (Freigaben sieht der Mensch).
+- Abnahme: Tests für beide Texte (schließen/öffnen), Client-`summary` taucht nicht auf, Entzug vor Zustimmung.
+
 ### G.6 Verweise: Issues in eigene Listen holen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.2, P.2, P.3a · **Dateien:** `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torrotasks/src/{app,list,detail}.rs`
 - Link in der Schnelleingabe: in einer Filterliste → anheften; in einer schreibbaren Liste → **Verweis** (VTODO
@@ -305,6 +332,51 @@ K.21 (frei)
 - Abnahme: Tests für Erkennen von Links, Anheften vs. Verweis, Abgleich (Titel, geschlossen), Haken bei Issue
   und PR; Rechte: Link auf ein Repo außerhalb der Auswahl → `not-found`, Verweis darauf schließt nichts;
   Sichtprüfung einer gemischten Liste in „Manual order“.
+
+### G.6b Verweise absichern (aus der API-Prüfung von G.6)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** G.6 · **Dateien:** `crates/torroworkplace/src/{pim,core,approvals}.rs`, `crates/torro-ipc/src/{api,lib}.rs`,
+  `crates/torro-pim-caldav/src/{client,nextcloud}.rs` (Besitz einer Liste), `crates/torrotasks/src/app.rs` (Rückmeldung), `docs/github.md`
+- **Leselücke (hoch):** Ein Client ohne GitHub-Recht, aber mit `github_repos = All` (Vorlagen), speichert per
+  `tasks.save_todo` eine Aufgabe mit fremdem `link`; `reconcile_links` schreibt mit dem vollen Token Titel und Zustand
+  hinein, der Client liest sie über `list_todos` (`pim.rs` ~689, `links_elsewhere` ~2150 prüft nur `reaches_repo`).
+  Fix: Jeder neu gesetzte oder geänderte Link wird abgewiesen, wenn der Client GitHub nicht lesen darf (wie bei
+  `add_link`); Test mit `Level::NoAccess` + `Selection::All`.
+- **Geteilte Nextcloud-Listen:** Wer eine mit mir geteilte Liste beschreiben kann, könnte dort ein `X-TORRO-LINK`
+  ablegen und so Titel meiner privaten Issues auslesen. Der Abgleich löst Verweise nur in Listen auf, die dem Konto
+  selbst gehören (Nextcloud: Besitzer der Sammlung = angemeldeter Benutzer; geteilte Listen nicht), oder in denen
+  der Verweis von dieser Suite angelegt wurde – Weg festlegen und begründen. In `docs/github.md` festhalten.
+- **Freigabe für `tasks.add_link`** (`approvals.rs` ~865, heute „Run tasks.add_link“): eigener Text wie bei
+  `UnpinIssue` – „Pin {item} to filter list "{list}"“ bzw. „Add a link to {item} to "{list}"“, Liste aus dem Cache,
+  `owner/repo#n` aus `address::issue_ref`, kein Client-Text. Unlesbare `url` schon vor der Freigabe mit `error` ablehnen.
+- **Freigabe beim Abhaken eines Verweises** (`approvals.rs` ~1063): Die Kurzform „Close GitHub issue …“ nur, wenn sich
+  außer `completed` nichts ändert; sonst „Close GitHub issue … and change task …“ mit den übrigen Änderungen.
+- **Katalogtexte:** `tasks.add_link` nennt die nötigen Rechte (GitHub lesen; zum Anheften GitHub schreiben, sonst
+  `forbidden`) und `not-connected`; `tasks.save_todo`: bei Verweisen ohne Schreibrecht wird nur die Aufgabe abgehakt,
+  ohne Fehler; Zeile ≤ 120 Zeichen.
+- **App:** kurze Rückmeldung nach „Add to list…“ („Added to {list}“).
+- **`docs/github.md`, Offene Punkte:** Clients ohne GitHub-Lesen sehen Titel/Zustand von Verweisen, die der Mensch
+  angelegt hat (eigene Aufgaben, bewusst); bei mehreren GitHub-Konten nimmt der Kern das erste mit Token
+  (später: Konto im Link mitführen).
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Tests für die Leselücke (an GitHub geht nichts, nichts wird in die Liste geschrieben), geteilte Liste wird
+  nicht abgeglichen, beide Freigabetexte (inkl. Abhaken mit weiteren Änderungen), `error` vor Freigabe.
+
+### G.6c Verweise: geteilte Listen, Ziehen auf die Seitenleiste
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** G.6b, G.3b · **Dateien:** `crates/torroworkplace/src/{pim,core,approvals}.rs`,
+  `crates/torrotasks/src/{app,list}.rs`, `crates/torro-gui/src/shell.rs` (falls die Seitenleiste ein Ziel braucht), `docs/github.md`
+- **Geteilte Listen (entschieden 2026-10-12, sichere Voreinstellung):** In Listen, die nicht privat sind (G.6b:
+  `Slot::private`), erledigt der Haken an einem Verweis **nur die Aufgabe**; das Issue bleibt offen. Sonst könnte
+  jemand, mit dem die Liste geteilt ist, einen Verweis unterschieben, und mein Haken schlösse ein Issue. Freigabetext
+  und Katalogtext entsprechend; in `docs/github.md` festhalten.
+- **Ziehen auf die Seitenleiste (Rest aus G.6):** Einen Eintrag einer Filterliste auf eine schreibbare Liste der
+  Seitenleiste ziehen legt dort einen Verweis an (`tasks.add_link`); eine Aufgabe auf eine andere Liste desselben
+  Kontos ziehen verschiebt sie (`tasks.save_todo` mit neuer Liste). Ziel beim Ziehen hervorheben. Nutzt das Ziehen
+  aus P.3b.
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Tests (Haken in geteilter Liste schließt nichts, an GitHub geht nichts; Ziehen legt Verweis an bzw.
+  verschiebt), Sichtprüfung des Ziehziels.
 
 ## K Kalender
 

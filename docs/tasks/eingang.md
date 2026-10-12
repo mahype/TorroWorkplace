@@ -7,11 +7,9 @@ E1–E3 bringen den Eingang **ohne Mail und ohne fremde Anmeldung**: Kern, Meldu
 Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mit E4 (Konzept
 [mail.md](../mail.md)), KI mit [ki.md](../ki.md).
 
-> **Erst anfangen, wenn M7.1 und M7.2 erledigt sind** ([tasks/mail.md](mail.md)). Dort werden gerade
-> die CalDAV- und Mail-Konten in Kern und Steuerzentrale gebaut, in denselben Dateien
-> (`torro-ipc/src/{lib,api}.rs`, `torroworkplace/src/{core,mcp,clients,pim}.rs`, `docs/api.md`,
-> `docs/api-reference.md`, Wurzel-`Cargo.toml`). Das gilt auch für E1.1, obwohl es meist neue Dateien
-> anlegt. Danach von einem frischen Stand des Arbeitszweigs aus beginnen.
+> **Entschieden 2026-10-12:** Der Kern (E1.1 ff.) wartet nicht mehr auf M7.1/M7.2, die noch niemand
+> begonnen hat. Startet M7.1 parallel, stimmen sich die beiden ab; Konflikte in `torro-ipc`, `core.rs`,
+> `mcp.rs`, `clients.rs`, `docs/api.md` und `docs/api-reference.md` werden beim Zusammenführen gelöst.
 >
 > **Auch A.3 (Freigaben) vorher abschließen.** A.3 ändert dieselben Stellen (`torro-ipc`, `core.rs`,
 > `mcp.rs`, Test `names_follow_the_rules`) und wird für E2.1 ohnehin gebraucht. Aufgaben, die den
@@ -19,18 +17,21 @@ Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mi
 > M-, G-, P-Aufgaben).
 
 ```
-M7.1 + M7.2 (mail.md), A.3 (api-mcp.md)
-        │
-      E1.1 ── E1.2 ─┬─ E1.3 ── E2.2 ─┬─ E2.3 (braucht A.7)
-                    │                └─ E2.4
-                    ├─ E2.1
-                    ├─ E3.1 ─┬─ E3.2 ── E3.5 (braucht P.2)
-                    │        ├─ E3.3 (nach A.8)
-                    │        ├─ E3.6
-                    │        └─ E3.7
-                    └─ E3.4 (braucht E2.1)
-E2.5 braucht E2.3, E3.2, A.8 und vorher die Freigabe ihres Sicherheitsteils
+E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b ── E3.2c ── E3.3a   ← sofort möglich
+       ├─ E2.2a
+       │
+A.3 (api-mcp.md)
+       │
+       └─ E1.1 ── E1.2 ─┬─ E1.3 ── E2.2 ─┬─ E2.3 (braucht A.7)
+                        │                └─ E2.4
+                        ├─ E2.1
+                        ├─ E3.3b (nach A.8), E3.6, E3.7
+                        └─ E3.4 (braucht E2.1)
+E3.5 braucht E3.2, E1.2, P.2 · E2.5 braucht E2.3, E3.2, A.8 und die Freigabe ihres Sicherheitsteils
 ```
+
+**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1, E3.2, E3.2b, E3.2c und E3.3a legen nur neue Crates an (plus je eine
+Zeile in der Wurzel-`Cargo.toml`) und laufen mit Demo-Daten. Sie dürfen sofort starten.
 
 ## Sicherheitsregeln des Eingangs (gelten für alle Aufgaben)
 
@@ -57,35 +58,51 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 
 ## Offene Punkte (vor der jeweiligen Aufgabe klären)
 
-1. **Schnittstelle `Rights`** (E1.1): neues Feld `inbox_sources: Selection` (welche Quellen ein Agent
-   sieht). Neues optionales Feld, also verträglich, aber `Rights` ist festgelegt: **Freigabe nötig.**
-2. **Schnittstelle `Event`** (E3.4): Für „Ruhe bei belegten Terminen“ braucht das Modell Frei/Belegt
-   (`TRANSP`). Fehlt heute. **Freigabe nötig**, sonst startet E3.4 ohne Ruhe und sie kommt nach.
-3. **Sicherheitsteil von E2.5** (Rückfragen beantworten) vor Beginn freigeben; dazu gehört eine
-   Erweiterung von Punkt 3 in „Was nie nach außen geht“ ([api.md](../api.md)) auf Antworten auf
-   Rückfragen.
-4. **A.6 (Agents & API)** braucht auf der Detailseite zusätzlich die Auswahl der Inbox-Quellen. Wird
-   in A.6 mit erledigt, sobald E1.1 steht.
+1. ~~Schnittstelle `Rights`~~ (E1.1): neues Feld `inbox_sources: Selection`, **freigegeben am 2026-10-12.**
+2. ~~Schnittstelle `Event`~~ (E3.4): Feld Frei/Belegt (`TRANSP`), **freigegeben am 2026-10-12.**
+3. ~~Sicherheitsteil von E2.5~~: **freigegeben am 2026-10-12.**
+4. ~~A.6 (Agents & API): Auswahl der Inbox-Quellen auf der Detailseite~~, erledigt mit A.6.
 
 ## E1 Kern
 
+### E1.1a Modell-Crate `torro-inbox`
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-inbox/` (neu: `Cargo.toml`,
+  `src/{lib,item,rules,source,demo}.rs`), Wurzel-`Cargo.toml` (Mitglied und Eintrag in
+  `[workspace.dependencies]`)
+- Ohne Ein-/Ausgabe und ohne Abhängigkeit zu `torro-ipc`; Vorbild ist `torro-pim` (Modell, `source.rs`,
+  `demo.rs`). Alle Typen mit `Serialize`, `Deserialize`, `JsonSchema`, weil E1.1 sie als Wire-Format
+  im Katalog benutzt.
+- **Typen:** `Item { id, source: SourceRef, thread_key, kind, lane, urgent, title, body, from,
+  agent: Option<AgentInfo>, received, updated, count, state, link, actions, untrusted }`;
+  `SourceRef { kind, name }` mit `kind` vorerst `suite | agent | script`;
+  `AgentInfo { agent: claude-code|codex|gemini, session, project, branch, pids }`;
+  `Kind`: `notice | agent_waiting | agent_done | approval | account_problem`; `Lane`: `for_me | info`;
+  `State`: `new | seen | done | snoozed(until)`; `Link`: `url | app | window`; `Action`; dazu
+  `SourceInfo` (Quelle mit Zahl offener Einträge und „stumm“) für die Seitenleiste.
+- **Regeln als reine Funktionen:** zusammenführen (gleicher `thread_key` erhöht `count`, setzt
+  `updated`, holt Erledigtes zurück), feste Spur (`agent_waiting`, `approval` → für mich, dringend;
+  `agent_done`, `account_problem` → für mich; `notice` → gewünschte Spur, nie dringend), Kinds, die nur
+  der Kern bzw. nur Hook-Clients anlegen dürfen (Sicherheitsregel 3, als Funktion, durchgesetzt in
+  E1.2), aufwachen (Vertagtes zur Zeit wieder `new`), aufräumen (Erledigtes nach 30 Tagen weg),
+  Sortierung der Liste (dringend zuerst, dann `updated` neu zuerst).
+- **`InboxSource`-Trait** (async wie `PimSource`): `list_items`, `list_sources`, `set_item_done`,
+  `snooze_item`, `set_item_lane`, `mute_source`. Fehler als eigenes Enum.
+- **`DemoSource`:** Beispieldaten im Speicher für `--demo`: zwei wartende Agenten (Claude Code, Codex),
+  ein fertiger, eine Freigabe, ein Kontoproblem, einige Skript-Meldungen in „Zur Info“, ein vertagter,
+  ein erledigter Eintrag; Änderungen wirken im Speicher. Sichtbare Texte englisch mit `tr()`
+  (Übersetzungen im Bericht nennen).
+- **API/MCP:** keine; Requests und Katalog kommen in E1.1.
+- **Abnahme:** Tests der Regeln (zusammenführen, feste Spuren, aufwachen, aufräumen, Sortierung) und
+  der Demo-Quelle; serde-Rundreise; fmt/clippy/test grün, auch mit `TORRO_LANG=de`.
+
 ### E1.1 Gerüst: Modell, Requests, Katalog
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** M7.1, M7.2, A.3, offener Punkt 1 · **Dateien:** `crates/torro-inbox/` (neu:
-  `Cargo.toml`, `src/{lib,item,rules}.rs`), Wurzel-`Cargo.toml` (Mitglied, `[workspace.dependencies]`),
+- [x] erledigt (Handler antworten bis E1.2 mit `unsupported`; `docs/api-reference.md` gibt es noch nicht, A.9)
+- **Modell:** Opus · **Braucht:** E1.1a, A.3 · **Dateien:**
+  `crates/torro-inbox/src/*` (nur falls das Wire-Format Ergänzungen braucht, nennen),
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-ipc/Cargo.toml`, `crates/torroworkplace/src/{clients,core,mcp}.rs`
   (nur Stellen, die `Rights { … }` bauen, und deren Tests), `docs/api.md` (Bereich `inbox`), `docs/api-reference.md`
-- **Crate `torro-inbox`**, ohne Ein-/Ausgabe, nur Typen und Regeln:
-  - `Item { id, source: SourceRef, thread_key, kind, lane, urgent, title, body, from, agent: Option<AgentInfo>,
-    received, updated, count, state, link, actions, untrusted }`.
-  - `SourceRef { kind, name }`; `kind` vorerst `suite | agent | script` (Mail, GitHub, ntfy … folgen
-    verträglich als neue Werte). `AgentInfo { agent: claude-code|codex|gemini, session, project, branch, pids }`.
-  - `Kind`: `notice | agent_waiting | agent_done | approval | account_problem`. `Lane`: `for_me | info`.
-    `State`: `new | seen | done | snoozed(until)`. `Link`: `url | app | window`.
-  - Regeln als reine Funktionen: **zusammenführen** (gleicher `thread_key` erhöht `count`, setzt
-    `updated`, holt Erledigtes zurück), **feste Spur** (`agent_waiting`, `approval` → für mich, dringend;
-    `agent_done`, `account_problem` → für mich; `notice` → was der Absender wünscht, nie dringend),
-    **aufwachen** (Vertagtes wird zur Zeit wieder `new`), **aufräumen** (Erledigtes nach 30 Tagen weg).
+- Nutzt die Typen und Regeln aus `torro-inbox` (E1.1a) als Wire-Format.
 - **Requests** (Bereich `inbox`), je mit Doc-Kommentar und Fehlercodes; Sicherheitsregeln oben beachten:
 
   | Request | Zugriff | Bemerkung |
@@ -114,7 +131,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   `clients.json` lädt; API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
 ### E1.2 Kern: Speicher und Befehle
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E1.1 · **Dateien:** `crates/torroworkplace/src/inbox.rs` (neu),
   `crates/torroworkplace/src/{core,clients,daemon}.rs`, `crates/torroworkplace/Cargo.toml`, Wurzel-`Cargo.toml`
   (`rusqlite` mit `bundled`)
@@ -125,6 +142,8 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Drosseln:** Gezählt werden nur **neue** Vorgänge (Zusammenführen in einen offenen `thread_key`
   zählt nicht): normale Clients 30 je Stunde, Hook-Clients 120 je Stunde, darüber `busy`.
   `resolve_items` wird nie gedrosselt.
+- **Längen begrenzen:** `title` auf 200 und `body` auf 4000 Zeichen kürzen (an einer Zeichengrenze, mit
+  „…“). Agenten schicken sonst ihre ganze letzte Antwort mit (Hinweis aus E2.2a).
 - Im Dienst: Vertagtes zur Zeit aufwecken, einmal täglich aufräumen.
 - Die App fragt wie Kalender und Aufgaben im Takt nach (`iced::time::every`); ein `subscribe` gibt es
   noch nicht und gehört nicht in diese Aufgabe.
@@ -133,9 +152,55 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   `not-found`, Client löst fremden Vorgang auf → keine Wirkung, Drossel → `busy`, Datei 0600; ist A.5
   schon da: `title`, `body`, `thread_key` stehen nicht in `audit.jsonl`.
 
-### E1.3 MCP und `torroworkplace notify`
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** E1.2 · **Dateien:** `crates/torroworkplace/src/{mcp,cli}.rs`
+### E1.2b Inbox absichern (aus der API-Prüfung von E1.1/E1.2)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E1.2 · **Dateien:** `crates/torroworkplace/src/{inbox,approvals,core,clients}.rs`,
+  `crates/torro-ipc/src/{api,lib}.rs`, `docs/api.md`
+- **Hoch:** Freigaben für `inbox.mute_source` (stumm/laut), `inbox.remove_rule` und `inbox.set_item_lane`
+  mit `remember` bekommen eigene Zusammenfassungen (Quelle mit Namen, Spur, die Regel aus dem Speicher
+  nachgeschlagen); ebenso `post_item` mit zitiertem Titel, wenn es auf Freigabe wartet.
+- **Hoch:** Ein Hook-Client gehört zu genau einem Agenten (beim Anlegen festgelegt, z. B. über ein Feld oder
+  den Namen); Meldungen landen unter diesem Agenten, ein anderes `agent.agent` wird abgelehnt. So hilft
+  Stummschalten zuverlässig.
+- **Hoch:** Längen für alle Felder: `thread_key` ≤ 200 Bytes und URL ≤ 2000 (sonst `error`), Agenten-Felder
+  kürzen, höchstens 16 `pids`; Test.
+- **Mittel:** Nur `http`/`https`-Links speichern (andere verwerfen), `app` nur bekannte Apps; `thread_key`
+  fremder Einträge nicht herausgeben (oder dokumentieren); Speicherfehler ohne Pfad an Clients; fehlende
+  Tests (eingeschränkte Rechte über `run_approved`, `set_item_lane{remember}` ohne Admin, `-shm`-Rechte,
+  `ListRules`/`ListSources` eines Hooks).
+- **Niedrig:** Filter (Spur, Zustand, seit, Anzahl) in SQL statt im Speicher; `user_version` aus
+  `SCHEMA_VERSION`; vorhandenes State-Verzeichnis auf 0700; Quellnamen eindeutig (`script:<name>` darf nicht
+  mit `script:cli` oder einem anderen Client gleichen Namens zusammenfallen); Katalogbeschreibung von
+  `post_item` nennt Grenzen, verworfene Felder und `id: null` = stumm.
+- **API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
+
+### E1.2c Suite-Einträge nur für den Menschen, Freigaben ohne Austausch (aus der API-Prüfung bis A.7)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E2.1, E2.4, E3.5, A.5, A.7 · **Dateien:** `crates/torroworkplace/src/{inbox,core,approvals,audit,client_setup}.rs`,
+  `crates/torro-ipc/src/api.rs`, `docs/api.md`
+- **Hoch (H1):** Die Quelle `suite` (Freigaben anderer Agenten, Kontoprobleme) sieht **kein** Client-Schlüssel,
+  auch nicht bei `inbox_sources: All` oder ausdrücklicher Auswahl. Entschieden 2026-10-12 (Empfehlung, kein
+  Widerspruch). Test: Client B sieht die Freigabe von Client A nicht (list/get/list_sources).
+- **Mittel (M2):** Eine Freigabe für einen Inbox-Befehl merkt sich `updated` des Eintrags; hat er sich bis zur
+  Ausführung geändert → `conflict`. `create_task_from_item` legt den Titel bei der Anfrage fest. Zusammenfassungen
+  sagen, was läuft: `open_item` nennt Host, App oder „agent window“, `create_task_from_item` das Fälligkeitsdatum.
+- **Mittel (M3):** `open_item` mit einem Web-Link braucht bei Client-Schlüsseln **immer** eine Freigabe
+  (Zusammenfassung mit Host); Katalogbeschreibung passt sich an.
+- **Mittel (M4):** `docs/api.md`: Inbox-Zeile mit `open_item` und `create_task_from_item` (inkl. Tasks-Prüfung),
+  `clients.activity`, in „Was nie nach außen geht“ Punkt 1 die Ausnahme „Schlüssel eines neuen Clients einmal an
+  die Steuerzentrale, die ihn in die Konfiguration des Agenten bzw. eine 0600-Schlüsseldatei schreibt“, Abschnitt
+  zum Assistenten mit Gemini, Hooks, Schlüsseldateien, Sicherungen.
+- **Niedrig:** `audit::ids`: Sammlungs-Kennungen nach dem Konto als Prüfsumme, Kennungen vom Client nur bei
+  passendem Format (sonst Prüfsumme); abgelehnte Freigabe protokolliert die Kennungen der gespeicherten Anfrage;
+  `client_setup::replace` verweigert kaputte Symlinks statt sie zu ersetzen.
+- **API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
+
+### E1.3 MCP, `torroworkplace notify` und Client für die App
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** E1.2, E3.1 · **Dateien:** `crates/torroworkplace/src/{mcp,cli}.rs`,
+  `crates/torro-ipc/src/inbox.rs` (neu), `crates/torro-ipc/src/lib.rs` (nur `mod`), `crates/torroinbox/src/main.rs`
 - **MCP:** Tools kommen aus dem Katalog; bequeme Eingaben: `inbox_list_items` ohne Angaben = für mich,
   offen, 50 Stück; `inbox_post_item` mit `title`, optional `body`, `url`. Antworten enthalten
   `untrusted` je Eintrag.
@@ -143,13 +208,15 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   schickt `inbox.post_item` als `notice`, Schlüssel aus `TORRO_TOKEN` (Skript) oder der App-Schlüssel;
   mit dem App-Schlüssel ist die Quelle `script:cli`. Läuft der Dienst nicht, Fehlermeldung und
   Exit-Code ≠ 0 (anders als der Hook in E2.2).
+- **Client:** `torro_ipc::inbox::InboxClient` setzt `InboxSource` über `core.sock` um (wie `PimClient`);
+  `torroinbox` benutzt ihn ohne `--demo`.
 - **Abnahme:** Vertragstest Tool ↔ Katalog; Tests, dass die bequemen Eingaben den richtigen Request
-  bauen; `notify` ohne Dienst → Exit-Code 1.
+  bauen; `notify` ohne Dienst → Exit-Code 1; App zeigt ohne `--demo` die Einträge des Dienstes.
 
 ## E2 Suite und Agenten
 
 ### E2.1 Quelle „Suite“: Freigaben und Kontoprobleme
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E1.2, A.3 · **Dateien:** `crates/torroworkplace/src/{inbox,approvals,pim}.rs`
 - Jede offene Freigabe ist ein Eintrag (`approval`, dringend, Aktionen „Allow“/„Deny“, die die Oberfläche
   als `approvals.decide_approval` schickt; Name aus A.3). Entschieden oder abgelaufen → erledigt sich
@@ -160,10 +227,29 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests: Freigabe anlegen → Eintrag, entscheiden → erledigt, Ablauf → erledigt;
   Kontoproblem kommt und geht; ein Agent kann beide nicht erledigen (`forbidden`).
 
+### E2.2a Hook-Meldungen übersetzen (reine Logik)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E1.1a · **Dateien:** `crates/torro-inbox/src/{lib,hook}.rs` (`hook.rs` neu),
+  `crates/torro-inbox/tests/fixtures/hooks/*.json` (neu), `crates/torro-inbox/Cargo.toml` (falls `serde_json`
+  als normale Abhängigkeit nötig)
+- Liest das JSON eines Hooks (Claude Code, Codex, Gemini CLI) und macht daraus eine Absicht:
+  „meldet `agent_waiting`/`agent_done` mit `AgentInfo`“, „löst das Warten dieser Sitzung auf“, „löst alles
+  dieser Sitzung auf“ oder „nichts“. Zuordnung genau nach der Tabelle in E2.2; unbekannte Ereignisse und
+  kaputtes JSON → „nichts“ (nie ein Fehler, der den Agenten stört).
+- Projekt = letzter Teil von `cwd`; Branch aus dem Inhalt von `.git/HEAD`, den der Aufrufer übergibt
+  (die Funktion liest keine Dateien). `thread_key` = `<agent>:<session_id>`. Meldung des Agenten als `body`.
+- Fixtures: echte Beispiel-Payloads je Ereignis nach den offiziellen Hook-Dokumentationen (Claude Code,
+  Codex, Gemini CLI), ohne persönliche Daten.
+- **API/MCP:** keine; E2.2 schickt die Absichten als Requests.
+- **Abnahme:** Fixture-Test je Zeile der Tabelle; unbekanntes Ereignis, fehlende Felder, kaputtes JSON →
+  „nichts“; Branch aus `ref: refs/heads/x` und aus einer losgelösten Commit-Kennung.
+
 ### E2.2 `torroworkplace hook`: Agenten melden sich
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** E1.3 · **Dateien:** `crates/torroworkplace/src/hook.rs` (neu),
-  `crates/torroworkplace/src/{cli,main}.rs`, `crates/torroworkplace/tests/fixtures/hooks/*.json` (neu)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E1.3, E2.2a · **Dateien:** `crates/torroworkplace/src/hook.rs` (neu),
+  `crates/torroworkplace/src/{cli,main}.rs`
+- Nutzt die Übersetzung aus E2.2a; hier kommen stdin, `.git/HEAD` lesen, Elternprozesse, Schlüssel und
+  Versand dazu.
 - `torroworkplace hook claude-code|codex|gemini` liest das JSON des Hooks von stdin und schickt
   `inbox.post_item` bzw. `inbox.resolve_items` mit einem Hook-Schlüssel (`TORRO_TOKEN`):
 
@@ -172,9 +258,9 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   | Claude Code | `Notification` mit `permission_prompt`, `agent_needs_input`, `elicitation_dialog` | `agent_waiting` |
   | Claude Code | `Stop` | `agent_done` |
   | Claude Code | `UserPromptSubmit`, `PostToolUse` | erledigt das Warten dieser Sitzung |
-  | Claude Code | `SessionEnd` | erledigt alles dieser Sitzung |
   | Codex | `PermissionRequest` (nur beobachten, keine Entscheidung) / `Stop` / `UserPromptSubmit`, `PostToolUse` | wartet / fertig / erledigt |
-  | Gemini CLI | `Notification` (`ToolPermission`) / `AfterAgent` | wartet / fertig |
+  | Gemini CLI | `Notification` (`ToolPermission`) / `AfterAgent` / `BeforeAgent` | wartet / fertig / erledigt |
+  | alle drei | `SessionEnd` | erledigt alles dieser Sitzung |
 
   `idle_prompt` wird ignoriert (`Stop` deckt es ab). `thread_key` = `<agent>:<session_id>` (der Kern
   stellt den Client davor). Projekt = letzter Teil von `cwd`; Branch aus `.git/HEAD` lesen (keinen
@@ -184,13 +270,18 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   läuft der Dienst nicht, passiert nichts (kein Start des Dienstes).
 - Unter Linux die Kette der Elternprozesse (`/proc/<pid>/stat`, höchstens 32 Stufen) als `agent.pids`
   mitschicken, für E2.4. Auf macOS und Windows leer (`#[cfg(target_os = "linux")]`).
-- Bis E2.3 steht, legt man den Hook-Client von Hand an (`torroworkplace ctl`, App-Schlüssel).
+- Bis E2.3 steht, legt man den Hook-Client von Hand an (`torroworkplace ctl`, App-Schlüssel):
+  `torroworkplace ctl clients add "Claude Code hooks" --kind hook --agent claude-code` gibt den Schlüssel einmal aus; der
+  Kern schneidet die Rechte auf `Rights::hook()` zu (nur `inbox` schreiben, keine Quellen sehen). Der
+  Hook läuft dann z. B. als `TORRO_TOKEN=<Schlüssel> torroworkplace hook claude-code`.
+  Umgesetzt: stdin höchstens 1 MiB (größer → nichts) mit höchstens 500 ms Warten, 500 ms für Verbindung und
+  Antwort zusammen; stderr bleibt still, außer bei falschem Aufruf oder mit `TORRO_HOOK_DEBUG=1` (eine Zeile).
 - **API/MCP:** nutzt E1.1.
 - **Abnahme:** Fixture-Tests je Ereignis → richtiger Request; unbekanntes Ereignis → nichts; kein
   Byte auf stdout; ohne Dienst Exit-Code 0 in unter 500 ms.
 
 ### E2.3 Hooks beim Verbinden eines Agenten einrichten
-- [ ] erledigt
+- [x] erledigt (Gemini CLI kam dabei auch als MCP-Ziel in den Assistenten)
 - **Modell:** Sonnet · **Braucht:** E2.2, A.7 · **Dateien:** `crates/torroworkplace/src/client_setup.rs`,
   `crates/torroworkplace/src/ui/agent_wizard.rs`, `crates/torroworkplace/tests/fixtures/client_setup/*`
 - **Oberfläche:** Im Assistenten „Connect agent“ für Claude Code, Codex und Gemini CLI ein Häkchen
@@ -203,8 +294,23 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** Tests mit Konfigurationen unter `tests/fixtures/` (vorhandene fremde Hooks bleiben,
   zweimal einrichten = einmal, Entfernen sauber), kein echtes Home-Verzeichnis.
 
+### E2.3b Hook-Schlüssel aus einer Datei statt aus der Befehlszeile
+- [x] erledigt (Datei `<config>/hooks/<hook-client-id>.key`, Befehl `'<exe>' hook <agent> --key-file '<datei>'`;
+  Eigentümer-Prüfung nur unter Linux über `/proc/self/status`, sonst nur die Rechte)
+- **Modell:** Opus · **Braucht:** E2.3 · **Dateien:** `crates/torroworkplace/src/{hook,client_setup}.rs`,
+  `crates/torroworkplace/tests/fixtures/client_setup/*`
+- Heute steht der Hook-Schlüssel in der Hook-Befehlszeile (`TORRO_TOKEN='…' torroworkplace hook …`) und damit
+  während jedes Aufrufs in `ps` sowie in der Agenten-Konfiguration. Stattdessen: Der Assistent legt den Schlüssel
+  in eine eigene Datei (0600, im Konfigurationsverzeichnis des Kerns, je Hook-Client), der Hook-Befehl nennt nur
+  die Datei (`torroworkplace hook claude-code --key-file <pfad>` oder `TORRO_TOKEN_FILE`), `hook.rs` liest sie
+  (höchstens wenige hundert Bytes, Rechte prüfen: von anderen lesbar → nichts tun). „Trennen…“ löscht die Datei.
+  Bestehende Einträge mit Schlüssel in der Befehlszeile werden beim erneuten Verbinden ersetzt.
+- **API/MCP:** keine.
+- **Abnahme:** Tests: Hook liest die Datei, zu offene Rechte → nichts, fehlende Datei → nichts (Exit 0, keine
+  Ausgabe); Konfiguration enthält keinen Schlüssel mehr; Entfernen löscht die Datei.
+
 ### E2.4 Ins Fenster des Agenten springen
-- [ ] erledigt
+- [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9)
 - **Modell:** Opus · **Braucht:** E2.2 · **Dateien:** `crates/torroworkplace/src/{inbox,core,mcp}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`
 - Der Kern sucht zu `agent.pids` das Fenster über `torro-wm` (`windows()` mit `pid`) und setzt den
@@ -216,69 +322,133 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **MCP:** `inbox_open_item` (Write; ein Agent kann damit den Blick des Menschen lenken, mehr nicht).
 - Grenzen im ersten Schritt: Läuft der Agent in tmux, endet die Kette beim tmux-Server, dann gibt es
   keinen Sprung (Aktion ausgeblendet). macOS/Windows: Aktion ausgeblendet.
+- Umgesetzt: Der Kern setzt `window` selbst, sobald ein Hook bei `agent_waiting`/`agent_done` Prozesse
+  mitschickt; ist einer davon ein tmux-Server (`/proc/<pid>/comm` beginnt mit `tmux`), bleibt der Link
+  weg, ebenso ohne Prozesse (macOS, Windows) – die App zeigt „Go to window“ dann nicht. Beim Öffnen
+  gewinnt der nächste Prozess mit Fenster; hat er mehrere Fenster (ein Terminal, das alle Fenster aus
+  einem Prozess bedient), ist die Antwort `unsupported`. Nach erfolgreichem Öffnen wird ein neuer
+  Eintrag `seen`, wenn der Aufrufer ihn ändern darf (Regel 1). Die App schickt für jeden Link
+  `inbox.open_item`; nur mit `--demo` öffnet sie Seiten und Apps weiter selbst.
 - **Abnahme:** Tests mit `torro-wm`-Fake (Fenster mit pid): Treffer, Fenster weg → `unsupported`;
   `file:`-Link → `unsupported`; `window` an einem Nicht-Hook-Eintrag wird ignoriert.
 
 ### E2.5 Rückfragen von Agenten im Eingang beantworten
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** E2.3, E3.2, A.8, offener Punkt 3 · **Dateien:** werden mit der
-  Freigabe festgelegt (voraussichtlich `hook.rs`, `approvals.rs`, `inbox.rs`, `torro-ipc`, `torroinbox`,
-  `docs/api.md`)
+- [x] erledigt (Freigabe der Art `approvals.ask_permission`, Ablauf 32 s, höchstens drei offen je Client; Hook `--answer`, Timeout 40 s; offen: MCP-Ablauftext „ten minutes“ in `mcp.rs`, lange Rückfragen in der Benachrichtigung mit „Allow“, ob Claude Code seinen Dialog erst nach dem Hook zeigt)
+- **Modell:** Opus · **Braucht:** E2.3b, E3.2, A.8b, E1.2c · Sicherheitsteil freigegeben 2026-10-12 ·
+  **Dateien:** `crates/torroworkplace/src/{hook,approvals,core,inbox,notify,client_setup,audit}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-inbox/src/hook.rs` (+ Fixtures),
+  `crates/torroinbox/src/{app,detail}.rs` (nur falls die Freigabe-Einträge mehr brauchen), `docs/api.md`
 - Claude Code und Codex fragen über den Hook `PermissionRequest` „darf ich?“. Der Hook legt eine
-  Rückfrage an und wartet bis zu 30 s auf die Entscheidung des Menschen im Eingang oder in der
-  Benachrichtigung („Allow“ / „Deny“). Ohne Entscheidung gibt der Hook **keine** Antwort, und der
-  Agent fragt wie gewohnt im Terminal. Nie automatisch erlauben.
-- **API:**
-  - `inbox.ask_question { question, options }` · Write – ein Agent oder Hook stellt dem Menschen eine
-    Frage. MCP `inbox_ask_question`.
-  - `inbox.question_status { id }` · Read – Antwort abholen. MCP `inbox_question_status`.
-  - `inbox.answer_question { id, option }` · Admin · **Never**, nur App-Schlüssel (Erweiterung von
-    Punkt 3 in api.md; in `names_follow_the_rules` unter `kept_back`).
-- **Sicherheitsteil zur Freigabe:** genauer Wortlaut des Befehls ungekürzt sichtbar, Entscheidung an
-  genau diese Rückfrage gebunden, fremder Text als `untrusted` gekennzeichnet, Antwort nur über den
-  App-Schlüssel.
-- **Abnahme:** Tests: Zeitablauf → keine Ausgabe; „Deny“ → Ablehnung im Format des Agenten;
-  Client-Schlüssel kann nicht antworten.
+  Rückfrage an und wartet bis zu 30 s auf die Entscheidung des Menschen im Eingang, in der
+  Steuerzentrale (Freigaben), mit `ctl allow|deny` oder in der Benachrichtigung („Allow“ / „Deny“).
+  Ohne Entscheidung gibt der Hook **keine** Antwort, und der Agent fragt wie gewohnt im Terminal.
+  Nie automatisch erlauben.
+- **Bauweise (Empfehlung):** die Rückfrage ist eine **Freigabe** (A.3) mit eigener Art „Rückfrage eines
+  Agenten“: Sie erscheint damit ohne neue Oberfläche in Inbox (E2.1), Tray, Steuerzentrale, `ctl approvals`
+  und Benachrichtigung; „Erlauben“ führt nichts im Kern aus, sondern beantwortet nur die Rückfrage. Weicht die
+  Umsetzung davon ab (eigene `inbox.ask_question`/`question_status`/`answer_question`), begründen.
+- **API:** ein Befehl zum Fragen (Write, auch für Hook-Clients), einer zum Abholen der Antwort (Read, nur die
+  eigene Rückfrage – Hook-Clients sehen sonst nichts, Regel 4), Entscheiden nur mit dem App-Schlüssel
+  (`approvals.decide_approval` bzw. `Mcp::Never`, Punkt 3 in api.md).
+- **Hook:** `torroworkplace hook claude-code|codex --answer` (o. ä.) für das Ereignis `PermissionRequest`;
+  antwortet im Format des jeweiligen Agenten (offizielle Doku prüfen: Claude Code
+  `hookSpecificOutput.decision.behavior` allow/deny, Codex entsprechend); gibt sonst nichts aus, Exit 0.
+  E2.3 richtet den Hook mit passend langem Timeout (> 30 s) ein; bestehende Einrichtungen werden beim erneuten
+  Verbinden ergänzt.
+- **Sicherheit:** genauer Wortlaut des Werkzeugs und Befehls ungekürzt sichtbar (aber als `untrusted`, ohne
+  Steuer-/Bidi-Zeichen), Entscheidung an genau diese Rückfrage gebunden (Kennung, Ablauf 30 s + Spielraum),
+  Antwort nur über den App-Schlüssel, Hook nimmt nur eine Antwort zur eigenen Rückfrage an; Protokoll ohne Inhalt.
+- **Abnahme:** Tests: Zeitablauf → keine Ausgabe; „Deny“ → Ablehnung im Format des Agenten; „Allow“ →
+  Erlaubnis im Format des Agenten; Client-Schlüssel kann nicht antworten; Hook-Client sieht fremde Rückfragen
+  nicht; `torro-api-review` ohne hohen Befund.
 
 ## E3 App `torroinbox`
 
 ### E3.1 App-Gerüst
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** E1.2 · **Dateien:** `crates/torroinbox/` (neu), Wurzel-`Cargo.toml`,
-  `crates/torro-ipc/src/inbox.rs` (neu, Client wie `pim.rs`), `crates/torro-ipc/src/lib.rs` (nur `mod`)
+- [x] erledigt (Befunde der Design-Prüfung in E3.2b)
+- **Modell:** Opus · **Braucht:** E1.1a · **Dateien:** `crates/torroinbox/` (neu), Wurzel-`Cargo.toml` (Mitglied)
 - Iced-App mit `torro_gui::shell`, Fensterklasse `torro-inbox`. Seitenleiste: **For me** (Zahl),
   **Info**, **Snoozed**, **Done**; Gruppe **Sources** aus `inbox.list_sources` (Suite, Agents, Scripts).
   Liste: Quellen-Symbol, Titel, Vorschau, Zeit, Zähler. Paneel (Muster U.3): bei Agenten Projekt,
   Branch, Meldung und Aktionen; bei Freigaben „Allow“/„Deny“.
 - Größen Breit, Mittel, Schmal; Mini und Leiste folgen in E3.3.
-- `InboxSource`-Trait mit echtem Client und Demo-Quelle; `--demo --open <state>` für die Sichtprüfung.
+- Arbeitet gegen `InboxSource` aus E1.1a; `--demo` nimmt `DemoSource`, `--demo --open <state>` für die
+  Sichtprüfung. Ohne `--demo` vorerst eine leere Quelle mit leerem Zustand; den echten Client bindet E1.3 an.
 - Leerer Zustand: „Nothing for you right now.“
-- **API/MCP:** nutzt E1.1.
+- **API/MCP:** kommt über E1.1/E1.3; die App schickt nur, was `InboxSource` anbietet.
 - **Abnahme:** `torro-design-review` in allen Größen, hell und dunkel; Tests der Nachrichten.
 
 ### E3.2 Abarbeiten mit der Tastatur
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E3.1 · **Dateien:** `crates/torroinbox/src/{app,keys}.rs`
 - `j`/`k` bewegen, `Enter` öffnen, `e` erledigt, `u` rückgängig (Hinweis 5 s), `s` vertagen (Later today,
   Tomorrow, Next week, Pick…), `m` Quelle stumm (mit Nachfrage), `l` Spur wechseln (fragt „Always for
   this source?“). Alles auch mit der Maus.
 - `Enter` öffnet bis E2.4 nur `http`/`https`-Links im Browser; mit E2.4 geht es über `inbox.open_item`.
+- Läuft mit der Demo-Quelle, bevor der Kern steht.
 - **API/MCP:** nutzt `inbox.set_item_done`, `snooze_item`, `set_item_lane`, `mute_source`.
 - **Abnahme:** Tests je Taste, Rückgängig.
 
-### E3.3 Mini, Leiste und Tray
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** E3.1, A.8 (gleiche Tray-Datei) · **Dateien:** `crates/torroinbox/src/glance.rs` (neu),
-  `crates/torroinbox/src/app.rs`, `crates/torroworkplace/src/tray/linux.rs`
-- Mini/Leiste: „3 for you“ und die drei obersten Einträge; Dringendes hervorgehoben (Design-Regel:
-  nicht in Torro-Rot).
+### E3.2b Feinschliff nach der Design-Prüfung von E3.1
+- [x] erledigt (zweite Prüfung: alte Befunde behoben, neue in E3.2c)
+- **Modell:** Opus · **Braucht:** E3.2 · **Dateien:** `crates/torroinbox/src/{app,list,detail}.rs`
+- Aus der Prüfung am 2026-10-11 (Bilder: Scratchpad `review-inbox/`):
+  - **Muss:** Kein hart abgeschnittener Text. Vorschau nur, wenn neben dem Titel genug Platz ist
+    (etwa 120 px), sonst weglassen; in Schmal zweizeilige Zeilen (Titel oben, Vorschau darunter in META).
+  - **Muss:** Dringendes nicht nur über die Farbe. „For me“ gruppiert wie torrotasks
+    („Waiting for you“ / „Earlier“, Gruppenkopf) oder ein Status-Punkt mit Wort vor der Zeit.
+  - **Muss:** Fehlertext als ganzer Satz, z. B. Titel „Couldn't load the inbox.“ und darunter leise der Grund.
+  - **Soll:** Liste in Breit links bündig wie die Schwester-Apps (mit offenem Paneel Breite `LIST`), nicht
+    mittig; in der Leiste (Rail) die Quellen weglassen oder unterscheidbar machen; Zahlen der Quellen nur
+    für die gezeigte Spur oder als „offen insgesamt“ erkennbar; im Kopf nur die Zahl statt „6 for you“;
+    im Freigabe-Paneel den Hinweis zu Allow/Deny direkt über die Knöpfe; leerer Zustand mit Symbol.
+  - **Schön:** „until Wed, 14 Oct“ bei Vertagtem; im Paneel zusätzlich die relative Zeit.
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne Muss-Befund; Bilder mit Fenster ganz auf dem Bildschirm
+  (die weißen Streifen der ersten Prüfung kamen vom Fenster über dem Bildschirmrand).
+
+### E3.2c Zweite Design-Prüfung: Nacharbeit
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** E3.2b · **Dateien:** `crates/torroinbox/src/{app,list,detail}.rs`,
+  `crates/torro-gui/src/theme.rs` (nur ein neues Token `size::ROW_TWO`), `crates/torro-gui/src/panel.rs`
+  (nur der Durchschein-Fehler)
+- Aus der Prüfung am 2026-10-12 (Bilder: Scratchpad `review-e32b/`):
+  - **Muss:** Zweizeilige Zeilen (Schmal, Mini) bekommen eigene Höhe `size::ROW_TWO` (52), `row_span`
+    rechnet damit; die Zeit steht auf der Zeile des Titels.
+  - **Muss:** In Schmal scheint der Auswahlbalken der Liste links durch das darübergelegte Paneel (und bei
+    Skalierung 1,6 eine Pixelspalte bei x=0). Das Paneel deckt dort die ganze Breite deckend ab.
+  - **Muss:** Stummschalten ohne Dialog und ohne roten Knopf: sofort stumm, mit dem Hinweis „Muted ·
+    Undo“ wie bei den anderen Änderungen (Regel: bestätigen *oder* rückgängig, nicht beides).
+  - **Soll:** Breit mit offenem Paneel: Liste füllt bis `CONTENT_MAX` statt `LIST` (keine 490 px Lücke).
+  - **Soll:** Vertagen-Menü zeigt die Zeit („13:30“, „Wed 09:00“) leise vor dem Tastenhinweis; die Auswahl
+    nennt im Titel das volle Datum, nicht zweimal den Tag, Knopf rechts wie im Dialog.
+  - **Soll:** Zahl im Kopf (Mittel) direkt am Menüknopf; Spur-Knopf im Paneel mit Wort („Move to Info“)
+    in Breit und Mittel; Fehlerzeile mit Symbol in Fehlerfarbe und Text in TEXT_2.
+  - **Schön:** Befehle in der Meldung nicht am „--“ umbrechen; Symbol im leeren Zustand größer (Token).
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne Muss-Befund.
+
+### E3.3a Mini und Leiste
+- [x] erledigt (offen aus der Prüfung: Ladefehler in Mini/Leiste zeigt noch die große Fehleransicht statt einer ruhigen Kachel)
+- **Modell:** Opus · **Braucht:** E3.2c · **Dateien:** `crates/torroinbox/src/glance.rs` (neu),
+  `crates/torroinbox/src/{app,main}.rs` (nur `mod` und Umschalten der Ansicht)
+- Mini/Leiste sind Anzeigen, keine Mini-Apps (Design-Regel): „3 for you“ und die drei obersten Einträge
+  mit Quellen-Symbol; Dringendes hervorgehoben (nicht in Torro-Rot); leer: ruhiger Satz. Klick öffnet die
+  App groß bzw. den Eintrag (wie die Glance-Ansichten von torrotasks und torrocalendar).
+- **API/MCP:** keine; liest über `InboxSource`.
+- **Abnahme:** `torro-design-review` für Mini und Leiste, hell und dunkel; Tests der Nachrichten.
+
+### E3.3b Tray-Zahl
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** E1.2, A.8 (gleiche Tray-Datei) · **Dateien:**
+  `crates/torroworkplace/src/tray/linux.rs`
 - Tray: **eine** Zahl für offene Einträge „für mich“ (Freigaben sind jetzt Einträge, die Zahl aus A.8
   geht darin auf), Untermenü mit den fünf neuesten, „Open Inbox“.
-- **Abnahme:** Sichtprüfung Mini/Leiste; Test der Tray-Zahl.
+- **Abnahme:** Test der Tray-Zahl.
 
 ### E3.4 Desktop-Benachrichtigungen und Ruhe
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** E1.2, E2.1, offener Punkt 2 · **Dateien:** `crates/torroworkplace/src/{notify,inbox}.rs`,
+- [x] erledigt (Popups in `inbox_notify.rs`; Freigaben fragen weiter nur über `approvals.rs`; Klick öffnet `torroinbox`, zum Eintrag springen fehlt noch ein Kanal zur App; `Event::transparency` aus `TRANSP`; Einstellung `quiet_when_busy` über `settings.set_setting`)
+- **Modell:** Opus · **Braucht:** E1.2, E2.1 (Feld `TRANSP` freigegeben 2026-10-12) · **Dateien:** `crates/torroworkplace/src/{notify,inbox}.rs`,
   `crates/torro-core/src/settings.rs`, bei Punkt 2 zusätzlich `crates/torro-pim/src/*` und
   `crates/torro-pim-caldav/src/ical.rs` (nennen)
 - Popups nur für „für mich“, Dringendes mit Ton. Knöpfe: „Done“, „Snooze 1 h“, Freigaben „Allow“/„Deny“;
@@ -291,8 +461,8 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   dringend; Sammelmeldung danach; Bündeln ab vier.
 
 ### E3.5 Zur Aufgabe machen
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** E3.2, P.2 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+- [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9; Rückweg: `link.id = inbox:<id>`, Webseite als `url`, Text als Beschreibung; Freigabe über das `confirm` des Clients wie bei jedem Write)
+- **Modell:** Opus · **Braucht:** E3.2, E1.2, P.2 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torroworkplace/src/{core,inbox,mcp}.rs`, `crates/torroinbox/src/app.rs`, `docs/api-reference.md`
 - **Oberfläche:** Taste `t` öffnet einen kleinen Dialog (Titel vorbelegt, Liste, Fälligkeit). Die
   Aufgabe bekommt den Link des Eintrags (Feld aus P.2), der Eintrag ist danach erledigt.
@@ -305,7 +475,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   ausgeblendete Liste → `not-found`.
 
 ### E3.6 In die Suite aufnehmen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** E3.1 · **Dateien:** `crates/torroworkplace/src/apps.rs`,
   `crates/torroinbox/src/main.rs`, `docs/app-catalog.md`
 - Startbar aus Tray und Steuerzentrale (Apps), Fensterklasse `torro-inbox`, Argumente `--lane` und
@@ -314,8 +484,8 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **Abnahme:** App startet aus dem Tray; Vorlage mit `--lane info` stellt das Fenster wieder her.
 
 ### E3.7 Steuerzentrale: Seite „Inbox“
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** E3.1, E3.4 · **Dateien:** `crates/torroworkplace/src/ui/inbox.rs` (neu),
+- [x] erledigt (zusätzlich `ui/launch.rs` für Demo-Regeln und `--open inbox|inbox-empty`; „Remove“ ohne Rückfrage, weil nichts verloren geht und die Regel in der Inbox mit einem Griff wiederkommt)
+- **Modell:** Sonnet · **Braucht:** E1.2, E3.4 · **Dateien:** `crates/torroworkplace/src/ui/inbox.rs` (neu),
   `crates/torroworkplace/src/ui/mod.rs`
 - **Oberfläche:** Gruppe „Notifications“ mit „Quiet during busy events“; Gruppe „Rules“ mit gemerkten
   Spur-Regeln und stummen Quellen, je mit „Remove“.

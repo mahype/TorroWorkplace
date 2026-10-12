@@ -22,6 +22,7 @@
 
 pub mod api;
 pub mod client;
+pub mod inbox;
 pub mod pim;
 pub mod server;
 
@@ -35,7 +36,8 @@ use torro_core::AppId;
 pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
-use torro_pim::{AccountState, Collection, Event, Todo};
+use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
+use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
@@ -253,7 +255,8 @@ pub enum Request {
     /// The task lists the suite shows, i.e. the collections with todos that are not hidden
     /// ([`Response::Collections`]). A collection with both appears in both lists. The GitHub
     /// filter lists are task lists too (`writable: false`, their definition in `source`); a
-    /// client sees them only with read access to `github`.
+    /// client sees them only with read access to `github`. Not writable means no new or deleted
+    /// tasks: ticking one of their issues still works ([`Request::SaveTodo`], task G.5).
     #[serde(rename = "tasks.list_lists")]
     TaskCollections,
     /// Events overlapping `[start, end)`.
@@ -271,6 +274,24 @@ pub enum Request {
     /// Creates (`href: None`) or updates; answered with [`Response::Todo`]. `collection` must be
     /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
     /// another calendar of the same account; moving to another account fails with `unsupported`.
+    ///
+    /// A link to a GitHub issue ([`Request::AddLink`]) in a writable list: changing `completed`
+    /// closes (reopens) the issue too, after the task is stored, for a client only with write
+    /// access to `github` and the issue's repository in its selection (else only the task
+    /// changes). The answer then carries the issue's new state in `link.github`. A client that
+    /// sets or changes a `link` without read access to `github` gets `forbidden` (the core would
+    /// fill in the item's title from GitHub, task G.6b), one to a repository outside its selection
+    /// `not-found`; both before anyone is asked to approve it. The core brings links in step with
+    /// GitHub only in the user's private lists (their own, writable by nobody else); in other lists
+    /// a link stays as written.
+    ///
+    /// Marking a GitHub issue in a filter list done closes it on GitHub (reopening reopens it);
+    /// pull requests are never closed; other fields of a GitHub match cannot be changed (task
+    /// G.5). Those are `unsupported`, as is a new task in a filter list; a stale `etag` is
+    /// `conflict`. The answer is the issue as GitHub reports it afterwards. A client needs write
+    /// access to `github` (else `forbidden`) and the issue's repository in its selection (else
+    /// `not-found`). GitHub's refusals: `auth` (token refused), `forbidden` (the token may not
+    /// write issues), `not-found`, `offline`, `error`; without a token `not-connected`.
     #[serde(rename = "tasks.save_todo")]
     SaveTodo { todo: Todo },
     #[serde(rename = "tasks.delete_todo")]
@@ -304,7 +325,9 @@ pub enum Request {
     // GitHub filter lists (task G.2, `docs/github.md`). Granted in the area `github`: for a client
     // key the core also filters every issue and pull request by its repository
     // (`api::Rights::github_repos`) before it reads it further, and the list itself must be in
-    // its `task_lists`.
+    // its `task_lists`. A client limited to some repositories has each search checked before
+    // GitHub is asked (task G.2b, `torro_pim_github::scope::confined`), sees only lists whose
+    // searches all pass that check, and gets fixed messages instead of GitHub's own.
     /// Creates a filter list of the GitHub account `account`: saved GitHub searches whose matches
     /// the core keeps as a task list (`github:<login>/<list-id>`, not writable), fetched whole now,
     /// every five minutes and on `accounts.sync`. Answered with [`Response::Collection`]: the
@@ -312,7 +335,10 @@ pub enum Request {
     /// is kept. A new list is never added to a client's selection of task lists, and list ids
     /// are never handed out twice. Codes: `not-found` for an account that is no connected GitHub
     /// account, `error` for an empty name, a colour that is not `#RRGGBB`, no search, more than
-    /// ten, or an address that is no issue list.
+    /// ten, or an address that is no issue list, `forbidden` (nothing stored, GitHub not asked)
+    /// for a client limited to some repositories when a search might reach beyond them: each
+    /// search needs a `repo:owner/name`, `org:owner` or `user:owner` the client was granted, no
+    /// other positive one (`-repo:` is fine), and no `OR`, `NOT` or parentheses.
     #[serde(rename = "tasks.create_filter_list")]
     CreateFilterList {
         /// The GitHub account, `github:<login>` as `accounts.list_accounts` lists it.
@@ -357,9 +383,12 @@ pub enum Request {
         collection: String,
     },
     /// Runs searches of the GitHub account `account` without saving anything, to try them before
-    /// creating or changing a list. Answered with [`Response::FilterPreview`]. Codes as
-    /// [`Request::CreateFilterList`], plus `auth` and `offline` when GitHub refuses the token or
-    /// cannot be reached.
+    /// creating or changing a list: one call to GitHub per search. Answered with
+    /// [`Response::FilterPreview`]. Codes as [`Request::CreateFilterList`] (`forbidden` for a
+    /// search outside a client's repositories, before GitHub is asked), plus `not-connected` when
+    /// the account has no token on this device, `auth` and `offline` when GitHub refuses the
+    /// token or cannot be reached, and `error` when GitHub cannot run a search (for a client with
+    /// a fixed message, never GitHub's own).
     #[serde(rename = "tasks.preview_filter")]
     PreviewFilter {
         /// The GitHub account, `github:<login>`.
@@ -377,6 +406,37 @@ pub enum Request {
         collection: String,
         /// The item: its address on github.com, `owner/repo#12` or its link id
         /// (`github:owner/repo#12`) as `source.pinned` lists it.
+        url: String,
+    },
+    /// Adds the GitHub issue or pull request `url` to the task list `collection` (task G.6,
+    /// `docs/github.md`, "Verweis"). Answered with [`Response::Todo`]: the item as the list holds
+    /// it now, with what GitHub reports in `link.github`.
+    ///
+    /// - A **GitHub filter list**: the item is pinned (the list's revision goes up by one) and the
+    ///   list fetched again; pinned already, nothing changes.
+    /// - A **writable task list**: a *link*, a task (VTODO) with `url`, `link` (only its id,
+    ///   `X-TORRO-LINK`) and GitHub's title, done when the item is closed or merged, written like
+    ///   [`Request::SaveTodo`]. One link per item and list: when the list has one already, that one
+    ///   is the answer. From then on the core takes title and state from GitHub on every refresh
+    ///   (closed or merged = done; never the other way round) and leaves due date, priority, order
+    ///   and sub-tasks alone. Ticking it with `tasks.save_todo` closes an issue on GitHub as well
+    ///   (unticking reopens it), never a pull request.
+    ///
+    /// Codes: `error` when `url` names no issue or pull request (for a client before anyone is
+    /// asked to approve it); `not-found` for a list that does
+    /// not exist (or that a client may not see), an item GitHub does not have or the token cannot
+    /// reach, and for a client an item outside its repositories (`api::Rights::github_repos`,
+    /// GitHub is not asked then); `forbidden` for a client without read access to `github` (to
+    /// pin: write access); `not-connected` when no GitHub account has a token on this device;
+    /// `auth`, `offline` when GitHub refuses the token or cannot be reached; a read-only Nextcloud
+    /// list and failed writes as in [`Request::SaveTodo`].
+    #[serde(rename = "tasks.add_link")]
+    AddLink {
+        /// Id of the task list (`<account-id>/<list URL>`) or GitHub filter list
+        /// (`github:<login>/<list-id>`) from `tasks.list_lists`.
+        collection: String,
+        /// The item: its address on github.com (`https://github.com/owner/repo/issues/12`,
+        /// `…/pull/12`), `owner/repo#12` or its link id `github:owner/repo#12`.
         url: String,
     },
 
@@ -429,14 +489,23 @@ pub enum Request {
     ListClients,
     /// Connects a new client with the rights of `template` and answers with
     /// [`Response::ClientKey`], the only time its key leaves the core. An empty `name` or `kind`
-    /// is `error`.
+    /// is `error`, so is a hook client without `agent` or another kind with one. A `script`
+    /// client named `cli` or like another script client is `conflict`: its name is its inbox
+    /// source (`script:<name>`), and the app key reports as `script:cli`.
     #[serde(rename = "clients.create_client")]
     CreateClient {
         /// What the person calls it: `Claude Code`.
         name: String,
-        /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor` or `script`.
+        /// Which program: `claude-code`, `codex`, `claude-desktop`, `cursor`, `script`, or `hook`
+        /// for the hooks of coding agents ([`api::HOOK_CLIENT`]), which may only report to the
+        /// inbox ([`api::Rights::for_kind`]).
         kind: String,
         template: RightsTemplate,
+        /// Only and always with kind `hook`: the coding agent whose hooks use the key. It is
+        /// fixed for the client's life; the inbox files every report of the key under this agent
+        /// and refuses reports that name another one ([`api::post_source`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentKind>,
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
@@ -451,6 +520,283 @@ pub enum Request {
     /// [`Response::Ok`]; an unknown id is `not-found`.
     #[serde(rename = "clients.remove_client")]
     RemoveClient { id: String },
+    /// The latest requests of the client `id` from the core's audit log (`audit.jsonl`, task
+    /// A.5), newest first, at most 50: time, command, the ids it named and its result, never a
+    /// content ([`Response::Activity`]). An unknown id is `not-found`; an unreadable log is
+    /// `error`.
+    #[serde(rename = "clients.activity")]
+    ClientActivity { id: String },
+
+    // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). A client command that needs
+    // a person's approval is answered with [`Response::Pending`]; the core keeps it in
+    // `approvals.json` (state directory, 0600) for ten minutes.
+    /// The approvals of the caller ([`Response::Approvals`]): open ones and those decided or expired
+    /// within the last day, newest first. A client key sees only its own; the app key sees all.
+    #[serde(rename = "approvals.list_approvals")]
+    ListApprovals,
+    /// One approval ([`Response::Approval`]): whether it still waits, was denied or expired, or
+    /// ran, then with the command's answer. `not-found` for an unknown id, one of another client,
+    /// or one gone after a day.
+    #[serde(rename = "approvals.approval_status")]
+    ApprovalStatus {
+        /// The id from the `pending` answer or from `approvals.list_approvals`.
+        id: String,
+    },
+    /// A person allows or denies an approval. Allowed, the command runs now with the client's
+    /// rights and collections of this moment (they may have changed while it waited), and its
+    /// answer is kept in the approval. Answered with [`Response::Approval`] as decided; `not-found`
+    /// for an unknown id, `conflict` for one that is no longer open (decided or expired). Only the
+    /// app key may send it: a client key gets `forbidden`, so no agent approves itself.
+    #[serde(rename = "approvals.decide_approval")]
+    DecideApproval {
+        /// The id of the approval.
+        id: String,
+        /// `true` runs the command, `false` drops it.
+        allow: bool,
+    },
+    /// Asks the person whether the caller may use a tool, as a coding agent's `PermissionRequest`
+    /// hook does (task E2.5): "Claude Code wants to use Bash in my-project: cargo test". The
+    /// question is an approval of its own kind: it always waits for the person, whatever the
+    /// client's rights say, and is answered with [`Response::Pending`] at once. It expires after
+    /// about half a minute (30 s and a little slack), not ten minutes, because the agent asks in
+    /// its own terminal after that.
+    ///
+    /// The person answers like any approval: in the inbox, the control centre, the notification
+    /// or with `ctl allow|deny`, all with the app key. Allowing runs nothing in Torro Workplace; it
+    /// only answers the question. Read the answer with `approvals.approval_status`: `done` with an
+    /// `ok` response is "allowed", `denied` is "denied", `expired` is "nobody answered". A client
+    /// reads only its own questions, a hook client too (and nothing else).
+    ///
+    /// The core writes the question itself: who asks is the client's agent (a hook client's agent
+    /// or the client's name), then `tool`, `project` and `details`, made harmless (no control or
+    /// invisible format characters) but never shortened, so the person sees exactly what would
+    /// run. Errors: `error` for a `tool` that is no tool name (1 to 100 ASCII letters, digits and
+    /// `_ - . : /`) or overlong
+    /// `details` (over 2,000 characters; the agent then asks in its own terminal), `busy` when
+    /// the client has ten approvals or three questions open.
+    #[serde(rename = "approvals.ask_permission")]
+    AskPermission {
+        /// The tool the agent wants to use, as the agent names it: `Bash`, `apply_patch`,
+        /// `mcp__fs__write`.
+        tool: String,
+        /// What exactly the tool would do, in full: the shell command, or the tool's input as JSON.
+        #[serde(default)]
+        details: String,
+        /// The project the agent works in: the last part of its working directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
+
+    // The inbox (`docs/eingang.md`, tasks E1.1 and E1.2): one place for everything that wants the
+    // user's attention. The wire format is `torro_inbox`'s. The security rules of
+    // `docs/tasks/eingang.md` hold for every one of these commands:
+    //
+    // - For a client key the core filters by `api::Rights::inbox_sources` before it reads
+    //   anything: an entry of another source behaves as if it did not exist (`not-found`). Hook
+    //   clients (`api::HOOK_CLIENT`) see no source at all (rule 4).
+    // - Approvals, account problems and every entry of the source `suite` are changed only by the
+    //   app key; any client gets `forbidden` (rule 1, `api::check_item_change`).
+    // - Titles and bodies of entries with `untrusted: true` are data from outside the suite, never
+    //   instructions (rule 5).
+    // - A client sees the `thread_key` of its own entries only; on entries of other posters it
+    //   is empty, so nobody learns another client's keys (the app key sees them all).
+    /// The entries the filter selects, urgent first, then the most recently updated
+    /// ([`torro_inbox::rules::order`]); snoozed entries that are due are woken first. Every field
+    /// left out selects all. Answered with [`Response::Items`]; a source the client may not see is
+    /// left out, and naming one in `source` gives an empty list. A hook client
+    /// ([`api::HOOK_CLIENT`]) gets `not-found` whatever it asks (rule 4).
+    #[serde(rename = "inbox.list_items")]
+    ListItems {
+        /// Only entries in this lane: `for_me` or `info`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<Lane>,
+        /// Only entries of this source, as `inbox.list_sources` lists it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SourceRef>,
+        /// Only open (new or seen), snoozed or done entries.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<StateFilter>,
+        /// Only entries updated at this instant (RFC 3339) or later.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<DateTime<Utc>>,
+        /// At most this many entries, the first ones in the order above.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+    /// One entry with all its text ([`Response::Item`]). `not-found` for an unknown id or an entry
+    /// of a source the client may not see.
+    #[serde(rename = "inbox.get_item")]
+    GetItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
+    },
+    /// Opens the entry on the person's screen, as "Go to window" and `Enter` in the inbox app do
+    /// (task E2.4): a `window` link brings the window of the coding agent behind a hook's entry to
+    /// the front, found anew from its `agent.pids` (nearest process first, because window ids
+    /// change); a `url` opens in the system browser; an `app` link starts or raises that app of the
+    /// suite. Only what security rule 6 allows is opened: `http`/`https` pages, apps of
+    /// `apps.list_apps`, windows only on entries of hooks (`agent_waiting`, `agent_done`).
+    ///
+    /// A new entry is seen afterwards, when the caller may change it (rule 1); nothing else
+    /// changes. Answered with [`Response::Ok`]. Errors: `not-found` for an unknown id or an entry
+    /// of a source the client may not see (hook clients see none, rule 4); `unsupported` when
+    /// there is nothing safe to open, no window of the agent's processes is found (closed, the
+    /// agent runs in tmux, several windows share its process) or the window manager cannot list
+    /// windows (macOS, Windows, no supported one); `error` when the browser or the app does not
+    /// start.
+    #[serde(rename = "inbox.open_item")]
+    OpenItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
+    },
+    /// Turns the entry into a task in the task list `collection` and marks the entry done (task
+    /// E3.5), as `t` and "Make task" in the inbox app do. Answered with [`Response::Todo`]: the
+    /// new task as stored, with its `href` and `etag` for later changes through
+    /// `tasks.save_todo`.
+    ///
+    /// The task gets `title` (the entry's title when it is left out or blank), `due`, the
+    /// entry's `body` as description (plain text, as it came), the entry's web page as `url`
+    /// when it has an `http`/`https` link, and `link.id = "inbox:<entry id>"` as the way back to
+    /// the entry. The entry is done only once the task was saved; a task that cannot be saved
+    /// leaves the entry as it is.
+    ///
+    /// The command is granted in the area `inbox` (Write), but it writes a task too, so the core
+    /// checks the client's tasks rights itself, in this order: write access in `tasks`
+    /// (`forbidden`), then the list (`not-found` when it is hidden, outside the client's
+    /// `task_lists` or unknown, as for `tasks.save_todo`), then the entry (`not-found` for an
+    /// unknown id or a source the client may not see, `forbidden` for approvals, account problems
+    /// and the suite's entries, rule 1). It waits for a person's approval when the client's
+    /// `confirm` asks for it on writes ([`Response::Pending`]); the core checks everything again
+    /// when it runs. Errors from the server as for `tasks.save_todo` (`unsupported` for a GitHub
+    /// filter list, `conflict`, `offline` …).
+    #[serde(rename = "inbox.create_task_from_item")]
+    CreateTaskFromItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
+        /// The task list's id from `tasks.list_lists`.
+        collection: String,
+        /// The task's title; left out or blank: the entry's title.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// When the task is due, a day or an instant; left out: no due date.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        due: Option<EventTime>,
+    },
+    /// The sources with entries or muted, with their number of open entries and whether they are
+    /// muted, for the sidebar ([`Response::Sources`]); only those the client may see.
+    #[serde(rename = "inbox.list_sources")]
+    ListSources,
+    /// Reports something to the inbox; answered with [`Response::Posted`].
+    ///
+    /// The core decides the source from the client that posts, never from the post (rule 2,
+    /// [`api::post_source`]), and keeps every client's `thread_key`s apart, so a client merges into
+    /// and resolves only its own entries. A report with the `thread_key` of an open or done entry
+    /// is merged into it ([`torro_inbox::rules::merge`]); without `thread_key` it is an entry of
+    /// its own. A muted source's report is dropped (`id: null`).
+    ///
+    /// The kind decides lane and urgency ([`torro_inbox::rules::placement`]); nobody makes an
+    /// entry urgent. `approval` and `account_problem` come only from the core: `forbidden`.
+    /// `agent_waiting` and `agent_done` are taken only from hook clients; from any other key they
+    /// become a `notice` ([`api::admit_post`], rule 3). A hook client reports only for the agent
+    /// it was created for ([`ClientInfo::agent`]); `agent` naming another one is `forbidden`.
+    ///
+    /// Limits: `title` is cut to 200 and `body` to 4000 characters (ending in "…"); a
+    /// `thread_key` over 200 bytes or a URL over 2000 bytes is `error`. Of `agent`, `session`,
+    /// `project` and `branch` are cut to 200 bytes and `pids` to the first 16. Dropped without
+    /// error: `agent` and a `window` link from any key but a hook, a URL that is not `http` or
+    /// `https`, and an `app` link to no app of the suite. Like every write, a post may wait for a
+    /// person's approval ([`Response::Pending`]) when the client's rights ask for it. Error codes:
+    /// `forbidden`, `busy` (too many new entries in the last hour), `error` (an empty title, a
+    /// limit above).
+    #[serde(rename = "inbox.post_item")]
+    PostItem {
+        /// `notice` for anything a script or agent reports; `agent_waiting` and `agent_done` from
+        /// hooks of coding agents.
+        kind: Kind,
+        /// One line for the list.
+        title: String,
+        /// More text for the detail panel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+        /// What "Open" does: a web page (`http`, `https`), an app of the suite, or the agent's
+        /// window (only on entries of hooks).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        link: Option<Link>,
+        /// The lane a `notice` goes to; leave out for `info`. Other kinds have a fixed lane.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lane: Option<Lane>,
+        /// Groups reports of one matter, e.g. `build:main`: a new report merges into the entry and
+        /// brings a done one back. Leave out for an entry of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thread_key: Option<String>,
+        /// Session, project and processes of a coding agent; sent by hooks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentInfo>,
+    },
+    /// The matter of `thread_key` went away: the caller's own open entries with it are done
+    /// (`torroworkplace hook` sends it when an agent goes on). Entries of other clients are never
+    /// touched, and nothing tells them apart from none. Answered with [`Response::Ok`]; a
+    /// `thread_key` over 200 bytes is `error`.
+    #[serde(rename = "inbox.resolve_items")]
+    ResolveItems {
+        /// The `thread_key` the caller posted with.
+        thread_key: String,
+    },
+    /// Marks the entry done, or open again with `done: false` ([`torro_inbox::rules::set_done`]).
+    /// Answered with [`Response::Item`] as stored; `not-found`, `forbidden` (rule 1).
+    #[serde(rename = "inbox.set_item_done")]
+    SetItemDone {
+        /// The entry's id.
+        id: String,
+        /// `true` marks it done, `false` opens it again.
+        done: bool,
+    },
+    /// Puts the entry off until `until`, or takes it back without ([`torro_inbox::rules::snooze`]).
+    /// Answered with [`Response::Item`] as stored; `not-found`, `forbidden` (rule 1).
+    #[serde(rename = "inbox.snooze_item")]
+    SnoozeItem {
+        /// The entry's id.
+        id: String,
+        /// When it comes back (RFC 3339); leave out to stop snoozing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<DateTime<Utc>>,
+    },
+    /// Moves the entry to `lane` ([`torro_inbox::rules::set_lane`]). With `remember` the core also
+    /// keeps the lane for later notices of the entry's source (a rule, `inbox.list_rules`); that
+    /// needs the admin switch, so [`Request::operation`] asks for [`api::Access::Admin`] then.
+    /// Answered with [`Response::Item`] as stored; `not-found`, `forbidden` (rule 1).
+    #[serde(rename = "inbox.set_item_lane")]
+    SetItemLane {
+        /// The entry's id.
+        id: String,
+        /// `for_me` or `info`.
+        lane: Lane,
+        /// Also put later notices of this source into `lane`.
+        #[serde(default)]
+        remember: bool,
+    },
+    /// Mutes the source (its new reports are dropped from then on) or unmutes it; entries already
+    /// there stay. A lasting rule. Answered with [`Response::Ok`]; `not-found` for a source the
+    /// client may not see, `not-found` for `suite`, which no client key sees (rule 1).
+    #[serde(rename = "inbox.mute_source")]
+    MuteSource {
+        /// The source, as `inbox.list_sources` lists it.
+        source: SourceRef,
+        /// `true` mutes, `false` unmutes.
+        muted: bool,
+    },
+    /// The lasting rules: lanes remembered for sources and muted sources ([`Response::Rules`]),
+    /// only of sources the client may see.
+    #[serde(rename = "inbox.list_rules")]
+    ListRules,
+    /// Removes a rule; a removed mute lets the source's reports in again. Answered with
+    /// [`Response::Ok`]; `not-found` for an unknown id or a rule of a source the client may not
+    /// see, `not-found` for a rule about `suite`, which no client key sees (rule 1).
+    #[serde(rename = "inbox.remove_rule")]
+    RemoveRule {
+        /// The rule's id from `inbox.list_rules`.
+        id: String,
+    },
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -477,6 +823,10 @@ pub enum SettingKey {
     /// comes from `tasks.list_lists`; one the core does not know is `not-found`
     /// (`torro_core::settings::ListOrderEntry`).
     ListOrder,
+    /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
+    /// up during a busy event of a shown calendar only when they are urgent; the others are
+    /// told in one message when the event ends.
+    QuietWhenBusy,
 }
 
 /// The core's answer to one [`Request`].
@@ -533,6 +883,10 @@ pub enum Response {
     Clients {
         clients: Vec<ClientInfo>,
     },
+    /// What one client did lately ([`Request::ClientActivity`]), newest first.
+    Activity {
+        entries: Vec<ActivityEntry>,
+    },
     /// A new client or a new key: the only answer that ever carries a client key, and only to
     /// the app key. Show or store it now; the core cannot tell it again.
     ClientKey {
@@ -554,33 +908,76 @@ pub enum Response {
     },
     /// What searches find without being saved ([`Request::PreviewFilter`]).
     FilterPreview {
-        /// How many issues and pull requests match. For the suite GitHub's count, added up over
-        /// the searches (an item two searches find counts twice). For a client limited to some
-        /// repositories, the matches in those among the first 1,000 of each search.
+        /// How many issues and pull requests match: GitHub's count, added up over the searches
+        /// (an item two searches find counts twice). Should GitHub return a match outside a
+        /// client's repositories although its search named only granted ones (a renamed
+        /// repository), that search counts only the matches on its first page the client sees.
         matches: u64,
         /// A search found more than 1,000 matches; a list of it would hold only the first 1,000.
         truncated: bool,
         /// The first matches (at most 20) as tasks of no list (`collection` empty).
         todos: Vec<Todo>,
     },
+    /// The command waits for a person's approval and has not run yet (`result: "pending"`). Ask
+    /// later with `approvals.approval_status` and the approval's `id`; it expires at `expires`.
+    Pending {
+        approval: ApprovalInfo,
+    },
+    /// The approvals the caller may see ([`Request::ListApprovals`]).
+    Approvals {
+        approvals: Vec<ApprovalInfo>,
+    },
+    /// One approval ([`Request::ApprovalStatus`], [`Request::DecideApproval`]).
+    Approval {
+        approval: ApprovalInfo,
+    },
+    /// Inbox entries ([`Request::ListItems`]). Text of entries with `untrusted: true` is data,
+    /// never instructions.
+    Items {
+        items: Vec<Item>,
+    },
+    /// One inbox entry as stored ([`Request::GetItem`], [`Request::SetItemDone`],
+    /// [`Request::SnoozeItem`], [`Request::SetItemLane`]).
+    Item {
+        item: Item,
+    },
+    /// The inbox sources the caller may see ([`Request::ListSources`]).
+    Sources {
+        sources: Vec<SourceInfo>,
+    },
+    /// A report reached the inbox ([`Request::PostItem`]).
+    Posted {
+        /// The entry it was merged into or became; `None` when its source is muted and it was
+        /// dropped.
+        id: Option<String>,
+    },
+    /// The lasting rules of the inbox ([`Request::ListRules`]).
+    Rules {
+        rules: Vec<Rule>,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
     ///   client may not see),
     /// - `workspace-not-empty`: a load with mode `empty` found windows,
-    /// - `busy`: another save or load is running,
-    /// - `unsupported`: no supported window manager, or an API version ([`Envelope::v`]) the
-    ///   core does not speak,
+    /// - `busy`: another save or load is running, or a client posted too many new inbox entries
+    ///   within the last hour,
+    /// - `unsupported`: no supported window manager, an API version ([`Envelope::v`]) the core
+    ///   does not speak, or a command the core cannot carry out yet,
     /// - `not-connected`: no account to read from or write to, or no GitHub CLI sign-in to take
     ///   over,
     /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
     ///   or the item changed there meanwhile,
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
     /// - `forbidden`: the client's rights do not cover the command, it is for the app key only
-    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`), or it would need a
-    ///   person's approval, which the core cannot ask for yet,
-    /// - `pending`: the command waits for a person to approve it,
+    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`,
+    ///   `approvals.decide_approval`), it needs a person's approval that the core could not
+    ///   record (`approvals.json` cannot be written), or a security rule of the inbox refuses it
+    ///   (a client changing an approval or an entry of the suite, or posting an approval),
     /// - `error`: anything else.
+    ///
+    /// A command that waits for a person's approval is no error: it is answered with
+    /// [`Response::Pending`] (`result: "pending"`).
     Error {
         code: String,
         message: String,
@@ -639,12 +1036,98 @@ pub struct ClientInfo {
     pub id: String,
     /// `Claude Code`
     pub name: String,
-    /// `claude-code`, `codex`, `claude-desktop`, `cursor` or `script`.
+    /// `claude-code`, `codex`, `claude-desktop`, `cursor`, `script` or `hook`.
     pub kind: String,
     pub created: DateTime<Utc>,
     /// The last request with its key, to the minute.
     pub last_used: Option<DateTime<Utc>>,
     pub rights: Rights,
+    /// For a hook client ([`api::HOOK_CLIENT`]): the coding agent it reports for, fixed when it
+    /// was created ([`Request::CreateClient`]). `None` for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentKind>,
+}
+
+/// One line of the core's audit log (`audit.jsonl` in its state directory, task A.5): one request
+/// of a client key, or the run of one it asked a person for. It never holds a content: no titles,
+/// names, search terms, texts, thread keys, summaries, requests or answers (`docs/api.md`,
+/// "Protokoll"). Requests of the app key are not logged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEntry {
+    /// When the core answered.
+    pub time: DateTime<Utc>,
+    /// The client ([`ClientInfo::id`]); `None` for a key the core does not know (`unauthorized`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
+    /// The command's catalogue name: `calendar.delete_event`.
+    pub command: String,
+    /// What the command named, each as `kind:value`: `collection:<id>`, `account:<id>`,
+    /// `inbox:<id>`, `approval:<id>`, `client:<id>`, `rule:<id>`, `source:<source>`,
+    /// `setting:<key>`, `app:<binary>`, and `item:<hash>` or `template:<hash>` (16 hex digits of
+    /// a SHA-256) for ids that can carry a readable name (CalDAV hrefs, issue URLs, template ids
+    /// made from the template's name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<String>,
+    /// `ok`, `pending` (waits for a person), `denied` (a person said no), or the error code
+    /// (`forbidden`, `not-found` …).
+    pub result: String,
+    /// The approval the request waits for or ran with ([`ApprovalInfo::id`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<String>,
+}
+
+/// One approval: a client's command that waits for a person, or did.
+///
+/// `summary` says in words what would happen (`Delete event "Team meeting" on Tue, 14 Oct`), in
+/// the language of the core. It holds text the client sent (titles, names), so front ends show it
+/// as plain text and never interpret it (no markup, no links).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalInfo {
+    /// Random id, 16 hex digits: `9c1f0a7e3b2d4c58`.
+    pub id: String,
+    /// The id of the client that sent the command ([`ClientInfo::id`]).
+    pub client: String,
+    /// Its name when it asked: `Claude Code`.
+    pub client_name: String,
+    /// The command's catalogue name: `calendar.delete_event`.
+    pub command: String,
+    pub summary: String,
+    pub created: DateTime<Utc>,
+    /// Ten minutes after `created` (a question of `approvals.ask_permission`: about half a
+    /// minute); an approval still open then expires.
+    pub expires: DateTime<Utc>,
+    /// When a person decided it or it expired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub state: ApprovalState,
+}
+
+/// Where an approval stands; in JSON the field `state`, with `response` once it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "state")]
+pub enum ApprovalState {
+    /// Waits for a person.
+    Pending,
+    /// Allowed; the command runs now.
+    Running,
+    /// Allowed and run. `response` is the command's answer, which can be an error too (for
+    /// `forbidden` when the client's rights no longer cover it, `not-found` for a collection it
+    /// no longer reaches).
+    Done { response: Box<Response> },
+    /// A person said no; the command did not run.
+    Denied,
+    /// Nobody decided in time (ten minutes, a question half a minute); the command did not run.
+    Expired,
+}
+
+impl ApprovalState {
+    /// Still waiting for a person.
+    pub fn is_pending(&self) -> bool {
+        matches!(self, ApprovalState::Pending)
+    }
 }
 
 /// A client key handed out by [`Response::ClientKey`].
@@ -806,6 +1289,7 @@ mod tests {
                 created: Utc::now(),
                 last_used: None,
                 rights: api::RightsTemplate::ReadOnly.rights(),
+                agent: None,
             },
             key: key.clone(),
         };
@@ -814,6 +1298,37 @@ mod tests {
         assert_eq!(key, IssuedKey::new(Key::new("torro_c1_secret")));
         assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secreT")));
         assert_ne!(key, IssuedKey::new(Key::new("torro_c1_secret2")));
+    }
+
+    #[test]
+    fn approvals_carry_their_state_and_the_answer_once_run() {
+        let at = DateTime::parse_from_rfc3339("2026-10-14T09:00:00Z").expect("time").with_timezone(&Utc);
+        let approval = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "c1".into(),
+            client_name: "Claude Code".into(),
+            command: "workspaces.delete_template".into(),
+            summary: "Delete template \"dev\"".into(),
+            created: at,
+            expires: at + chrono::Duration::minutes(10),
+            decided: None,
+            state: ApprovalState::Pending,
+        };
+        let pending = serde_json::to_value(Response::Pending { approval: approval.clone() }).expect("json");
+        assert_eq!(pending["result"], "pending");
+        assert_eq!(pending["approval"]["state"], "pending");
+        assert_eq!(pending["approval"]["clientName"], "Claude Code");
+        assert!(pending["approval"].get("decided").is_none());
+
+        let done = ApprovalInfo {
+            decided: Some(at),
+            state: ApprovalState::Done { response: Box::new(Response::Ok) },
+            ..approval
+        };
+        let json = serde_json::to_value(Response::Approval { approval: done.clone() }).expect("json");
+        assert_eq!(json["approval"]["state"], "done");
+        assert_eq!(json["approval"]["response"], serde_json::json!({"result": "ok"}));
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), Response::Approval { approval: done });
     }
 
     #[test]

@@ -25,6 +25,16 @@ const KEYCHAIN_SERVICE: &str = "torroworkplace";
 /// The file name of the account list in the core's config directory.
 pub const ACCOUNTS_FILE: &str = "accounts.json";
 
+/// The keychain entries of client keys start with this (`client-<id>`, kept by the core next to
+/// the account secrets). No account id may start with it, or an account could overwrite, read out
+/// or delete a client's key.
+pub const RESERVED_ID_PREFIX: &str = "client-";
+
+/// `id` is reserved for client keys ([`RESERVED_ID_PREFIX`]) and never names an account.
+pub fn is_reserved_id(id: &str) -> bool {
+    id.starts_with(RESERVED_ID_PREFIX)
+}
+
 /// What kind of server an account talks to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,7 +164,11 @@ impl Account {
         }
     }
 
+    /// The keychain entry of this account; never one of a client key ([`is_reserved_id`]).
     fn keychain_entry(&self) -> Result<keyring::Entry, AccountError> {
+        if is_reserved_id(&self.id) {
+            return Err(AccountError::ReservedId(self.id.clone()));
+        }
         keyring::Entry::new(KEYCHAIN_SERVICE, &self.id).map_err(|err| AccountError::Keychain(err.to_string()))
     }
 }
@@ -169,6 +183,9 @@ pub enum AccountError {
     Format(serde_json::Error),
     /// The system keychain refused or is not running.
     Keychain(String),
+    /// The account id starts with [`RESERVED_ID_PREFIX`], which belongs to client keys; such an
+    /// account gets no keychain entry.
+    ReservedId(String),
 }
 
 impl fmt::Display for AccountError {
@@ -178,6 +195,7 @@ impl fmt::Display for AccountError {
             AccountError::Io(err) => write!(f, "accounts file: {err}"),
             AccountError::Format(err) => write!(f, "accounts file is damaged: {err}"),
             AccountError::Keychain(err) => write!(f, "keychain: {err}"),
+            AccountError::ReservedId(id) => write!(f, "account id {id:?} is reserved for client keys"),
         }
     }
 }
@@ -192,12 +210,27 @@ pub fn load() -> Result<Vec<Account>, AccountError> {
 /// All accounts in the account list at `path` (an [`ACCOUNTS_FILE`]); an empty list when the
 /// file does not exist. For callers that are handed their config directory, such as the core's
 /// tests, which must never read the user's file.
+///
+/// An account whose id is reserved for client keys ([`is_reserved_id`]) is left out (and named
+/// on stderr): the core never writes one, so it was put there by hand or by another program.
 pub fn load_from(path: &Path) -> Result<Vec<Account>, AccountError> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(AccountError::Format),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(err) => Err(AccountError::Io(err)),
-    }
+    let mut accounts: Vec<Account> = match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map_err(AccountError::Format)?,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(AccountError::Io(err)),
+    };
+    accounts.retain(|account| {
+        let reserved = is_reserved_id(&account.id);
+        if reserved {
+            eprintln!(
+                "torro: ignoring account {:?} in {}: the id is reserved for client keys",
+                account.id,
+                path.display()
+            );
+        }
+        !reserved
+    });
+    Ok(accounts)
 }
 
 /// Replaces the stored accounts. Secrets are not touched.
@@ -267,6 +300,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         saved.expect("saved");
         assert_eq!(read.expect("read"), accounts);
+    }
+
+    #[test]
+    fn account_ids_of_client_keys_are_refused_on_load_and_in_the_keychain() {
+        // A file of our own in the system's temp directory; never the user's list.
+        let path = std::env::temp_dir().join(format!("torro-core-reserved-{}-{ACCOUNTS_FILE}", std::process::id()));
+        let anna = Account::nextcloud("https://cloud.example.org", "anna");
+        let intruder = Account { id: "client-a1b2c3d4".into(), ..anna.clone() };
+        fs::write(&path, serde_json::to_vec(&[intruder.clone(), anna.clone()]).expect("json")).expect("written");
+        let read = load_from(&path);
+        let _ = fs::remove_file(&path);
+        assert_eq!(read.expect("read"), [anna]);
+
+        // Refused before the keychain is asked, so no test touches the user's keychain.
+        assert!(matches!(intruder.secret(), Err(AccountError::ReservedId(_))));
+        assert!(matches!(intruder.set_secret("x"), Err(AccountError::ReservedId(_))));
+        assert!(matches!(intruder.delete_secret(), Err(AccountError::ReservedId(_))));
+        assert!(is_reserved_id("client-") && !is_reserved_id("nextcloud:client-x@cloud"));
     }
 
     #[test]

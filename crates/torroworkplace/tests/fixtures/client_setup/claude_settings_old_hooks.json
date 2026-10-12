@@ -1,0 +1,47 @@
+{
+  "model": "opus",
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notify-send 'Claude Code' 'Waiting'"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "TORRO_TOKEN='torro_old_0000aaaa' '/opt/torro/torroworkplace' hook claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "TORRO_TOKEN='torro_old_0000aaaa' '/opt/torro/torroworkplace' hook claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "TORRO_TOKEN='torro_old_0000aaaa' '/opt/torro/torroworkplace' hook claude-code",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

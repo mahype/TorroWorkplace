@@ -14,6 +14,12 @@
 //!   its [`Action`] and runs it on the [`Daemon`].
 //!
 //! Every native object (icon, menu) is created and changed on the main thread only.
+//!
+//! What waits in the inbox ([`Waiting`], task E3.3b) shows as the inbox section at the top of the
+//! shared menu and as the count in the tooltip ("Torro Workplace · 3 for you"). Neither system
+//! has a highlight like ksni's `NeedsAttention` for a status item, so urgency stays in the menu
+//! and the notifications; a text next to the icon (macOS `set_title`) would take menu bar room
+//! for every notice and is left out.
 
 use std::fmt;
 use std::sync::{Arc, Mutex};
@@ -26,7 +32,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use super::icon;
-use super::menu::{self, Action, Item};
+use super::menu::{self, Action, Item, Waiting};
 use crate::core::Snapshot;
 use crate::daemon::Daemon;
 
@@ -187,9 +193,15 @@ impl App {
             }
         };
         self.actions = actions;
+        let tooltip = tooltip(Waiting::of(snapshot));
         match &self.tray {
-            Some(tray) => tray.set_menu(Some(Box::new(native))),
-            None => match new_tray(native) {
+            Some(tray) => {
+                tray.set_menu(Some(Box::new(native)));
+                if let Err(err) = tray.set_tooltip(Some(&tooltip)) {
+                    eprintln!("torroworkplace: cannot update the tray tooltip: {err}");
+                }
+            }
+            None => match new_tray(native, &tooltip) {
                 Ok(tray) => {
                     self.tray = Some(tray);
                     // macOS draws a new status item only on the next pass of the run loop; a
@@ -230,12 +242,23 @@ impl ApplicationHandler<Event> for App {
     }
 }
 
-/// Creates the icon with `menu`. A left click opens the menu on both systems; on macOS the image
-/// is a template, so the menu bar tints it for light and dark.
-fn new_tray(menu: Menu) -> Result<TrayIcon, TrayError> {
+/// The tooltip of the icon: the name and, when something waits, how much
+/// ([`menu::waiting_line`]); never a title.
+fn tooltip(waiting: Waiting) -> String {
+    match menu::waiting_line(waiting) {
+        line if line.is_empty() => APP_NAME.to_string(),
+        line => format!("{APP_NAME} · {line}"),
+    }
+}
+
+/// The name of the icon, as the notifications name the sender.
+const APP_NAME: &str = crate::notify::APP_NAME;
+
+/// Creates the icon with `menu` and `tooltip`. A left click opens the menu on both systems; on
+/// macOS the image is a template, so the menu bar tints it for light and dark.
+fn new_tray(menu: Menu, tooltip: &str) -> Result<TrayIcon, TrayError> {
     let image = Icon::from_rgba(icon_image(), ICON_SIDE, ICON_SIDE).map_err(TrayError::Icon)?;
-    let builder =
-        TrayIconBuilder::new().with_tooltip("Torro Workplace").with_menu(Box::new(menu)).with_menu_on_left_click(true);
+    let builder = TrayIconBuilder::new().with_tooltip(tooltip).with_menu(Box::new(menu)).with_menu_on_left_click(true);
     #[cfg(target_os = "macos")]
     let builder = builder.with_icon_templated(image);
     #[cfg(windows)]
@@ -333,6 +356,13 @@ mod tests {
     fn ampersands_survive_muda() {
         assert_eq!(escape("Mail & Chat"), "Mail && Chat");
         assert_eq!(escape("Settings…"), "Settings…");
+    }
+
+    #[test]
+    fn the_tooltip_counts_what_waits() {
+        assert_eq!(tooltip(Waiting::default()), "Torro Workplace");
+        let waiting = Waiting { for_me: 3, urgent: 0 };
+        assert_eq!(tooltip(waiting), format!("Torro Workplace · {}", menu::waiting_line(waiting)));
     }
 
     #[test]

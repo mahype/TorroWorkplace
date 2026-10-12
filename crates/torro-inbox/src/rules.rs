@@ -1,0 +1,420 @@
+//! The rules of the inbox as pure functions, shared by the core (E1.2), the demo data and the
+//! apps, so all of them merge, place, wake and sort entries the same way.
+//!
+//! The security rules of `docs/tasks/eingang.md` that depend only on an entry live here too
+//! ([`admitted_kind`], [`human_only`], [`may_open`]); the core enforces them (E1.2, E2.4).
+//! Nothing here reads a clock: whoever calls passes `now`, so tests can fix it.
+
+use std::cmp::Ordering;
+
+use chrono::{DateTime, TimeDelta, Utc};
+
+use crate::item::{Item, Kind, Lane, Link, SourceKind, State};
+
+/// Days a done entry is kept before [`expired`] says it goes.
+pub const KEEP_DONE_DAYS: i64 = 30;
+
+/// Who creates an entry, as the core sees the client behind a post.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Poster {
+    /// The core itself: approvals, account problems.
+    Core,
+    /// A client of the kind `hook` (E2.3): the hooks of coding agents.
+    Hook,
+    /// Any other client: agents over MCP, scripts, `torroworkplace notify`.
+    Client,
+}
+
+/// Lane and urgency of an entry of `kind`; `wanted` is the lane the poster asked for.
+///
+/// Fixed for every kind but [`Kind::Notice`], so nobody can make their entries urgent:
+/// waiting agents and approvals are for me and urgent, finished agents and account problems
+/// for me; a notice goes where it was wanted ([`Lane::Info`] when nothing was asked) and is
+/// never urgent.
+pub fn placement(kind: Kind, wanted: Option<Lane>) -> (Lane, bool) {
+    match kind {
+        Kind::AgentWaiting | Kind::Approval => (Lane::ForMe, true),
+        Kind::AgentDone | Kind::AccountProblem => (Lane::ForMe, false),
+        Kind::Notice => (wanted.unwrap_or(Lane::Info), false),
+    }
+}
+
+/// The kind an entry posted as `kind` by `poster` gets; `None` when the post is refused
+/// (`forbidden`). Security rule 3: approvals and account problems come only from the core,
+/// agent states only from hooks (or the core) and turn into a [`Kind::Notice`] from anyone else.
+pub fn admitted_kind(kind: Kind, poster: Poster) -> Option<Kind> {
+    match (kind, poster) {
+        (Kind::Approval | Kind::AccountProblem, Poster::Core) => Some(kind),
+        (Kind::Approval | Kind::AccountProblem, _) => None,
+        (Kind::AgentWaiting | Kind::AgentDone, Poster::Core | Poster::Hook) => Some(kind),
+        (Kind::AgentWaiting | Kind::AgentDone, Poster::Client) => Some(Kind::Notice),
+        (Kind::Notice, _) => Some(Kind::Notice),
+    }
+}
+
+/// Only the app key may change the entry (done, snooze, lane), every other client gets
+/// `forbidden`. Security rule 1: approvals, account problems and anything from the suite belong
+/// to the user, or an agent could push away an approval.
+pub fn human_only(item: &Item) -> bool {
+    matches!(item.kind, Kind::Approval | Kind::AccountProblem) || item.source.kind == SourceKind::Suite
+}
+
+/// The entry's link may be opened. Security rule 6: web links only with `http` or `https`,
+/// apps only those `known_app` accepts (the apps of `apps.list_apps` and the control centre),
+/// windows only on entries a hook reported (the agent kinds, which only hooks create).
+/// `false` without a link.
+pub fn may_open(item: &Item, known_app: impl Fn(&str) -> bool) -> bool {
+    match &item.link {
+        None => false,
+        Some(Link::Url { url }) => is_web(url),
+        Some(Link::App { app }) => known_app(app),
+        Some(Link::Window) => matches!(item.kind, Kind::AgentWaiting | Kind::AgentDone),
+    }
+}
+
+/// `url` starts with `http://` or `https://`, in any case.
+fn is_web(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// `existing` after the report `incoming` of the same matter (same `source` and `thread_key`;
+/// the caller finds `existing` by them).
+///
+/// Keeps id, source, thread key and `received`; takes everything the report says (kind, lane,
+/// urgency, texts, agent, link, actions, `untrusted`) and its `updated`; counts one more report.
+/// A done or seen entry is new again, so a matter that comes back is not missed; a snoozed one
+/// stays snoozed, the user put it off on purpose.
+pub fn merge(existing: Item, incoming: Item) -> Item {
+    let state = match existing.state {
+        State::Snoozed { until } => State::Snoozed { until },
+        State::New | State::Seen | State::Done { .. } => State::New,
+    };
+    Item {
+        id: existing.id,
+        source: existing.source,
+        thread_key: existing.thread_key,
+        received: existing.received,
+        count: existing.count.saturating_add(1),
+        state,
+        ..incoming
+    }
+}
+
+/// Marks the entry done at `now`, or open again: a done entry becomes [`State::Seen`] (the
+/// user has seen it), any other stays as it is. `updated` does not change, so undoing puts the
+/// entry back where it was in the list.
+pub fn set_done(item: &mut Item, done: bool, now: DateTime<Utc>) {
+    if done {
+        if !matches!(item.state, State::Done { .. }) {
+            item.state = State::Done { at: now };
+        }
+    } else if matches!(item.state, State::Done { .. }) {
+        item.state = State::Seen;
+    }
+}
+
+/// Puts the entry off until `until`; `None` takes a snoozed entry back to [`State::Seen`] and
+/// leaves any other as it is.
+pub fn snooze(item: &mut Item, until: Option<DateTime<Utc>>) {
+    match until {
+        Some(until) => item.state = State::Snoozed { until },
+        None if matches!(item.state, State::Snoozed { .. }) => item.state = State::Seen,
+        None => {}
+    }
+}
+
+/// Moves the entry to `lane`. It is urgent only in [`Lane::ForMe`] and only if its kind is
+/// ([`placement`]): an entry the user moved to "Info" does not interrupt any more.
+pub fn set_lane(item: &mut Item, lane: Lane) {
+    item.lane = lane;
+    item.urgent = lane == Lane::ForMe && placement(item.kind, None).1;
+}
+
+/// Wakes the entry if it is snoozed until `now` or earlier: [`State::New`] with `updated` at the
+/// time it was due, so it comes back at the top. Returns whether it woke.
+pub fn wake(item: &mut Item, now: DateTime<Utc>) -> bool {
+    match item.state {
+        State::Snoozed { until } if until <= now => {
+            item.state = State::New;
+            item.updated = until;
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The entry was done [`KEEP_DONE_DAYS`] or more before `now` and is removed.
+pub fn expired(item: &Item, now: DateTime<Utc>) -> bool {
+    match item.state {
+        State::Done { at } => now - at >= TimeDelta::days(KEEP_DONE_DAYS),
+        _ => false,
+    }
+}
+
+/// The order of the list: urgent entries first, then the most recently `updated`; ties by id so
+/// every app shows the same order.
+pub fn order(a: &Item, b: &Item) -> Ordering {
+    b.urgent.cmp(&a.urgent).then_with(|| b.updated.cmp(&a.updated)).then_with(|| a.id.cmp(&b.id))
+}
+
+/// Sorts `items` by [`order`].
+pub fn sort(items: &mut [Item]) {
+    items.sort_by(order);
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::TimeZone;
+
+    use super::*;
+    use crate::item::{Action, AgentInfo, AgentKind, SourceRef};
+
+    fn at(hour: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 11, hour, 0, 0).single().expect("valid time")
+    }
+
+    fn item(id: &str, kind: Kind) -> Item {
+        let (lane, urgent) = placement(kind, None);
+        Item {
+            id: id.into(),
+            source: SourceRef::script("backup"),
+            thread_key: format!("thread-{id}"),
+            kind,
+            lane,
+            urgent,
+            title: "Backup finished".into(),
+            body: None,
+            from: None,
+            agent: None,
+            received: at(8),
+            updated: at(8),
+            count: 1,
+            state: State::New,
+            link: None,
+            actions: Vec::new(),
+            untrusted: true,
+        }
+    }
+
+    #[test]
+    fn fixed_lanes() {
+        for wanted in [None, Some(Lane::Info), Some(Lane::ForMe)] {
+            assert_eq!(placement(Kind::AgentWaiting, wanted), (Lane::ForMe, true));
+            assert_eq!(placement(Kind::Approval, wanted), (Lane::ForMe, true));
+            assert_eq!(placement(Kind::AgentDone, wanted), (Lane::ForMe, false));
+            assert_eq!(placement(Kind::AccountProblem, wanted), (Lane::ForMe, false));
+        }
+        assert_eq!(placement(Kind::Notice, None), (Lane::Info, false));
+        assert_eq!(placement(Kind::Notice, Some(Lane::ForMe)), (Lane::ForMe, false), "never urgent");
+    }
+
+    #[test]
+    fn only_the_core_creates_approvals_and_only_hooks_agent_states() {
+        for kind in [Kind::Approval, Kind::AccountProblem] {
+            assert_eq!(admitted_kind(kind, Poster::Core), Some(kind));
+            assert_eq!(admitted_kind(kind, Poster::Hook), None);
+            assert_eq!(admitted_kind(kind, Poster::Client), None);
+        }
+        for kind in [Kind::AgentWaiting, Kind::AgentDone] {
+            assert_eq!(admitted_kind(kind, Poster::Hook), Some(kind));
+            assert_eq!(admitted_kind(kind, Poster::Core), Some(kind));
+            assert_eq!(admitted_kind(kind, Poster::Client), Some(Kind::Notice));
+        }
+        for poster in [Poster::Core, Poster::Hook, Poster::Client] {
+            assert_eq!(admitted_kind(Kind::Notice, poster), Some(Kind::Notice));
+        }
+    }
+
+    #[test]
+    fn approvals_account_problems_and_the_suite_belong_to_the_user() {
+        assert!(human_only(&item("1", Kind::Approval)));
+        assert!(human_only(&item("2", Kind::AccountProblem)));
+        assert!(human_only(&Item { source: SourceRef::suite(), ..item("3", Kind::Notice) }));
+        assert!(!human_only(&item("4", Kind::Notice)));
+        assert!(!human_only(&Item { source: SourceRef::agent("codex"), ..item("5", Kind::AgentWaiting) }));
+    }
+
+    #[test]
+    fn only_safe_links_open() {
+        let with = |kind: Kind, link: Link| Item { link: Some(link), ..item("1", kind) };
+        let known = |app: &str| app == "torrocalendar";
+        let url = |u: &str| Link::Url { url: u.into() };
+        assert!(may_open(&with(Kind::Notice, url("https://example.org")), known));
+        assert!(may_open(&with(Kind::Notice, url("HTTP://example.org")), known));
+        for bad in ["file:///etc/passwd", "javascript:alert(1)", "httpx://a", "ftp://a", ""] {
+            assert!(!may_open(&with(Kind::Notice, url(bad)), known), "{bad}");
+        }
+        assert!(may_open(&with(Kind::Notice, Link::App { app: "torrocalendar".into() }), known));
+        assert!(!may_open(&with(Kind::Notice, Link::App { app: "sh".into() }), known));
+        assert!(may_open(&with(Kind::AgentWaiting, Link::Window), known));
+        assert!(may_open(&with(Kind::AgentDone, Link::Window), known));
+        assert!(!may_open(&with(Kind::Notice, Link::Window), known), "window only on hook entries");
+        assert!(!may_open(&item("1", Kind::Notice), known), "no link");
+    }
+
+    #[test]
+    fn merging_counts_takes_the_report_and_keeps_the_identity() {
+        let existing = Item { state: State::Seen, ..item("1", Kind::AgentWaiting) };
+        let incoming = Item {
+            id: "ignored".into(),
+            received: at(10),
+            updated: at(10),
+            title: "Codex finished".into(),
+            body: Some("All tests pass".into()),
+            agent: Some(AgentInfo {
+                agent: AgentKind::Codex,
+                session: "s1".into(),
+                project: None,
+                branch: None,
+                pids: Vec::new(),
+            }),
+            ..item("2", Kind::AgentDone)
+        };
+        let merged = merge(existing.clone(), incoming.clone());
+        assert_eq!(merged.id, existing.id);
+        assert_eq!(merged.thread_key, existing.thread_key);
+        assert_eq!(merged.received, at(8));
+        assert_eq!(merged.updated, at(10));
+        assert_eq!(merged.count, 2);
+        assert_eq!(merged.state, State::New);
+        assert_eq!((merged.kind, merged.lane, merged.urgent), (Kind::AgentDone, Lane::ForMe, false));
+        assert_eq!(merged.title, incoming.title);
+        assert_eq!(merged.body, incoming.body);
+        assert_eq!(merged.agent, incoming.agent);
+    }
+
+    #[test]
+    fn merging_brings_back_done_but_not_snoozed() {
+        let done = Item { state: State::Done { at: at(9) }, ..item("1", Kind::Notice) };
+        assert_eq!(merge(done, item("2", Kind::Notice)).state, State::New);
+        let snoozed = State::Snoozed { until: at(20) };
+        let merged = merge(Item { state: snoozed, ..item("1", Kind::Notice) }, item("2", Kind::Notice));
+        assert_eq!(merged.state, snoozed);
+        let many = Item { count: u32::MAX, ..item("1", Kind::Notice) };
+        assert_eq!(merge(many, item("2", Kind::Notice)).count, u32::MAX);
+    }
+
+    #[test]
+    fn done_and_open_again() {
+        let mut entry = item("1", Kind::Notice);
+        set_done(&mut entry, true, at(9));
+        assert_eq!(entry.state, State::Done { at: at(9) });
+        set_done(&mut entry, true, at(10));
+        assert_eq!(entry.state, State::Done { at: at(9) }, "done twice keeps the first time");
+        set_done(&mut entry, false, at(11));
+        assert_eq!(entry.state, State::Seen);
+        assert_eq!(entry.updated, at(8), "keeps its place");
+        let mut fresh = item("2", Kind::Notice);
+        set_done(&mut fresh, false, at(11));
+        assert_eq!(fresh.state, State::New);
+    }
+
+    #[test]
+    fn snoozing_and_taking_it_back() {
+        let mut entry = item("1", Kind::Notice);
+        snooze(&mut entry, None);
+        assert_eq!(entry.state, State::New, "not snoozed, nothing to take back");
+        snooze(&mut entry, Some(at(20)));
+        assert_eq!(entry.state, State::Snoozed { until: at(20) });
+        snooze(&mut entry, None);
+        assert_eq!(entry.state, State::Seen);
+    }
+
+    #[test]
+    fn moving_to_info_ends_urgency_and_back_restores_it() {
+        let mut waiting = item("1", Kind::AgentWaiting);
+        set_lane(&mut waiting, Lane::Info);
+        assert_eq!((waiting.lane, waiting.urgent), (Lane::Info, false));
+        set_lane(&mut waiting, Lane::ForMe);
+        assert_eq!((waiting.lane, waiting.urgent), (Lane::ForMe, true));
+        let mut notice = item("2", Kind::Notice);
+        set_lane(&mut notice, Lane::ForMe);
+        assert_eq!((notice.lane, notice.urgent), (Lane::ForMe, false));
+    }
+
+    #[test]
+    fn snoozed_entries_wake_at_their_time() {
+        let mut entry = Item { state: State::Snoozed { until: at(12) }, ..item("1", Kind::Notice) };
+        assert!(!wake(&mut entry, at(11)));
+        assert_eq!(entry.state, State::Snoozed { until: at(12) });
+        assert!(wake(&mut entry, at(12)));
+        assert_eq!(entry.state, State::New);
+        assert_eq!(entry.updated, at(12), "back at the top");
+        assert!(!wake(&mut entry, at(13)), "wakes once");
+        let mut open = item("2", Kind::Notice);
+        assert!(!wake(&mut open, at(13)));
+    }
+
+    #[test]
+    fn done_entries_expire_after_30_days() {
+        let done = Item { state: State::Done { at: at(8) }, ..item("1", Kind::Notice) };
+        let days = |n: i64| at(8) + TimeDelta::days(n);
+        assert!(!expired(&done, days(29)));
+        assert!(!expired(&done, days(KEEP_DONE_DAYS) - TimeDelta::seconds(1)));
+        assert!(expired(&done, days(KEEP_DONE_DAYS)));
+        for open in [State::New, State::Seen, State::Snoozed { until: at(9) }] {
+            assert!(!expired(&Item { state: open, ..item("2", Kind::Notice) }, days(365)));
+        }
+    }
+
+    #[test]
+    fn urgent_first_then_newest() {
+        let mut items = vec![
+            Item { updated: at(9), ..item("old", Kind::Notice) },
+            Item { updated: at(7), ..item("urgent-old", Kind::AgentWaiting) },
+            Item { updated: at(11), ..item("new", Kind::Notice) },
+            Item { updated: at(10), ..item("urgent-new", Kind::Approval) },
+            Item { updated: at(11), ..item("new-b", Kind::Notice) },
+        ];
+        sort(&mut items);
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["urgent-new", "urgent-old", "new", "new-b", "old"]);
+    }
+
+    #[test]
+    fn items_survive_a_serde_round_trip() {
+        let full = Item {
+            body: Some("Claude needs your permission to use Bash".into()),
+            from: Some(crate::item::Sender { name: "Anna".into(), address: Some("anna@example.org".into()) }),
+            agent: Some(AgentInfo {
+                agent: AgentKind::ClaudeCode,
+                session: "abc".into(),
+                project: Some("TorroWorkplace".into()),
+                branch: Some("feat/inbox".into()),
+                pids: vec![42, 7],
+            }),
+            state: State::Snoozed { until: at(20) },
+            link: Some(Link::Window),
+            actions: vec![Action::Allow { approval: "a1".into() }, Action::Deny { approval: "a1".into() }],
+            ..item("1", Kind::AgentWaiting)
+        };
+        for entry in
+            [full, item("2", Kind::Notice), Item { state: State::Done { at: at(9) }, ..item("3", Kind::Notice) }]
+        {
+            let json = serde_json::to_string(&entry).expect("serialize");
+            assert_eq!(serde_json::from_str::<Item>(&json).expect("deserialize"), entry, "{json}");
+        }
+    }
+
+    #[test]
+    fn optional_fields_may_be_left_out() {
+        let json = serde_json::json!({
+            "id": "1",
+            "source": { "kind": "suite" },
+            "thread_key": "approval:1",
+            "kind": "approval",
+            "lane": "for_me",
+            "urgent": true,
+            "title": "Approve?",
+            "received": "2026-10-11T08:00:00Z",
+            "updated": "2026-10-11T08:00:00Z",
+            "count": 1,
+            "state": "new",
+            "untrusted": true
+        });
+        let entry: Item = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(entry.source, SourceRef::suite());
+        assert_eq!((entry.body, entry.link, entry.actions), (None, None, Vec::new()));
+    }
+}

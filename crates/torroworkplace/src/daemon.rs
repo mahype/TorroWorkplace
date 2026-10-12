@@ -5,8 +5,11 @@
 //! - the socket (`torro_ipc::server`) for `ctl`, hotkeys, the control centre, the apps and
 //!   agents; every request there passes the key check ([`Core::handle_from`]),
 //! - the tray icon (see `tray`),
-//! - a refresher that rebuilds the tray menu after every command and on window manager
-//!   events (debounced),
+//! - a refresher that rebuilds the tray menu after every command, on window manager events and
+//!   when the open approvals change ([`watch_approvals`]) or anything is written to the inbox
+//!   ([`watch_inbox`]), all debounced into one refresh,
+//! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
+//!   ([`tend_inbox`]),
 //!
 //! and ends on "Quit", Ctrl+C or when the socket server fails. Every command, from the
 //! tray or the socket, goes through [`Core::handle`].
@@ -197,6 +200,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
     pim.start();
     let core = Arc::new(Core::new(backend, store, pim, clients));
     core.start();
+    tokio::spawn(tend_inbox(Arc::clone(&core)));
+    // Popups for new entries "for me" (task E3.4), also when headless: they need no tray.
+    tokio::spawn(crate::inbox_notify::run(Arc::clone(&core), Arc::new(crate::inbox_notify::SystemDesktop)));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -242,8 +248,14 @@ async fn serve(shows: Shows) -> Result<(), String> {
         refresh: refresh_tx.clone(),
         quit: quit_tx,
     });
+    // Taken before the first snapshot, so an approval opened or an entry posted in between still
+    // refreshes the menu.
+    let approval_changes = core.approval_changes();
+    let inbox_changes = core.inbox().changes();
     let front = Front::start(&daemon, shows, core.snapshot().await).await?;
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
+    tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
+    tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
 
     match core.events().await {
         Ok(mut events) => {
@@ -326,6 +338,67 @@ async fn refresher(core: Arc<Core>, mut requests: mpsc::UnboundedReceiver<()>, f
     }
 }
 
+/// Asks for a new menu whenever the count of open approvals may have changed: one was opened (by a
+/// client from the socket) or decided (control centre, `ctl`, notification), or one expired by the
+/// clock ([`Core::approvals_changed`]). Their inbox entries (task E2.1) mostly tell the tray
+/// themselves ([`watch_inbox`]); this keeps [`Snapshot::approvals_waiting`] right to the second.
+async fn watch_approvals(
+    core: Arc<Core>,
+    mut changes: tokio::sync::watch::Receiver<()>,
+    refresh: mpsc::UnboundedSender<()>,
+) {
+    while core.approvals_changed(&mut changes).await {
+        if refresh.send(()).is_err() {
+            return;
+        }
+    }
+}
+
+/// Asks for a new menu whenever something was written to the inbox (task E3.3b,
+/// [`crate::inbox::Inbox::changes`]): a post from a client, a change in the Inbox app, waking, the
+/// clean-up, the suite's approvals and account problems. So "Inbox (n)" follows without polling;
+/// the refresher collapses bursts into one new menu.
+async fn watch_inbox(mut changes: tokio::sync::watch::Receiver<()>, refresh: mpsc::UnboundedSender<()>) {
+    while changes.changed().await.is_ok() {
+        if refresh.send(()).is_err() {
+            return;
+        }
+    }
+}
+
+/// How often the inbox wakes snoozed entries that are due. The apps poll at about the same pace,
+/// and listing wakes entries too, so a minute is late enough.
+const INBOX_WAKE_EVERY: Duration = Duration::from_secs(60);
+
+/// Wakes snoozed inbox entries every [`INBOX_WAKE_EVERY`] and removes the ones done 30 days ago
+/// once a day, the first time right at start. A failure is logged once until the next success,
+/// not every minute.
+async fn tend_inbox(core: Arc<Core>) {
+    let mut cleaned: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut failing = false;
+    loop {
+        let now = chrono::Utc::now();
+        let clean_up = cleaned.is_none_or(|at| now - at >= chrono::TimeDelta::days(1));
+        match core.inbox().tend(now, clean_up) {
+            Ok((_, removed)) => {
+                if clean_up {
+                    cleaned = Some(now);
+                    if removed > 0 {
+                        eprintln!("torroworkplace: removed {removed} inbox entries done 30 days ago");
+                    }
+                }
+                failing = false;
+            }
+            Err(err) if !failing => {
+                eprintln!("torroworkplace: inbox: {err}");
+                failing = true;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(INBOX_WAKE_EVERY).await;
+    }
+}
+
 /// Template commands: they change the menu and get a notification. Calendar and task
 /// requests from the apps get neither; the apps show their own feedback.
 fn changes_state(request: &Request) -> bool {
@@ -369,6 +442,7 @@ fn describe(request: &Request) -> String {
         Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),
         Request::PreviewFilter { account, .. } => format!("preview filter of {account}"),
         Request::UnpinIssue { collection, .. } => format!("unpin from {collection}"),
+        Request::AddLink { collection, .. } => format!("add link to {collection}"),
         Request::Settings => "settings".into(),
         Request::UpdateSettings { .. } => "update settings".into(),
         Request::SetSetting { key, .. } => format!("set {key:?}"),
@@ -385,6 +459,26 @@ fn describe(request: &Request) -> String {
         Request::UpdateClient { id, .. } => format!("update client {id}"),
         Request::NewClientKey { id } => format!("new key for client {id}"),
         Request::RemoveClient { id } => format!("remove client {id}"),
+        Request::ClientActivity { id } => format!("activity of client {id}"),
+        Request::ListApprovals => "approvals".into(),
+        Request::ApprovalStatus { id } => format!("approval {id}"),
+        Request::DecideApproval { id, allow } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
+        // Never the tool or the command: they are what the agent would run.
+        Request::AskPermission { .. } => "ask for permission".into(),
+        // Ids only, never a title, a body or a thread key (security rule 7 of the inbox).
+        Request::ListItems { .. } => "inbox items".into(),
+        Request::GetItem { id } => format!("inbox item {id}"),
+        Request::OpenItem { id } => format!("open inbox item {id}"),
+        Request::CreateTaskFromItem { id, collection, .. } => format!("make a task in {collection} of inbox item {id}"),
+        Request::ListSources => "inbox sources".into(),
+        Request::PostItem { .. } => "post to inbox".into(),
+        Request::ResolveItems { .. } => "resolve inbox items".into(),
+        Request::SetItemDone { id, .. } => format!("set inbox item {id} done"),
+        Request::SnoozeItem { id, .. } => format!("snooze inbox item {id}"),
+        Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
+        Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
+        Request::ListRules => "inbox rules".into(),
+        Request::RemoveRule { id } => format!("remove inbox rule {id}"),
     }
 }
 
@@ -399,6 +493,7 @@ fn report(what: &str, response: &Response) {
             }
         }
         Response::Saved { template } => eprintln!("torroworkplace: saved {:?} ({})", template.name, template.id),
+        Response::Pending { approval } => eprintln!("torroworkplace: {what}: waits for approval {}", approval.id),
         _ => eprintln!("torroworkplace: {what}: ok"),
     }
     if let Some((summary, body)) = crate::notify::message(what, response) {

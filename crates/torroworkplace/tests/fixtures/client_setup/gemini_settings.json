@@ -1,0 +1,41 @@
+{
+  "general": {
+    "vimMode": true
+  },
+  "mcpServers": {
+    "docs": {
+      "command": "npx",
+      "args": ["-y", "docs-mcp"]
+    }
+  },
+  "hooksConfig": {
+    "enabled": true,
+    "notifications": false
+  },
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "write_file|replace",
+        "hooks": [
+          {
+            "name": "security-check",
+            "type": "command",
+            "command": "$GEMINI_PROJECT_DIR/.gemini/hooks/security.sh",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "hooks": [
+          {
+            "name": "log-turn",
+            "type": "command",
+            "command": "~/.gemini/hooks/log.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

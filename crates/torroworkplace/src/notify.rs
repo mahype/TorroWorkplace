@@ -2,16 +2,26 @@
 //! the failures (translated with `torro_core::i18n`). [`message`] decides what to say, [`show`] puts it on the desktop without
 //! ever blocking the daemon.
 //!
+//! And the question to the person when an agent's command waits for approval ([`ask`]): the
+//! summary with "Allow" and "Deny" (task A.3), closed again once the approval is decided or
+//! expires (task A.3b).
+//!
+//! On Linux the answer comes back as the D-Bus signal `ActionInvoked` for the notification's id.
+//! The signal is not checked for its sender: any program of the same user on the session bus
+//! could send it, as it could read the app key next to the socket. The threat model of approvals
+//! is an agent talking to the API or MCP, not code that already runs as the user (`docs/api.md`,
+//! "Freigaben").
+//!
 //! The sender ("Torro Workplace", with the app icon) is not a plain text on macOS and Windows:
 //! the system takes it from an identity of the app, so `platform` sets that up before the
 //! first notification. Where that is not possible, the notification still appears and carries
 //! the name in its subtitle instead.
 
 use torro_core::i18n::{tr, trf};
-use torro_ipc::Response;
+use torro_ipc::{ApprovalInfo, Response};
 
-/// The app name shown with each notification.
-const APP_NAME: &str = "Torro Workplace";
+/// The app name shown with each notification (also the inbox popups, `inbox_notify`).
+pub(crate) const APP_NAME: &str = "Torro Workplace";
 
 /// The identity of the app for the notification system: the bundle id on macOS (the one
 /// `packaging/macos/Info.plist.in` builds from the app id `torro-workplace`, so the two must
@@ -71,6 +81,111 @@ pub fn show(summary: String, body: String) {
     if let Err(err) = spawned {
         eprintln!("torroworkplace: cannot show notification: {err}");
     }
+}
+
+/// The title and body of the question for `approval`: who asks, and what would happen. Both hold
+/// text the client chose (its name, the titles in the summary): [`ask`] shows them as plain text.
+///
+/// A question of an agent (task E2.5) says "asks for permission": allowing it runs nothing, it
+/// only answers the agent.
+pub fn question(approval: &ApprovalInfo) -> (String, String) {
+    let client = [("client", &approval.client_name as &dyn std::fmt::Display)];
+    let title = match crate::approvals::is_question(approval) {
+        true => trf("{client} asks for permission", &client),
+        false => trf("{client} asks for approval", &client),
+    };
+    (title, approval.summary.clone())
+}
+
+/// Asks the person about `approval` and calls `decide` with their answer: `true` for "Allow",
+/// `false` for "Deny". Closing the notification, or clicking it anywhere else, decides nothing;
+/// the approval then waits in the control centre until it expires.
+///
+/// The question goes away by itself when `settled` fires (the approval was decided elsewhere:
+/// control centre, `ctl allow|deny`) or its sender is dropped, and when the approval expires,
+/// whichever comes first; nothing waits for it longer than that. It runs as a task on the core's
+/// runtime and never blocks the caller; without a runtime nothing is shown.
+///
+/// Linux and the BSDs show the buttons. macOS and Windows show the question without them (notify-rust
+/// has no buttons there) under the app's own sender, so the person decides in the control centre
+/// there.
+pub fn ask(
+    approval: &ApprovalInfo,
+    settled: tokio::sync::oneshot::Receiver<()>,
+    decide: impl FnOnce(bool) + Send + 'static,
+) {
+    let (summary, body) = question(approval);
+    let lasts = (approval.expires - chrono::Utc::now()).to_std().unwrap_or_default();
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        eprintln!("torroworkplace: cannot show notification: no runtime to wait for the answer on");
+        return;
+    };
+    runtime.spawn(async move {
+        if let Err(err) = send_question(summary, body, lasts, settled, decide).await {
+            eprintln!("torroworkplace: cannot show notification: {err}");
+        }
+    });
+}
+
+/// Shows the question and waits for the first of: an answer, `settled`, or `lasts` running out.
+/// In the last two cases it closes the notification, so no question about a decided or expired
+/// approval stays on the desktop (some servers keep notifications with actions until clicked).
+#[cfg(all(unix, not(target_os = "macos")))]
+async fn send_question(
+    summary: String,
+    body: String,
+    lasts: std::time::Duration,
+    settled: tokio::sync::oneshot::Receiver<()>,
+    decide: impl FnOnce(bool),
+) -> notify_rust::error::Result<()> {
+    let millis = u32::try_from(lasts.as_millis()).unwrap_or(u32::MAX);
+    let handle = notify_rust::Notification::new()
+        .appname(APP_NAME)
+        // The summary is plain text by the specification; only the body may carry markup.
+        .summary(&summary)
+        .body(&plain(&body))
+        .action("allow", tr("Allow"))
+        .action("deny", tr("Deny"))
+        .timeout(notify_rust::Timeout::Milliseconds(millis))
+        .show_async()
+        .await?;
+    let answered = handle.wait_for_action_async(|response| {
+        // A click on the notification itself ("default") and closing it decide nothing.
+        if let notify_rust::NotificationResponse::Action(action) = response {
+            match action.as_str() {
+                "allow" => decide(true),
+                "deny" => decide(false),
+                _ => {}
+            }
+        }
+    });
+    tokio::select! {
+        () = answered => {}
+        _ = settled => handle.close_async().await,
+        () = tokio::time::sleep(lasts) => handle.close_async().await,
+    }
+    Ok(())
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+async fn send_question(
+    summary: String,
+    body: String,
+    _lasts: std::time::Duration,
+    _settled: tokio::sync::oneshot::Receiver<()>,
+    _decide: impl FnOnce(bool),
+) -> notify_rust::error::Result<()> {
+    // Showing may block on these systems; the core's runtime must not wait for it.
+    tokio::task::spawn_blocking(move || send(&summary, &body))
+        .await
+        .unwrap_or_else(|err| Err(notify_rust::error::Error::from(err.to_string().as_str())))
+}
+
+/// `text` for a notification server that may read markup in the body (`<b>`, `<a href>`): `&`,
+/// `<` and `>` as entities, so a client's text shows as written and never becomes a link.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn plain(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn send(summary: &str, body: &str) -> notify_rust::error::Result<()> {
@@ -388,6 +503,32 @@ mod tests {
     }
 
     #[test]
+    fn the_question_names_the_client_and_what_would_happen() {
+        let at = chrono::Utc::now();
+        let approval = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "c1".into(),
+            client_name: "Claude Code".into(),
+            command: "workspaces.delete_template".into(),
+            summary: "Delete template \"dev\"".into(),
+            created: at,
+            expires: at,
+            decided: None,
+            state: torro_ipc::ApprovalState::Pending,
+        };
+        assert_eq!(
+            question(&approval),
+            (trf("{client} asks for approval", &[("client", &"Claude Code")]), "Delete template \"dev\"".to_string())
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn client_text_never_becomes_markup() {
+        assert_eq!(plain("<a href=\"x\">Tom & Jerry</a>"), "&lt;a href=\"x\"&gt;Tom &amp; Jerry&lt;/a&gt;");
+    }
+
+    #[test]
     fn app_id_is_what_the_macos_bundle_gets() {
         // `make-app.sh` builds `io.github.mahype.@APPID@` with the app id `torro-workplace`.
         assert_eq!(APP_ID, "io.github.mahype.torro-workplace");
@@ -478,5 +619,24 @@ mod tests {
         // macOS hands the notification to the system on a thread of its own when the handle
         // is dropped; leave it time to arrive before the test process ends.
         std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_question_of_an_agent_asks_for_permission() {
+        let at = chrono::Utc::now();
+        let approval = ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "h1".into(),
+            client_name: "Claude Code hooks".into(),
+            command: crate::approvals::QUESTION_COMMAND.into(),
+            summary: "Claude Code wants to use Bash: ls".into(),
+            created: at,
+            expires: at,
+            decided: None,
+            state: torro_ipc::ApprovalState::Pending,
+        };
+        let (title, body) = question(&approval);
+        assert_eq!(title, trf("{client} asks for permission", &[("client", &"Claude Code hooks")]));
+        assert_eq!(body, approval.summary);
     }
 }

@@ -7,13 +7,14 @@
 //! not running → `ProviderError::Other` with the `IpcError` message, an unexpected
 //! variant → `Other("unexpected answer …")`.
 //!
-//! [`PimSource::accounts`] reads `Accounts` and leaves out the collections, which come with
-//! [`PimSource::collections`]; that one joins `CalendarCollections` and `TaskCollections`, so
-//! the apps keep one call each.
+//! [`PimSource::accounts`] reads `Accounts` (with a GitHub token's scopes) and leaves out the
+//! collections, which come with [`PimSource::collections`]; that one joins `CalendarCollections`
+//! and `TaskCollections`, so the apps keep one call each.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
+use torro_pim::source::{FilterDefinition, FilterPreview};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 use crate::Request;
@@ -46,6 +47,15 @@ impl PimClient {
             }),
             Ok(response) => Ok(response),
             Err(err) => Err(ProviderError::Other(err.to_string())),
+        }
+    }
+
+    /// Sends a request answered with [`Response::Collection`] (a filter list just created or
+    /// changed).
+    async fn ask_collection(&self, request: Request) -> Result<Collection, ProviderError> {
+        match self.ask(request).await? {
+            Response::Collection { collection } => Ok(collection),
+            other => Err(unexpected(other)),
         }
     }
 
@@ -89,6 +99,7 @@ impl PimSource for PimClient {
                     label: account.label,
                     kind: account.kind,
                     state: account.state,
+                    scopes: account.scopes,
                 })
                 .collect()),
             other => Err(unexpected(other)),
@@ -175,6 +186,52 @@ impl PimSource for PimClient {
             other => Err(unexpected(other)),
         }
     }
+
+    /// `Request::UnpinIssue` with the list's id and the item's link id as `url`.
+    async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
+        expect_ok(self.ask(Request::UnpinIssue { collection, url: item }).await?)
+    }
+
+    /// `Request::AddLink`; the answer is the task the list holds.
+    async fn add_link(&self, collection: String, url: String) -> Result<Todo, ProviderError> {
+        match self.ask(Request::AddLink { collection, url }).await? {
+            Response::Todo { todo } => Ok(todo),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `Request::CreateFilterList` with the definition's fields.
+    async fn create_filter_list(
+        &self,
+        account: String,
+        definition: FilterDefinition,
+    ) -> Result<Collection, ProviderError> {
+        let FilterDefinition { name, color, queries } = definition;
+        self.ask_collection(Request::CreateFilterList { account, name, color, queries }).await
+    }
+
+    /// `Request::UpdateFilterList`; a `conflict` names the list.
+    async fn update_filter_list(
+        &self,
+        collection: String,
+        revision: u64,
+        definition: FilterDefinition,
+    ) -> Result<Collection, ProviderError> {
+        let FilterDefinition { name, color, queries } = definition;
+        let request = Request::UpdateFilterList { collection: collection.clone(), revision, name, color, queries };
+        self.ask_collection(request).await.map_err(|err| with_uid(err, &collection))
+    }
+
+    async fn delete_filter_list(&self, collection: String) -> Result<(), ProviderError> {
+        expect_ok(self.ask(Request::DeleteFilterList { collection }).await?)
+    }
+
+    async fn preview_filter(&self, account: String, queries: Vec<String>) -> Result<FilterPreview, ProviderError> {
+        match self.ask(Request::PreviewFilter { account, queries }).await? {
+            Response::FilterPreview { matches, truncated, todos } => Ok(FilterPreview { matches, truncated, todos }),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -249,6 +306,7 @@ mod tests {
             location: None,
             description: None,
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         }
     }
 
@@ -271,6 +329,32 @@ mod tests {
         }
     }
 
+    /// A filter list as the core answers `create`/`update` with.
+    fn filter_list(id: &str, name: &str, color: Option<String>, queries: Vec<String>, revision: u64) -> Collection {
+        Collection {
+            id: id.into(),
+            name: name.into(),
+            kind: CollectionKind::Todos,
+            color,
+            writable: false,
+            source: Some(torro_pim::model::GitHubFilter {
+                queries,
+                pinned: Vec::new(),
+                revision,
+                truncated: false,
+                problem: None,
+            }),
+        }
+    }
+
+    fn definition() -> FilterDefinition {
+        FilterDefinition {
+            name: "Bugs".into(),
+            color: Some("#E8A33D".into()),
+            queries: vec!["is:open label:bug".into(), "is:pr review-requested:@me".into()],
+        }
+    }
+
     /// What a core that stores the item answers to a write: the item with an href and an etag.
     fn stored_event(event: Event) -> Event {
         Event { href: Some(format!("/cal/work/{}.ics", event.uid)), etag: Some("\"2\"".into()), ..event }
@@ -289,6 +373,22 @@ mod tests {
                 Response::LoginStarted { login_url: format!("{server}/login/v2/flow") }
             }
             Request::Sync | Request::DeleteEvent { .. } | Request::DeleteTodo { .. } => Response::Ok,
+            // Only the pinned item of the test list can be unpinned.
+            Request::UnpinIssue { collection, url }
+                if collection == "github:mahype/bugs" && url == "github:mahype/TorroWorkplace#7" =>
+            {
+                Response::Ok
+            }
+            Request::UnpinIssue { .. } => {
+                Response::Error { code: "not-found".into(), message: "the list does not pin it".into() }
+            }
+            // The answer names what arrived: the list and the pasted address.
+            Request::AddLink { url, .. } if !url.contains('#') => {
+                Response::Error { code: "error".into(), message: "not a GitHub link".into() }
+            }
+            Request::AddLink { collection, url } => {
+                Response::Todo { todo: stored_todo(Todo { collection, url: Some(url), ..todo() }) }
+            }
             // The collection with both kinds is in both answers.
             Request::CalendarCollections => Response::Collections { collections: vec![collection(), calendar()] },
             Request::TaskCollections => Response::Collections { collections: vec![list(), collection()] },
@@ -308,6 +408,28 @@ mod tests {
                     sort_order: Some(0),
                     ..todo()
                 }],
+            },
+            // Filter lists: the answer names what arrived (account, revision, searches).
+            Request::CreateFilterList { account, name, color, queries } => {
+                Response::Collection { collection: filter_list(&format!("{account}/new"), &name, color, queries, 1) }
+            }
+            Request::UpdateFilterList { revision, .. } if revision != 4 => {
+                Response::Error { code: "conflict".into(), message: "the list changed".into() }
+            }
+            Request::UpdateFilterList { collection, revision, name, color, queries } => {
+                Response::Collection { collection: filter_list(&collection, &name, color, queries, revision + 1) }
+            }
+            Request::DeleteFilterList { collection } if collection == "github:mahype/bugs" => Response::Ok,
+            Request::DeleteFilterList { .. } => {
+                Response::Error { code: "not-found".into(), message: "no such filter list".into() }
+            }
+            Request::PreviewFilter { queries, .. } if queries.iter().any(|q| q.contains("github.com/mahype")) => {
+                Response::Error { code: "error".into(), message: "That address is no list of issues.".into() }
+            }
+            Request::PreviewFilter { queries, .. } => Response::FilterPreview {
+                matches: queries.len() as u64,
+                truncated: false,
+                todos: vec![Todo { collection: String::new(), ..todo() }],
             },
             other => Response::Error { code: "error".into(), message: format!("test core does not know {other:?}") },
         }
@@ -370,6 +492,8 @@ mod tests {
                         id: "nextcloud:bob@other.example.test".into(),
                         label: "bob@other.example.test".into(),
                         collections: vec![],
+                        // Scopes come along (task G.5: whether ticking may close an issue).
+                        scopes: Some(vec!["repo".into()]),
                         ..account_info()
                     };
                     Response::Accounts { accounts: vec![account_info(), second] }
@@ -387,12 +511,14 @@ mod tests {
                     label: "anna@cloud.example.test".into(),
                     kind: "nextcloud".into(),
                     state: account(),
+                    scopes: None,
                 },
                 PimAccount {
                     id: "nextcloud:bob@other.example.test".into(),
                     label: "bob@other.example.test".into(),
                     kind: "nextcloud".into(),
                     state: account(),
+                    scopes: Some(vec!["repo".into()]),
                 },
             ]
         );
@@ -497,6 +623,62 @@ mod tests {
         let to_the_end = core.client().move_todo(moved, None).await.unwrap();
         assert_eq!(to_the_end[0].summary, "", "no before");
         assert!(matches!(core.client().move_todo(todo(), None).await, Err(ProviderError::Other(_))), "not saved");
+    }
+
+    #[tokio::test]
+    async fn unpin_sends_list_and_item() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        client.unpin_issue("github:mahype/bugs".into(), "github:mahype/TorroWorkplace#7".into()).await.unwrap();
+        let other = client.unpin_issue("github:mahype/bugs".into(), "github:mahype/TorroWorkplace#8".into()).await;
+        assert_eq!(other, Err(ProviderError::Other("the list does not pin it".into())));
+    }
+
+    #[tokio::test]
+    async fn add_link_sends_list_and_address_and_returns_the_task() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let added = client.add_link("/tasks/home/".into(), "mahype/TorroWorkplace#7".into()).await.unwrap();
+        assert_eq!(
+            (added.collection.as_str(), added.url.as_deref()),
+            ("/tasks/home/", Some("mahype/TorroWorkplace#7"))
+        );
+        let refused = client.add_link("/tasks/home/".into(), "no link".into()).await;
+        assert_eq!(refused, Err(ProviderError::Other("not a GitHub link".into())));
+    }
+
+    #[tokio::test]
+    async fn filter_lists_are_created_changed_and_deleted() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let created = client.create_filter_list("github:mahype".into(), definition()).await.unwrap();
+        assert_eq!(created, filter_list("github:mahype/new", "Bugs", Some("#E8A33D".into()), definition().queries, 1));
+        let changed = client.update_filter_list("github:mahype/bugs".into(), 4, definition()).await.unwrap();
+        assert_eq!(changed.source.map(|s| s.revision), Some(5), "the revision went out");
+        client.delete_filter_list("github:mahype/bugs".into()).await.unwrap();
+        let gone = client.delete_filter_list("github:mahype/other".into()).await;
+        assert_eq!(gone, Err(ProviderError::Other("no such filter list".into())));
+    }
+
+    #[tokio::test]
+    async fn an_outdated_revision_is_a_conflict_naming_the_list() {
+        let core = start(|request| async move { answer(request) }).await;
+        let stale = core.client().update_filter_list("github:mahype/bugs".into(), 3, definition()).await;
+        assert_eq!(stale, Err(ProviderError::Conflict { uid: "github:mahype/bugs".into() }));
+    }
+
+    #[tokio::test]
+    async fn preview_sends_the_searches_and_reads_the_matches() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let queries = definition().queries;
+        let preview = client.preview_filter("github:mahype".into(), queries).await.unwrap();
+        assert_eq!(preview.matches, 2, "both searches went out");
+        assert!(!preview.truncated);
+        assert_eq!(preview.todos.len(), 1);
+        let address = vec!["https://github.com/mahype".to_string()];
+        let refused = client.preview_filter("github:mahype".into(), address).await;
+        assert_eq!(refused, Err(ProviderError::Other("That address is no list of issues.".into())));
     }
 
     #[tokio::test]

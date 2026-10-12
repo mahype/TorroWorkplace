@@ -2,7 +2,8 @@
 //! an example window built with `torro_gui::shell`.
 //!
 //! `cargo run -p torro-gui --example gallery` shows the styles (dark), `-- --light` in light mode,
-//! `-- --blocks` the building blocks, `-- --window` the example "Tasks" window (sample data from
+//! `-- --blocks` the building blocks, `-- --parts` the small parts of the tasks redesign (property
+//! lines, label chips, state pills, progress bars) and every bundled icon, `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
@@ -34,8 +35,11 @@ use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Place
 fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().collect();
     let start = Start::from_args(&args);
-    let size =
-        if start.page == Page::Window { iced::Size::new(1440.0, 900.0) } else { iced::Size::new(3700.0, 1060.0) };
+    let size = match start.page {
+        Page::Window => iced::Size::new(1440.0, 900.0),
+        Page::Parts => iced::Size::new(3200.0, 840.0),
+        _ => iced::Size::new(3700.0, 1060.0),
+    };
     iced::application(move || Gallery::new(start), Gallery::update, Gallery::view)
         .settings(torro_gui::settings())
         .title("Torro style gallery")
@@ -62,6 +66,8 @@ fn window(size: iced::Size) -> iced::window::Settings {
 enum Page {
     Styles,
     Blocks,
+    /// The small parts of the tasks redesign (R.1) and every bundled icon.
+    Parts,
     Window,
 }
 
@@ -90,6 +96,8 @@ impl Start {
             Page::Window
         } else if has("--blocks") {
             Page::Blocks
+        } else if has("--parts") {
+            Page::Parts
         } else {
             Page::Styles
         };
@@ -234,6 +242,7 @@ impl Gallery {
         match self.page {
             Page::Window => responsive(move |size| self.tasks_window(layout::of(size))).into(),
             Page::Blocks => self.page_frame(self.blocks()),
+            Page::Parts => self.page_frame(self.parts()),
             Page::Styles => self.page_frame(self.styles()),
         }
     }
@@ -285,12 +294,13 @@ impl Gallery {
         let title =
             row![typo::text(typo::BODY_STRONG, "Style gallery"), typo::text(typo::BODY, mode).style(theme::text_3)]
                 .spacing(space::S);
-        let pages = [Page::Styles, Page::Blocks, Page::Window];
+        let pages = [Page::Styles, Page::Blocks, Page::Parts, Page::Window];
         let active = pages.iter().position(|p| *p == self.page).unwrap_or(0);
         let pages = widgets::segmented(
             [
                 ("Styles", Msg::Page(Page::Styles)),
                 ("Blocks", Msg::Page(Page::Blocks)),
+                ("Parts", Msg::Page(Page::Parts)),
                 ("Window", Msg::Page(Page::Window)),
             ],
             active,
@@ -849,6 +859,13 @@ fn quiet<'a>(which: Icon, edge: f32) -> Element<'a, Msg> {
     let quiet: Element<'static, Msg> =
         icon(which, edge).style(|t, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }).into();
     quiet
+}
+
+/// An icon tinted with a palette colour that follows the mode.
+fn coloured_svg(
+    colour: impl Fn(&Palette) -> Color + 'static,
+) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
+    move |t, _| iced::widget::svg::Style { color: Some(colour(palette(t))) }
 }
 
 fn coloured(colour: impl Fn(&Palette) -> Color + 'static) -> impl Fn(&Theme) -> iced::widget::text::Style {
@@ -1453,5 +1470,197 @@ impl Gallery {
         let fourth =
             column![section("Settings group", settings.into()), section("States", states.into())].spacing(space::XL);
         row![first, second, third, fourth].spacing(space::XXL).padding(space::XL).into()
+    }
+
+    /// The small parts of the tasks redesign (R.1) in the places R.2 and R.3 use them, and every
+    /// bundled icon with its name.
+    fn parts(&self) -> Element<'_, Msg> {
+        let p = self.palette();
+        let value = |text: &'static str| widgets::prop_value::<Msg>(text);
+        let date = |text: &'static str| typo::text(typo::BODY.tabular(), text);
+        let labels = |names: &[(&'static str, &'static str)]| {
+            widgets::label_chip_row(names.iter().map(|(hex, name)| widgets::label_chip(hex, *name)).collect())
+        };
+        let block = |title: &'static str, rows: Vec<Element<'static, Msg>>| widgets::prop_section(title, rows);
+        let props = column![
+            column(vec![
+                widgets::prop_line("Status", Some(Mark::Tinted(Icon::CircleDot, p.ok)), value("Open"), Some(Msg::Noop)),
+                widgets::prop_line(
+                    "Priority",
+                    None,
+                    row![priority(3, false), value("High")].spacing(space::S).align_y(Alignment::Center),
+                    Some(Msg::Noop),
+                ),
+                widgets::prop_line("Due", Some(Mark::Icon(Icon::Calendar)), date("Today, 16:00"), Some(Msg::Noop),),
+                widgets::prop_line(
+                    "Reminder",
+                    Some(Mark::Icon(Icon::Bell)),
+                    widgets::prop_placeholder("Add reminder"),
+                    Some(Msg::Noop),
+                ),
+                widgets::prop_line("Repeat", Some(Mark::Icon(Icon::Repeat)), value("Every 3 days"), Some(Msg::Noop),),
+            ]),
+            rule::horizontal(1).style(style::rule),
+            block(
+                "Organisation",
+                vec![
+                    widgets::prop_line("List", Some(Mark::Ring(p.calendar[0])), value("Work"), Some(Msg::Noop)),
+                    widgets::prop_line(
+                        "Parent",
+                        Some(Mark::Icon(Icon::ListTree)),
+                        widgets::prop_placeholder("Add parent task"),
+                        Some(Msg::Noop),
+                    ),
+                    widgets::prop_line(
+                        "Labels",
+                        None,
+                        labels(&[
+                            ("d73a4a", "bug"),
+                            ("#3B82F6", "ui"),
+                            ("#D4A72C", "linux"),
+                            ("#2DA44E", "enhancement")
+                        ]),
+                        Some(Msg::Noop),
+                    ),
+                    widgets::prop_line(
+                        "Labels",
+                        Some(Mark::Icon(Icon::Tag)),
+                        widgets::prop_placeholder("Add labels"),
+                        Some(Msg::Noop),
+                    ),
+                ]
+            ),
+            rule::horizontal(1).style(style::rule),
+            block(
+                "Source",
+                vec![
+                    widgets::prop_line("Account", Some(Mark::Icon(Icon::Github)), value("GitHub · mahype"), None),
+                    widgets::prop_line(
+                        "Repo",
+                        Some(Mark::Icon(Icon::FolderGit2)),
+                        value("mahype/TorroWorkplace"),
+                        Some(Msg::Noop),
+                    ),
+                    widgets::prop_line("Milestone", Some(Mark::Icon(Icon::Milestone)), value("v0.4"), Some(Msg::Noop),),
+                    widgets::prop_line(
+                        "Branch",
+                        Some(Mark::Icon(Icon::GitBranch)),
+                        value("anna/tray-templates-with-a-very-long-branch-name"),
+                        None,
+                    ),
+                ]
+            ),
+        ]
+        .spacing(space::S);
+        let props = container(props)
+            .width(size::PROPS)
+            .padding(iced::Padding { top: space::L, right: space::L, bottom: space::XL, left: space::L })
+            .style(style::container::panel);
+
+        let cell = |content: Element<'static, Msg>, name: &'static str| -> Element<'static, Msg> {
+            row![content, typo::text(typo::META, name).style(theme::text_3)]
+                .spacing(space::S)
+                .align_y(Alignment::Center)
+                .into()
+        };
+        let pills = column![
+            row![
+                widgets::state_pill(Mark::Tinted(Icon::CircleDot, p.ok), "Open"),
+                widgets::state_pill(Mark::Tinted(Icon::GitPullRequest, p.ok), "Open"),
+                widgets::state_pill(Icon::GitPullRequestDraft, "Draft"),
+                widgets::state_pill(Mark::Tinted(Icon::GitMerge, p.merged), "Merged"),
+                widgets::state_pill(Mark::Tinted(Icon::CircleCheck, p.merged), "Closed"),
+                widgets::state_pill(Mark::Tinted(Icon::GitPullRequestClosed, p.error), "Closed"),
+                widgets::state_pill(Mark::Tinted(Icon::CircleCheck, p.ok), "Completed"),
+            ]
+            .spacing(space::S),
+            row![
+                widgets::label_chip("#D73A4A", "bug"),
+                widgets::label_chip("#3B82F6", "ui"),
+                widgets::label_chip("#D4A72C", "linux"),
+                widgets::label_chip("2da44e", "enhancement"),
+                widgets::label_chip("not a colour", "no colour"),
+                typo::text(typo::CAPTION.tabular(), "+2").style(theme::text_3),
+            ]
+            .spacing(space::XS)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(space::M);
+        let bar = |done: usize, total: usize| -> Element<'static, Msg> {
+            row![
+                widgets::progress_bar(done, total),
+                typo::text(typo::META.tabular(), format!("{done}/{total}")).style(theme::text_3)
+            ]
+            .spacing(space::S)
+            .align_y(Alignment::Center)
+            .into()
+        };
+        let sub_tasks = column![
+            row![
+                icon(Icon::ChevronDown, 12.0).style(|t, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }),
+                typo::text(typo::CAPTION, "Sub-tasks").style(theme::text_2),
+                bar(2, 4),
+            ]
+            .spacing(space::S)
+            .align_y(Alignment::Center),
+            row![bar(0, 3), bar(4, 4), bar(0, 0)].spacing(space::XL),
+        ]
+        .spacing(space::M);
+        let hint = |which: Icon, label: &'static str| -> Element<'static, Msg> {
+            let mut r = row![quiet(which, icon::SIZE_SM)].spacing(space::XS).align_y(Alignment::Center);
+            if !label.is_empty() {
+                r = r.push(typo::text(typo::META.tabular(), label).style(theme::text_3));
+            }
+            r.into()
+        };
+        let hints = row![
+            hint(Icon::ListChecks, "2/4"),
+            hint(Icon::AlignLeft, ""),
+            hint(Icon::Repeat, ""),
+            hint(Icon::Bell, ""),
+            hint(Icon::GripVertical, ""),
+            widgets::kbd("N"),
+            widgets::kbd("Ctrl L"),
+        ]
+        .spacing(space::L)
+        .align_y(Alignment::Center);
+        let ci = row![
+            cell(icon(Icon::CircleDotDashed, icon::SIZE_SM).style(coloured_svg(|p| p.attention)).into(), "running"),
+            cell(icon(Icon::CircleCheck, icon::SIZE_SM).style(coloured_svg(|p| p.ok)).into(), "passed"),
+            cell(icon(Icon::CircleX, icon::SIZE_SM).style(coloured_svg(|p| p.error)).into(), "failed"),
+            cell(icon(Icon::CircleDashed, icon::SIZE_SM).style(coloured_svg(|p| p.text_3)).into(), "queued"),
+            cell(icon(Icon::Eye, icon::SIZE_SM).style(coloured_svg(|p| p.attention)).into(), "review"),
+            cell(icon(Icon::GitMerge, icon::SIZE).style(coloured_svg(|p| p.merged)).into(), "merged"),
+        ]
+        .spacing(space::L)
+        .align_y(Alignment::Center);
+        let small = column![
+            section("State pills and label chips", pills.into()),
+            section("Progress bar", sub_tasks.into()),
+            section("Hints in a row, key hints", hints.into()),
+            section("Check and state symbols", ci.into()),
+        ]
+        .spacing(space::XL);
+
+        let every_icon = iced::widget::Row::with_children(Icon::ALL.iter().map(|&which| -> Element<'static, Msg> {
+            row![quiet(which, icon::SIZE), typo::text(typo::META, format!("{which:?}")).style(theme::text_2)]
+                .spacing(space::S)
+                .align_y(Alignment::Center)
+                .width(170)
+                .into()
+        }))
+        .spacing(space::S)
+        .wrap()
+        .vertical_spacing(space::M);
+        let icons = container(every_icon).width(1000);
+
+        row![
+            section("Properties column", props.into()),
+            small,
+            section("Every bundled icon (Lucide 0.469.0, stroke 1.75)", icons.into())
+        ]
+        .spacing(space::XXL)
+        .padding(space::XL)
+        .into()
     }
 }

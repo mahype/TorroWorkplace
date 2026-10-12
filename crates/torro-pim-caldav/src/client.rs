@@ -4,6 +4,10 @@
 //! server (task M1.4): every URL it is handed or finds in an answer must have the origin
 //! (scheme, host, port) of the account URL it was made with ([`CalDavClient::on_server`]).
 //! Anything else is refused before a request is built.
+//!
+//! The collections come with whether they are private to the user (task G.6b,
+//! [`CalDavClient::collections_with_privacy`]): theirs and writable by nobody else, as Nextcloud
+//! reports owner and sharees. The core resolves GitHub links only there.
 
 use chrono::{DateTime, Utc};
 use reqwest::{Method, StatusCode, Url};
@@ -14,6 +18,15 @@ use crate::{CalDavAccount, http_error, ical};
 const NS_DAV: &str = "DAV:";
 const NS_CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
 const NS_APPLE: &str = "http://apple.com/ns/ical/";
+/// Nextcloud's (ownCloud's) sharing properties: `owner-principal`, `invite`.
+const NS_OWNCLOUD: &str = "http://owncloud.org/ns";
+
+/// What [`CalDavClient::collections_with_privacy`] asks of every collection in the calendar home:
+/// kind, name, colour and rights, and who owns it and whom it is shared with (`{DAV:}owner` from
+/// RFC 3744, Nextcloud's `oc:owner-principal` and `oc:invite`).
+const COLLECTIONS_PROPFIND: &str = r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/" xmlns:oc="http://owncloud.org/ns">
+  <d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><c:supported-calendar-component-set/><d:current-user-privilege-set/><d:owner/><oc:owner-principal/><oc:invite/></d:prop>
+</d:propfind>"#;
 
 /// A signed-in connection to one CalDAV account.
 #[derive(Debug, Clone)]
@@ -44,14 +57,31 @@ impl CalDavClient {
     /// The calendars and task lists of the account. A calendar the server lists on another
     /// host is left out: the client would have to send the password there to read it.
     pub async fn collections(&self) -> Result<Vec<Collection>, ProviderError> {
+        Ok(self.collections_with_privacy().await?.into_iter().map(|(collection, _)| collection).collect())
+    }
+
+    /// The collections of [`CalDavClient::collections`], each with whether it is *private*: the
+    /// signed-in user owns it and nobody else may write to it (task G.6b, [`private`]). The core
+    /// resolves GitHub links with the user's token only in private lists; in any other list
+    /// someone else could place a link and read what GitHub answers. `false` whenever the server
+    /// does not say (fail closed).
+    pub async fn collections_with_privacy(&self) -> Result<Vec<(Collection, bool)>, ProviderError> {
         let principal =
             self.find_href(&self.base, "<d:current-user-principal/>", NS_DAV, "current-user-principal").await?;
         let home = self.find_href(&principal, "<c:calendar-home-set/>", NS_CALDAV, "calendar-home-set").await?;
-        let body = r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">
-  <d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><c:supported-calendar-component-set/><d:current-user-privilege-set/></d:prop>
-</d:propfind>"#;
-        let xml = self.request("PROPFIND", &home, "1", body).await?;
-        let doc = parse_xml(&xml)?;
+        let xml = self.request("PROPFIND", &home, "1", COLLECTIONS_PROPFIND).await?;
+        self.collections_in_answer(&xml, &home, &principal)
+    }
+
+    /// The collections in the answer `xml` to [`COLLECTIONS_PROPFIND`] on the calendar home
+    /// `home` of the user `principal`, each with whether it is private ([`private`]).
+    fn collections_in_answer(
+        &self,
+        xml: &str,
+        home: &Url,
+        principal: &Url,
+    ) -> Result<Vec<(Collection, bool)>, ProviderError> {
+        let doc = parse_xml(xml)?;
         let mut collections = Vec::new();
         for response in responses(&doc) {
             let Some(prop) = ok_prop(response) else { continue };
@@ -84,7 +114,8 @@ impl CalDavClient {
                 .map(|c| c.trim().chars().take(7).collect::<String>())
                 .filter(|c| c.len() == 7 && c.starts_with('#'));
             let writable = writable(prop);
-            collections.push(Collection { id: url.to_string(), name, kind, color, writable, source: None });
+            let private = private(prop, home, principal);
+            collections.push((Collection { id: url.to_string(), name, kind, color, writable, source: None }, private));
         }
         Ok(collections)
     }
@@ -171,6 +202,75 @@ fn writable(prop: roxmltree::Node<'_, '_>) -> bool {
             && p.tag_name().namespace() == Some(NS_DAV)
             && matches!(p.tag_name().name(), "all" | "write" | "write-content" | "bind")
     })
+}
+
+/// Whether the collection in `prop` (of the calendar home `home`) is private to the user
+/// `principal`: it is theirs ([`owned`]) and nobody else may write to it ([`shared_for_writing`]).
+/// Someone who may write to a list could place a GitHub link there and read the title the core
+/// fetches with the user's token (task G.6b).
+fn private(prop: roxmltree::Node<'_, '_>, home: &Url, principal: &Url) -> bool {
+    owned(prop, home, principal) && !shared_for_writing(prop)
+}
+
+/// Whether the server reports `principal` as the owner of the collection in `prop`: Nextcloud's
+/// `oc:owner-principal` (`principals/users/anna`, relative to its DAV root; a calendar shared with
+/// the user names the one who shared it) and the standard `{DAV:}owner` (an href; Nextcloud reports
+/// the same owner there). Every owner reported must be the user; none reported is not owned.
+fn owned(prop: roxmltree::Node<'_, '_>, home: &Url, principal: &Url) -> bool {
+    let me = principal_path(principal);
+    let nextcloud = child(prop, NS_OWNCLOUD, "owner-principal")
+        .and_then(|n| n.text())
+        .map(|owner| owner.trim().trim_matches('/'))
+        .filter(|owner| !owner.is_empty())
+        .map(|owner| me.ends_with(&format!("/{}", percent_decoded(owner))));
+    let acl = child(prop, NS_DAV, "owner")
+        .and_then(|owner| child(owner, NS_DAV, "href"))
+        .and_then(|href| href.text())
+        .map(|href| {
+            home.join(href.trim()).is_ok_and(|url| url.origin() == principal.origin() && principal_path(&url) == me)
+        });
+    match (nextcloud, acl) {
+        (None, None) => false,
+        (nextcloud, acl) => nextcloud.unwrap_or(true) && acl.unwrap_or(true),
+    }
+}
+
+/// Whether others may write to the collection in `prop`, as far as the server says: Nextcloud
+/// lists the sharees of the user's own collections in `oc:invite`, each with `oc:read` or
+/// `oc:read-write` (users, groups and circles alike; public links are read-only). A server that
+/// reports no `oc:invite` says nothing about it, which counts as shared.
+fn shared_for_writing(prop: roxmltree::Node<'_, '_>) -> bool {
+    let Some(invite) = child(prop, NS_OWNCLOUD, "invite") else { return true };
+    invite.descendants().any(|node| is(node, NS_OWNCLOUD, "read-write"))
+}
+
+/// The path of a principal URL, percent-decoded and without a trailing slash, so
+/// `/remote.php/dav/principals/users/anna%40example.org/` and the `principals/users/anna@example.org`
+/// of `oc:owner-principal` compare.
+fn principal_path(url: &Url) -> String {
+    percent_decoded(url.path().trim_end_matches('/'))
+}
+
+/// `text` with every `%XX` decoded; anything else, and a `%` not followed by two hex digits, as it
+/// is. Invalid UTF-8 becomes U+FFFD, which then matches nothing.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&byte) = bytes.get(i) {
+        let hex = bytes.get(i + 1..i + 3).and_then(|pair| std::str::from_utf8(pair).ok());
+        match hex.and_then(|pair| u8::from_str_radix(pair, 16).ok()) {
+            Some(decoded) if byte == b'%' => {
+                out.push(decoded);
+                i += 3;
+            }
+            _ => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn parse_xml(xml: &str) -> Result<roxmltree::Document<'_>, ProviderError> {
@@ -376,6 +476,88 @@ END:VCALENDAR
         ] {
             assert!(client.on_server(url(foreign)).is_err(), "{foreign}");
         }
+    }
+
+    /// One collection of a calendar home answer, at `path` under anna's home, with `props` added
+    /// to its 200 propstat.
+    fn home_entry(path: &str, props: &str) -> String {
+        format!(
+            r#"<d:response><d:href>/remote.php/dav/calendars/anna/{path}/</d:href><d:propstat><d:prop>
+<d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>{path}</d:displayname>
+<c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>{props}
+</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"#
+        )
+    }
+
+    #[test]
+    fn only_lists_of_the_user_that_nobody_else_may_write_to_are_private() {
+        let shared = |access: &str| {
+            format!(
+                "<oc:invite><oc:user><d:href>principal:principals/users/bob</d:href><oc:common-name>Bob</oc:common-name>\
+                 <oc:invite-accepted/><oc:access><oc:{access}/></oc:access></oc:user></oc:invite>"
+            )
+        };
+        let anna = "<oc:owner-principal>principals/users/anna</oc:owner-principal>";
+        let entries = [
+            home_entry("own", &format!("{anna}<oc:invite/>")),
+            home_entry("read-only-for-bob", &format!("{anna}{}", shared("read"))),
+            home_entry("writable-for-bob", &format!("{anna}{}", shared("read-write"))),
+            home_entry(
+                "team_shared_by_bob",
+                "<oc:owner-principal>principals/users/bob</oc:owner-principal><oc:invite/>\
+                 <d:owner><d:href>/remote.php/dav/principals/users/bob</d:href></d:owner>",
+            ),
+            home_entry(
+                "acl-owner",
+                "<d:owner><d:href>/remote.php/dav/principals/users/anna</d:href></d:owner><oc:invite/>",
+            ),
+            home_entry(
+                "owners-disagree",
+                "<oc:owner-principal>principals/users/anna</oc:owner-principal><oc:invite/>\
+                 <d:owner><d:href>/remote.php/dav/principals/users/bob</d:href></d:owner>",
+            ),
+            home_entry("nobody-says", "<oc:invite/>"),
+            home_entry("sharing-unknown", anna),
+        ];
+        let xml = format!(
+            r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:oc="http://owncloud.org/ns">{}</d:multistatus>"#,
+            entries.concat()
+        );
+        let account =
+            CalDavAccount { url: "https://cloud.example.org/remote.php/dav/".into(), username: "anna".into() };
+        let client = CalDavClient::new(reqwest::Client::new(), &account, "secret".into()).expect("client");
+        let url = |text: &str| Url::parse(text).expect("url");
+        let home = url("https://cloud.example.org/remote.php/dav/calendars/anna/");
+        let principal = url("https://cloud.example.org/remote.php/dav/principals/users/anna/");
+
+        let found = client.collections_in_answer(&xml, &home, &principal).expect("answer parses");
+        let private: Vec<(&str, bool)> = found.iter().map(|(c, private)| (c.name.as_str(), *private)).collect();
+        assert_eq!(
+            private,
+            [
+                ("own", true),
+                ("read-only-for-bob", true),
+                ("writable-for-bob", false),
+                ("team_shared_by_bob", false),
+                ("acl-owner", true),
+                ("owners-disagree", false),
+                ("nobody-says", false),
+                ("sharing-unknown", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn owners_compare_without_percent_encoding() {
+        let xml = r#"<d:prop xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><oc:owner-principal>principals/users/anna@example.org</oc:owner-principal><oc:invite/></d:prop>"#;
+        let doc = roxmltree::Document::parse(xml).expect("xml");
+        let url = |text: &str| Url::parse(text).expect("url");
+        let home = url("https://cloud.example.org/remote.php/dav/calendars/anna%40example.org/");
+        let anna = url("https://cloud.example.org/remote.php/dav/principals/users/anna%40example.org/");
+        let other = url("https://cloud.example.org/remote.php/dav/principals/users/xanna@example.org/");
+        assert!(private(doc.root_element(), &home, &anna));
+        assert!(!private(doc.root_element(), &home, &other), "a name that only ends the same is someone else");
+        assert_eq!(percent_decoded("a%40b%2"), "a@b%2");
     }
 
     #[test]

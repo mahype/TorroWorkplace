@@ -1,50 +1,97 @@
 //! The tasks window: state, loading, quick add, saving, and the Linear window around it (task
 //! T.1): `torro_gui::shell` with the sidebar (filters, lists, "Open Calendar", "Settings") in the
-//! wide layout and a navigation menu ("Today ▾") plus drawer in the medium and narrow ones. In the
-//! wide layout the sidebar collapses to a rail of icons (U.2: panel button or `[`, remembered in
-//! `ui.json`); the medium layout always shows that rail. The
-//! list (`list.rs`) and the detail panel (`detail.rs`) only render and report clicks as
-//! [`Message`]s.
+//! wide layout and a navigation menu ("Today ▾") plus drawer in the narrow one. In the wide layout
+//! the sidebar collapses to a rail of icons (U.2: panel button or `[`, remembered in `ui.json`);
+//! the medium layout always shows that rail. The list (`list.rs`) and the detail (`detail.rs`)
+//! only render and report clicks as [`Message`]s.
 //!
-//! The detail (T.4, U.5) is the side panel of `torro_gui::panel`: beside the list in the wide
-//! layout (where it takes the place of the properties column), over the list in the medium and
-//! narrow ones (full width in narrow); the list keeps its width. It has no Save button: it hands
-//! out saves as it changes, and while title or notes wait to be saved a one-second timer sends
-//! `Flush` ([`AUTOSAVE`]).
+//! The columns (redesign R.2 in `docs/tasks/design.md`, mock-up
+//! `docs/prototypes/tasks/redesign.html`) – see [`Columns`]: without an open task the list stands
+//! alone at the left, at most [`size::CONTENT_MAX`] wide. With one open, wide windows whose content
+//! is at least [`THREE_COLUMNS_FROM`] wide show three columns – the list ([`size::LIST`]), the
+//! detail and the properties ([`size::PROPS`]) –, narrower wide and medium windows the list
+//! ([`size::LIST_MEDIUM`]) and the detail, narrow windows the detail instead of the list. A
+//! line separates the columns. Each column has its own head in the window's header bar: the list's
+//! (filter, "{n} open", Display, "New task") over the list, the detail's (path, ↑ ↓, close) over
+//! detail and properties; the header line runs under both.
 //!
-//! The header (T.2) has one primary button, "New task", that focuses the quick add row (the same
-//! message as "New" at the app switcher); "Show completed" lives in the small Display menu. There
-//! is no filter function yet, so no "Filter" button.
+//! Detail and properties come from `detail.rs` (task R.3) and are put in at three places:
+//! [`App::detail_head`] (in the header bar), [`App::detail_column`] and
+//! [`App::properties_column`]; [`App::fit`] tells the detail which layout it is in. Its editors
+//! and its "…" menu float over the window like the app's menus.
+//!
+//! The detail has no Save button: it hands out saves as it changes, and while title or notes wait
+//! to be saved a one-second timer sends `Flush` ([`AUTOSAVE`]).
+//!
+//! The list head has one primary button, "New task", that focuses the quick add row (the same
+//! message as "New" at the app switcher). The Display menu groups the list (due date, list,
+//! priority, none), shows or hides completed tasks and syncs ("Sync now", with the time of the
+//! last sync). There is no filter function yet, so no "Filter" button, and no "Refresh" button:
+//! syncing lives in the Display menu and on `R`.
 //!
 //! The window size picks the layout ([`layout::of`], design skill section 6): mini and strip are
 //! glances without any frame (`glance.rs`: the numbers "3 overdue · 5 today" and the next open
-//! tasks, to be ticked off and nothing else); narrow is the list with "Today ▾" in the header and
-//! the detail over the list; medium and wide are as described above. The size is kept in the
-//! state ([`Message::Resized`]), so the keys can be switched off in a glance; filter, selection,
-//! open detail and quick add text survive every change of size.
+//! tasks, to be ticked off and nothing else); narrow, medium and wide are as described above. The
+//! size is kept in the state ([`Message::Resized`]), so the keys can be switched off in a glance;
+//! filter, selection, open detail, folded groups and quick add text survive every change of size.
 //!
-//! The keyboard (T.3): ↑/↓ move a cursor through the rows as the list shows them (groups and
-//! subtasks included), Enter opens the task under it, Space ticks it, N focuses the quick add
-//! row, Escape closes menu, drawer or detail (see [`Message::Escape`]). The cursor is the
-//! highlighted row; the list scrolls to keep it in view. Plain keys are ignored while a text
-//! field has the focus ([`shortcut`], [`typing`]) or a menu is open.
+//! Issues of a GitHub filter list have a check (task G.5): ticking one closes it on GitHub through
+//! the core's `save_todo` ([`Message::IssueChanged`]), and a quiet card at the bottom says "Issue
+//! closed" with "Undo" (reopens it) for [`NOTICE_FOR`]. Pull requests have none; where the
+//! account's token may not write issues ([`PimAccount::may_close_issues`]) the check is locked.
+//!
+//! The keyboard (T.3): ↑/↓ or j/k move a cursor through the rows as the list shows them (groups
+//! and subtasks included) – with a task open they open the next one –, Enter opens the task under
+//! it, Space ticks it, N focuses the quick add row, R syncs, Escape closes menu, drawer or detail
+//! (see [`Message::Escape`]). The cursor is the highlighted row; the list scrolls to keep it in
+//! view. Plain keys are ignored while a text field has the focus ([`shortcut`], [`typing`]) or a
+//! menu is open.
+//!
+//! GitHub links (task G.6): a GitHub address or `owner/repo#12` in quick add ([`Link::pasted`])
+//! goes to the core's `add_link` instead of becoming a task titled with it: in a task list a link
+//! task with GitHub's title (and the due date quick add gives there), in a filter list – whose quick
+//! add row says "Paste a GitHub link to pin…" – a pinned item. "Add to list…" in the detail of a
+//! filter list's item does the same for the list picked; a card then says "Added to {list}" when
+//! that is not the list shown (task G.6b). A link has the issue's check in the list
+//! and the detail; ticking one goes the way of an issue of a filter list, so "Issue closed · Undo"
+//! shows when the core closed the issue too – only when its answer reports the issue closed and
+//! it was not before. In a list shared with others the core closes nothing (task G.6c), so no card.
+//!
+//! GitHub filter lists (task G.4): "New filter list…" closes the GitHub account's group in the
+//! sidebar, the "…" menu in the head of a filter list has "Edit filter…" and "Delete list…". The
+//! dialog itself is `filter.rs`; the app only opens it, runs its tasks and acts on its
+//! [`filter::Outcome`] (show the saved list, leave a deleted one, reload after a conflict).
+//!
+//! Manual order (task P.3b): a single writable list can be ordered by hand – Display › Order "Due
+//! date" / "Manual", stored per list in the suite settings (`settings.set_setting` `list_order`,
+//! read with the settings on every tick; `--demo` keeps it in the process). In "Manual" the list
+//! has no groups (`list.rs`); Alt+↑/↓ moves the task under the cursor one step among the tasks it is
+//! ordered with, and a row can be dragged by its grip. A move shows at once and goes to the core's
+//! `tasks.move_todo` ([`Moving`], one at a time); an error puts the list back, says so and reloads.
+//!
+//! Dragging to the sidebar (task G.6c): in a GitHub filter list, and in a writable list with
+//! another list of its account, every row has the grip. Dragged onto a list of the sidebar that
+//! takes it ([`App::drop_targets`]; that row shows a ring, `shell::drop_target`), an item of a
+//! filter list becomes a link there (`tasks.add_link`, "Added to {list}"), a task moves there
+//! (`tasks.save_todo` with the new list, "Moved to {list}"). Lists of another account are no
+//! targets: the core refuses such a move (`unsupported`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Local, NaiveDate, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, row, stack, svg, text, text_input};
-use iced::{Alignment, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
+use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::ListOrder;
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::panel;
 use torro_gui::shell::{self, SidebarMode, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
@@ -52,11 +99,15 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
-use torro_ipc::{Request, Response};
+use torro_ipc::{Request, Response, SettingKey};
+use torro_pim::account::{GITHUB_KIND, account_of, combined_state_for};
 use torro_pim::demo::DemoSource;
-use torro_pim::{AccountState, Collection, EventTime, PimAccount, PimSource, Todo};
+use torro_pim::model::{GitHubFilter, GitHubKind, GitHubState, Link};
+use torro_pim::source::move_plan;
+use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, ProviderError, Todo};
 
-use crate::detail::{self, Detail};
+use crate::detail::{self, Detail, Fit};
+use crate::filter;
 use crate::glance::{self, GlanceData};
 use crate::list::{self, ListData};
 
@@ -82,6 +133,8 @@ pub enum Menu {
     Nav,
     /// The Display menu in the header ("Show completed").
     Display,
+    /// The "…" menu in the head of a GitHub filter list: "Edit filter…", "Delete list…".
+    List,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so that every state can be
@@ -100,6 +153,31 @@ pub enum Open {
     Switcher,
     /// The detail of the first task with its due date card open.
     Due,
+    /// The detail of the first open pull request in the list (a GitHub item with checks and
+    /// review), so its detail can be photographed as well.
+    PullRequest,
+    /// The detail of the first task with its "…" menu open (Copy link, Delete task).
+    More,
+    /// The first GitHub filter list whose last refresh failed (else the first one): its symbol in
+    /// the sidebar, the hint over the list, the rows grouped by repository.
+    FilterList,
+    /// The first item pinned in a filter list, in the detail with its "…" menu open (Unpin).
+    Pinned,
+    /// The first writable task list in manual order (task P.3b): one run of rows, no groups.
+    Manual,
+    /// The same with the Display menu open on its "Order" section.
+    Order,
+    /// The same with its first row being dragged and the marker two places further down.
+    Drag,
+    /// The first filter list with its first row dragged onto the first writable list of the
+    /// sidebar, which shows the ring of a drop target (task G.6c).
+    Drop,
+    /// The dialog "New filter list" of the first GitHub account.
+    FilterNew,
+    /// The dialog "Edit filter list" of the first filter list, shown behind it.
+    FilterEdit,
+    /// The question before deleting the first filter list.
+    FilterDelete,
     /// The error state with its "Retry".
     Error,
     /// No tasks at all.
@@ -109,13 +187,24 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 9] = [
+    const ALL: [(&'static str, Open); 20] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
         ("due", Open::Due),
+        ("pr", Open::PullRequest),
+        ("more", Open::More),
+        ("filter", Open::FilterList),
+        ("pinned", Open::Pinned),
+        ("manual", Open::Manual),
+        ("order", Open::Order),
+        ("drag", Open::Drag),
+        ("drop", Open::Drop),
+        ("filter-new", Open::FilterNew),
+        ("filter-edit", Open::FilterEdit),
+        ("filter-delete", Open::FilterDelete),
         ("error", Open::Error),
         ("empty", Open::Empty),
         ("loading", Open::Loading),
@@ -128,8 +217,8 @@ impl Open {
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
 /// - `--now <YYYY-MM-DDTHH:MM>`: a fixed "now" (only its day counts here) and demo data around
-///   it, for pictures that can be made again; needs `--demo`. The detail panel still reads the
-///   clock itself (`detail.rs`).
+///   it, for pictures that can be made again; needs `--demo`. The detail counts from that day as
+///   well ([`Detail::on_day`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub open: Option<Open>,
@@ -231,12 +320,188 @@ const DEMO_ERROR: &str = "The server did not answer (demo)";
 
 /// The id of the quick add field, so "New" can focus it.
 const QUICK_ADD: &str = "quick-add";
-/// Where the quick add text starts: past the "+" icon, which sits 12 in from the edge.
-const QUICK_ADD_START: f32 = space::M + icon::SIZE_SM + space::S;
-/// Where the quick add text ends: before the key hint.
-const QUICK_ADD_END: f32 = space::XXL + space::S;
+/// Where the quick add text starts: on the axis of the rows' titles – past the leading symbol
+/// (16 in, 16 wide, 12 after it) and the priority column (14, 8 after it).
+const QUICK_ADD_START: f32 = space::L + icon::SIZE + space::M + icon::SIZE_SM + space::S;
+/// Where the quick add text ends: before the key hint "N" at the right.
+const QUICK_ADD_END: f32 = space::L + space::XL + space::S;
+/// Wide windows show the properties column beside the detail from this content width on (the
+/// panel next to the sidebar or rail): list 460 + detail + properties 300 (mock-up).
+pub const THREE_COLUMNS_FROM: f32 = 1320.0;
+/// List ([`size::LIST_MEDIUM`]) and detail side by side from this content width on: the detail
+/// then gets at least the width of the properties column ([`size::PROPS`]), the narrowest column
+/// the design gives a task's facts. Below it (medium windows under about 740) the detail beside
+/// the list would be a sliver of wrapped words – there it replaces the list as in narrow windows.
+/// The content's two border lines and the line between the columns count as well.
+pub const LIST_DETAIL_FROM: f32 = size::LIST_MEDIUM + size::PROPS + 3.0 * LINE;
+/// The list head keeps the label of "Display" from this list width on; narrower it is an icon
+/// with a tooltip (mock-up: `@container list (max-width:439px)`).
+const HEAD_LABELS_FROM: f32 = 440.0;
+/// The one-pixel lines between the columns.
+const LINE: f32 = size::HAIRLINE;
 /// How long after the last keystroke typed title or notes are saved.
 const AUTOSAVE: Duration = Duration::from_secs(1);
+/// How long "Issue closed · Undo" stays (task G.5): long enough to reach "Undo", short enough not
+/// to linger in a tile that runs all day.
+pub const NOTICE_FOR: Duration = Duration::from_secs(8);
+
+/// The card after an issue was closed (task G.5): "Issue closed" with "Undo".
+#[derive(Debug, Clone)]
+struct Notice {
+    /// The closed issue as the core answered, for "Undo" when the list does not hold it any more.
+    todo: Todo,
+    /// When it was closed; the card goes after [`NOTICE_FOR`] ([`Message::NoticeTick`]).
+    since: iced::time::Instant,
+    /// The name of the list a GitHub link went to when it is not the one shown (task G.6b): the
+    /// card then says "Added to {list}", without "Undo".
+    added_to: Option<String>,
+    /// With `added_to`: the task was moved there by dragging it onto the list (task G.6c), so the
+    /// card says "Moved to {list}".
+    moved: bool,
+}
+
+/// Moves of a list in manual order on their way to the core (task P.3b), sent one at a time: a
+/// move names its tasks by `href` and needs their current etags, which the answer to the one
+/// before brings. Each move shows at once ([`App::move_task`]).
+#[derive(Debug, Clone)]
+struct Moving {
+    /// The tasks as they were before the first move not answered yet: what an error goes back to.
+    undo: Vec<Todo>,
+    /// Moves behind the one in flight, oldest first: the task and the one it goes in front of
+    /// (`None`: the end of its level), by `href`.
+    queued: VecDeque<(String, Option<String>)>,
+}
+
+/// Which task: its list and uid (task G.3b). The uid alone is not enough, since the same issue is
+/// in every filter list that finds it, with the same uid; the cursor, the open detail and a drag
+/// must stay on the copy the user chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Key {
+    collection: String,
+    uid: String,
+}
+
+impl Key {
+    fn of(todo: &Todo) -> Key {
+        Key { collection: todo.collection.clone(), uid: todo.uid.clone() }
+    }
+
+    /// `todo` is the task this names.
+    fn is(&self, todo: &Todo) -> bool {
+        todo.uid == self.uid && todo.collection == self.collection
+    }
+}
+
+/// A row being dragged by its grip (task P.3b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Drag {
+    /// The dragged task, so a reload during the drag does not mix up rows.
+    key: Key,
+    /// Where the marker stands: a place of [`list::drop_places`]; `None` until the pointer moved.
+    place: Option<usize>,
+    /// The list of the sidebar the pointer is on, when it takes the task ([`App::drop_targets`],
+    /// task G.6c): the drop goes there, and the list's marker hides meanwhile.
+    over: Option<String>,
+}
+
+/// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Columns {
+    /// No task open: the list alone at the left, at most [`size::CONTENT_MAX`] wide (narrow
+    /// windows: the full width).
+    List,
+    /// Narrow windows with a task open: the detail instead of the list.
+    Detail,
+    /// The list ([`size::LIST_MEDIUM`]) and the detail; the properties are chips in the detail.
+    ListDetail,
+    /// The list ([`size::LIST`]), the detail and the properties column ([`size::PROPS`]).
+    ListDetailProps,
+}
+
+/// The columns for a window of `class` whose content (the panel beside sidebar or rail; the whole
+/// window in narrow ones) is `content` wide, with a task open in the detail or not. Mini and strip
+/// show a glance and no columns; they count as narrow here. A medium window too small for list
+/// and detail side by side ([`LIST_DETAIL_FROM`]) shows the detail instead of the list, as a
+/// narrow one does.
+pub fn columns(class: SizeClass, content: f32, detail_open: bool) -> Columns {
+    match (class, detail_open) {
+        (_, false) => Columns::List,
+        (SizeClass::Wide, true) if content >= THREE_COLUMNS_FROM => Columns::ListDetailProps,
+        (SizeClass::Wide | SizeClass::Medium, true) if content >= LIST_DETAIL_FROM => Columns::ListDetail,
+        (_, true) => Columns::Detail,
+    }
+}
+
+/// The width of the content for a window `width` wide in `class`: the window less the sidebar
+/// (`sidebar`: expanded or rail) and the inset margin in the wide and medium layouts, the whole
+/// window otherwise.
+pub fn content_width(class: SizeClass, sidebar: SidebarMode, width: f32) -> f32 {
+    let side = match (class, sidebar) {
+        (SizeClass::Wide, SidebarMode::Expanded) => size::SIDEBAR,
+        (SizeClass::Wide, SidebarMode::Rail) | (SizeClass::Medium, _) => shell::RAIL,
+        (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, _) => return width,
+    };
+    (width - side - size::INSET).max(0.0)
+}
+
+/// The width of the list column in `columns`, inside a content `content` wide: alone at most
+/// [`size::CONTENT_MAX`] (inside the panel's border; the whole panel when less than
+/// [`space::XXL`] would be left beside it) – the whole width in narrow windows –, beside
+/// the detail [`size::LIST`] or [`size::LIST_MEDIUM`]. Rows shorten after it ([`list::RowParts`]).
+pub fn list_width(class: SizeClass, columns: Columns, content: f32) -> f32 {
+    match columns {
+        Columns::List if matches!(class, SizeClass::Wide | SizeClass::Medium) => {
+            let inner = content - 2.0 * LINE;
+            // A sliver of empty panel beside the list would only look like a mistake: then the
+            // list takes the whole panel.
+            if inner - size::CONTENT_MAX < space::XXL { inner } else { size::CONTENT_MAX }
+        }
+        Columns::List | Columns::Detail => content,
+        Columns::ListDetail => size::LIST_MEDIUM,
+        Columns::ListDetailProps => size::LIST,
+    }
+}
+
+/// What quick add gives a new task when "+" of `group` was pressed (`None`: the quick add row
+/// itself): `(due, priority, list)`. A due group sets its day – yesterday for "Overdue", today,
+/// tomorrow for "Upcoming", none for "No date" –, a priority group its priority, a list group its
+/// list. Otherwise a task added under "Today" is due today, as before.
+pub fn quick_add_fields(
+    group: Option<&list::Group>,
+    filter: &Filter,
+    today: NaiveDate,
+) -> (Option<EventTime>, Option<u8>, Option<String>) {
+    use list::Group;
+    let day = |date: Option<NaiveDate>| date.map(EventTime::Date);
+    let by_filter = day((*filter == Filter::Today).then_some(today));
+    match group {
+        Some(Group::Overdue) => (day(today.pred_opt()), None, None),
+        Some(Group::Today) => (day(Some(today)), None, None),
+        Some(Group::Upcoming) => (day(today.succ_opt()), None, None),
+        Some(Group::NoDate) => (None, None, None),
+        Some(Group::List(id)) => (by_filter, None, Some(id.clone())),
+        Some(Group::Priority(prio)) => (by_filter, prio.ical(), None),
+        Some(Group::Completed | Group::Repo(_) | Group::All) | None => (by_filter, None, None),
+    }
+}
+
+/// Minutes in an hour and in a day, for [`ago`].
+const HOUR: i64 = 60;
+const DAY: i64 = 24 * HOUR;
+
+/// How long ago `then` was, for "Synced 2 min ago": "just now", "5 min ago", "3 h ago", "2 d ago".
+pub fn ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let minutes = (now - then).num_minutes();
+    if minutes < 1 {
+        tr("just now").into()
+    } else if minutes < HOUR {
+        trf("{n} min ago", &[("n", &minutes)])
+    } else if minutes < DAY {
+        trf("{n} h ago", &[("n", &(minutes / HOUR))])
+    } else {
+        trf("{n} d ago", &[("n", &(minutes / DAY))])
+    }
+}
 
 pub struct App {
     source: Source,
@@ -258,14 +523,23 @@ pub struct App {
     todos: Vec<Todo>,
     filter: Filter,
     show_completed: bool,
+    /// How the list groups its rows (Display menu). Window state, nothing is stored.
+    group_by: list::GroupBy,
+    /// How a GitHub filter list groups its rows: by repository until the Display menu says
+    /// otherwise (task G.3). Kept apart from `group_by`, which filter lists do not offer all of.
+    filter_group_by: list::GroupBy,
+    /// Groups folded away in the list. Window state.
+    collapsed: HashSet<list::Group>,
+    /// The group whose "+" was pressed: the next quick add task goes there ([`quick_add_fields`]).
+    quick_group: Option<list::Group>,
     /// Whether tasks have been loaded once; until then the list shows loading (or the error).
     loaded: bool,
     quick_add: String,
     /// Index into `todos` of the task open in the detail panel.
     selected: Option<usize>,
-    /// The uid of the task under the keyboard cursor: the highlighted row. A uid, not an index,
-    /// so it survives reloads; clicking a row or opening a task moves it there.
-    cursor: Option<String>,
+    /// The task under the keyboard cursor: the highlighted row. A [`Key`], not an index, so it
+    /// survives reloads; clicking a row or opening a task moves it there.
+    cursor: Option<Key>,
     /// The list's scroll offset and visible height, as last reported; none until it scrolls.
     scroll: Option<(f32, f32)>,
     detail: Option<Detail>,
@@ -280,13 +554,25 @@ pub struct App {
     sidebar: SidebarMode,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
+    /// "Issue closed · Undo" after ticking an issue of a filter list (task G.5).
+    notice: Option<Notice>,
+    /// The dialog of a GitHub filter list, while it is open (task G.4).
+    filter_dialog: Option<filter::Dialog>,
+    /// How the task lists are ordered (Display › Order, task P.3b), by list id; a list not named
+    /// here is ordered by due date. From the suite settings; `--demo` keeps it in the process.
+    list_orders: BTreeMap<String, ListOrder>,
+    /// Changes of `list_orders` on their way to the core; until they are answered, the settings
+    /// fetched meanwhile are older than what the window shows and are not taken.
+    orders_saving: usize,
+    /// Moves of a list in manual order the core has not answered yet.
+    moving: Option<Moving>,
+    /// The row being dragged by its grip, if any.
+    drag: Option<Drag>,
 }
 
+// A message may carry a whole task; two kinds do (`Saved`, `IssueChanged`), so Clippy no longer
+// counts one variant as oversized. Boxing them would only add an allocation.
 #[derive(Debug, Clone)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a message carries a whole task and is handled once; boxing would only add an allocation"
-)]
 pub enum Message {
     /// The window has this size (at start and after every resize).
     Resized(Size),
@@ -303,9 +589,28 @@ pub enum Message {
     ToggleDone(usize),
     /// From the list: open `todos[index]` in the detail panel.
     Select(usize),
+    /// A group head: fold or unfold the group.
+    ToggleGroup(list::Group),
+    /// "+" in a group head: the next quick add task goes into this group ([`quick_add_fields`]).
+    AddInGroup(list::Group),
+    /// The Display menu: group the list like this.
+    SetGroupBy(list::GroupBy),
     Detail(detail::Message),
     Saved(Result<Todo, String>),
     Deleted(Result<(), String>),
+    /// The core's answer to "Unpin" ([`detail::Action::Unpin`]).
+    Unpinned(Result<(), String>),
+    /// The core's answer to closing or reopening an issue of a filter list (task G.5): the issue
+    /// as GitHub reports it now.
+    IssueChanged(Result<Todo, String>),
+    /// "Undo" in the "Issue closed" card: reopen it.
+    Undo,
+    /// The core's answer to a GitHub link pasted into quick add or "Add to list…" (task G.6): the
+    /// task the list holds, and the due date and priority quick add gives a new task there
+    /// ([`quick_add_fields`]), which a link in a task list then gets.
+    LinkAdded(Result<Todo, String>, Option<EventTime>, Option<u8>),
+    /// The clock while the card shows; it goes after [`NOTICE_FOR`].
+    NoticeTick(iced::time::Instant),
     Refresh,
     Tick,
     /// The desktop's light/dark preference (once at start, then whenever it changes).
@@ -343,6 +648,38 @@ pub enum Message {
     Shortcut(Shortcut),
     /// The answer of that check: `true` if a text field has the focus, which swallows the key.
     ShortcutChecked(Shortcut, bool),
+    /// Open the dialog of a GitHub filter list ("New filter list…", "Edit filter…", "Delete list…").
+    OpenFilterDialog(filter::Open),
+    /// From the open filter list dialog.
+    Filter(filter::Message),
+    /// Open or close the "…" menu in the head of a filter list.
+    ToggleListMenu,
+    /// Display › Order: order the list shown like this (task P.3b). Only a single writable list
+    /// has an order of its own.
+    SetListOrder(ListOrder),
+    /// The orders of the task lists as stored in the suite settings; an error keeps the ones we have.
+    ListOrders(Result<BTreeMap<String, ListOrder>, String>),
+    /// The core's answer to storing an order ([`Message::SetListOrder`]).
+    ListOrderSaved(Result<(), String>),
+    /// The grip of `todos[index]` was pressed: the drag begins.
+    DragStart(usize),
+    /// The pointer is at this height in the list's content while a row is dragged.
+    DragMove(f32),
+    /// The mouse button was released while a row is dragged: the task goes where the marker is, or
+    /// onto the list of the sidebar the pointer is on.
+    DragEnd,
+    /// While a row is dragged, the pointer came onto this list of the sidebar, which takes it
+    /// (task G.6c).
+    DragOver(String),
+    /// The pointer left this list of the sidebar again.
+    DragLeave(String),
+    /// The core's answer to moving a task to another list by dragging it there (task G.6c).
+    TaskMoved(Result<Todo, String>),
+    /// The core's answer to a move in manual order: the tasks it wrote, with their new etags.
+    Moved(Result<Vec<Todo>, ProviderError>),
+    /// A failed move, said again once the reload it started has come back (a reload clears the
+    /// error line).
+    MoveFailed(String),
 }
 
 /// What a plain key does in the list.
@@ -358,12 +695,19 @@ pub enum Shortcut {
     Toggle,
     /// N: a new task, in the quick add row.
     New,
+    /// R: sync now ("Sync now" in the Display menu).
+    Sync,
     /// `[`: collapse or expand the sidebar ([`Message::ToggleSidebar`]).
     Sidebar,
+    /// Alt+↑: move the task under the cursor one step up (a list in manual order).
+    MoveUp,
+    /// Alt+↓: move it one step down.
+    MoveDown,
 }
 
 /// Keyboard shortcuts of the list, like the calendar's: keys a widget already used (typing in a
-/// text field, Enter in quick add) are ignored, and so is anything with Ctrl, Alt or the logo key.
+/// text field, Enter in quick add) are ignored, and so is anything with Ctrl, Alt or the logo key –
+/// except Alt+↑/↓, which move a task in manual order.
 fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     use iced::keyboard::{Event as Key, Key as Name, key::Named};
     if status == iced::event::Status::Captured {
@@ -373,15 +717,23 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
     if shell::is_sidebar_key(&key, modifiers) {
         return Some(Message::Shortcut(Shortcut::Sidebar));
     }
+    if modifiers.alt() && !modifiers.control() && !modifiers.logo() {
+        return match key.as_ref() {
+            Name::Named(Named::ArrowUp) => Some(Message::Shortcut(Shortcut::MoveUp)),
+            Name::Named(Named::ArrowDown) => Some(Message::Shortcut(Shortcut::MoveDown)),
+            _ => None,
+        };
+    }
     if modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
     }
     let shortcut = match key.as_ref() {
-        Name::Named(Named::ArrowUp) => Shortcut::Up,
-        Name::Named(Named::ArrowDown) => Shortcut::Down,
+        Name::Named(Named::ArrowUp) | Name::Character("k") => Shortcut::Up,
+        Name::Named(Named::ArrowDown) | Name::Character("j") => Shortcut::Down,
         Name::Named(Named::Enter) => Shortcut::Open,
         Name::Named(Named::Space) => Shortcut::Toggle,
         Name::Character("n") => Shortcut::New,
+        Name::Character("r") => Shortcut::Sync,
         _ => return None,
     };
     Some(Message::Shortcut(shortcut))
@@ -391,7 +743,16 @@ fn shortcut(event: iced::Event, status: iced::event::Status, _window: iced::wind
 /// field without a submit action) are not taken by a field, so the status of the event alone does
 /// not tell that someone is typing; the fields are asked instead. A new text field in this window
 /// belongs here. (The title and notes editors take every key they get, so they need no entry.)
-const TEXT_FIELDS: [&str; 2] = [QUICK_ADD, detail::DUE_INPUT];
+const TEXT_FIELDS: [&str; 3] = [QUICK_ADD, detail::DUE_INPUT, detail::SUBTASK_INPUT];
+
+/// The end of a drag: the left mouse button released anywhere in the window, inside the list or
+/// not (the list only hears what happens over it).
+fn drag_release(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Message::DragEnd),
+        _ => None,
+    }
+}
 
 /// Whether one of [`TEXT_FIELDS`] has the focus. A field that is not on screen does not answer.
 fn typing() -> Task<bool> {
@@ -414,6 +775,10 @@ impl App {
             todos: Vec::new(),
             filter: Filter::Today,
             show_completed: false,
+            group_by: list::GroupBy::default(),
+            filter_group_by: list::GroupBy::Repo,
+            collapsed: HashSet::new(),
+            quick_group: None,
             loaded: false,
             quick_add: String::new(),
             selected: None,
@@ -425,7 +790,7 @@ impl App {
             system_mode: Mode::None,
             menu: match open {
                 Some(Open::Menu) => Some(Menu::Nav),
-                Some(Open::Display) => Some(Menu::Display),
+                Some(Open::Display | Open::Order) => Some(Menu::Display),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
@@ -435,12 +800,19 @@ impl App {
             zoom,
             launch,
             opened: false,
+            notice: None,
+            filter_dialog: None,
+            list_orders: BTreeMap::new(),
+            orders_saving: 0,
+            moving: None,
+            drag: None,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             app.fetch_account(),
             app.fetch_appearance(),
+            app.fetch_list_orders(),
             app.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             size,
@@ -464,16 +836,33 @@ impl App {
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
         if !self.is_glance() {
-            // Escape closes an open menu, drawer or the detail; nothing listens while none is open.
-            if self.menu.is_some() || self.drawer || self.detail.is_some() {
+            // Escape closes an open menu, drawer, dialog or the detail; nothing listens while none is open.
+            if self.menu.is_some()
+                || self.drawer
+                || self.detail.is_some()
+                || self.filter_dialog.is_some()
+                || self.drag.is_some()
+            {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
-            if self.connected() {
+            // Only while a row is dragged: the release ends it wherever it happens.
+            if self.drag.is_some() {
+                subscriptions.push(iced::event::listen_with(drag_release));
+            }
+            // The keys of the list are not for a list behind a dialog.
+            if self.connected() && self.filter_dialog.is_none() {
                 subscriptions.push(iced::event::listen_with(shortcut));
             }
         }
+        if let Some(dialog) = &self.filter_dialog {
+            subscriptions.push(dialog.subscription().map(Message::Filter));
+        }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
+        }
+        // Only while "Issue closed" shows: nothing ticks in a quiet window.
+        if self.notice.is_some() {
+            subscriptions.push(iced::time::every(Duration::from_secs(1)).map(Message::NoticeTick));
         }
         Subscription::batch(subscriptions)
     }
@@ -501,7 +890,8 @@ impl App {
             Message::Resized(size) => self.size = size,
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(torro_pim::combined_state(&accounts));
+                // Every account that can hold task lists, GitHub (filter lists) included.
+                self.account = Some(combined_state_for(&accounts, CollectionKind::Todos));
                 self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();
@@ -519,13 +909,22 @@ impl App {
                     self.todos = todos;
                     self.loaded = true;
                     self.error = None;
+                    if let Some(dialog) = self.filter_dialog.as_mut() {
+                        dialog.reloaded(&self.collections);
+                    }
                     self.keep_cursor(place);
                     // Keep the detail panel on the same task after a reload.
-                    let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
-                    self.selected = selected_uid.and_then(|uid| self.todos.iter().position(|t| t.uid == uid));
+                    let selected = self.detail.as_ref().map(|d| Key::of(&d.original));
+                    self.selected = selected.and_then(|key| self.todos.iter().position(|t| key.is(t)));
                     let lists = self.writable_lists();
+                    let pinned = self.detail.as_ref().is_some_and(|detail| self.is_pinned(&detail.original));
+                    let issue_check = self.detail.as_ref().and_then(|detail| self.issue_check(&detail.original));
                     match (self.selected, self.detail.as_mut()) {
-                        (Some(_), Some(detail)) => detail.refresh(&lists, &self.todos),
+                        (Some(_), Some(detail)) => {
+                            detail.refresh(&lists, &self.todos);
+                            detail.pinned = pinned;
+                            detail.issue_check = issue_check;
+                        }
                         _ => self.detail = None,
                     }
                     return self.open_launched();
@@ -541,6 +940,7 @@ impl App {
                 self.filter = filter;
                 self.cursor = None;
                 self.scroll = None;
+                self.quick_group = None;
                 self.close_menus();
                 return self.close_detail();
             }
@@ -548,7 +948,25 @@ impl App {
             Message::QuickAddChanged(value) => self.quick_add = value,
             Message::QuickAddSubmit => {
                 let summary = self.quick_add.trim().to_string();
-                let Some(collection) = self.target_list() else {
+                let (due, priority, list) = quick_add_fields(self.quick_group.as_ref(), &self.filter, self.today);
+                // A filter list takes GitHub links only: they are pinned there (task G.6).
+                if let Filter::List(id) = &self.filter
+                    && self.filter_source(id).is_some()
+                {
+                    if summary.is_empty() {
+                        return Task::none();
+                    }
+                    if Link::pasted(&summary).is_none() {
+                        self.error =
+                            Some(tr("Only links to GitHub issues and pull requests can be pinned here").into());
+                        return Task::none();
+                    }
+                    let id = id.clone();
+                    self.quick_add.clear();
+                    return self.add_link(id, summary, None, None);
+                }
+                let writable = list.filter(|id| self.writable_lists().iter().any(|c| &c.id == id));
+                let Some(collection) = writable.or_else(|| self.target_list()) else {
                     self.error = Some(tr("No task list yet").into());
                     return Task::none();
                 };
@@ -556,14 +974,19 @@ impl App {
                     return Task::none();
                 }
                 self.quick_add.clear();
+                self.quick_group = None;
+                // A pasted GitHub link becomes a link task with GitHub's title (task G.6).
+                if Link::pasted(&summary).is_some() {
+                    return self.add_link(collection, summary, due, priority);
+                }
                 let todo = Todo {
                     uid: String::new(),
                     collection,
                     href: None,
                     etag: None,
                     summary,
-                    due: (self.filter == Filter::Today).then_some(EventTime::Date(self.today)),
-                    priority: None,
+                    due,
+                    priority,
                     completed: false,
                     parent: None,
                     description: None,
@@ -576,10 +999,36 @@ impl App {
             }
             Message::ToggleDone(index) => {
                 if let Some(todo) = self.toggled(index) {
+                    // A link closes its issue too (task G.6): the answer may bring "Issue closed".
+                    if self.filter_source(&todo.collection).is_some() || list::github_of(&todo).is_some() {
+                        return self.change_issue(todo);
+                    }
                     return self.save(todo);
                 }
             }
             Message::Select(index) => return self.select(index),
+            Message::ToggleGroup(group) => {
+                if !self.collapsed.remove(&group) {
+                    self.collapsed.insert(group);
+                }
+            }
+            Message::AddInGroup(group) => {
+                self.quick_group = Some(group);
+                self.close_menus();
+                return operation::focus(QUICK_ADD);
+            }
+            Message::SetGroupBy(group_by) => {
+                if self.shown_filter_list().is_some() {
+                    self.filter_group_by = group_by;
+                } else {
+                    self.group_by = group_by;
+                }
+                // Folds and the "+" group belong to the old groups.
+                self.collapsed.clear();
+                self.quick_group = None;
+                self.scroll = None;
+                self.menu = None;
+            }
             Message::Detail(message) => {
                 let Some(detail) = self.detail.as_mut() else { return Task::none() };
                 let action = detail.update(message);
@@ -606,7 +1055,27 @@ impl App {
                 Ok(()) => return self.load(),
                 Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
             },
+            // The reload closes the detail when no search finds the item any more.
+            Message::Unpinned(result) => match result {
+                Ok(()) => return self.load(),
+                Err(err) => self.error = Some(trf("Unpin failed: {error}", &[("error", &err)])),
+            },
+            Message::IssueChanged(result) => return self.issue_changed(result),
+            Message::LinkAdded(result, due, priority) => return self.link_added(result, due, priority),
+            Message::Undo => {
+                if let Some(todo) = self.undo() {
+                    return self.change_issue(todo);
+                }
+            }
+            Message::NoticeTick(now) => {
+                if self.notice.as_ref().is_some_and(|notice| now.saturating_duration_since(notice.since) >= NOTICE_FOR)
+                {
+                    self.notice = None;
+                }
+            }
             Message::Refresh => {
+                // "Sync now" in the Display menu: the menu has done its job.
+                self.menu = None;
                 let source = self.source.clone();
                 let sync =
                     Task::perform(async move { source.sync().await.map_err(|e| e.to_string()) }, |_| Message::Tick);
@@ -614,7 +1083,11 @@ impl App {
             }
             Message::Tick => {
                 self.today = self.launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date());
-                let appearance = Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)]);
+                let appearance = Task::batch([
+                    self.fetch_appearance(),
+                    self.fetch_list_orders(),
+                    self.zoom.fetch().map(Message::Zoom),
+                ]);
                 // The accounts come with every tick: one may have been added or removed.
                 let accounts = self.fetch_account();
                 if !self.connected() {
@@ -661,6 +1134,11 @@ impl App {
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::CloseMenu => self.close_menus(),
+            Message::Escape if self.filter_dialog.is_some() => {
+                return self.update(Message::Filter(filter::Message::Cancel));
+            }
+            // Escape drops the dragged row where it was.
+            Message::Escape if self.drag.is_some() => self.drag = None,
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
@@ -685,6 +1163,34 @@ impl App {
             Message::Shortcut(key) => {
                 return typing().map(move |typing| Message::ShortcutChecked(key, typing));
             }
+            Message::OpenFilterDialog(open) => return self.open_filter_dialog(open),
+            Message::Filter(message) => return self.filter_message(message),
+            Message::ToggleListMenu => self.toggle_menu(Menu::List),
+            Message::SetListOrder(order) => return self.set_list_order(order),
+            Message::ListOrders(Ok(orders)) if self.orders_saving == 0 => self.list_orders = orders,
+            // Older than a change on its way, or the core is not answering: keep what we have.
+            Message::ListOrders(_) => {}
+            Message::ListOrderSaved(result) => {
+                self.orders_saving = self.orders_saving.saturating_sub(1);
+                if let Err(err) = result {
+                    self.error = Some(trf("Couldn't save the order: {error}", &[("error", &err)]));
+                    // What is stored comes back with the next fetch.
+                    return self.fetch_list_orders();
+                }
+            }
+            Message::DragStart(index) => self.start_drag(index),
+            Message::DragMove(y) => self.drag_to(y),
+            Message::DragEnd => return self.drop_dragged(),
+            Message::DragOver(list) => self.drag_over(list),
+            Message::DragLeave(list) => {
+                // Leaving one row and coming onto the next can arrive in either order.
+                if let Some(drag) = self.drag.as_mut().filter(|drag| drag.over.as_ref() == Some(&list)) {
+                    drag.over = None;
+                }
+            }
+            Message::TaskMoved(result) => return self.task_moved(result),
+            Message::Moved(result) => return self.moved(result),
+            Message::MoveFailed(text) => self.error = Some(text),
             Message::ShortcutChecked(key, typing) => {
                 // `[` works wherever the sidebar is (it also closes the drawer it opened).
                 if !typing && key == Shortcut::Sidebar {
@@ -714,7 +1220,10 @@ impl App {
             },
             // The same as "New task" in the header.
             Shortcut::New => self.update(Message::Switcher(Switcher::New)),
+            Shortcut::Sync => self.update(Message::Refresh),
             Shortcut::Sidebar => self.toggle_sidebar(),
+            Shortcut::MoveUp => self.move_step(true),
+            Shortcut::MoveDown => self.move_step(false),
         }
     }
 
@@ -745,11 +1254,44 @@ impl App {
     }
 
     /// `todos[index]` with its done state flipped, ready to be saved; none if there is no such
-    /// task. The one thing a glance lets you do.
+    /// task, or it is a match of a GitHub filter list that cannot be ticked: a pull request, or an
+    /// issue whose account may not close issues ([`App::issue_check`], task G.5). The one thing a
+    /// glance lets you do.
     fn toggled(&self, index: usize) -> Option<Todo> {
         let mut todo = self.todos.get(index)?.clone();
+        if self.filter_source(&todo.collection).is_some() && self.issue_check(&todo) != Some(true) {
+            return None;
+        }
         todo.completed = !todo.completed;
         Some(todo)
+    }
+
+    /// The definition of the GitHub filter list `id` ([`Collection::source`]); `None` for every
+    /// other list.
+    fn filter_source(&self, id: &str) -> Option<&GitHubFilter> {
+        self.collections.iter().find(|c| c.id == id)?.source.as_ref()
+    }
+
+    /// The filter list the list shows, if the filter is one.
+    fn shown_filter_list(&self) -> Option<&GitHubFilter> {
+        match &self.filter {
+            Filter::List(id) => self.filter_source(id),
+            _ => None,
+        }
+    }
+
+    /// `todo` is pinned in its filter list: `source.pinned` holds its link id.
+    fn is_pinned(&self, todo: &Todo) -> bool {
+        let (Some(source), Some(link)) = (self.filter_source(&todo.collection), todo.link.as_ref()) else {
+            return false;
+        };
+        source.pinned.contains(&link.id)
+    }
+
+    /// How the list groups now: a filter list by its own choice (repository at first), every other
+    /// view by the one choice of the Display menu.
+    fn grouping(&self) -> list::GroupBy {
+        if self.shown_filter_list().is_some() { self.filter_group_by } else { self.group_by }
     }
 
     /// Collection id → its colour.
@@ -757,8 +1299,20 @@ impl App {
         self.collections.iter().map(|c| (c.id.clone(), collection_color(c.color.as_deref()))).collect()
     }
 
-    /// What the list shows, without the colours and names only drawing needs.
-    fn list_data(&self, show_list: bool) -> ListData<'_> {
+    /// The columns the window shows now.
+    fn columns(&self) -> Columns {
+        let class = self.class();
+        columns(class, content_width(class, self.sidebar, self.size.width), self.detail.is_some())
+    }
+
+    /// The width of the list column now.
+    fn list_width(&self) -> f32 {
+        let class = self.class();
+        list_width(class, self.columns(), content_width(class, self.sidebar, self.size.width))
+    }
+
+    /// What the list shows. Rows name their list (pill or dot) unless the filter is one list.
+    fn list_data(&self) -> ListData<'_> {
         ListData {
             todos: &self.todos,
             colors: self.colors(),
@@ -767,35 +1321,48 @@ impl App {
             show_completed: self.show_completed,
             today: self.today,
             selected: self.cursor_index(),
-            show_list,
-            attention: palette(&self.theme()).attention_text,
+            show_list: !matches!(self.filter, Filter::List(_)),
+            group_by: self.grouping(),
+            collapsed: &self.collapsed,
+            width: self.list_width(),
+            palette: palette(&self.theme()),
+            read_only: self.shown_filter_list().is_some(),
+            issue_lists: self.issue_lists(),
+            manual: self.manual(),
+            grips: self.grips(),
+            // Over a list of the sidebar the drop goes there: no marker in the list meanwhile.
+            drag: self.drag.as_ref().and_then(|drag| {
+                let place = drag.place.filter(|_| drag.over.is_none());
+                Some((self.key_index(&drag.key)?, place))
+            }),
         }
     }
 
     /// Index into `todos` of the task under the cursor, if it is in the list.
     fn cursor_index(&self) -> Option<usize> {
-        let uid = self.cursor.as_deref()?;
-        self.todos.iter().position(|t| t.uid == uid)
+        let key = self.cursor.as_ref()?;
+        self.key_index(key)
     }
 
     /// Where the cursor row is among the shown rows.
     fn cursor_place(&self) -> Option<usize> {
         let index = self.cursor_index()?;
-        list::order(&self.list_data(false)).iter().position(|&i| i == index)
+        list::order(&self.list_data()).iter().position(|&i| i == index)
     }
 
     /// After a reload: a cursor whose task is gone (ticked off, deleted elsewhere) moves to the row
     /// that took its place, so ticking tasks one after the other with Space just works.
     fn keep_cursor(&mut self, place: Option<usize>) {
         let (Some(place), true) = (place, self.cursor_index().is_none()) else { return };
-        let order = list::order(&self.list_data(false));
-        self.cursor = order.get(place.min(order.len().saturating_sub(1))).map(|&i| self.todos[i].uid.clone());
+        let order = list::order(&self.list_data());
+        self.cursor = order.get(place.min(order.len().saturating_sub(1))).map(|&i| Key::of(&self.todos[i]));
     }
 
     /// Moves the cursor one row down or up, and stops at the first and last row. With no cursor
-    /// yet, ↓ chooses the first row and ↑ the last.
+    /// yet, ↓ chooses the first row and ↑ the last. With a task open in the detail, the detail
+    /// follows the cursor (Linear's j/k).
     fn step(&mut self, forward: bool) -> Task<Message> {
-        let order = list::order(&self.list_data(false));
+        let order = list::order(&self.list_data());
         let Some(last) = order.len().checked_sub(1) else { return Task::none() };
         let next = match (self.cursor_place(), forward) {
             (None, true) => 0,
@@ -803,14 +1370,19 @@ impl App {
             (Some(place), true) => (place + 1).min(last),
             (Some(place), false) => place.saturating_sub(1),
         };
-        self.cursor = Some(self.todos[order[next]].uid.clone());
-        self.reveal(order[next])
+        self.cursor = Some(Key::of(&self.todos[order[next]]));
+        let reveal = self.reveal(order[next]);
+        let opened = self.detail.as_ref().is_some_and(|detail| !Key::of(&self.todos[order[next]]).is(&detail.original));
+        if opened {
+            return Task::batch([self.select(order[next]), reveal]);
+        }
+        reveal
     }
 
     /// Scrolls the list the least that shows `todos[index]` completely.
     fn reveal(&mut self, index: usize) -> Task<Message> {
         let Some((offset, height)) = self.scroll else { return Task::none() };
-        let Some((top, bottom)) = list::row_span(&self.list_data(false), index) else { return Task::none() };
+        let Some((top, bottom)) = list::row_span(&self.list_data(), index) else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -877,10 +1449,16 @@ impl App {
     /// The whole window in the layout of `class`.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
+        let list_menu = Anchor::new();
+        // In a narrow window the filter list dialog is a view of its own.
+        if let Some(dialog) = self.filter_dialog.as_ref().filter(|dialog| dialog.is_full(class)) {
+            return dialog.view(class, self.size).map(Message::Filter);
+        }
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher));
-        let header = self.header(class, &nav, &display);
+        let columns = self.columns();
+        let header = self.header(class, columns, [&nav, &display, &property, &list_menu]);
         let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
                 &switcher,
@@ -892,125 +1470,311 @@ impl App {
             Menu::Display => {
                 widgets::floating(&display, Placement::Below(Align::End), self.display_menu(), Message::CloseMenu)
             }
+            Menu::List => {
+                widgets::floating(&list_menu, Placement::Below(Align::End), self.list_menu(), Message::CloseMenu)
+            }
         });
+        let dialog = self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.size).map(Message::Filter));
+        // The property editors and the "…" menu of the detail.
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
-        let layer = menu.or_else(editor);
-        let detail =
-            self.detail.as_ref().map(|detail| detail.panel(self.crumb_filter(detail), &property, Message::Detail));
-        // The panel takes the place of the properties column while it is beside the list.
-        let placed = panel::place(class, self.body(class), detail, layer);
-        shell::shell(class, sidebar, header, placed.body, None)
+        // The properties column is part of the body ([`App::body`]), not the shell's: the detail
+        // brings its own, scrolling on its own.
+        let window = shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(placed.overlay)
-            .into()
+            .overlay(dialog.or(menu).or_else(editor));
+        self.with_notice(window.into())
     }
 
-    /// The header: the filter's title (wide) or the navigation menu (medium, narrow), then Display,
-    /// refresh and the one primary button "New task" ("+" alone in the narrow layouts).
-    fn header<'a>(&'a self, class: SizeClass, nav: &Anchor, display: &Anchor) -> Element<'a, Message> {
+    /// The window's header bar, split like the columns below it: the list's head over the list
+    /// (with a line at the list's edge), the detail's head over detail and properties. Narrow
+    /// windows show one of the two.
+    /// The anchors are those of the navigation menu, the Display menu, the detail's editors and the
+    /// "…" menu of a filter list.
+    fn header<'a>(&'a self, class: SizeClass, columns: Columns, anchors: [&Anchor; 4]) -> Element<'a, Message> {
+        let [nav, display, property, list_menu] = anchors;
+        let list_width = self.list_width();
+        if columns == Columns::Detail {
+            return self.detail_head(columns, property);
+        }
+        let list_head = self.list_head(class, list_width, [nav, display, list_menu]);
+        let content = content_width(class, self.sidebar, self.size.width);
+        // A list that fills the panel needs no line at its edge: the panel's border is there.
+        if !matches!(class, SizeClass::Wide | SizeClass::Medium) || list_width >= content - 2.0 * LINE {
+            return list_head;
+        }
+        // The header bar pads 16 at the left; the list head keeps 12 at its right before the line.
+        let mut split = row![
+            container(list_head).width(list_width - space::L - space::M),
+            Space::new().width(space::M),
+            rule::vertical(LINE).style(style::rule),
+        ]
+        .align_y(Alignment::Center);
+        if self.detail.is_some() {
+            split = split.push(Space::new().width(space::L)).push(self.detail_head(columns, property));
+        }
+        split.into()
+    }
+
+    /// The head of the list: the filter's icon, name and "{n} open" – in narrow windows the
+    /// navigation menu ("Today ▾") after the drawer button –, then Display (its label only where the
+    /// list is at least [`HEAD_LABELS_FROM`] wide) and the one primary button "New task" ("+" alone
+    /// in narrow windows). A GitHub filter list takes no new tasks, so it has no "New task"; it has
+    /// its "…" menu instead ("Edit filter…", "Delete list…").
+    fn list_head<'a>(&'a self, class: SizeClass, width: f32, anchors: [&Anchor; 3]) -> Element<'a, Message> {
+        let [nav, display, list_menu] = anchors;
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
-        let icon = filter_icon(&self.filter);
+        let icon = self.filter_mark(&self.filter);
         let new_task = Message::Switcher(Switcher::New);
-        let (show_display, new_button) = match class {
-            SizeClass::Wide => (
-                widgets::text_button(
-                    Some(Icon::SlidersHorizontal),
-                    tr("Display"),
-                    style::button::ghost,
-                    Some(Message::ToggleDisplay),
-                ),
-                widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task)),
-            ),
-            SizeClass::Medium => (
-                widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay)),
-                widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task)),
-            ),
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => (
-                widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay)),
-                widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task)),
-            ),
+        let show_display = if width >= HEAD_LABELS_FROM {
+            widgets::text_button(
+                Some(Icon::SlidersHorizontal),
+                tr("Display"),
+                style::button::ghost,
+                Some(Message::ToggleDisplay),
+            )
+        } else {
+            widgets::icon_button(Icon::SlidersHorizontal, tr("Display"), Some(Message::ToggleDisplay))
         };
-        let trailing = [
-            widgets::anchored(display, show_display),
-            widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)),
-            new_button,
-        ];
-        match class {
-            SizeClass::Wide => shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing),
-            SizeClass::Medium => {
-                let menu = widgets::menu_button(nav, icon, name, Message::ToggleNav);
-                let title =
-                    row![menu, typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None)]
-                        .spacing(space::S)
-                        .align_y(Alignment::Center);
-                // The rail at the left has the panel button.
-                shell::header_bar([], title, trailing)
-            }
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
-                [shell::sidebar_toggle(Message::ShowDrawer)],
-                widgets::menu_button(nav, icon, name, Message::ToggleNav),
-                trailing,
-            ),
+        let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
+        let new_button = if narrow {
+            widgets::compact_button(Icon::Plus, tr("New task"), style::button::primary, Some(new_task))
+        } else {
+            widgets::text_button(Some(Icon::Plus), tr("New task"), style::button::primary, Some(new_task))
+        };
+        let mut trailing = vec![widgets::anchored(display, show_display)];
+        if self.shown_filter_list().is_none() {
+            trailing.push(new_button);
+        } else {
+            let more = widgets::icon_button(Icon::Ellipsis, tr("List actions"), Some(Message::ToggleListMenu));
+            trailing.push(widgets::anchored(list_menu, more));
+        }
+        if !narrow {
+            // Wide and medium have the sidebar or the rail for the navigation.
+            return shell::header_bar([], shell::header_title(icon, name, Some(open)), trailing);
+        }
+        let title = row![
+            widgets::menu_button(nav, icon, name, Message::ToggleNav),
+            typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None),
+        ]
+        .spacing(space::XS)
+        .align_y(Alignment::Center);
+        shell::header_bar([shell::sidebar_toggle(Message::ShowDrawer)], title, trailing)
+    }
+
+    /// How the detail lays itself out in `columns`: beside the properties column, with its
+    /// properties as chips, or in place of the list.
+    fn fit(columns: Columns) -> Fit {
+        match columns {
+            Columns::ListDetailProps => Fit::Columns,
+            Columns::List | Columns::ListDetail => Fit::Chips,
+            Columns::Detail => Fit::Narrow,
         }
     }
 
-    /// The Display menu: "Show completed" as a check, the choice that used to be a switch.
+    /// The head of the detail (`detail.rs`, [`Detail::head`]) in the header bar, over the main
+    /// column and the properties: the path, ↑ ↓, "…" and close; in narrow windows "‹ <filter>"
+    /// back to the list. `anchor` is the one of the detail's editors and menu.
+    fn detail_head<'a>(&'a self, columns: Columns, anchor: &Anchor) -> Element<'a, Message> {
+        let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
+        detail.head(Self::fit(columns), self.filter_name(&self.filter), anchor).map(Message::Detail)
+    }
+
+    /// The detail's main column (`detail.rs`, [`Detail::main_column`]): title, notes, sub-tasks,
+    /// for pull requests checks and reviews; the properties as chips under the title unless the
+    /// properties column is there.
+    fn detail_column<'a>(&'a self, columns: Columns, anchor: &Anchor) -> Element<'a, Message> {
+        let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
+        detail.main_column(Self::fit(columns), palette(&self.theme()), anchor).map(Message::Detail)
+    }
+
+    /// The properties column of wide windows with [`Columns::ListDetailProps`] (`detail.rs`,
+    /// [`Detail::properties_column`], [`size::PROPS`] wide), with the name of the account the
+    /// task's list belongs to.
+    fn properties_column<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
+        let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
+        let account = account_of(&detail.original.collection, &self.accounts, |a| a.id.as_str());
+        detail.properties_column(account.map(account_title), anchor).map(Message::Detail)
+    }
+
+    /// The Display menu: how to group the list, how to order it (a single writable list: "Due
+    /// date" or "Manual", task P.3b), "Show completed", and "Sync now" (`R`) under the time of the
+    /// last sync. A GitHub filter list groups by repository or not at all; a list in manual order
+    /// has no groups, so it offers none.
     fn display_menu(&self) -> Element<'_, Message> {
+        use list::GroupBy;
+        let grouping = self.grouping();
+        let group = |mark: Icon, label: &'static str, by: GroupBy| {
+            MenuItem::new(mark, label, Message::SetGroupBy(by)).current(grouping == by)
+        };
+        let groups = if self.shown_filter_list().is_some() {
+            vec![
+                group(Icon::FolderGit2, tr("Repository"), GroupBy::Repo),
+                group(Icon::Minus, tr("None"), GroupBy::None),
+            ]
+        } else {
+            vec![
+                group(Icon::Calendar, tr("Due date"), GroupBy::Due),
+                group(Icon::List, tr("List"), GroupBy::List),
+                group(Icon::SignalHigh, tr("Priority"), GroupBy::Priority),
+                group(Icon::Minus, tr("None"), GroupBy::None),
+            ]
+        };
         let check = Mark::Check(palette(&self.theme()).text_2, self.show_completed);
-        widgets::menu(vec![MenuSection::new(vec![MenuItem::new(
+        let sync = vec![MenuItem::new(Icon::RefreshCw, tr("Sync now"), Message::Refresh).trail(Trail::Kbd("R"))];
+        let synced = match self.last_sync() {
+            Some(at) => MenuSection::titled(trf("Synced {when}", &[("when", &ago(at, Utc::now()))]), sync),
+            None => MenuSection::new(sync),
+        };
+        let mut sections = Vec::new();
+        if !self.manual() {
+            sections.push(MenuSection::titled(tr("Group by"), groups));
+        }
+        if let Some(current) = self.list_order() {
+            let order = |mark: Icon, label: &'static str, order: ListOrder| {
+                MenuItem::new(mark, label, Message::SetListOrder(order)).current(current == order)
+            };
+            sections.push(MenuSection::titled(
+                tr("Order"),
+                vec![
+                    order(Icon::CalendarClock, tr("Due date"), ListOrder::DueDate),
+                    order(Icon::GripVertical, tr("Manual"), ListOrder::Manual),
+                ],
+            ));
+        }
+        sections.push(MenuSection::new(vec![MenuItem::new(
             check,
             tr("Show completed"),
             Message::ShowCompleted(!self.show_completed),
-        )])])
+        )]));
+        sections.push(synced);
+        widgets::menu(sections)
     }
 
-    /// The content below the header: the list at its own width, whatever the detail does; the
-    /// detail is the side panel `window` places beside or over it.
-    fn body(&self, class: SizeClass) -> Element<'_, Message> {
-        widgets::content(size::CONTENT_MAX, self.list(class))
+    /// The "…" menu of the filter list shown: "Edit filter…" and "Delete list…".
+    fn list_menu(&self) -> Element<'_, Message> {
+        let Filter::List(id) = &self.filter else { return Space::new().into() };
+        let open = |open: filter::Open| Message::OpenFilterDialog(open);
+        widgets::menu(vec![MenuSection::new(vec![
+            MenuItem::new(Icon::SquarePen, tr("Edit filter…"), open(filter::Open::Edit(id.clone()))),
+            MenuItem::new(Icon::Trash2, tr("Delete list…"), open(filter::Open::Delete(id.clone()))),
+        ])])
+    }
+
+    /// When the accounts last synced: the latest of them, as the core reports it.
+    fn last_sync(&self) -> Option<DateTime<Utc>> {
+        self.accounts
+            .iter()
+            .filter_map(|account| match &account.state {
+                AccountState::Connected { last_sync, .. } => *last_sync,
+                _ => None,
+            })
+            .max()
+    }
+
+    /// The content below the header bar in `columns`: the list alone at its width (a line at its
+    /// right where it does not fill the panel), the detail instead of it, or list and detail side by
+    /// side with a line between them, and the properties column after another line.
+    fn body(&self, class: SizeClass, columns: Columns, anchor: &Anchor) -> Element<'_, Message> {
+        let width = self.list_width();
+        let line = || rule::vertical(LINE).style(style::rule);
+        match columns {
+            Columns::Detail => self.detail_column(columns, anchor),
+            Columns::List => {
+                let content = content_width(class, self.sidebar, self.size.width);
+                if !matches!(class, SizeClass::Wide | SizeClass::Medium) || width >= content - 2.0 * LINE {
+                    return self.list();
+                }
+                row![container(self.list()).width(width), line(), Space::new().width(Fill)].into()
+            }
+            Columns::ListDetail => {
+                row![container(self.list()).width(width), line(), self.detail_column(columns, anchor)].into()
+            }
+            Columns::ListDetailProps => row![
+                container(self.list()).width(width),
+                line(),
+                self.detail_column(columns, anchor),
+                line(),
+                self.properties_column(anchor),
+            ]
+            .into(),
+        }
     }
 
     /// The quick add row, an error line if there is one, and the grouped list; loading and the
-    /// error of a first load stand in for all three.
-    fn list(&self, class: SizeClass) -> Element<'_, Message> {
+    /// error of a first load stand in for all three. A GitHub filter list takes no new tasks: in
+    /// place of the quick add row it shows its hints, if it has any ([`App::filter_hints`]).
+    fn list(&self) -> Element<'_, Message> {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
-        let mut top = column![self.quick_add_row()].spacing(space::S);
-        if let Some(err) = &self.error {
-            top = top.push(
-                typo::text(typo::META, err.clone())
-                    .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
-            );
+        // A filter list takes pasted GitHub links, which are pinned (task G.6); its hints follow.
+        let mut content = column![self.quick_add_row()];
+        if let Some(source) = self.shown_filter_list() {
+            content = content.extend(self.filter_hints(source));
         }
-        let show_list = matches!(class, SizeClass::Wide | SizeClass::Medium) && !matches!(self.filter, Filter::List(_));
-        let data = self.list_data(show_list);
-        column![container(top).padding(Padding::new(space::S).bottom(space::XS)), list::view(data)]
-            .width(Fill)
-            .height(Fill)
-            .into()
+        if let Some(err) = &self.error {
+            let line = typo::text(typo::META, err.clone())
+                .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) });
+            content = content.push(container(line).padding([space::S, space::L]));
+        }
+        content.push(list::view(self.list_data())).width(Fill).height(Fill).into()
     }
 
-    /// The quick add row: a calm line like a list row ("+ New task …", the key hint "N" at the
-    /// end) that is a text input underneath. The icon and the hint lie over it, so the input keeps
-    /// its hover and focus states; the hint goes away as soon as something is typed.
+    /// The hints of a filter list over its rows, quiet, one line each (32 with the line below):
+    /// "Couldn't refresh from GitHub" with the reason in `text_3` when the last refresh failed
+    /// (the rows are those from before), and "Showing the first 1,000 matches" when a search found
+    /// more than GitHub hands out. The icon stands on the axis of the rows' leading symbols.
+    fn filter_hints(&self, source: &GitHubFilter) -> Vec<Element<'_, Message>> {
+        let width = self.list_width();
+        let mut hints = Vec::new();
+        if let Some(problem) = &source.problem {
+            let title = tr("Couldn't refresh from GitHub");
+            // What is left beside the icon and the title, for the reason on the same line.
+            let used = 2.0 * space::L + icon::SIZE + space::M + typo::text_width(title, typo::META) + space::S;
+            let reason = typo::ellipsize(problem, typo::META, (width - used).max(0.0));
+            let line = row![
+                typo::text(typo::META, title).style(theme::text_2).wrapping(text::Wrapping::None),
+                typo::text(typo::META, reason).style(theme::text_3).wrapping(text::Wrapping::None),
+            ]
+            .spacing(space::S);
+            hints.push(hint_row(list::toned(Icon::CircleAlert, icon::SIZE_SM, list::Tone::Attention), line));
+        }
+        if source.truncated {
+            let line = typo::text(typo::META, tr("Showing the first 1,000 matches"))
+                .style(theme::text_2)
+                .wrapping(text::Wrapping::None);
+            hints.push(hint_row(list::toned(Icon::ListFilter, icon::SIZE_SM, list::Tone::Text3), line));
+        }
+        hints
+    }
+
+    /// The quick add row: a list row (40 with its line) that is a text input underneath – no box,
+    /// "+" on the axis of the rows' leading symbols, the text on the axis of their titles, the key
+    /// hint "N" at the right. The icon and the hint lie over the input, so it keeps its hover and
+    /// focus states (focused: `selected` with the focus ring); the hint goes away as soon as
+    /// something is typed.
     fn quick_add_row(&self) -> Element<'_, Message> {
-        let input = text_input(tr("New task …"), &self.quick_add)
+        let height = size::ROW - LINE;
+        let above = (height - typo::line_height(typo::BODY)) / 2.0;
+        let placeholder = match self.shown_filter_list() {
+            Some(_) => tr("Paste a GitHub link to pin…"),
+            None => tr("Add a task or paste a GitHub link…"),
+        };
+        let input = text_input(placeholder, &self.quick_add)
             .id(QUICK_ADD)
             .on_input(Message::QuickAddChanged)
             .on_submit(Message::QuickAddSubmit)
-            .padding(Padding { top: space::S, bottom: space::S, left: QUICK_ADD_START, right: QUICK_ADD_END })
-            .style(style::text_input);
-        let plus = icon::icon(Icon::Plus, icon::SIZE_SM).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
+            .padding(Padding { top: above, bottom: above, left: QUICK_ADD_START, right: QUICK_ADD_END })
+            .style(quick_add_style);
+        let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
         let mut over =
-            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::M]);
+            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::L]);
         if self.quick_add.is_empty() {
             over = over.push(widgets::kbd("N"));
         }
-        // 8 above and below the 20-high text make the row `CONTROL_LG` (36) high.
-        stack![input, over].height(size::CONTROL_LG).into()
+        column![stack![input, over].height(height), rule::horizontal(LINE).style(style::rule)].into()
     }
 
     /// The filters with their icon and open count, then one entry per task list (ring, count).
@@ -1028,8 +1792,13 @@ impl App {
             .into_iter()
             .map(|collection| {
                 let filter = Filter::List(collection.id.clone());
+                // A filter list has a symbol of its own; a task list its ring.
+                let mark = match &collection.source {
+                    Some(source) => Mark::Icon(filter_list_icon(source)),
+                    None => Mark::Ring(collection_color(collection.color.as_deref())),
+                };
                 NavEntry {
-                    mark: Mark::Ring(collection_color(collection.color.as_deref())),
+                    mark,
                     label: collection.name,
                     count: Some(list::open_count(&self.todos, &filter, self.today)),
                     active: filter == self.filter,
@@ -1043,10 +1812,30 @@ impl App {
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons (U.2).
     fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
         let (views, lists) = self.nav_entries();
+        // While a row is dragged, the lists that take it report the pointer and show a ring (G.6c).
+        let targets = self.dragged_targets();
+        let over = self.drag.as_ref().and_then(|drag| drag.over.as_deref());
         let row = |e: NavEntry| {
             let trail = e.trail();
-            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
+            let target = match &e.filter {
+                Filter::List(id) if targets.contains(id) => Some(id.clone()),
+                _ => None,
+            };
+            let item = widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter));
+            match target {
+                Some(id) => {
+                    let on = over == Some(id.as_str());
+                    shell::drop_target(item, on, Message::DragOver(id.clone()), Message::DragLeave(id))
+                }
+                None => item,
+            }
         };
+        let new_filter_list = |account: &PimAccount| {
+            let open = Message::OpenFilterDialog(filter::Open::New(account.id.clone()));
+            widgets::sidebar_item_in(mode, Icon::Plus, tr("New filter list…"), Trail::None, false, open)
+        };
+        // GitHub accounts whose group ends with "New filter list…"; the others get it after the lists.
+        let mut grouped: HashSet<&str> = HashSet::new();
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             // One account: as it always was, a flat list under "Lists".
@@ -1065,14 +1854,19 @@ impl App {
                     };
                     let unfolded = !self.folded.contains(&account.id);
                     let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
-                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    items.push(widgets::sidebar_group_in(mode, account_title(account), toggle));
                     // The rail has no title to unfold with, so it shows every list.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
+                        if account.kind == GITHUB_KIND {
+                            items.push(new_filter_list(account));
+                        }
                     }
+                    grouped.insert(account.id.as_str());
                 }
             }
         }
+        items.extend(self.github_accounts().filter(|a| !grouped.contains(a.id.as_str())).map(new_filter_list));
         let footer = vec![
             widgets::sidebar_item_in(
                 mode,
@@ -1095,6 +1889,11 @@ impl App {
             let trail = e.trail();
             MenuItem::new(e.mark, e.label, Message::SetFilter(e.filter)).trail(trail).current(e.active)
         };
+        let new_filter_list = |account: &PimAccount| {
+            let open = Message::OpenFilterDialog(filter::Open::New(account.id.clone()));
+            MenuItem::new(Icon::Plus, tr("New filter list…"), open)
+        };
+        let mut grouped: HashSet<&str> = HashSet::new();
         let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             Err(lists) => {
@@ -1104,9 +1903,19 @@ impl App {
             }
             // A menu has no folding: every account is a section named after it.
             Ok(groups) => sections.extend(groups.into_iter().map(|group| {
-                let title = group.account.map_or_else(|| tr("Lists"), |account| account.label.as_str());
-                MenuSection::titled(title, group.items.into_iter().map(item).collect())
+                let title = group.account.map_or_else(|| tr("Lists").to_string(), account_title);
+                let mut items: Vec<_> = group.items.into_iter().map(item).collect();
+                if let Some(account) = group.account.filter(|a| a.kind == GITHUB_KIND) {
+                    items.push(new_filter_list(account));
+                    grouped.insert(account.id.as_str());
+                }
+                MenuSection::titled(title, items)
             })),
+        }
+        let more: Vec<_> =
+            self.github_accounts().filter(|a| !grouped.contains(a.id.as_str())).map(new_filter_list).collect();
+        if !more.is_empty() {
+            sections.push(MenuSection::new(more));
         }
         sections.push(MenuSection::new(vec![
             MenuItem::new(Icon::Calendar, tr("Open Calendar"), Message::OpenApp(AppId::CALENDAR.binary))
@@ -1116,22 +1925,16 @@ impl App {
         widgets::menu(sections)
     }
 
-    /// The filter name for the detail's crumb ("Work › Today"); none when the filter is the
-    /// task's own list, which the crumb already names.
-    fn crumb_filter(&self, detail: &Detail) -> Option<String> {
-        match &self.filter {
-            Filter::List(id) if *id == detail.original.collection => None,
-            filter => Some(self.filter_name(filter)),
-        }
-    }
-
     /// Opens `todos[index]` in the detail, saving what the open detail still holds.
     fn select(&mut self, index: usize) -> Task<Message> {
         let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
         let flush = self.close_detail();
         self.selected = Some(index);
-        self.cursor = Some(todo.uid.clone());
-        self.detail = Some(Detail::new(&todo, &self.writable_lists(), &self.todos));
+        self.cursor = Some(Key::of(&todo));
+        let mut detail = Detail::new(&todo, &self.writable_lists(), &self.todos).on_day(self.today);
+        detail.pinned = self.is_pinned(&todo);
+        detail.issue_check = self.issue_check(&todo);
+        self.detail = Some(detail);
         flush
     }
 
@@ -1159,11 +1962,11 @@ impl App {
                     Message::Deleted,
                 )
             }
-            detail::Action::ToggleDone(uid) => match self.todos.iter().position(|t| t.uid == uid) {
+            detail::Action::ToggleDone(uid) => match self.detail_index(&uid) {
                 Some(index) => self.update(Message::ToggleDone(index)),
                 None => Task::none(),
             },
-            detail::Action::Show(uid) => match self.todos.iter().position(|t| t.uid == uid) {
+            detail::Action::Show(uid) => match self.detail_index(&uid) {
                 Some(index) => self.select(index),
                 None => Task::none(),
             },
@@ -1175,6 +1978,19 @@ impl App {
                 }
                 Task::none()
             }
+            // R.3: a new sub-task, "Copy link" and ↑ ↓ in the detail's head.
+            detail::Action::Create(todo) => self.save(todo),
+            detail::Action::CopyLink(url) => iced::clipboard::write(url),
+            detail::Action::Unpin { collection, item } => {
+                let source = self.source.clone();
+                Task::perform(
+                    async move { source.unpin_issue(collection, item).await.map_err(|e| e.to_string()) },
+                    Message::Unpinned,
+                )
+            }
+            detail::Action::AddLink { collection, url } => self.add_link(collection, url, None, None),
+            detail::Action::Previous => self.step(false),
+            detail::Action::Next => self.step(true),
         }
     }
 
@@ -1185,6 +2001,15 @@ impl App {
     fn close_menus(&mut self) {
         self.menu = None;
         self.drawer = false;
+    }
+
+    /// The icon of a filter in the header: the smart lists' ([`filter_icon`]), a filter list's
+    /// symbol ([`filter_list_icon`]); a task list has none (its ring is in the sidebar).
+    fn filter_mark(&self, filter: &Filter) -> Option<Icon> {
+        match filter {
+            Filter::List(id) => self.filter_source(id).map(filter_list_icon),
+            other => filter_icon(other),
+        }
     }
 
     fn filter_name(&self, filter: &Filter) -> String {
@@ -1230,19 +2055,116 @@ impl App {
         Task::perform(async move { source.save_todo(todo).await.map_err(|e| e.to_string()) }, Message::Saved)
     }
 
-    /// The detail states of `--open`, once the first tasks are in: a detail needs a task to open.
+    /// The states of `--open` that need the first tasks: a detail needs a task to open, a filter
+    /// list the lists.
     fn open_launched(&mut self) -> Task<Message> {
         if std::mem::replace(&mut self.opened, true) {
             return Task::none();
         }
-        let Some(open @ (Open::Detail | Open::Due)) = self.launch.open else { return Task::none() };
-        let Some(first) = list::order(&self.list_data(false)).first().copied() else { return Task::none() };
-        let select = self.select(first);
-        if open == Open::Due {
-            let card = self.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
-            return Task::batch([select, card]);
+        let filter_lists = || self.collections.iter().filter(|c| c.source.is_some());
+        let filter_list = match self.launch.open {
+            Some(Open::FilterList) => filter_lists()
+                .find(|c| c.source.as_ref().is_some_and(|s| s.problem.is_some()))
+                .or_else(|| filter_lists().next()),
+            Some(Open::Pinned) => filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty())),
+            Some(Open::FilterEdit | Open::FilterDelete) => filter_lists().next(),
+            _ => None,
         }
-        select
+        .map(|list| list.id.clone());
+        if let Some(id) = filter_list.clone() {
+            self.filter = Filter::List(id);
+        }
+        let dialog = match (self.launch.open, filter_list) {
+            (Some(Open::FilterEdit), Some(id)) => Some(filter::Open::Edit(id)),
+            (Some(Open::FilterDelete), Some(id)) => Some(filter::Open::Delete(id)),
+            (Some(Open::FilterNew), _) => self.github_accounts().next().map(|a| filter::Open::New(a.id.clone())),
+            _ => None,
+        };
+        if let Some(open) = dialog {
+            return self.open_filter_dialog(open);
+        }
+        if matches!(self.launch.open, Some(Open::Manual | Open::Order | Open::Drag)) {
+            self.open_manual();
+            return Task::none();
+        }
+        if self.launch.open == Some(Open::Drop) {
+            self.open_drop();
+            return Task::none();
+        }
+        let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
+        else {
+            return Task::none();
+        };
+        let order = list::order(&self.list_data());
+        let first = match open {
+            Open::PullRequest => order.into_iter().find(|&index| is_open_pull_request(&self.todos[index])),
+            Open::Pinned => order.into_iter().find(|&index| self.is_pinned(&self.todos[index])),
+            _ => order.first().copied(),
+        };
+        let Some(first) = first else { return Task::none() };
+        let select = self.select(first);
+        let editor = match open {
+            Open::Due => detail::Editor::Due,
+            Open::More | Open::Pinned => detail::Editor::More,
+            _ => return select,
+        };
+        let card = self.update(Message::Detail(detail::Message::Open(editor)));
+        Task::batch([select, card])
+    }
+
+    /// The connected GitHub accounts, which can have filter lists.
+    fn github_accounts(&self) -> impl Iterator<Item = &PimAccount> {
+        self.accounts.iter().filter(|a| a.kind == GITHUB_KIND && matches!(a.state, AccountState::Connected { .. }))
+    }
+
+    /// Opens the dialog of a filter list (`filter.rs`): a new list of a GitHub account, or "Edit
+    /// filter…" / "Delete list…" of a filter list. Unknown ids open nothing.
+    fn open_filter_dialog(&mut self, open: filter::Open) -> Task<Message> {
+        self.close_menus();
+        let owner = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str());
+        let list = |id: &str| self.collections.iter().find(|c| c.id == id);
+        let (dialog, focus) = match open {
+            filter::Open::New(id) => {
+                let account = self.accounts.iter().find(|a| a.id == id);
+                (account.map(|a| filter::Dialog::new_list(a.id.clone(), account_title(a))), true)
+            }
+            filter::Open::Edit(id) => {
+                let edit =
+                    |(list, a): (&Collection, &PimAccount)| filter::Dialog::edit(list, a.id.clone(), account_title(a));
+                (list(&id).zip(owner(&id)).and_then(edit), false)
+            }
+            filter::Open::Delete(id) => (list(&id).and_then(filter::Dialog::delete), false),
+        };
+        let opened = dialog.is_some();
+        self.filter_dialog = dialog;
+        if opened && focus { operation::focus(filter::NAME_INPUT) } else { Task::none() }
+    }
+
+    /// Hands `message` to the open filter list dialog and acts on its outcome: a saved list is
+    /// shown, a deleted one left, and after a conflict the lists are loaded again.
+    fn filter_message(&mut self, message: filter::Message) -> Task<Message> {
+        let Some(dialog) = self.filter_dialog.as_mut() else { return Task::none() };
+        let (task, outcome) = dialog.update(message, &self.source);
+        let task = task.map(Message::Filter);
+        match outcome {
+            filter::Outcome::Stay => task,
+            filter::Outcome::Close => {
+                self.filter_dialog = None;
+                task
+            }
+            filter::Outcome::Saved(id) => {
+                self.filter_dialog = None;
+                let show = self.update(Message::SetFilter(Filter::List(id)));
+                Task::batch([task, show, self.load()])
+            }
+            filter::Outcome::Deleted(id) => {
+                self.filter_dialog = None;
+                let shown = self.filter == Filter::List(id);
+                let leave = if shown { self.update(Message::SetFilter(Filter::Today)) } else { Task::none() };
+                Task::batch([task, leave, self.load()])
+            }
+            filter::Outcome::Reload => Task::batch([task, self.load()]),
+        }
     }
 
     fn load(&self) -> Task<Message> {
@@ -1263,6 +2185,503 @@ impl App {
             Message::Loaded,
         )
     }
+}
+
+/// Ticking issues of GitHub filter lists (task G.5).
+impl App {
+    /// Whether `todo` is an issue of a GitHub filter list, which has a check: `Some(true)` when
+    /// ticking may close it, `Some(false)` when its account's token may not write issues (the check
+    /// is locked); `None` for pull requests and every task outside a filter list.
+    ///
+    /// A link in a task list (task G.6), issue or pull request, is a task of its own: `Some(true)`,
+    /// ticking it always works (it closes an issue too where the core may).
+    fn issue_check(&self, todo: &Todo) -> Option<bool> {
+        let github = list::github_of(todo)?;
+        if self.filter_source(&todo.collection).is_none() {
+            return Some(true);
+        }
+        (github.kind == GitHubKind::Issue).then(|| self.may_close(&todo.collection))
+    }
+
+    /// Whether the account of the filter list `id` may close issues
+    /// ([`PimAccount::may_close_issues`]); an account not listed (yet) may: the core decides.
+    fn may_close(&self, id: &str) -> bool {
+        account_of(id, &self.accounts, |a| a.id.as_str()).is_none_or(PimAccount::may_close_issues)
+    }
+
+    /// The filter lists by id, each with [`App::may_close`], for the checks of the list.
+    fn issue_lists(&self) -> HashMap<String, bool> {
+        let lists = self.collections.iter().filter(|c| c.source.is_some());
+        lists.map(|c| (c.id.clone(), self.may_close(&c.id))).collect()
+    }
+
+    /// Index into `todos` of the task `uid` the open detail asks for (a subtask or itself), in the
+    /// detail's list first: the same issue can be in two filter lists.
+    fn detail_index(&self, uid: &str) -> Option<usize> {
+        let list = self.detail.as_ref().map(|detail| detail.original.collection.as_str());
+        let in_list = self.todos.iter().position(|t| t.uid == uid && Some(t.collection.as_str()) == list);
+        in_list.or_else(|| self.todos.iter().position(|t| t.uid == uid))
+    }
+
+    /// "Undo": the card goes, and the issue it names is to be reopened – in the version the list
+    /// holds if it does (a reload may have brought a newer one), else as the core answered.
+    fn undo(&mut self) -> Option<Todo> {
+        let notice = self.notice.take_if(|notice| notice.added_to.is_none())?;
+        let same = |t: &&Todo| t.uid == notice.todo.uid && t.collection == notice.todo.collection;
+        let closed = self.todos.iter().find(same).cloned().unwrap_or(notice.todo);
+        Some(Todo { completed: false, ..closed })
+    }
+
+    /// Closes (`todo.completed`) or reopens the issue `todo` of a filter list through the core's
+    /// `save_todo`; the answer comes as [`Message::IssueChanged`].
+    fn change_issue(&self, todo: Todo) -> Task<Message> {
+        let source = self.source.clone();
+        Task::perform(async move { source.save_todo(todo).await.map_err(|e| e.to_string()) }, Message::IssueChanged)
+    }
+
+    /// The core's answer to [`App::change_issue`]: the issue goes into the list at once (the reload
+    /// follows) and into an open detail; after closing, "Issue closed · Undo" shows. A refusal (the
+    /// token may not write issues, GitHub not reachable …) is the error line over the list.
+    fn issue_changed(&mut self, result: Result<Todo, String>) -> Task<Message> {
+        let saved = match result {
+            Ok(saved) => saved,
+            Err(err) => {
+                self.notice = None;
+                self.error = Some(trf("Couldn't change the issue: {error}", &[("error", &err)]));
+                return Task::none();
+            }
+        };
+        let same = |t: &Todo| t.uid == saved.uid && t.collection == saved.collection;
+        let is_closed = |todo: &Todo| list::github_of(todo).is_some_and(|github| github.state != GitHubState::Open);
+        // Closed already before this tick (as far as the list knew): then the tick closed nothing.
+        let was_closed = self.todos.iter().find(|t| same(t)).is_some_and(is_closed);
+        if let Some(shown) = self.todos.iter_mut().find(|t| same(t)) {
+            *shown = saved.clone();
+        }
+        // Only when an issue was really closed now, as the core's answer reports it: a link to a
+        // pull request, one whose issue the core could not close, and one in a list shared with
+        // others (task G.6c: the core closes nothing there) are only done themselves.
+        let issue = list::github_of(&saved).is_some_and(|github| github.kind == GitHubKind::Issue);
+        self.notice = (saved.completed && issue && is_closed(&saved) && !was_closed).then(|| Notice {
+            todo: saved.clone(),
+            since: iced::time::Instant::now(),
+            added_to: None,
+            moved: false,
+        });
+        let follow_up = match self.detail.as_mut() {
+            Some(detail) if same(&detail.original) => detail.stored(&saved),
+            _ => detail::Action::None,
+        };
+        Task::batch([self.detail_action(follow_up), self.load()])
+    }
+
+    /// Adds the GitHub item `url` to the list `collection` through the core's `add_link` (task
+    /// G.6): pinned in a filter list, a link task elsewhere. `due` and `priority` are what quick add
+    /// gives a new task there; the answer comes as [`Message::LinkAdded`].
+    fn add_link(&self, collection: String, url: String, due: Option<EventTime>, priority: Option<u8>) -> Task<Message> {
+        let source = self.source.clone();
+        Task::perform(async move { source.add_link(collection, url).await.map_err(|e| e.to_string()) }, move |r| {
+            Message::LinkAdded(r, due, priority)
+        })
+    }
+
+    /// The core's answer to [`App::add_link`]: a new link task in a task list gets the due date and
+    /// priority quick add gives there (it has none of its own yet), then the list is loaded again.
+    /// A refusal (no GitHub account, an item GitHub does not have …) is the error line. When the
+    /// link went to another list than the one shown ("Add to list…", or quick add in a smart
+    /// list), a card says where: "Added to {list}" (task G.6b).
+    fn link_added(
+        &mut self,
+        result: Result<Todo, String>,
+        due: Option<EventTime>,
+        priority: Option<u8>,
+    ) -> Task<Message> {
+        let added = match result {
+            Ok(added) => added,
+            Err(err) => {
+                self.error = Some(trf("Couldn't add the link: {error}", &[("error", &err)]));
+                return Task::none();
+            }
+        };
+        self.error = None;
+        if !matches!(&self.filter, Filter::List(id) if *id == added.collection) {
+            let name = self.collections.iter().find(|c| c.id == added.collection).map(|c| c.name.clone());
+            let added_to = Some(name.unwrap_or_else(|| tr("List").into()));
+            self.notice =
+                Some(Notice { todo: added.clone(), since: iced::time::Instant::now(), added_to, moved: false });
+        }
+        let planned = Todo { due: added.due.or(due), priority: added.priority.or(priority), ..added.clone() };
+        let writable = self.writable_lists().iter().any(|list| list.id == added.collection);
+        if writable && planned != added {
+            return self.save(planned);
+        }
+        self.load()
+    }
+
+    /// `window` with the "Issue closed" card at the bottom centre while it shows. Always the same
+    /// two layers, so the window keeps its state (scroll, focus) when the card comes and goes.
+    fn with_notice<'a>(&'a self, window: Element<'a, Message>) -> Element<'a, Message> {
+        let card: Element<'a, Message> = match &self.notice {
+            Some(Notice { added_to: Some(list), moved, .. }) => added_card(list, *moved),
+            Some(_) => notice_card(),
+            None => Space::new().into(),
+        };
+        let layer = container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL);
+        stack![window, layer].width(Fill).height(Fill).into()
+    }
+}
+
+/// Ordering a list by hand (task P.3b).
+impl App {
+    /// How the list shown is ordered: `None` where it has no order of its own (the smart lists
+    /// Today, Planned and All, a GitHub filter list, a list that is read-only).
+    fn list_order(&self) -> Option<ListOrder> {
+        let Filter::List(id) = &self.filter else { return None };
+        let writable = self.collections.iter().any(|c| &c.id == id && c.writable && c.kind.has_todos());
+        (writable && self.filter_source(id).is_none()).then(|| self.list_orders.get(id).copied().unwrap_or_default())
+    }
+
+    /// The list shown is in manual order.
+    fn manual(&self) -> bool {
+        self.list_order() == Some(ListOrder::Manual)
+    }
+
+    /// Index into `todos` of the task `key` names, if it is loaded.
+    fn key_index(&self, key: &Key) -> Option<usize> {
+        self.todos.iter().position(|t| key.is(t))
+    }
+
+    /// Display › Order: orders the list shown by `order`, at once in this window, then in the suite
+    /// settings (`--demo` stores nothing). Folds, the "+" group and the scroll belong to the old
+    /// order. Nothing happens where the list has no order of its own.
+    fn set_list_order(&mut self, order: ListOrder) -> Task<Message> {
+        let (Some(_), Filter::List(id)) = (self.list_order(), &self.filter) else { return Task::none() };
+        let id = id.clone();
+        match order {
+            ListOrder::DueDate => self.list_orders.remove(&id),
+            ListOrder::Manual => self.list_orders.insert(id.clone(), order),
+        };
+        self.menu = None;
+        self.drag = None;
+        self.collapsed.clear();
+        self.quick_group = None;
+        self.scroll = None;
+        let Source::Core(client) = &self.source else { return Task::none() };
+        self.orders_saving += 1;
+        let socket = client.socket.clone();
+        Task::perform(save_list_order(socket, list_order_request(id, order)), Message::ListOrderSaved)
+    }
+
+    /// Asks the core for the orders of the lists. Done with the appearance on every tick, so a
+    /// change in another window reaches this one within a minute. `--demo` has none to ask.
+    fn fetch_list_orders(&self) -> Task<Message> {
+        let Source::Core(client) = &self.source else { return Task::none() };
+        Task::perform(stored_list_orders(client.socket.clone()), Message::ListOrders)
+    }
+
+    /// Alt+↑ (`up`) or Alt+↓: moves the task under the cursor one step among the tasks it is
+    /// ordered with ([`list::step_target`]); nothing at the edge or outside manual order.
+    fn move_step(&mut self, up: bool) -> Task<Message> {
+        if !self.manual() {
+            return Task::none();
+        }
+        let Some(index) = self.cursor_index() else { return Task::none() };
+        match list::step_target(&self.list_data(), index, up) {
+            Some(before) => self.move_task(index, before),
+            None => Task::none(),
+        }
+    }
+
+    /// The grip of `todos[index]` was pressed: it becomes the cursor row and is dragged.
+    fn start_drag(&mut self, index: usize) {
+        let Some(key) = self.todos.get(index).map(Key::of).filter(|_| self.manual() || self.grips()) else { return };
+        self.cursor = Some(key.clone());
+        self.drag = Some(Drag { key, place: None, over: None });
+    }
+
+    /// The pointer is at `y` in the list's content: the marker goes to the nearest place the
+    /// dragged task may go ([`list::drop_places`]).
+    fn drag_to(&mut self, y: f32) {
+        let Some(index) = self.drag.as_ref().and_then(|drag| self.key_index(&drag.key)) else { return };
+        let place = list::nearest_place(&list::drop_places(&self.list_data(), index), y).map(|(place, _)| place);
+        if let Some(drag) = self.drag.as_mut() {
+            drag.place = place;
+        }
+    }
+
+    /// The button was released: the dragged task goes where the marker stands (nothing before the
+    /// pointer moved).
+    fn drop_dragged(&mut self) -> Task<Message> {
+        let Some(drag) = self.drag.take() else { return Task::none() };
+        if let (Some(index), Some(list)) = (self.key_index(&drag.key), drag.over) {
+            return self.drop_on_list(index, list);
+        }
+        let (Some(index), Some(place)) = (self.key_index(&drag.key), drag.place) else { return Task::none() };
+        let places = list::drop_places(&self.list_data(), index);
+        match places.into_iter().find(|&(at, _)| at == place) {
+            Some((_, before)) => self.move_task(index, before),
+            None => Task::none(),
+        }
+    }
+
+    /// Puts `todos[index]` in front of `todos[before]` (to the end of its level with `None`): at
+    /// once here, renumbered like the core does it ([`move_plan`]), then through the core's
+    /// `tasks.move_todo` – right away, or after the moves still on their way ([`Moving`]). The
+    /// cursor stays on the task and the list scrolls to keep it in view. Nothing when the task is
+    /// there already or has never been stored.
+    fn move_task(&mut self, index: usize, before: Option<usize>) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        let before = before.and_then(|i| self.todos.get(i)).cloned();
+        let Some(href) = todo.href.clone() else { return Task::none() };
+        let plan = move_plan(&self.todos, &todo, before.as_ref()).unwrap_or_default();
+        if plan.is_empty() {
+            return Task::none();
+        }
+        let undo = self.todos.clone();
+        for planned in plan {
+            if let Some(shown) = self.todos.iter_mut().find(|t| t.href == planned.href) {
+                shown.sort_order = planned.sort_order;
+            }
+        }
+        self.cursor = Some(Key::of(&todo));
+        let step = (href, before.and_then(|b| b.href));
+        let reveal = self.reveal(index);
+        if let Some(moving) = self.moving.as_mut() {
+            moving.queued.push_back(step);
+            return reveal;
+        }
+        self.moving = Some(Moving { undo, queued: VecDeque::new() });
+        Task::batch([self.send_move(step), reveal])
+    }
+
+    /// Sends one move to the core with the tasks as this window holds them now (their latest
+    /// etags). A task that is gone meanwhile fails the move like the core would.
+    fn send_move(&self, (href, before): (String, Option<String>)) -> Task<Message> {
+        let find = |href: &str| self.todos.iter().find(|t| t.href.as_deref() == Some(href)).cloned();
+        let before = match before {
+            Some(before) => find(&before).map(Some),
+            None => Some(None),
+        };
+        let (Some(todo), Some(before)) = (find(&href), before) else {
+            return Task::done(Message::Moved(Err(ProviderError::Other(tr("The task is gone").into()))));
+        };
+        let source = self.source.clone();
+        Task::perform(async move { source.move_todo(todo, before).await }, Message::Moved)
+    }
+
+    /// The core's answer to a move. Written tasks keep the place this window gave them and take
+    /// their new etags; the next move waiting goes out, and after the last one the list is
+    /// loaded again. An error puts the list back as it was before the moves still unanswered, says
+    /// what happened (a `conflict`: changed elsewhere) and reloads.
+    fn moved(&mut self, result: Result<Vec<Todo>, ProviderError>) -> Task<Message> {
+        let written = match result {
+            Ok(written) => written,
+            Err(err) => {
+                if let Some(moving) = self.moving.take() {
+                    self.todos = moving.undo;
+                }
+                let text = move_failed(&err);
+                self.error = Some(text.clone());
+                return self.load().chain(Task::done(Message::MoveFailed(text)));
+            }
+        };
+        for stored in written {
+            if let Some(shown) = self.todos.iter_mut().find(|t| t.href.is_some() && t.href == stored.href) {
+                shown.etag = stored.etag;
+            }
+        }
+        match self.moving.as_mut().and_then(|moving| moving.queued.pop_front()) {
+            Some(next) => self.send_move(next),
+            None => {
+                self.moving = None;
+                self.load()
+            }
+        }
+    }
+
+    /// `--open manual | order | drag`: the first writable task list in manual order, for pictures
+    /// of it; `drag` with its first row dragged and the marker two places further down.
+    fn open_manual(&mut self) {
+        let Some(id) = self.writable_lists().first().map(|list| list.id.clone()) else { return };
+        self.filter = Filter::List(id.clone());
+        self.list_orders.insert(id, ListOrder::Manual);
+        if self.launch.open != Some(Open::Drag) {
+            return;
+        }
+        let Some(&first) = list::order(&self.list_data()).first() else { return };
+        let place = list::drop_places(&self.list_data(), first).get(2).map(|&(place, _)| place);
+        self.cursor = Some(Key::of(&self.todos[first]));
+        self.drag = Some(Drag { key: Key::of(&self.todos[first]), place, over: None });
+    }
+}
+
+/// Dragging a row onto a list of the sidebar (task G.6c).
+impl App {
+    /// The lists of the sidebar a task of the list `collection` may be dropped on, by id:
+    ///
+    /// - from a GitHub filter list every writable task list, where the item becomes a link
+    ///   (`tasks.add_link`; one there already is the answer, nothing doubles);
+    /// - from a writable task list the other writable lists of the same account, where the task
+    ///   moves (`tasks.save_todo` with the new list). The core refuses a move to another account
+    ///   (`unsupported`), so those lists are no targets; neither is any list while the accounts are
+    ///   not known.
+    ///
+    /// Empty for every other list (read-only, unknown).
+    fn drop_targets(&self, collection: &str) -> Vec<String> {
+        let writable = self.writable_lists();
+        if self.filter_source(collection).is_some() {
+            return writable.into_iter().map(|list| list.id).collect();
+        }
+        if !writable.iter().any(|list| list.id == collection) {
+            return Vec::new();
+        }
+        let account = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str()).map(|a| a.id.as_str());
+        let Some(own) = account(collection) else { return Vec::new() };
+        writable
+            .into_iter()
+            .filter(|list| list.id != collection && account(&list.id) == Some(own))
+            .map(|list| list.id)
+            .collect()
+    }
+
+    /// The rows of the list shown have a grip to drag them onto a list of the sidebar: one list is
+    /// shown and its tasks have somewhere to go ([`App::drop_targets`]). The smart lists (Today,
+    /// Planned, All) have none; manual order has its own grip ([`App::manual`]).
+    fn grips(&self) -> bool {
+        matches!(&self.filter, Filter::List(id) if !self.drop_targets(id).is_empty())
+    }
+
+    /// The lists of the sidebar the row being dragged may be dropped on; empty without a drag.
+    fn dragged_targets(&self) -> Vec<String> {
+        let dragged = self.drag.as_ref().and_then(|drag| self.key_index(&drag.key));
+        dragged.map(|index| self.drop_targets(&self.todos[index].collection)).unwrap_or_default()
+    }
+
+    /// The pointer came onto the list `list` of the sidebar while a row is dragged: the drop goes
+    /// there, if it takes the row.
+    fn drag_over(&mut self, list: String) {
+        if !self.dragged_targets().contains(&list) {
+            return;
+        }
+        if let Some(drag) = self.drag.as_mut() {
+            drag.over = Some(list);
+        }
+    }
+
+    /// `todos[index]` was dropped on the list `list` of the sidebar: an item of a filter list
+    /// becomes a link there ([`App::add_link`], "Added to {list}"), a task moves there – out of its
+    /// parent, which stays behind, as "Move to list" in the detail does it. Nothing for a list that
+    /// does not take it.
+    fn drop_on_list(&mut self, index: usize, list: String) -> Task<Message> {
+        let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
+        if !self.drop_targets(&todo.collection).contains(&list) {
+            return Task::none();
+        }
+        if self.filter_source(&todo.collection).is_some() {
+            let Some(url) = todo.link.map(|link| link.id) else { return Task::none() };
+            return self.add_link(list, url, None, None);
+        }
+        let moved = Todo { collection: list, parent: None, ..todo };
+        let source = self.source.clone();
+        Task::perform(async move { source.save_todo(moved).await.map_err(|e| e.to_string()) }, Message::TaskMoved)
+    }
+
+    /// The core's answer to a move by dragging: "Moved to {list}", then as any save (the detail
+    /// follows, the list is loaded again). A refusal is the error line.
+    fn task_moved(&mut self, result: Result<Todo, String>) -> Task<Message> {
+        match result {
+            Ok(saved) => {
+                let name = self.collections.iter().find(|c| c.id == saved.collection).map(|c| c.name.clone());
+                let added_to = Some(name.unwrap_or_else(|| tr("List").into()));
+                let since = iced::time::Instant::now();
+                self.notice = Some(Notice { todo: saved.clone(), since, added_to, moved: true });
+                self.update(Message::Saved(Ok(saved)))
+            }
+            Err(err) => {
+                self.error = Some(trf("Couldn't move the task: {error}", &[("error", &err)]));
+                Task::none()
+            }
+        }
+    }
+
+    /// `--open drop`: the first filter list with its first row dragged onto the first writable
+    /// list of the sidebar, for pictures of the drop target.
+    fn open_drop(&mut self) {
+        let Some(id) = self.collections.iter().find(|c| c.source.is_some()).map(|c| c.id.clone()) else { return };
+        self.filter = Filter::List(id);
+        let Some(&first) = list::order(&self.list_data()).first() else { return };
+        let over = self.drop_targets(&self.todos[first].collection).into_iter().next();
+        self.cursor = Some(Key::of(&self.todos[first]));
+        self.drag = Some(Drag { key: Key::of(&self.todos[first]), place: None, over });
+    }
+}
+
+/// The request that stores how the list `list` is ordered (`settings.set_setting` with
+/// `list_order`, task P.3a).
+fn list_order_request(list: String, order: ListOrder) -> Request {
+    Request::SetSetting { key: SettingKey::ListOrder, value: serde_json::json!({ "list": list, "order": order }) }
+}
+
+/// Sends `request` (from [`list_order_request`]) to the core at `socket`.
+async fn save_list_order(socket: std::path::PathBuf, request: Request) -> Result<(), String> {
+    match torro_ipc::client::call(&socket, &request).await {
+        Ok(Response::Ok) => Ok(()),
+        Ok(Response::Error { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// How the task lists are ordered, as the suite settings at the core `socket` say.
+async fn stored_list_orders(socket: std::path::PathBuf) -> Result<BTreeMap<String, ListOrder>, String> {
+    match torro_ipc::client::call(&socket, &Request::Settings).await {
+        Ok(Response::Settings { settings }) => Ok(settings.list_orders),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// What the error line says when a move failed. A conflict means the list changed elsewhere (in
+/// Nextcloud, another app): it is loaded again, so moving once more works.
+fn move_failed(err: &ProviderError) -> String {
+    match err {
+        ProviderError::Conflict { .. } => {
+            tr("The list changed elsewhere and was reloaded. Move the task again.").to_string()
+        }
+        other => trf("Couldn't move the task: {error}", &[("error", other)]),
+    }
+}
+
+/// "Issue closed" with "Undo" (task G.5): one line on the menu surface with its border and shadow
+/// (like the zoom badge), 36 high, the violet check of a closed issue before the words.
+fn notice_card<'a>() -> Element<'a, Message> {
+    let line = row![
+        list::toned(Icon::CircleCheck, icon::SIZE, list::Tone::Merged),
+        typo::text(typo::BODY, tr("Issue closed")).wrapping(text::Wrapping::None),
+        widgets::text_button(None, tr("Undo"), style::button::ghost, Some(Message::Undo)),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    container(line)
+        .padding(Padding { top: space::XS, right: space::XS, bottom: space::XS, left: space::M })
+        .style(style::container::menu)
+        .into()
+}
+
+/// "Added to {list}" after a GitHub link went to a list not shown (task G.6b), or "Moved to {list}"
+/// after a task was dragged onto another list (`moved`, task G.6c): the card of [`notice_card`]
+/// with a check, no action. A long list name is cut with "…".
+fn added_card<'a>(name: &str, moved: bool) -> Element<'a, Message> {
+    let name = typo::ellipsize(name, typo::BODY, size::PROPS);
+    let args: [(&str, &dyn std::fmt::Display); 1] = [("list", &name)];
+    let text = if moved { trf("Moved to {list}", &args) } else { trf("Added to {list}", &args) };
+    let line = row![
+        list::toned(Icon::Check, icon::SIZE, list::Tone::Ok),
+        typo::text(typo::BODY, text).wrapping(text::Wrapping::None),
+    ]
+    .spacing(space::S)
+    .align_y(Alignment::Center);
+    container(line).padding(Padding::from([space::S, space::M])).style(style::container::menu).into()
 }
 
 /// A row of the sidebar and the navigation menu.
@@ -1290,12 +2709,66 @@ impl NavEntry {
 }
 
 /// The icon of a filter; lists have none (they show their colour as a ring).
+/// An open GitHub pull request (what `--open pr` looks for).
+fn is_open_pull_request(todo: &Todo) -> bool {
+    todo.link.as_ref().and_then(|link| link.github.as_ref()).is_some_and(|github| {
+        github.kind == torro_pim::model::GitHubKind::PullRequest && github.state == torro_pim::model::GitHubState::Open
+    })
+}
+
+/// The symbol of a GitHub filter list in the sidebar and the header. Its definition stores none,
+/// so it is read from the searches: one for bugs (`label:bug`) is a bug, one about me (`@me`:
+/// assigned, review requested, mentioned) a person with a check, anything else the filter symbol.
+fn filter_list_icon(source: &GitHubFilter) -> Icon {
+    let any = |needle: &str| source.queries.iter().any(|query| query.to_lowercase().contains(needle));
+    if any("label:bug") {
+        Icon::Bug
+    } else if any("@me") {
+        Icon::UserCheck
+    } else {
+        Icon::ListFilter
+    }
+}
+
+/// The title of an account's group in the sidebar and the navigation menu: its name, for a GitHub
+/// account "GitHub · login" (the name alone would be a bare login).
+fn account_title(account: &PimAccount) -> String {
+    if account.kind == GITHUB_KIND {
+        trf("GitHub · {login}", &[("login", &account.label)])
+    } else {
+        account.label.clone()
+    }
+}
+
+/// A hint over the list ([`App::filter_hints`]): `mark` (14) centred on the axis of the rows'
+/// leading symbols, `line` 12 after it, 32 high with the list's line below.
+fn hint_row<'a>(mark: Element<'a, Message>, line: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    let content = row![container(mark).center_x(icon::SIZE), line.into()].spacing(space::M).align_y(Alignment::Center);
+    column![
+        container(content).width(Fill).center_y(size::ROW_GROUP - LINE).padding([0.0, space::L]).clip(true),
+        rule::horizontal(LINE).style(style::rule),
+    ]
+    .into()
+}
+
 fn filter_icon(filter: &Filter) -> Option<Icon> {
     match filter {
         Filter::Today => Some(Icon::Sun),
         Filter::Planned => Some(Icon::CalendarClock),
         Filter::All => Some(Icon::Layers),
         Filter::List(_) => None,
+    }
+}
+
+/// The quick add field, built on `style::text_input`: no frame at rest and on hover (it is a list
+/// row, not a box), and `selected` with the focus ring while focused.
+fn quick_add_style(t: &Theme, status: text_input::Status) -> text_input::Style {
+    let base = style::text_input(t, status);
+    match status {
+        text_input::Status::Focused { .. } => {
+            text_input::Style { background: Background::Color(palette(t).selected), ..base }
+        }
+        _ => text_input::Style { border: base.border.width(0), ..base },
     }
 }
 
@@ -1373,14 +2846,350 @@ mod tests {
             });
             (views.len(), names)
         };
-        let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let names = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         assert_eq!(
             grouped(&app),
-            (3, Some(vec![vec!["Tasks".to_string()], vec!["Groceries".to_string(), "Family".to_string()]])),
+            (3, Some(vec![names(&["Tasks"]), names(&["Groceries", "Family"]), names(&["Needs me", "Torro bugs"])])),
             "Today, Planned and All stay above the groups, each account has its lists"
         );
         let _ = app.update(Message::AccountLoaded(Ok(vec![account(torro_pim::demo::WORK_ACCOUNT)])));
         assert_eq!(grouped(&app).1, None, "a single account is not grouped");
+    }
+
+    /// The GitHub account of the demo.
+    fn github_account() -> PimAccount {
+        PimAccount { kind: GITHUB_KIND.into(), label: "mahype".into(), ..account(torro_pim::demo::GITHUB_ACCOUNT) }
+    }
+
+    /// The accounts of `--demo`: two Nextcloud accounts and the GitHub one.
+    fn demo_accounts() -> Vec<PimAccount> {
+        let mut accounts = two_accounts();
+        accounts.push(github_account());
+        accounts
+    }
+
+    #[test]
+    fn filter_lists_sit_in_the_github_group_with_their_own_symbol() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let (_, lists) = app.nav_entries();
+        let marks: Vec<(String, Mark)> =
+            lists.iter().filter(|e| e.list_id().starts_with("github:")).map(|e| (e.label.clone(), e.mark)).collect();
+        assert_eq!(
+            marks,
+            [("Needs me".to_string(), Mark::Icon(Icon::UserCheck)), ("Torro bugs".to_string(), Mark::Icon(Icon::Bug))]
+        );
+        assert!(lists.iter().filter(|e| !e.list_id().starts_with("github:")).all(|e| matches!(e.mark, Mark::Ring(_))));
+        assert_eq!(account_title(&github_account()), trf("GitHub · {login}", &[("login", &"mahype")]));
+        assert_eq!(account_title(&account("nextcloud:anna@cloud")), "nextcloud:anna@cloud", "others by their name");
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::TORRO_BUGS.into())));
+        assert_eq!(app.filter_mark(&app.filter), Some(Icon::Bug), "the header shows it too");
+    }
+
+    /// The demo app on the filter list "Torro bugs" with the accounts `accounts`, and the index of
+    /// its open issue #145.
+    fn on_torro_bugs(accounts: Vec<PimAccount>) -> (App, usize) {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(accounts)));
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::TORRO_BUGS.into())));
+        let issue = app
+            .todos
+            .iter()
+            .position(|t| t.collection == torro_pim::demo::TORRO_BUGS && t.uid == "github:mahype/TorroWorkplace#145");
+        (app, issue.expect("the sample's open bug"))
+    }
+
+    /// `todo` saved in the demo source, as the core would answer it.
+    fn stored(app: &App, todo: Todo) -> Todo {
+        iced::futures::executor::block_on(app.source.save_todo(todo)).expect("the demo closes and reopens issues")
+    }
+
+    #[test]
+    fn ticking_an_issue_closes_it_and_undo_reopens_it() {
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        assert_eq!(app.issue_check(&app.todos[issue]), Some(true));
+        assert_eq!(app.list_data().issue_lists.get(torro_pim::demo::TORRO_BUGS), Some(&true));
+        let ticked = app.toggled(issue).expect("an issue can be ticked");
+        assert!(ticked.completed);
+        assert!(app.update(Message::ToggleDone(issue)).units() > 0, "the core is asked");
+
+        let closed = stored(&app, ticked);
+        let _ = app.update(Message::IssueChanged(Ok(closed.clone())));
+        assert!(app.todos[issue].completed, "done at once, before the reload");
+        let since = app.notice.as_ref().map(|notice| notice.since).expect("Issue closed · Undo");
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+
+        // The card goes by itself after a while, and not before.
+        let _ = app.update(Message::NoticeTick(since + NOTICE_FOR - Duration::from_secs(1)));
+        assert!(app.notice.is_some());
+        let undo = app.undo().expect("Undo reopens the closed issue");
+        assert!(!undo.completed && undo.uid == closed.uid && undo.etag == closed.etag);
+        assert!(app.notice.is_none(), "the card goes with Undo");
+        let reopened = stored(&app, undo);
+        let _ = app.update(Message::IssueChanged(Ok(reopened)));
+        assert!(!app.todos[issue].completed);
+        assert!(app.notice.is_none(), "reopening says nothing");
+
+        let _ = app.update(Message::IssueChanged(Ok(closed)));
+        let since = app.notice.as_ref().map(|notice| notice.since).expect("closed again");
+        let _ = app.update(Message::NoticeTick(since + NOTICE_FOR));
+        assert!(app.notice.is_none(), "gone after {NOTICE_FOR:?}");
+        assert_eq!(app.update(Message::Undo).units(), 0, "nothing left to undo");
+    }
+
+    /// `on_torro_bugs` with the open bug #145 found by "Needs me" as well, that copy first in the
+    /// loaded tasks; the index of the copy in "Torro bugs".
+    fn with_a_copy_in_another_list(app: &mut App, issue: usize) -> usize {
+        let copy = Todo { collection: torro_pim::demo::NEEDS_ME.into(), ..app.todos[issue].clone() };
+        let mut todos = app.todos.clone();
+        todos.insert(0, copy);
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), todos))));
+        app.todos
+            .iter()
+            .position(|t| t.collection == torro_pim::demo::TORRO_BUGS && t.uid == app.todos[issue + 1].uid)
+            .expect("the bug in its own list")
+    }
+
+    #[test]
+    fn the_same_issue_in_two_filter_lists_keeps_cursor_and_detail_on_its_own_copy() {
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        let issue = with_a_copy_in_another_list(&mut app, issue);
+        let own = |app: &App| app.todos[issue].collection.clone();
+        assert!(issue > 0, "the other list's copy comes first");
+
+        let _ = app.select(issue);
+        assert_eq!(app.cursor_index(), Some(issue), "the cursor row is the chosen copy, not the first with its uid");
+        assert_eq!(app.list_data().selected, Some(issue));
+        assert_eq!(app.detail_index(&app.todos[issue].uid), Some(issue));
+
+        // A reload keeps both on that copy.
+        let todos = app.todos.clone();
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), todos))));
+        assert_eq!(app.selected, Some(issue));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.collection.clone()), Some(own(&app)));
+        assert_eq!(app.cursor_index(), Some(issue));
+
+        // The keyboard goes up to the bug above it and back, never through the other list's copy.
+        let before = app.cursor.clone();
+        let _ = app.step(false);
+        assert_ne!(app.cursor, before);
+        assert_eq!(app.detail.as_ref().map(|d| d.original.collection.clone()), Some(own(&app)));
+        let _ = app.step(true);
+        assert_eq!(app.cursor, before);
+        assert_eq!(app.selected, Some(issue));
+    }
+
+    #[test]
+    fn a_filter_list_shows_its_items_in_the_order_of_the_search() {
+        let mut app = launched(&["--demo"]);
+        let id = torro_pim::demo::NEEDS_ME;
+        let _ = app.update(Message::SetFilter(Filter::List(id.into())));
+        // One run of rows: the groups of repositories sit apart from the order inside them.
+        let _ = app.update(Message::SetGroupBy(list::GroupBy::None));
+        let mut expected: Vec<&Todo> = app.todos.iter().filter(|t| t.collection == id).collect();
+        expected.sort_by_key(|t| t.sort_order);
+        let expected: Vec<String> = expected.into_iter().map(|t| t.uid.clone()).collect();
+        assert!(expected.len() > 1, "the sample has several matches");
+        assert_eq!(rows(&app), expected, "not by due date, priority and title");
+
+        // A newer answer from the core with another order is shown as it comes.
+        let mut todos = app.todos.clone();
+        for todo in todos.iter_mut().filter(|t| t.collection == id) {
+            todo.sort_order = todo.sort_order.map(|n| 100 - n);
+        }
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), todos))));
+        let reversed: Vec<String> = expected.into_iter().rev().collect();
+        assert_eq!(rows(&app), reversed);
+    }
+
+    #[test]
+    fn the_detail_closes_an_issue_like_the_list() {
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        let _ = app.select(issue);
+        assert_eq!(app.detail.as_ref().and_then(|detail| detail.issue_check), Some(true));
+        let tick = app.update(Message::Detail(detail::Message::ToggleDone));
+        assert!(tick.units() > 0, "the tick goes to the core");
+        let closed = stored(&app, Todo { completed: true, ..app.todos[issue].clone() });
+        let _ = app.update(Message::IssueChanged(Ok(closed.clone())));
+        assert_eq!(app.detail.as_ref().map(|detail| detail.original.clone()), Some(closed), "the state follows");
+    }
+
+    /// Index of the task of the demo with the link id `github:mahype/TorroWorkplace#<number>` in
+    /// the list "Tasks" (a link, task G.6).
+    fn link_in_tasks(app: &App, number: u64) -> usize {
+        let id = Link::github("mahype/TorroWorkplace", number).id;
+        let link = |t: &Todo| t.link.as_ref().is_some_and(|l| l.id == id) && app.filter_source(&t.collection).is_none();
+        app.todos.iter().position(link).expect("a link of the sample")
+    }
+
+    #[test]
+    fn a_pasted_link_is_added_as_a_link_in_a_task_list_and_pinned_in_a_filter_list() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let address = "https://github.com/mahype/TorroWorkplace/issues/145";
+        let _ = app.update(Message::QuickAddChanged(address.into()));
+        assert!(app.update(Message::QuickAddSubmit).units() > 0, "the core is asked");
+        assert!(app.quick_add.is_empty() && app.error.is_none());
+
+        // Under "Today" the new link is due today, as any task added there.
+        let target = app.target_list().expect("a writable list");
+        let added = iced::futures::executor::block_on(app.source.add_link(target, address.into())).expect("added");
+        assert_eq!((added.summary.as_str(), added.due), ("Week view: all-day events cover the day names", None));
+        let today = Some(EventTime::Date(app.today));
+        assert!(app.update(Message::LinkAdded(Ok(added.clone()), today, None)).units() > 0, "saved with its day");
+        // Not the list shown: a card says where it went (task G.6b), with nothing to undo.
+        let name = app.collections.iter().find(|c| c.id == added.collection).map(|c| c.name.clone());
+        assert!(name.is_some());
+        assert_eq!(app.notice.as_ref().and_then(|notice| notice.added_to.clone()), name, "Added to {name:?}");
+        let _ = app.view();
+        assert_eq!(app.update(Message::Undo).units(), 0, "nothing to undo");
+        // In the list shown the new row says enough.
+        app.notice = None;
+        let _ = app.update(Message::SetFilter(Filter::List(added.collection.clone())));
+        let _ = app.update(Message::LinkAdded(Ok(added.clone()), None, None));
+        assert!(app.notice.is_none());
+        let _ = app.update(Message::SetFilter(Filter::Today));
+        let refused = Message::LinkAdded(Err("GitHub has no such issue".into()), None, None);
+        let _ = app.update(refused);
+        assert!(app.error.as_deref().is_some_and(|e| e.contains("GitHub has no such issue")));
+
+        // A filter list takes links only, and pins them.
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        let _ = app.update(Message::QuickAddChanged("Buy oat milk".into()));
+        assert_eq!(app.update(Message::QuickAddSubmit).units(), 0, "nothing to pin");
+        assert_eq!(app.quick_add, "Buy oat milk", "the text stays to be corrected");
+        assert!(app.error.is_some());
+        let _ = app.update(Message::QuickAddChanged("mahype/TorroWorkplace#145".into()));
+        assert!(app.update(Message::QuickAddSubmit).units() > 0);
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+    }
+
+    #[test]
+    fn a_link_has_a_check_and_says_issue_closed_only_when_its_issue_closed() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let issue = link_in_tasks(&app, 123);
+        assert_eq!(app.issue_check(&app.todos[issue]), Some(true), "never locked");
+        let ticked = app.toggled(issue).expect("a link can be ticked");
+        assert!(app.update(Message::ToggleDone(issue)).units() > 0, "the core is asked");
+        let _ = app.update(Message::IssueChanged(Ok(stored(&app, ticked))));
+        assert!(app.notice.is_some(), "Issue closed · Undo");
+        let undo = app.undo().expect("Undo");
+        assert!(!undo.completed);
+
+        let pull = link_in_tasks(&app, 131);
+        assert_eq!(app.issue_check(&app.todos[pull]), Some(true), "a link to a pull request is ticked too");
+        let ticked = app.toggled(pull).expect("a link can be ticked");
+        let _ = app.update(Message::IssueChanged(Ok(stored(&app, ticked))));
+        assert!(app.todos[pull].completed && app.notice.is_none(), "a pull request is not closed: no card");
+    }
+
+    #[test]
+    fn without_write_access_the_check_is_locked_and_a_refusal_is_shown() {
+        let mut reader = github_account();
+        reader.scopes = Some(vec!["read:org".into()]);
+        let mut accounts = two_accounts();
+        accounts.push(reader);
+        let (mut app, issue) = on_torro_bugs(accounts);
+        assert_eq!(app.issue_check(&app.todos[issue]), Some(false));
+        assert_eq!(app.list_data().issue_lists.get(torro_pim::demo::TORRO_BUGS), Some(&false));
+        assert!(app.toggled(issue).is_none());
+        assert_eq!(app.update(Message::ToggleDone(issue)).units(), 0, "nothing goes to GitHub");
+        let _ = app.view();
+
+        // A fine-grained token says nothing about its scopes: ticking is tried, GitHub decides.
+        let (mut app, issue) = on_torro_bugs(demo_accounts());
+        assert!(app.toggled(issue).is_some());
+        let refused = "GitHub does not let this token change the issue.";
+        let _ = app.update(Message::IssueChanged(Err(refused.into())));
+        assert_eq!(app.error, Some(trf("Couldn't change the issue: {error}", &[("error", &refused)])));
+        assert!(app.notice.is_none() && !app.todos[issue].completed);
+    }
+
+    #[test]
+    fn a_filter_list_symbol_comes_from_its_searches() {
+        let source = |queries: &[&str]| GitHubFilter {
+            queries: queries.iter().map(|q| q.to_string()).collect(),
+            pinned: Vec::new(),
+            revision: 1,
+            truncated: false,
+            problem: None,
+        };
+        assert_eq!(filter_list_icon(&source(&["is:open Label:Bug repo:a/b"])), Icon::Bug);
+        assert_eq!(filter_list_icon(&source(&["is:pr", "review-requested:@me"])), Icon::UserCheck);
+        assert_eq!(filter_list_icon(&source(&["org:torro is:open"])), Icon::ListFilter);
+    }
+
+    #[test]
+    fn a_filter_list_groups_by_repository_and_takes_no_new_tasks() {
+        use list::GroupBy;
+        let mut app = launched(&["--demo"]);
+        assert_eq!(app.list_data().group_by, GroupBy::Due);
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        let data = app.list_data();
+        assert_eq!((data.group_by, data.read_only), (GroupBy::Repo, true), "by repository, read-only");
+        let groups: Vec<list::Group> = list::grouped(&data).into_iter().map(|(group, _)| group).collect();
+        assert_eq!(groups.len(), 2, "the two repositories of the sample");
+        let _ = app.update(Message::SetGroupBy(GroupBy::None));
+        assert_eq!((app.list_data().group_by, app.group_by), (GroupBy::None, GroupBy::Due), "its own choice");
+        let _ = app.update(Message::SetFilter(Filter::All));
+        assert_eq!(app.list_data().group_by, GroupBy::Due, "the other views keep theirs");
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        assert_eq!(app.list_data().group_by, GroupBy::None, "and the filter list keeps its own");
+        // A pull request is never ticked off (G.5): Space does nothing.
+        let pull = list::order(&app.list_data()).into_iter().find(|&i| is_open_pull_request(&app.todos[i]));
+        let pull = pull.expect("the sample's pull request");
+        assert!(app.toggled(pull).is_none());
+        assert_eq!(app.update(Message::ToggleDone(pull)).units(), 0);
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ToggleDisplay);
+            let _ = app.view();
+            let _ = app.update(Message::CloseMenu);
+        }
+    }
+
+    #[test]
+    fn a_pinned_item_is_unpinned_through_the_source() {
+        let mut app = launched(&["--demo", "--open", "pinned"]);
+        assert_eq!(app.filter, Filter::List(torro_pim::demo::NEEDS_ME.into()));
+        let detail = app.detail.as_ref().expect("the pinned item is open");
+        assert!(detail.pinned && detail.layer(&Anchor::new()).is_some(), "with its \"…\" menu");
+        assert!(app.update(Message::Detail(detail::Message::Unpin)).units() > 0, "the request goes out");
+        assert_eq!(app.update(Message::Unpinned(Ok(()))).units(), 1, "then the tasks are reloaded");
+        let _ = app.update(Message::Unpinned(Err("not pinned".into())));
+        assert_eq!(app.error, Some(trf("Unpin failed: {error}", &[("error", &"not pinned")])));
+        // An item that is not pinned has no "Unpin".
+        let index = app.todos.iter().position(|t| t.collection == torro_pim::demo::TORRO_BUGS).expect("a match");
+        let _ = app.update(Message::Select(index));
+        assert!(!app.detail.as_ref().expect("open").pinned);
+    }
+
+    #[test]
+    fn the_filter_list_state_opens_the_list_with_a_hint() {
+        let app = launched(&["--demo", "--open", "filter"]);
+        assert_eq!(app.filter, Filter::List(torro_pim::demo::TORRO_BUGS.into()), "the one whose refresh failed");
+        let source = app.shown_filter_list().expect("a filter list");
+        assert_eq!(app.filter_hints(source).len(), 1);
+        let mut needs_me = launched(&["--demo"]);
+        let _ = needs_me.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        let source = needs_me.shown_filter_list().expect("a filter list");
+        assert_eq!(needs_me.filter_hints(source).len(), 1, "more than 1,000 matches");
+        let _ = needs_me.list();
+    }
+
+    #[test]
+    fn a_github_account_alone_is_enough_for_the_tasks_app() {
+        let mut app = demo_app();
+        let _ = app.update(Message::AccountLoaded(Ok(vec![github_account()])));
+        assert!(app.connected(), "its filter lists are task lists");
     }
 
     #[test]
@@ -1518,7 +3327,7 @@ mod tests {
     }
 
     fn cursor(app: &App) -> Option<&str> {
-        app.cursor.as_deref()
+        app.cursor.as_ref().map(|key| key.uid.as_str())
     }
 
     #[test]
@@ -1555,9 +3364,9 @@ mod tests {
     #[test]
     fn the_cursor_row_is_the_highlighted_row() {
         let mut app = app_with_rows();
-        assert_eq!(app.list_data(false).selected, None);
+        assert_eq!(app.list_data().selected, None);
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.list_data(false).selected.map(|i| app.todos[i].uid.as_str()), Some("overdue"));
+        assert_eq!(app.list_data().selected.map(|i| app.todos[i].uid.as_str()), Some("overdue"));
         let _ = app.update(Message::Select(0));
         assert_eq!(cursor(&app), Some("later"), "clicking a row moves the cursor there");
     }
@@ -1630,6 +3439,9 @@ mod tests {
             (Key::Named(Named::Enter), Shortcut::Open),
             (Key::Named(Named::Space), Shortcut::Toggle),
             (Key::Character("n".into()), Shortcut::New),
+            (Key::Character("j".into()), Shortcut::Down),
+            (Key::Character("k".into()), Shortcut::Up),
+            (Key::Character("r".into()), Shortcut::Sync),
         ];
         for (key, expected) in keys {
             let got = shortcut(press(key.clone(), Modifiers::empty()), Status::Ignored, id);
@@ -1666,16 +3478,16 @@ mod tests {
     #[test]
     fn the_list_scrolls_the_least_that_shows_the_cursor_row() {
         let mut app = app_with_rows();
-        // Heads are 36 high (the first only 31: it has no gap and no line above), rows 40: overdue 31–71,
-        // child 71–111, then the "Today" head.
+        // Heads are 32 high and flush with the rows, rows 40: overdue 32–72, child 72–112, then the
+        // "Today" head 112–144 and its row.
         let _ = app.update(Message::Scrolled(0.0, 100.0));
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.scroll, Some((11.0, 100.0)), "child ends at 111, so 11 scrolls it in");
+        assert_eq!(app.scroll, Some((12.0, 100.0)), "child ends at 112, so 12 scrolls it in");
         let _ = press(&mut app, Shortcut::Down);
-        assert_eq!(app.scroll, Some((87.0, 100.0)), "today ends at 187");
+        assert_eq!(app.scroll, Some((84.0, 100.0)), "today ends at 184");
         let _ = press(&mut app, Shortcut::Up);
-        assert_eq!(app.scroll, Some((71.0, 100.0)), "child starts at 71, above the view");
+        assert_eq!(app.scroll, Some((72.0, 100.0)), "child starts at 72, above the view");
         let _ = press(&mut app, Shortcut::Up);
         assert_eq!(app.scroll, Some((0.0, 100.0)), "the first row brings its group head along");
         let _ = app.update(Message::Scrolled(0.0, 400.0));
@@ -1753,7 +3565,7 @@ mod tests {
             last_sync: None,
             problem: None,
         };
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state, scopes: None }
     }
 
     /// The accounts of `--demo`: the sample spreads over two.
@@ -1801,26 +3613,145 @@ mod tests {
             assert_eq!(app.filter, Filter::Planned, "{size:?}");
             assert_eq!(app.quick_add, "Buy oat milk");
             assert_eq!(app.detail.as_ref().map(|d| d.original.uid.clone()), open);
-            assert_eq!(app.cursor, open);
+            assert_eq!(app.cursor.as_ref().map(|key| key.uid.clone()), open);
             // Every size builds its view from this state.
             let _ = app.view();
         }
     }
 
     #[test]
-    fn the_detail_leaves_the_list_its_width_in_every_layout() {
+    fn the_columns_follow_the_window_and_the_open_task() {
         let mut app = app_with_rows();
         connected(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!((app.columns(), app.list_width()), (Columns::List, size::CONTENT_MAX), "nothing open");
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Open);
         let _ = app.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
-        for size in [WIDE, MEDIUM, NARROW] {
+        for (size, sidebar, expected, list) in [
+            (WIDE, SidebarMode::Expanded, Columns::ListDetailProps, size::LIST),
+            (Size::new(1280.0, 840.0), SidebarMode::Expanded, Columns::ListDetail, size::LIST_MEDIUM),
+            (Size::new(1400.0, 840.0), SidebarMode::Rail, Columns::ListDetailProps, size::LIST),
+            (MEDIUM, SidebarMode::Rail, Columns::ListDetail, size::LIST_MEDIUM),
+            (NARROW, SidebarMode::Expanded, Columns::Detail, NARROW.width),
+        ] {
+            let _ = app.update(Message::UiState(UiState { sidebar }));
             let _ = app.update(Message::Resized(size));
-            assert_eq!(panel::mode_for(app.class()) == panel::PanelMode::Beside, size == WIDE, "{size:?}");
-            // The panel, the list and the open card are built from the one state.
+            assert_eq!((app.columns(), app.list_width()), (expected, list), "{size:?} {sidebar:?}");
+            // Header, list, detail, properties and the open card are built from the one state.
             let _ = app.view();
         }
-        assert!(app.detail.is_some(), "a resize does not close the panel");
+        assert!(app.detail.is_some(), "a resize does not close the detail");
+    }
+
+    #[test]
+    fn three_columns_need_a_content_of_1320() {
+        assert_eq!(content_width(SizeClass::Wide, SidebarMode::Expanded, 1600.0), 1360.0);
+        assert_eq!(content_width(SizeClass::Wide, SidebarMode::Rail, 1600.0), 1540.0);
+        assert_eq!(content_width(SizeClass::Medium, SidebarMode::Expanded, 1000.0), 940.0, "medium has the rail");
+        assert_eq!(content_width(SizeClass::Narrow, SidebarMode::Expanded, 480.0), 480.0);
+        assert_eq!(columns(SizeClass::Wide, 1320.0, true), Columns::ListDetailProps);
+        assert_eq!(columns(SizeClass::Wide, 1319.0, true), Columns::ListDetail);
+        assert_eq!(columns(SizeClass::Medium, 1320.0, true), Columns::ListDetail, "medium never has three");
+        // Medium windows of 600-740: the detail beside the list would be a sliver, so it replaces it.
+        assert_eq!(LIST_DETAIL_FROM, 683.0);
+        assert_eq!(columns(SizeClass::Medium, LIST_DETAIL_FROM, true), Columns::ListDetail);
+        assert_eq!(columns(SizeClass::Medium, LIST_DETAIL_FROM - 1.0, true), Columns::Detail);
+        let medium_700 = content_width(SizeClass::Medium, SidebarMode::Rail, 700.0);
+        assert_eq!(columns(SizeClass::Medium, medium_700, true), Columns::Detail, "700 wide");
+        let medium_800 = content_width(SizeClass::Medium, SidebarMode::Rail, 800.0);
+        assert_eq!(columns(SizeClass::Medium, medium_800, true), Columns::ListDetail, "800 wide");
+        assert_eq!(columns(SizeClass::Narrow, 480.0, true), Columns::Detail);
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            assert_eq!(columns(class, 1400.0, false), Columns::List, "{class:?}");
+        }
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 540.0), 538.0, "inside the border of a small panel");
+        assert_eq!(list_width(SizeClass::Narrow, Columns::List, 480.0), 480.0, "narrow: the whole width");
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 740.0), 738.0, "no sliver of 18 beside the list");
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 940.0), size::CONTENT_MAX);
+    }
+
+    #[test]
+    fn quick_add_puts_the_task_where_the_plus_was() {
+        use list::{Group, Prio};
+        let today = NaiveDate::from_ymd_opt(2026, 10, 11).expect("valid date");
+        let date = |d: u32| Some(EventTime::Date(NaiveDate::from_ymd_opt(2026, 10, d).expect("valid date")));
+        let fields = |group: Option<Group>, filter: Filter| quick_add_fields(group.as_ref(), &filter, today);
+        assert_eq!(fields(None, Filter::Today), (date(11), None, None), "under Today: due today, as before");
+        assert_eq!(fields(None, Filter::All), (None, None, None));
+        assert_eq!(fields(Some(Group::Overdue), Filter::All), (date(10), None, None));
+        assert_eq!(fields(Some(Group::Today), Filter::All), (date(11), None, None));
+        assert_eq!(fields(Some(Group::Upcoming), Filter::Today), (date(12), None, None));
+        assert_eq!(fields(Some(Group::NoDate), Filter::Today), (None, None, None));
+        assert_eq!(fields(Some(Group::List("home".into())), Filter::All), (None, None, Some("home".into())));
+        assert_eq!(fields(Some(Group::Priority(Prio::Urgent)), Filter::Today), (date(11), Some(1), None));
+        assert_eq!(fields(Some(Group::Priority(Prio::Low)), Filter::All), (None, Some(9), None));
+    }
+
+    #[test]
+    fn group_heads_fold_add_and_regroup() {
+        use list::{Group, GroupBy};
+        let mut app = app_with_rows();
+        let rows = list::order(&app.list_data()).len();
+        let _ = app.update(Message::ToggleGroup(Group::Overdue));
+        assert_eq!(list::order(&app.list_data()).len(), rows - 2, "overdue and its subtask fold away");
+        let _ = app.update(Message::ToggleGroup(Group::Overdue));
+        assert_eq!(list::order(&app.list_data()).len(), rows);
+        assert!(app.update(Message::AddInGroup(Group::Upcoming)).units() > 0, "the quick add row gets the focus");
+        assert_eq!(app.quick_group, Some(Group::Upcoming));
+        let _ = app.update(Message::ToggleGroup(Group::Today));
+        let _ = app.update(Message::ToggleDisplay);
+        let _ = app.update(Message::SetGroupBy(GroupBy::Priority));
+        assert_eq!(app.group_by, GroupBy::Priority);
+        assert!(app.collapsed.is_empty() && app.quick_group.is_none() && app.menu.is_none(), "a fresh start");
+        let _ = app.update(Message::AddInGroup(Group::Today));
+        let _ = app.update(Message::SetFilter(Filter::Planned));
+        assert_eq!(app.quick_group, None, "another filter forgets the group");
+    }
+
+    #[test]
+    fn with_a_task_open_the_arrows_open_the_next_one() {
+        let mut app = app_with_rows();
+        let _ = press(&mut app, Shortcut::Down);
+        let _ = press(&mut app, Shortcut::Open);
+        let _ = press(&mut app, Shortcut::Down);
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("child"), "↓ opens the next row");
+        let _ = app.update(Message::Detail(detail::Message::Next));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("today"), "so does ↓ in its head");
+        let _ = app.update(Message::Detail(detail::Message::Previous));
+        assert_eq!(app.detail.as_ref().map(|d| d.original.uid.as_str()), Some("child"));
+        assert_eq!(cursor(&app), Some("child"), "the highlighted row follows");
+        let _ = app.update(Message::Escape);
+        let _ = press(&mut app, Shortcut::Down);
+        assert!(app.detail.is_none(), "without an open task the arrows only move the cursor");
+    }
+
+    #[test]
+    fn sync_times_read_like_a_clock() {
+        let now = Utc::now();
+        assert_eq!(ago(now, now), tr("just now"));
+        assert_eq!(ago(now - chrono::Duration::minutes(2), now), trf("{n} min ago", &[("n", &2)]));
+        assert_eq!(ago(now - chrono::Duration::hours(3), now), trf("{n} h ago", &[("n", &3)]));
+        assert_eq!(ago(now - chrono::Duration::days(2), now), trf("{n} d ago", &[("n", &2)]));
+    }
+
+    #[test]
+    fn the_demo_builds_in_every_layout_grouping_and_theme() {
+        use list::GroupBy;
+        let mut app = launched(&["--demo", "--open", "detail"]);
+        let _ = app.update(Message::ShowCompleted(true));
+        for appearance in [Appearance::Light, Appearance::Dark] {
+            let _ = app.update(Message::Appearance(Ok(appearance)));
+            for group_by in [GroupBy::Due, GroupBy::List, GroupBy::Priority, GroupBy::None] {
+                let _ = app.update(Message::SetGroupBy(group_by));
+                for size in [WIDE, Size::new(1280.0, 840.0), MEDIUM, NARROW, MINI, Size::new(320.0, 480.0), STRIP] {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.update(Message::ToggleDisplay);
+                    let _ = app.view();
+                    let _ = app.update(Message::CloseMenu);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1945,12 +3876,18 @@ mod tests {
     fn the_detail_states_open_the_first_task_once() {
         let detail = launched(&["--demo", "--open", "detail"]);
         let open = detail.detail.as_ref().expect("the detail is open");
-        let first = list::order(&detail.list_data(false))[0];
+        let first = list::order(&detail.list_data())[0];
         assert_eq!(open.original.uid, detail.todos[first].uid);
         assert!(open.layer(&Anchor::new()).is_none(), "no property editor");
 
+        let pr = launched(&["--demo", "--open", "pr"]);
+        let open = &pr.detail.as_ref().expect("the detail is open").original;
+        assert!(is_open_pull_request(open), "{} is an open pull request", open.summary);
+
         let due = launched(&["--demo", "--open", "due"]);
         assert!(due.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the due card");
+        let more = launched(&["--demo", "--open", "more"]);
+        assert!(more.detail.as_ref().expect("the detail is open").layer(&Anchor::new()).is_some(), "the … menu");
 
         // Closing it does not bring it back with the next reload.
         let mut closed = launched(&["--demo", "--open", "detail"]);
@@ -2012,5 +3949,474 @@ mod tests {
         assert_eq!(app.class(), SizeClass::Medium);
         let _ = app.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
         assert_eq!((app.scale_factor(), app.class()), (1.0, SizeClass::Wide));
+    }
+
+    /// A demo app started with these words, with the demo's accounts (GitHub included) and data.
+    fn launched_with_accounts(words: &[&str]) -> App {
+        let launch = Launch::parse(&args(words)).expect("valid parameters");
+        let (mut app, _) = App::new(launch.source(&args(words)), launch);
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        app
+    }
+
+    #[test]
+    fn filter_list_dialogs_open_and_their_outcome_is_followed() {
+        use torro_pim::demo::{NEEDS_ME, TORRO_BUGS};
+        let app = launched_with_accounts(&["--demo", "--open", "filter-edit"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Edit(_))));
+        assert_eq!(app.filter, Filter::List(NEEDS_ME.into()), "the list is shown behind its dialog");
+
+        let mut app = launched_with_accounts(&["--demo", "--open", "filter-delete"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Delete(_))));
+        let _ = app.update(Message::Escape);
+        assert!(app.filter_dialog.is_none(), "Escape cancels");
+        let _ = app.update(Message::OpenFilterDialog(filter::Open::Delete(NEEDS_ME.into())));
+        let _ = app.update(Message::Filter(filter::Message::Deleted(Ok(()))));
+        assert_eq!((app.filter_dialog.is_none(), &app.filter), (true, &Filter::Today), "the deleted list is left");
+
+        let mut app = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Edit(_))));
+        let _ = app.update(Message::Filter(filter::Message::Saved(Ok(TORRO_BUGS.into()))));
+        assert_eq!((app.filter_dialog.is_none(), &app.filter), (true, &Filter::List(TORRO_BUGS.into())));
+
+        // An id that is no filter list opens nothing.
+        let _ = app.update(Message::OpenFilterDialog(filter::Open::Edit("nope".into())));
+        assert!(app.filter_dialog.is_none());
+        assert_eq!(app.github_accounts().count(), 1);
+    }
+
+    /// The demo on the list "Tasks" in manual order (`--open manual`).
+    fn manual_app() -> App {
+        let app = launched(&["--demo", "--open", "manual"]);
+        assert!(app.manual(), "the first writable list, by hand");
+        app
+    }
+
+    /// The uids of the rows as the list shows them.
+    fn rows(app: &App) -> Vec<String> {
+        list::order(&app.list_data()).into_iter().map(|i| app.todos[i].uid.clone()).collect()
+    }
+
+    /// The uids of the top-level open rows, in the order shown.
+    fn top_rows(app: &App) -> Vec<String> {
+        let data = app.list_data();
+        let top = |&(i, depth): &(usize, usize)| (depth == 0 && !app.todos[i].completed).then_some(i);
+        list::arrange(&data).iter().filter_map(top).map(|i| app.todos[i].uid.clone()).collect()
+    }
+
+    fn put_cursor(app: &mut App, uid: &str) {
+        app.cursor = app.todos.iter().find(|t| t.uid == uid).map(Key::of);
+        assert!(app.cursor.is_some(), "{uid} is loaded");
+    }
+
+    #[test]
+    fn the_order_is_offered_for_a_single_writable_list_only() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        assert_eq!(app.list_order(), None, "Today has no order of its own");
+        for filter in [Filter::Planned, Filter::All, Filter::List(torro_pim::demo::NEEDS_ME.into())] {
+            let _ = app.update(Message::SetFilter(filter.clone()));
+            assert_eq!(app.list_order(), None, "{filter:?}");
+            assert_eq!(app.update(Message::SetListOrder(ListOrder::Manual)).units(), 0);
+            assert!(app.list_orders.is_empty(), "nothing is set for {filter:?}");
+        }
+        let tasks = app.writable_lists().first().map(|list| list.id.clone()).expect("a writable list");
+        let _ = app.update(Message::SetFilter(Filter::List(tasks.clone())));
+        assert_eq!(app.list_order(), Some(ListOrder::DueDate), "by due date until set otherwise");
+        let _ = app.update(Message::ToggleDisplay);
+        assert_eq!(app.update(Message::SetListOrder(ListOrder::Manual)).units(), 0, "the demo keeps it in the process");
+        assert_eq!(app.list_orders.get(&tasks), Some(&ListOrder::Manual));
+        assert!(app.manual() && app.menu.is_none(), "chosen, the menu closes");
+        assert_eq!(list::grouped(&app.list_data()).len(), 1, "no due groups");
+        let _ = app.update(Message::SetListOrder(ListOrder::DueDate));
+        assert!(app.list_orders.is_empty(), "the default is not kept");
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            for order in [ListOrder::DueDate, ListOrder::Manual] {
+                let _ = app.update(Message::SetListOrder(order));
+                let _ = app.update(Message::ToggleDisplay);
+                let _ = app.view();
+                let _ = app.update(Message::CloseMenu);
+            }
+        }
+    }
+
+    #[test]
+    fn the_menu_writes_the_setting_through_the_core() {
+        assert_eq!(
+            list_order_request("work".into(), ListOrder::Manual),
+            Request::SetSetting {
+                key: SettingKey::ListOrder,
+                value: serde_json::json!({ "list": "work", "order": "manual" }),
+            }
+        );
+        assert_eq!(
+            list_order_request("work".into(), ListOrder::DueDate),
+            Request::SetSetting {
+                key: SettingKey::ListOrder,
+                value: serde_json::json!({ "list": "work", "order": "due_date" }),
+            }
+        );
+        // A core that is never asked here: the tasks are built, not run.
+        let core = Source::Core(torro_ipc::pim::PimClient { socket: "no-core.sock".into() });
+        let (mut app, _) = App::new(core, Launch::default());
+        connected(&mut app);
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        let tasks = app.writable_lists().first().map(|list| list.id.clone()).expect("a writable list");
+        let _ = app.update(Message::SetFilter(Filter::List(tasks.clone())));
+        assert_eq!(app.update(Message::SetListOrder(ListOrder::Manual)).units(), 1, "set_setting goes out");
+        assert_eq!(app.orders_saving, 1);
+        let _ = app.update(Message::ListOrders(Ok(BTreeMap::new())));
+        assert!(app.manual(), "settings read before the change are not taken");
+        let _ = app.update(Message::ListOrderSaved(Ok(())));
+        let _ = app.update(Message::ListOrders(Ok(BTreeMap::from([(tasks.clone(), ListOrder::Manual)]))));
+        assert!(app.manual() && app.error.is_none());
+        let _ = app.update(Message::ListOrders(Ok(BTreeMap::new())));
+        assert!(!app.manual(), "changed in another window: followed");
+        let _ = app.update(Message::SetListOrder(ListOrder::Manual));
+        assert!(app.update(Message::ListOrderSaved(Err("core is not running".into()))).units() > 0, "fetched again");
+        let said = trf("Couldn't save the order: {error}", &[("error", &"core is not running")]);
+        assert_eq!(app.error, Some(said));
+    }
+
+    #[test]
+    fn alt_arrows_move_the_task_in_manual_order_and_stop_at_the_edges() {
+        let mut app = manual_app();
+        assert_eq!(press(&mut app, Shortcut::MoveDown).units(), 0, "nothing without a cursor");
+        let before = top_rows(&app);
+        assert!(before.len() >= 3, "the sample has tasks to order: {before:?}");
+        put_cursor(&mut app, &before[0]);
+        assert_eq!(press(&mut app, Shortcut::MoveUp).units(), 0, "the first stays first");
+        assert_eq!(top_rows(&app), before);
+        assert!(app.moving.is_none());
+
+        assert!(press(&mut app, Shortcut::MoveDown).units() > 0, "the move goes to the core");
+        let mut expected = before.clone();
+        expected.swap(0, 1);
+        assert_eq!(top_rows(&app), expected, "shown at once");
+        assert_eq!(cursor(&app), Some(before[0].as_str()), "the cursor stays on the task");
+        assert!(app.moving.as_ref().is_some_and(|moving| moving.queued.is_empty()));
+
+        // A second move waits for the answer to the first, then goes out.
+        let _ = press(&mut app, Shortcut::MoveDown);
+        expected.swap(1, 2);
+        assert_eq!(top_rows(&app), expected);
+        assert_eq!(app.moving.as_ref().map(|moving| moving.queued.len()), Some(1));
+        assert!(app.update(Message::Moved(Ok(Vec::new()))).units() > 0, "the next one is sent");
+        assert!(app.moving.as_ref().is_some_and(|moving| moving.queued.is_empty()));
+        assert!(app.update(Message::Moved(Ok(Vec::new()))).units() > 0, "after the last one: reload");
+        assert!(app.moving.is_none());
+
+        let last = expected.last().cloned().expect("a last row");
+        put_cursor(&mut app, &last);
+        assert_eq!(press(&mut app, Shortcut::MoveDown).units(), 0, "the last stays last");
+        assert!(press(&mut app, Shortcut::MoveUp).units() > 0);
+        let n = expected.len();
+        expected.swap(n - 2, n - 1);
+        assert_eq!(top_rows(&app), expected);
+    }
+
+    #[test]
+    fn subtasks_move_under_their_parent_and_parents_take_them_along() {
+        let mut app = manual_app();
+        let shown = rows(&app);
+        let parent_of = |uid: &str| app.todos.iter().find(|t| t.uid == uid).and_then(|t| t.parent.clone());
+        let first_kid = shown.iter().find(|uid| parent_of(uid).is_some()).expect("the sample has subtasks");
+        let parent = parent_of(first_kid).expect("a parent");
+        let kids: Vec<String> = shown.iter().filter(|uid| parent_of(uid).as_ref() == Some(&parent)).cloned().collect();
+        assert!(kids.len() >= 2, "a task with two subtasks or more");
+        let block = |rows: &[String]| {
+            let at = rows.iter().position(|uid| *uid == parent).expect("the parent is shown");
+            rows[at..=at + kids.len()].to_vec()
+        };
+        let mut family = block(&shown);
+        assert_eq!(&family[1..], &kids[..], "the subtasks follow their parent");
+
+        put_cursor(&mut app, &kids[0]);
+        assert_eq!(press(&mut app, Shortcut::MoveUp).units(), 0, "the first subtask stays under its parent");
+        assert!(press(&mut app, Shortcut::MoveDown).units() > 0);
+        family.swap(1, 2);
+        assert_eq!(block(&rows(&app)), family, "moved among its siblings, still under the parent");
+        put_cursor(&mut app, family.last().expect("a last subtask"));
+        let _ = app.update(Message::Moved(Ok(Vec::new())));
+        let last = rows(&app);
+        assert_eq!(press(&mut app, Shortcut::MoveDown).units(), 0, "the last subtask does not leave its parent");
+        assert_eq!(rows(&app), last);
+
+        // The parent moves with its subtasks.
+        put_cursor(&mut app, &parent);
+        let top = top_rows(&app);
+        let up = top.iter().position(|uid| *uid == parent).is_some_and(|at| at > 0);
+        let _ = press(&mut app, if up { Shortcut::MoveUp } else { Shortcut::MoveDown });
+        assert_eq!(block(&rows(&app)), family, "the subtasks come along");
+        assert_ne!(top_rows(&app), top);
+    }
+
+    #[test]
+    fn a_failed_move_goes_back_says_so_and_reloads() {
+        let mut app = manual_app();
+        let before = rows(&app);
+        let orders: Vec<Option<i64>> = app.todos.iter().map(|t| t.sort_order).collect();
+        let first = top_rows(&app)[0].clone();
+        put_cursor(&mut app, &first);
+        let _ = press(&mut app, Shortcut::MoveDown);
+        let _ = press(&mut app, Shortcut::MoveDown);
+        assert_ne!(rows(&app), before);
+        let reload = app.update(Message::Moved(Err(ProviderError::Conflict { uid: String::new() })));
+        assert!(reload.units() > 0, "loaded again");
+        assert_eq!(rows(&app), before, "back as before the first unanswered move");
+        assert_eq!(app.todos.iter().map(|t| t.sort_order).collect::<Vec<_>>(), orders);
+        assert!(app.moving.is_none(), "the waiting move is dropped");
+        let conflict = tr("The list changed elsewhere and was reloaded. Move the task again.");
+        assert_eq!(app.error.as_deref(), Some(conflict));
+        // The reload clears the error line; the message brings it back.
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        let _ = app.update(Message::MoveFailed(conflict.into()));
+        assert_eq!(app.error.as_deref(), Some(conflict));
+
+        let _ = press(&mut app, Shortcut::MoveDown);
+        let _ = app.update(Message::Moved(Err(ProviderError::Offline)));
+        let said = trf("Couldn't move the task: {error}", &[("error", &ProviderError::Offline)]);
+        assert_eq!(app.error, Some(said));
+        assert_eq!(rows(&app), before);
+    }
+
+    #[test]
+    fn a_move_reaches_the_demo_source_and_a_stale_one_is_a_conflict() {
+        let mut app = manual_app();
+        let top = top_rows(&app);
+        let index = |app: &App, uid: &str| app.todos.iter().position(|t| t.uid == uid).expect("shown");
+        let (first, second) = (app.todos[index(&app, &top[0])].clone(), app.todos[index(&app, &top[1])].clone());
+        // What the core answers when the first task goes behind the second (the third is in front).
+        let third = app.todos[index(&app, &top[2])].clone();
+        let written = iced::futures::executor::block_on(app.source.move_todo(first.clone(), Some(third)));
+        let written = written.expect("the demo moves it");
+        assert!(!written.is_empty());
+        let stale = iced::futures::executor::block_on(app.source.move_todo(first, Some(second)));
+        assert!(matches!(stale, Err(ProviderError::Conflict { .. })), "{stale:?}");
+        assert_eq!(move_failed(&ProviderError::Conflict { uid: String::new() }), app_conflict_text());
+        let _ = app.update(Message::Moved(Ok(written)));
+    }
+
+    fn app_conflict_text() -> String {
+        tr("The list changed elsewhere and was reloaded. Move the task again.").to_string()
+    }
+
+    #[test]
+    fn a_row_is_dragged_by_its_grip_to_the_marker() {
+        let mut app = manual_app();
+        let top = top_rows(&app);
+        let first = app.todos.iter().position(|t| t.uid == top[0]).expect("shown");
+        let idle = app.subscription().units();
+        let _ = app.update(Message::DragStart(first));
+        assert_eq!(app.drag, Some(Drag { key: Key::of(&app.todos[first]), place: None, over: None }));
+        assert_eq!(cursor(&app), Some(top[0].as_str()), "the dragged row is the cursor row");
+        assert_eq!(app.subscription().units(), idle + 2, "Escape and the release listen while dragging");
+        assert_eq!(app.update(Message::DragEnd).units(), 0, "released before it moved: nothing");
+        assert!(app.drag.is_none());
+
+        let _ = app.update(Message::DragStart(first));
+        let places = list::drop_places(&app.list_data(), first);
+        let (place, _) = places[2];
+        let _ = app.update(Message::DragMove(place as f32 * size::ROW + 3.0));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.place), Some(place), "the marker snaps to the place");
+        for size in [WIDE, MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        assert!(app.update(Message::DragEnd).units() > 0, "dropped: the move goes out");
+        let mut expected = top.clone();
+        expected.swap(0, 1);
+        assert_eq!(top_rows(&app), expected, "in front of the third, behind the second");
+
+        // Escape lets go without moving.
+        let _ = app.update(Message::Moved(Ok(Vec::new())));
+        let now = rows(&app);
+        let _ = app.update(Message::DragStart(first));
+        let _ = app.update(Message::DragMove(0.0));
+        let _ = app.update(Message::Escape);
+        assert!(app.drag.is_none());
+        assert_eq!(app.update(Message::DragEnd).units(), 0);
+        assert_eq!(rows(&app), now);
+    }
+
+    #[test]
+    fn the_drag_state_starts_with_the_marker_shown() {
+        let app = launched(&["--demo", "--open", "drag"]);
+        assert!(app.manual());
+        assert!(app.drag.as_ref().is_some_and(|drag| drag.place.is_some()));
+        let order = launched(&["--demo", "--open", "order"]);
+        assert_eq!(order.menu, Some(Menu::Display));
+        assert!(order.manual());
+    }
+
+    #[test]
+    fn alt_with_the_arrows_moves_and_nothing_else() {
+        use iced::event::Status;
+        use iced::keyboard::{Event, Key, Location, Modifiers, key::Named, key::Physical};
+        let press = |key: Key, modifiers: Modifiers| {
+            iced::Event::Keyboard(Event::KeyPressed {
+                modified_key: key.clone(),
+                key,
+                physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+                location: Location::Standard,
+                modifiers,
+                text: None,
+                repeat: false,
+            })
+        };
+        let id = iced::window::Id::unique();
+        let up = shortcut(press(Key::Named(Named::ArrowUp), Modifiers::ALT), Status::Ignored, id);
+        assert!(matches!(up, Some(Message::Shortcut(Shortcut::MoveUp))));
+        let down = shortcut(press(Key::Named(Named::ArrowDown), Modifiers::ALT), Status::Ignored, id);
+        assert!(matches!(down, Some(Message::Shortcut(Shortcut::MoveDown))));
+        assert!(shortcut(press(Key::Character("j".into()), Modifiers::ALT), Status::Ignored, id).is_none());
+        let both = Modifiers::ALT | Modifiers::CTRL;
+        assert!(shortcut(press(Key::Named(Named::ArrowUp), both), Status::Ignored, id).is_none());
+        assert!(shortcut(press(Key::Named(Named::ArrowUp), Modifiers::ALT), Status::Captured, id).is_none());
+        // Outside manual order Alt+↓ does nothing.
+        let mut app = app_with_rows();
+        let _ = app.update(Message::ShortcutChecked(Shortcut::Down, false));
+        assert_eq!(app.update(Message::ShortcutChecked(Shortcut::MoveDown, false)).units(), 0);
+    }
+
+    // ----- Dragging onto the sidebar (task G.6c) ------------------------------------------------
+
+    /// The id of the demo's list named `name`.
+    fn list_named(app: &App, name: &str) -> String {
+        app.collections.iter().find(|c| c.name == name).map(|c| c.id.clone()).expect("a list of the demo")
+    }
+
+    /// The first row of the list shown, as an index into `todos`.
+    fn first_row(app: &App) -> usize {
+        list::order(&app.list_data()).first().copied().expect("a row")
+    }
+
+    #[test]
+    fn an_item_of_a_filter_list_dragged_onto_a_list_becomes_a_link_there() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        let _ = app.update(Message::SetFilter(Filter::List(torro_pim::demo::NEEDS_ME.into())));
+        assert!(app.grips() && app.list_data().grips, "its rows have a grip");
+        let tasks = list_named(&app, "Tasks");
+        let first = first_row(&app);
+        let _ = app.update(Message::DragStart(first));
+        // Every writable list takes it, whatever the account; filter lists do not.
+        let mut targets = app.dragged_targets();
+        targets.sort();
+        let mut writable: Vec<String> = app.writable_lists().into_iter().map(|c| c.id).collect();
+        writable.sort();
+        assert_eq!(targets, writable);
+        assert!(!targets.iter().any(|id| id.starts_with("github:")));
+
+        let _ = app.update(Message::DragOver(torro_pim::demo::TORRO_BUGS.into()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), None, "a filter list takes nothing");
+        let _ = app.update(Message::DragOver(tasks.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), Some(tasks.clone()), "the target");
+        for size in [WIDE, MEDIUM] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        assert!(app.update(Message::DragEnd).units() > 0, "the core is asked to add the link");
+        assert!(app.drag.is_none());
+
+        // The core's answer: "Added to Tasks".
+        let url = app.todos[first].link.as_ref().map(|link| link.id.clone()).expect("a GitHub item");
+        let added = iced::futures::executor::block_on(app.source.add_link(tasks.clone(), url)).expect("added");
+        assert_eq!(added.collection, tasks);
+        let _ = app.update(Message::LinkAdded(Ok(added), None, None));
+        assert_eq!(app.notice.as_ref().and_then(|n| n.added_to.as_deref()), Some("Tasks"));
+        assert!(!app.notice.as_ref().is_some_and(|n| n.moved));
+    }
+
+    #[test]
+    fn a_task_dragged_onto_another_list_of_its_account_moves_there() {
+        let mut app = launched_with_accounts(&["--demo"]);
+        let (groceries, family, tasks) =
+            (list_named(&app, "Groceries"), list_named(&app, "Family"), list_named(&app, "Tasks"));
+        let _ = app.update(Message::SetFilter(Filter::List(groceries.clone())));
+        // Family is in the same account; Tasks is in the other one, the core would refuse the move.
+        assert_eq!(app.drop_targets(&groceries), std::slice::from_ref(&family));
+        assert!(app.grips());
+        let first = first_row(&app);
+        let _ = app.update(Message::DragStart(first));
+        let _ = app.update(Message::DragOver(tasks.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), None, "no target across accounts");
+        let _ = app.update(Message::DragOver(family.clone()));
+        // Leaving another row afterwards (events in either order) keeps the target.
+        let _ = app.update(Message::DragLeave(tasks.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), Some(family.clone()));
+        let _ = app.update(Message::DragLeave(family.clone()));
+        assert_eq!(app.drag.as_ref().and_then(|drag| drag.over.clone()), None);
+        let _ = app.update(Message::DragOver(family.clone()));
+        let _ = app.view();
+        assert!(app.update(Message::DragEnd).units() > 0, "the core is asked to move it");
+
+        // The core's answer: "Moved to Family", the row leaves the list with the reload.
+        let moved = Todo { collection: family.clone(), parent: None, ..app.todos[first].clone() };
+        let moved = stored(&app, moved);
+        let _ = app.update(Message::TaskMoved(Ok(moved)));
+        let notice = app.notice.as_ref().expect("a card");
+        assert_eq!((notice.added_to.as_deref(), notice.moved), (Some("Family"), true));
+        let _ = app.view();
+        assert_eq!(app.update(Message::Undo).units(), 0, "nothing to undo");
+        let _ = app.update(Message::TaskMoved(Err("The server did not answer".into())));
+        assert!(app.error.as_deref().is_some_and(|e| e.contains("The server did not answer")));
+
+        // Tasks has no other list in its account, the smart lists have no grip.
+        assert!(app.drop_targets(&tasks).is_empty());
+        let _ = app.update(Message::SetFilter(Filter::List(tasks)));
+        assert!(!app.grips());
+        let _ = app.update(Message::DragStart(first_row(&app)));
+        assert!(app.drag.is_none(), "nothing to drag to");
+        let _ = app.update(Message::SetFilter(Filter::Today));
+        assert!(!app.grips());
+    }
+
+    #[test]
+    fn without_the_accounts_a_task_has_nowhere_to_go() {
+        let app = launched(&["--demo"]);
+        let groceries = list_named(&app, "Groceries");
+        assert!(app.drop_targets(&groceries).is_empty(), "the account of a list is not known yet");
+        assert!(!app.drop_targets(torro_pim::demo::NEEDS_ME).is_empty(), "a link may go anywhere");
+    }
+
+    #[test]
+    fn the_drop_state_shows_a_filter_list_row_over_a_list() {
+        let app = launched(&["--demo", "--open", "drop"]);
+        assert!(app.shown_filter_list().is_some());
+        let over = app.drag.as_ref().and_then(|drag| drag.over.clone()).expect("over a list");
+        assert!(app.writable_lists().iter().any(|list| list.id == over));
+        assert_eq!(app.list_data().drag.and_then(|(_, place)| place), None, "no marker in the list");
+    }
+
+    #[test]
+    fn ticking_a_link_whose_issue_stays_open_shows_no_issue_closed_card() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let issue = link_in_tasks(&app, 123);
+        let ticked = app.toggled(issue).expect("a link can be ticked");
+        // A list shared with others: the core marks the task done and leaves the issue open.
+        let _ = app.update(Message::IssueChanged(Ok(Todo { etag: Some("\"2\"".into()), ..ticked.clone() })));
+        assert!(app.todos[issue].completed, "the task is done");
+        assert!(app.notice.is_none(), "no Issue closed · Undo");
+        // Without GitHub's details in the answer, the same.
+        let bare = Todo { link: ticked.link.clone().map(|link| Link { github: None, ..link }), ..ticked.clone() };
+        let _ = app.update(Message::IssueChanged(Ok(bare)));
+        assert!(app.notice.is_none());
+    }
+
+    #[test]
+    fn an_issue_closed_before_the_tick_brings_no_card() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let issue = link_in_tasks(&app, 123);
+        let closed = stored(&app, Todo { completed: true, ..app.todos[issue].clone() });
+        // The list already knew it closed (GitHub, or a tick elsewhere): this tick closed nothing.
+        app.todos[issue] = Todo { completed: false, ..closed.clone() };
+        let _ = app.update(Message::IssueChanged(Ok(closed)));
+        assert!(app.notice.is_none());
     }
 }

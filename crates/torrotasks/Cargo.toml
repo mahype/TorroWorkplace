@@ -18,6 +18,7 @@ torro-gui.workspace = true
 torro-ipc.workspace = true
 chrono.workspace = true
 iced.workspace = true
+serde_json.workspace = true
 webbrowser.workspace = true
 
 # Not under `[target.'cfg(windows)'.build-dependencies]`: Cargo checks that `cfg` against the host that runs the build

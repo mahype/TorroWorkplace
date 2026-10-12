@@ -29,7 +29,7 @@ pub enum Language {
 }
 
 /// All suite-wide settings.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     /// Language of the suite: `system` follows the desktop, `english` and `german` fix it.
@@ -58,6 +58,31 @@ pub struct Settings {
     /// [`ListOrder::Manual`] are stored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub list_orders: BTreeMap<String, ListOrder>,
+    /// "Quiet during busy events" (task E3.4): while a busy event of a shown calendar runs (not
+    /// all-day, not marked free), only urgent inbox entries pop up; the rest is told in one
+    /// message when it ends. On unless turned off.
+    #[serde(default = "on")]
+    pub quiet_when_busy: bool,
+}
+
+/// `true`, for settings that are on unless the file says otherwise.
+fn on() -> bool {
+    true
+}
+
+impl Default for Settings {
+    fn default() -> Settings {
+        Settings {
+            language: Language::default(),
+            appearance: Appearance::default(),
+            start_at_login: false,
+            hidden_collections: Vec::new(),
+            zoom: Zoom::default(),
+            night: Night::default(),
+            list_orders: BTreeMap::new(),
+            quiet_when_busy: on(),
+        }
+    }
 }
 
 /// A time of day on the quarter hour, `00:00` to `23:45`, the grid of [`Night`]. Kept as minutes
@@ -473,8 +498,20 @@ mod tests {
             zoom: Zoom::DEFAULT,
             night: Night::DEFAULT,
             list_orders: BTreeMap::new(),
+            quiet_when_busy: true,
         };
         assert_eq!(load_from(&path), expected);
+    }
+
+    #[test]
+    fn quiet_when_busy_is_on_unless_turned_off() {
+        let dir = TempDir::new("quiet");
+        let path = dir.file("settings.json");
+        assert!(Settings::default().quiet_when_busy);
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert!(load_from(&path).quiet_when_busy, "a file from before the setting keeps quiet on");
+        fs::write(&path, r#"{"quietWhenBusy":false}"#).expect("write");
+        assert!(!load_from(&path).quiet_when_busy);
     }
 
     #[test]
@@ -519,6 +556,7 @@ mod tests {
             zoom: Zoom::nearest(1.25),
             night: Night { from: q(23, 30), to: q(7, 0) },
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
+            quiet_when_busy: false,
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

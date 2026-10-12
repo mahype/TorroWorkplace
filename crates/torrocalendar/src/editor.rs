@@ -332,6 +332,7 @@ impl Form {
             location: None,
             description: None,
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         });
         event.summary = title.to_string();
         event.start = start;
@@ -996,6 +997,7 @@ mod tests {
             location: Some("Room 3".into()),
             description: Some("Bring slides".into()),
             recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
         }
     }
 

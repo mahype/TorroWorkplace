@@ -1,4 +1,4 @@
-//! The command-line clients of the core: `ctl setups …`, `ctl clients …` and `status`.
+//! The command-line clients of the core: `ctl setups …`, `ctl clients …`, `status` and `notify`.
 //!
 //! Each command becomes one [`Request`], goes to the daemon over the local socket and prints
 //! the [`Response`]: short lines for people, or the response as JSON with `--json` for bars
@@ -8,13 +8,25 @@
 //!
 //! `ctl clients` connects agents and scripts before the control centre can (A.6): `add` prints
 //! the new key once, `new-key` a replacement; neither can be shown again.
+//!
+//! `ctl approvals` lists what agents wait for and `ctl allow|deny <id>` decides, with the app key
+//! like the control centre (A.3b): a way to decide on systems without notification buttons and
+//! before the control centre has its approvals page (A.8).
+//!
+//! `notify` (E1.3) posts a notice to the inbox for scripts: `inbox.post_item` with kind `notice`.
+//! Unlike `ctl` it sends the client key in `TORRO_TOKEN` when there is one, so the entry belongs
+//! to that script's source; without, it sends the app key and the core files it under
+//! `script:cli`. The core decides the source, never this command. A core that is not running is
+//! an error (exit code 1): a script should learn that its notice went nowhere.
 
 use std::fmt;
+use std::path::Path;
 use std::process::ExitCode;
 
 use torro_core::i18n::{tr, trf};
+use torro_inbox::{AgentKind, Kind, Lane, Link};
 use torro_ipc::api::{Rights, RightsTemplate};
-use torro_ipc::{ClientInfo, Request, Response, socket_path};
+use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, IpcError, Key, Request, Response, socket_path};
 use torro_setups::{LoadMode, TemplateSummary};
 
 const USAGE: &str = "usage:
@@ -25,11 +37,18 @@ const USAGE: &str = "usage:
   torroworkplace ctl setups delete <id> [--json]
   torroworkplace ctl setups load <id> [--mode empty|add|replace] [--json]
   torroworkplace ctl clients list [--json]
-  torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script]
+  torroworkplace ctl clients add <name> [--kind claude-code|codex|claude-desktop|cursor|script|hook]
+                                        [--agent claude-code|codex|gemini]
                                         [--template read-only|read-and-write|full-access] [--json]
   torroworkplace ctl clients remove <id> [--json]
   torroworkplace ctl clients new-key <id> [--json]
-  torroworkplace ctl quit [--json]";
+  torroworkplace ctl approvals [--json]
+  torroworkplace ctl allow <id> [--json]
+  torroworkplace ctl deny <id> [--json]
+  torroworkplace ctl quit [--json]
+  torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
+  torroworkplace hook claude-code|codex|gemini [--key-file <file>]
+                                                 (run by an agent's hooks; reads stdin, prints nothing)";
 
 /// The kind of a client added without `--kind`.
 const DEFAULT_KIND: &str = "script";
@@ -39,6 +58,8 @@ const DEFAULT_KIND: &str = "script";
 struct Options<'a> {
     mode: Option<&'a str>,
     kind: Option<&'a str>,
+    /// The agent a `hook` client reports for (task E1.2b binds every hook client to one).
+    agent: Option<&'a str>,
     template: Option<&'a str>,
 }
 
@@ -69,8 +90,11 @@ impl fmt::Display for UsageError {
 impl std::error::Error for UsageError {}
 
 /// Entry point from `main`: `args` are the arguments after the binary name, starting with
-/// `status` or `ctl`.
+/// `status`, `ctl` or `notify`.
 pub fn from_args(args: &[String]) -> ExitCode {
+    if args.first().is_some_and(|head| head == "notify") {
+        return notify_from_args(&args[1..]);
+    }
     match parse(args) {
         Ok(command) => run(command),
         Err(err) => {
@@ -104,6 +128,7 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
             }
             "--mode" => &mut options.mode,
             "--kind" => &mut options.kind,
+            "--agent" => &mut options.agent,
             "--template" => &mut options.template,
             flag if flag.starts_with('-') => return Err(UsageError::new(format!("unknown option {arg}"))),
             word => {
@@ -132,8 +157,9 @@ pub fn parse(args: &[String]) -> Result<Command, UsageError> {
     if options.mode.is_some() && !matches!(request, Request::LoadTemplate { .. }) {
         return Err(UsageError::new("--mode only applies to ctl setups load"));
     }
-    if (options.kind.is_some() || options.template.is_some()) && !matches!(request, Request::CreateClient { .. }) {
-        return Err(UsageError::new(tr("--kind and --template only apply to ctl clients add")));
+    let client_options = options.kind.is_some() || options.agent.is_some() || options.template.is_some();
+    if client_options && !matches!(request, Request::CreateClient { .. }) {
+        return Err(UsageError::new(tr("--kind, --agent and --template only apply to ctl clients add")));
     }
     Ok(Command { request, json })
 }
@@ -143,6 +169,7 @@ fn missing_value(flag: &str) -> UsageError {
     match flag {
         "--mode" => UsageError::new("--mode needs a value: empty, add or replace"),
         "--kind" => UsageError::new(tr("--kind needs a value, e.g. claude-code or script")),
+        "--agent" => UsageError::new(tr("--agent needs a value: claude-code, codex or gemini")),
         _ => UsageError::new(tr("--template needs a value: read-only, read-and-write or full-access")),
     }
 }
@@ -153,10 +180,28 @@ fn ctl_request(words: &[&str], options: &Options) -> Result<Request, UsageError>
         ["setups"] => Err(UsageError::new("ctl setups needs a subcommand: list, save, update, delete or load")),
         ["clients", verb, args @ ..] => clients_request(verb, args, options),
         ["clients"] => Err(UsageError::new(tr("ctl clients needs a subcommand: list, add, remove or new-key"))),
+        ["approvals"] => Ok(Request::ListApprovals),
+        ["approvals", ..] => Err(UsageError::new(tr("ctl approvals takes no arguments"))),
+        [verb @ ("allow" | "deny"), args @ ..] => decide_request(verb, args),
         ["quit"] => Ok(Request::Quit),
         ["quit", ..] => Err(UsageError::new("ctl quit takes no arguments")),
         [] => Err(UsageError::new("ctl needs a group, e.g. `ctl setups list`")),
-        [other, ..] => Err(UsageError::new(format!("unknown ctl group {other:?}; try setups, clients or quit"))),
+        [other, ..] => Err(UsageError::new(trf(
+            "unknown ctl group {group}; try setups, clients, approvals, allow, deny or quit",
+            &[("group", &format!("{other:?}"))],
+        ))),
+    }
+}
+
+/// `ctl allow <id>` and `ctl deny <id>`: a person's decision on an open approval.
+fn decide_request(verb: &str, args: &[&str]) -> Result<Request, UsageError> {
+    match args {
+        [id] => Ok(Request::DecideApproval { id: id.to_string(), allow: verb == "allow" }),
+        [] => Err(UsageError::new(trf(
+            "ctl {verb} needs the id of an approval; `ctl approvals` lists them",
+            &[("verb", &verb)],
+        ))),
+        _ => Err(UsageError::new(trf("too many arguments for ctl {verb}", &[("verb", &verb)]))),
     }
 }
 
@@ -168,6 +213,7 @@ fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Reque
             name: name.to_string(),
             kind: options.kind.unwrap_or(DEFAULT_KIND).to_string(),
             template: parse_template(options.template)?,
+            agent: parse_agent(options.agent)?,
         }),
         ("remove", [id]) => Ok(Request::RemoveClient { id: id.to_string() }),
         ("new-key", [id]) => Ok(Request::NewClientKey { id: id.to_string() }),
@@ -183,6 +229,17 @@ fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Reque
             &[("verb", &format!("{verb:?}"))],
         ))),
     }
+}
+
+/// `--agent` for a hook client: the agent it reports for; left out, none (the core then refuses
+/// a `hook` client, task E1.2b).
+fn parse_agent(agent: Option<&str>) -> Result<Option<AgentKind>, UsageError> {
+    agent
+        .map(|id| {
+            AgentKind::from_id(id)
+                .ok_or_else(|| UsageError::new(tr("--agent needs a value: claude-code, codex or gemini")))
+        })
+        .transpose()
 }
 
 /// `--template`; without it the standard template, *Read and write*.
@@ -270,6 +327,130 @@ fn show(response: &Response, json: bool) -> ExitCode {
     }
 }
 
+/// `torroworkplace notify …` with `args` after `notify`: parses ([`parse_notify`]), takes the key
+/// from [`crate::mcp::TOKEN_VAR`] ([`token_from`]) and posts ([`run_notify`]). Exit codes: 0
+/// posted (or dropped because the source is muted), 1 refused or core not running, 64 bad
+/// arguments.
+pub fn notify_from_args(args: &[String]) -> ExitCode {
+    let command = match parse_notify(args) {
+        Ok(command) => command,
+        Err(err) => {
+            eprintln!("{}: {err}\n\n{USAGE}", crate::APP.binary);
+            return ExitCode::from(64);
+        }
+    };
+    let Some(socket) = socket_path() else {
+        eprintln!("{}: no state directory, so no core socket to look for", crate::APP.binary);
+        return ExitCode::FAILURE;
+    };
+    let token = token_from(std::env::var(crate::mcp::TOKEN_VAR).ok());
+    run_notify(&command, &socket, token.as_ref())
+}
+
+/// The arguments after `notify` as an `inbox.post_item` with kind `notice`: `--title` (required,
+/// not empty), `--body`, `--url` (a link to open), `--thread` (the `thread_key` that merges
+/// reports of one matter), `--for-me` (lane `for_me`; else the core's default, `info`) and
+/// `--json`. Values come as the next argument or after `=`.
+pub fn parse_notify(args: &[String]) -> Result<Command, UsageError> {
+    let (mut title, mut body, mut url, mut thread) = (None, None, None, None);
+    let (mut for_me, mut json) = (false, false);
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let (flag, inline) = match arg.split_once('=') {
+            Some((flag, value)) if flag.starts_with("--") => (flag, Some(value)),
+            _ => (arg.as_str(), None),
+        };
+        let slot = match flag {
+            "--for-me" | "--json" if inline.is_some() => {
+                return Err(UsageError::new(trf("{flag} takes no value", &[("flag", &flag)])));
+            }
+            "--for-me" => {
+                for_me = true;
+                continue;
+            }
+            "--json" => {
+                json = true;
+                continue;
+            }
+            "--title" => &mut title,
+            "--body" => &mut body,
+            "--url" => &mut url,
+            "--thread" => &mut thread,
+            flag if flag.starts_with('-') => {
+                return Err(UsageError::new(trf("unknown option {option}", &[("option", &arg)])));
+            }
+            _ => {
+                return Err(UsageError::new(trf(
+                    "notify takes no words, only options; put the text in --title \"{word}\"",
+                    &[("word", &arg)],
+                )));
+            }
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => rest
+                .next()
+                .map(String::as_str)
+                .ok_or_else(|| UsageError::new(trf("{flag} needs a value", &[("flag", &flag)])))?,
+        };
+        *slot = Some(value.to_string());
+    }
+    let title = title
+        .filter(|title| !title.trim().is_empty())
+        .ok_or_else(|| UsageError::new(tr("notify needs a title: --title \"Backup finished\"")))?;
+    let request = Request::PostItem {
+        kind: Kind::Notice,
+        title,
+        body,
+        link: url.map(|url| Link::Url { url }),
+        lane: for_me.then_some(Lane::ForMe),
+        thread_key: thread,
+        agent: None,
+    };
+    Ok(Command { request, json })
+}
+
+/// The client key in `TORRO_TOKEN` (`value` is the variable's content), `None` when it is
+/// missing or blank: then [`run_notify`] sends the app key.
+pub fn token_from(value: Option<String>) -> Option<Key> {
+    value.as_deref().map(str::trim).filter(|key| !key.is_empty()).map(Key::new)
+}
+
+/// Posts `command` to the core at `socket`, with `token` when there is one, else with the app key
+/// next to the socket ([`torro_ipc::client::call`]), and prints the answer like `ctl`. A core
+/// that is not running is a message and [`ExitCode::FAILURE`]; nothing is started.
+fn run_notify(command: &Command, socket: &Path, token: Option<&Key>) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("{}: {err}", crate::APP.binary);
+            return ExitCode::FAILURE;
+        }
+    };
+    let answer = runtime.block_on(async {
+        match token {
+            Some(key) => torro_ipc::client::call_with_key(socket, Some(key), &command.request).await,
+            None => torro_ipc::client::call(socket, &command.request).await,
+        }
+    });
+    match answer {
+        Ok(response) => show(&response, command.json),
+        Err(IpcError::NotRunning) => {
+            eprintln!(
+                "{}",
+                tr(
+                    "Torro Workplace isn't running, so nothing reached the inbox. Start it with `torroworkplace daemon`."
+                )
+            );
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// Exit code for a failed request: 3 when a load found the workspace not empty, otherwise 1.
 pub fn error_exit_status(code: &str) -> u8 {
     match code {
@@ -316,6 +497,15 @@ pub fn render(response: &Response) -> String {
             trf("Key for {name} ({id}). It is shown only this once:", &[("name", &client.name), ("id", &client.id)]),
             key.expose(),
         ),
+        Response::Approvals { approvals } => {
+            if approvals.is_empty() {
+                return tr("No commands wait for approval.").to_string();
+            }
+            approvals.iter().map(approval_line).collect::<Vec<_>>().join("\n")
+        }
+        Response::Approval { approval } => approval_line(approval),
+        Response::Posted { id: Some(id) } => trf("Posted to the inbox ({id}).", &[("id", id)]),
+        Response::Posted { id: None } => tr("Not posted: this source is muted in the inbox.").to_string(),
         Response::Ok => "ok".to_string(),
         Response::Error { message, .. } => message.clone(),
         // Calendar and task answers are for the apps; show them as JSON.
@@ -343,6 +533,27 @@ fn client_line(client: &ClientInfo) -> String {
         None => tr("never used").to_string(),
     };
     format!("{}  {}  {}  {}  {last_used}", client.id, client.name, client.kind, rights_word(&client.rights))
+}
+
+/// `id  state  client: summary`; the id is what `ctl allow` and `ctl deny` take. The summary is
+/// the core's ([`crate::approvals::summary`]), already one line without control characters.
+fn approval_line(approval: &ApprovalInfo) -> String {
+    let local = |time: chrono::DateTime<chrono::Utc>| time.with_timezone(&chrono::Local).format("%H:%M").to_string();
+    let state = match &approval.state {
+        ApprovalState::Pending => trf("waiting until {time}", &[("time", &local(approval.expires))]),
+        ApprovalState::Running => tr("running").to_string(),
+        ApprovalState::Done { response } => match response.as_ref() {
+            Response::Error { message, .. } => {
+                // A terminal would act on escape sequences; the message may quote a client's ids.
+                let message: String = message.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+                trf("ran and failed: {message}", &[("message", &message)])
+            }
+            _ => tr("done").to_string(),
+        },
+        ApprovalState::Denied => tr("denied").to_string(),
+        ApprovalState::Expired => tr("expired").to_string(),
+    };
+    format!("{}  {state}  {}: {}", approval.id, approval.client_name, approval.summary)
 }
 
 /// The template the rights match, or that they were changed afterwards.
@@ -482,8 +693,12 @@ mod tests {
 
     #[test]
     fn clients_add_with_name_kind_and_template() {
-        let add =
-            |kind: &str, template| Request::CreateClient { name: "Claude Code".into(), kind: kind.into(), template };
+        let add = |kind: &str, template| Request::CreateClient {
+            name: "Claude Code".into(),
+            kind: kind.into(),
+            template,
+            agent: None,
+        };
         assert_eq!(request(&["ctl", "clients", "add", "Claude Code"]), add("script", RightsTemplate::ReadAndWrite));
         assert_eq!(
             request(&["ctl", "clients", "add", "Claude Code", "--kind", "claude-code", "--template=read-only"]),
@@ -498,6 +713,14 @@ mod tests {
         assert!(parse_strs(&["ctl", "clients", "add", "A", "--template", "everything"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "add", "A", "--kind"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "list", "--kind", "codex"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "list", "--agent", "codex"]).is_err());
+        assert!(parse_strs(&["ctl", "clients", "add", "H", "--kind", "hook", "--agent", "nobody"]).is_err());
+        let Request::CreateClient { agent, kind, .. } =
+            request(&["ctl", "clients", "add", "Claude Code hooks", "--kind", "hook", "--agent", "claude-code"])
+        else {
+            panic!("ctl clients add asks for a new client");
+        };
+        assert_eq!((kind.as_str(), agent), ("hook", Some(AgentKind::ClaudeCode)));
         assert!(parse_strs(&["ctl", "setups", "list", "--template", "read-only"]).is_err());
         assert!(parse_strs(&["ctl", "clients", "add", "A", "--mode", "add"]).is_err());
     }
@@ -510,6 +733,7 @@ mod tests {
             created: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
             last_used,
             rights,
+            agent: None,
         }
     }
 
@@ -569,6 +793,298 @@ mod tests {
         assert!(render(&status).contains("workspace: -"));
         let loaded = Response::Loaded { restored: 2, failed: vec![("kitty".into(), "gone".into())] };
         assert_eq!(render(&loaded), "restored 2 windows\nfailed kitty: gone");
+    }
+
+    #[test]
+    fn approvals_are_listed_allowed_and_denied() {
+        assert_eq!(request(&["ctl", "approvals"]), Request::ListApprovals);
+        assert_eq!(request(&["ctl", "allow", "9c1f"]), Request::DecideApproval { id: "9c1f".into(), allow: true });
+        assert_eq!(request(&["ctl", "deny", "9c1f"]), Request::DecideApproval { id: "9c1f".into(), allow: false });
+        assert!(parse_strs(&["ctl", "approvals", "list"]).is_err());
+        assert!(parse_strs(&["ctl", "allow"]).is_err());
+        assert!(parse_strs(&["ctl", "deny", "a", "b"]).is_err());
+        assert!(parse_strs(&["ctl", "allow", "a", "--mode", "add"]).is_err());
+        assert!(parse_strs(&["ctl", "approvals", "--json"]).expect("json").json);
+    }
+
+    fn approval(state: ApprovalState) -> ApprovalInfo {
+        let at = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        ApprovalInfo {
+            id: "9c1f0a7e3b2d4c58".into(),
+            client: "a1b2c3d4".into(),
+            client_name: "Claude Code".into(),
+            command: "workspaces.delete_template".into(),
+            summary: "Delete template \"Dev\"".into(),
+            created: at,
+            expires: at,
+            decided: None,
+            state,
+        }
+    }
+
+    #[test]
+    fn approvals_render_one_per_line_with_their_state() {
+        assert_eq!(render(&Response::Approvals { approvals: vec![] }), tr("No commands wait for approval."));
+        assert_eq!(
+            render(&Response::Approval { approval: approval(ApprovalState::Denied) }),
+            format!("9c1f0a7e3b2d4c58  {}  Claude Code: Delete template \"Dev\"", tr("denied"))
+        );
+        let failed = Response::Error { code: "not-found".into(), message: "no template\u{1b}[2J \"dev\"".into() };
+        let line =
+            render(&Response::Approval { approval: approval(ApprovalState::Done { response: Box::new(failed) }) });
+        assert!(line.contains(&trf("ran and failed: {message}", &[("message", &"no template [2J \"dev\"")])), "{line}");
+        let pending = render(&Response::Approvals { approvals: vec![approval(ApprovalState::Pending)] });
+        let until = DateTime::<Utc>::from_timestamp(0, 0).unwrap().with_timezone(&chrono::Local).format("%H:%M");
+        assert!(pending.contains(&trf("waiting until {time}", &[("time", &until)])), "{pending}");
+    }
+
+    /// `ctl approvals`, `ctl allow` and `ctl deny` against a core in a temporary directory: the
+    /// app key is read next to its socket, as `run` reads it next to the user's.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ctl_decides_approvals_with_the_app_key() {
+        use std::sync::Arc;
+
+        use torro_setups::storage::Store;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = crate::clients::tests::open_in(dir.path());
+        let (_, agent) = clients.add("Agent", "script", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
+        let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
+        let store = Store::at(dir.path().to_path_buf());
+        for id in ["dev", "review"] {
+            let now = Utc::now();
+            store
+                .save(&torro_setups::Template {
+                    schema_version: torro_setups::SCHEMA_VERSION,
+                    id: id.into(),
+                    name: format!("Template {id}"),
+                    wm: "hyprland".into(),
+                    created: now,
+                    updated: now,
+                    source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
+                    tree: None,
+                    windows: vec![],
+                })
+                .expect("saved");
+        }
+        let core = Arc::new(
+            crate::core::Core::new(
+                torro_wm::Backend::Unsupported { name: "test".into() },
+                store,
+                Arc::new(crate::pim::PimService::with_settings(settings)),
+                clients,
+            )
+            .with_approvals(crate::approvals::tests::quiet_in(dir.path())),
+        );
+        // Next to `state/app.key`, where `torro_ipc::client::call` looks for the app key.
+        let socket = dir.path().join("state").join("core.sock");
+        let path = socket.clone();
+        tokio::spawn(async move {
+            torro_ipc::server::serve_with_key(&path, move |key, request| {
+                let core = Arc::clone(&core);
+                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+            })
+            .await
+        });
+        let ask = |args: &[&str]| {
+            let (socket, args) = (socket.clone(), args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>());
+            async move {
+                let command = parse(&args).expect("parses");
+                for _ in 0..100 {
+                    if let Ok(response) = torro_ipc::client::call(&socket, &command.request).await {
+                        return response;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                panic!("the test core does not answer");
+            }
+        };
+        assert_eq!(render(&ask(&["ctl", "approvals"]).await), tr("No commands wait for approval."));
+
+        // The agent wants two templates deleted; both wait for a person.
+        let mut ids = Vec::new();
+        for id in ["dev", "review"] {
+            let delete = Request::DeleteTemplate { id: id.into() };
+            match torro_ipc::client::call_with_key(&socket, Some(&agent), &delete).await.expect("answered") {
+                Response::Pending { approval } => ids.push(approval.id),
+                other => panic!("expected pending, got {other:?}"),
+            }
+        }
+        let listed = render(&ask(&["ctl", "approvals"]).await);
+        assert_eq!(listed.lines().count(), 2, "{listed}");
+        assert!(listed.contains("Template dev") && listed.contains(&ids[0]), "{listed}");
+
+        let allow = ["ctl", "allow", ids[0].as_str()];
+        let allowed = ask(&allow).await;
+        assert!(
+            matches!(&allowed, Response::Approval { approval } if matches!(approval.state, ApprovalState::Done { .. })),
+            "{allowed:?}"
+        );
+        assert!(render(&allowed).contains(tr("done")));
+        let denied = ask(&["ctl", "deny", ids[1].as_str()]).await;
+        assert!(render(&denied).contains(tr("denied")), "{denied:?}");
+        assert!(Store::at(dir.path().to_path_buf()).load("dev").is_err(), "allowed, so deleted");
+        assert!(Store::at(dir.path().to_path_buf()).load("review").is_ok(), "denied, so kept");
+        // Decided once: a second decision is refused.
+        assert!(matches!(ask(&allow).await, Response::Error { ref code, .. } if code == "conflict"));
+    }
+
+    fn notify(args: &[&str]) -> Result<Command, UsageError> {
+        parse_notify(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+    }
+
+    fn notice(title: &str) -> Request {
+        Request::PostItem {
+            kind: Kind::Notice,
+            title: title.into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: None,
+            agent: None,
+        }
+    }
+
+    #[test]
+    fn notify_posts_a_notice() {
+        assert_eq!(
+            notify(&["--title", "Backup finished"]),
+            Ok(Command { request: notice("Backup finished"), json: false })
+        );
+        let full = notify(&[
+            "--title=Build failed",
+            "--body",
+            "3 tests failing",
+            "--url",
+            "https://ci.example/1",
+            "--for-me",
+            "--thread=build:main",
+            "--json",
+        ]);
+        let wanted = Request::PostItem {
+            kind: Kind::Notice,
+            title: "Build failed".into(),
+            body: Some("3 tests failing".into()),
+            link: Some(Link::Url { url: "https://ci.example/1".into() }),
+            lane: Some(Lane::ForMe),
+            thread_key: Some("build:main".into()),
+            agent: None,
+        };
+        assert_eq!(full, Ok(Command { request: wanted, json: true }));
+        // Through the entry point's dispatch too: `from_args` hands `notify …` over.
+        assert!(parse_strs(&["notify", "--title", "x"]).is_err(), "notify is not a ctl command");
+    }
+
+    #[test]
+    fn notify_refuses_what_it_cannot_post() {
+        for args in [
+            &[][..],
+            &["--body", "no title"],
+            &["--title", "  "],
+            &["--title"],
+            &["--title", "x", "--thread"],
+            &["--title", "x", "extra"],
+            &["--title", "x", "--kind", "approval"],
+            &["--title", "x", "--for-me=yes"],
+        ] {
+            assert!(notify(args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_token_is_trimmed_and_blank_means_the_app_key() {
+        assert!(token_from(None).is_none());
+        assert!(token_from(Some("  \n".into())).is_none());
+        assert_eq!(token_from(Some(" torro_c1_x\n".into())).as_ref().map(Key::expose), Some("torro_c1_x"));
+    }
+
+    #[test]
+    fn posted_answers_render() {
+        assert_eq!(
+            render(&Response::Posted { id: Some("i1".into()) }),
+            trf("Posted to the inbox ({id}).", &[("id", &"i1")])
+        );
+        assert_eq!(render(&Response::Posted { id: None }), tr("Not posted: this source is muted in the inbox."));
+    }
+
+    #[test]
+    fn notify_without_a_core_fails_with_exit_code_1() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("state").join("core.sock");
+        let command = notify(&["--title", "Backup finished"]).expect("parses");
+        assert_eq!(run_notify(&command, &socket, None), ExitCode::FAILURE);
+        assert_eq!(run_notify(&command, &socket, Some(&Key::new("torro_c1_x"))), ExitCode::FAILURE);
+        assert_eq!(ExitCode::FAILURE, ExitCode::from(1));
+    }
+
+    /// `notify` against a core in a temporary directory: with the app key next to its socket the
+    /// entry is filed under `script:cli`, with a script's key under that script.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn notify_posts_under_the_cli_or_the_scripts_source() {
+        use std::sync::Arc;
+
+        use torro_inbox::SourceRef;
+        use torro_setups::storage::Store;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = crate::clients::tests::open_in(dir.path());
+        let (_, backup) = clients.add("Backup", "script", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
+        let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
+        let core = Arc::new(
+            crate::core::Core::new(
+                torro_wm::Backend::Unsupported { name: "test".into() },
+                Store::at(dir.path().to_path_buf()),
+                Arc::new(crate::pim::PimService::with_settings(settings)),
+                clients,
+            )
+            .with_approvals(crate::approvals::tests::quiet_in(dir.path()))
+            .with_inbox(crate::inbox::tests::inbox_in(dir.path())),
+        );
+        let socket = dir.path().join("state").join("core.sock");
+        let path = socket.clone();
+        tokio::spawn(async move {
+            torro_ipc::server::serve_with_key(&path, move |key, request| {
+                let core = Arc::clone(&core);
+                async move { core.handle_from(key.as_ref(), request).await.unwrap_or_else(|r| r.response()) }
+            })
+            .await
+        });
+        for _ in 0..100 {
+            if torro_ipc::client::call(&socket, &Request::Ping).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let post = |args: &'static [&'static str], key: Option<Key>| {
+            let socket = socket.clone();
+            tokio::task::spawn_blocking(move || {
+                let command = notify(args).expect("parses");
+                run_notify(&command, &socket, key.as_ref())
+            })
+        };
+        assert_eq!(post(&["--title", "From the shell", "--for-me"], None).await.expect("ran"), ExitCode::SUCCESS);
+        assert_eq!(post(&["--title", "Backup finished"], Some(backup)).await.expect("ran"), ExitCode::SUCCESS);
+        let unknown = post(&["--title", "x"], Some(Key::new("torro_00000000_nope"))).await.expect("ran");
+        assert_eq!(unknown, ExitCode::FAILURE, "an unknown key is refused");
+
+        let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+        let Ok(Response::Items { items }) = torro_ipc::client::call(&socket, &all).await else {
+            panic!("the app key lists the inbox");
+        };
+        let mut filed: Vec<(String, String, Lane)> =
+            items.iter().map(|item| (item.title.clone(), item.source.key(), item.lane)).collect();
+        filed.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            filed,
+            [
+                ("Backup finished".into(), SourceRef::script("Backup").key(), Lane::Info),
+                ("From the shell".into(), SourceRef::script("cli").key(), Lane::ForMe),
+            ]
+        );
+        assert!(items.iter().all(|item| item.kind == Kind::Notice && item.untrusted));
     }
 
     #[test]

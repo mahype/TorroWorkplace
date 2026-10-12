@@ -6,6 +6,9 @@
 //!
 //! Also here: how a list in "Manual order" is sorted and renumbered ([`manual_order`],
 //! [`move_plan`], task P.3a), shared by the core, the demo data and the apps.
+//!
+//! GitHub filter lists are created, changed, deleted and tried out here as well
+//! ([`FilterDefinition`], [`FilterPreview`]; the dialog of task G.4).
 
 use std::cmp::Ordering;
 use std::future::Future;
@@ -17,8 +20,8 @@ use crate::{Collection, Event, PimAccount, ProviderError, Todo};
 pub trait PimSource: Send + Sync {
     /// Every account behind the data, in the order they were added; empty when none is set up.
     /// A sign-in that runs is listed too, with an empty `id` and [`crate::AccountState::SigningIn`].
-    /// Apps that show a single state use [`crate::combined_state`]; collections name their
-    /// account in their id ([`crate::account`]).
+    /// Apps that show a single state use [`crate::account::combined_state_for`] with the kind of
+    /// collection they show; collections name their account in their id ([`crate::account`]).
     fn accounts(&self) -> impl Future<Output = Result<Vec<PimAccount>, ProviderError>> + Send;
 
     /// Starts Login Flow v2 for the Nextcloud at `server` (as the user typed it) and opens
@@ -68,6 +71,109 @@ pub trait PimSource: Send + Sync {
         todo: Todo,
         before: Option<Todo>,
     ) -> impl Future<Output = Result<Vec<Todo>, ProviderError>> + Send;
+
+    /// Takes the pinned issue or pull request `item` out of the GitHub filter list `collection`
+    /// (`tasks.unpin_issue`, task G.2; "Unpin" in the tasks app, task G.3). `collection` is the
+    /// list's [`Collection::id`] (`github:<login>/<list-id>`), `item` the link id as
+    /// `source.pinned` lists it (`github:owner/repo#12`; the core also takes the item's address on
+    /// github.com). The item stays in the list while one of its searches finds it; nothing changes
+    /// on GitHub. Reload the tasks afterwards.
+    ///
+    /// [`ProviderError::Other`] when the list does not pin the item or `collection` is no filter
+    /// list (the core's `not-found`).
+    fn unpin_issue(&self, collection: String, item: String) -> impl Future<Output = Result<(), ProviderError>> + Send;
+
+    /// Adds the GitHub issue or pull request `url` to the task list `collection`
+    /// (`tasks.add_link`, task G.6): pinned in a GitHub filter list, a *link* (a task with the
+    /// item's address, its link id and GitHub's title) in a writable list. `url` is what the person
+    /// pasted: the item's address on github.com, `owner/repo#12` or `github:owner/repo#12`.
+    ///
+    /// Returns the task as the list holds it now, with the GitHub details in `link.github`; when
+    /// the list holds the item already, that task. Reload the tasks afterwards (pinning fetches
+    /// the filter list again).
+    ///
+    /// [`ProviderError::Other`] with the core's message when `url` names no issue or pull request,
+    /// GitHub does not have it, no GitHub account is connected, or the list is read-only or unknown;
+    /// [`ProviderError::Auth`] / [`ProviderError::Offline`] when GitHub refuses the token or cannot
+    /// be reached.
+    fn add_link(&self, collection: String, url: String) -> impl Future<Output = Result<Todo, ProviderError>> + Send;
+
+    /// Creates a GitHub filter list of the GitHub account `account` (`github:<login>`, as
+    /// [`PimSource::accounts`] lists it) from `definition` (`tasks.create_filter_list`, dialog of
+    /// task G.4). Returns the new list as [`PimSource::collections`] will list it: id
+    /// `github:<login>/<list-id>`, not writable, the definition in `source` (searches as the core
+    /// stores them: addresses turned into searches); a failed first fetch is in `source.problem`
+    /// and the list is kept. Reload collections and tasks afterwards for its items.
+    ///
+    /// [`ProviderError::Other`] with the core's message for an account that is no connected
+    /// GitHub account, an empty name, a colour that is not `#RRGGBB`, no search or more than ten,
+    /// an address that is no issue list, and a search a client may not run (`forbidden`).
+    fn create_filter_list(
+        &self,
+        account: String,
+        definition: FilterDefinition,
+    ) -> impl Future<Output = Result<Collection, ProviderError>> + Send;
+
+    /// Replaces name, colour and searches of the filter list `collection` with `definition` and
+    /// fetches it again; pinned items stay (`tasks.update_filter_list`). `revision` is the list's
+    /// `source.revision` as last read. Returns the list as stored, with its new revision.
+    ///
+    /// [`ProviderError::Conflict`] (its `uid` is `collection`) when the list changed meanwhile:
+    /// nothing changed, read the list again. [`ProviderError::Other`] as for
+    /// [`PimSource::create_filter_list`], and for a collection that is no filter list.
+    fn update_filter_list(
+        &self,
+        collection: String,
+        revision: u64,
+        definition: FilterDefinition,
+    ) -> impl Future<Output = Result<Collection, ProviderError>> + Send;
+
+    /// Deletes the filter list `collection` with its cached items from this device
+    /// (`tasks.delete_filter_list`). Nothing changes on GitHub. Reload collections and tasks
+    /// afterwards. [`ProviderError::Other`] for a collection that is no filter list.
+    fn delete_filter_list(&self, collection: String) -> impl Future<Output = Result<(), ProviderError>> + Send;
+
+    /// Runs `queries` (searches or github.com addresses of issue lists, as for
+    /// [`FilterDefinition::queries`]) for the GitHub account `account` without saving anything
+    /// (`tasks.preview_filter`): one call to GitHub per search, so call it when the person stops
+    /// typing, not on every key.
+    ///
+    /// [`ProviderError::Auth`] / [`ProviderError::Offline`] when GitHub refuses the token or cannot
+    /// be reached; [`ProviderError::Other`] with the core's message for an address that is no
+    /// issue list, a search GitHub cannot run, an account without a token on this device
+    /// (`not-connected`) and a search a client may not run (`forbidden`).
+    fn preview_filter(
+        &self,
+        account: String,
+        queries: Vec<String>,
+    ) -> impl Future<Output = Result<FilterPreview, ProviderError>> + Send;
+}
+
+/// What a GitHub filter list is made of, as the dialog of task G.4 sends it to
+/// [`PimSource::create_filter_list`] and [`PimSource::update_filter_list`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterDefinition {
+    /// The name of the list; must not be empty.
+    pub name: String,
+    /// The colour as `#RRGGBB`; `None` for the app's default.
+    pub color: Option<String>,
+    /// One to ten GitHub searches (`is:open is:issue repo:owner/name label:bug`) or addresses of
+    /// issue lists on github.com, which the core turns into searches. The list holds the matches
+    /// of any of them.
+    pub queries: Vec<String>,
+}
+
+/// What searches find without being saved ([`PimSource::preview_filter`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilterPreview {
+    /// How many issues and pull requests match: GitHub's count, added up over the searches (an
+    /// item two searches find counts twice).
+    pub matches: u64,
+    /// A search found more than 1,000 matches; a list of it would hold only the first 1,000.
+    pub truncated: bool,
+    /// The first matches (at most 20) as tasks of no list (`collection` empty), with their GitHub
+    /// details in `link`.
+    pub todos: Vec<Todo>,
 }
 
 /// Room left behind the last number when a task goes to the end of a list or a task without

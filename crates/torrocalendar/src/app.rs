@@ -682,7 +682,9 @@ impl App {
         match message {
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
-                self.account = Some(torro_pim::combined_state(&accounts));
+                // Only accounts that can hold calendars: GitHub alone is "No calendar account yet".
+                self.account =
+                    Some(torro_pim::account::combined_state_for(&accounts, torro_pim::CollectionKind::Events));
                 self.accounts = accounts;
                 if self.connected() && !was_connected {
                     return self.load();
@@ -2043,7 +2045,7 @@ mod tests {
 
     /// A connected account with this id, named like it.
     fn account(id: &str) -> PimAccount {
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state: connected() }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state: connected(), scopes: None }
     }
 
     fn one_account() -> Vec<PimAccount> {

@@ -89,11 +89,14 @@
 //! ```
 //!
 //! The drawer of the medium and narrow layouts dims the window behind it (scrim) and has a shadow.
+//!
+//! While something is dragged over the sidebar, the rows that may take it are wrapped in
+//! [`drop_target`]: they report the pointer and show a ring while it is on them.
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Element, Fill, Padding, Shadow, Vector, keyboard};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Vector, keyboard};
 use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
@@ -359,6 +362,34 @@ pub fn sidebar<'a, M: 'a>(
     column![top, blank::vertical(), bottom].height(Fill).into()
 }
 
+/// A sidebar row ([`widgets::sidebar_item_in`], either mode) that takes what is being dragged –
+/// the tasks app drags a task onto a list (task G.6c). The app wraps only the rows that may take
+/// the dragged item, and only while something is dragged:
+///
+/// - `on_enter` / `on_exit` report the pointer coming onto the row and leaving it. The app keeps
+///   which row it is over and acts on the drop where the mouse button is released; a press that
+///   began elsewhere never presses the row's button.
+/// - `over`: the pointer is on the row. A 2-px ring in `focus_ring` with the row's radius lies on
+///   top of its hover surface, so the target stands apart from the chosen row (`selected`, no
+///   ring) and from rows that take nothing (hover only). The ring layer is there in both states,
+///   so the row keeps its widget state when the pointer comes and goes.
+///
+/// ```ignore
+/// let row = widgets::sidebar_item_in(mode, mark, name, trail, active, Message::Show(id.clone()));
+/// shell::drop_target(row, drag.over.as_ref() == Some(&id), Message::DragOver(id.clone()), Message::DragLeave(id))
+/// ```
+pub fn drop_target<'a, M: Clone + 'a>(row: Element<'a, M>, over: bool, on_enter: M, on_exit: M) -> Element<'a, M> {
+    let ring = container(blank().width(Fill).height(Fill)).style(move |t| container::Style {
+        border: Border {
+            color: if over { palette(t).focus_ring } else { Color::TRANSPARENT },
+            width: style::FOCUS_RING_WIDTH,
+            radius: radius::SM.into(),
+        },
+        ..container::Style::default()
+    });
+    mouse_area(stack![row, ring].width(Fill)).on_enter(on_enter).on_exit(on_exit).into()
+}
+
 /// The row inside the header bar: `leading` (sidebar toggle, back button), the `title`
 /// ([`header_title`], or a [`widgets::menu_button`] in medium and narrow), free space, then
 /// `trailing` (view, filter, exactly one primary button). 8 between all pieces, centred.
@@ -417,6 +448,7 @@ pub enum Switcher {
 /// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace").
 fn app_name(app: AppId) -> &'static str {
     match app.binary {
+        "torroinbox" => tr("Inbox"),
         "torrotasks" => tr("Tasks"),
         "torrocalendar" => tr("Calendar"),
         _ => tr("Workplace"),
@@ -425,6 +457,7 @@ fn app_name(app: AppId) -> &'static str {
 
 fn app_icon(app: AppId) -> Icon {
     match app.binary {
+        "torroinbox" => Icon::Inbox,
         "torrotasks" => Icon::ListTodo,
         "torrocalendar" => Icon::Calendar,
         _ => Icon::LayoutGrid,
@@ -557,23 +590,33 @@ pub struct AccountGroup<'a, T> {
 /// [`torro_pim::account`]), for a sidebar that groups per account (task M1.3). The groups follow
 /// the order of `accounts`, the items keep their order, accounts without items get no group.
 ///
-/// `Err(items)` – the items given back – with fewer than two accounts: one account looks like it
-/// always did, a flat list under the app's own title, so the caller needs no second code path,
-/// only `Err(items) => flat`.
+/// `Err(items)` – the items given back – when fewer than two accounts own any of the items: one
+/// account looks like it always did, a flat list under the app's own title, so the caller needs no
+/// second code path, only `Err(items) => flat`. Only owners count, so an account without
+/// collections of the kind the app shows – a GitHub account in the calendar, or one without
+/// filter lists in the tasks app – brings no account titles (task G.3).
 pub fn account_groups<'a, T>(
     accounts: &'a [PimAccount],
     items: Vec<T>,
     id: impl Fn(&T) -> &str,
 ) -> Result<Vec<AccountGroup<'a, T>>, Vec<T>> {
-    if accounts.len() < 2 {
+    let owners: Vec<Option<usize>> = items
+        .iter()
+        .map(|item| {
+            account_of(id(item), accounts, |a| a.id.as_str())
+                .and_then(|owner| accounts.iter().position(|a| std::ptr::eq(a, owner)))
+        })
+        .collect();
+    let mut owning: Vec<usize> = owners.iter().flatten().copied().collect();
+    owning.sort_unstable();
+    owning.dedup();
+    if owning.len() < 2 {
         return Err(items);
     }
     let mut groups: Vec<AccountGroup<'a, T>> =
         accounts.iter().map(|account| AccountGroup { account: Some(account), items: Vec::new() }).collect();
     let mut strays = Vec::new();
-    for item in items {
-        let owner = account_of(id(&item), accounts, |a| a.id.as_str())
-            .and_then(|owner| accounts.iter().position(|a| std::ptr::eq(a, owner)));
+    for (item, owner) in items.into_iter().zip(owners) {
         match owner {
             Some(index) => groups[index].items.push(item),
             None => strays.push(item),
@@ -619,7 +662,7 @@ mod tests {
     fn account(id: &str) -> PimAccount {
         let state =
             AccountState::Connected { server: "s".into(), login_name: "l".into(), last_sync: None, problem: None };
-        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state }
+        PimAccount { id: id.into(), label: id.into(), kind: "nextcloud".into(), state, scopes: None }
     }
 
     #[test]
@@ -643,6 +686,18 @@ mod tests {
             vec![(Some("a"), vec!["a/1", "a/2"]), (Some("b"), vec!["b/1", "b/2"]), (None, vec!["gone/3"]),],
             "account c has no items and no group; strays come last"
         );
+    }
+
+    #[test]
+    fn an_account_without_items_brings_no_titles() {
+        // A Nextcloud account and a GitHub account without filter lists (or, in the calendar, a
+        // GitHub account at all): one owner, so the flat list as before.
+        let accounts = [account("a"), account("github:mahype")];
+        let items: Vec<String> = ["a/1", "a/2", "gone/3"].map(String::from).to_vec();
+        assert_eq!(account_groups(&accounts, items.clone(), |i| i), Err(items));
+        let with_list: Vec<String> = ["a/1", "github:mahype/bugs"].map(String::from).to_vec();
+        let groups = account_groups(&accounts, with_list, |i| i).expect("two owners");
+        assert_eq!(groups.len(), 2);
     }
 
     #[test]

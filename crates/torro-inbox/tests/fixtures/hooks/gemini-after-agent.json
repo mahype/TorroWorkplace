@@ -1,0 +1,10 @@
+{
+  "session_id": "7f3a",
+  "transcript_path": "/home/user/.gemini/tmp/project-hash/chats/session-7f3a.json",
+  "cwd": "/home/user/my-project",
+  "hook_event_name": "AfterAgent",
+  "timestamp": "2026-10-11T09:31:00.000Z",
+  "prompt": "Fix the failing test",
+  "prompt_response": "The test failed because of a missing import. It passes now.",
+  "stop_hook_active": false
+}

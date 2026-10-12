@@ -133,6 +133,10 @@ pub struct Palette {
     pub error_text: Color,
     /// Status "not set up, inactive".
     pub inactive: Color,
+    /// Status "merged / closed as done" on GitHub (a merged pull request, a closed issue): violet,
+    /// the same hue as the fifth list colour. A graphic (icon, dot) next to a word, never text;
+    /// ≥ 3:1 on every surface.
+    pub merged: Color,
     /// Default colours for calendars and task lists, in this order: work (blue), personal
     /// (green), family (orange), birthday (pink), groceries (violet). Use them as bar, dot, ring
     /// or check mark; as a surface only through [`Palette::tinted`].
@@ -225,6 +229,7 @@ const DARK: Palette = Palette {
     error: color(STATUS_ERROR),
     error_text: color(STATUS_ERROR),
     inactive: color(STATUS_INACTIVE),
+    merged: hex(0xA78BFA),
     calendar: [hex(0x5B8CFF), hex(0x3FB984), hex(0xE8A33D), hex(0xD96CA8), hex(0xA78BFA)],
     tint: 0.18,
     shadow: shadow(0.5),
@@ -253,6 +258,7 @@ const LIGHT: Palette = Palette {
     error: color(STATUS_ERROR),
     error_text: mix(color(STATUS_ERROR), hex(0x18191B), 0.3),
     inactive: color(STATUS_INACTIVE),
+    merged: hex(0x7C5CE6),
     calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xB06F12), hex(0xC2508F), hex(0x7C5CE6)],
     tint: 0.14,
     shadow: shadow(0.12),
@@ -395,6 +401,10 @@ pub mod size {
     pub const CONTROL_LG: f32 = 36.0;
     /// 40: a list row (tasks).
     pub const ROW: f32 = 40.0;
+    /// 52: a list row on two lines (title over a `META` line, as the inbox shows in narrow
+    /// windows). `BODY` (20) and `META` (16) need 36; in [`ROW`] that leaves 2 above and below,
+    /// which reads cramped – 52 gives them the 8 of a one-line row.
+    pub const ROW_TWO: f32 = 52.0;
     /// 28: a sidebar row (menu rows are 30, set by the menu building block).
     pub const ROW_SIDEBAR: f32 = 28.0;
     /// 32: a group head in a list ("Overdue 2").
@@ -490,6 +500,17 @@ mod tests {
             assert!(ratio >= 4.5, "{mode}: attention_text on {surface} is {ratio:.2}:1");
         }
         assert_eq!(Palette::dark().attention_text, Palette::dark().attention, "dark mode keeps the status colour");
+    }
+
+    #[test]
+    fn merged_stands_out_on_every_surface() {
+        // A graphic next to a word (WCAG: 3:1), like the list colours.
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            let (ratio, surface) = worst(p, p.merged);
+            assert!(ratio >= 3.0, "{mode}: merged on {surface} is {ratio:.2}:1");
+        }
+        assert_eq!(Palette::dark().merged.into_rgba8(), [0xA7, 0x8B, 0xFA, 0xFF]);
+        assert_eq!(Palette::light().merged.into_rgba8(), [0x7C, 0x5C, 0xE6, 0xFF]);
     }
 
     #[test]

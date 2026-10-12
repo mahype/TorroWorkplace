@@ -16,6 +16,7 @@
 
 mod app;
 mod detail;
+mod filter;
 mod glance;
 mod list;
 

@@ -1,5 +1,6 @@
 //! Building blocks of a Linear-style window: buttons, sidebar rows, list rows, group heads, menus,
-//! floating cards, chips, property rows, settings groups and the empty, loading and error states.
+//! floating cards, chips, property rows (also with the name in front), label chips, state pills,
+//! progress bars, settings groups and the empty, loading and error states.
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -44,9 +45,12 @@ use std::time::Duration;
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{
-    button, canvas, center, column, container, float, mouse_area, opaque, pin, row, rule, stack, svg, tooltip,
+    button, canvas, center, column, container, float, mouse_area, opaque, pin, responsive, row, rule, stack, svg,
+    tooltip,
 };
-use iced::{Alignment, Background, Color, Element, Fill, Padding, Point, Rectangle, Size, Subscription, Theme, Vector};
+use iced::{
+    Alignment, Background, Color, Element, Fill, Length, Padding, Point, Rectangle, Size, Subscription, Theme, Vector,
+};
 use iced::{border, keyboard, mouse};
 
 use torro_core::i18n::tr;
@@ -76,6 +80,8 @@ const ROW_GAP: f32 = 10.0;
 const LINE: f32 = size::HAIRLINE;
 /// Height of a list pill ([`pill`]) and of its round ends.
 const PILL_HEIGHT: f32 = 20.0;
+/// Edge of the icon in an [`icon_pill`] (the mock-up's `.s12`).
+const PILL_ICON: f32 = space::M;
 /// Edge of an avatar in [`avatar_stack`] and how far the next one is moved right.
 const AVATAR: f32 = 22.0;
 const AVATAR_STEP: f32 = 20.0;
@@ -83,6 +89,17 @@ const AVATAR_STEP: f32 = 20.0;
 const GROUP_CHEVRON: f32 = 12.0;
 /// Width of the bar that marks the selected list row.
 const SELECTED_BAR: f32 = 2.0;
+/// Width of the label column of a [`prop_line`] ("Priority", "Due"): the value starts at the same
+/// x in every row of the properties column.
+const PROP_LABEL_WIDTH: f32 = 88.0;
+/// Top and bottom padding of a [`prop_line`]: with the 20-px line of `BODY` that makes the 32-px
+/// [`size::CONTROL`]; a value of several lines (wrapping label chips) makes the row taller.
+const PROP_PADDING_Y: f32 = 6.0;
+/// Height of the pill with a state word ([`state_pill`]) and of its round ends.
+const STATE_PILL_HEIGHT: f32 = 22.0;
+/// Size of the progress bar ([`progress_bar`]).
+const PROGRESS_WIDTH: f32 = 64.0;
+const PROGRESS_HEIGHT: f32 = 4.0;
 
 // ---------------------------------------------------------------------------------------------
 // Marks and trailing details, shared by sidebar rows, menu items, chips and property rows.
@@ -262,7 +279,8 @@ pub fn text_button<'a, M: Clone + 'a>(
 }
 
 /// `content` with `label` as tooltip below it (a small menu-style card, after a short delay).
-fn with_tooltip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
+/// Also for a control that is locked, to say why (the locked check of an issue, task G.5).
+pub fn with_tooltip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
     tip(content, typo::text(typo::CAPTION, label).style(theme::text_2), tooltip::Position::Bottom)
 }
 
@@ -298,16 +316,14 @@ fn icon_only<'a, M: Clone + 'a>(
     which: Icon,
     tooltip: impl IntoFragment<'a>,
     style: ButtonStyle,
-    square: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let edge = if square { icon::SIZE } else { icon::SIZE_SM };
-    let b = if square {
-        button(center(button_icon(which, edge, style))).width(size::CONTROL_SM).padding(0)
-    } else {
-        button(container(button_icon(which, edge, style)).center_y(Fill)).padding(style::BUTTON_PADDING)
-    };
-    let b = b.height(size::CONTROL_SM).style(style).on_press_maybe(on_press);
+    let b = button(center(button_icon(which, icon::SIZE, style)))
+        .width(size::CONTROL_SM)
+        .height(size::CONTROL_SM)
+        .padding(0)
+        .style(style)
+        .on_press_maybe(on_press);
     with_tooltip(b, tooltip)
 }
 
@@ -318,7 +334,7 @@ pub fn icon_button<'a, M: Clone + 'a>(
     tooltip: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    icon_only(which, tooltip, style::button::icon, true, on_press)
+    icon_only(which, tooltip, style::button::icon, on_press)
 }
 
 /// An icon button with a frame (`style::button::boxed`), 28 × 28: "New" next to the app switcher.
@@ -327,19 +343,20 @@ pub fn boxed_button<'a, M: Clone + 'a>(
     tooltip: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    icon_only(which, tooltip, style::button::boxed, true, on_press)
+    icon_only(which, tooltip, style::button::boxed, on_press)
 }
 
 /// A text button reduced to its icon, for the narrow layout where the label does not fit (the
-/// primary "+" in a narrow header). Same height and padding as [`text_button`]; `tooltip` keeps
-/// the label.
+/// primary "+" in a narrow header): 28 × 28 with the icon at 16 in the style's text colour
+/// (`on_accent` for `primary`), as `.lhead .btn.primary` in the tasks mock-up. The larger icon
+/// keeps its thin strokes readable on the red; `tooltip` keeps the label.
 pub fn compact_button<'a, M: Clone + 'a>(
     which: Icon,
     tooltip: impl IntoFragment<'a>,
     style: ButtonStyle,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    icon_only(which, tooltip, style, false, on_press)
+    icon_only(which, tooltip, style, on_press)
 }
 
 /// A segmented control (Day · Week · Month): one segment per `(label, message)`, the segment at
@@ -923,9 +940,31 @@ pub fn chip<'a, M: Clone + 'a>(
     label: impl IntoFragment<'a>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
+    chip_with(mark.map(|mark| mark_view(mark, Scale::Small, Tone::Text3)), label, on_press)
+}
+
+/// A [`chip`] led by a glyph of the app's own instead of a [`Mark`], e.g. the priority bars of the
+/// task list, so a chip reads like the row it belongs to. `lead` should be at most 14 high.
+///
+/// ```ignore
+/// widgets::chip_led(list::prio_glyph(prio), prio.label(), Some(Message::Open(Editor::Priority)))
+/// ```
+pub fn chip_led<'a, M: Clone + 'a>(
+    lead: impl Into<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    chip_with(Some(lead.into()), label, on_press)
+}
+
+fn chip_with<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    label: impl IntoFragment<'a>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
-    if let Some(mark) = mark {
-        content = content.push(mark_view(mark, Scale::Small, Tone::Text3));
+    if let Some(lead) = lead {
+        content = content.push(lead);
     }
     let label = label.into_fragment();
     if !label.is_empty() {
@@ -950,6 +989,16 @@ pub fn pill<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> E
     pill_at(colour, label, 1.0)
 }
 
+/// A [`pill`] led by a 12-px icon in `text_3` instead of the dot: where a row comes from when
+/// that is not a list, e.g. the GitHub mark before a repository ("TorroWorkplace").
+///
+/// ```ignore
+/// widgets::icon_pill(Icon::Github, "TorroWorkplace")
+/// ```
+pub fn icon_pill<'a, M: 'a>(which: Icon, label: impl IntoFragment<'a>) -> Element<'a, M> {
+    pill_led(Some(toned(which, PILL_ICON, Tone::Text3)), label, 1.0)
+}
+
 /// [`pill`] for a disabled row ("Coming soon" next to a service that is not available yet): the
 /// whole pill at the disabled opacity of 40 %, like the row's text.
 pub fn pill_disabled<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> Element<'a, M> {
@@ -958,9 +1007,14 @@ pub fn pill_disabled<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<
 
 /// The pill with its colours at `alpha` of their strength.
 fn pill_at<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>, alpha: f32) -> Element<'a, M> {
+    pill_led(colour.map(|colour| color_dot(colour.scale_alpha(alpha), Scale::Small.dot())), label, alpha)
+}
+
+/// The pill with `lead` (dot or icon) before the label, its colours at `alpha` of their strength.
+fn pill_led<'a, M: 'a>(lead: Option<Element<'a, M>>, label: impl IntoFragment<'a>, alpha: f32) -> Element<'a, M> {
     let mut content = row![].spacing(space::XS).align_y(Alignment::Center);
-    if let Some(colour) = colour {
-        content = content.push(color_dot(colour.scale_alpha(alpha), Scale::Small.dot()));
+    if let Some(lead) = lead {
+        content = content.push(lead);
     }
     content = content.push(typo::text(typo::META, label).wrapping(Wrapping::None));
     container(content)
@@ -1015,6 +1069,191 @@ pub fn prop_section<'a, M: 'a>(title: impl IntoFragment<'a>, rows: Vec<Element<'
     let title = container(typo::text(typo::CAPTION, title).style(theme::text_3))
         .padding(Padding { bottom: space::XS, ..style::ITEM_PADDING });
     column![title].extend(rows).into()
+}
+
+/// A property with its name in front, for the properties column of a detail ("Priority  ▂▄▆ High"):
+/// the `label` in `META` and `text_3`, 88 wide so the values line up, then `mark` (16, `text_3`)
+/// and the `value`. At least 32 high, taller when the value wraps. With `on_press` the whole row
+/// is a button with a hover surface that opens the editor; its 8 inner margin sticks out of the
+/// column's text edge, like [`prop_row`].
+///
+/// Fill `value` with [`prop_value`], [`prop_placeholder`] (nothing set yet: "Add due date") or any
+/// element (a [`label_chip_row`], a date in `BODY.tabular()`).
+///
+/// ```ignore
+/// widgets::prop_line(tr("Due"), Some(Icon::Calendar.into()), widgets::prop_value(&due), Some(Message::EditDue))
+/// widgets::prop_line(tr("Reminder"), Some(Icon::Bell.into()), widgets::prop_placeholder(tr("Add reminder")), Some(Message::EditReminder))
+/// widgets::prop_line(tr("Labels"), None, widgets::label_chip_row(chips), Some(Message::EditLabels))
+/// ```
+pub fn prop_line<'a, M: Clone + 'a>(
+    label: impl IntoFragment<'a>,
+    mark: Option<Mark>,
+    value: impl Into<Element<'a, M>>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let name = container(typo::text(typo::META, label).style(theme::text_3).wrapping(Wrapping::None))
+        .width(PROP_LABEL_WIDTH)
+        .clip(true);
+    let mut content = row![].spacing(space::S).align_y(Alignment::Center);
+    if let Some(mark) = mark {
+        content = content.push(mark_view(mark, Scale::Row, Tone::Text3));
+    }
+    content = content.push(container(value.into()).width(Fill));
+    let line = row![name, content].spacing(space::S).align_y(Alignment::Center);
+    let padding = Padding { top: PROP_PADDING_Y, bottom: PROP_PADDING_Y, ..style::ITEM_PADDING };
+    match on_press {
+        Some(message) => {
+            button(line).width(Fill).padding(padding).style(style::button::sidebar_item(false)).on_press(message).into()
+        }
+        None => container(line).width(Fill).padding(padding).into(),
+    }
+}
+
+/// The value of a [`prop_line`] that is set: one line of `BODY` in `text`, clipped at the edge.
+pub fn prop_value<'a, M: 'a>(value: impl IntoFragment<'a>) -> Element<'a, M> {
+    prop_text(value, theme::text)
+}
+
+/// The value of a [`prop_line`] that is not set yet ("Add due date"): one line of `BODY` in
+/// `text_3`. The row stays a button, so a click sets it.
+pub fn prop_placeholder<'a, M: 'a>(placeholder: impl IntoFragment<'a>) -> Element<'a, M> {
+    prop_text(placeholder, theme::text_3)
+}
+
+/// One line of `BODY` in the colour `colour` picks, cut with "…" to the width it gets
+/// ([`typo::ellipsize`]; Iced 0.14 cannot do that itself); a cut value shows the whole of it as a
+/// tooltip. The colour is set explicitly because the text sits in a button, which would otherwise
+/// hand it its own (`text_2`).
+fn prop_text<'a, M: 'a>(
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    let full = text.into_fragment().into_owned();
+    responsive(move |room| {
+        let shown = typo::ellipsize(&full, typo::BODY, room.width);
+        let cut = shown != full;
+        let line = container(typo::text(typo::BODY, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        if cut { with_tooltip(line, full.clone()) } else { line.into() }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// A label of a GitHub issue or pull request ("● bug"): 20 high, `line_strong` frame with radius 4,
+/// the name in `CAPTION` and `text_2`, led by a 6-px dot in the label's own colour. `hex` is the
+/// colour as the server sends it, `#RRGGBB` (GitHub's `d73a4a` without the `#` works as well); an
+/// unreadable one gives a neutral dot. The colour is only ever the dot: the name carries the
+/// meaning. Not a button; clicks belong to the row around it.
+///
+/// A row shows at most two and then "+n": `typo::text(typo::CAPTION.tabular(), format!("+{n}"))`
+/// in `theme::text_3`.
+///
+/// ```ignore
+/// widgets::label_chip_row(issue.labels.iter().map(|l| widgets::label_chip(&l.color, &l.name)).collect())
+/// ```
+pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<'a, M> {
+    let edge = Scale::Small.dot();
+    let dot: Element<'a, M> = match label_colour(hex) {
+        Some(colour) => color_dot(colour, edge),
+        None => container(blank().width(edge).height(edge))
+            .style(move |t| container::Style {
+                background: Some(Background::Color(palette(t).text_3)),
+                border: border::rounded(edge / 2.0),
+                ..container::Style::default()
+            })
+            .into(),
+    };
+    let content = row![dot, typo::text(typo::CAPTION, name).wrapping(Wrapping::None)]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
+    container(content)
+        .center_y(PILL_HEIGHT)
+        .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                text_color: Some(p.text_2),
+                border: border::rounded(radius::XS).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// [`label_chip`]s side by side with 4 between them, wrapping onto more lines when they do not
+/// fit (the value of a "Labels" [`prop_line`]).
+pub fn label_chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
+    row(chips).spacing(space::XS).wrap().vertical_spacing(space::XS).into()
+}
+
+/// The colour of a label from its `hex`, with or without `#`.
+fn label_colour(hex: &str) -> Option<Color> {
+    color_from_hex(hex).or_else(|| color_from_hex(&format!("#{}", hex.trim())))
+}
+
+/// The state of an item in words ("Merged", "Draft", "Open", "Completed"): 22 high, round,
+/// `line_strong` frame, `mark` 14 in front, the `label` in `CAPTION` and `text`. The colour sits
+/// only in the mark, the word says the state, so the pill reads without colour.
+///
+/// Pass an icon tinted with the palette of the current theme, as [`group_head`] does:
+///
+/// ```ignore
+/// let p = palette(&self.theme());
+/// widgets::state_pill(Mark::Tinted(Icon::GitMerge, p.merged), tr("Merged"))
+/// widgets::state_pill(Mark::Tinted(Icon::CircleDot, p.ok), tr("Open"))
+/// widgets::state_pill(Icon::GitPullRequestDraft, tr("Draft")) // neutral, in text_3
+/// ```
+pub fn state_pill<'a, M: 'a>(mark: impl Into<Mark>, label: impl IntoFragment<'a>) -> Element<'a, M> {
+    let content = row![
+        mark_view(mark.into(), Scale::Small, Tone::Text3),
+        typo::text(typo::CAPTION, label).wrapping(Wrapping::None)
+    ]
+    .spacing(space::XS)
+    .align_y(Alignment::Center);
+    container(content)
+        .center_y(STATE_PILL_HEIGHT)
+        .padding(Padding::new(0.0).left(ICON_GAP).right(space::S))
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                text_color: Some(p.text),
+                border: border::rounded(STATE_PILL_HEIGHT / 2.0).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The share of `done` in `total` for [`progress_bar`]: 0 for an empty list, never above 1.
+fn progress_fraction(done: usize, total: usize) -> f32 {
+    if total == 0 { 0.0 } else { (done as f32 / total as f32).min(1.0) }
+}
+
+/// A progress bar of `done` out of `total` ("2/4" sub-tasks): 64 × 4, round, a `line_strong` track
+/// with the `ok` colour filled from the left. Put the count next to it in `META` and `text_3`
+/// (the bar alone is no information); an empty list (`total` 0) shows an empty track.
+///
+/// ```ignore
+/// row![widgets::progress_bar(done, total), typo::text(typo::META.tabular(), format!("{done}/{total}")).style(theme::text_3)].spacing(space::S)
+/// ```
+pub fn progress_bar<'a, M: 'a>(done: usize, total: usize) -> Element<'a, M> {
+    let fill =
+        container(blank().width(PROGRESS_WIDTH * progress_fraction(done, total)).height(PROGRESS_HEIGHT)).style(|t| {
+            container::Style {
+                background: Some(Background::Color(palette(t).ok)),
+                border: border::rounded(PROGRESS_HEIGHT / 2.0),
+                ..container::Style::default()
+            }
+        });
+    container(fill)
+        .width(PROGRESS_WIDTH)
+        .height(PROGRESS_HEIGHT)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).line_strong)),
+            border: border::rounded(PROGRESS_HEIGHT / 2.0),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// A small muted heading over a group of rows: `CAPTION` in `text_3`, in sentence case as written
@@ -1327,6 +1566,26 @@ mod tests {
     }
 
     #[test]
+    fn label_colours_read_with_or_without_the_hash() {
+        let red = Some(Color::from_rgb8(0xD7, 0x3A, 0x4A));
+        assert_eq!(label_colour("#D73A4A"), red);
+        assert_eq!(label_colour("d73a4a"), red, "GitHub sends labels without the #");
+        assert_eq!(label_colour(" d73a4a "), red);
+        assert_eq!(label_colour(""), None);
+        assert_eq!(label_colour("red"), None);
+    }
+
+    #[test]
+    fn progress_is_the_share_done_and_never_leaves_the_track() {
+        assert_eq!(progress_fraction(0, 0), 0.0, "no sub-tasks: an empty track, not NaN");
+        assert_eq!(progress_fraction(0, 3), 0.0);
+        assert_eq!(progress_fraction(2, 4), 0.5);
+        assert_eq!(progress_fraction(4, 4), 1.0);
+        assert_eq!(progress_fraction(5, 4), 1.0, "more done than total stays inside 64 px");
+        assert_eq!((PROGRESS_WIDTH, PROGRESS_HEIGHT), (64.0, 4.0));
+    }
+
+    #[test]
     fn a_menu_below_starts_under_the_left_edge_of_its_trigger() {
         let at = place(rect(60.0, 8.0, 90.0, 28.0), MENU, WINDOW, Placement::Below(Align::Start));
         assert_eq!(at, Point::new(60.0, 8.0 + 28.0 + BELOW_GAP));
@@ -1421,6 +1680,18 @@ mod tests {
             pill(Some(p.calendar[1]), "Personal"),
             prop_row(Some(Mark::Icon(Icon::Bell)), typo::text(typo::BODY, "15:45"), Some(Msg::Go)),
             prop_section("Properties", vec![]),
+            prop_line("Due", Some(Mark::Icon(Icon::Calendar)), prop_value("Today, 16:00"), Some(Msg::Go)),
+            prop_line("Reminder", Some(Mark::Icon(Icon::Bell)), prop_placeholder("Add reminder"), None),
+            prop_line(
+                "Labels",
+                None,
+                label_chip_row(vec![label_chip("#D73A4A", "bug"), label_chip("nope", "ui")]),
+                None,
+            ),
+            state_pill(Mark::Tinted(Icon::GitMerge, p.merged), "Merged"),
+            state_pill(Icon::GitPullRequestDraft, "Draft"),
+            progress_bar(2, 4),
+            kbd("N"),
             group("General", vec![group_row("Start at login", Some("Recommended".into()), blank())], None),
             content(size::CONTENT_MAX, blank()),
             loading(),

@@ -322,6 +322,7 @@ pub mod github {
     use std::path::PathBuf;
     use std::process::{Output, Stdio};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use chrono::{DateTime, Utc};
@@ -332,6 +333,7 @@ pub mod github {
     use torro_pim::AccountState;
 
     use super::{keychain, with_account};
+    use crate::inbox::{AccountCheck, Health, Trouble};
 
     /// GitHub's GraphQL endpoint; every check of a token asks it.
     pub const GRAPHQL_URL: &str = "https://api.github.com/graphql";
@@ -597,6 +599,10 @@ pub mod github {
         checked: Option<DateTime<Utc>>,
         problem: Option<String>,
         scopes: Option<Vec<String>>,
+        /// The account needs a new sign-in, of which kind and since when, for the inbox (task
+        /// E2.1): a missing token or one GitHub refuses or that belongs to someone else now.
+        /// Being offline is none; a check GitHub accepts clears it.
+        signed_out: Option<(Trouble, DateTime<Utc>)>,
     }
 
     impl Slot {
@@ -623,17 +629,39 @@ pub mod github {
             match result {
                 Ok(checked) if checked.login != self.account.login_name => {
                     self.problem = Some("Sign in again: the token now belongs to another GitHub account".into());
+                    self.sign_out(Trouble::SignInNeeded, now);
                 }
                 Ok(checked) => {
                     self.checked = Some(now);
                     self.problem = None;
                     self.scopes = checked.scopes;
+                    self.signed_out = None;
                 }
                 Err(GithubError::Refused) => {
                     self.problem = Some("Sign in again: GitHub no longer accepts the token".into());
+                    self.sign_out(Trouble::SignInRefused, now);
                 }
                 Err(err) => self.problem = Some(err.to_string()),
             }
+        }
+
+        /// Notes that the account needs a new sign-in because of `trouble`, since `now` unless
+        /// the same trouble went on already.
+        fn sign_out(&mut self, trouble: Trouble, now: DateTime<Utc>) {
+            if !self.signed_out.is_some_and(|(same, _)| same == trouble) {
+                self.signed_out = Some((trouble, now));
+            }
+        }
+
+        /// How the account stands for the inbox: a needed sign-in is a problem, a check GitHub
+        /// accepted last is fine, anything else (not checked yet, offline) unsure.
+        fn check(&self) -> AccountCheck {
+            let health = match self.signed_out {
+                Some((trouble, since)) => Health::Problem { trouble, since },
+                None if self.checked.is_some() && self.problem.is_none() => Health::Fine,
+                None => Health::Unsure,
+            };
+            AccountCheck { account: self.account.id.clone(), label: self.account.login_name.clone(), health }
         }
     }
 
@@ -652,6 +680,8 @@ pub mod github {
         cli: Vec<String>,
         /// In the order of `accounts.json`; a new account comes last.
         slots: RwLock<Vec<Slot>>,
+        /// The stored accounts were read (or could not be), so `slots` is all there is.
+        loaded: AtomicBool,
     }
 
     impl GithubAccounts {
@@ -679,7 +709,15 @@ pub mod github {
             graphql: String,
             cli: Vec<String>,
         ) -> GithubAccounts {
-            GithubAccounts { accounts_file, tokens, http, graphql, cli, slots: RwLock::new(Vec::new()) }
+            GithubAccounts {
+                accounts_file,
+                tokens,
+                http,
+                graphql,
+                cli,
+                slots: RwLock::new(Vec::new()),
+                loaded: AtomicBool::new(false),
+            }
         }
 
         /// Loads the stored GitHub accounts with their tokens and checks each with GitHub, in the
@@ -691,6 +729,7 @@ pub mod github {
                 if let Err(err) = service.load().await {
                     eprintln!("torroworkplace: cannot read the GitHub accounts: {err}");
                 }
+                service.loaded.store(true, Ordering::Release);
                 if let Err(err) = service.check_all().await {
                     eprintln!("torroworkplace: a GitHub account could not be checked: {err}");
                 }
@@ -719,7 +758,8 @@ pub mod github {
                     Ok(None) => (None, Some("Sign in again: no token is stored on this device".to_string())),
                     Err(err) => (None, Some(format!("Sign in again: the keychain could not be read ({err})"))),
                 };
-                Slot { account, token, checked: None, problem, scopes: None }
+                let signed_out = token.is_none().then(|| (Trouble::SignInNeeded, Utc::now()));
+                Slot { account, token, checked: None, problem, scopes: None, signed_out }
             });
             let mut held = self.slots.write().await;
             for slot in slots {
@@ -734,6 +774,16 @@ pub mod github {
         /// The accounts as `accounts.list_accounts` lists them, never with their tokens.
         pub async fn infos(&self) -> Vec<AccountInfo> {
             self.slots.read().await.iter().map(Slot::info).collect()
+        }
+
+        /// How every GitHub account stands for the inbox (task E2.1,
+        /// [`crate::inbox::tend_suite`]); `None` until the stored accounts were read
+        /// ([`GithubAccounts::start`]), so none of them counts as removed before.
+        pub async fn account_checks(&self) -> Option<Vec<AccountCheck>> {
+            if !self.loaded.load(Ordering::Acquire) {
+                return None;
+            }
+            Some(self.slots.read().await.iter().map(Slot::check).collect())
         }
 
         /// `id` is one of these accounts.
@@ -771,8 +821,14 @@ pub mod github {
             let checked = check(self.http()?, &self.graphql, &token).await?;
             let account = Account::github(&checked.login);
             self.store(&account, &token).await.map_err(GithubError::Other)?;
-            let slot =
-                Slot { account, token: Some(token), checked: Some(Utc::now()), problem: None, scopes: checked.scopes };
+            let slot = Slot {
+                account,
+                token: Some(token),
+                checked: Some(Utc::now()),
+                problem: None,
+                scopes: checked.scopes,
+                signed_out: None,
+            };
             let info = slot.info();
             let mut slots = self.slots.write().await;
             match slots.iter_mut().find(|held| held.account.id == slot.account.id) {
@@ -988,6 +1044,39 @@ pub mod github {
         pub(crate) const NO_CLI: &[&str] = &["torro-test-no-such-gh-command", "auth", "token"];
 
         const CLASSIC: &str = "ghp_classicSECRET";
+
+        /// Task E2.1: a needed sign-in is an account problem for the inbox, being offline is not.
+        #[test]
+        fn a_refused_or_foreign_token_needs_a_new_sign_in_but_offline_is_unsure() {
+            let t0 = Utc::now();
+            let mut slot = Slot {
+                account: Account::github("mahype"),
+                token: None,
+                checked: None,
+                problem: None,
+                scopes: None,
+                signed_out: None,
+            };
+            assert_eq!(slot.check().health, Health::Unsure, "not checked yet");
+            let ok = || Ok(Checked { login: "mahype".into(), scopes: None });
+            slot.apply(ok(), t0);
+            assert_eq!(slot.check().health, Health::Fine);
+            slot.apply(Err(GithubError::Offline), t0);
+            assert_eq!(slot.check().health, Health::Unsure);
+
+            let later = t0 + chrono::Duration::minutes(5);
+            slot.apply(Err(GithubError::Refused), later);
+            slot.apply(Err(GithubError::Refused), later + chrono::Duration::minutes(5));
+            let refused = Health::Problem { trouble: Trouble::SignInRefused, since: later };
+            assert_eq!(
+                slot.check(),
+                AccountCheck { account: "github:mahype".into(), label: "mahype".into(), health: refused }
+            );
+            slot.apply(Ok(Checked { login: "someone".into(), scopes: None }), later);
+            assert!(matches!(slot.check().health, Health::Problem { trouble: Trouble::SignInNeeded, .. }));
+            slot.apply(ok(), later);
+            assert_eq!(slot.check().health, Health::Fine);
+        }
 
         #[tokio::test]
         async fn a_check_asks_for_the_viewer_with_the_token_in_the_header_only() {

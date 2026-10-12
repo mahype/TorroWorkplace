@@ -2,10 +2,14 @@
 //!
 //! One document per kind of question: [`search_body`] (`search(type: ISSUE)`, one page) and
 //! [`items_body`] (pinned items by repository and number). Both ask for the same fields of an
-//! issue or pull request ([`FIELDS`]), so pull request state, checks and sub-issue parent come in
-//! the same call. Values travel as GraphQL variables, never inside the document. Answers are read
-//! by [`read_search`] and [`read_items`]; GitHub's GraphQL documentation describes their shape,
-//! and `tests/fixtures/` holds answers of that shape.
+//! issue or pull request ([`ISSUE_FIELDS`], [`PULL_FIELDS`]), so pull request state, checks and
+//! sub-issue parent come in the same call. Closing and reopening an issue (task G.5) takes two:
+//! [`issue_id_body`] (the issue's node id, which the mutations need) and [`set_done_body`]
+//! (`closeIssue` with `stateReason: COMPLETED`, or `reopenIssue`), which answers with the issue
+//! as it is afterwards. Values travel as GraphQL variables, never inside the document. Answers
+//! are read by [`read_search`], [`read_items`], [`read_issue_id`] and [`read_set_done`]; GitHub's
+//! GraphQL documentation describes their shape, and `tests/fixtures/` holds answers of that
+//! shape.
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -20,12 +24,15 @@ use crate::item::Item;
 const LABELS: usize = 20;
 const ASSIGNEES: usize = 10;
 
-/// The fields read of every issue and pull request, as two fragments.
-const FIELDS: &str = "fragment IssueFields on Issue { number title body url state updatedAt \
+/// The fields read of every issue. A fragment of its own, since a document must use every
+/// fragment it defines: the mutations ([`set_done_body`]) answer with an issue only.
+const ISSUE_FIELDS: &str = "fragment IssueFields on Issue { number title body url state updatedAt \
      repository { nameWithOwner } labels(first: 20) { nodes { name color } } \
      assignees(first: 10) { nodes { login } } milestone { title dueOn } \
-     parent { number repository { nameWithOwner } } } \
-     fragment PullFields on PullRequest { number title body url state isDraft updatedAt \
+     parent { number repository { nameWithOwner } } }";
+
+/// The fields read of every pull request.
+const PULL_FIELDS: &str = "fragment PullFields on PullRequest { number title body url state isDraft updatedAt \
      repository { nameWithOwner } labels(first: 20) { nodes { name color } } \
      assignees(first: 10) { nodes { login } } milestone { title dueOn } reviewDecision mergeable \
      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } }";
@@ -35,7 +42,7 @@ pub fn search_body(query: &str, first: usize, after: Option<&str>) -> Value {
     let document = format!(
         "query($q: String!, $first: Int!, $after: String) {{ search(type: ISSUE, query: $q, first: $first, \
          after: $after) {{ issueCount pageInfo {{ hasNextPage endCursor }} nodes {{ __typename ...IssueFields \
-         ...PullFields }} }} }} {FIELDS}"
+         ...PullFields }} }} }} {ISSUE_FIELDS} {PULL_FIELDS}"
     );
     json!({ "query": document, "variables": { "q": query, "first": first, "after": after } })
 }
@@ -56,7 +63,7 @@ pub fn items_body(refs: &[IssueRef]) -> Value {
         variables.insert(format!("r{k}"), json!(name));
         variables.insert(format!("n{k}"), json!(item.number));
     }
-    let document = format!("query({}) {{ {} }} {FIELDS}", parameters.join(", "), fields.join(" "));
+    let document = format!("query({}) {{ {} }} {ISSUE_FIELDS} {PULL_FIELDS}", parameters.join(", "), fields.join(" "));
     json!({ "query": document, "variables": variables })
 }
 
@@ -99,6 +106,77 @@ pub fn read_items(answer: &Value, count: usize) -> Result<Vec<Item>, Error> {
         .filter_map(|node| serde_json::from_value::<Node>(node).ok())
         .filter_map(Node::into_item)
         .collect())
+}
+
+/// The node id of the issue `issue` (`I_kw…`): what [`set_done_body`] needs. The `__typename`
+/// tells an issue from a pull request, which has no `id` asked for here.
+pub fn issue_id_body(issue: &IssueRef) -> Value {
+    let (owner, name) = issue.owner_and_name();
+    let document = "query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { \
+                    issueOrPullRequest(number: $n) { __typename ... on Issue { id } } } }";
+    json!({ "query": document, "variables": { "o": owner, "r": name, "n": issue.number } })
+}
+
+/// GitHub's answer to [`issue_id_body`]: the issue's node id. [`Error::NotFound`] when there is
+/// no such issue or repository (or the token does not reach it), [`Error::Input`] for a pull
+/// request, which is never closed here (`docs/github.md`, "Abhaken"); other errors as
+/// [`change_error`] reads them.
+pub fn read_issue_id(answer: &Value) -> Result<String, Error> {
+    if let Some(err) = change_error(answer) {
+        return Err(err);
+    }
+    let node = answer.pointer("/data/repository/issueOrPullRequest").filter(|node| !node.is_null());
+    let Some(node) = node else { return Err(Error::NotFound) };
+    match (node.get("__typename").and_then(Value::as_str), node.get("id").and_then(Value::as_str)) {
+        (Some("Issue"), Some(id)) => Ok(id.to_string()),
+        (Some("PullRequest"), _) => Err(Error::Input("Pull requests are never closed or reopened here.".into())),
+        _ => Err(Error::Github("GitHub sent an answer without the issue.".into())),
+    }
+}
+
+/// Closes the issue with the node id `id` as completed (`done`: `closeIssue` with
+/// `stateReason: COMPLETED`) or reopens it (`reopenIssue`), and asks for the issue as it is
+/// afterwards ([`ISSUE_FIELDS`]).
+pub fn set_done_body(id: &str, done: bool) -> Value {
+    let change = match done {
+        true => "closeIssue(input: { issueId: $id, stateReason: COMPLETED })",
+        false => "reopenIssue(input: { issueId: $id })",
+    };
+    let document =
+        format!("mutation($id: ID!) {{ {change} {{ issue {{ __typename ...IssueFields }} }} }} {ISSUE_FIELDS}");
+    json!({ "query": document, "variables": { "id": id } })
+}
+
+/// GitHub's answer to [`set_done_body`] with the same `done`: the issue as it is now. Errors as
+/// [`change_error`] reads them.
+pub fn read_set_done(answer: &Value, done: bool) -> Result<Item, Error> {
+    if let Some(err) = change_error(answer) {
+        return Err(err);
+    }
+    let pointer = if done { "/data/closeIssue/issue" } else { "/data/reopenIssue/issue" };
+    answer
+        .pointer(pointer)
+        .cloned()
+        .and_then(|node| serde_json::from_value::<Node>(node).ok())
+        .and_then(Node::into_item)
+        .ok_or_else(|| Error::Github("GitHub sent an answer without the issue.".into()))
+}
+
+/// The first error of an answer to [`issue_id_body`] or [`set_done_body`], by its `type`:
+/// `FORBIDDEN` and `INSUFFICIENT_SCOPES` are [`Error::Forbidden`] (the token may not write
+/// issues there), `NOT_FOUND` is [`Error::NotFound`], anything else [`Error::Github`] with
+/// GitHub's message.
+///
+/// Only `errors[0]` is read: GitHub answers a change with one error, and the first one decides
+/// what the caller can do about it. Further errors in the same answer are ignored on purpose.
+fn change_error(answer: &Value) -> Option<Error> {
+    let error = answer.get("errors")?.as_array()?.first()?;
+    let message = error.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+    Some(match error.get("type").and_then(Value::as_str) {
+        Some("FORBIDDEN" | "INSUFFICIENT_SCOPES") => Error::Forbidden,
+        Some("NOT_FOUND") => Error::NotFound,
+        _ => Error::Github(format!("GitHub could not change the issue: {message}")),
+    })
 }
 
 /// The message of the first error in `answer` whose `type` `counts`.
@@ -284,6 +362,11 @@ pub(crate) mod tests {
             "search_page2" => include_str!("../tests/fixtures/search_page2.json"),
             "search_error" => include_str!("../tests/fixtures/search_error.json"),
             "pinned" => include_str!("../tests/fixtures/pinned.json"),
+            "issue_id" => include_str!("../tests/fixtures/issue_id.json"),
+            "close_issue" => include_str!("../tests/fixtures/close_issue.json"),
+            "reopen_issue" => include_str!("../tests/fixtures/reopen_issue.json"),
+            "close_insufficient_scopes" => include_str!("../tests/fixtures/close_insufficient_scopes.json"),
+            "close_forbidden" => include_str!("../tests/fixtures/close_forbidden.json"),
             other => panic!("no fixture {other}"),
         };
         serde_json::from_str(text).expect("valid fixture")
@@ -356,5 +439,47 @@ pub(crate) mod tests {
         assert_eq!(body["variables"]["n1"], 9);
         let document = body["query"].as_str().expect("document");
         assert!(document.contains("i1: repository(owner: $o1, name: $r1)") && !document.contains("mahype"));
+    }
+
+    #[test]
+    fn closing_asks_for_the_node_id_then_closes_as_completed_or_reopens() {
+        let issue = IssueRef { repo: "mahype/TorroWorkplace".into(), number: 123 };
+        let body = issue_id_body(&issue);
+        assert_eq!(body["variables"], json!({"o": "mahype", "r": "TorroWorkplace", "n": 123}));
+        assert!(!body["query"].as_str().expect("document").contains("mahype"), "values are variables");
+        assert_eq!(read_issue_id(&fixture("issue_id")).as_deref(), Ok("I_kwDOMahype85Abc123"));
+
+        let close = set_done_body("I_kwDOMahype85Abc123", true);
+        let document = close["query"].as_str().expect("document");
+        assert!(document.contains("closeIssue(input: { issueId: $id, stateReason: COMPLETED })"), "{document}");
+        assert!(!document.contains("PullFields") && !document.contains("I_kw"), "{document}");
+        assert_eq!(close["variables"], json!({"id": "I_kwDOMahype85Abc123"}));
+        let reopen = set_done_body("I_kwDOMahype85Abc123", false);
+        assert!(reopen["query"].as_str().expect("document").contains("reopenIssue(input: { issueId: $id })"));
+
+        let closed = read_set_done(&fixture("close_issue"), true).expect("the closed issue");
+        assert_eq!((closed.id.number, closed.kind, closed.state), (123, GitHubKind::Issue, GitHubState::Closed));
+        assert_eq!(closed.updated_at, "2026-10-12T09:30:00Z", "the new version");
+        let reopened = read_set_done(&fixture("reopen_issue"), false).expect("the open issue");
+        assert_eq!(reopened.state, GitHubState::Open);
+        assert!(read_set_done(&fixture("close_issue"), false).is_err(), "the answer to the other question");
+    }
+
+    #[test]
+    fn a_token_that_may_not_write_a_missing_issue_and_a_pull_request_are_told_apart() {
+        for name in ["close_insufficient_scopes", "close_forbidden"] {
+            assert_eq!(read_set_done(&fixture(name), true), Err(Error::Forbidden), "{name}");
+            assert_eq!(read_issue_id(&fixture(name)), Err(Error::Forbidden), "{name}");
+        }
+        let gone = json!({"data": {"repository": null},
+            "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a Repository with the name 'a/b'."}]});
+        assert_eq!(read_issue_id(&gone), Err(Error::NotFound));
+        assert_eq!(read_issue_id(&json!({"data": {"repository": {"issueOrPullRequest": null}}})), Err(Error::NotFound));
+        let pull = json!({"data": {"repository": {"issueOrPullRequest": {"__typename": "PullRequest"}}}});
+        assert_eq!(read_issue_id(&pull).map_err(|err| err.code()), Err("error"));
+        let limited = json!({"errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]});
+        let err = read_set_done(&limited, true).expect_err("an error");
+        assert_eq!(err.code(), "error");
+        assert!(err.to_string().contains("rate limit"), "the suite reads GitHub's words: {err}");
     }
 }

@@ -2,6 +2,7 @@
 members = [
     "crates/torro-core",
     "crates/torro-pim",
+    "crates/torro-inbox",
     "crates/torro-pim-caldav",
     "crates/torro-pim-github",
     "crates/torro-ipc",
@@ -12,6 +13,7 @@ members = [
     "crates/torroworkplace",
     "crates/torrotasks",
     "crates/torrocalendar",
+    "crates/torroinbox",
 ]
 resolver = "3"
 
@@ -26,6 +28,7 @@ homepage = "https://github.com/mahype/TorroWorkplace"
 [workspace.dependencies]
 torro-core = { path = "crates/torro-core" }
 torro-pim = { path = "crates/torro-pim" }
+torro-inbox = { path = "crates/torro-inbox" }
 torro-pim-caldav = { path = "crates/torro-pim-caldav" }
 torro-pim-github = { path = "crates/torro-pim-github" }
 torro-tui = { path = "crates/torro-tui" }
@@ -43,6 +46,8 @@ keyring = "4.2.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "charset", "http2", "json", "form"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 roxmltree = "0.21.1"
+# Bundled: builds SQLite from source, so no system library is needed on Linux, macOS or Windows.
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 schemars = { version = "1.2.2", features = ["chrono04"] }
 webbrowser = "1.2.4"
 winreg = "0.56.0"

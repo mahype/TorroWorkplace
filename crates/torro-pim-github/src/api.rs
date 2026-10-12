@@ -91,6 +91,15 @@ impl Api {
         Ok(Fetched { items: item::union(parts), truncated })
     }
 
+    /// Closes the issue `issue` as completed (`done`) or reopens it, and returns it as GitHub
+    /// reports it afterwards (new state, new `updated_at`), task G.5. Pull requests are never
+    /// closed here ([`Error::Input`], before anything changes). [`Error::Forbidden`] when the token
+    /// may not write issues there, [`Error::NotFound`] when GitHub has no such issue or the token
+    /// does not reach it. See [`set_done`].
+    pub async fn set_issue_done(&self, issue: &IssueRef, done: bool) -> Result<Item, Error> {
+        set_done(|body| self.post(body), issue, done).await
+    }
+
     /// Sends one GraphQL document and returns GitHub's answer as JSON.
     async fn post(&self, body: Value) -> Result<Value, Error> {
         let response = self
@@ -157,6 +166,19 @@ where
     Ok(Search { total, items })
 }
 
+/// Closes (`done`) or reopens the issue `issue` through `post`: first its node id
+/// ([`graphql::issue_id_body`]), then the mutation ([`graphql::set_done_body`]); the answer is the
+/// issue as it is afterwards. Nothing changes when the first call fails. Apart from
+/// [`Api::set_issue_done`] so it can be tested with recorded answers.
+pub async fn set_done<Post, Fut>(mut post: Post, issue: &IssueRef, done: bool) -> Result<Item, Error>
+where
+    Post: FnMut(Value) -> Fut,
+    Fut: Future<Output = Result<Value, Error>>,
+{
+    let id = graphql::read_issue_id(&post(graphql::issue_id_body(issue)).await?)?;
+    graphql::read_set_done(&post(graphql::set_done_body(&id, done)).await?, done)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -212,6 +234,58 @@ mod tests {
         assert_eq!(err, Error::Offline);
         let err = paginate(|_| async { Ok(fixture("search_error")) }, "is:open", 10).await.expect_err("error");
         assert_eq!(err.code(), "error");
+    }
+
+    /// `set_done` against recorded answers: the node id, then `answer` to the mutation. Returns
+    /// the result and the documents sent.
+    async fn closing(done: bool, answer: &'static str) -> (Result<Item, Error>, Vec<Value>) {
+        let asked = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let record = Arc::clone(&asked);
+        let issue = IssueRef { repo: "mahype/TorroWorkplace".into(), number: 123 };
+        let result = set_done(
+            move |body: Value| {
+                let first = record.lock().expect("record").is_empty();
+                record.lock().expect("record").push(body);
+                async move { Ok(fixture(if first { "issue_id" } else { answer })) }
+            },
+            &issue,
+            done,
+        )
+        .await;
+        let asked = asked.lock().expect("record").clone();
+        (result, asked)
+    }
+
+    #[tokio::test]
+    async fn an_issue_is_closed_as_completed_and_reopened_by_its_node_id() {
+        let (closed, asked) = closing(true, "close_issue").await;
+        assert_eq!(closed.map(|item| item.state), Ok(torro_pim::model::GitHubState::Closed));
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0]["variables"]["n"], 123);
+        assert_eq!(asked[1]["variables"]["id"], "I_kwDOMahype85Abc123");
+        assert!(asked[1]["query"].as_str().is_some_and(|q| q.contains("stateReason: COMPLETED")));
+        let (reopened, asked) = closing(false, "reopen_issue").await;
+        assert_eq!(reopened.map(|item| item.state), Ok(torro_pim::model::GitHubState::Open));
+        assert!(asked[1]["query"].as_str().is_some_and(|q| q.contains("reopenIssue")));
+    }
+
+    #[tokio::test]
+    async fn a_token_without_write_access_is_forbidden_and_a_failed_lookup_changes_nothing() {
+        let (refused, _) = closing(true, "close_insufficient_scopes").await;
+        assert_eq!(refused, Err(Error::Forbidden));
+        let issue = IssueRef { repo: "mahype/TorroWorkplace".into(), number: 7 };
+        let calls = Arc::new(Mutex::new(0));
+        let count = Arc::clone(&calls);
+        let offline = set_done(
+            move |_| {
+                *count.lock().expect("count") += 1;
+                async { Err(Error::Offline) }
+            },
+            &issue,
+            true,
+        )
+        .await;
+        assert_eq!((offline, *calls.lock().expect("count")), (Err(Error::Offline), 1), "no mutation after it");
     }
 
     #[test]

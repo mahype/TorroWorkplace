@@ -1,0 +1,10 @@
+{
+  "data": {
+    "repository": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "id": "I_kwDOMahype85Abc123"
+      }
+    }
+  }
+}

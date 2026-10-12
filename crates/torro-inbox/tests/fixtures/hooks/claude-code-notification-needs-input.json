@@ -1,0 +1,10 @@
+{
+  "session_id": "abc123",
+  "transcript_path": "/home/user/.claude/projects/-home-user-my-project/abc123.jsonl",
+  "cwd": "/home/user/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "Notification",
+  "message": "Claude is waiting for your input",
+  "title": "Input needed",
+  "notification_type": "agent_needs_input"
+}

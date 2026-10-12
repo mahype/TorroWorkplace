@@ -1,0 +1,12 @@
+{
+  "session_id": "7f3a",
+  "transcript_path": "/home/user/.gemini/tmp/project-hash/chats/session-7f3a.json",
+  "cwd": "/home/user/my-project",
+  "hook_event_name": "Notification",
+  "timestamp": "2026-10-11T09:30:00.000Z",
+  "notification_type": "ToolPermission",
+  "message": "Gemini CLI wants to run: npm test",
+  "details": {
+    "tool_name": "run_shell_command"
+  }
+}

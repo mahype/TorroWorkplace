@@ -2,6 +2,18 @@
 //! core into [`Item`]s; the front ends only draw them: `linux.rs` with ksni, `desktop.rs` with
 //! tray-icon on macOS and Windows. A click runs the entry's [`Action`] on the [`Daemon`], so
 //! every entry does the same thing everywhere.
+//!
+//! What waits for the person ([`Waiting`], task E3.3b) is **one** number: the open inbox entries
+//! "for me". Open approvals are such entries since E2.1, so the "Approvals (n)" of task A.8 went
+//! into it; the approvals page stays in the control centre ("Settings…"). While something waits,
+//! the menu starts with "Inbox (n)" and the five newest entries, all opening the Inbox app (it
+//! cannot be told yet which entry to show: that needs a channel into the running app). Titles of
+//! foreign sources are `untrusted`, so they reach the menu as [`plain`] text; what a front end
+//! must escape on top (DBusMenu's `_`, muda's `&`) it does itself.
+//!
+//! The counts are part of the [`Snapshot`]; the daemon hands over a new one whenever something
+//! is written to the inbox or an approval changes, so the tray never asks the socket itself and
+//! nothing polls.
 
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -9,7 +21,7 @@ use torro_ipc::Request;
 use torro_pim::AccountState;
 use torro_setups::{LoadMode, TemplateSummary};
 
-use crate::core::Snapshot;
+use crate::core::{InboxLine, Snapshot};
 use crate::daemon::Daemon;
 
 /// What a click on an entry does.
@@ -44,12 +56,51 @@ pub enum Item {
     Separator,
 }
 
-/// The menu from docs/core.md for one snapshot.
+/// What waits for the person, counted in the tray (task E3.3b): the open inbox entries "for me",
+/// approvals included (task E2.1), so they are never counted twice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Waiting {
+    /// Open inbox entries "for me" ([`Snapshot::inbox_for_me`]).
+    pub for_me: usize,
+    /// How many of them are urgent ([`Snapshot::inbox_urgent`]).
+    pub urgent: usize,
+}
+
+impl Waiting {
+    /// What waits according to `snapshot`.
+    pub fn of(snapshot: &Snapshot) -> Waiting {
+        Waiting { for_me: snapshot.inbox_for_me, urgent: snapshot.inbox_urgent }
+    }
+
+    /// Everything that waits, as one number.
+    pub fn total(self) -> usize {
+        self.for_me
+    }
+}
+
+/// "3 for you", or nothing when nothing waits: the tooltip line of every front end. Only the
+/// count, never a title: bars may read a tooltip as markup, and titles are foreign text.
+pub fn waiting_line(waiting: Waiting) -> String {
+    match waiting.total() {
+        0 => String::new(),
+        n => trf("{n} for you", &[("n", &n)]),
+    }
+}
+
+/// The longest title of an entry in the menu, in characters, before it ends in "…"; with the
+/// source after it, that is about what Omarchy's bar shows of a line.
+const TITLE_IN_MENU: usize = 28;
+
+/// The longest source name of an entry in the menu, in characters.
+const SOURCE_IN_MENU: usize = 16;
+
+/// The menu from docs/core.md for one snapshot, with the inbox on top while something waits
+/// ([`inbox_section`]).
 ///
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
-    let mut menu = Vec::new();
+    let mut menu = inbox_section(snapshot);
     if let Some(name) = &snapshot.unsupported {
         menu.push(info(trf("{name} not supported yet", &[("name", name)])));
         menu.push(Item::Separator);
@@ -74,6 +125,7 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
         menu.push(submenu(tr("Delete"), delete));
         menu.push(Item::Separator);
     }
+    menu.push(open(tr("Inbox"), AppId::INBOX));
     menu.push(open(tr("Calendar"), AppId::CALENDAR));
     menu.push(open(tr("Tasks"), AppId::TASKS));
     menu.push(Item::Separator);
@@ -85,6 +137,40 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string() }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
+}
+
+/// While something waits: "Inbox (n)" and the newest entries ("title · source"), then a
+/// separator. Empty when nothing waits; the Inbox app is still among the apps below.
+/// Every entry opens the Inbox app; jumping to one entry needs a channel into the app.
+fn inbox_section(snapshot: &Snapshot) -> Vec<Item> {
+    let waiting = Waiting::of(snapshot);
+    if waiting.total() == 0 {
+        return Vec::new();
+    }
+    let mut section = vec![open(&trf("Inbox ({n})", &[("n", &waiting.total())]), AppId::INBOX)];
+    section.extend(snapshot.inbox_newest.iter().map(|line| open(&entry_label(line), AppId::INBOX)));
+    section.push(Item::Separator);
+    section
+}
+
+/// "Title · Source" for one entry, both as [`plain`] text.
+fn entry_label(line: &InboxLine) -> String {
+    format!("{} · {}", plain(&line.title, TITLE_IN_MENU), plain(&line.source, SOURCE_IN_MENU))
+}
+
+/// `text` from outside the suite, cut to `max` characters, so that it shows exactly as written in
+/// a menu label: control characters (line breaks, tabs) become spaces, and the invisible marks
+/// that turn the direction of text are dropped, so a title cannot make the line read differently.
+/// Mnemonic marks are left to the front ends, which know their own (`linux.rs`, `desktop.rs`).
+fn plain(text: &str, max: usize) -> String {
+    let flat: String =
+        text.chars().filter(|c| !turns_direction(*c)).map(|c| if c.is_control() { ' ' } else { c }).collect();
+    crate::inbox::cap(flat.trim(), max)
+}
+
+/// The Unicode marks that embed, override or isolate a direction of text, and the plain marks.
+fn turns_direction(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// `Workspace 3 · hyprland`, or what is going on instead.
@@ -205,6 +291,7 @@ mod tests {
                 sub(tr("Update")),
                 sub(tr("Delete")),
                 "-".to_string(),
+                tr("Inbox").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 "-".to_string(),
@@ -226,6 +313,7 @@ mod tests {
             action_of(&menu, tr("Save workspace")),
             Some(Action::Run(Box::new(Request::SaveTemplate { name: None })))
         );
+        assert_eq!(action_of(&menu, tr("Inbox")), Some(Action::OpenApp(AppId::INBOX)));
         assert_eq!(action_of(&menu, tr("Calendar")), Some(Action::OpenApp(AppId::CALENDAR)));
         assert_eq!(action_of(&menu, tr("Tasks")), Some(Action::OpenApp(AppId::TASKS)));
         assert_eq!(
@@ -289,5 +377,62 @@ mod tests {
         let menu = labels(&build(&busy));
         assert!(menu.contains(&format!("({})", tr("Busy …"))));
         assert!(menu.contains(&format!("({})", tr("Not connected to Nextcloud"))));
+    }
+
+    fn line(title: &str, source: &str) -> InboxLine {
+        InboxLine { id: format!("id-{title}"), title: title.into(), source: source.into() }
+    }
+
+    /// Task E3.3b: one number for everything "for me", approvals included.
+    #[test]
+    fn the_inbox_leads_the_menu_with_one_number() {
+        let none = Waiting::of(&snapshot());
+        assert_eq!(none, Waiting::default());
+        assert_eq!(waiting_line(none), String::new());
+        assert_eq!(labels(&build(&snapshot()))[0], format!("{} ▸", tr("Load template")));
+
+        // An approval and two notices; the snapshot still knows the approval apart, the tray not.
+        let waiting = Snapshot {
+            approvals_waiting: 1,
+            inbox_for_me: 3,
+            inbox_urgent: 1,
+            inbox_newest: vec![line("Delete event", "Suite"), line("Backup failed", "backup")],
+            ..snapshot()
+        };
+        let three = Waiting::of(&waiting);
+        assert_eq!((three, three.total()), (Waiting { for_me: 3, urgent: 1 }, 3), "approvals are not counted twice");
+        let menu = build(&waiting);
+        assert_eq!(
+            labels(&menu)[..4],
+            [
+                trf("Inbox ({n})", &[("n", &3)]),
+                "Delete event · Suite".to_string(),
+                "Backup failed · backup".to_string(),
+                "-".to_string(),
+            ]
+        );
+        assert!(
+            menu[..3]
+                .iter()
+                .all(|item| matches!(item, Item::Entry { action: Some(Action::OpenApp(AppId::INBOX)), .. })),
+            "every inbox line opens the Inbox app"
+        );
+        assert_eq!(labels(&menu)[4], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
+        assert!(!labels(&menu).contains(&trf("Approvals ({n})", &[("n", &1)])), "no second number for approvals");
+        assert_eq!(waiting_line(three), trf("{n} for you", &[("n", &3)]));
+    }
+
+    /// Titles come from agents and scripts: shown as written, never as a line break or turned
+    /// text, and short enough for the bar.
+    #[test]
+    fn foreign_titles_show_as_plain_text() {
+        let label = |title: &str, source: &str| entry_label(&line(title, source));
+        assert_eq!(label("fix_build", "my_script"), "fix_build · my_script", "mnemonics are the front ends' job");
+        assert_eq!(label("two\nlines\there", "x"), "two lines here · x");
+        assert_eq!(label("\u{202E}gnp.exe", "x"), "gnp.exe · x", "no turned text");
+        assert_eq!(label("<b>bold</b> &amp;", "x"), "<b>bold</b> &amp; · x", "markup stays text");
+        let long = "A very long title from an agent that goes on";
+        let cut: String = long.chars().take(TITLE_IN_MENU - 1).collect();
+        assert_eq!(label(long, "x"), format!("{cut}… · x"));
     }
 }

@@ -136,7 +136,7 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Katalog- und Vertragstests grün.
 
 ### A.3 Freigaben
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** A.2, A.4 · **Dateien:** `crates/torroworkplace/src/approvals.rs` (neu), `crates/torroworkplace/src/mcp.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/notify.rs`, `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/account.rs`
 - Offene Freigaben in `approvals.json`, Ablauf nach 10 Minuten, `pending`-Antwort mit
   Zusammenfassung, `approvals.list/status/decide` (decide nur App-Schlüssel), Benachrichtigung mit
@@ -153,6 +153,31 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** Agent kann sich nicht selbst freigeben; Neustart verliert nichts; Ablauf greift;
   Admin-Befehl eines Agenten wartet auch bei „Freigabe vorher: Nie“.
 
+### A.3b Freigaben absichern (aus der API-Prüfung von A.3)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/{approvals,pim,core,notify,main}.rs`,
+  `crates/torroworkplace/src/cli.rs` (nur `ctl approvals`), `crates/torro-ipc/src/api.rs` (nur Katalogbeschreibung),
+  `docs/api.md`, `.claude/skills/torro-api/SKILL.md`
+- **Hoch: Die Zusammenfassung darf nicht lügen.** Heute baut sie Titel und Datum aus den Angaben des Clients,
+  ausgeführt wird aber über `href`. Für alle Befehle mit `href` (`DeleteEvent`, `DeleteTodo`, `SaveEvent`/`SaveTodo`
+  mit `href`, Verschieben, `UnpinIssue`) kommen Titel, Beginn und Kalender bzw. Liste aus dem Cache des Kerns;
+  unbekannt → ehrlich „unknown event“ bzw. „unknown task“; Änderungen zeigen „'alt' → 'neu'“. Sammlungen,
+  Filterlisten und Vorlagen mit Anzeigenamen statt Kennung. Test: Client schickt falschen Titel → die
+  Zusammenfassung zeigt den echten.
+- **Mittel:** `quote()` entfernt auch Format-Zeichen (Unicode Cf: Zero-Width, Bidi-Steuerung) mit Test.
+  Offene Freigaben beim Start des Dienstes erneut ankündigen. Bis A.8 ein Weg ohne Linux-Benachrichtigung:
+  `torroworkplace ctl approvals` (Liste) und `ctl allow|deny <id>` (App-Schlüssel).
+- **Mittel, Regeln:** `pending` ist eine Antwort-Variante, kein Fehlercode: Skill `torro-api` korrigieren;
+  in `docs/api.md` „Versionen“ festhalten, dass Clients unbekannte `result`-Werte tolerieren müssen; MCP
+  meldet „waiting“ weiter als Tool-Fehler mit Kennung (so dokumentieren).
+- **Niedrig:** Ein-/Ausgabefehler gegenüber Clients ohne Pfad (Pfad nur ins Log); Benachrichtigung nach einer
+  Entscheidung schließen und das Warten begrenzen; leerer Client-Name → Client-Kennung; Katalog
+  `approval_status`: MCP-Tools warten schon bis 60 s selbst. In `notify.rs`/`api.md` vermerken, dass
+  D-Bus-`ActionInvoked` nicht nach Absender gefiltert wird (Modell: keine Sandbox gegen Code desselben Nutzers).
+- **API/MCP:** keine neuen Befehle (die `ctl`-Befehle nutzen `approvals.*`).
+- **Abnahme:** Test mit falschem Titel; Cf-Test; Neustart kündigt an (Fake-Benachrichtiger); `ctl approvals`
+  im Temp-Verzeichnis; `torro-api-review` ohne hohen Befund.
+
 ### A.4 MCP-Server
 - [x] erledigt
 - **Modell:** Opus · **Braucht:** A.1 (zusammenführen erst nach A.2) · **Dateien:** `crates/torroworkplace/src/mcp.rs` (neu), `crates/torroworkplace/src/main.rs`, `crates/torroworkplace/Cargo.toml`, `Cargo.toml`
@@ -164,30 +189,77 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Dienst im Temp-Verzeichnis (`tools/list`, ein Lese-, ein Schreib-Tool, `forbidden`).
 
 ### A.5 Protokoll
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.1 · **Dateien:** `crates/torroworkplace/src/audit.rs` (neu), `crates/torroworkplace/src/core.rs`
 - `audit.jsonl` (0600, ohne Inhalte, Rotation bei 5 MB), „zuletzt benutzt“ je Client,
   `clients.activity { id }`.
+- **Oberfläche:** Karte des Clients (A.6) · **API:** `Request::ClientActivity` · `clients.activity` · Zugriff Admin
+  · **MCP:** Never („Was nie nach außen geht“, 2: `clients.*`).
 
 ### A.6 Steuerzentrale: Agents & API
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.2, A.5 · **Dateien:** `crates/torroworkplace/src/ui/agents.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`
 - Karten, Detailseite mit Rechten je Bereich und Sammlungen, „Create new key“, „Disconnect…“.
 - Seit G.2 ([github.md](../github.md), „Rechte für Agenten“): Bereich **GitHub** mit Stufe und der Auswahl
   `github_repos` (Repos `owner/name` oder ganze Konten `owner`, „All“ oder ausgewählte). Ohne Lesen auf GitHub
   sieht ein Agent keine Filterliste; die Auswahl filtert jeden Treffer.
 
+### A.6b Agents & API: Feinschliff nach der Design-Prüfung
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** A.6, A.7 (gleiche Datei) · **Dateien:** `crates/torroworkplace/src/ui/agents.rs`
+- Aus der Prüfung am 2026-10-12 (kein Muss-Befund):
+  - Verwaltungsbefehle sind laut `api.md` ein **eigener Schalter je Bereich**, unabhängig von der Stufe:
+    Einrückung weg, Untertitel nennt den Bereich („Accounts · each time with your approval“).
+  - Kalender/Listen wie in „Accounts“: Farbe nur als Punkt vor dem Namen, neutraler Schalter rechts.
+  - Leerer Zustand mit Symbol, Titel ohne Punkt, Text passend zum Knopf aus A.7.
+  - Segmente in Breit gleich breit bzw. links verankert, damit die Stufen untereinander stehen.
+  - `when()`: `trf("yesterday {time}", …)` statt Satzbau mit `format!`.
+  - Untertitel unter dem Titel aussagekräftiger („Agent · Used 2 days ago“); Schlüssel und Zeiten tabellarisch.
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne neue Muss-Befunde.
+
 ### A.7 Assistent „Connect agent“
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** A.6 · **Dateien:** `crates/torroworkplace/src/ui/agent_wizard.rs` (neu), `crates/torroworkplace/src/client_setup.rs` (neu)
 - Clients erkennen, Schlüssel eintragen (Claude Code per `claude mcp add`, Codex per CLI, JSON
   atomar mit 0600), „Script“: einmal anzeigen.
 - **Abnahme:** Tests mit Konfigurationen unter `tests/fixtures/`, kein echtes Home-Verzeichnis.
 
+### A.7b Assistent und Agenten-Seite: Nacharbeit aus der Design-Prüfung
+- [x] erledigt (offen, nur Soll: in Schmal Name doppelt in Kopf und Titel; Schlüssel in Schmal mit „Copy“ in eigener Zeile; in Breit Lücke rechts neben kurzen Segmenten)
+- **Modell:** Sonnet · **Braucht:** A.6b, E2.3 · **Dateien:** `crates/torroworkplace/src/ui/{agent_wizard,agents}.rs`
+- Aus der Abnahme von A.6b am 2026-10-12:
+  - **Muss:** Assistent, Schritt „Access“ in Schmal: Untertitel der Optionen hart abgeschnitten
+    („…deleting waits for your appr“). Umbrechen lassen oder kürzen („Changes everything; deleting needs approval“).
+  - **Muss:** Detailseite in Schmal: Untertitel der Bereiche abgeschnitten. Unter Mittel steht das Segment in
+    einer eigenen Zeile unter Titel und Untertitel.
+  - **Soll:** rechte Kante einheitlich (eine Spalte für alle Bedienelemente oder alle bündig rechts);
+    Schritt „Done“: „Restart …“ als Untertitel zuerst, darunter eine Gruppe mit Zeilen und Häkchen wie beim
+    Konto-Assistenten; „Disconnect… on its page removes the entry again“ → „To undo, choose Disconnect on its
+    page“; Punkte in Zeilen-Untertiteln einheitlich weglassen; „Not found“-Zeilen gleich hoch wie gefundene;
+    Häkchen-Feld im hellen Modus leichter (TEXT_2).
+  - **Schön:** Schlüssel im Schritt „Key“ tabellarisch.
+  - **Aus E1.2c (H1):** Die Auswahl „Inbox sources“ bietet `suite` nicht mehr an; Hinweis im Fußtext, dass Freigaben
+    und Kontoprobleme nur der Mensch sieht.
+- **API/MCP:** keine.
+- **Abnahme:** `torro-design-review` ohne Muss-Befund.
+
 ### A.8 Freigaben in Oberfläche und Tray
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/ui/approvals.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/tray/linux.rs`
 - Liste mit „Allow“/„Deny“, Zahl am Tray-Icon.
+
+### A.8b Tray öffnet die Freigaben, Zahl ohne Abfrage
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** A.8, E1.2b · **Dateien:** `crates/torroworkplace/src/{core,daemon}.rs`,
+  `crates/torroworkplace/src/tray/linux.rs`
+- „Approvals (n)“ im Tray startet die Steuerzentrale mit `--section approvals` (wie `start_accounts_page`);
+  ist sie schon offen, wird sie nach vorn geholt (Umschalten einer offenen Steuerzentrale braucht später
+  einen Kanal, hier nicht).
+- Die Zahl kommt aus `Snapshot` (neues Feld) und das Tray-Menü wird neu gebaut, wenn sich Freigaben ändern,
+  statt alle 5 s über den Socket abzufragen (das würde mit A.5 jede 5 s eine Protokollzeile schreiben).
+- **API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests für Snapshot und Menü; die Abfrage-Schleife ist weg.
 
 ### A.11 Kleinkram aus den API-Checks
 - [ ] erledigt

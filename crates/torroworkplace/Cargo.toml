@@ -23,6 +23,7 @@ todo = "deny"
 [dependencies]
 torro-core.workspace = true
 torro-pim.workspace = true
+torro-inbox.workspace = true
 torro-pim-caldav.workspace = true
 torro-pim-github.workspace = true
 torro-ipc.workspace = true
@@ -41,6 +42,7 @@ sha2.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true
+rusqlite.workspace = true
 schemars.workspace = true
 webbrowser.workspace = true
 

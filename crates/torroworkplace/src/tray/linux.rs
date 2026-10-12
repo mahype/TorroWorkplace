@@ -2,6 +2,15 @@
 //! Waybar and KDE show it). It only draws the shared menu from `menu.rs`, built from a
 //! [`Snapshot`] of the core; clicks run the entries' actions on the [`Daemon`]. The icon comes
 //! from `icon.rs`.
+//!
+//! What waits for the person ([`Waiting`], task E3.3b) shows in two ksni-only places: the
+//! tooltip says how many ("3 for you", [`menu::waiting_line`]), never a title, since bars may
+//! read the description as markup; and the item status is `NeedsAttention`, which bars use to
+//! highlight the icon, only while something urgent waits (an approval, an agent waiting); notices
+//! and finished agents count but stay calm.
+//!
+//! A number drawn onto the icon is left out: the protocol's overlay icon is only another pixmap,
+//! so the digits would have to be rasterised here, and many bars ignore it.
 
 use std::fmt;
 use std::sync::Arc;
@@ -10,7 +19,7 @@ use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 
 use super::icon;
-use super::menu::{self, Item};
+use super::menu::{self, Item, Waiting};
 use crate::core::Snapshot;
 use crate::daemon::Daemon;
 
@@ -40,7 +49,8 @@ pub struct Tray {
     daemon: Arc<Daemon>,
 }
 
-/// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot.
+/// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot, and with
+/// it the count of what waits.
 pub async fn spawn(daemon: Arc<Daemon>, snapshot: Snapshot) -> Result<TrayHandle, TrayError> {
     Tray { snapshot, daemon }.spawn().await.map_err(TrayError::Spawn)
 }
@@ -57,6 +67,21 @@ impl ksni::Tray for Tray {
         "Torro Workplace".into()
     }
 
+    /// Bars highlight an item that needs attention: only while something urgent waits.
+    fn status(&self) -> ksni::Status {
+        item_status(Waiting::of(&self.snapshot))
+    }
+
+    /// The name and, when something waits, how much. Never a summary: the description may be
+    /// read as markup by the bar, and summaries hold text a client sent.
+    fn tool_tip(&self) -> ksni::ToolTip {
+        ksni::ToolTip {
+            title: "Torro Workplace".into(),
+            description: menu::waiting_line(Waiting::of(&self.snapshot)),
+            ..Default::default()
+        }
+    }
+
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
         icon::SIZES
             .iter()
@@ -69,6 +94,13 @@ impl ksni::Tray for Tray {
     }
 }
 
+/// `NeedsAttention` while something urgent waits (an approval, an agent waiting), else `Active`.
+/// Notices and finished agents count in the number but do not make the icon stand out: the tray
+/// stays calm for what can wait.
+fn item_status(waiting: Waiting) -> ksni::Status {
+    if waiting.urgent > 0 { ksni::Status::NeedsAttention } else { ksni::Status::Active }
+}
+
 /// The menu from docs/core.md for one snapshot ([`menu::build`]), as ksni items.
 fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
     menu::build(snapshot).into_iter().map(ksni_item).collect()
@@ -78,7 +110,7 @@ fn build_menu(snapshot: &Snapshot) -> Vec<MenuItem<Tray>> {
 fn ksni_item(item: Item) -> MenuItem<Tray> {
     match item {
         Item::Entry { label, action } => StandardItem {
-            label,
+            label: label_text(&label),
             enabled: action.is_some(),
             activate: Box::new(move |tray: &mut Tray| {
                 if let Some(action) = &action {
@@ -89,10 +121,17 @@ fn ksni_item(item: Item) -> MenuItem<Tray> {
         }
         .into(),
         Item::Submenu { label, items } => {
+            let label = label_text(&label);
             SubMenu { label, submenu: items.into_iter().map(ksni_item).collect(), ..Default::default() }.into()
         }
         Item::Separator => MenuItem::Separator,
     }
+}
+
+/// `label` as DBusMenu shows it as written: it takes an underscore as the mark of an access key,
+/// so each one is doubled. Inbox titles and template names may hold any (`fix_build`).
+fn label_text(label: &str) -> String {
+    label.replace('_', "__")
 }
 
 #[cfg(test)]
@@ -138,6 +177,7 @@ mod tests {
                 sub(tr("Update")),
                 sub(tr("Delete")),
                 "-".to_string(),
+                tr("Inbox").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 "-".to_string(),
@@ -180,12 +220,12 @@ mod tests {
             .iter()
             .flat_map(|item| match item {
                 Item::Submenu { label, items } => {
-                    let mut lines = vec![format!("{label} ▸")];
+                    let mut lines = vec![format!("{} ▸", label_text(label))];
                     lines.extend(model_tree(items).into_iter().map(|line| format!("  {line}")));
                     lines
                 }
-                Item::Entry { label, action: Some(_) } => vec![label.clone()],
-                Item::Entry { label, action: None } => vec![format!("({label})")],
+                Item::Entry { label, action: Some(_) } => vec![label_text(label)],
+                Item::Entry { label, action: None } => vec![format!("({})", label_text(label))],
                 Item::Separator => vec!["-".into()],
             })
             .collect()
@@ -207,9 +247,40 @@ mod tests {
 
     #[test]
     fn ksni_draws_the_shared_menu_entry_for_entry() {
-        for snapshot in [snapshot(), Snapshot { workspace_windows: 0, ..snapshot() }, Snapshot::default()] {
+        let line = crate::core::InboxLine { id: "a".into(), title: "Backup failed".into(), source: "backup".into() };
+        let waiting = Snapshot { inbox_for_me: 1, inbox_newest: vec![line], ..snapshot() };
+        for snapshot in [snapshot(), Snapshot { workspace_windows: 0, ..snapshot() }, Snapshot::default(), waiting] {
             assert_eq!(ksni_tree(&build_menu(&snapshot)), model_tree(&menu::build(&snapshot)));
         }
+    }
+
+    #[test]
+    fn only_something_urgent_makes_the_icon_stand_out() {
+        assert_eq!(item_status(Waiting::default()), ksni::Status::Active);
+        assert_eq!(item_status(Waiting { for_me: 4, urgent: 0 }), ksni::Status::Active, "notices count but stay calm");
+        assert_eq!(item_status(Waiting { for_me: 4, urgent: 1 }), ksni::Status::NeedsAttention);
+    }
+
+    /// The inbox section of the shared menu reaches the bar, with underscores shown as themselves
+    /// instead of as access keys.
+    #[test]
+    fn the_inbox_leads_the_ksni_menu_and_underscores_show() {
+        let waiting = Snapshot {
+            inbox_for_me: 2,
+            inbox_urgent: 1,
+            inbox_newest: vec![crate::core::InboxLine {
+                id: "a".into(),
+                title: "fix_build".into(),
+                source: "my_script".into(),
+            }],
+            ..snapshot()
+        };
+        let menu = build_menu(&waiting);
+        assert_eq!(
+            labels(&menu)[..3],
+            [trf("Inbox ({n})", &[("n", &2)]), "fix__build · my__script".to_string(), "-".to_string()]
+        );
+        assert_eq!(label_text("Mail_Chat"), "Mail__Chat");
     }
 
     #[test]

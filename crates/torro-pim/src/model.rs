@@ -108,6 +108,11 @@ pub struct Event {
     /// One occurrence of a recurring series. Editing series is not supported yet, so the
     /// apps show these read-only.
     pub recurring: bool,
+    /// Whether the event blocks the time (iCalendar `TRANSP`): `opaque` (busy) or
+    /// `transparent` (free, e.g. a reminder or "working from home"). Missing means `opaque`, as
+    /// RFC 5545 says; send the value back as read so a change of other fields keeps it.
+    #[serde(default)]
+    pub transparency: Transparency,
 }
 
 impl Event {
@@ -115,6 +120,23 @@ impl Event {
     pub fn all_day(&self) -> bool {
         matches!(self.start, EventTime::Date(_))
     }
+
+    /// The event makes its time busy: opaque and not all-day. All-day entries (holidays,
+    /// birthdays) and transparent ones leave the time free, whatever they say.
+    pub fn busy(&self) -> bool {
+        self.transparency == Transparency::Opaque && !self.all_day()
+    }
+}
+
+/// Free or busy (iCalendar `TRANSP`, RFC 5545 section 3.8.2.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Transparency {
+    /// The time is busy (`TRANSP:OPAQUE`); also when the event says nothing.
+    #[default]
+    Opaque,
+    /// The time stays free (`TRANSP:TRANSPARENT`).
+    Transparent,
 }
 
 /// A task (VTODO).
@@ -195,6 +217,38 @@ impl Link {
             return None;
         }
         Some((repo, number.parse().ok()?))
+    }
+
+    /// The GitHub link `input` names, as a person pastes it (task G.6): the address of an issue or
+    /// pull request on github.com (`https://github.com/owner/repo/issues/12`, `…/pull/12/files`,
+    /// with or without `https://` or `www.`, anything after the number ignored), `owner/repo#12`
+    /// or a link id `github:owner/repo#12`; surrounding spaces do not count. `None` for anything
+    /// else, so the tasks app can tell a pasted link from a title. The core reads the same forms
+    /// (`torro_pim_github::address::issue_ref`) and decides; this only recognises them.
+    pub fn pasted(input: &str) -> Option<Link> {
+        let input = input.trim();
+        let id = Link { id: input.to_string(), github: None };
+        if id.github_ref().is_some() {
+            return Some(id);
+        }
+        let part =
+            |p: &str| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        let number = |n: &str| n.parse::<u64>().ok();
+        if let Some((repo, n)) = input.split_once('#')
+            && let Some((owner, name)) = repo.split_once('/')
+            && part(owner)
+            && part(name)
+        {
+            return Some(Link::github(repo, number(n)?));
+        }
+        let rest = input.strip_prefix("https://").or_else(|| input.strip_prefix("http://")).unwrap_or(input);
+        let rest = rest.strip_prefix("www.").unwrap_or(rest);
+        let path = rest.strip_prefix("github.com/")?.split(['?', '#']).next().unwrap_or_default();
+        let mut segments = path.split('/');
+        let (owner, name, page, n) = (segments.next()?, segments.next()?, segments.next()?, segments.next()?);
+        (part(owner) && part(name) && matches!(page, "issues" | "pull"))
+            .then(|| number(n).map(|n| Link::github(&format!("{owner}/{name}"), n)))
+            .flatten()
     }
 
     /// The item's page: `https://github.com/<owner>/<repo>/issues/<number>` for a GitHub id
@@ -294,6 +348,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_event_from_an_older_client_is_busy_and_free_ones_round_trip() {
+        let json = r#"{"uid":"e","collection":"a/https://x/cal/","href":null,"etag":null,"summary":"Call",
+            "start":{"datetime":"2026-10-12T09:00:00Z"},"end":{"datetime":"2026-10-12T10:00:00Z"},
+            "location":null,"description":null,"recurring":false}"#;
+        let event: Event = serde_json::from_str(json).expect("old event");
+        assert_eq!(event.transparency, Transparency::Opaque, "missing TRANSP means busy (RFC 5545)");
+        assert!(event.busy());
+        let free = Event { transparency: Transparency::Transparent, ..event.clone() };
+        let json = serde_json::to_string(&free).expect("json");
+        assert!(json.contains(r#""transparency":"transparent""#), "{json}");
+        assert_eq!(serde_json::from_str::<Event>(&json).expect("back"), free);
+        assert!(!free.busy(), "free time is not busy");
+        let day = NaiveDate::from_ymd_opt(2026, 10, 12).expect("date");
+        let all_day = Event { start: EventTime::Date(day), end: None, ..event };
+        assert!(!all_day.busy(), "all-day entries never make the time busy");
+    }
+
+    #[test]
     fn a_task_from_an_older_client_reads_without_the_new_fields() {
         let json = r#"{"uid":"t","collection":"a/https://x/tasks/","href":null,"etag":null,"summary":"Milk",
             "due":null,"priority":null,"completed":false,"parent":null,"description":null}"#;
@@ -367,6 +439,32 @@ mod tests {
         ] {
             let link = Link { id: other.into(), github: None };
             assert_eq!((link.github_ref(), link.web_url()), (None, None), "{other}");
+        }
+    }
+
+    #[test]
+    fn pasted_links_are_recognised_and_titles_are_not() {
+        let wanted = Some(Link::github("mahype/TorroWorkplace", 12));
+        for input in [
+            "github:mahype/TorroWorkplace#12",
+            "mahype/TorroWorkplace#12",
+            " https://github.com/mahype/TorroWorkplace/issues/12 ",
+            "https://github.com/mahype/TorroWorkplace/pull/12/files",
+            "github.com/mahype/TorroWorkplace/issues/12#issuecomment-1",
+            "https://www.github.com/mahype/TorroWorkplace/issues/12?x=1",
+        ] {
+            assert_eq!(Link::pasted(input), wanted, "{input}");
+        }
+        for title in [
+            "Buy oat milk",
+            "Fix #12",
+            "mahype#12",
+            "https://github.com/mahype/TorroWorkplace/issues",
+            "https://example.org/mahype/TorroWorkplace/issues/12",
+            "https://github.com/mahype/Torro Workplace/issues/12",
+            "a/b#x",
+        ] {
+            assert_eq!(Link::pasted(title), None, "{title}");
         }
     }
 }
