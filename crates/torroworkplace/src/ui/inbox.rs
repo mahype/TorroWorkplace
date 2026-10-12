@@ -196,7 +196,7 @@ mod tests {
 
     fn rule(id: &str, source: SourceRef, effect: RuleEffect) -> Rule {
         let created = DateTime::parse_from_rfc3339("2026-10-12T08:00:00Z").expect("time").with_timezone(&Utc);
-        Rule { id: id.into(), source, effect, created }
+        Rule { id: id.into(), source, sender: None, effect, created }
     }
 
     fn inbox_app(installed: bool) -> AppInfo {

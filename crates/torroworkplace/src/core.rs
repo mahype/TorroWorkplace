@@ -522,6 +522,7 @@ impl Core {
             }
         });
         self.github.start();
+        self.start_mail_feed(torro_core::account::accounts_file().ok());
         self.mail.start();
         let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
         tokio::spawn(async move {
@@ -544,6 +545,13 @@ impl Core {
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
         });
+    }
+
+    /// Files new mail of the mail accounts in the inbox from now on, each account's `notify` read
+    /// from `accounts_file` (task E4.1, [`crate::mail::inbox_feed`]). Part of [`Core::start`],
+    /// before the mail sync starts, so no change is missed.
+    pub(crate) fn start_mail_feed(&self, accounts_file: Option<std::path::PathBuf>) {
+        crate::mail::inbox_feed::start(Arc::clone(&self.inbox), Arc::clone(&self.mail), accounts_file);
     }
 
     /// A request from the socket with the key the client sent. Every request from outside the
@@ -1195,7 +1203,13 @@ impl Core {
                 {
                     return refused;
                 }
-                self.inbox.handle(request, client, Utc::now())
+                let done = matches!(request, Request::SetItemDone { done: true, .. });
+                let response = self.inbox.handle(request, client, Utc::now());
+                // Done with a mail entry marks its mail read on the server (task E4.1).
+                if let (true, Response::Item { item }) = (done, &response) {
+                    crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, item);
+                }
+                response
             }
         }
     }
@@ -1264,8 +1278,13 @@ impl Core {
             failed => return failed,
         };
         let done = Request::SetItemDone { id: id.to_string(), done: true };
-        if let Response::Error { message, .. } = self.inbox.handle(done, client, Utc::now()) {
-            eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
+        match self.inbox.handle(done, client, Utc::now()) {
+            Response::Error { message, .. } => {
+                eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
+            }
+            // A mail entry's mail is read now (task E4.1).
+            Response::Item { item } => crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, &item),
+            _ => {}
         }
         Response::Todo { todo: saved }
     }

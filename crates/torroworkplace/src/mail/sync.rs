@@ -579,6 +579,13 @@ pub(crate) mod fake {
             self.changed();
         }
 
+        /// The flags of message `uid` in `folder` as the server holds them, sorted.
+        pub(crate) fn flags(&self, folder: &str, uid: u32) -> Vec<String> {
+            let mut world = self.world();
+            let message = world.folder(folder).messages.iter().find(|m| m.uid == uid).expect("a message of the fake");
+            message.flags.iter().cloned().collect()
+        }
+
         /// Removes message `uid` from `folder` for good.
         pub(crate) fn expunge(&self, folder: &str, uid: u32) {
             {
@@ -749,8 +756,43 @@ pub(crate) mod fake {
             )
         }
 
+        /// `UID STORE <set> +FLAGS.SILENT (…)` or `-FLAGS.SILENT (…)` on the folder `path`: changes
+        /// the flags as a real server does (a new mod-sequence) and tells idling clients.
+        fn store(&self, tag: &str, rest: &str, path: &str) -> String {
+            let mut parts = rest.splitn(3, ' ');
+            let (set, change, list) =
+                (parts.next().unwrap_or_default(), parts.next().unwrap_or_default(), parts.next().unwrap_or_default());
+            let add = match change.to_ascii_uppercase().trim_end_matches(".SILENT") {
+                "+FLAGS" => true,
+                "-FLAGS" => false,
+                _ => return format!("{tag} BAD unknown STORE"),
+            };
+            let flags: Vec<String> = list.trim_matches(['(', ')']).split_whitespace().map(str::to_string).collect();
+            {
+                let mut world = self.world();
+                let modseq = world.bump();
+                let folder = world.folder(path);
+                folder.modseq = modseq;
+                for message in folder.messages.iter_mut().filter(|message| in_set(set, message.uid)) {
+                    for flag in &flags {
+                        if add {
+                            message.flags.insert(flag.clone());
+                        } else {
+                            message.flags.remove(flag);
+                        }
+                    }
+                    message.modseq = modseq;
+                }
+            }
+            self.changed();
+            format!("{tag} OK Store completed")
+        }
+
         fn uid(&self, tag: &str, rest: &str, selected: Option<&str>) -> String {
             let Some(path) = selected else { return format!("{tag} BAD no folder selected") };
+            if let Some(store) = rest.strip_prefix("STORE ") {
+                return self.store(tag, store, path);
+            }
             let mut world = self.world();
             let folder = world.folder(path);
             let mut lines = Vec::new();

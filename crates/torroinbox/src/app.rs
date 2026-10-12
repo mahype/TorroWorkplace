@@ -1160,7 +1160,8 @@ impl<S: InboxSource + 'static> App<S> {
                 Link::Url { url } => return self.open_url(url),
                 Link::App { app } if app == AppId::WORKPLACE.binary => return self.update(Message::OpenSettings),
                 Link::App { app } => return self.update(Message::OpenApp(app)),
-                Link::Window => {}
+                // A mail is shown in this app (task E4.2); the demo source only marks it seen.
+                Link::Window | Link::Mail { .. } => {}
             }
         }
         #[cfg(test)]

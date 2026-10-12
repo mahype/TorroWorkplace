@@ -57,6 +57,19 @@
 //! ([`Inbox::for_me`]). It hears of every change through [`Inbox::changes`]: whatever writes to
 //! the file (a post, a merge, resolving, done, snooze, lane, waking, the clean-up, the suite's
 //! reconciliation, rules) marks it, so no write path can forget to and nothing polls.
+//!
+//! **Mail** (task E4.1) is filed by the core as well, by the mail feed
+//! (`crate::mail::inbox_feed`): one entry of kind `message` per conversation of a mail account
+//! ([`Inbox::file_mail`]), owned by the account (its id is no client id, nor [`APP_OWNER`] or
+//! [`CORE_OWNER`]), so no request merges into or resolves one. Which message went into which entry
+//! is kept beside the entries (`mail_messages`): a message is filed once, the entry knows which
+//! mail to mark read when it is done ([`Inbox::mail_messages`]), and it is done by itself once its
+//! mail was read or moved elsewhere ([`Inbox::open_mail_entries`], [`Inbox::resolve_mail`]). A
+//! client sees mail entries only with read access to mail and the account besides the source
+//! ([`Scope::of`]), and marks one done only with write access to mail ([`check_mail_done`]), since
+//! that marks the mail read on its server: checked before an approval and when the command runs.
+//! Moving a mail with `remember` keeps the lane for its sender, not for the whole account
+//! ([`remember_lane`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -74,11 +87,12 @@ use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, Poster};
 use torro_inbox::{
-    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceKind,
+    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo, SourceKind,
     SourceRef, State, StateFilter,
 };
-use torro_ipc::api::{self, HOOK_CLIENT, InboxForbidden, Selection};
+use torro_ipc::api::{self, Access, Area, HOOK_CLIENT, InboxForbidden, Rights, Selection};
 use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
+use torro_mail::{ACCOUNT_PREFIX, Notify};
 
 use crate::account::github::GithubAccounts;
 use crate::approvals::{Approvals, InboxFacts};
@@ -91,7 +105,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -182,6 +196,35 @@ ALTER TABLE items ADD COLUMN lane TEXT NOT NULL DEFAULT 'info';
 ALTER TABLE items ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE items ADD COLUMN updated TEXT NOT NULL DEFAULT '';
 CREATE INDEX items_by_order ON items (urgent, updated);
+";
+
+/// From schema version 2 to 3 (task E4.1):
+///
+/// - `mail_messages`: the messages filed into mail entries, one row per message of an account
+///   (`message` is its id `m:…` in the account's store, `item` the entry's id), so a message is
+///   filed once and a done entry knows which mail to mark read.
+/// - `rules` gets `sender` (empty for rules about a whole source): a lane remembered for one sender
+///   of a mail account. SQLite cannot change a table's constraints, so the table is built anew with
+///   one rule per source, effect and sender.
+const SCHEMA_V3: &str = "
+CREATE TABLE mail_messages (
+    account TEXT NOT NULL,
+    message TEXT NOT NULL,
+    item TEXT NOT NULL,
+    PRIMARY KEY (account, message)
+);
+CREATE INDEX mail_messages_by_item ON mail_messages (item);
+CREATE TABLE rules_v3 (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    effect TEXT NOT NULL,
+    sender TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL,
+    UNIQUE (source, effect, sender)
+);
+INSERT INTO rules_v3 (id, source, effect, data) SELECT id, source, effect, data FROM rules;
+DROP TABLE rules;
+ALTER TABLE rules_v3 RENAME TO rules;
 ";
 
 /// The inbox: `inbox.sqlite`, opened on first use.
@@ -282,10 +325,17 @@ impl Inbox {
                 .and_then(|_| api::post_source(Some(client), agent.as_ref()))
                 .map(drop)
                 .map_err(Failure::Forbidden),
-            Request::SetItemDone { id, .. }
-            | Request::SnoozeItem { id, .. }
-            | Request::SetItemLane { id, .. }
-            | Request::CreateTaskFromItem { id, .. } => changeable(db, id, Some(client)).map(drop),
+            // Done marks a mail entry's mail read on the server (task E4.1); a task marks it done.
+            Request::SetItemDone { id, done: true } | Request::CreateTaskFromItem { id, .. } => {
+                check_mail_done(&changeable(db, id, Some(client))?.item, Some(client))
+            }
+            // Nobody is asked to approve remembering a mail's lane when there is no sender to keep it for.
+            Request::SetItemLane { id, remember: true, .. } => {
+                remembered_sender(&changeable(db, id, Some(client))?.item).map(drop)
+            }
+            Request::SetItemDone { id, .. } | Request::SnoozeItem { id, .. } | Request::SetItemLane { id, .. } => {
+                changeable(db, id, Some(client)).map(drop)
+            }
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
@@ -344,8 +394,9 @@ impl Inbox {
     /// `Err` holds the answer: `not-found` for an unknown entry or one of a source `client` may
     /// not see (a hook client sees none, no client the suite's), `forbidden` when `client` may not
     /// change it (security rule 1: approvals, account problems and the suite's entries are the
-    /// person's, so an agent cannot turn an approval into a task and mark it done). The app key
-    /// (`None`) may change every entry.
+    /// person's, so an agent cannot turn an approval into a task and mark it done) or, for a mail
+    /// entry, lacks write access to mail ([`check_mail_done`]: done marks the mail read). The app
+    /// key (`None`) may change every entry.
     pub fn entry_for_task(
         &self,
         id: &str,
@@ -354,7 +405,9 @@ impl Inbox {
     ) -> Result<Item, Box<Response>> {
         self.with(|db| {
             wake_due(db, now)?;
-            Ok(changeable(db, id, client)?.item)
+            let item = changeable(db, id, client)?.item;
+            check_mail_done(&item, client)?;
+            Ok(item)
         })
         .map_err(|failure| Box::new(failure.response()))
     }
@@ -432,6 +485,120 @@ impl Inbox {
             None => complete,
         };
         self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, now)).map_err(|f| f.to_string())
+    }
+
+    /// Files the new mail `mail` at `now` (task E4.1): as a new entry of its conversation, or
+    /// merged into the entry of the conversation, which counts one more and opens again when it
+    /// was done ([`rules::merge`]). Returns the entry's id, or `None` when nothing was filed:
+    ///
+    /// - `notify` is [`Notify::Off`], or [`Notify::ForMeOnly`] and the mail goes to "Info";
+    /// - the person muted the account's source;
+    /// - the message was filed before (so filing again after a missed change counts nothing twice).
+    ///
+    /// The entry: kind `message`, source the account ([`SourceRef::mail`]), thread key the
+    /// conversation, lane by [`rules::mail_lane`] (a lane remembered for the sender, else "Info" for
+    /// [`NewMail::bulk`], else "for me"), never urgent, title the subject, text the start of the
+    /// mail, `from` the sender, a link to the message, `untrusted`. It is placed in the list by
+    /// the newest mail's date (never later than `now`); a mail older than the entry's newest leaves
+    /// title, text, sender and link as they are. `Err` holds the message for the log, without
+    /// anything of the mail.
+    pub fn file_mail(&self, mail: &NewMail, notify: Notify, now: DateTime<Utc>) -> Result<Option<String>, String> {
+        if notify == Notify::Off {
+            return Ok(None);
+        }
+        let source = match mail.account.parse::<SourceRef>() {
+            Ok(source) if source.kind == SourceKind::Mail => source,
+            _ => return Err(format!("{:?} is no mail account", mail.account)),
+        };
+        self.with(|db| file_mail(db, mail, source, notify, now)).map_err(|failure| failure.to_string())
+    }
+
+    /// The entries of the mail account `account` that are open or snoozed, each with the messages
+    /// filed into it, oldest entry first; with `touching`, only those holding one of these
+    /// messages. For the mail feed: an entry whose mail is no longer unread in the inbox folder is
+    /// done ([`Inbox::resolve_mail`]). `Err` holds the message for the log.
+    pub fn open_mail_entries(&self, account: &str, touching: Option<&[String]>) -> Result<Vec<MailEntry>, String> {
+        let entries = self.with(|db| {
+            let mut statement = db.prepare(
+                "SELECT m.item, m.message FROM mail_messages m JOIN items i ON i.id = m.item
+                 WHERE m.account = ?1 AND i.owner = ?1 AND i.state IN ('new', 'seen', 'snoozed')
+                 ORDER BY i.received, m.item, m.message",
+            )?;
+            let rows =
+                statement.query_map([account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            let mut entries: Vec<MailEntry> = Vec::new();
+            for row in rows {
+                let (item, message) = row?;
+                match entries.last_mut() {
+                    Some(entry) if entry.id == item => entry.messages.push(message),
+                    _ => entries.push(MailEntry { id: item, messages: vec![message] }),
+                }
+            }
+            Ok(entries)
+        });
+        let mut entries = entries.map_err(|failure| failure.to_string())?;
+        if let Some(touching) = touching {
+            entries.retain(|entry| entry.messages.iter().any(|message| touching.contains(message)));
+        }
+        Ok(entries)
+    }
+
+    /// Marks the entries `ids` of the mail account `account` done at `now`, snoozed or not: their
+    /// mail was read or moved elsewhere (task E4.1). Entries done already, of other owners or gone
+    /// stay as they are. `Err` holds the message for the log.
+    pub fn resolve_mail(&self, account: &str, ids: &[String], now: DateTime<Utc>) -> Result<(), String> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            for id in ids {
+                let condition = "owner = ? AND id = ?";
+                let found = read_items(&tx, &Scope::All, condition, vec![text(account), text(id.as_str())], "")?;
+                for Stored { mut item, .. } in found {
+                    if !matches!(item.state, State::Done { .. }) {
+                        rules::set_done(&mut item, true, now);
+                        update_item(&tx, &item)?;
+                    }
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Marks done at `now` the open and snoozed entries of every mail account not in `active` (task
+    /// E4.1): an account that was removed, or whose mail was switched off, shows no mail any more and
+    /// nothing could mark its mail read. Returns how many were done. `Err` holds the message for
+    /// the log.
+    pub fn retire_mail(&self, active: &[String], now: DateTime<Utc>) -> Result<usize, String> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            let condition = "instr(source, ?) = 1 AND state IN ('new', 'seen', 'snoozed')";
+            let open = read_items(&tx, &Scope::All, condition, vec![text(ACCOUNT_PREFIX)], "")?;
+            let mut retired = 0;
+            for Stored { mut item, .. } in open {
+                if !active.contains(&item.source.key()) {
+                    rules::set_done(&mut item, true, now);
+                    update_item(&tx, &item)?;
+                    retired += 1;
+                }
+            }
+            tx.commit()?;
+            Ok(retired)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The messages filed into the entry `id` (`m:…` of its account), oldest first; empty for an
+    /// entry that is no mail entry or does not exist. The core reads them the moment a mail entry
+    /// is done, to mark exactly that mail read on its server (task E4.1). `Err` holds the message
+    /// for the log.
+    pub fn mail_messages(&self, id: &str) -> Result<Vec<String>, String> {
+        self.with(|db| {
+            let mut statement = db.prepare("SELECT message FROM mail_messages WHERE item = ?1 ORDER BY rowid")?;
+            let rows = statement.query_map([id], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+        .map_err(|failure| failure.to_string())
     }
 
     /// Runs `work` on the open database, opening it first if needed, and marks
@@ -625,6 +792,9 @@ fn answer(
             Ok(Response::Ok)
         }
         Request::SetItemDone { id, done } => {
+            if done {
+                check_mail_done(&changeable(db, &id, client)?.item, client)?;
+            }
             let stored = change(db, &id, client, |item| rules::set_done(item, done, now))?;
             Ok(Response::Item { item: stored.shown_to(client) })
         }
@@ -636,7 +806,7 @@ fn answer(
             let tx = db.transaction()?;
             let stored = change(&tx, &id, client, |item| rules::set_lane(item, lane))?;
             if remember {
-                remember_lane(&tx, &stored.item.source, lane, now)?;
+                remember_lane(&tx, &stored.item, lane, now)?;
             }
             tx.commit()?;
             Ok(Response::Item { item: stored.shown_to(client) })
@@ -677,36 +847,57 @@ fn owner(client: Option<&ClientInfo>) -> &str {
 enum Scope {
     /// Every source: the app key only.
     All,
-    /// Every source but `suite`: a client whose selection is "all".
-    AllButSuite,
-    /// These source keys only ([`SourceRef::key`]), never `suite`; empty sees nothing.
+    /// Every source but `suite` and the mail accounts outside `mail` ([`mail_reach`]): a client
+    /// whose selection is "all".
+    AllButSuite { mail: Selection },
+    /// These source keys only ([`SourceRef::key`]), never `suite` nor a mail account out of reach;
+    /// empty sees nothing.
     Only(Vec<String>),
 }
 
 impl Scope {
-    /// The app key sees all; a client its `inbox_sources` without `suite`; a hook client nothing,
-    /// whatever its rights say (security rule 4; `Rights::for_kind` keeps them empty anyway).
+    /// The app key sees all; a client its `inbox_sources` without `suite` and without the mail
+    /// accounts it may not read ([`mail_reach`]); a hook client nothing, whatever its rights say
+    /// (security rule 4; `Rights::for_kind` keeps them empty anyway).
     ///
     /// The source `suite` is the person's alone (task E1.2c): its entries are other clients'
     /// approvals, with summaries from the core's caches, and the accounts' troubles. No client
     /// sees it, not with "all" and not when its selection names it (as
     /// `api::Rights::reaches_source` says).
+    ///
+    /// A mail entry holds the subject, sender and start of a mail (task E4.1): a client sees it only
+    /// when it could read that mail itself, with read access to mail and the account among its
+    /// `mail_accounts`, besides the source among its `inbox_sources`.
     fn of(client: Option<&ClientInfo>) -> Scope {
-        let suite = SourceRef::suite().key();
         match client {
             None => Scope::All,
             Some(client) if client.kind == HOOK_CLIENT => Scope::Only(Vec::new()),
-            Some(client) => match &client.rights.inbox_sources {
-                Selection::All => Scope::AllButSuite,
-                Selection::Only(keys) => Scope::Only(keys.iter().filter(|key| **key != suite).cloned().collect()),
-            },
+            Some(client) => {
+                let mail = mail_reach(&client.rights);
+                match &client.rights.inbox_sources {
+                    Selection::All => Scope::AllButSuite { mail },
+                    // The rule of `Rights::reaches_source`, so the API says what the queries do.
+                    Selection::Only(keys) => Scope::Only(
+                        keys.iter()
+                            .filter(|key| {
+                                key.parse::<SourceRef>().is_ok_and(|source| client.rights.reaches_source(&source))
+                            })
+                            .cloned()
+                            .collect(),
+                    ),
+                }
+            }
         }
     }
 
     fn sees(&self, source: &SourceRef) -> bool {
         match self {
             Scope::All => true,
-            Scope::AllButSuite => source.kind != SourceKind::Suite,
+            Scope::AllButSuite { mail } => match source.kind {
+                SourceKind::Suite => false,
+                SourceKind::Mail => mail.contains(&source.key()),
+                SourceKind::Agent | SourceKind::Script => true,
+            },
             Scope::Only(keys) => keys.contains(&source.key()),
         }
     }
@@ -714,15 +905,54 @@ impl Scope {
     /// The SQL condition on `source` and its parameters; `None` when nothing is visible, so the
     /// query need not run at all.
     fn condition(&self) -> Option<(String, Vec<Value>)> {
+        let suite = || text(SourceRef::suite().key());
         match self {
             Scope::All => Some(("1".into(), Vec::new())),
-            Scope::AllButSuite => Some(("source <> ?".into(), vec![text(SourceRef::suite().key())])),
+            Scope::AllButSuite { mail: Selection::All } => Some(("source <> ?".into(), vec![suite()])),
+            Scope::AllButSuite { mail: Selection::Only(accounts) } => {
+                let mut values = vec![suite(), text(ACCOUNT_PREFIX)];
+                let mut condition = "source <> ? AND (instr(source, ?) <> 1".to_string();
+                if !accounts.is_empty() {
+                    condition.push_str(&format!(" OR source IN ({})", vec!["?"; accounts.len()].join(", ")));
+                    values.extend(accounts.iter().cloned().map(Value::Text));
+                }
+                condition.push(')');
+                Some((condition, values))
+            }
             Scope::Only(keys) if keys.is_empty() => None,
             Scope::Only(keys) => {
                 let marks = vec!["?"; keys.len()].join(", ");
                 Some((format!("source IN ({marks})"), keys.iter().cloned().map(Value::Text).collect()))
             }
         }
+    }
+}
+
+/// The mail accounts whose entries a client with `rights` sees (task E4.1): its `mail_accounts`
+/// when it may read mail, else none, as `Rights::reaches_source` has it. Mail sources are keyed by
+/// the account's id, so the selection of accounts is one of sources too.
+fn mail_reach(rights: &Rights) -> Selection {
+    if rights.area(Area::Mail).allows(Access::Read) {
+        rights.mail_accounts.clone()
+    } else {
+        Selection::Only(Vec::new())
+    }
+}
+
+/// `client` may mark `item` done (task E4.1): marking a mail entry done marks its mail read on the
+/// server, which takes write access to mail; without it `forbidden`. The app key (`None`) and
+/// every other entry pass. Checked before an approval ([`Inbox::refusal`]) and again when the
+/// command runs ([`answer`], [`Inbox::entry_for_task`]), so rights narrowed meanwhile hold.
+fn check_mail_done(item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
+    match client {
+        Some(client)
+            if item.source.kind == SourceKind::Mail && !client.rights.area(Area::Mail).allows(Access::Write) =>
+        {
+            Err(Failure::Forbidden(InboxForbidden(
+                "marking a mail entry done marks the mail read on its server, which needs write access to mail",
+            )))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -944,10 +1174,7 @@ fn post(
         return Ok(None);
     }
     // A lane the person remembered for the source beats the one the poster asks for.
-    let remembered = rules.iter().find_map(|rule| match rule.effect {
-        RuleEffect::Lane { lane } => Some(lane),
-        RuleEffect::Muted => None,
-    });
+    let remembered = rules.iter().filter(|rule| rule.sender.is_none()).find_map(remembered_lane);
     let (lane, urgent) = rules::placement(kind, remembered.or(post.lane));
     let title = agent_title(kind, own_agent).unwrap_or_else(|| given.to_string());
     let body = post.body.as_deref().map(str::trim).filter(|body| !body.is_empty()).map(|body| cap(body, BODY_MAX));
@@ -1060,6 +1287,8 @@ fn opening(item: &Item) -> Result<Opening, Failure> {
             Some(pids) if !pids.is_empty() => Ok(Opening::Window { pids }),
             _ => refused("the agent's processes are unknown"),
         },
+        // The Inbox app shows the message itself (task E4.2).
+        Some(Link::Mail { .. }) => Ok(Opening::App(AppId::INBOX)),
         None => refused("it has no link"),
     }
 }
@@ -1086,7 +1315,7 @@ fn agent_title(kind: Kind, agent: Option<AgentKind>) -> Option<String> {
     match kind {
         Kind::AgentWaiting => Some(trf("{agent} is waiting for you", &[("agent", &name)])),
         Kind::AgentDone => Some(trf("{agent} finished", &[("agent", &name)])),
-        Kind::Notice | Kind::Approval | Kind::AccountProblem => None,
+        Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message => None,
     }
 }
 
@@ -1153,10 +1382,37 @@ fn change(
     Ok(stored)
 }
 
-/// Keeps `lane` for later notices of `source`, replacing a lane remembered before.
-fn remember_lane(db: &Connection, source: &SourceRef, lane: Lane, now: DateTime<Utc>) -> Result<(), Failure> {
-    db.execute("DELETE FROM rules WHERE source = ?1 AND effect = 'lane'", params![source.key()])?;
-    insert_rule(db, Rule { id: new_id()?, source: source.clone(), effect: RuleEffect::Lane { lane }, created: now })
+/// Keeps `lane` for later reports like `item`, replacing a lane remembered before: for later
+/// notices of its source, or for a mail entry for later mail of its sender (task E4.1), so moving
+/// one newsletter does not move all mail of the account. A mail without a sender's address has
+/// nothing to remember it by: `error`.
+fn remember_lane(db: &Connection, item: &Item, lane: Lane, now: DateTime<Utc>) -> Result<(), Failure> {
+    let sender = remembered_sender(item)?;
+    db.execute(
+        "DELETE FROM rules WHERE source = ?1 AND effect = 'lane' AND sender = ?2",
+        params![item.source.key(), sender.as_deref().unwrap_or_default()],
+    )?;
+    let rule =
+        Rule { id: new_id()?, source: item.source.clone(), sender, effect: RuleEffect::Lane { lane }, created: now };
+    insert_rule(db, rule)
+}
+
+/// The lane `rule` keeps, if it keeps one.
+fn remembered_lane(rule: &Rule) -> Option<Lane> {
+    match rule.effect {
+        RuleEffect::Lane { lane } => Some(lane),
+        RuleEffect::Muted => None,
+    }
+}
+
+/// The sender a lane remembered for `item` is kept for ([`rules::mail_sender`]): `None` for entries
+/// whose source is remembered, `error` for a mail without a sender's address, which has nothing to
+/// remember it by.
+fn remembered_sender(item: &Item) -> Result<Option<String>, Failure> {
+    match (item.source.kind, rules::mail_sender(item)) {
+        (SourceKind::Mail, None) => Err(Failure::Invalid("this mail names no sender to remember the lane for".into())),
+        (_, sender) => Ok(sender),
+    }
 }
 
 /// Mutes `source` (once; muting twice keeps the first rule) or unmutes it.
@@ -1165,18 +1421,28 @@ fn set_muted(db: &Connection, source: &SourceRef, muted: bool, now: DateTime<Utc
         db.execute("DELETE FROM rules WHERE source = ?1 AND effect = 'muted'", params![source.key()])?;
         return Ok(());
     }
-    insert_rule(db, Rule { id: new_id()?, source: source.clone(), effect: RuleEffect::Muted, created: now })
+    insert_rule(
+        db,
+        Rule { id: new_id()?, source: source.clone(), sender: None, effect: RuleEffect::Muted, created: now },
+    )
 }
 
-/// Stores `rule`; a rule of the same effect for the same source stays as it is.
+/// Stores `rule`; a rule of the same effect for the same source and sender stays as it is.
 fn insert_rule(db: &Connection, rule: Rule) -> Result<(), Failure> {
     let effect = match rule.effect {
         RuleEffect::Lane { .. } => "lane",
         RuleEffect::Muted => "muted",
     };
     db.execute(
-        "INSERT INTO rules (id, source, effect, data) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (source, effect) DO NOTHING",
-        params![rule.id, rule.source.key(), effect, serde_json::to_string(&rule)?],
+        "INSERT INTO rules (id, source, effect, sender, data) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (source, effect, sender) DO NOTHING",
+        params![
+            rule.id,
+            rule.source.key(),
+            effect,
+            rule.sender.as_deref().unwrap_or_default(),
+            serde_json::to_string(&rule)?
+        ],
     )?;
     Ok(())
 }
@@ -1255,7 +1521,10 @@ fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
 /// returns how many.
 fn remove_expired(db: &Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
     let before = stamp(now - TimeDelta::days(KEEP_DONE_DAYS));
-    Ok(db.execute("DELETE FROM items WHERE state = 'done' AND state_at <= ?1", params![before])?)
+    let removed = db.execute("DELETE FROM items WHERE state = 'done' AND state_at <= ?1", params![before])?;
+    // The messages of mail entries that went with them (task E4.1).
+    db.execute("DELETE FROM mail_messages WHERE item NOT IN (SELECT id FROM items)", [])?;
+    Ok(removed)
 }
 
 /// The `state` and `state_at` columns of `state`.
@@ -1323,6 +1592,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 2 {
         tx.execute_batch(SCHEMA_V2)?;
         backfill(&tx)?;
+    }
+    if version < 3 {
+        tx.execute_batch(SCHEMA_V3)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -1607,12 +1879,124 @@ fn reconcile(
     Ok(())
 }
 
+/// A new, unread mail in the inbox folder of a mail account, as the mail feed hands it to
+/// [`Inbox::file_mail`] (task E4.1). Everything but `account` came from outside: never log it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMail {
+    /// The account's id, `mail:<address>`: the entry's source and the owner of its thread keys.
+    pub account: String,
+    /// The message's id in the account's store (`m:…`); the entry links to its newest one.
+    pub message: String,
+    /// The conversation (`MessageSummary::thread_id`): one entry per conversation.
+    pub thread: String,
+    /// The subject; the entry's title ("(no subject)" when empty).
+    pub subject: String,
+    /// The start of the text; the entry's text.
+    pub snippet: String,
+    /// Who sent it, with the address rules remember senders by; `None` without a `From:`.
+    pub from: Option<Sender>,
+    /// Sent by a machine or to a list (`List-Id`, `List-Unsubscribe`, `Precedence: bulk`,
+    /// `Auto-Submitted`): "Info", unless the person keeps the sender elsewhere.
+    pub bulk: bool,
+    /// When it was sent: where its entry stands in the list.
+    pub date: DateTime<Utc>,
+}
+
+/// An open mail entry and the messages filed into it ([`Inbox::open_mail_entries`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailEntry {
+    /// The entry's id.
+    pub id: String,
+    /// The messages filed into it (`m:…`), oldest first.
+    pub messages: Vec<String>,
+}
+
+/// [`Inbox::file_mail`] on the open database, for `source`, the account's.
+fn file_mail(
+    db: &mut Connection,
+    mail: &NewMail,
+    source: SourceRef,
+    notify: Notify,
+    now: DateTime<Utc>,
+) -> Result<Option<String>, Failure> {
+    let tx = db.transaction()?;
+    let filed: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM mail_messages WHERE account = ?1 AND message = ?2)",
+        params![mail.account, mail.message],
+        |row| row.get(0),
+    )?;
+    if filed {
+        return Ok(None);
+    }
+    let rules = read_rules(&tx, &Scope::All, "source = ?", vec![text(source.key())])?;
+    if rules.iter().any(|rule| rule.effect == RuleEffect::Muted) {
+        return Ok(None);
+    }
+    let sender = rules::sender_key(mail.from.as_ref());
+    let remembered =
+        rules.iter().filter(|rule| rule.sender.is_some() && rule.sender == sender).find_map(remembered_lane);
+    let lane = rules::mail_lane(mail.bulk, remembered);
+    if notify == Notify::ForMeOnly && lane != Lane::ForMe {
+        return Ok(None);
+    }
+    let (lane, urgent) = rules::placement(Kind::Message, Some(lane));
+    let existing = read_owned(&tx, &mail.account, &mail.thread)?;
+    let id = match &existing {
+        Some(existing) => existing.id.clone(),
+        None => new_id()?,
+    };
+    // A date in the future would keep the entry on top; a sender sets it.
+    let date = mail.date.min(now);
+    let subject = mail.subject.trim();
+    let snippet = mail.snippet.trim();
+    let mut incoming = Item {
+        id: id.clone(),
+        source,
+        thread_key: mail.thread.clone(),
+        kind: Kind::Message,
+        lane,
+        urgent,
+        title: cap(if subject.is_empty() { tr("(no subject)") } else { subject }, TITLE_MAX),
+        body: (!snippet.is_empty()).then(|| cap(snippet, BODY_MAX)),
+        from: mail.from.clone(),
+        agent: None,
+        received: date,
+        updated: date,
+        count: 1,
+        state: State::New,
+        link: Some(Link::Mail { message: mail.message.clone() }),
+        actions: Vec::new(),
+        // Mail is data from outside, never instructions.
+        untrusted: true,
+    };
+    match existing {
+        Some(existing) => {
+            // An older mail of the conversation, filed late, does not take the place of the newest.
+            if date < existing.updated {
+                incoming.updated = existing.updated;
+                incoming.title = existing.title.clone();
+                incoming.body = existing.body.clone();
+                incoming.from = existing.from.clone();
+                incoming.link = existing.link.clone();
+            }
+            update_item(&tx, &rules::merge(existing, incoming))?;
+        }
+        None => insert_item(&tx, &mail.account, &incoming)?,
+    }
+    tx.execute(
+        "INSERT INTO mail_messages (account, message, item) VALUES (?1, ?2, ?3)",
+        params![mail.account, mail.message, id],
+    )?;
+    tx.commit()?;
+    Ok(Some(id))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use chrono::TimeZone;
     use torro_core::i18n::tr;
     use torro_inbox::{AgentKind, StateFilter};
-    use torro_ipc::api::{Rights, RightsTemplate};
+    use torro_ipc::api::{AreaRights, Level, Rights, RightsTemplate};
 
     use super::*;
 
@@ -2963,5 +3347,317 @@ pub(crate) mod tests {
         assert!(long.title.ends_with('…'), "{}", long.title);
         assert_eq!(long.body.as_deref(), Some(question.summary.as_str()), "the whole question");
         assert!(long.urgent && long.untrusted);
+    }
+
+    // ----- mail (task E4.1) -----
+
+    const ANNA: &str = "mail:anna@example.org";
+
+    fn mail(message: &str, thread: &str, subject: &str, from: &str, bulk: bool, date: DateTime<Utc>) -> NewMail {
+        NewMail {
+            account: ANNA.into(),
+            message: message.into(),
+            thread: thread.into(),
+            subject: subject.into(),
+            snippet: format!("Text of {subject}"),
+            from: Some(Sender { name: "Bernd".into(), address: Some(from.into()) }),
+            bulk,
+            date,
+        }
+    }
+
+    /// A mail from a person to Anna.
+    fn personal(message: &str, thread: &str, date: DateTime<Utc>) -> NewMail {
+        mail(message, thread, "Offer by Friday", "bernd@example.com", false, date)
+    }
+
+    fn filed(inbox: &Inbox, mail: &NewMail, now: DateTime<Utc>) -> String {
+        inbox.file_mail(mail, Notify::All, now).expect("filed").expect("an entry")
+    }
+
+    fn get(inbox: &Inbox, id: &str, client: Option<&ClientInfo>) -> Response {
+        inbox.handle(Request::GetItem { id: id.into() }, client, at(12, 0))
+    }
+
+    fn rules_of(inbox: &Inbox) -> Vec<Rule> {
+        match inbox.handle(Request::ListRules, None, at(12, 0)) {
+            Response::Rules { rules } => rules,
+            other => panic!("expected rules, got {other:?}"),
+        }
+    }
+
+    /// A client with every right but in `mail`: `level` there (`None`: the area is not listed),
+    /// and the mail accounts `accounts`.
+    fn with_mail(level: Option<Level>, accounts: Selection) -> ClientInfo {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        match level {
+            Some(level) => rights.areas.insert(Area::Mail, AreaRights { level, admin: false }),
+            None => rights.areas.remove(&Area::Mail),
+        };
+        rights.mail_accounts = accounts;
+        client("cc03", "claude-code", rights)
+    }
+
+    #[test]
+    fn a_new_mail_is_an_untrusted_message_of_its_account_that_links_to_the_mail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(9, 0));
+        let entry = item(get(&inbox, &id, None));
+        assert_eq!(entry.source, SourceRef::mail("anna@example.org"));
+        assert_eq!(entry.source.key(), ANNA, "the source's key is the account's id");
+        assert_eq!((entry.kind, entry.lane, entry.urgent, entry.untrusted), (Kind::Message, Lane::ForMe, false, true));
+        assert_eq!((entry.title.as_str(), entry.body.as_deref()), ("Offer by Friday", Some("Text of Offer by Friday")));
+        assert_eq!(entry.from.and_then(|from| from.address).as_deref(), Some("bernd@example.com"));
+        assert_eq!(entry.link, Some(Link::Mail { message: "m:1".into() }));
+        assert_eq!((entry.thread_key.as_str(), entry.count, entry.state), ("t:1", 1, State::New));
+        assert_eq!((entry.received, entry.updated), (at(8, 0), at(8, 0)), "placed by the mail's date");
+        assert_eq!(inbox.mail_messages(&id).expect("read"), ["m:1"]);
+        assert_eq!(inbox.opening(&id, None, at(9, 0)), Ok(Opening::App(AppId::INBOX)), "the Inbox app shows it");
+
+        let untitled = NewMail { subject: "  ".into(), ..personal("m:2", "t:2", at(8, 0)) };
+        assert_eq!(item(get(&inbox, &filed(&inbox, &untitled, at(9, 0)), None)).title, tr("(no subject)"));
+        let ahead = personal("m:3", "t:3", at(23, 0));
+        assert_eq!(item(get(&inbox, &filed(&inbox, &ahead, at(9, 0)), None)).updated, at(9, 0), "never after now");
+    }
+
+    #[test]
+    fn a_conversation_is_one_entry_that_counts_its_mail_and_files_each_mail_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let first = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let done = Request::SetItemDone { id: first.clone(), done: true };
+        assert!(matches!(item(inbox.handle(done, None, at(8, 30))).state, State::Done { .. }));
+
+        let reply = NewMail { subject: "Re: Offer by Friday".into(), ..personal("m:2", "t:1", at(9, 0)) };
+        assert_eq!(filed(&inbox, &reply, at(9, 1)), first, "the entry of the conversation");
+        let entry = item(get(&inbox, &first, None));
+        assert_eq!((entry.count, entry.state), (2, State::New), "a new mail opens it again");
+        assert_eq!(
+            (entry.title.as_str(), entry.link),
+            ("Re: Offer by Friday", Some(Link::Mail { message: "m:2".into() }))
+        );
+        assert_eq!(inbox.file_mail(&reply, Notify::All, at(9, 2)), Ok(None), "filed again, counted once");
+
+        // An older mail of the conversation, filed late, counts but leaves the newest in front.
+        filed(&inbox, &NewMail { subject: "Earlier".into(), ..personal("m:0", "t:1", at(7, 0)) }, at(9, 3));
+        let entry = item(get(&inbox, &first, None));
+        assert_eq!((entry.count, entry.title.as_str(), entry.updated), (3, "Re: Offer by Friday", at(9, 0)));
+        assert_eq!(inbox.mail_messages(&first).expect("read"), ["m:1", "m:2", "m:0"]);
+        let bernd = NewMail { account: "mail:bernd@example.com".into(), ..personal("m:1", "t:1", at(9, 0)) };
+        assert_ne!(filed(&inbox, &bernd, at(9, 4)), first, "the same conversation in another account is apart");
+    }
+
+    #[test]
+    fn newsletters_go_to_info_unless_the_person_keeps_their_sender_elsewhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let news = |message: &str| mail(message, message, "Weekly news", "News@Shop.example", true, at(8, 0));
+        let first = filed(&inbox, &news("m:1"), at(9, 0));
+        assert_eq!(item(get(&inbox, &first, None)).lane, Lane::Info);
+
+        // Moving it with "remember" keeps the lane for its sender, not for the whole account.
+        let moved = Request::SetItemLane { id: first.clone(), lane: Lane::ForMe, remember: true };
+        assert_eq!(item(inbox.handle(moved, None, at(9, 5))).lane, Lane::ForMe);
+        let rules = rules_of(&inbox);
+        assert_eq!(rules.len(), 1);
+        assert_eq!((rules[0].source.key().as_str(), rules[0].sender.as_deref()), (ANNA, Some("news@shop.example")));
+        assert_eq!(rules[0].effect, RuleEffect::Lane { lane: Lane::ForMe });
+        let second = filed(&inbox, &news("m:2"), at(10, 0));
+        assert_eq!(item(get(&inbox, &second, None)).lane, Lane::ForMe, "the sender's lane beats the headers");
+        let invoice = filed(&inbox, &mail("m:9", "t:9", "Invoice", "billing@other.example", true, at(8, 0)), at(10, 0));
+        assert_eq!(item(get(&inbox, &invoice, None)).lane, Lane::Info, "other senders keep theirs");
+
+        // Remembered again, the sender's rule is replaced, not doubled.
+        let back = Request::SetItemLane { id: second, lane: Lane::Info, remember: true };
+        inbox.handle(back, None, at(10, 5));
+        let rules = rules_of(&inbox);
+        assert_eq!((rules.len(), rules[0].effect), (1, RuleEffect::Lane { lane: Lane::Info }));
+        let anonymous = filed(&inbox, &NewMail { from: None, ..news("m:3") }, at(10, 6));
+        let refused = Request::SetItemLane { id: anonymous.clone(), lane: Lane::ForMe, remember: true };
+        assert_eq!(code(&inbox.handle(refused, None, at(10, 7))), "error", "no sender to remember");
+        assert_eq!(item(get(&inbox, &anonymous, None)).lane, Lane::Info, "and nothing moved");
+    }
+
+    #[test]
+    fn the_accounts_setting_and_muting_decide_what_is_filed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let news = mail("m:1", "t:1", "Weekly news", "news@shop.example", true, at(8, 0));
+        let offer = personal("m:2", "t:2", at(8, 0));
+        assert_eq!(inbox.file_mail(&offer, Notify::Off, at(9, 0)), Ok(None));
+        assert_eq!(inbox.file_mail(&news, Notify::ForMeOnly, at(9, 0)), Ok(None), "only mail for me");
+        assert!(inbox.file_mail(&offer, Notify::ForMeOnly, at(9, 0)).expect("filed").is_some());
+
+        let mute = Request::MuteSource { source: SourceRef::mail("anna@example.org"), muted: true };
+        assert_eq!(inbox.handle(mute, None, at(9, 1)), Response::Ok);
+        assert_eq!(inbox.file_mail(&personal("m:3", "t:3", at(9, 0)), Notify::All, at(9, 2)), Ok(None), "muted");
+        assert_eq!(items(inbox.handle(all(), None, at(9, 3))).len(), 1);
+        let not_mail = NewMail { account: "agent:codex".into(), ..personal("m:4", "t:4", at(9, 0)) };
+        assert!(inbox.file_mail(&not_mail, Notify::All, at(9, 4)).is_err());
+    }
+
+    #[test]
+    fn a_client_sees_mail_entries_only_with_read_access_to_mail_and_the_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(9, 0));
+        posted(inbox.handle(notice("Backup done", None), Some(&script()), at(9, 0)));
+        let titles = |client: &ClientInfo| -> Vec<String> {
+            items(inbox.handle(all(), Some(client), at(9, 1))).into_iter().map(|item| item.title).collect()
+        };
+        let anna = || Selection::Only(vec![ANNA.into()]);
+        let reader = with_mail(Some(Level::Read), anna());
+        assert_eq!(titles(&reader), ["Backup done", "Offer by Friday"]);
+        assert!(item(get(&inbox, &id, Some(&reader))).thread_key.is_empty(), "the account's thread keys are its own");
+
+        let other = Selection::Only(vec!["mail:bernd@example.com".into()]);
+        for blind in [
+            with_mail(None, Selection::All),
+            with_mail(Some(Level::NoAccess), Selection::All),
+            with_mail(Some(Level::Read), other),
+        ] {
+            assert_eq!(titles(&blind), ["Backup done"], "{:?}", blind.rights);
+            assert_eq!(code(&get(&inbox, &id, Some(&blind))), "not-found");
+            let done = Request::SetItemDone { id: id.clone(), done: true };
+            assert_eq!(code(&inbox.handle(done, Some(&blind), at(9, 2))), "not-found");
+            let sources = match inbox.handle(Request::ListSources, Some(&blind), at(9, 2)) {
+                Response::Sources { sources } => sources,
+                other => panic!("expected sources, got {other:?}"),
+            };
+            assert!(sources.iter().all(|info| info.source.kind != SourceKind::Mail), "{sources:?}");
+        }
+        // Naming the source among the inbox sources is not enough without mail.
+        let mut named = with_mail(Some(Level::Read), anna());
+        named.rights.inbox_sources = Selection::Only(vec![ANNA.into()]);
+        assert_eq!(titles(&named), ["Offer by Friday"]);
+        named.rights.areas.remove(&Area::Mail);
+        assert!(titles(&named).is_empty());
+    }
+
+    #[test]
+    fn marking_a_mail_entry_done_needs_write_access_to_mail_before_and_when_it_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(9, 0));
+        let reader = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        let done = || Request::SetItemDone { id: id.clone(), done: true };
+        assert_eq!(inbox.refusal(&done(), Some(&reader)).as_ref().map(code), Some("forbidden"), "before an approval");
+        assert_eq!(code(&inbox.handle(done(), Some(&reader), at(9, 1))), "forbidden", "when it runs");
+        let task = Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None };
+        assert_eq!(inbox.refusal(&task, Some(&reader)).as_ref().map(code), Some("forbidden"));
+        let refused = inbox.entry_for_task(&id, Some(&reader), at(9, 1)).expect_err("refused");
+        assert_eq!(code(&refused), "forbidden");
+        assert_eq!(item(get(&inbox, &id, None)).state, State::New, "nothing changed");
+        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)) };
+        assert!(inbox.refusal(&snooze, Some(&reader)).is_none(), "the rest as for any entry");
+
+        let writer = with_mail(Some(Level::Write), Selection::Only(vec![ANNA.into()]));
+        assert!(inbox.refusal(&done(), Some(&writer)).is_none());
+        assert!(matches!(item(inbox.handle(done(), Some(&writer), at(9, 2))).state, State::Done { .. }));
+        let again = Request::SetItemDone { id: id.clone(), done: false };
+        assert_eq!(
+            item(inbox.handle(again, Some(&reader), at(9, 3))).state,
+            State::Seen,
+            "opening it again reads nothing"
+        );
+    }
+
+    #[test]
+    fn mail_entries_are_done_when_their_mail_went_elsewhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let one = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let two = filed(&inbox, &personal("m:2", "t:2", at(8, 30)), at(8, 31));
+        filed(&inbox, &personal("m:3", "t:1", at(9, 0)), at(9, 1));
+        let open = inbox.open_mail_entries(ANNA, None).expect("read");
+        assert_eq!(
+            open,
+            [
+                MailEntry { id: one.clone(), messages: vec!["m:1".into(), "m:3".into()] },
+                MailEntry { id: two.clone(), messages: vec!["m:2".into()] },
+            ]
+        );
+        let touching = inbox.open_mail_entries(ANNA, Some(&["m:3".to_string()])).expect("read");
+        assert_eq!(touching.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), [one.as_str()]);
+        assert!(inbox.open_mail_entries("mail:bernd@example.com", None).expect("read").is_empty());
+
+        inbox.resolve_mail(ANNA, std::slice::from_ref(&one), at(10, 0)).expect("resolved");
+        assert_eq!(item(get(&inbox, &one, None)).state, State::Done { at: at(10, 0) });
+        assert_eq!(inbox.open_mail_entries(ANNA, None).expect("read").len(), 1, "done is no longer open");
+        inbox.resolve_mail(ANNA, std::slice::from_ref(&one), at(11, 0)).expect("again");
+        assert_eq!(item(get(&inbox, &one, None)).state, State::Done { at: at(10, 0) }, "done stays as it was");
+        inbox.resolve_mail("mail:bernd@example.com", std::slice::from_ref(&two), at(10, 1)).expect("nothing");
+        assert_eq!(item(get(&inbox, &two, None)).state, State::New, "only the account's own entries");
+
+        // Done entries go after 30 days, and with them what was filed into them.
+        inbox.tend(at(10, 0) + TimeDelta::days(KEEP_DONE_DAYS), true).expect("cleaned");
+        assert!(inbox.mail_messages(&one).expect("read").is_empty());
+        assert_eq!(inbox.mail_messages(&two).expect("read"), ["m:2"]);
+    }
+
+    #[test]
+    fn entries_of_mail_accounts_gone_are_done_and_others_stay() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let anna = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let bernd = NewMail { account: "mail:bernd@example.com".into(), ..personal("m:2", "t:2", at(8, 0)) };
+        let bernd = filed(&inbox, &bernd, at(8, 2));
+        let snoozed = Request::SnoozeItem { id: bernd.clone(), until: Some(at(20, 0)) };
+        inbox.handle(snoozed, None, at(8, 3));
+        let notice = posted(inbox.handle(notice("Backup done", None), Some(&script()), at(8, 4)));
+
+        assert_eq!(inbox.retire_mail(&[ANNA.to_string()], at(9, 0)), Ok(1));
+        assert_eq!(item(get(&inbox, &anna, None)).state, State::New, "an account still there");
+        assert_eq!(item(get(&inbox, &bernd, None)).state, State::Done { at: at(9, 0) }, "snoozed or not");
+        assert_eq!(item(get(&inbox, &notice, None)).state, State::New, "only mail");
+        assert_eq!(inbox.retire_mail(&[], at(10, 0)), Ok(1));
+        assert_eq!(inbox.retire_mail(&[], at(11, 0)), Ok(0), "done stays done");
+    }
+
+    #[test]
+    fn a_mails_lane_without_a_sender_is_refused_before_anyone_is_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let anonymous = NewMail { from: None, ..personal("m:1", "t:1", at(8, 0)) };
+        let id = filed(&inbox, &anonymous, at(9, 0));
+        let client = with_mail(Some(Level::Read), Selection::All);
+        let remember = Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: true };
+        assert_eq!(inbox.refusal(&remember, Some(&client)).as_ref().map(code), Some("error"));
+        let only_move = Request::SetItemLane { id, lane: Lane::Info, remember: false };
+        assert!(inbox.refusal(&only_move, Some(&client)).is_none());
+    }
+
+    #[test]
+    fn a_file_of_schema_2_keeps_its_rules_and_learns_mail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = file_in(dir.path());
+        fs::create_dir_all(file.parent().expect("dir")).expect("dir");
+        let rule = Rule {
+            id: "r1".into(),
+            source: SourceRef::script("ci"),
+            sender: None,
+            effect: RuleEffect::Lane { lane: Lane::ForMe },
+            created: at(7, 0),
+        };
+        {
+            let db = Connection::open(&file).expect("opens");
+            db.execute_batch(SCHEMA_V1).expect("tables");
+            db.execute_batch(SCHEMA_V2).expect("tables");
+            db.execute_batch("PRAGMA user_version = 2").expect("version");
+            db.execute(
+                "INSERT INTO rules (id, source, effect, data) VALUES ('r1', 'script:ci', 'lane', ?1)",
+                params![serde_json::to_string(&rule).expect("json")],
+            )
+            .expect("row");
+        }
+        let inbox = inbox_in(dir.path());
+        assert_eq!(rules_of(&inbox), [rule]);
+        let id = filed(&inbox, &mail("m:1", "t:1", "News", "news@shop.example", true, at(8, 0)), at(9, 0));
+        inbox.handle(Request::SetItemLane { id, lane: Lane::ForMe, remember: true }, None, at(9, 1));
+        assert_eq!(rules_of(&inbox).len(), 2, "a sender's rule beside the source's");
+        let db = Connection::open(&file).expect("opens");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

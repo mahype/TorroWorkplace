@@ -415,6 +415,7 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
     let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
         id: id.into(),
         source,
+        sender: None,
         effect,
         created: now - age,
     };

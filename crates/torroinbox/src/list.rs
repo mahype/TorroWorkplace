@@ -328,12 +328,14 @@ fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Element<'a, Me
     center(content).padding(space::XL).into()
 }
 
-/// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts.
+/// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
+/// inbox tray for a mail account.
 pub fn source_icon(source: &SourceRef) -> Icon {
     match source.kind {
         SourceKind::Suite => Icon::LayoutGrid,
         SourceKind::Agent => Icon::Sparkles,
         SourceKind::Script => Icon::AppWindow,
+        SourceKind::Mail => Icon::Inbox,
     }
 }
 

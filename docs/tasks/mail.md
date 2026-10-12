@@ -389,7 +389,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten.
 
 ### E4.1 Mail als Quelle im Eingang
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.6 · **Dateien:** `crates/torro-inbox/src/{item,rules,source}.rs`,
   `crates/torroworkplace/src/{inbox,inbox_notify}.rs`, `crates/torroworkplace/src/mail/service.rs`
 - `SourceKind::Mail`, Name = Konto-Kennung (Schlüssel `mail:<adresse>`, in `inbox_sources` auswählbar). Neue,
