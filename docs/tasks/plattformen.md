@@ -178,16 +178,15 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
   und macOS-Build unverändert.
 
 ### X.10 Windows-Signatur
-- [ ] erledigt
-- **Modell:** Opus, mit dem Maintainer · **Braucht:** X.1, X.2, X.4 · **Dateien:** `dist-workspace.toml`,
-  `.github/workflows/release.yml` (nur über `dist generate`), `docs/release.md`
-- Erst, wenn Windows benutzbar ist. Entscheiden und einrichten: Azure Artifact Signing (Monatsabo; `dist` ab
-  0.33, also `cargo-dist-version` anheben; vorher prüfen, ob es für Einzelentwickler in Deutschland offen ist)
-  oder klassisches OV-Zertifikat (Schlüssel in Hardware oder Cloud; `dist` 0.32 kann SSL.com eSigner).
-- Auch mit Signatur warnt SmartScreen, bis die Dateien genug Downloads gesammelt haben; das in
-  `docs/release.md` festhalten.
-- Abnahme: Ein Release-Kandidat liefert signierte `.exe` (`signtool verify /pa` bzw. Eigenschaften →
-  Digitale Signaturen); Checkliste in `docs/release.md` abgehakt.
+- [x] erledigt (entschieden 2026-10-12: **unsigniert**)
+- **Entscheidung:** Windows wird unsigniert ausgeliefert. Eine Signatur ist zum Bauen und Ausliefern nicht nötig;
+  sie unterdrückt nur die SmartScreen-Meldung beim ersten Start einer im Browser geladenen Datei. Der
+  PowerShell-Installer von `dist` löst diese Meldung nicht aus.
+- Recherche (2026-10-11), falls es später doch eine Signatur sein soll: Azure Artifact Signing ist für
+  Einzelpersonen nur in den USA und Kanada offen (`dist` ab 0.33); SignPath Foundation signiert Open Source
+  kostenlos (Herausgeber „SignPath Foundation“, Prüfung dauert Wochen); Certum Open Source etwa 49 €/Jahr, für CI
+  nur über inoffizielle Werkzeuge; SSL.com eSigner etwa 310 $/Jahr. Auch mit Signatur warnt SmartScreen, bis die
+  Dateien genug Downloads gesammelt haben.
 
 ### X.11 Abnahme auf echten Rechnern und Doku
 - [ ] erledigt

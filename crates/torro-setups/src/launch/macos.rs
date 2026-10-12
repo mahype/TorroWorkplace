@@ -16,23 +16,26 @@ use std::path::{Path, PathBuf};
 /// `Foo.app`. The `Contents/MacOS` part is required so a folder that merely ends in `.app` (say a
 /// build output directory) is not taken for a bundle.
 pub fn app_bundle(exe: &Path) -> Option<PathBuf> {
-    let parts: Vec<String> = exe.components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
+    // Split at `/` by hand rather than with `Path::components`: these are always macOS paths,
+    // and on other systems (where the tests run too) the components would be rejoined with `\`.
+    let text = exe.to_string_lossy();
+    let parts: Vec<&str> = text.split('/').collect();
     // The file system is case-insensitive by default, so is the extension. A bare ".app" is a
     // hidden folder, not a bundle.
     let is_app = |name: &str| name.len() > 4 && name.to_lowercase().ends_with(".app");
-    let in_contents = |at: usize| parts.get(at + 1).is_some_and(|next| next == "Contents");
+    let in_contents = |at: usize| parts.get(at + 1).is_some_and(|next| *next == "Contents");
     // Some bundle, at any depth, must hold the executable itself: `X.app/Contents/MacOS/<file>`.
     let holds_executable = (0..parts.len()).any(|at| {
-        is_app(&parts[at])
+        is_app(parts[at])
             && in_contents(at)
-            && parts.get(at + 2).is_some_and(|dir| dir == "MacOS")
+            && parts.get(at + 2).is_some_and(|dir| *dir == "MacOS")
             && parts.len() > at + 3
     });
     if !holds_executable {
         return None;
     }
-    let outermost = (0..parts.len()).find(|&at| is_app(&parts[at]) && in_contents(at))?;
-    Some(parts[..=outermost].iter().collect())
+    let outermost = (0..parts.len()).find(|&at| is_app(parts[at]) && in_contents(at))?;
+    Some(PathBuf::from(parts[..=outermost].join("/")))
 }
 
 /// The command that starts the program with executable `exe` and command line `cmd` (first word
