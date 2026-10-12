@@ -51,7 +51,7 @@ use torro_gui::connect;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
-use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -1614,13 +1614,25 @@ impl<S: InboxSource + 'static> App<S> {
                 self.zoom.view(self.glance(class)),
                 self.zoom.factor(),
                 surface,
+                self.cover(),
                 Message::DragWindow,
             ));
         }
         // Always two layers, so the window keeps its state when the hint comes and goes.
         let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
-        let surface = Surface::of(class);
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), surface, Message::DragWindow))
+        let (surface, cover) = (Surface::of(class), self.cover());
+        let content = self.zoom.view(window);
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: the panel of an entry
+    /// over the list, else the drawer. A glance has neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if self.is_glance() {
+            return Cover::Nothing;
+        }
+        Cover::panel(class, self.detail.is_some()).or(Cover::drawer(class, self.drawer))
     }
 
     /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.
@@ -2331,6 +2343,24 @@ mod tests {
         let for_me: Vec<&str> = app.for_me.iter().map(|item| item.id.as_str()).collect();
         assert_eq!(for_me, ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"], "not Info's entries");
         assert_eq!(glance::waiting(&app.for_me), 3);
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Resized(MEDIUM));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+
+        let mut detail = loaded(&["--open", "detail"]);
+        detail.drawer = true;
+        for (size, expected) in
+            [(MEDIUM, Cover::Panel), (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)), (WIDE, Cover::Nothing)]
+        {
+            let _ = detail.update(Message::Resized(size));
+            assert_eq!(detail.cover(), expected, "{size:?}: the entry's panel lies above the drawer");
+        }
     }
 
     #[test]

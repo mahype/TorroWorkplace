@@ -42,7 +42,7 @@ use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
-use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -949,7 +949,18 @@ impl App {
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), self.surface(), Message::DragWindow))
+        let (surface, cover) = (self.surface(), self.cover());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: the editor's panel over
+    /// the view, else the drawer. Nothing while signing in or in a glance, which have neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if !self.connected() || is_glance(class) {
+            return Cover::Nothing;
+        }
+        Cover::panel(class, self.editor.is_some()).or(Cover::drawer(class, self.drawer))
     }
 
     /// The surface at the top of [`App::content`], which the title band takes: the window background
@@ -2136,6 +2147,28 @@ mod tests {
         let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
         let _ = app.update(Message::Loaded(Ok((collections, events))));
         app
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(app.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut edit = launched(&["--demo", "--open", "editor"]);
+        edit.drawer = true;
+        for (size, cover) in [
+            (Size::new(800.0, 600.0), Cover::Panel),
+            (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)),
+            (Size::new(1600.0, 1000.0), Cover::Nothing),
+        ] {
+            let _ = edit.update(Message::Resized(size));
+            assert_eq!(edit.cover(), cover, "{size:?}: the editor's panel lies above the drawer");
+        }
     }
 
     #[test]

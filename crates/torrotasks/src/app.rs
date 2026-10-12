@@ -92,7 +92,7 @@ use torro_core::settings::ListOrder;
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -1407,7 +1407,22 @@ impl App {
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), self.surface(), Message::DragWindow))
+        let (surface, cover) = (self.surface(), self.cover());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: a filter list dialog,
+    /// else the drawer. The narrow editor fills the window as a view of its own ([`App::window`]);
+    /// signing in and the glance have neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if !self.connected() || self.is_glance() {
+            return Cover::Nothing;
+        }
+        match &self.filter_dialog {
+            Some(dialog) if dialog.is_full(class) => Cover::Filled(Surface::Panel),
+            dialog => Cover::dialog(dialog.is_some()).or(Cover::drawer(class, self.drawer)),
+        }
     }
 
     /// The surface at the top of [`App::content`], which the title band takes: the window background
@@ -3870,6 +3885,28 @@ mod tests {
         connected(&mut app);
         let _ = app.update(Message::Loaded(Ok((collections, todos))));
         app
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(app.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut dialog = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        dialog.drawer = true;
+        for (size, cover) in [
+            (Size::new(1600.0, 1000.0), Cover::Dialog),
+            (Size::new(800.0, 600.0), Cover::Dialog),
+            (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)),
+        ] {
+            let _ = dialog.update(Message::Resized(size));
+            assert_eq!(dialog.cover(), cover, "{size:?}: the dialog, but not the narrow editor's own view");
+        }
     }
 
     #[test]

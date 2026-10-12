@@ -60,7 +60,7 @@ use torro_core::i18n::tr;
 use torro_core::settings::Settings;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -757,7 +757,18 @@ impl Ui {
         });
         // The glances lie on the panel even while loading, so the layout alone decides the band.
         let surface = Surface::of(layout::of(self.size));
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), surface, Message::DragWindow))
+        let content = self.zoom.view(window);
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, self.cover(), Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: the page's dialog, else
+    /// the drawer. A glance has neither.
+    fn cover(&self) -> Cover {
+        let class = layout::of(self.size);
+        if matches!(class, SizeClass::Mini | SizeClass::Strip) {
+            return Cover::Nothing;
+        }
+        Cover::dialog(self.page_overlay().is_some()).or(Cover::drawer(class, self.drawer))
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
@@ -1144,6 +1155,24 @@ mod tests {
     fn started(words: &[&str]) -> Ui {
         let args: Vec<String> = words.iter().map(|word| word.to_string()).collect();
         Ui::new(Launch::parse(&args).expect("valid parameters")).0
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut ui = started(&["--demo"]);
+        let _ = ui.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(ui.cover(), Cover::Nothing);
+        ui.drawer = true;
+        assert_eq!(ui.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = ui.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(ui.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut remove = started(&["--demo", "--open", "remove"]);
+        remove.drawer = true;
+        for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = remove.update(Message::Resized(size));
+            assert_eq!(remove.cover(), Cover::Dialog, "{size:?}: the dialog dims the whole window");
+        }
     }
 
     #[test]

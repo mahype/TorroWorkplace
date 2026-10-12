@@ -659,7 +659,11 @@ R.1 ─┬─ R.2 ─┐
   macOS: Mini von Kalender, Aufgaben und Inbox ohne abgeschnittene Zeile.
 
 ### U.9 Abdunklung auch über dem Titelband (macOS)
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS hell und dunkel: Kalender-Editor in Mittel und Schmal, Kalender-Schublade, Filterdialog der Aufgaben, Dialog „remove“ der Steuerzentrale)
+- **Umsetzung:** `shell::Cover` (`Nothing`, `Dialog`, `Drawer`, `Panel`, `Filled(Surface)`) als
+  weiterer Parameter von `shell::titlebar`. Das Band ist nicht einfach ganz abgedunkelt, sondern
+  folgt dem, was oben liegt: über der Schublade deren Fläche, über dem Paneel in Mittel dessen Fläche,
+  daneben abgedunkelt; füllt das Paneel das Fenster (Schmal), nimmt das Band dessen Fläche.
 - **Modell:** Opus · **Braucht:** U.7 · **Dateien:** `crates/torro-gui/src/shell.rs`,
   `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
   `crates/torroworkplace/src/ui/mod.rs`
