@@ -21,10 +21,11 @@
 //!    nothing), and the shell writes the agent's hooks with its key ([`client_setup::Job::Hook`]).
 //!    Neither Cancel nor Escape nor a click next to the dialog interrupts this: the keys exist
 //!    only in this window's memory.
-//! 4. **Done:** "Restart Claude Code to use Torro Workplace.", where the entry and the hooks went
-//!    (Codex runs new hooks only once they are trusted in its `/hooks`), or why the hooks could
-//!    not be set up: then the hook client is removed again, and the agent works without them. The
-//!    keys are dropped from memory.
+//! 4. **Done:** "Restart Claude Code to use Torro Workplace." as the step's subtitle, below it a
+//!    group with a row per thing that was set up, each with a check in the ok colour: where the
+//!    entry and the hooks went (Codex runs new hooks only once they are trusted in its `/hooks`),
+//!    or why the hooks could not be set up (a cross in the error colour): then the hook client is
+//!    removed again, and the agent works without them. The keys are dropped from memory.
 //!
 //!    **Key:** a script's key, or an agent's key whose entry could not be written (with the
 //!    reason): shown this once with "Copy", the way the agents page shows a new key. A click next
@@ -32,20 +33,23 @@
 //!
 //! `Message::Close` and `Message::Dismiss` are handled by `agents.rs`, which asks [`closable`]
 //! and [`dismissable`] first. [`view`] is the dialog's content; `agents::overlay` puts it on the
-//! dialog surface.
+//! dialog surface. Its rows ([`wrap_row`]) let label and line below wrap instead of cutting them
+//! off, since the dialog is only as wide as a narrow window allows; the lines below carry no full
+//! stop, like the rows of the agents page.
 
 use iced::widget::space as blank;
-use iced::widget::{Space, checkbox, column, row, svg, text, text_input};
+use iced::widget::text::IntoFragment;
+use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::theme::{self, Palette, palette, space};
+use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::{style, typo, widgets};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{HOOK_CLIENT, RightsTemplate};
 use torro_ipc::{IssuedKey, Request, Response};
 
-use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
+use super::{Action, Data, chevron, one_line, pressable, row_frame};
 use crate::client_setup::{Found, Job, Method, Outcome, TOKEN_VARIABLE, Target};
 
 /// The step the dialog is on.
@@ -396,7 +400,7 @@ fn subtitle(state: &State) -> String {
         Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks => {
             tr("Creating a key and adding it to the configuration.").to_string()
         }
-        Step::Done => trf("{name} is connected.", &[("name", &name)]),
+        Step::Done => trf("Restart {name} to use Torro Workplace.", &[("name", &name)]),
         Step::Key => tr("Copy the key now.").to_string(),
     }
 }
@@ -409,11 +413,11 @@ fn client_step(state: &State) -> Element<'_, Message> {
     let mut rows: Vec<Element<'_, Message>> = found
         .iter()
         .map(|found| {
-            let row = setting_row(None, found.target.label(), Some(found_detail(found)), chevron());
+            let row = wrap_row(None, found.target.label(), Some(found_detail(found)), chevron());
             pressable(row, Some(Message::Choose(Choice::Agent(found.target))))
         })
         .collect();
-    let script = setting_row(None, tr("Script"), Some(tr("A key for your own program").to_string()), chevron());
+    let script = wrap_row(None, tr("Script"), Some(tr("A key for your own program").to_string()), chevron());
     rows.push(pressable(script, Some(Message::Choose(Choice::Script))));
     rows.extend(
         Target::ALL.into_iter().filter(|target| !found.iter().any(|found| found.target == *target)).map(missing_row),
@@ -430,7 +434,8 @@ fn found_detail(found: &Found) -> String {
     }
 }
 
-/// A known client that is not on this computer: name and "Not found", faded to the disabled 40 %.
+/// A known client that is not on this computer: name and "Not found", faded to the disabled 40 %,
+/// as high as the rows of the clients that were found.
 fn missing_row(target: Target) -> Element<'static, Message> {
     let faded = |colour: fn(&Palette) -> Color| {
         move |t: &Theme| text::Style { color: Some(colour(palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
@@ -438,7 +443,7 @@ fn missing_row(target: Target) -> Element<'static, Message> {
     let name = one_line(typo::text(typo::BODY, target.label()).style(faded(|p| p.text)));
     row_frame(
         row![name, widgets::pill_disabled(None, tr("Not found"))].spacing(space::L).align_y(Alignment::Center),
-        false,
+        true,
     )
 }
 
@@ -471,7 +476,7 @@ fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             } else {
                 Space::new().width(icon::SIZE).into()
             };
-            let row = setting_row(None, template_label(template), Some(template_detail(template).to_string()), mark);
+            let row = wrap_row(None, template_label(template), Some(template_detail(template).to_string()), mark);
             pressable(row, Some(Message::Template(template)))
         })
         .collect();
@@ -489,11 +494,12 @@ fn inbox_group(state: &State) -> Element<'_, Message> {
     let on = !state.no_hooks;
     let check = checkbox(on)
         .size(style::CHECK_SIZE)
-        .style(|t: &Theme, status| style::checkbox(palette(t).text)(t, status))
+        // `text_2`, not `text`: a black box would be the heaviest mark of the light dialog.
+        .style(|t: &Theme, status| style::checkbox(palette(t).text_2)(t, status))
         .on_toggle(Message::Hooks);
     let label = tr("Report to Inbox when waiting or done");
-    let detail = tr("A separate key that can only report.");
-    let row = setting_row(Some(check.into()), label, Some(detail.to_string()), Space::new());
+    let detail = tr("A separate key that can only report");
+    let row = wrap_row(Some(check.into()), label, Some(detail.to_string()), Space::new());
     widgets::group(tr("Inbox"), vec![pressable(row, Some(Message::Hooks(!on)))], None)
 }
 
@@ -507,46 +513,88 @@ fn template_label(template: RightsTemplate) -> &'static str {
 
 fn template_detail(template: RightsTemplate) -> &'static str {
     match template {
-        RightsTemplate::ReadOnly => tr("Reads everything, changes nothing."),
-        RightsTemplate::ReadAndWrite => tr("Reads and changes everything; deleting waits for your approval."),
-        RightsTemplate::FullAccess => tr("Reads, changes and deletes everything without asking."),
+        RightsTemplate::ReadOnly => tr("Reads everything, changes nothing"),
+        RightsTemplate::ReadAndWrite => tr("Changes everything; deleting needs approval"),
+        RightsTemplate::FullAccess => tr("Changes and deletes everything without asking"),
     }
 }
 
-/// What to do now and where the entry went.
+/// What was set up, a row each with a check in the ok colour: the entry, the hooks (for Codex
+/// with how to trust them) or, with a cross in the error colour, why the hooks could not be set
+/// up. Below the group how to undo it. ("Restart …" is the step's subtitle.)
 fn done_step(state: &State) -> Element<'_, Message> {
-    let name = chosen_name(state);
     let place = state.choice.and_then(|choice| found(state, choice)).flatten();
-    let written = match place {
+    let mut rows = Vec::new();
+    match place {
         Some(found) if matches!(found.method, Method::Cli { .. }) => {
-            trf("Added with the {command} command.", &[("command", &found.place)])
+            let added = trf("Added with the {command} command", &[("command", &found.place)]);
+            rows.push(wrap_row(Some(status_mark(Icon::CircleCheck, |p| p.ok)), added, None, Space::new()));
         }
-        Some(found) => trf("Added to {file}.", &[("file", &found.place)]),
-        None => String::new(),
-    };
-    let mut lines = column![
-        typo::text(typo::BODY, trf("Restart {name} to use Torro Workplace.", &[("name", &name)])),
-        typo::text(typo::BODY, written).style(theme::text_2),
-    ]
-    .spacing(space::M);
-    match &state.hooks {
-        Some(Ok(file)) => {
-            let added = trf("Hooks added to {file}.", &[("file", file)]);
-            lines = lines.push(typo::text(typo::BODY, added).style(theme::text_2));
-            if state.choice == Some(Choice::Agent(Target::Codex)) {
-                let trust = tr("Codex runs new hooks only after you trust them: type /hooks in Codex.");
-                lines = lines.push(typo::text(typo::BODY, trust).style(theme::text_2));
-            }
-        }
-        Some(Err(error)) => {
-            let problem = trf("Inbox reports could not be set up: {error}", &[("error", error)]);
-            let error_text = |t: &Theme| text::Style { color: Some(palette(t).error_text) };
-            lines = lines.push(typo::text(typo::BODY, problem).style(error_text));
+        Some(found) => {
+            let added = trf("Added to {file}", &[("file", &found.place)]);
+            rows.push(wrap_row(Some(status_mark(Icon::CircleCheck, |p| p.ok)), added, None, Space::new()));
         }
         None => {}
     }
-    let again = tr("Disconnect… on its page removes the entry again.");
-    lines.push(typo::text(typo::BODY, again).style(theme::text_2)).into()
+    match &state.hooks {
+        Some(Ok(file)) => {
+            let added = trf("Hooks added to {file}", &[("file", file)]);
+            let trust = (state.choice == Some(Choice::Agent(Target::Codex)))
+                .then(|| tr("Codex runs them only after you trust them: type /hooks in Codex").to_string());
+            rows.push(wrap_row(Some(status_mark(Icon::CircleCheck, |p| p.ok)), added, trust, Space::new()));
+        }
+        Some(Err(error)) => {
+            let failed = tr("Inbox reports could not be set up");
+            rows.push(wrap_row(
+                Some(status_mark(Icon::CircleX, |p| p.error)),
+                failed,
+                Some(error.clone()),
+                Space::new(),
+            ));
+        }
+        None => {}
+    }
+    let undo = tr("To undo, choose Disconnect on its page.");
+    if rows.is_empty() {
+        return typo::text(typo::BODY, undo).style(theme::text_2).into();
+    }
+    widgets::group(tr("Configuration"), rows, Some(undo.to_string()))
+}
+
+/// A status icon in front of a row: 16, in the colour `colour` picks from the palette.
+fn status_mark<'a>(which: Icon, colour: fn(&Palette) -> Color) -> Element<'a, Message> {
+    icon::icon(which, icon::SIZE).style(move |t: &Theme, _| svg::Style { color: Some(colour(palette(t))) }).into()
+}
+
+/// A row of a settings group in the dialog, with the metrics of `setting_row` (16 at the sides,
+/// 12 after the `mark`, 16 before the `control`, 44 high, 56 with a `detail`), but label and detail
+/// wrap instead of being cut off: the dialog is only as wide as the window, and a translation or a
+/// long path must stay readable. The row grows by a line then. The label takes the text colour of
+/// a surrounding button ([`pressable`]); the detail is `META` in `text_2`.
+fn wrap_row<'a>(
+    mark: Option<Element<'a, Message>>,
+    label: impl IntoFragment<'a>,
+    detail: Option<String>,
+    control: impl Into<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let padding = row_padding(detail.is_some());
+    let mut lines = column![typo::text(typo::BODY, label)];
+    if let Some(detail) = detail {
+        lines = lines.push(typo::text(typo::META, detail).style(theme::text_2));
+    }
+    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::M).align_y(Alignment::Center);
+    let content = row![text.width(Fill), control.into()].spacing(space::L).align_y(Alignment::Center);
+    container(content).width(Fill).padding([padding, space::L]).into()
+}
+
+/// The padding above and below a [`wrap_row`]: what makes it 44 high with one line of text and 56
+/// with a detail, as long as nothing wraps.
+fn row_padding(detail: bool) -> f32 {
+    let line = |level: typo::Level| level.line_height.to_absolute(level.size).0;
+    match detail {
+        true => (size::HEADER + space::M - line(typo::BODY) - line(typo::META)) / 2.0,
+        false => (size::HEADER - line(typo::BODY)) / 2.0,
+    }
 }
 
 /// The key this once: why it is shown, the key in a field to select, and "Copy".
@@ -574,10 +622,11 @@ fn key_step(state: &State) -> Element<'_, Message> {
         );
     }
     let key = state.key.as_ref().map_or("", IssuedKey::expose);
+    // Tabular figures: a key is read and compared character by character.
     let field = text_input("", key)
         .size(typo::BODY.size)
         .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .font(typo::BODY.tabular().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
