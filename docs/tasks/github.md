@@ -278,7 +278,7 @@ K.21 (frei)
 - Abnahme: Test mit demselben Issue in zwei Listen (Cursor, Detail), Test der Reihenfolge, Sichtprüfung.
 
 ### G.4 Dialog: Filterliste anlegen und bearbeiten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** G.3 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs` (`filter.rs` neu)
 - „New filter list…“ und „Edit filter…“: Feld zum Einfügen (Anfrage oder Adresse), darunter das Formular
   (Typ, Repos, Status, Labels mit/ohne, Zuständig, Autor, Erwähnt, Review angefragt, Meilenstein, Sortierung;

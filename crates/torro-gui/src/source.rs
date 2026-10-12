@@ -5,6 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use torro_ipc::pim::PimClient;
 use torro_pim::demo::DemoSource;
+use torro_pim::source::{FilterDefinition, FilterPreview};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 /// The core over the socket, or demo data in memory (`--demo`). Cheap to clone, so every
@@ -161,6 +162,31 @@ impl PimSource for Source {
 
     async fn unpin_issue(&self, collection: String, item: String) -> Result<(), ProviderError> {
         delegate!(self, s => s.unpin_issue(collection, item))
+    }
+
+    async fn create_filter_list(
+        &self,
+        account: String,
+        definition: FilterDefinition,
+    ) -> Result<Collection, ProviderError> {
+        delegate!(self, s => s.create_filter_list(account, definition))
+    }
+
+    async fn update_filter_list(
+        &self,
+        collection: String,
+        revision: u64,
+        definition: FilterDefinition,
+    ) -> Result<Collection, ProviderError> {
+        delegate!(self, s => s.update_filter_list(collection, revision, definition))
+    }
+
+    async fn delete_filter_list(&self, collection: String) -> Result<(), ProviderError> {
+        delegate!(self, s => s.delete_filter_list(collection))
+    }
+
+    async fn preview_filter(&self, account: String, queries: Vec<String>) -> Result<FilterPreview, ProviderError> {
+        delegate!(self, s => s.preview_filter(account, queries))
     }
 }
 

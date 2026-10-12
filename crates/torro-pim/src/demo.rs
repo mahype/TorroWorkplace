@@ -14,6 +14,10 @@
 //! like the core's: "Needs me" (two searches, one pinned issue of another repository, more than
 //! 1,000 matches) and "Torro bugs" (its last refresh from GitHub failed), so the sidebar's GitHub
 //! group, the grouping by repository, the hints of a list and "Unpin" all show with `--demo`.
+//!
+//! Filter lists can be created, changed, deleted and tried out (task G.4). The demo cannot ask
+//! GitHub; it searches the GitHub items of the sample instead and understands only a few
+//! qualifiers ([`demo_matches`]), enough for the dialog's preview to show something real.
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -21,7 +25,7 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 
 use crate::account::{GITHUB_KIND, account_of, local_id};
 use crate::model::{ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
-use crate::source::{PimSource, move_plan};
+use crate::source::{FilterDefinition, FilterPreview, PimSource, move_plan};
 use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
 
 #[derive(Debug, Default)]
@@ -83,6 +87,113 @@ const READ_ONLY: &str = "Of a GitHub issue in a filter list only whether it is d
 const PULL_REQUESTS: &str = "Pull requests are never closed or reopened here";
 /// What deleting a filter list's item is answered with (core: `unsupported`).
 const NOT_DELETED: &str = "The items of a GitHub filter list cannot be deleted; they live on GitHub";
+
+/// At most this many searches per filter list, as the core allows.
+const MAX_QUERIES: usize = 10;
+/// At most this many matches come with a preview, as from the core.
+const PREVIEW_ITEMS: usize = 20;
+
+/// Refuses a definition the core would refuse, with the core's messages.
+fn check_definition(definition: &FilterDefinition) -> Result<(), ProviderError> {
+    let refuse = |message: &str| Err(ProviderError::Other(message.into()));
+    if definition.name.trim().is_empty() {
+        return refuse("A filter list needs a name.");
+    }
+    let hex = |c: &str| c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|d| d.is_ascii_hexdigit());
+    if definition.color.as_deref().is_some_and(|c| !hex(c)) {
+        return refuse("A colour is written as #RRGGBB.");
+    }
+    match definition.queries.iter().filter(|q| !q.trim().is_empty()).count() {
+        0 => refuse("A filter list needs at least one search."),
+        n if n > MAX_QUERIES => refuse("A filter list may run at most 10 searches."),
+        _ => Ok(()),
+    }
+}
+
+/// Whether the GitHub item `todo` matches the search `query`, as far as the demo understands it:
+/// `is:open`, `is:closed`, `is:merged`, `is:issue`, `is:pr` (and `type:`), `repo:`, `label:` (a
+/// comma for any of several), `-label:`, `assignee:`, `review-requested:` and `milestone:`.
+/// Everything else (`involves:@me`, `author:`, words) is let through: the demo knows no authors.
+fn demo_match(todo: &Todo, query: &str) -> bool {
+    let Some(link) = todo.link.as_ref() else { return false };
+    let (Some(details), Some((repo, _))) = (link.github.as_ref(), link.github_ref()) else { return false };
+    let me = |who: &str| if who == "@me" { GITHUB_LOGIN.to_string() } else { who.to_lowercase() };
+    let labelled = |names: &str| {
+        names.split(',').any(|name| details.labels.iter().any(|l| l.name.eq_ignore_ascii_case(name.trim_matches('"'))))
+    };
+    query.split_whitespace().all(|word| {
+        let word = word.to_lowercase();
+        match word.split_once(':') {
+            Some(("is" | "state", "open")) => details.state == GitHubState::Open,
+            Some(("is" | "state", "closed")) => details.state != GitHubState::Open,
+            Some(("is", "merged")) => details.state == GitHubState::Merged,
+            Some(("is" | "type", "issue")) => details.kind == GitHubKind::Issue,
+            Some(("is" | "type", "pr")) => details.kind == GitHubKind::PullRequest,
+            Some(("repo", name)) => repo.eq_ignore_ascii_case(name),
+            Some(("label", names)) => labelled(names),
+            Some(("-label", names)) => !labelled(names),
+            Some(("assignee", who)) => details.assignees.iter().any(|a| a.to_lowercase() == me(who)),
+            Some(("review-requested", _)) => details.review == Some(ReviewState::Required),
+            Some(("milestone", name)) => {
+                details.milestone.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(name.trim_matches('"')))
+            }
+            _ => true,
+        }
+    })
+}
+
+/// The GitHub items of the sample that `query` finds ([`demo_match`]), each once, as tasks of no
+/// list. An address cannot be read without the core.
+fn demo_matches(todos: &[Todo], query: &str) -> Result<Vec<Todo>, ProviderError> {
+    let lower = query.trim().to_lowercase();
+    if lower.starts_with("http") || lower.starts_with("github.com/") || lower.starts_with("www.github.com/") {
+        return Err(ProviderError::Other("The demo cannot read addresses; paste a search instead.".into()));
+    }
+    let mut found: Vec<Todo> = Vec::new();
+    for todo in todos.iter().filter(|t| demo_match(t, query)) {
+        let Some(link) = todo.link.as_ref() else { continue };
+        if !found.iter().any(|f| f.uid == link.id) {
+            found.push(Todo {
+                uid: link.id.clone(),
+                collection: String::new(),
+                href: todo.url.clone(),
+                ..todo.clone()
+            });
+        }
+    }
+    Ok(found)
+}
+
+impl Data {
+    /// The items of a filter list with `queries` and `pinned`, as the core keeps them in list
+    /// `id`: what any search finds, plus the pinned items, each once.
+    fn filter_items(&self, id: &str, queries: &[String], pinned: &[String]) -> Result<Vec<Todo>, ProviderError> {
+        let mut items: Vec<Todo> = Vec::new();
+        for query in queries {
+            for item in demo_matches(&self.todos, query)? {
+                if !items.iter().any(|i| i.uid == item.uid) {
+                    items.push(item);
+                }
+            }
+        }
+        let kept = self.todos.iter().filter(|t| t.collection == id && pinned.contains(&t.uid));
+        for item in kept {
+            if !items.iter().any(|i| i.uid == item.uid) {
+                items.push(item.clone());
+            }
+        }
+        Ok(items
+            .into_iter()
+            .enumerate()
+            .map(|(n, item)| Todo {
+                collection: id.into(),
+                etag: Some(format!("demo-{n}")),
+                sort_order: i64::try_from(n).ok(),
+                ..item
+            })
+            .collect())
+    }
+}
 
 /// See the module docs.
 #[derive(Debug, Default)]
@@ -855,6 +966,94 @@ impl PimSource for DemoSource {
         data.todos.retain(|t| t.collection != collection || t.link.as_ref().is_none_or(|link| link.id != id));
         Ok(())
     }
+
+    /// A new list of the GitHub account with a fresh id (`github:mahype/list-<n>`, never handed
+    /// out twice) and the sample's items its searches find.
+    async fn create_filter_list(
+        &self,
+        account: String,
+        definition: FilterDefinition,
+    ) -> Result<Collection, ProviderError> {
+        check_definition(&definition)?;
+        if account != GITHUB_ACCOUNT {
+            return Err(ProviderError::Other(format!("{account} is no connected GitHub account")));
+        }
+        let mut data = self.lock();
+        data.next_id += 1;
+        let id = format!("{GITHUB_ACCOUNT}/list-{}", data.next_id);
+        let queries: Vec<String> = definition.queries.into_iter().filter(|q| !q.trim().is_empty()).collect();
+        let items = data.filter_items(&id, &queries, &[])?;
+        let source = GitHubFilter { queries, pinned: Vec::new(), revision: 1, truncated: false, problem: None };
+        let list = Collection {
+            id: id.clone(),
+            name: definition.name.trim().into(),
+            kind: CollectionKind::Todos,
+            color: definition.color,
+            writable: false,
+            source: Some(source),
+        };
+        data.collections.push(list.clone());
+        data.todos.extend(items);
+        Ok(list)
+    }
+
+    /// Like the core: an outdated `revision` is a conflict; pinned items stay.
+    async fn update_filter_list(
+        &self,
+        collection: String,
+        revision: u64,
+        definition: FilterDefinition,
+    ) -> Result<Collection, ProviderError> {
+        check_definition(&definition)?;
+        let mut data = self.lock();
+        let Some(source) = data.collections.iter().find(|c| c.id == collection).and_then(|c| c.source.clone()) else {
+            return Err(ProviderError::Other(format!("No filter list {collection}")));
+        };
+        if source.revision != revision {
+            return Err(ProviderError::Conflict { uid: collection });
+        }
+        let queries: Vec<String> = definition.queries.into_iter().filter(|q| !q.trim().is_empty()).collect();
+        let items = data.filter_items(&collection, &queries, &source.pinned)?;
+        data.todos.retain(|t| t.collection != collection);
+        data.todos.extend(items);
+        let Some(list) = data.collections.iter_mut().find(|c| c.id == collection) else {
+            return Err(ProviderError::Other(format!("No filter list {collection}")));
+        };
+        list.name = definition.name.trim().into();
+        list.color = definition.color;
+        list.source = Some(GitHubFilter { queries, revision: revision + 1, problem: None, truncated: false, ..source });
+        Ok(list.clone())
+    }
+
+    async fn delete_filter_list(&self, collection: String) -> Result<(), ProviderError> {
+        let mut data = self.lock();
+        let before = data.collections.len();
+        data.collections.retain(|c| c.id != collection || c.source.is_none());
+        if data.collections.len() == before {
+            return Err(ProviderError::Other(format!("No filter list {collection}")));
+        }
+        data.todos.retain(|t| t.collection != collection);
+        Ok(())
+    }
+
+    /// Searches the sample's GitHub items ([`demo_matches`]); the count adds up over the searches.
+    async fn preview_filter(&self, account: String, queries: Vec<String>) -> Result<FilterPreview, ProviderError> {
+        if account != GITHUB_ACCOUNT {
+            return Err(ProviderError::Other(format!("{account} is no connected GitHub account")));
+        }
+        let data = self.lock();
+        let mut preview = FilterPreview::default();
+        for query in queries.iter().filter(|q| !q.trim().is_empty()) {
+            let found = demo_matches(&data.todos, query)?;
+            preview.matches += found.len() as u64;
+            for item in found {
+                if preview.todos.len() < PREVIEW_ITEMS && !preview.todos.iter().any(|t| t.uid == item.uid) {
+                    preview.todos.push(item);
+                }
+            }
+        }
+        Ok(preview)
+    }
 }
 
 #[cfg(test)]
@@ -1034,6 +1233,52 @@ mod tests {
         assert_eq!(source.save_todo(new).await, Err(ProviderError::Other(READ_ONLY.into())));
         let accounts = source.accounts().await.expect("accounts");
         assert!(accounts.iter().all(PimAccount::may_close_issues), "the demo's token may write issues");
+    }
+
+    #[tokio::test]
+    async fn the_preview_searches_the_sample() {
+        let source = DemoSource::new(sunday());
+        let bugs = vec![format!("is:issue is:open repo:{REPO} label:bug")];
+        let preview = source.preview_filter(GITHUB_ACCOUNT.into(), bugs).await.expect("preview");
+        assert!(preview.matches >= 3, "the open bugs of the sample: {}", preview.matches);
+        assert!(preview.todos.iter().all(|t| t.collection.is_empty() && t.link.is_some()));
+        let both = vec!["is:pr".to_string(), "is:issue".to_string()];
+        let all = source.preview_filter(GITHUB_ACCOUNT.into(), both).await.expect("preview");
+        assert!(all.matches > preview.matches, "the counts add up");
+        let address = vec!["https://github.com/mahype/TorroWorkplace/issues".to_string()];
+        assert!(source.preview_filter(GITHUB_ACCOUNT.into(), address).await.is_err());
+        assert!(source.preview_filter(WORK_ACCOUNT.into(), vec!["is:open".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn filter_lists_are_created_changed_and_deleted() {
+        let source = DemoSource::new(sunday());
+        let definition = |name: &str, query: &str| FilterDefinition {
+            name: name.into(),
+            color: Some("#5B8CFF".into()),
+            queries: vec![query.into()],
+        };
+        let empty = source.create_filter_list(GITHUB_ACCOUNT.into(), definition(" ", "is:open")).await;
+        assert_eq!(empty, Err(ProviderError::Other("A filter list needs a name.".into())));
+
+        let list = source.create_filter_list(GITHUB_ACCOUNT.into(), definition("PRs", "is:pr")).await.expect("new");
+        assert!(list.id.starts_with("github:mahype/") && !list.writable);
+        let items = |todos: &[Todo], id: &str| todos.iter().filter(|t| t.collection == id).count();
+        let pulls = items(&source.todos().await.expect("todos"), &list.id);
+        assert!(pulls > 0, "the new list holds the sample's pull requests");
+
+        let stale = source.update_filter_list(list.id.clone(), 7, definition("Bugs", "label:bug")).await;
+        assert_eq!(stale, Err(ProviderError::Conflict { uid: list.id.clone() }));
+        let changed =
+            source.update_filter_list(list.id.clone(), 1, definition("Bugs", "label:bug")).await.expect("changed");
+        assert_eq!((changed.name.as_str(), changed.source.map(|s| s.revision)), ("Bugs", Some(2)));
+        assert_ne!(items(&source.todos().await.expect("todos"), &list.id), 0);
+
+        source.delete_filter_list(list.id.clone()).await.expect("deleted");
+        assert_eq!(items(&source.todos().await.expect("todos"), &list.id), 0);
+        assert!(!source.collections().await.expect("collections").iter().any(|c| c.id == list.id));
+        assert!(source.delete_filter_list(list.id).await.is_err(), "only once");
+        assert!(source.delete_filter_list(TASKS.into()).await.is_err(), "no filter list");
     }
 
     #[test]

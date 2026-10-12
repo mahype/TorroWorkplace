@@ -46,6 +46,11 @@
 //! (see [`Message::Escape`]). The cursor is the highlighted row; the list scrolls to keep it in
 //! view. Plain keys are ignored while a text field has the focus ([`shortcut`], [`typing`]) or a
 //! menu is open.
+//!
+//! GitHub filter lists (task G.4): "New filter list…" closes the GitHub account's group in the
+//! sidebar, the "…" menu in the head of a filter list has "Edit filter…" and "Delete list…". The
+//! dialog itself is `filter.rs`; the app only opens it, runs its tasks and acts on its
+//! [`filter::Outcome`] (show the saved list, leave a deleted one, reload after a conflict).
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -76,6 +81,7 @@ use torro_pim::model::{GitHubFilter, GitHubKind};
 use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, Todo};
 
 use crate::detail::{self, Detail, Fit};
+use crate::filter;
 use crate::glance::{self, GlanceData};
 use crate::list::{self, ListData};
 
@@ -101,6 +107,8 @@ pub enum Menu {
     Nav,
     /// The Display menu in the header ("Show completed").
     Display,
+    /// The "…" menu in the head of a GitHub filter list: "Edit filter…", "Delete list…".
+    List,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so that every state can be
@@ -129,6 +137,12 @@ pub enum Open {
     FilterList,
     /// The first item pinned in a filter list, in the detail with its "…" menu open (Unpin).
     Pinned,
+    /// The dialog "New filter list" of the first GitHub account.
+    FilterNew,
+    /// The dialog "Edit filter list" of the first filter list, shown behind it.
+    FilterEdit,
+    /// The question before deleting the first filter list.
+    FilterDelete,
     /// The error state with its "Retry".
     Error,
     /// No tasks at all.
@@ -138,7 +152,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 13] = [
+    const ALL: [(&'static str, Open); 16] = [
         ("detail", Open::Detail),
         ("menu", Open::Menu),
         ("display", Open::Display),
@@ -149,6 +163,9 @@ impl Open {
         ("more", Open::More),
         ("filter", Open::FilterList),
         ("pinned", Open::Pinned),
+        ("filter-new", Open::FilterNew),
+        ("filter-edit", Open::FilterEdit),
+        ("filter-delete", Open::FilterDelete),
         ("error", Open::Error),
         ("empty", Open::Empty),
         ("loading", Open::Loading),
@@ -450,6 +467,8 @@ pub struct App {
     zoom: Zoom,
     /// "Issue closed · Undo" after ticking an issue of a filter list (task G.5).
     notice: Option<Notice>,
+    /// The dialog of a GitHub filter list, while it is open (task G.4).
+    filter_dialog: Option<filter::Dialog>,
 }
 
 // A message may carry a whole task; two kinds do (`Saved`, `IssueChanged`), so Clippy no longer
@@ -526,6 +545,12 @@ pub enum Message {
     Shortcut(Shortcut),
     /// The answer of that check: `true` if a text field has the focus, which swallows the key.
     ShortcutChecked(Shortcut, bool),
+    /// Open the dialog of a GitHub filter list ("New filter list…", "Edit filter…", "Delete list…").
+    OpenFilterDialog(filter::Open),
+    /// From the open filter list dialog.
+    Filter(filter::Message),
+    /// Open or close the "…" menu in the head of a filter list.
+    ToggleListMenu,
 }
 
 /// What a plain key does in the list.
@@ -626,6 +651,7 @@ impl App {
             launch,
             opened: false,
             notice: None,
+            filter_dialog: None,
         };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
@@ -655,13 +681,17 @@ impl App {
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
         if !self.is_glance() {
-            // Escape closes an open menu, drawer or the detail; nothing listens while none is open.
-            if self.menu.is_some() || self.drawer || self.detail.is_some() {
+            // Escape closes an open menu, drawer, dialog or the detail; nothing listens while none is open.
+            if self.menu.is_some() || self.drawer || self.detail.is_some() || self.filter_dialog.is_some() {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
-            if self.connected() {
+            // The keys of the list are not for a list behind a dialog.
+            if self.connected() && self.filter_dialog.is_none() {
                 subscriptions.push(iced::event::listen_with(shortcut));
             }
+        }
+        if let Some(dialog) = &self.filter_dialog {
+            subscriptions.push(dialog.subscription().map(Message::Filter));
         }
         if self.detail.as_ref().is_some_and(Detail::wants_autosave) {
             subscriptions.push(iced::time::every(AUTOSAVE).map(|_| Message::Detail(detail::Message::Flush)));
@@ -715,6 +745,9 @@ impl App {
                     self.todos = todos;
                     self.loaded = true;
                     self.error = None;
+                    if let Some(dialog) = self.filter_dialog.as_mut() {
+                        dialog.reloaded(&self.collections);
+                    }
                     self.keep_cursor(place);
                     // Keep the detail panel on the same task after a reload.
                     let selected_uid = self.detail.as_ref().map(|d| d.original.uid.clone());
@@ -911,6 +944,9 @@ impl App {
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::CloseMenu => self.close_menus(),
+            Message::Escape if self.filter_dialog.is_some() => {
+                return self.update(Message::Filter(filter::Message::Cancel));
+            }
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
@@ -935,6 +971,9 @@ impl App {
             Message::Shortcut(key) => {
                 return typing().map(move |typing| Message::ShortcutChecked(key, typing));
             }
+            Message::OpenFilterDialog(open) => return self.open_filter_dialog(open),
+            Message::Filter(message) => return self.filter_message(message),
+            Message::ToggleListMenu => self.toggle_menu(Menu::List),
             Message::ShortcutChecked(key, typing) => {
                 // `[` works wherever the sidebar is (it also closes the drawer it opened).
                 if !typing && key == Shortcut::Sidebar {
@@ -1184,11 +1223,16 @@ impl App {
     /// The whole window in the layout of `class`.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let (switcher, nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
+        let list_menu = Anchor::new();
+        // In a narrow window the filter list dialog is a view of its own.
+        if let Some(dialog) = self.filter_dialog.as_ref().filter(|dialog| dialog.is_full(class)) {
+            return dialog.view(class, self.size).map(Message::Filter);
+        }
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher));
         let columns = self.columns();
-        let header = self.header(class, columns, [&nav, &display, &property]);
+        let header = self.header(class, columns, [&nav, &display, &property, &list_menu]);
         let menu = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
                 &switcher,
@@ -1200,7 +1244,11 @@ impl App {
             Menu::Display => {
                 widgets::floating(&display, Placement::Below(Align::End), self.display_menu(), Message::CloseMenu)
             }
+            Menu::List => {
+                widgets::floating(&list_menu, Placement::Below(Align::End), self.list_menu(), Message::CloseMenu)
+            }
         });
+        let dialog = self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.size).map(Message::Filter));
         // The property editors and the "…" menu of the detail.
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail
@@ -1208,21 +1256,22 @@ impl App {
         let window = shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
-            .overlay(menu.or_else(editor));
+            .overlay(dialog.or(menu).or_else(editor));
         self.with_notice(window.into())
     }
 
     /// The window's header bar, split like the columns below it: the list's head over the list
     /// (with a line at the list's edge), the detail's head over detail and properties. Narrow
     /// windows show one of the two.
-    /// The anchors are those of the navigation menu, the Display menu and the detail's editors.
-    fn header<'a>(&'a self, class: SizeClass, columns: Columns, anchors: [&Anchor; 3]) -> Element<'a, Message> {
-        let [nav, display, property] = anchors;
+    /// The anchors are those of the navigation menu, the Display menu, the detail's editors and the
+    /// "…" menu of a filter list.
+    fn header<'a>(&'a self, class: SizeClass, columns: Columns, anchors: [&Anchor; 4]) -> Element<'a, Message> {
+        let [nav, display, property, list_menu] = anchors;
         let list_width = self.list_width();
         if columns == Columns::Detail {
             return self.detail_head(columns, property);
         }
-        let list_head = self.list_head(class, list_width, nav, display);
+        let list_head = self.list_head(class, list_width, [nav, display, list_menu]);
         let content = content_width(class, self.sidebar, self.size.width);
         // A list that fills the panel needs no line at its edge: the panel's border is there.
         if !matches!(class, SizeClass::Wide | SizeClass::Medium) || list_width >= content - 2.0 * LINE {
@@ -1244,8 +1293,10 @@ impl App {
     /// The head of the list: the filter's icon, name and "{n} open" – in narrow windows the
     /// navigation menu ("Today ▾") after the drawer button –, then Display (its label only where the
     /// list is at least [`HEAD_LABELS_FROM`] wide) and the one primary button "New task" ("+" alone
-    /// in narrow windows). A GitHub filter list takes no new tasks, so it has no "New task".
-    fn list_head<'a>(&'a self, class: SizeClass, width: f32, nav: &Anchor, display: &Anchor) -> Element<'a, Message> {
+    /// in narrow windows). A GitHub filter list takes no new tasks, so it has no "New task"; it has
+    /// its "…" menu instead ("Edit filter…", "Delete list…").
+    fn list_head<'a>(&'a self, class: SizeClass, width: f32, anchors: [&Anchor; 3]) -> Element<'a, Message> {
+        let [nav, display, list_menu] = anchors;
         let name = self.filter_name(&self.filter);
         let open = trf("{n} open", &[("n", &list::open_count(&self.todos, &self.filter, self.today))]);
         let icon = self.filter_mark(&self.filter);
@@ -1269,6 +1320,9 @@ impl App {
         let mut trailing = vec![widgets::anchored(display, show_display)];
         if self.shown_filter_list().is_none() {
             trailing.push(new_button);
+        } else {
+            let more = widgets::icon_button(Icon::Ellipsis, tr("List actions"), Some(Message::ToggleListMenu));
+            trailing.push(widgets::anchored(list_menu, more));
         }
         if !narrow {
             // Wide and medium have the sidebar or the rail for the navigation.
@@ -1354,6 +1408,16 @@ impl App {
             )]),
             synced,
         ])
+    }
+
+    /// The "…" menu of the filter list shown: "Edit filter…" and "Delete list…".
+    fn list_menu(&self) -> Element<'_, Message> {
+        let Filter::List(id) = &self.filter else { return Space::new().into() };
+        let open = |open: filter::Open| Message::OpenFilterDialog(open);
+        widgets::menu(vec![MenuSection::new(vec![
+            MenuItem::new(Icon::SquarePen, tr("Edit filter…"), open(filter::Open::Edit(id.clone()))),
+            MenuItem::new(Icon::Trash2, tr("Delete list…"), open(filter::Open::Delete(id.clone()))),
+        ])])
     }
 
     /// When the accounts last synced: the latest of them, as the core reports it.
@@ -1505,6 +1569,12 @@ impl App {
             let trail = e.trail();
             widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::SetFilter(e.filter))
         };
+        let new_filter_list = |account: &PimAccount| {
+            let open = Message::OpenFilterDialog(filter::Open::New(account.id.clone()));
+            widgets::sidebar_item_in(mode, Icon::Plus, tr("New filter list…"), Trail::None, false, open)
+        };
+        // GitHub accounts whose group ends with "New filter list…"; the others get it after the lists.
+        let mut grouped: HashSet<&str> = HashSet::new();
         let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             // One account: as it always was, a flat list under "Lists".
@@ -1527,10 +1597,15 @@ impl App {
                     // The rail has no title to unfold with, so it shows every list.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
+                        if account.kind == GITHUB_KIND {
+                            items.push(new_filter_list(account));
+                        }
                     }
+                    grouped.insert(account.id.as_str());
                 }
             }
         }
+        items.extend(self.github_accounts().filter(|a| !grouped.contains(a.id.as_str())).map(new_filter_list));
         let footer = vec![
             widgets::sidebar_item_in(
                 mode,
@@ -1553,6 +1628,11 @@ impl App {
             let trail = e.trail();
             MenuItem::new(e.mark, e.label, Message::SetFilter(e.filter)).trail(trail).current(e.active)
         };
+        let new_filter_list = |account: &PimAccount| {
+            let open = Message::OpenFilterDialog(filter::Open::New(account.id.clone()));
+            MenuItem::new(Icon::Plus, tr("New filter list…"), open)
+        };
+        let mut grouped: HashSet<&str> = HashSet::new();
         let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
         match shell::account_groups(&self.accounts, lists, NavEntry::list_id) {
             Err(lists) => {
@@ -1563,8 +1643,18 @@ impl App {
             // A menu has no folding: every account is a section named after it.
             Ok(groups) => sections.extend(groups.into_iter().map(|group| {
                 let title = group.account.map_or_else(|| tr("Lists").to_string(), account_title);
-                MenuSection::titled(title, group.items.into_iter().map(item).collect())
+                let mut items: Vec<_> = group.items.into_iter().map(item).collect();
+                if let Some(account) = group.account.filter(|a| a.kind == GITHUB_KIND) {
+                    items.push(new_filter_list(account));
+                    grouped.insert(account.id.as_str());
+                }
+                MenuSection::titled(title, items)
             })),
+        }
+        let more: Vec<_> =
+            self.github_accounts().filter(|a| !grouped.contains(a.id.as_str())).map(new_filter_list).collect();
+        if !more.is_empty() {
+            sections.push(MenuSection::new(more));
         }
         sections.push(MenuSection::new(vec![
             MenuItem::new(Icon::Calendar, tr("Open Calendar"), Message::OpenApp(AppId::CALENDAR.binary))
@@ -1715,11 +1805,21 @@ impl App {
                 .find(|c| c.source.as_ref().is_some_and(|s| s.problem.is_some()))
                 .or_else(|| filter_lists().next()),
             Some(Open::Pinned) => filter_lists().find(|c| c.source.as_ref().is_some_and(|s| !s.pinned.is_empty())),
+            Some(Open::FilterEdit | Open::FilterDelete) => filter_lists().next(),
             _ => None,
         }
         .map(|list| list.id.clone());
-        if let Some(id) = filter_list {
+        if let Some(id) = filter_list.clone() {
             self.filter = Filter::List(id);
+        }
+        let dialog = match (self.launch.open, filter_list) {
+            (Some(Open::FilterEdit), Some(id)) => Some(filter::Open::Edit(id)),
+            (Some(Open::FilterDelete), Some(id)) => Some(filter::Open::Delete(id)),
+            (Some(Open::FilterNew), _) => self.github_accounts().next().map(|a| filter::Open::New(a.id.clone())),
+            _ => None,
+        };
+        if let Some(open) = dialog {
+            return self.open_filter_dialog(open);
         }
         let Some(open @ (Open::Detail | Open::Due | Open::PullRequest | Open::More | Open::Pinned)) = self.launch.open
         else {
@@ -1740,6 +1840,61 @@ impl App {
         };
         let card = self.update(Message::Detail(detail::Message::Open(editor)));
         Task::batch([select, card])
+    }
+
+    /// The connected GitHub accounts, which can have filter lists.
+    fn github_accounts(&self) -> impl Iterator<Item = &PimAccount> {
+        self.accounts.iter().filter(|a| a.kind == GITHUB_KIND && matches!(a.state, AccountState::Connected { .. }))
+    }
+
+    /// Opens the dialog of a filter list (`filter.rs`): a new list of a GitHub account, or "Edit
+    /// filter…" / "Delete list…" of a filter list. Unknown ids open nothing.
+    fn open_filter_dialog(&mut self, open: filter::Open) -> Task<Message> {
+        self.close_menus();
+        let owner = |id: &str| account_of(id, &self.accounts, |a| a.id.as_str());
+        let list = |id: &str| self.collections.iter().find(|c| c.id == id);
+        let (dialog, focus) = match open {
+            filter::Open::New(id) => {
+                let account = self.accounts.iter().find(|a| a.id == id);
+                (account.map(|a| filter::Dialog::new_list(a.id.clone(), account_title(a))), true)
+            }
+            filter::Open::Edit(id) => {
+                let edit =
+                    |(list, a): (&Collection, &PimAccount)| filter::Dialog::edit(list, a.id.clone(), account_title(a));
+                (list(&id).zip(owner(&id)).and_then(edit), false)
+            }
+            filter::Open::Delete(id) => (list(&id).and_then(filter::Dialog::delete), false),
+        };
+        let opened = dialog.is_some();
+        self.filter_dialog = dialog;
+        if opened && focus { operation::focus(filter::NAME_INPUT) } else { Task::none() }
+    }
+
+    /// Hands `message` to the open filter list dialog and acts on its outcome: a saved list is
+    /// shown, a deleted one left, and after a conflict the lists are loaded again.
+    fn filter_message(&mut self, message: filter::Message) -> Task<Message> {
+        let Some(dialog) = self.filter_dialog.as_mut() else { return Task::none() };
+        let (task, outcome) = dialog.update(message, &self.source);
+        let task = task.map(Message::Filter);
+        match outcome {
+            filter::Outcome::Stay => task,
+            filter::Outcome::Close => {
+                self.filter_dialog = None;
+                task
+            }
+            filter::Outcome::Saved(id) => {
+                self.filter_dialog = None;
+                let show = self.update(Message::SetFilter(Filter::List(id)));
+                Task::batch([task, show, self.load()])
+            }
+            filter::Outcome::Deleted(id) => {
+                self.filter_dialog = None;
+                let shown = self.filter == Filter::List(id);
+                let leave = if shown { self.update(Message::SetFilter(Filter::Today)) } else { Task::none() };
+                Task::batch([task, leave, self.load()])
+            }
+            filter::Outcome::Reload => Task::batch([task, self.load()]),
+        }
     }
 
     fn load(&self) -> Task<Message> {
@@ -2988,5 +3143,41 @@ mod tests {
         assert_eq!(app.class(), SizeClass::Medium);
         let _ = app.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
         assert_eq!((app.scale_factor(), app.class()), (1.0, SizeClass::Wide));
+    }
+
+    /// A demo app started with these words, with the demo's accounts (GitHub included) and data.
+    fn launched_with_accounts(words: &[&str]) -> App {
+        let launch = Launch::parse(&args(words)).expect("valid parameters");
+        let (mut app, _) = App::new(launch.source(&args(words)), launch);
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        let _ = app.update(Message::AccountLoaded(Ok(demo_accounts())));
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        app
+    }
+
+    #[test]
+    fn filter_list_dialogs_open_and_their_outcome_is_followed() {
+        use torro_pim::demo::{NEEDS_ME, TORRO_BUGS};
+        let app = launched_with_accounts(&["--demo", "--open", "filter-edit"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Edit(_))));
+        assert_eq!(app.filter, Filter::List(NEEDS_ME.into()), "the list is shown behind its dialog");
+
+        let mut app = launched_with_accounts(&["--demo", "--open", "filter-delete"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Delete(_))));
+        let _ = app.update(Message::Escape);
+        assert!(app.filter_dialog.is_none(), "Escape cancels");
+        let _ = app.update(Message::OpenFilterDialog(filter::Open::Delete(NEEDS_ME.into())));
+        let _ = app.update(Message::Filter(filter::Message::Deleted(Ok(()))));
+        assert_eq!((app.filter_dialog.is_none(), &app.filter), (true, &Filter::Today), "the deleted list is left");
+
+        let mut app = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        assert!(matches!(app.filter_dialog, Some(filter::Dialog::Edit(_))));
+        let _ = app.update(Message::Filter(filter::Message::Saved(Ok(TORRO_BUGS.into()))));
+        assert_eq!((app.filter_dialog.is_none(), &app.filter), (true, &Filter::List(TORRO_BUGS.into())));
+
+        // An id that is no filter list opens nothing.
+        let _ = app.update(Message::OpenFilterDialog(filter::Open::Edit("nope".into())));
+        assert!(app.filter_dialog.is_none());
+        assert_eq!(app.github_accounts().count(), 1);
     }
 }
