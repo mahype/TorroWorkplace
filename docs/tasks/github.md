@@ -362,6 +362,22 @@ K.21 (frei)
 - Abnahme: Tests für die Leselücke (an GitHub geht nichts, nichts wird in die Liste geschrieben), geteilte Liste wird
   nicht abgeglichen, beide Freigabetexte (inkl. Abhaken mit weiteren Änderungen), `error` vor Freigabe.
 
+### G.6c Verweise: geteilte Listen, Ziehen auf die Seitenleiste
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.6b, G.3b · **Dateien:** `crates/torroworkplace/src/{pim,core,approvals}.rs`,
+  `crates/torrotasks/src/{app,list}.rs`, `crates/torro-gui/src/shell.rs` (falls die Seitenleiste ein Ziel braucht), `docs/github.md`
+- **Geteilte Listen (entschieden 2026-10-12, sichere Voreinstellung):** In Listen, die nicht privat sind (G.6b:
+  `Slot::private`), erledigt der Haken an einem Verweis **nur die Aufgabe**; das Issue bleibt offen. Sonst könnte
+  jemand, mit dem die Liste geteilt ist, einen Verweis unterschieben, und mein Haken schlösse ein Issue. Freigabetext
+  und Katalogtext entsprechend; in `docs/github.md` festhalten.
+- **Ziehen auf die Seitenleiste (Rest aus G.6):** Einen Eintrag einer Filterliste auf eine schreibbare Liste der
+  Seitenleiste ziehen legt dort einen Verweis an (`tasks.add_link`); eine Aufgabe auf eine andere Liste desselben
+  Kontos ziehen verschiebt sie (`tasks.save_todo` mit neuer Liste). Ziel beim Ziehen hervorheben. Nutzt das Ziehen
+  aus P.3b.
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Tests (Haken in geteilter Liste schließt nichts, an GitHub geht nichts; Ziehen legt Verweis an bzw.
+  verschiebt), Sichtprüfung des Ziehziels.
+
 ## K Kalender
 
 ### K.21 Fällige Aufgaben im Kalender
