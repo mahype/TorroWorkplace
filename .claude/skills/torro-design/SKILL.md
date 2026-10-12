@@ -92,6 +92,7 @@ aus einem Guss wirkt:
 | `TEXT_3` | `#8A8F98` | `#62666D` | Metadaten, Zähler, Gruppentitel, Platzhalter (≥ 4.5:1 auf allen Flächen) |
 | `LINE` | Weiß 6 % | Schwarz 7 % | Trennlinien, Raster, Rand der Inhaltsfläche |
 | `LINE_STRONG` | Weiß 10 % | Schwarz 11 % | Rahmen von Knöpfen, Eingaben, Chips, Menüs |
+| `LINE_SELECTED` | Weiß 28 % | Schwarz 32 % | Kante von Gewähltem (Chip, aktives Segment) und Hover gerahmter Knöpfe (`Palette::line_selected`) |
 | `FOCUS_RING` | Weiß 35 % | Schwarz 50 % | Fokus, 2 px, 1 px Abstand (≥ 3:1) |
 | `ACCENT` | Torro-Rot `#D50C0C` | dto. | **nur** Primärknopf, Heute, Jetzt-Linie, App-Logo |
 | `merged` | `#A78BFA` | `#7C5CE6` | GitHub „gemergt/erledigt geschlossen“ (Violett): **nur** Icon oder Punkt neben einem Wort (≥ 3:1 auf allen Flächen, `Palette::merged`), nie als Text |
@@ -193,7 +194,12 @@ aus einem Guss wirkt:
   Seitenleiste), `danger` (ghost mit `STATUS_ERROR`-Text). Wird der Primärknopf in Schmal zum Icon
   (`widgets::compact_button`), ist er 28×28 mit Icon 16 in `on_accent` – so bleibt das „+“ auf Rot
   kräftig (5,4:1). Ansichten wechseln: `segmented` (Grund
-  `BG`, aktives Segment `SELECTED` mit `LINE_STRONG`-Kante).
+  `BG`, aktives Segment `SELECTED` mit `LINE_SELECTED`-Kante). Speichert ein Knopf, zeigt er
+  `widgets::busy_button(tr("Creating…"), style)`: volle Farbe, Icon, nimmt keinen zweiten Klick.
+- **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – 28 hoch, Radius 6,
+  `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
+  vor dem Text. GitHub-Labels zum Wählen: `widgets::label_choice(hex, name, on, on_press)` (Farbe nur als
+  Punkt 8). Filter und Vorlagen werden angeklickt, nicht getippt.
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius 8, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `CAPTION`-
   Titel; Trenner `LINE`.
