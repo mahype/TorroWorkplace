@@ -1093,4 +1093,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Disconnect this script?", "Dieses Skript trennen?"),
     ("Calendars left off don't exist for this agent.", "Ausgeschaltete Kalender gibt es für diesen Agenten nicht."),
     ("Lists left off don't exist for this agent.", "Ausgeschaltete Listen gibt es für diesen Agenten nicht."),
+    ("Urgent", "Dringend"),
+    ("Group by", "Gruppieren nach"),
+    ("Synced {when}", "Synchronisiert {when}"),
+    ("Add a task or paste a GitHub link…", "Aufgabe eingeben oder GitHub-Link einfügen…"),
 ];
