@@ -1389,4 +1389,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Outlook.com and Microsoft 365 need a sign-in through Microsoft, which Torro Workplace does not support yet.",
         "Outlook.com und Microsoft 365 verlangen eine Anmeldung über Microsoft, die Torro Workplace noch nicht unterstützt.",
     ),
+    // Mail sync in the core (M2.6)
+    ("Mail cannot be kept on this device.", "Mails können auf diesem Gerät nicht gespeichert werden."),
+    (
+        "No home directory, so mail cannot be kept on this device.",
+        "Kein Home-Verzeichnis, daher können Mails auf diesem Gerät nicht gespeichert werden.",
+    ),
+    ("No such mail account.", "Kein solches Mail-Konto."),
+    (
+        "Sign in again: no password is stored on this device",
+        "Erneut anmelden: Auf diesem Gerät ist kein Passwort gespeichert",
+    ),
+    ("The mail server answered unexpectedly.", "Der Mail-Server hat unerwartet geantwortet."),
+    (
+        "The mail server does not have this folder or message.",
+        "Diesen Ordner oder diese Nachricht gibt es auf dem Mail-Server nicht.",
+    ),
+    ("The mail server is not on the public internet.", "Der Mail-Server ist nicht im öffentlichen Internet."),
 ];
