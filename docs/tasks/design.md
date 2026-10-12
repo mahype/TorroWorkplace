@@ -595,7 +595,7 @@ R.1 ─┬─ R.2 ─┐
 ## Rückmeldungen 2026-10-12
 
 ### U.6 Titelleiste wie aus einem Guss (macOS)
-- [ ] erledigt, Sichtprüfung auf macOS offen (Ampeln und Ziehen am Band nicht gesehen)
+- [x] erledigt (Sichtprüfung auf macOS: Ampeln im Band, Gesamtbild gebilligt; Ziehen am Band und Schmal noch ungeprüft)
 - **Modell:** Opus · **Braucht:** keine · **Dateien:** `crates/torro-gui/src/{lib,shell}.rs`,
   `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
   `crates/torroworkplace/src/ui/mod.rs`
