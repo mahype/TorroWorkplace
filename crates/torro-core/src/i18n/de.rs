@@ -769,8 +769,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Torro Workplace hat nicht rechtzeitig geantwortet, darum wurde nichts gemeldet.",
     ),
     (
-        "the hook needs one agent: torroworkplace hook claude-code|codex|gemini",
-        "der Hook braucht genau einen Agenten: torroworkplace hook claude-code|codex|gemini",
+        "the hook needs one agent: torroworkplace hook claude-code|codex|gemini [--key-file <file>]",
+        "der Hook braucht genau einen Agenten: torroworkplace hook claude-code|codex|gemini [--key-file <datei>]",
     ),
     // Approvals: inbox summaries (E1.2b)
     ("Report \"{title}\" to the inbox", "„{title}“ in den Eingang melden"),
@@ -1063,4 +1063,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Review required", "Review erforderlich"),
     ("Approved", "Freigegeben"),
     ("Changes requested", "Änderungen angefordert"),
+    // Command line: hook key file (E2.3b)
+    (
+        "The key file {file} could not be read ({error}), so nothing was reported.",
+        "Die Schlüsseldatei {file} ließ sich nicht lesen ({error}), darum wurde nichts gemeldet.",
+    ),
+    (
+        "The key file {file} is open to other users (mode {mode}), so it was not used. Make it private with chmod 600.",
+        "Die Schlüsseldatei {file} ist für andere Nutzer offen (Modus {mode}), darum wurde sie nicht verwendet. Mach sie mit chmod 600 privat.",
+    ),
+    (
+        "The key file {file} belongs to another user, so it was not used.",
+        "Die Schlüsseldatei {file} gehört einem anderen Nutzer, darum wurde sie nicht verwendet.",
+    ),
+    (
+        "The key file {file} holds no key, so nothing was reported.",
+        "Die Schlüsseldatei {file} enthält keinen Schlüssel, darum wurde nichts gemeldet.",
+    ),
 ];
