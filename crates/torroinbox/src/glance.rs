@@ -2,8 +2,8 @@
 //! design skill `.claude/skills/torro-design`, section 6; the pattern is `torrotasks/src/glance.rs`).
 //!
 //! - **Mini** ([`mini`]): at the top the numbers, each a big figure (`DISPLAY`) with its word beside
-//!   it – "6 for you  3 ● waiting" (the second part only while something waits) – then the top
-//!   [`SHOWN`] open entries of "For me" as rows: the source's icon, the title cut to fit, how long
+//!   it – "6 for you  3 ● waiting" (the second part only while something waits) – then as many
+//!   open entries of "For me" as fit the height, at least the top [`SHOWN`], as rows: the source's icon, the title cut to fit, how long
 //!   ago at the right. Nothing for the user: a calm "Nothing for you right now." under the inbox
 //!   icon.
 //! - **Strip** ([`strip`]): the same numbers at the left, the same entries beside them as cells in
@@ -37,8 +37,9 @@ use torro_inbox::Item;
 use crate::app::Message;
 use crate::list;
 
-/// At most this many entries are shown (`docs/eingang.md`: "die drei obersten"); the numbers at
-/// the top say how many there are in all.
+/// The strip shows at most this many entries (`docs/eingang.md`: "die drei obersten"); the mini
+/// tile shows as many as fit its height, like torrotasks fills a tall tile. The numbers at the
+/// top say how many there are in all.
 pub const SHOWN: usize = 3;
 /// The height of a row of the mini tile: a sidebar row, so a row is a 28-high click target.
 const ROW: f32 = size::ROW_SIDEBAR;
@@ -78,11 +79,6 @@ pub fn waiting(items: &[Item]) -> usize {
     items.iter().filter(|item| list::is_waiting(item)).count()
 }
 
-/// The entries the glance shows: the first [`SHOWN`] of `items`.
-pub fn top(items: &[Item]) -> &[Item] {
-    &items[..items.len().min(SHOWN)]
-}
-
 /// The parts of the numbers as `(text, waiting)`: "6 for you", then "3 waiting" while something
 /// waits. Nothing open: none (the glance says [`calm`] instead).
 pub fn count_parts(items: &[Item]) -> Vec<(String, bool)> {
@@ -113,10 +109,10 @@ fn error_height() -> f32 {
 }
 
 /// How many rows fit in a mini tile `height` high under the numbers (with room for the error line
-/// if there is one), at most [`SHOWN`].
+/// if there is one).
 pub fn rows_that_fit(height: f32, error: bool) -> usize {
     let above = 2.0 * space::M + figure_height() + space::S + if error { error_height() } else { 0.0 };
-    (((height - above) / ROW).floor().max(0.0) as usize).min(SHOWN)
+    ((height - above) / ROW).floor().max(0.0) as usize
 }
 
 /// How many cells fit beside the numbers in a strip with `avail` width, at most [`SHOWN`].
@@ -293,7 +289,7 @@ pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     }
     content = content.push(Space::new().height(space::S));
     let shown = rows_that_fit(size.height, data.error.is_some());
-    for item in top(data.items).iter().take(shown) {
+    for item in data.items.iter().take(shown) {
         content = content.push(row_view(item, data, width));
     }
     tile(content, padding)
@@ -371,7 +367,7 @@ pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     let shown = cells_that_fit(avail);
     let width = cell_width(avail, shown);
     let mut cells = row![].spacing(CELL_GAP).align_y(Alignment::Center);
-    for item in top(data.items).iter().take(shown) {
+    for item in data.items.iter().take(shown) {
         cells = cells.push(cell(item, data, width));
     }
     let content = row![
@@ -426,15 +422,10 @@ mod tests {
     }
 
     #[test]
-    fn at_most_three_are_shown_waiting_first() {
+    fn waiting_entries_lead() {
         let items = for_me();
         assert!(items.len() > SHOWN);
-        let shown = top(&items);
-        assert_eq!(shown.len(), SHOWN);
-        assert_eq!(shown[0].id, items[0].id);
-        assert!(list::is_waiting(&shown[0]), "a waiting entry leads");
-        assert_eq!(top(&items[..1]).len(), 1);
-        assert!(top(&[]).is_empty());
+        assert!(list::is_waiting(&items[0]), "a waiting entry leads");
     }
 
     #[test]
@@ -444,7 +435,7 @@ mod tests {
         assert_eq!(rows_that_fit(150.0, true), 2, "the error line takes room");
         assert_eq!(rows_that_fit(120.0, false), 2, "the smallest window");
         assert_eq!(rows_that_fit(40.0, false), 0);
-        assert_eq!(rows_that_fit(480.0, false), SHOWN, "never more than three");
+        assert!(rows_that_fit(480.0, false) > SHOWN, "a tall tile fills its height");
     }
 
     #[test]
