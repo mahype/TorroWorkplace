@@ -743,9 +743,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Expires now", "Läuft gleich ab"),
     ("Less than a minute left", "Noch weniger als eine Minute"),
     ("{n} min left", "noch {n} Min."),
-    ("Approvals ({n})", "Freigaben ({n})"),
-    ("1 request waits for your approval", "1 Anfrage wartet auf deine Freigabe"),
-    ("{n} requests wait for your approval", "{n} Anfragen warten auf deine Freigabe"),
     // Command line: notify (E1.3)
     ("Posted to the inbox ({id}).", "In den Eingang gestellt ({id})."),
     ("Not posted: this source is muted in the inbox.", "Nicht gestellt: Diese Quelle ist im Eingang stummgeschaltet."),
@@ -820,4 +817,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Lässt sich von hier nicht öffnen. Das Fenster ist vielleicht geschlossen.",
     ),
     ("Couldn't open the entry.", "Der Eintrag ließ sich nicht öffnen."),
+    // Tray: inbox count (E3.3b)
+    ("Inbox ({n})", "Eingang ({n})"),
 ];
