@@ -12,6 +12,7 @@
 //! - [`style`]: the style functions for every Iced widget, light and dark.
 //! - [`icon`]: the bundled Lucide icons.
 //! - [`layout`]: the size classes of tiled windows (`layout::of(size)`).
+//! - [`markdown`]: Markdown to read (GitHub texts) in the Torro look.
 //! - [`shell`]: the Linear window frame (sidebar, inset panel, header bar, properties column)
 //!   and the app switcher; the sidebar expanded, collapsed to a rail of icons, or as a drawer.
 //! - [`ui_state`]: what a window remembers between starts (`ui.json`: the sidebar choice).
@@ -25,6 +26,7 @@ pub mod datetime;
 pub mod dialog;
 pub mod icon;
 pub mod layout;
+pub mod markdown;
 pub mod panel;
 pub mod shell;
 pub mod source;

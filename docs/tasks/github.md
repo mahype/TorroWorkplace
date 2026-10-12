@@ -378,6 +378,27 @@ K.21 (frei)
 - Abnahme: Tests (Haken in geteilter Liste schließt nichts, an GitHub geht nichts; Ziehen legt Verweis an bzw.
   verschiebt), Sichtprüfung des Ziehziels.
 
+### G.7 Text von GitHub als Markdown
+- [x] erledigt (Sichtprüfung mit `--demo --open pinned` in 1600×1000 und 480×900, hell und dunkel; die Demo
+  hat dafür ein Issue mit Markdown-Text. Verweise tragen nur die eigene Notiz, den Issue-Text zeigen nur Filterlisten)
+- **Modell:** Opus · **Braucht:** G.3 · **Dateien:** `crates/torro-gui/Cargo.toml` (Iced-Feature `markdown`),
+  `crates/torro-gui/src/{lib,markdown}.rs`, `crates/torrotasks/src/detail.rs`, `crates/torro-pim/src/demo.rs`
+  (Demo-Issue mit Markdown-Text für `--demo --open pinned`)
+- Rückmeldung 2026-10-12: Der Text von Issues und Pull Requests steht im Paneel als roher Markdown-Text. Wie in
+  [github.md](../github.md) („Seitenpaneel: Text als Markdown, nur lesen“) wird er dargestellt: Überschriften,
+  Absätze, Listen mit Aufgaben-Kästchen, Code, Zitate, Trennlinien, Tabellen, Links.
+- Baustein `torro_gui::markdown` im Torro-Stil (Inter in den Stufen, Farben aus der Palette, keine
+  Iced-Standardstile): Überschrift 1 `TITLE`, weitere `BODY_STRONG`; Absätze `BODY` in `TEXT_2`; Links unterstrichen
+  in `TEXT`; Code in Festbreitenschrift auf `RAISED`. Fett wird SemiBold (Inter liegt nur bis 600 bei).
+  Bilder werden nicht geladen: ihr Alternativtext als Link.
+- Links öffnen nur `http`/`https` im Browser (fremder Text, wie `Action::OpenUrl`). HTML im Text (Kommentare aus
+  Issue-Vorlagen, `<details>`) erscheint nicht.
+- Nur Einträge von GitHub; eigene Notizen bleiben Text zum Bearbeiten.
+- **Oberfläche:** Aufgaben-App, Paneel. **API/MCP:** keine neuen Requests; `tasks.list_todos` liefert den Text schon
+  roh, und das bleibt so.
+- Abnahme: Tests (Zerlegen, nur `http`/`https` öffnet, eigene Aufgaben bleiben bearbeitbar); Sichtprüfung mit einem
+  echten Issue-Text in Breit und Schmal, hell und dunkel.
+
 ## K Kalender
 
 ### K.21 Fällige Aufgaben im Kalender
