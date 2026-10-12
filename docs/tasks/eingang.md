@@ -198,7 +198,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 ## E2 Suite und Agenten
 
 ### E2.1 Quelle „Suite“: Freigaben und Kontoprobleme
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E1.2, A.3 · **Dateien:** `crates/torroworkplace/src/{inbox,approvals,pim}.rs`
 - Jede offene Freigabe ist ein Eintrag (`approval`, dringend, Aktionen „Allow“/„Deny“, die die Oberfläche
   als `approvals.decide_approval` schickt; Name aus A.3). Entschieden oder abgelaufen → erledigt sich

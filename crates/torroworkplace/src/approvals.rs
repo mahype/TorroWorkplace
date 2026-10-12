@@ -12,7 +12,9 @@
 //! `torroworkplace ctl allow|deny <id>`, or the desktop notification with "Allow" and "Deny" that
 //! every new approval shows ([`Approvals::system`]), whose click goes to the core with the app key.
 //! The notification closes once the approval is decided by any of these ways, and the core asks
-//! again about the open ones when it starts ([`Approvals::announce_open`]). The agent never gets a
+//! again about the open ones when it starts ([`Approvals::announce_open`]). Every open approval is
+//! also an entry of the inbox, with "Allow" and "Deny", done once it is decided or expired (task
+//! E2.1, [`crate::inbox::file_approvals`] over [`Approvals::with_open`]). The agent never gets a
 //! code it could confirm with. A command kept from agents ([`Mcp::Never`]: taking secrets,
 //! managing clients, deciding approvals) never becomes an approval, so a secret never reaches
 //! `approvals.json`.
@@ -324,6 +326,31 @@ impl Approvals {
             (self.notify.ask)(info);
         }
         Ok(open.len())
+    }
+
+    /// Runs `work` with the approvals still open as of `now` (expired ones are marked first) while
+    /// no approval can be opened or decided, and returns what it returns. So whatever `work` passes
+    /// the open approvals on to (the inbox, task E2.1) is never overtaken by an older view of them.
+    /// `work` must return at once: it holds up every other approval command. Without a file (no
+    /// home directory, tests without their own approvals) no approval can be open, and `work` gets
+    /// none.
+    pub async fn with_open<T>(
+        &self,
+        now: DateTime<Utc>,
+        work: impl FnOnce(&[ApprovalInfo]) -> T,
+    ) -> Result<T, ApprovalsError> {
+        if self.file.is_none() {
+            return Ok(work(&[]));
+        }
+        let state = self.state(now).await?;
+        let open: Vec<ApprovalInfo> = state
+            .entries
+            .iter()
+            .filter(|entry| entry.info.state.is_pending())
+            .map(|entry| entry.info.clone())
+            .collect();
+        // `state` is held until `work` returns.
+        Ok(work(&open))
     }
 
     /// The approvals `client` may see, newest first: its own, or all for `None` (the app key).

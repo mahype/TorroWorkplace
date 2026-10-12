@@ -70,6 +70,7 @@ use torro_core::i18n::{tr, trf};
 
 use crate::account::{self, Connected, Stored};
 use crate::approvals::{Facts, Known};
+use crate::inbox::{AccountCheck, Health, Trouble};
 use crate::notify;
 use crate::settings_service::SettingsStore;
 
@@ -78,6 +79,11 @@ const SYNC_EVERY: Duration = Duration::from_secs(5 * 60);
 /// The cached event window around now.
 const WINDOW_BACK_DAYS: i64 = 90;
 const WINDOW_AHEAD_DAYS: i64 = 365;
+
+/// How long every sync of an account must fail before the inbox shows it as an account problem
+/// (task E2.1, [`Trouble::SyncFailing`]): an outage of a few minutes, or a laptop that wakes up
+/// before its network, is nothing to bother the user with.
+pub const SYNC_PROBLEM_AFTER: Span = Span::minutes(30);
 
 /// One account in the core: who it is, its connection and what is cached of it.
 #[derive(Debug)]
@@ -90,6 +96,11 @@ struct Slot {
     client: Option<CalDavClient>,
     last_sync: Option<DateTime<Utc>>,
     problem: Option<String>,
+    /// What keeps the account from working and since when, for the inbox (task E2.1): set with
+    /// `problem` by a failed sync or a missing app password, cleared by a sync or sign-in that
+    /// works. `since` stays while the same trouble goes on, so "failing for 30 minutes" counts
+    /// from the first failure this core saw (the time is not stored; a restart starts afresh).
+    trouble: Option<(Trouble, DateTime<Utc>)>,
     /// With ids `<account-id>/<url>`; the events and todos name them the same way.
     collections: Vec<Collection>,
     events: Vec<Event>,
@@ -109,6 +120,7 @@ impl Slot {
             client,
             last_sync: None,
             problem: None,
+            trouble: None,
             collections: Vec::new(),
             events: Vec::new(),
             window: None,
@@ -126,7 +138,12 @@ impl Slot {
                 Slot::new(connected, client)
             }
             Stored::Unusable { account, problem } => {
-                Slot { problem: Some(problem), ..Slot::new(Connected { account, app_password: String::new() }, None) }
+                let trouble = Some((Trouble::SignInNeeded, Utc::now()));
+                Slot {
+                    problem: Some(problem),
+                    trouble,
+                    ..Slot::new(Connected { account, app_password: String::new() }, None)
+                }
             }
         }
     }
@@ -155,6 +172,19 @@ impl Slot {
         }
     }
 
+    /// How the account stands for the inbox at `now` (task E2.1): a refused or missing sign-in is
+    /// a problem at once, failing syncs only after [`SYNC_PROBLEM_AFTER`]; before that, and before
+    /// its first sync, it is unsure; after a sync that worked, fine.
+    fn check(&self, now: DateTime<Utc>) -> AccountCheck {
+        let health = match self.trouble {
+            Some((Trouble::SyncFailing, since)) if now - since <= SYNC_PROBLEM_AFTER => Health::Unsure,
+            Some((trouble, since)) => Health::Problem { trouble, since },
+            None if self.last_sync.is_some() => Health::Fine,
+            None => Health::Unsure,
+        };
+        AccountCheck { account: self.id().to_string(), label: self.label(), health }
+    }
+
     /// The account with all its cached collections, hidden ones included.
     fn info(&self) -> AccountInfo {
         let account = &self.connected.account;
@@ -177,6 +207,8 @@ struct State {
     signing_in: Option<(String, String)>,
     /// The filter lists of the GitHub accounts the core knows (task G.2).
     filters: Vec<FilterSlot>,
+    /// The stored accounts were read (or could not be), so `accounts` is all there is.
+    loaded: bool,
 }
 
 impl State {
@@ -482,6 +514,7 @@ impl PimService {
                 }
                 Err(err) => eprintln!("torroworkplace: cannot read the accounts: {err}"),
             }
+            service.state.write().await.loaded = true;
             loop {
                 let any = !service.state.read().await.accounts.is_empty();
                 if any {
@@ -925,6 +958,13 @@ impl PimService {
         combined_state(&accounts)
     }
 
+    /// How every account stands for the inbox at `now` (task E2.1, [`crate::inbox::tend_suite`]);
+    /// `None` until the stored accounts were read, so none of them counts as removed before.
+    pub async fn account_checks(&self, now: DateTime<Utc>) -> Option<Vec<AccountCheck>> {
+        let state = self.state.read().await;
+        state.loaded.then(|| state.accounts.iter().map(|slot| slot.check(now)).collect())
+    }
+
     /// Starts Login Flow v2 and finishes it in the background: the account is added, or the one
     /// with the same id gets the new app password, and is synced.
     async fn connect(self: &Arc<Self>, server: String) -> Response {
@@ -952,6 +992,7 @@ impl PimService {
                                 slot.connected = connected;
                                 slot.client = client;
                                 slot.problem = None;
+                                slot.trouble = None;
                                 slot.wipe_checked = false;
                             }
                             None => state.accounts.push(Slot::new(connected, client)),
@@ -1008,12 +1049,14 @@ impl PimService {
                 slot.todos = todos;
                 slot.last_sync = Some(Utc::now());
                 slot.problem = None;
+                slot.trouble = None;
                 slot.wipe_checked = false;
                 Ok(())
             }
             Err(err) => {
                 eprintln!("torroworkplace: sync of {id} failed: {err}");
                 slot.problem = Some(err.to_string());
+                slot.trouble = Some(failing(slot.trouble, &err, Utc::now()));
                 drop(state);
                 if err == ProviderError::Auth {
                     self.on_refused(id).await;
@@ -1422,6 +1465,20 @@ fn touched(
             .map(|t| Known { title: t.summary.clone(), start: None }),
     };
     Some((holder, item))
+}
+
+/// The trouble of an account whose sync just failed with `err` at `now`, after `before`: a refused
+/// app password or another failure, since `now` unless the same trouble went on already.
+fn failing(
+    before: Option<(Trouble, DateTime<Utc>)>,
+    err: &ProviderError,
+    now: DateTime<Utc>,
+) -> (Trouble, DateTime<Utc>) {
+    let trouble = if *err == ProviderError::Auth { Trouble::SignInRefused } else { Trouble::SyncFailing };
+    match before {
+        Some((same, since)) if same == trouble => (trouble, since),
+        _ => (trouble, now),
+    }
 }
 
 /// A request refused before anything changed: an API error code and a message for people.
@@ -2154,6 +2211,7 @@ pub(crate) mod tests {
             accounts: vec![slot_with(vec![])],
             signing_in: Some(("cloud.example.org".into(), "https://cloud.example.org/login/v2/flow/x".into())),
             filters: Vec::new(),
+            loaded: true,
         };
         let infos = account_infos(&state);
         assert_eq!(infos.len(), 2);
@@ -3398,5 +3456,56 @@ pub(crate) mod tests {
         let response = service.handle_within(Request::DeleteEvent { event: gone }, Reach::Suite).await;
         assert_eq!(code_of(&response), "not-found", "{response:?}");
         assert_eq!(lines(&record), [format!("GET {WORK}e.ics"), format!("GET {WORK}gone.ics")], "only reads");
+    }
+
+    #[tokio::test]
+    async fn account_checks_tell_the_inbox_which_accounts_need_the_user() {
+        let service = service();
+        let t0 = Utc::now();
+        assert_eq!(service.account_checks(t0).await, None, "nothing counts before the accounts are read");
+
+        let bob = torro_core::Account::nextcloud("https://other.example.org", "bob");
+        let unusable = Stored::Unusable { account: bob, problem: "Sign in again".into() };
+        {
+            let mut state = service.state.write().await;
+            state.loaded = true;
+            state.accounts.push(slot_with(Vec::new()));
+            state.accounts.push(Slot::loaded(unusable, None));
+        }
+        let health = |checks: Option<Vec<AccountCheck>>| -> Vec<Health> {
+            checks.expect("loaded").into_iter().map(|check| check.health).collect()
+        };
+        let checks = service.account_checks(t0).await.expect("loaded");
+        assert_eq!(checks[0].label, "anna@cloud.example.org");
+        assert_eq!(checks[0].health, Health::Unsure, "not synced since the core started");
+        assert!(matches!(checks[1].health, Health::Problem { trouble: Trouble::SignInNeeded, .. }));
+
+        // Synced once, then offline: unsure for 30 minutes, a problem since the first failure after.
+        let offline = ProviderError::Offline;
+        {
+            let mut state = service.state.write().await;
+            state.accounts[0].last_sync = Some(t0);
+            state.accounts.truncate(1);
+        }
+        assert_eq!(health(service.account_checks(t0).await), [Health::Fine]);
+        let first = t0 + Span::minutes(5);
+        service.state.write().await.accounts[0].trouble = Some(failing(None, &offline, first));
+        let again = failing(Some((Trouble::SyncFailing, first)), &offline, first + Span::minutes(5));
+        assert_eq!(again, (Trouble::SyncFailing, first), "the same trouble keeps its start");
+        assert_eq!(health(service.account_checks(first + SYNC_PROBLEM_AFTER).await), [Health::Unsure]);
+        let late = first + SYNC_PROBLEM_AFTER + Span::minutes(1);
+        assert_eq!(
+            health(service.account_checks(late).await),
+            [Health::Problem { trouble: Trouble::SyncFailing, since: first }]
+        );
+
+        // A refused app password is a problem at once, from the refusal on.
+        let refused = failing(Some((Trouble::SyncFailing, first)), &ProviderError::Auth, late);
+        assert_eq!(refused, (Trouble::SignInRefused, late));
+        service.state.write().await.accounts[0].trouble = Some(refused);
+        assert_eq!(
+            health(service.account_checks(late).await),
+            [Health::Problem { trouble: Trouble::SignInRefused, since: late }]
+        );
     }
 }

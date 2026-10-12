@@ -116,8 +116,8 @@ pub struct Core {
     /// ([`Approvals::system`]); tests keep theirs in a temporary directory.
     approvals: Arc<Approvals>,
     /// The inbox (task E1.2): the user's `inbox.sqlite` ([`Inbox::system`]); tests keep theirs
-    /// in a temporary directory.
-    inbox: Inbox,
+    /// in a temporary directory. Shared with the routine of the source `suite` (task E2.1).
+    inbox: Arc<Inbox>,
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
@@ -142,7 +142,7 @@ impl Core {
             settings,
             clients,
             approvals: Arc::new(Approvals::system()),
-            inbox: Inbox::system(),
+            inbox: Arc::new(Inbox::system()),
             github: Arc::new(GithubAccounts::system()),
             start_control_centre,
         }
@@ -158,7 +158,7 @@ impl Core {
     /// The core with `inbox` instead of the user's, for tests in other modules.
     #[cfg(test)]
     pub(crate) fn with_inbox(mut self, inbox: Inbox) -> Core {
-        self.inbox = inbox;
+        self.inbox = Arc::new(inbox);
         self
     }
 
@@ -170,8 +170,18 @@ impl Core {
     /// Starts the background work [`Core::new`] leaves out: asks the person again about the
     /// approvals still open (their notifications went with the core before, task A.3b), loads the
     /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
-    /// five minutes (task G.2). The daemon calls it once, next to `PimService::start`.
+    /// five minutes (task G.2), and files approvals and account problems in the inbox now and
+    /// every minute (task E2.1, [`crate::inbox::tend_suite`]). The daemon calls it once, next to
+    /// `PimService::start`.
     pub fn start(&self) {
+        let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
+        let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
+        tokio::spawn(async move {
+            loop {
+                crate::inbox::tend_suite(&inbox, &approvals, &pim, &github, Utc::now()).await;
+                tokio::time::sleep(crate::inbox::SUITE_EVERY).await;
+            }
+        });
         let approvals = Arc::clone(&self.approvals);
         tokio::spawn(async move {
             if let Err(err) = approvals.announce_open(Utc::now()).await {
@@ -282,7 +292,10 @@ impl Core {
             _ => crate::approvals::summary(&request, &self.facts(&request).await),
         };
         match self.approvals.open(client, &name.unwrap_or_default(), request, summary, Utc::now()).await {
-            Ok(approval) => Ok(Response::Pending { approval }),
+            Ok(approval) => {
+                crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
+                Ok(Response::Pending { approval })
+            }
             Err(err @ ApprovalsError::TooMany) => Ok(err.response()),
             Err(err) => {
                 eprintln!("torroworkplace: cannot ask for approval of {command}: {err}");
@@ -329,7 +342,11 @@ impl Core {
     /// A person's decision (`approvals.decide_approval`, app key only). Allowed, the command runs
     /// now ([`Core::run_approved`]) and its answer is kept in the approval.
     async fn decide_approval(&self, id: &str, allow: bool) -> Response {
-        let (client, request) = match self.approvals.decide(id, allow, Utc::now()).await {
+        let decided = self.approvals.decide(id, allow, Utc::now()).await;
+        if decided.is_ok() {
+            crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
+        }
+        let (client, request) = match decided {
             Ok(Decision::Run { client, request }) => (client, *request),
             Ok(Decision::Denied(approval)) => return Response::Approval { approval },
             Err(err) => return err.response(),
@@ -1102,6 +1119,37 @@ mod tests {
 
         let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         assert_eq!(ask(&core, Some(&key), delete()).await, Response::Ok, "runs without asking");
+    }
+
+    /// Task E2.1: the core files an approval in the inbox as it opens and resolves it as it is
+    /// decided, without waiting for its routine.
+    #[tokio::test]
+    async fn an_approval_is_an_inbox_entry_while_it_waits() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        save_template(&core, "dev");
+        let (_, key) = client(&core, RightsTemplate::ReadAndWrite.rights()).await;
+        let asked = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "dev".into() }).await);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let suite = || Request::ListItems {
+            lane: None,
+            source: Some(torro_inbox::SourceRef::suite()),
+            state: None,
+            since: None,
+            limit: None,
+        };
+        let entries = |response: Response| match response {
+            Response::Items { items } => items,
+            other => panic!("expected items, got {other:?}"),
+        };
+        let filed = entries(ask(&core, Some(&app_key), suite()).await);
+        assert_eq!(filed.len(), 1, "{filed:?}");
+        assert_eq!((filed[0].kind, filed[0].title.as_str()), (torro_inbox::Kind::Approval, asked.summary.as_str()));
+        assert_eq!(filed[0].actions[0], torro_inbox::Action::Allow { approval: asked.id.clone() });
+
+        ask(&core, Some(&app_key), decide(&asked.id, false)).await;
+        let resolved = entries(ask(&core, Some(&app_key), suite()).await);
+        assert!(matches!(resolved[0].state, torro_inbox::State::Done { .. }), "{resolved:?}");
     }
 
     /// The API review of A.3: a client sent the href of an important event with the title "Lunch",

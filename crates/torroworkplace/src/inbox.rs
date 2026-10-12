@@ -28,6 +28,14 @@
 //! rule 6). A client sees the `thread_key` of its own entries only ([`Stored::shown_to`]).
 //!
 //! Failures of the file reach clients without paths or details; those go to the core's log.
+//!
+//! **The source `suite`** (task E2.1) is filed by the core itself, not through a request: every
+//! open approval ([`file_approvals`]) and every account that needs the user
+//! ([`Inbox::file_account_problems`]) is one entry, owned by [`CORE_OWNER`], so no client and not
+//! even the app key's own reports can merge into or resolve it. The core brings them in line with
+//! what stands now ([`reconcile`]) after an approval opened or was decided, when it starts and
+//! every [`SUITE_EVERY`] ([`tend_suite`]): that is how an expired approval, a fixed account or a
+//! restart are caught up with. Only the app key changes these entries (security rule 1).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -41,17 +49,19 @@ use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use torro_core::AppId;
-use torro_core::i18n::trf;
+use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, Poster};
 use torro_inbox::{
-    AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceRef, State,
+    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, SourceInfo, SourceRef, State,
     StateFilter,
 };
 use torro_ipc::api::{self, HOOK_CLIENT, InboxForbidden, Selection};
-use torro_ipc::{ClientInfo, Request, Response};
+use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
 
-use crate::approvals::InboxFacts;
+use crate::account::github::GithubAccounts;
+use crate::approvals::{Approvals, InboxFacts};
+use crate::pim::PimService;
 
 /// The file in the core's state directory.
 pub const FILE: &str = "inbox.sqlite";
@@ -91,6 +101,21 @@ pub const PIDS_MAX: usize = 16;
 /// The owner of the entries the app key posts (`torroworkplace notify`). Client ids are hex
 /// digits, so this never meets one.
 const APP_OWNER: &str = "app";
+
+/// The owner of the entries the core files itself (task E2.1): approvals and account problems.
+/// Neither a client id nor [`APP_OWNER`], so no request merges into or resolves one of them.
+const CORE_OWNER: &str = "core";
+
+/// The start of the thread keys of approval entries, `approval:<approval id>`.
+const APPROVAL_THREADS: &str = "approval:";
+
+/// The start of the thread keys of account problems, `account:<account id>`: one entry per
+/// account, whatever its problem.
+const ACCOUNT_THREADS: &str = "account:";
+
+/// How often the core brings the entries of the suite in line ([`tend_suite`]): an approval that
+/// expired or an account that was fixed is done at most this long after.
+pub const SUITE_EVERY: Duration = Duration::from_secs(60);
 
 /// Tables and indexes of schema version 1.
 ///
@@ -231,6 +256,50 @@ impl Inbox {
             Ok((woken, removed))
         })
         .map_err(|failure| failure.to_string())
+    }
+
+    /// Files the approvals in `open` (pending ones; others are skipped) as entries of the source
+    /// `suite` at `now` and marks done the entries of approvals no longer among them (task E2.1):
+    /// kind `approval`, urgent, "for me", with "Allow" and "Deny" that carry the approval's id,
+    /// the summary the core wrote as title and `untrusted` (the summary quotes the client). One
+    /// entry per approval (thread key `approval:<id>`); calling it again with the same approvals
+    /// changes nothing. `open` must be all approvals open at `now`; the core passes them under the
+    /// approvals' lock ([`file_approvals`]). `Err` holds the message for the log.
+    pub fn file_approvals(&self, open: &[ApprovalInfo], now: DateTime<Utc>) -> Result<(), String> {
+        let matters = open.iter().filter(|info| info.state.is_pending()).map(approval_matter).collect();
+        self.with(|db| reconcile(db, APPROVAL_THREADS, matters, |_| true, now)).map_err(|f| f.to_string())
+    }
+
+    /// Files the accounts in `checks` that need the user as entries of the source `suite` at
+    /// `now` and marks done the entries of accounts that are fine again (task E2.1): kind
+    /// `account_problem`, "for me", not urgent, linking to the control centre. One entry per
+    /// account (thread key `account:<id>`); a new problem of the same account changes its texts.
+    ///
+    /// An account whose state is [`Health::Unsure`] keeps its entry as it is, open or done. With
+    /// `complete`, `checks` names every account the core has, and the entries of accounts missing
+    /// from it (removed meanwhile) are done too; without, they stay, since a service that has not
+    /// loaded its accounts yet would otherwise resolve them all. `Err` holds the message for the
+    /// log.
+    pub fn file_account_problems(
+        &self,
+        checks: &[AccountCheck],
+        complete: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let matters = checks
+            .iter()
+            .filter_map(|check| match check.health {
+                Health::Problem { trouble, since } => Some(account_matter(check, trouble, since)),
+                Health::Fine | Health::Unsure => None,
+            })
+            .collect();
+        let health = |thread_key: &str| checks.iter().find(|check| check.thread_key() == thread_key).map(|c| c.health);
+        // An entry without a problem is done when its account is fine, or gone from a complete list.
+        let fixed = |thread_key: &str| match health(thread_key) {
+            Some(health) => health == Health::Fine,
+            None => complete,
+        };
+        self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, now)).map_err(|f| f.to_string())
     }
 
     /// Runs `work` on the open database, opening it first if needed.
@@ -1064,6 +1133,231 @@ fn make_private(file: &Path) -> io::Result<()> {
     {
         let _ = file;
     }
+    Ok(())
+}
+
+/// How one account stands for the inbox (task E2.1), as its service sees it now
+/// ([`PimService::account_checks`], [`GithubAccounts::account_checks`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountCheck {
+    /// The account's id, as `accounts.list_accounts` names it.
+    pub account: String,
+    /// The name the user knows the account by: `anna@cloud.example.org`, a GitHub login.
+    pub label: String,
+    pub health: Health,
+}
+
+impl AccountCheck {
+    /// The thread key of the account's entry.
+    fn thread_key(&self) -> String {
+        format!("{ACCOUNT_THREADS}{}", self.account)
+    }
+}
+
+/// Whether an account needs the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    /// It works: its last sync or check succeeded. Its entry, if open, is done.
+    Fine,
+    /// Not known yet, or failing too briefly to bother the user (not synced since the core
+    /// started, offline for a few minutes). Its entry stays as it is.
+    Unsure,
+    /// It needs the user since `since`. An entry done before `since` opens again (the problem came
+    /// back); one done at or after it stays done (the user put this problem away).
+    Problem { trouble: Trouble, since: DateTime<Utc> },
+}
+
+/// What is wrong with an account; decides the texts of its entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    /// The server or GitHub refused the app password or token.
+    SignInRefused,
+    /// This device has no usable sign-in: the secret is missing from the keychain, or the token
+    /// belongs to another account now.
+    SignInNeeded,
+    /// Every sync failed for longer than [`crate::pim::SYNC_PROBLEM_AFTER`], for another reason
+    /// than a refused sign-in (offline, server errors).
+    SyncFailing,
+}
+
+/// Files the open approvals of `approvals` in `inbox` ([`Inbox::file_approvals`]) as of `now`,
+/// under the approvals' lock ([`Approvals::with_open`]), so an older view never overtakes a newer
+/// one. The core calls it after an approval was opened or decided, and [`tend_suite`] every
+/// minute, which catches expired approvals and those that vanished while the core was down.
+/// Failures go to the log; the approval itself works without its entry.
+pub async fn file_approvals(inbox: &Inbox, approvals: &Approvals, now: DateTime<Utc>) {
+    match approvals.with_open(now, |open| inbox.file_approvals(open, now)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => eprintln!("torroworkplace: inbox: cannot file the approvals: {err}"),
+        Err(err) => eprintln!("torroworkplace: inbox: cannot read the approvals to file them: {err}"),
+    }
+}
+
+/// The routine of the source `suite` at `now`: files the open approvals ([`file_approvals`]) and
+/// the accounts of the calendar service and the GitHub accounts that need the user
+/// ([`Inbox::file_account_problems`]). The list counts as complete only once both services loaded
+/// their accounts. The core runs it when it starts and every [`SUITE_EVERY`].
+pub async fn tend_suite(
+    inbox: &Inbox,
+    approvals: &Approvals,
+    pim: &PimService,
+    github: &GithubAccounts,
+    now: DateTime<Utc>,
+) {
+    file_approvals(inbox, approvals, now).await;
+    let (nextcloud, github) = (pim.account_checks(now).await, github.account_checks().await);
+    let complete = nextcloud.is_some() && github.is_some();
+    let checks: Vec<AccountCheck> = nextcloud.into_iter().chain(github).flatten().collect();
+    if let Err(err) = inbox.file_account_problems(&checks, complete, now) {
+        eprintln!("torroworkplace: inbox: cannot file the account problems: {err}");
+    }
+}
+
+/// A matter the core files itself, as it stands now.
+struct Matter {
+    thread_key: String,
+    kind: Kind,
+    title: String,
+    body: Option<String>,
+    link: Option<Link>,
+    actions: Vec<Action>,
+    untrusted: bool,
+    /// Since when it stands ([`Health::Problem`]).
+    since: DateTime<Utc>,
+}
+
+impl Matter {
+    /// The matter as a new entry `id` of the suite at `now`.
+    fn into_item(self, id: String, now: DateTime<Utc>) -> Item {
+        let (lane, urgent) = rules::placement(self.kind, None);
+        Item {
+            id,
+            source: SourceRef::suite(),
+            thread_key: self.thread_key,
+            kind: self.kind,
+            lane,
+            urgent,
+            title: cap(&self.title, TITLE_MAX),
+            body: self.body.map(|body| cap(&body, BODY_MAX)),
+            from: None,
+            agent: None,
+            received: now,
+            updated: now,
+            count: 1,
+            state: State::New,
+            link: self.link,
+            actions: self.actions,
+            untrusted: self.untrusted,
+        }
+    }
+}
+
+/// The entry of an open approval: its summary as title, who asks as body.
+fn approval_matter(approval: &ApprovalInfo) -> Matter {
+    Matter {
+        thread_key: format!("{APPROVAL_THREADS}{}", approval.id),
+        kind: Kind::Approval,
+        // Built by the core and made harmless (`approvals::summary`), but it quotes the client.
+        title: approval.summary.clone(),
+        body: Some(trf("{client} asks for approval", &[("client", &approval.client_name)])),
+        link: None,
+        actions: vec![Action::Allow { approval: approval.id.clone() }, Action::Deny { approval: approval.id.clone() }],
+        untrusted: true,
+        since: approval.created,
+    }
+}
+
+/// The entry of an account that needs the user: written by the core in its language, so trusted;
+/// opening it opens the control centre, where the account can be signed in again.
+fn account_matter(check: &AccountCheck, trouble: Trouble, since: DateTime<Utc>) -> Matter {
+    let account = [("account", &check.label as &dyn fmt::Display)];
+    let (title, body) = match trouble {
+        Trouble::SignInRefused => (
+            trf("Sign-in to {account} was refused", &account),
+            tr("The service no longer accepts the sign-in of this device. Sign in again under Accounts."),
+        ),
+        Trouble::SignInNeeded => (
+            trf("Sign in to {account} again", &account),
+            tr("This device has no valid sign-in for the account. Sign in again under Accounts."),
+        ),
+        Trouble::SyncFailing => (
+            trf(
+                "{account} has not synced for {minutes} minutes",
+                &[account[0], ("minutes", &crate::pim::SYNC_PROBLEM_AFTER.num_minutes())],
+            ),
+            tr("Calendars and tasks show what was synced last. Check the connection, or open Accounts."),
+        ),
+    };
+    Matter {
+        thread_key: check.thread_key(),
+        kind: Kind::AccountProblem,
+        title,
+        body: Some(body.to_string()),
+        // `Link::App` names an app, not a page in it: the control centre opens where it opens.
+        link: Some(Link::App { app: AppId::WORKPLACE.binary.to_string() }),
+        actions: Vec::new(),
+        untrusted: false,
+        since,
+    }
+}
+
+/// Brings the core's entries whose thread key starts with `family` in line with `matters`, all
+/// matters of that family as they stand at `now`:
+///
+/// - a matter without an entry gets one, unless the user muted the suite;
+/// - an open or snoozed entry keeps its state, its texts follow the matter;
+/// - an entry done before the matter began ([`Matter::since`]) opens again ([`rules::merge`],
+///   unless muted): the matter came back. One done since stays done: the user put it away;
+/// - an open or snoozed entry without a matter is done when `fixed` says so for its thread key.
+///
+/// Nothing is throttled ([`Poster::Core`]); all in one transaction.
+fn reconcile(
+    db: &mut Connection,
+    family: &str,
+    matters: Vec<Matter>,
+    fixed: impl Fn(&str) -> bool,
+    now: DateTime<Utc>,
+) -> Result<(), Failure> {
+    let tx = db.transaction()?;
+    let condition = "owner = ? AND instr(thread_key, ?) = 1";
+    let stored = read_items(&tx, &Scope::All, condition, vec![text(CORE_OWNER), text(family)], "")?;
+    let mut entries: BTreeMap<String, Item> =
+        stored.into_iter().map(|stored| (stored.item.thread_key.clone(), stored.item)).collect();
+    let suite = vec![text(SourceRef::suite().key())];
+    let muted = !read_rules(&tx, &Scope::All, "source = ? AND effect = 'muted'", suite)?.is_empty();
+    for matter in matters {
+        match entries.remove(&matter.thread_key) {
+            None if muted => {}
+            None => insert_item(&tx, CORE_OWNER, &matter.into_item(new_id()?, now))?,
+            Some(entry) => match entry.state {
+                State::Done { at } if at < matter.since && !muted => {
+                    let incoming = matter.into_item(entry.id.clone(), now);
+                    update_item(&tx, &rules::merge(entry, incoming))?;
+                }
+                State::Done { .. } => {}
+                State::New | State::Seen | State::Snoozed { .. } => {
+                    let current = Item {
+                        title: cap(&matter.title, TITLE_MAX),
+                        body: matter.body.map(|body| cap(&body, BODY_MAX)),
+                        link: matter.link,
+                        actions: matter.actions,
+                        untrusted: matter.untrusted,
+                        ..entry.clone()
+                    };
+                    if current != entry {
+                        update_item(&tx, &current)?;
+                    }
+                }
+            },
+        }
+    }
+    for (thread_key, mut entry) in entries {
+        if !matches!(entry.state, State::Done { .. }) && fixed(&thread_key) {
+            rules::set_done(&mut entry, true, now);
+            update_item(&tx, &entry)?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1904,5 +2198,202 @@ pub(crate) mod tests {
         let inbox = Inbox::system();
         assert_eq!(code(&inbox.handle(all(), None, at(8, 0))), "error");
         assert!(inbox.tend(at(8, 0), true).is_err());
+    }
+
+    /// The entries of the source `suite`, as the app key lists them.
+    fn suite(inbox: &Inbox, now: DateTime<Utc>) -> Vec<Item> {
+        let request =
+            Request::ListItems { lane: None, source: Some(SourceRef::suite()), state: None, since: None, limit: None };
+        let mut items = items(inbox.handle(request, None, now));
+        items.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
+        items
+    }
+
+    async fn ask(approvals: &Approvals, template: &str, now: DateTime<Utc>) -> ApprovalInfo {
+        let request = Request::DeleteTemplate { id: template.into() };
+        let summary = format!("Delete template \"{template}\"");
+        approvals.open("c1", "Claude Code", request, summary, now).await.expect("opened")
+    }
+
+    fn entry_of<'a>(items: &'a [Item], approval: &ApprovalInfo) -> &'a Item {
+        let key = format!("approval:{}", approval.id);
+        items.iter().find(|item| item.thread_key == key).expect("an entry for the approval")
+    }
+
+    #[tokio::test]
+    async fn an_open_approval_is_an_entry_until_decided_or_expired() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        let first = ask(&approvals, "dev", at(8, 0)).await;
+        let second = ask(&approvals, "ops", at(8, 0)).await;
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+
+        let items = suite(&inbox, at(8, 0));
+        assert_eq!(items.len(), 2, "one entry per approval, filing twice adds none: {items:?}");
+        let entry = entry_of(&items, &first);
+        assert_eq!((entry.kind, entry.lane, entry.urgent, entry.untrusted), (Kind::Approval, Lane::ForMe, true, true));
+        assert_eq!(entry.title, first.summary);
+        let asks = trf("{client} asks for approval", &[("client", &"Claude Code")]);
+        assert_eq!(entry.body.as_deref(), Some(asks.as_str()));
+        assert_eq!(
+            entry.actions,
+            [Action::Allow { approval: first.id.clone() }, Action::Deny { approval: first.id.clone() }]
+        );
+        assert_eq!((entry.state, entry.count, entry.link.clone()), (State::New, 1, None));
+
+        // Decided: done at once. The other one expires ten minutes after it was asked for.
+        approvals.decide(&first.id, false, at(8, 1)).await.expect("decided");
+        file_approvals(&inbox, &approvals, at(8, 1)).await;
+        let items = suite(&inbox, at(8, 1));
+        assert_eq!(entry_of(&items, &first).state, State::Done { at: at(8, 1) });
+        assert_eq!(entry_of(&items, &second).state, State::New);
+
+        file_approvals(&inbox, &approvals, at(8, 11)).await;
+        assert_eq!(entry_of(&suite(&inbox, at(8, 11)), &second).state, State::Done { at: at(8, 11) });
+    }
+
+    #[tokio::test]
+    async fn a_restart_files_what_is_missing_and_resolves_what_vanished() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        let filed = ask(&approvals, "dev", at(8, 0)).await;
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+        // The core stopped right after storing this one, before its entry was filed.
+        let unfiled = ask(&approvals, "ops", at(8, 1)).await;
+        // An entry whose approval is gone (dropped with a damaged approvals.json, say).
+        let vanished = Item { id: "gone".into(), thread_key: "approval:gone".into(), ..approval(at(7, 0)) };
+        file_from_core(&inbox, &vanished);
+        drop((inbox, approvals));
+
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        file_approvals(&inbox, &approvals, at(8, 2)).await;
+        let items = suite(&inbox, at(8, 2));
+        assert_eq!(items.len(), 3, "{items:?}");
+        let kept = entry_of(&items, &filed);
+        assert_eq!((kept.state, kept.count), (State::New, 1), "no duplicate");
+        assert_eq!(entry_of(&items, &unfiled).state, State::New);
+        let gone = items.iter().find(|item| item.id == "gone").expect("kept");
+        assert_eq!(gone.state, State::Done { at: at(8, 2) });
+    }
+
+    fn check(account: &str, health: Health) -> AccountCheck {
+        AccountCheck { account: account.into(), label: format!("{account}@cloud.example.org"), health }
+    }
+
+    fn problem(trouble: Trouble, since: DateTime<Utc>) -> Health {
+        Health::Problem { trouble, since }
+    }
+
+    fn account_entry<'a>(items: &'a [Item], account: &str) -> &'a Item {
+        let key = format!("account:{account}");
+        items.iter().find(|item| item.thread_key == key).expect("an entry for the account")
+    }
+
+    #[test]
+    fn an_account_problem_comes_and_goes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let refused = [check("anna", problem(Trouble::SignInRefused, at(8, 0))), check("bob", Health::Fine)];
+        inbox.file_account_problems(&refused, true, at(8, 0)).expect("filed");
+        inbox.file_account_problems(&refused, true, at(8, 1)).expect("filed");
+
+        let items = suite(&inbox, at(8, 1));
+        assert_eq!(items.len(), 1, "only anna needs the user, once: {items:?}");
+        let entry = account_entry(&items, "anna");
+        assert_eq!(
+            (entry.kind, entry.lane, entry.urgent, entry.untrusted),
+            (Kind::AccountProblem, Lane::ForMe, false, false)
+        );
+        assert_eq!(entry.title, trf("Sign-in to {account} was refused", &[("account", &"anna@cloud.example.org")]));
+        assert_eq!(entry.link, Some(Link::App { app: "torroworkplace".into() }));
+        assert!(rules::may_open(entry, is_app_of_the_suite), "the control centre may be opened");
+        assert_eq!((entry.state, entry.count), (State::New, 1));
+
+        // Another problem of the same account changes its entry; fixed, it is done.
+        let failing = [check("anna", problem(Trouble::SyncFailing, at(8, 2)))];
+        inbox.file_account_problems(&failing, true, at(8, 3)).expect("filed");
+        let entry = account_entry(&suite(&inbox, at(8, 3)), "anna").clone();
+        let minutes = crate::pim::SYNC_PROBLEM_AFTER.num_minutes();
+        let args: [(&str, &dyn fmt::Display); 2] = [("account", &"anna@cloud.example.org"), ("minutes", &minutes)];
+        let title = trf("{account} has not synced for {minutes} minutes", &args);
+        assert_eq!((entry.title, entry.state, entry.count), (title, State::New, 1));
+        inbox.file_account_problems(&[check("anna", Health::Fine)], true, at(8, 4)).expect("filed");
+        assert_eq!(account_entry(&suite(&inbox, at(8, 4)), "anna").state, State::Done { at: at(8, 4) });
+
+        // It comes back: the entry opens again. Put away by the person, it stays away while
+        // this problem lasts.
+        let back = [check("anna", problem(Trouble::SignInNeeded, at(9, 0)))];
+        inbox.file_account_problems(&back, true, at(9, 0)).expect("filed");
+        let entry = account_entry(&suite(&inbox, at(9, 0)), "anna").clone();
+        assert_eq!((entry.state, entry.count), (State::New, 2));
+        inbox.handle(Request::SetItemDone { id: entry.id.clone(), done: true }, None, at(9, 5));
+        inbox.file_account_problems(&back, true, at(9, 6)).expect("filed");
+        assert_eq!(account_entry(&suite(&inbox, at(9, 6)), "anna").state, State::Done { at: at(9, 5) });
+    }
+
+    #[test]
+    fn an_unsure_or_unlisted_account_keeps_its_entry_until_the_list_is_complete() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let both = [
+            check("anna", problem(Trouble::SyncFailing, at(8, 0))),
+            check("bob", problem(Trouble::SignInNeeded, at(8, 0))),
+        ];
+        inbox.file_account_problems(&both, true, at(8, 0)).expect("filed");
+
+        // After a restart nothing is known yet: anna has not synced, bob's service has not loaded.
+        inbox.file_account_problems(&[check("anna", Health::Unsure)], false, at(8, 1)).expect("filed");
+        let items = suite(&inbox, at(8, 1));
+        assert!(items.iter().all(|item| item.state == State::New), "{items:?}");
+
+        // Once every service has loaded, an account that is not listed was removed.
+        inbox.file_account_problems(&[check("anna", Health::Unsure)], true, at(8, 2)).expect("filed");
+        let items = suite(&inbox, at(8, 2));
+        assert_eq!(account_entry(&items, "anna").state, State::New);
+        assert_eq!(account_entry(&items, "bob").state, State::Done { at: at(8, 2) });
+    }
+
+    #[tokio::test]
+    async fn an_agent_cannot_put_away_an_approval_or_an_account_problem() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (inbox, approvals) = (inbox_in(dir.path()), crate::approvals::tests::quiet_in(dir.path()));
+        let asked = ask(&approvals, "dev", at(8, 0)).await;
+        file_approvals(&inbox, &approvals, at(8, 0)).await;
+        let problems = [check("anna", problem(Trouble::SignInRefused, at(8, 0)))];
+        inbox.file_account_problems(&problems, true, at(8, 0)).expect("filed");
+        let items = suite(&inbox, at(8, 0));
+        assert_eq!(items.len(), 2);
+
+        // A client that sees the suite reads them but changes nothing, nor resolves their threads.
+        let script = script();
+        for entry in &items {
+            let done = Request::SetItemDone { id: entry.id.clone(), done: true };
+            assert_eq!(code(&inbox.handle(done.clone(), Some(&script), at(8, 1))), "forbidden");
+            assert_eq!(inbox.refusal(&done, Some(&script)).as_ref().map(code), Some("forbidden"));
+        }
+        for thread_key in [format!("approval:{}", asked.id), "account:anna".to_string()] {
+            let resolve = Request::ResolveItems { thread_key };
+            assert_eq!(inbox.handle(resolve.clone(), Some(&script), at(8, 2)), Response::Ok);
+            // Not even the app key's own reports share the core's threads.
+            assert_eq!(inbox.handle(resolve, None, at(8, 2)), Response::Ok);
+        }
+        assert!(suite(&inbox, at(8, 3)).iter().all(|item| item.state == State::New));
+    }
+
+    #[test]
+    fn a_muted_suite_gets_no_new_entries_but_old_ones_still_resolve() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let anna = [check("anna", problem(Trouble::SignInNeeded, at(8, 0)))];
+        inbox.file_account_problems(&anna, true, at(8, 0)).expect("filed");
+        let mute = Request::MuteSource { source: SourceRef::suite(), muted: true };
+        assert_eq!(inbox.handle(mute, None, at(8, 1)), Response::Ok);
+
+        let checks = [check("anna", Health::Fine), check("bob", problem(Trouble::SignInNeeded, at(8, 2)))];
+        inbox.file_account_problems(&checks, true, at(8, 2)).expect("filed");
+        let items = suite(&inbox, at(8, 2));
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(account_entry(&items, "anna").state, State::Done { at: at(8, 2) });
     }
 }
