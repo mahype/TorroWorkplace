@@ -713,4 +713,30 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("done", "erledigt"),
     ("denied", "abgelehnt"),
     ("expired", "abgelaufen"),
+    // Control centre: approvals (A.8)
+    ("Approvals", "Freigaben"),
+    ("No requests waiting.", "Keine Anfragen offen."),
+    (
+        "When an agent wants to change or delete something, you decide here.",
+        "Wenn ein Agent etwas ändern oder löschen will, entscheidest du hier.",
+    ),
+    ("Nothing waits for you right now.", "Gerade wartet nichts auf dich."),
+    (
+        "Allowed commands run with the agent's rights at that moment. Unanswered requests expire after ten minutes.",
+        "Erlaubte Befehle laufen mit den Rechten, die der Agent in diesem Moment hat. Unbeantwortete Anfragen verfallen nach zehn Minuten.",
+    ),
+    ("Recently decided", "Zuletzt entschieden"),
+    (
+        "Decided and expired requests stay here for a day.",
+        "Entschiedene und abgelaufene Anfragen bleiben einen Tag hier.",
+    ),
+    ("Waiting", "Wartet"),
+    ("Denied", "Abgelehnt"),
+    ("Expired", "Abgelaufen"),
+    ("Expires now", "Läuft gleich ab"),
+    ("Less than a minute left", "Noch weniger als eine Minute"),
+    ("{n} min left", "noch {n} Min."),
+    ("Approvals ({n})", "Freigaben ({n})"),
+    ("1 request waits for your approval", "1 Anfrage wartet auf deine Freigabe"),
+    ("{n} requests wait for your approval", "{n} Anfragen warten auf deine Freigabe"),
 ];
