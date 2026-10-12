@@ -425,6 +425,25 @@ impl Ui {
                 }
                 messages
             }
+            Open::WizardMail(demo) => {
+                let mut messages =
+                    vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)];
+                messages.extend(
+                    wizard::demo_messages(demo)
+                        .into_iter()
+                        .map(|message| Message::Accounts(accounts::Message::Wizard(message))),
+                );
+                messages
+            }
+            Open::ChangePassword => {
+                let caldav = accounts::listed(&self.data.accounts).find(|account| account.kind == "caldav");
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                if let Some(account) = caldav {
+                    messages.push(Message::Accounts(accounts::Message::Open(account.id.clone())));
+                    messages.push(Message::Accounts(accounts::Message::ChangePassword));
+                }
+                messages
+            }
             Open::GithubDetail => {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
                 let mut messages = vec![Message::Select(Section::Accounts)];
@@ -1435,6 +1454,23 @@ mod tests {
             let github = started(&["--demo", "--open", state]);
             assert!(github.accounts.busy() || github.page_overlay().is_some(), "{state}: the dialog is open");
         }
+        for state in [
+            "wizard-mail",
+            "wizard-mail-found",
+            "wizard-mail-unsupported",
+            "wizard-mail-none",
+            "wizard-mail-password",
+            "wizard-mail-refused",
+            "wizard-mail-services",
+            "wizard-mail-done",
+        ] {
+            let mail = started(&["--demo", "--open", state]);
+            assert_eq!(mail.section, Section::Accounts, "{state}");
+            assert!(mail.accounts.wizard.is_some() && mail.page_overlay().is_some(), "{state}: the dialog is open");
+        }
+        let password = started(&["--demo", "--open", "change-password"]);
+        assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@mailbox.org@dav.mailbox.org"));
+        assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
 
@@ -1478,6 +1514,7 @@ mod tests {
         assert_eq!(demo.perform(Action::OpenUrl("https://example.org".into())).units(), 0);
         assert_eq!(demo.update(Message::Tick).units(), 0, "no reload from a service");
         assert_eq!(demo.update(Message::Sent(Ok(Response::Ok))).units(), 0);
+        let accounts = demo.data.accounts.len();
         // What the pages and the shell do on their own account.
         let messages = [
             Message::Apps(apps::Message::Open("torrotasks".into())),
@@ -1499,7 +1536,7 @@ mod tests {
             let text = format!("{message:?}");
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
-        assert_eq!(demo.data.accounts.len(), 3, "removing an account in the demo changes nothing");
+        assert_eq!(demo.data.accounts.len(), accounts, "removing an account in the demo changes nothing");
         assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 3, "nor do the inbox's controls");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);

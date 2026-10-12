@@ -2496,7 +2496,8 @@ mod tests {
         assert_eq!(woke.ok(), Some(true), "a decision wakes the tray");
 
         // One that expires in a moment wakes it without any change, and is no longer counted then.
-        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::milliseconds(100);
+        // Two seconds left, so the count before the expiry holds even under a loaded parallel test run.
+        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::seconds(2);
         core.approvals.open("c1", "One", delete("b"), None, "b".into(), soon).await.expect("opened");
         changes.mark_unchanged();
         assert_eq!(core.snapshot().await.approvals_waiting, 1);
