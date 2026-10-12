@@ -239,6 +239,8 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
     page“; Punkte in Zeilen-Untertiteln einheitlich weglassen; „Not found“-Zeilen gleich hoch wie gefundene;
     Häkchen-Feld im hellen Modus leichter (TEXT_2).
   - **Schön:** Schlüssel im Schritt „Key“ tabellarisch.
+  - **Aus E1.2c (H1):** Die Auswahl „Inbox sources“ bietet `suite` nicht mehr an; Hinweis im Fußtext, dass Freigaben
+    und Kontoprobleme nur der Mensch sieht.
 - **API/MCP:** keine.
 - **Abnahme:** `torro-design-review` ohne Muss-Befund.
 

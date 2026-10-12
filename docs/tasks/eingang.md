@@ -178,6 +178,28 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **API/MCP:** keine neuen Befehle.
 - **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
 
+### E1.2c Suite-Einträge nur für den Menschen, Freigaben ohne Austausch (aus der API-Prüfung bis A.7)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E2.1, E2.4, E3.5, A.5, A.7 · **Dateien:** `crates/torroworkplace/src/{inbox,core,approvals,audit,client_setup}.rs`,
+  `crates/torro-ipc/src/api.rs`, `docs/api.md`
+- **Hoch (H1):** Die Quelle `suite` (Freigaben anderer Agenten, Kontoprobleme) sieht **kein** Client-Schlüssel,
+  auch nicht bei `inbox_sources: All` oder ausdrücklicher Auswahl. Entschieden 2026-10-12 (Empfehlung, kein
+  Widerspruch). Test: Client B sieht die Freigabe von Client A nicht (list/get/list_sources).
+- **Mittel (M2):** Eine Freigabe für einen Inbox-Befehl merkt sich `updated` des Eintrags; hat er sich bis zur
+  Ausführung geändert → `conflict`. `create_task_from_item` legt den Titel bei der Anfrage fest. Zusammenfassungen
+  sagen, was läuft: `open_item` nennt Host, App oder „agent window“, `create_task_from_item` das Fälligkeitsdatum.
+- **Mittel (M3):** `open_item` mit einem Web-Link braucht bei Client-Schlüsseln **immer** eine Freigabe
+  (Zusammenfassung mit Host); Katalogbeschreibung passt sich an.
+- **Mittel (M4):** `docs/api.md`: Inbox-Zeile mit `open_item` und `create_task_from_item` (inkl. Tasks-Prüfung),
+  `clients.activity`, in „Was nie nach außen geht“ Punkt 1 die Ausnahme „Schlüssel eines neuen Clients einmal an
+  die Steuerzentrale, die ihn in die Konfiguration des Agenten bzw. eine 0600-Schlüsseldatei schreibt“, Abschnitt
+  zum Assistenten mit Gemini, Hooks, Schlüsseldateien, Sicherungen.
+- **Niedrig:** `audit::ids`: Sammlungs-Kennungen nach dem Konto als Prüfsumme, Kennungen vom Client nur bei
+  passendem Format (sonst Prüfsumme); abgelehnte Freigabe protokolliert die Kennungen der gespeicherten Anfrage;
+  `client_setup::replace` verweigert kaputte Symlinks statt sie zu ersetzen.
+- **API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests je Punkt; `torro-api-review` ohne hohen Befund.
+
 ### E1.3 MCP, `torroworkplace notify` und Client für die App
 - [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E1.2, E3.1 · **Dateien:** `crates/torroworkplace/src/{mcp,cli}.rs`,
