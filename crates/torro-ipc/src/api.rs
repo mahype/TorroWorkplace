@@ -1316,9 +1316,10 @@ static CONNECT_MAIL: Command = Command {
     mcp: Mcp::Never,
     description: "Signs in to a mail account (IMAP and SMTP, and on request the calendars and tasks of the same \
                   sign-in over CalDAV) with the password a person typed in the control centre: checks it with the \
-                  servers without sending anything, keeps it in the system keychain and adds the account. A CalDAV \
-                  account of the same sign-in is taken over and leaves the account list. Returns the account, \
-                  never the password. Only the app key may use it.",
+                  servers without sending anything, keeps it in the system keychain and adds the account. \
+                  Connecting an account again replaces servers and password, and can switch on its calendars and \
+                  tasks. A CalDAV account of the same sign-in is taken over and leaves the account list. Returns \
+                  the account, never the password. Only the app key may use it.",
 };
 
 static UPDATE_MAIL_ACCOUNT: Command = Command {
@@ -1500,8 +1501,9 @@ static LIST_APPROVALS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists this key's commands that wait for a person's approval, and those decided or expired within \
-                  the last day with their outcome, newest first. An approval expires after ten minutes, a question \
-                  of `approvals.ask_permission` after about 30 seconds.",
+                  the last day with their outcome, newest first; sending mail lists its recipients, attachments and \
+                  text start in `details`. An approval expires after ten minutes, a question of \
+                  `approvals.ask_permission` after about 30 seconds.",
 };
 
 static APPROVAL_STATUS: Command = Command {
@@ -1809,9 +1811,11 @@ static SEND_DRAFT: Command = Command {
     mcp: Mcp::Tool,
     description: "Sends one of your saved drafts by its id, keeps a copy in the sent folder and removes the draft. It \
                   cannot be taken back. Unless the person allowed sending without asking, it waits for their \
-                  approval, which shows account, subject and recipients; if the draft changes meanwhile it is not \
-                  sent. `forbidden` when the person does not let this key send mail. `delivery: unknown` means the \
-                  connection broke after handing the message over: it is never sent again by itself.",
+                  approval, which shows account, subject, every recipient (Bcc counted and named), the \
+                  attachments and the start of the text; if the draft changes meanwhile it is not sent. \
+                  `forbidden` when the person does not let this key send mail. `delivery: unknown` means the \
+                  connection broke after handing the message over: the draft stays and is never sent again by \
+                  itself, so do not send it again; tell the person to check their sent mail.",
 };
 
 #[cfg(test)]

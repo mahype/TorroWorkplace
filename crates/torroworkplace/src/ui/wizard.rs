@@ -62,7 +62,6 @@
 //! puts it on the dialog surface over the whole window (`super::dialog`).
 
 use chrono::{DateTime, Utc};
-use iced::Length::FillPortion;
 use iced::widget::space as blank;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
@@ -75,6 +74,7 @@ use torro_ipc::{AccountInfo, Request, Response, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_pim::AccountState;
 
+use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
 
 /// GitHub's page for a new classic token, with the scope the suite needs (`repo`: private
@@ -266,77 +266,6 @@ impl Offer {
                 .accounts
                 .iter()
                 .any(|account| account.id == id && account.unsupported.is_none() && !account.connected)
-    }
-}
-
-/// The two mail servers of an account.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Server {
-    /// Incoming mail.
-    Imap,
-    /// Outgoing mail (submission).
-    Smtp,
-}
-
-impl Server {
-    /// The usual port for `security`: IMAP 993 (TLS) or 143 (STARTTLS), SMTP 465 or 587.
-    fn default_port(self, security: Security) -> u16 {
-        match (self, security) {
-            (Server::Imap, Security::Tls) => 993,
-            (Server::Imap, Security::StartTls) => 143,
-            (Server::Smtp, Security::Tls) => 465,
-            (Server::Smtp, Security::StartTls) => 587,
-        }
-    }
-
-    /// What most providers use when the search found nothing: IMAP over TLS, SMTP with STARTTLS.
-    fn default_security(self) -> Security {
-        match self {
-            Server::Imap => Security::Tls,
-            Server::Smtp => Security::StartTls,
-        }
-    }
-}
-
-/// One mail server as typed under "Advanced": the port stays text until it is sent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ServerFields {
-    host: String,
-    port: String,
-    security: Security,
-}
-
-impl ServerFields {
-    /// No host yet, with the usual port and security of `server`.
-    fn empty(server: Server) -> ServerFields {
-        let security = server.default_security();
-        ServerFields { host: String::new(), port: server.default_port(security).to_string(), security }
-    }
-
-    /// The fields of a server the search found.
-    fn of(endpoint: &Endpoint) -> ServerFields {
-        ServerFields { host: endpoint.host.clone(), port: endpoint.port.to_string(), security: endpoint.security }
-    }
-
-    /// Nothing was entered for this server.
-    fn is_blank(&self) -> bool {
-        self.host.trim().is_empty()
-    }
-
-    /// The server as the request wants it; `None` without a host or with a port that is no port.
-    fn endpoint(&self) -> Option<Endpoint> {
-        let host = self.host.trim();
-        let port = self.port.trim().parse::<u16>().ok().filter(|port| *port > 0)?;
-        (!host.is_empty()).then(|| Endpoint { host: host.to_string(), port, security: self.security })
-    }
-
-    /// Another security: a port that was the usual one of the old security follows to the usual
-    /// one of the new, so switching to STARTTLS does not leave port 993 behind.
-    fn set_security(&mut self, server: Server, security: Security) {
-        if self.port.trim() == server.default_port(self.security).to_string() {
-            self.port = server.default_port(security).to_string();
-        }
-        self.security = security;
     }
 }
 
@@ -1419,40 +1348,6 @@ fn advanced<'a>(open: bool, content: Element<'a, Message>) -> Element<'a, Messag
     block.into()
 }
 
-/// How the width of the host and port fields relate: a port is a few digits, a host a name.
-const HOST_SHARE: u16 = 3;
-const PORT_SHARE: u16 = 1;
-
-/// One mail server under "Advanced": host and port in one row, the security in the next. Enter in
-/// a field works like Continue.
-fn server_group<'a>(
-    server: Server,
-    fields: &'a ServerFields,
-    title: &'static str,
-    host_placeholder: &'static str,
-    submit: Option<Message>,
-) -> Element<'a, Message> {
-    let host = field(host_placeholder, &fields.host)
-        .on_input(move |host| Message::ServerHostChanged(server, host))
-        .on_submit_maybe(submit.clone())
-        .width(FillPortion(HOST_SHARE));
-    let port = field(tr("Port"), &fields.port)
-        .on_input(move |port| Message::ServerPortChanged(server, port))
-        .on_submit_maybe(submit)
-        .width(FillPortion(PORT_SHARE));
-    // TLS and STARTTLS are the protocols' names, the same in every language.
-    let security = widgets::segmented(
-        [
-            ("TLS", Message::ServerSecurityPicked(server, Security::Tls)),
-            ("STARTTLS", Message::ServerSecurityPicked(server, Security::StartTls)),
-        ],
-        usize::from(fields.security == Security::StartTls),
-    );
-    let rows =
-        vec![row_frame(row![host, port].spacing(space::S), false), setting_row(None, tr("Security"), None, security)];
-    widgets::group(title, rows, None)
-}
-
 /// What "Advanced" holds on the address step: both mail servers and the CalDAV address, filled in
 /// with what was found.
 fn servers_block(state: &State) -> Element<'_, Message> {
@@ -1460,9 +1355,19 @@ fn servers_block(state: &State) -> Element<'_, Message> {
     let submit = mail_can_continue(state, state.step).then_some(Message::Continue);
     let caldav =
         field("https://dav.example.org", &mail.caldav).on_input(Message::CaldavChanged).on_submit_maybe(submit.clone());
+    let server = |which: Server, fields, titles| {
+        server_group(
+            fields,
+            titles,
+            move |host| Message::ServerHostChanged(which, host),
+            move |port| Message::ServerPortChanged(which, port),
+            move |security| Message::ServerSecurityPicked(which, security),
+            submit.clone(),
+        )
+    };
     column![
-        server_group(Server::Imap, &mail.imap, tr("Incoming mail (IMAP)"), "imap.example.org", submit.clone()),
-        server_group(Server::Smtp, &mail.smtp, tr("Outgoing mail (SMTP)"), "smtp.example.org", submit),
+        server(Server::Imap, &mail.imap, imap_titles()),
+        server(Server::Smtp, &mail.smtp, smtp_titles()),
         field_group(
             tr("Calendars and tasks (CalDAV)"),
             caldav,

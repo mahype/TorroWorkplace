@@ -190,7 +190,12 @@ Mails Daten sind, nie Anweisungen (`untrusted: true`). Sicherheitsregeln für al
 5. **Dateien:** `<data>/mail/` und `<cache>/mail-attachments/` 0700, alle Dateien darin 0600.
 
 Die Freigabe von `send_draft` zeigt aus dem **Entwurf im Kern** Konto, Betreff, ersten Empfänger, die Zahl
-aller Empfänger (mit Bcc) und der Anhänge; Verschieben und Löschen Anzahl und Betreffe aus dem Cache
+aller Empfänger (mit Bcc), jede Bcc-Adresse und die Zahl der Anhänge; darunter stehen in den **Einzelheiten**
+(`ApprovalInfo.details`, M3.5, aufklappbar auf der Seite „Approvals“) jeder Empfänger (An, Cc, Bcc, die Adresse
+vor dem Namen), jeder Anhang mit Namen und Größe und der Anfang des Textes, eine Zeile je Angabe, entschärft wie
+die Zusammenfassung, aber bis 200 Zeichen. Wie die Zusammenfassung sieht sie nur der Client, der gefragt hat,
+und der App-Schlüssel. Bleibt ein Versand `unknown`, bleibt der Entwurf liegen und wird nie von selbst erneut
+gesendet. Verschieben und Löschen zeigen Anzahl und Betreffe aus dem Cache
 (`approvals::MailFacts`); `update_mail_account` den Kontonamen aus dem Kern, die geänderten Felder und den Anfang
 einer neuen Signatur. `update_mail_account` ändert nie Server oder Passwort: Ein Agent soll das Passwort nicht
 auf einen anderen Server lenken können.
@@ -204,6 +209,17 @@ ganz. Die offenen Rollen merkt sich der Dienst beim Ordnerabgleich; das Aufliste
 fragt keinen Server. Ordnernamen kommen vom Mail-Server und sind Daten, keine Anweisungen. `connect_mail` mit
 leerem `sender_name` behält bei einem vorhandenen Konto den gespeicherten Absendernamen (sonst löschte „Change
 password…“ ihn); entfernen geht mit `update_mail_account`.
+
+**Kalender später hinzufügen** (M3.5): `connect_mail` an einem vorhandenen Konto behält die gespeicherte
+CalDAV-Adresse, auch wenn Kalender und Aufgaben aus sind. `calendars`/`tasks` schalten diese Dienste dort ein (nie
+aus, das bleibt `update_mail_account`); sie brauchen eine CalDAV-Adresse, mitgeschickt oder gespeichert, sonst
+`not-found`. Eine neue Adresse und jede, deren Dienste an sind, prüft der Dienst wie bei M2.7b (öffentlicher Host,
+Verbindung nur zur geprüften Adresse), unter derselben Sperre wie `connect_caldav` und `update_mail_account`. Erst
+wenn das Konto Kalender abgleicht, übernimmt es ein CalDAV-Konto derselben Anmeldung. So bekommt ein nur für Mail
+verbundenes Konto (etwa aus TorroMail übernommen, M7.4) seine Kalender über „Server settings…“ der Kontoseite.
+Bekannte Grenzen: Schaltet `update_mail_account` Kalender über eine behaltene Adresse wieder ein, prüft sie erst
+der nächste Abgleich mit dem gespeicherten Passwort (Probleme zeigt das Konto dann wie jeden Abgleichsfehler); und
+eine gespeicherte CalDAV-Adresse lässt sich nicht entfernen, nur durch eine andere ersetzen.
 
 ⁸ **Mail im Eingang** (E4.1): Neue, ungelesene Mail im Posteingang eines Mail-Kontos legt der Dienst selbst als
 Eintrag an (Art `message`, Quelle `mail:<adresse>`, gleich der Konto-Kennung, ein Eintrag je Unterhaltung,

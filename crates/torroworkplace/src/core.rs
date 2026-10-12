@@ -807,8 +807,11 @@ impl Core {
                     Ok(prepared) => prepared,
                     Err(refused) => return Ok(refused),
                 };
-                fingerprint = Some(pinned);
-                let summary = crate::approvals::summary(&request, &Facts { mail: Some(mail), ..Facts::default() });
+                // Everything the summary leaves out goes into the details (task M3.5), from the
+                // same draft.
+                let facts = Facts { mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
             (_, Area::Inbox) => {
@@ -837,8 +840,9 @@ impl Core {
         };
         let name = name.unwrap_or_default();
         let opened = match fingerprint {
-            Some(fingerprint) => {
-                self.approvals.open_with_fingerprint(client, &name, request, fingerprint, summary, Utc::now()).await
+            Some((fingerprint, details)) => {
+                let shown = (summary, details);
+                self.approvals.open_with_fingerprint(client, &name, request, fingerprint, shown, Utc::now()).await
             }
             None => self.approvals.open(client, &name, request, pin, summary, Utc::now()).await,
         };
@@ -1524,15 +1528,18 @@ impl Core {
     /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, servers and
     ///    sender name (`error`); then the stored accounts (`error` without a home directory, before
     ///    any server is asked);
-    /// 2. connecting an account that exists keeps its settings, hidden collections and rights:
-    ///    `calendars` and `tasks` count only for a new account, without `caldav` the stored
-    ///    CalDAV address stays and with an empty `sender_name` the stored sender name (task M2.8).
-    ///    Calendars or tasks without a CalDAV address are `not-found`;
+    /// 2. connecting an account that exists keeps its settings, hidden collections and rights, but
+    ///    `calendars` and `tasks` switch those services on (task M3.5: adding calendars to an
+    ///    account connected for mail only; never off). Without `caldav` the stored CalDAV address
+    ///    stays, also while calendars and tasks are off, and with an empty `sender_name` the stored
+    ///    sender name (task M2.8). Calendars or tasks without a CalDAV address are `not-found`;
     /// 3. IMAP and SMTP ([`MailService::check_sign_in`]), then the CalDAV address when calendars or
-    ///    tasks are wanted ([`Core::check_caldav`]); every host must be public. A refusal is `auth`
-    ///    and names the server; nothing is stored before all of them took the password;
-    /// 4. the CalDAV account of the same sign-in (`account::caldav_sign_in`), if there is one, is
-    ///    taken over: the list names the mail account instead in the same write
+    ///    tasks are wanted or it is new ([`Core::check_caldav`]: public host, connected at the
+    ///    checked addresses only, task M2.7b); every host must be public. A refusal is `auth` and
+    ///    names the server; nothing is stored before all of them took the password;
+    /// 4. once the account syncs calendars or tasks, the CalDAV account of the same sign-in
+    ///    (`account::caldav_sign_in`), if there is one, is taken over: the list names the mail
+    ///    account instead in the same write
     ///    ([`MailService::save_account`]), its collections keep their settings and selections
     ///    under the new ids ([`Core::take_over_choices`], hidden ones before anything is stored),
     ///    and the calendar service swaps the two in one step ([`PimService::put_mail_account`]),
@@ -1571,19 +1578,26 @@ impl Core {
             Err(message) => return refusal("error", message),
         };
         let existing = stored.iter().find(|account| account.id == id && account.kind == AccountKind::Mail);
-        let settings = existing.and_then(|account| account.mail_settings.clone()).unwrap_or_else(|| MailSettings {
+        let mut settings = existing.and_then(|account| account.mail_settings.clone()).unwrap_or_else(|| MailSettings {
             services: torro_mail::Services { mail: true, calendars, tasks },
             ..MailSettings::default()
         });
+        // Adding calendars and tasks later (task M3.5): at an account that exists they are switched
+        // on, never off (that is `accounts.update_mail_account`).
+        settings.services.calendars |= calendars;
+        settings.services.tasks |= tasks;
+        let stored_caldav = existing.and_then(|account| account.mail.as_ref()?.caldav.clone());
         let caldav = match caldav.as_deref().map(str::trim).filter(|typed| !typed.is_empty()) {
             Some(typed) => match torro_pim_caldav::discover::server_address(typed) {
                 Ok(url) => Some(url),
                 Err(_) => return refusal("error", tr("Enter the server as an https address.").into()),
             },
-            None => existing.and_then(|account| account.mail.as_ref()?.caldav.clone()),
+            None => stored_caldav.clone(),
         };
-        // Only a CalDAV address that took the password is kept, and only while it is used.
+        // The stored CalDAV address stays while calendars and tasks are off, so they can be
+        // switched on later; it took the password when it was stored. A new one is checked here.
         let wants_calendars = settings.services.calendars || settings.services.tasks;
+        let check_caldav = wants_calendars || caldav != stored_caldav;
         if wants_calendars && caldav.is_none() {
             let message = tr("No calendar service was found for this address. Enter the server address.");
             return refusal("not-found", message.into());
@@ -1594,18 +1608,13 @@ impl Core {
             "" => existing.and_then(|account| Some(account.mail.as_ref()?.sender_name.clone())).unwrap_or_default(),
             typed => typed.to_string(),
         };
-        let config = torro_mail::MailAccountConfig {
-            address: address.trim().to_string(),
-            sender_name,
-            imap,
-            smtp,
-            caldav: caldav.filter(|_| wants_calendars),
-        };
+        let config =
+            torro_mail::MailAccountConfig { address: address.trim().to_string(), sender_name, imap, smtp, caldav };
         let open_roles = match self.mail.check_sign_in(&config, login, &password, &settings.folder_roles).await {
             Ok(open) => open,
             Err(failed) => return failed.response(),
         };
-        let offered = match &config.caldav {
+        let offered = match config.caldav.as_deref().filter(|_| check_caldav) {
             Some(url) => match self.check_caldav(url, login, &password).await {
                 Ok(offered) => offered,
                 Err(failed) => return failed.response(),
@@ -1620,7 +1629,10 @@ impl Core {
             Ok(account) => account,
             Err(invalid) => return refusal("error", invalid.to_string()),
         };
+        // Only an account that syncs calendars takes the CalDAV account of its sign-in over; a kept
+        // address alone (calendars and tasks off) leaves it as it is.
         let replaces = crate::account::caldav_sign_in(&account)
+            .filter(|_| crate::account::syncs_calendars(&account))
             .and_then(|caldav_id| stored.iter().find(|a| a.kind == AccountKind::CalDav && a.id == caldav_id).cloned());
         // What the person hid stays hidden under the new ids before anything is stored: hidden
         // collections keep agents out too.
@@ -1779,7 +1791,10 @@ impl Core {
     ///   account again with one) and no CalDAV account of the same sign-in beside it (else
     ///   `conflict`: connecting the mail account again takes it over), so the same collections are
     ///   never synced twice. The calendar service follows at once
-    ///   ([`PimService::put_mail_account`]).
+    ///   ([`PimService::put_mail_account`]). The address is not signed in to here: it took the
+    ///   password when it was stored, and is kept while calendars and tasks are off (task M3.5),
+    ///   so the next sync is what tries it again; a problem shows at the account like any failed
+    ///   sync. A stored address can be replaced (`accounts.connect_mail`), not removed.
     /// - `folder_roles`: only roles the server leaves open now, each only to one of its candidate
     ///   folders ([`MailService::open_roles`], asked at the server), else `error`; the other picks
     ///   stay.
@@ -6329,19 +6344,24 @@ mod tests {
         };
         assert_eq!(core.handle(update).await, Response::Ok);
 
-        // Connecting again (calendars asked for, but settings stay): servers and password only.
+        // Connecting again keeps the settings: servers and password only. Calendars asked for
+        // without any CalDAV address are not found (task M3.5: they would be switched on).
         let mut again = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
-        if let Request::ConnectMail { calendars, sender_name, .. } = &mut again {
-            *calendars = true;
+        if let Request::ConnectMail { sender_name, .. } = &mut again {
             *sender_name = "Anna Example".into();
         }
+        let mut with_calendars = again.clone();
+        if let Request::ConnectMail { calendars, .. } = &mut with_calendars {
+            *calendars = true;
+        }
+        assert_eq!(code(&core.handle(with_calendars).await), "not-found");
         assert!(matches!(core.handle(again).await, Response::MailConnected { .. }));
         let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
         assert_eq!(stored.len(), 1);
         let settings = stored[0].mail_settings.clone().expect("settings");
         assert_eq!(settings.signature.as_deref(), Some("-- \nAnna"));
         assert_eq!(settings.notify, torro_mail::Notify::ForMeOnly);
-        assert!(!settings.services.calendars, "calendars count only for a new account");
+        assert!(!settings.services.calendars, "nothing switched on without an address");
 
         // No setting reaches the servers: calendars need a CalDAV address, a role the server gave
         // a folder itself cannot be moved, and nothing changed meanwhile.
@@ -6378,6 +6398,69 @@ mod tests {
         let (_, insider) = client(&core, granted).await;
         let asked = waits(ask(&core, Some(&insider), with(None, None)).await);
         assert_eq!(asked.command, "accounts.update_mail_account");
+    }
+
+    /// Task M3.5: an account connected for mail only gets its calendars and tasks later by being
+    /// connected again with them and a CalDAV address, which is checked first (under the lock of
+    /// calendar sign-ins); the address then stays when the account is connected again with
+    /// calendars and tasks off, without being asked again, and the switch turns them on again.
+    #[tokio::test]
+    async fn calendars_are_added_later_and_the_caldav_address_stays() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, asked) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let stored = || {
+            let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+            let account = stored.into_iter().find(|account| account.id == ANNA_MAIL).expect("the account");
+            (account.mail.and_then(|mail| mail.caldav), account.mail_settings.map(|s| s.services).unwrap_or_default())
+        };
+        let mail_only = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        assert!(matches!(mail_only, Response::MailConnected { calendars: false, .. }), "{mail_only:?}");
+        assert_eq!(stored().0, None);
+
+        // Adding them waits for the decision about the sign-in's calendars like every other way.
+        let add = anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav));
+        let deciding = core.calendar_sign_ins.lock().await;
+        let waiting = tokio::time::timeout(std::time::Duration::from_millis(200), core.handle(add.clone())).await;
+        assert!(waiting.is_err(), "waits for the lock");
+        drop(deciding);
+        let added = core.handle(add).await;
+        assert!(matches!(added, Response::MailConnected { calendars: true, tasks: true, .. }), "{added:?}");
+        let (caldav, services) = stored();
+        assert!(caldav.as_deref().is_some_and(|url| url.starts_with(&dav)), "{caldav:?}");
+        assert!(services.calendars && services.tasks, "switched on");
+        assert!(!asked.lock().expect("record").is_empty(), "the address was checked");
+        // The calendars sync in the background once switched on; that sync asks the server too,
+        // so it must be over before the requests are counted below.
+        crate::mail::service::tests::eventually("the calendars synced", || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { return false };
+            anna_view(&accounts).and_then(|view| view.calendars).is_some_and(|state| state.last_sync.is_some())
+        })
+        .await;
+
+        // Off, then connected again without calendars (a new password): the address stays and is
+        // not asked; the switch alone turns calendars on again.
+        let switch = |calendars| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
+            folder_roles: None,
+        };
+        assert_eq!(core.handle(switch(false)).await, Response::Ok);
+        let before = asked.lock().expect("record").len();
+        let again = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        assert!(matches!(again, Response::MailConnected { calendars: false, .. }), "{again:?}");
+        let (kept, services) = stored();
+        assert_eq!(kept, caldav, "the address stays while calendars and tasks are off");
+        assert!(!services.calendars && !services.tasks, "nothing was switched on");
+        assert_eq!(asked.lock().expect("record").len(), before, "a kept address is not asked");
+        assert_eq!(core.handle(switch(true)).await, Response::Ok);
+        assert!(stored().1.calendars);
+        nowhere(dir.path(), MAIL_PASSWORD, &[&mail_only, &added, &again]);
     }
 
     /// The mail view of `accounts`' entry `ANNA_MAIL` (task M2.8), if it has one.
@@ -7047,6 +7130,9 @@ mod tests {
             attachments: 0,
             text_start: "Dear Bernd, see you.".into(),
             bcc: vec!["carla@example.net".into()],
+            to: vec![torro_mail::MailAddress { name: Some("Bernd".into()), address: "bernd@example.com".into() }],
+            cc: vec![torro_mail::MailAddress { name: None, address: "dora@example.com".into() }],
+            files: Vec::new(),
         };
         let facts = crate::approvals::MailFacts {
             account: Some("anna@example.org".into()),
@@ -7054,10 +7140,33 @@ mod tests {
             draft: Some(shown),
             ..Default::default()
         };
-        let expected = crate::approvals::summary(&send(&lunch), &Facts { mail: Some(facts), ..Facts::default() });
-        assert_eq!(asked.summary, expected);
+        let facts = Facts { mail: Some(facts), ..Facts::default() };
+        assert_eq!(asked.summary, crate::approvals::summary(&send(&lunch), &facts));
         assert!(asked.summary.contains("bernd@example.com"), "{}", asked.summary);
         assert!(asked.summary.contains("Bcc: carla@example.net"), "the blind copy is named: {}", asked.summary);
+        // Task M3.5: the details list every recipient from the stored draft.
+        assert_eq!(asked.details, crate::approvals::details(&send(&lunch), &facts));
+        for address in ["bernd@example.com", "dora@example.com", "carla@example.net"] {
+            assert!(asked.details.iter().any(|line| line.contains(address)), "{address}: {:?}", asked.details);
+        }
+        // The client that asked and the app key see them; another client sees not even the approval.
+        let listed = |key: &Key| {
+            let key = key.clone();
+            let core = &core;
+            async move {
+                match ask(core, Some(&key), Request::ListApprovals).await {
+                    Response::Approvals { approvals } => approvals,
+                    other => panic!("approvals, got {other:?}"),
+                }
+            }
+        };
+        let own = listed(&asking).await;
+        assert!(own.iter().any(|seen| seen.id == asked.id && seen.details == asked.details));
+        assert!(listed(&app_key).await.iter().any(|seen| seen.id == asked.id && seen.details == asked.details));
+        let (_, stranger) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
+        assert!(listed(&stranger).await.is_empty(), "another client's approvals are not there");
+        let status = ask(&core, Some(&stranger), Request::ApprovalStatus { id: asked.id.clone() }).await;
+        assert_eq!(code(&status), "not-found");
         assert!(smtp.sent().is_empty(), "nothing went out yet");
         let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(decided.state, torro_ipc::ApprovalState::Done { response: Box::new(mail_sent()) });

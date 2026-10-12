@@ -49,7 +49,7 @@ use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::{Item, Lane, Link, Rule, RuleEffect, SourceRef};
 use torro_ipc::api::Mcp;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
-use torro_mail::Role;
+use torro_mail::{MailAddress, Role};
 use torro_pim::{Event, EventTime, Todo};
 use torro_setups::LoadMode;
 
@@ -281,8 +281,8 @@ pub struct Facts {
 ///   then `, <n> attachments` when there are any, then `, Bcc: <address>, …` naming every blind
 ///   copy (the first [`BCC_SHOWN`], then ` and <n> more`), then `: "<start of the text>"` (task
 ///   M3.3). A blind copy is how mail would leave unseen, so the summary never folds it into the
-///   count alone. The full list of recipients belongs in the approval's detail view (the API has
-///   none yet). Without the draft: "Send an unknown draft".
+///   count alone. Every recipient, the attachments and more of the text are in the approval's
+///   details ([`details`], task M3.5). Without the draft: "Send an unknown draft".
 /// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages,
 ///   among them "<first subject>", to "<folder>"` for several; the folder by the name the store
 ///   has, a role without a folder by its word ("Archive"). Messages the store does not hold count
@@ -327,6 +327,22 @@ pub struct DraftFacts {
     pub text_start: String,
     /// For `mail.send_draft` (task M3.3): the Bcc addresses, which the summary names one by one.
     pub bcc: Vec<String>,
+    /// For the details of `mail.send_draft` (task M3.5, [`details`]): the `To` recipients as the
+    /// draft has them, with their names.
+    pub to: Vec<MailAddress>,
+    /// For the details of `mail.send_draft`: the `Cc` recipients, with their names.
+    pub cc: Vec<MailAddress>,
+    /// For the details of `mail.send_draft`: every attachment that goes out, in the draft's order.
+    pub files: Vec<FileFact>,
+}
+
+/// One attachment of a draft that is sent, for the details of its approval ([`details`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileFact {
+    /// The file name as it goes out (made safe by the core).
+    pub name: String,
+    /// Its size in bytes.
+    pub size: u64,
 }
 
 /// How many Bcc addresses a summary of `mail.send_draft` names before it says "and <n> more".
@@ -543,7 +559,7 @@ impl Approvals {
         summary: String,
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
-        self.open_entry(client, client_name, request, (pin, None), summary, now).await
+        self.open_entry(client, client_name, request, (pin, None), (summary, Vec::new()), now).await
     }
 
     /// [`Approvals::open`] for a command that must run on exactly what the person was shown
@@ -551,26 +567,29 @@ impl Approvals {
     /// built message and its envelope). It is stored with the approval, handed back with the
     /// decision ([`Decision::Run`]), and the caller compares it with what it would run then. It is
     /// never shown to the client: it is no code to confirm with.
+    ///
+    /// `(summary, details)` is what the person is shown: the summary ([`summary`]) and the lines
+    /// below it ([`details`], task M3.5), both stored in [`ApprovalInfo`].
     pub async fn open_with_fingerprint(
         &self,
         client: &str,
         client_name: &str,
         request: Request,
         fingerprint: String,
-        summary: String,
+        (summary, details): (String, Vec<String>),
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
-        self.open_entry(client, client_name, request, (None, Some(fingerprint)), summary, now).await
+        self.open_entry(client, client_name, request, (None, Some(fingerprint)), (summary, details), now).await
     }
 
-    /// [`Approvals::open`] with the entry's pin and fingerprint.
+    /// [`Approvals::open`] with the entry's pin and fingerprint, and the details it shows.
     async fn open_entry(
         &self,
         client: &str,
         client_name: &str,
         request: Request,
         (pin, fingerprint): (Option<EntryPin>, Option<String>),
-        summary: String,
+        (summary, details): (String, Vec<String>),
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
         let command = request.operation().command;
@@ -598,6 +617,7 @@ impl Approvals {
             client_name: if client_name.trim().is_empty() { client } else { client_name }.to_string(),
             command: command.name.to_string(),
             summary,
+            details,
             created: now,
             expires: now + lifetime(&request),
             decided: None,
@@ -1417,6 +1437,63 @@ fn draft_sent(draft: &DraftFacts, account: &str) -> String {
     }
 }
 
+/// The longest piece of text from outside in a line of the details ([`details`]), in characters:
+/// room for a long subject, an address and the start of the text (`mime` keeps 200 of it).
+pub const DETAIL_MAX: usize = 200;
+
+/// What the summary of `request` leaves out, one line each, in the core's language (task M3.5,
+/// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and for a draft the
+/// core does not hold. For sending, from [`MailFacts::draft`], in this order:
+///
+/// - `Subject: "<subject>"` ("(no subject)" for none);
+/// - `To: <address>` per recipient, `<address> ("<name>")` with a name, then `Cc: …`, then
+///   `Bcc: <address>`: every recipient, the address first, so a name cannot hide where it goes;
+/// - `Attachment: "<file name>", <size>` per attachment ("12 KB");
+/// - `Text: "<start of the text>"` unless it is empty.
+///
+/// Every text from the draft is made harmless as in the summary ([`quote`]: one line, no format
+/// characters, no double quotes, no braces), but cut at [`DETAIL_MAX`] characters instead of 60.
+/// The person sees all of it, so nothing is left out but the end of a long text.
+pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    let Request::SendDraft { .. } = request else { return Vec::new() };
+    let Some(draft) = facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) else { return Vec::new() };
+    let long = |text: &str| quote_up_to(text, DETAIL_MAX);
+    let recipient = |who: &MailAddress| match who.name.as_deref().map(long).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{} (\"{name}\")", long(&who.address)),
+        None => long(&who.address),
+    };
+    let subject = match long(&draft.subject) {
+        empty if empty.is_empty() => tr("(no subject)").to_string(),
+        quoted => format!("\"{quoted}\""),
+    };
+    let mut lines = vec![trf("Subject: {subject}", &[("subject", &subject)])];
+    lines.extend(draft.to.iter().map(|who| trf("To: {recipient}", &[("recipient", &recipient(who))])));
+    lines.extend(draft.cc.iter().map(|who| trf("Cc: {recipient}", &[("recipient", &recipient(who))])));
+    lines.extend(draft.bcc.iter().map(|address| trf("Bcc: {recipient}", &[("recipient", &long(address))])));
+    lines.extend(draft.files.iter().map(|file| {
+        let name = format!("\"{}\"", long(&file.name));
+        trf("Attachment: {name}, {size}", &[("name", &name), ("size", &size_words(file.size))])
+    }));
+    match long(&draft.text_start) {
+        empty if empty.is_empty() => {}
+        text => lines.push(trf("Text: {text}", &[("text", &format!("\"{text}\""))])),
+    }
+    lines
+}
+
+/// A size in bytes as people read it: "860 B", "3 KB", "12 MB" (rounded up, as the inbox app
+/// writes it).
+fn size_words(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    if bytes < KB {
+        trf("{n} B", &[("n", &bytes)])
+    } else if bytes < KB * KB {
+        trf("{n} KB", &[("n", &bytes.div_ceil(KB))])
+    } else {
+        trf("{n} MB", &[("n", &bytes.div_ceil(KB * KB))])
+    }
+}
+
 /// A subject quoted for a summary ([`quote`]); "(no subject)" for an empty one.
 fn subject(text: &str) -> String {
     match quote(text) {
@@ -1459,6 +1536,11 @@ fn role_word(role: Role) -> &'static str {
 /// (so the text cannot end the quoted part and pretend to be the core's words), braces round ones
 /// (so it cannot fill a placeholder), and at most [`QUOTE_MAX`] characters with `…`.
 fn quote(text: &str) -> String {
+    quote_up_to(text, QUOTE_MAX)
+}
+
+/// [`quote`] cut at `max` characters instead of [`QUOTE_MAX`].
+fn quote_up_to(text: &str, max: usize) -> String {
     let cleaned: String = text
         .chars()
         .filter(|c| !is_format(*c))
@@ -1472,7 +1554,7 @@ fn quote(text: &str) -> String {
         .collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
     let one_line = words.join(" ");
-    match one_line.char_indices().nth(QUOTE_MAX) {
+    match one_line.char_indices().nth(max) {
         Some((cut, _)) => format!("{}…", &one_line[..cut]),
         None => one_line,
     }
@@ -2078,7 +2160,7 @@ pub(crate) mod tests {
             recipients: 3,
             attachments: 2,
             text_start: "Dear Bernd, \"see\" you {at} noon.".into(),
-            bcc: Vec::new(),
+            ..DraftFacts::default()
         };
         let recipients = trf("{first} and {n} more", &[("first", &"bernd@example.com"), ("n", &2)]);
         let base = trf(
@@ -2108,6 +2190,55 @@ pub(crate) mod tests {
         assert_eq!(summary(&send, &Facts::default()), tr("Send an unknown draft"));
     }
 
+    /// Task M3.5: the details of sending list every recipient with the address first, every
+    /// attachment with its size and the start of the text, made harmless like the summary but
+    /// longer; every other command has none.
+    #[test]
+    fn sending_lists_every_recipient_attachment_and_the_text_in_the_details() {
+        let send = Request::SendDraft { id: "m:1".into() };
+        let who =
+            |name: Option<&str>, address: &str| MailAddress { name: name.map(str::to_string), address: address.into() };
+        let long_text = format!("Dear Bernd,\n\u{202E}see {{you}} \"soon\". {}", "x".repeat(300));
+        let draft = DraftFacts {
+            to: vec![who(Some("Bernd \"Boss\" Example"), "bernd@example.com"), who(None, "dora@example.com")],
+            cc: vec![who(Some("  "), "carl@example.org")],
+            bcc: vec!["eve@example.net".into()],
+            files: vec![
+                FileFact { name: "plan.pdf".into(), size: 2_340 },
+                FileFact { name: "photo.jpg".into(), size: 3 * 1024 * 1024 },
+                FileFact { name: "a.txt".into(), size: 860 },
+            ],
+            text_start: long_text,
+            ..DraftFacts::default()
+        };
+        let facts = Facts { mail: Some(MailFacts { draft: Some(draft), ..MailFacts::default() }), ..Facts::default() };
+        let lines = details(&send, &facts);
+        let recipient = |label: &'static str, value: &str| trf(label, &[("recipient", &value)]);
+        let file = |name: &str, size: String| trf("Attachment: {name}, {size}", &[("name", &name), ("size", &size)]);
+        assert_eq!(
+            lines[..8],
+            [
+                trf("Subject: {subject}", &[("subject", &tr("(no subject)"))]),
+                recipient("To: {recipient}", "bernd@example.com (\"Bernd 'Boss' Example\")"),
+                recipient("To: {recipient}", "dora@example.com"),
+                recipient("Cc: {recipient}", "carl@example.org"),
+                recipient("Bcc: {recipient}", "eve@example.net"),
+                file("\"plan.pdf\"", trf("{n} KB", &[("n", &3)])),
+                file("\"photo.jpg\"", trf("{n} MB", &[("n", &3)])),
+                file("\"a.txt\"", trf("{n} B", &[("n", &860)])),
+            ]
+        );
+        let text = &lines[8];
+        assert!(text.contains("Dear Bernd, see (you) 'soon'."), "harmless, on one line: {text}");
+        assert!(!text.contains('\u{202E}') && !text.contains('\n'));
+        assert!(text.ends_with("…\"") && text.chars().count() < DETAIL_MAX + 20, "cut at {DETAIL_MAX}: {text}");
+        assert_eq!(lines.len(), 9);
+
+        assert!(details(&send, &Facts::default()).is_empty(), "an unknown draft has none");
+        let delete = Request::DeleteTemplate { id: "dev".into() };
+        assert!(details(&delete, &facts).is_empty(), "nor has any other command");
+    }
+
     /// Task M3.3: the fingerprint of what the person was shown survives a restart and comes back
     /// with the decision; approvals without one read as before.
     #[tokio::test]
@@ -2116,10 +2247,21 @@ pub(crate) mod tests {
         let approvals = quiet_in(dir.path());
         let send = Request::SendDraft { id: "m:1".into() };
         let asked = approvals
-            .open_with_fingerprint("c1", "One", send.clone(), "f00d".into(), "Send".into(), at(0))
+            .open_with_fingerprint(
+                "c1",
+                "One",
+                send.clone(),
+                "f00d".into(),
+                ("Send".into(), vec!["To: b".into()]),
+                at(0),
+            )
             .await
             .expect("opened");
+        assert_eq!(asked.details, ["To: b"]);
         let restarted = quiet_in(dir.path());
+        let kept = restarted.status(Some("c1"), &asked.id, at(1)).await.expect("kept");
+        assert_eq!(kept.details, ["To: b"], "the details survive a restart");
+        assert!(matches!(restarted.status(Some("c2"), &asked.id, at(1)).await, Err(ApprovalsError::NotFound(_))));
         let Ok(Decision::Run { fingerprint, request, .. }) = restarted.decide(&asked.id, true, at(1)).await else {
             panic!("allowed runs");
         };

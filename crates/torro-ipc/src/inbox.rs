@@ -510,6 +510,7 @@ mod tests {
                         client_name: "Claude Code".into(),
                         command: "approvals.ask_permission".into(),
                         summary: "Bash: cargo test".into(),
+                        details: Vec::new(),
                         created: at(10),
                         expires: at(11),
                         decided: Some(at(10)),
