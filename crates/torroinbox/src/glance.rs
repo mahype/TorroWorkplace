@@ -301,11 +301,13 @@ fn numbers_column(parts: &[(String, bool)], width: f32) -> Element<'static, Mess
     let mut lines = column![].spacing(space::XS);
     for (text, waiting) in parts {
         if *waiting {
-            let word = typo::text(typo::BODY, ellipsize(text, typo::BODY, width - DOT - space::S))
+            // META like the cells' second line, so both lines of the numbers sit level with the
+            // two lines of the cells beside them.
+            let word = typo::text(typo::META, ellipsize(text, typo::META, width - DOT - space::XS))
                 .style(theme::text_2)
                 .wrapping(Wrapping::None);
             let line = row![widgets::status_dot(widgets::Status::Attention), word]
-                .spacing(space::S)
+                .spacing(space::XS)
                 .align_y(Alignment::Center);
             lines = lines.push(line);
         } else {
@@ -323,7 +325,7 @@ fn numbers_width(parts: &[(String, bool)]) -> f32 {
         .iter()
         .map(
             |(text, waiting)| {
-                if *waiting { DOT + space::S + text_width(text, typo::BODY) } else { text_width(text, HEAD_LEVELS[0]) }
+                if *waiting { DOT + space::XS + text_width(text, typo::META) } else { text_width(text, HEAD_LEVELS[0]) }
             },
         )
         .fold(0.0, f32::max)
