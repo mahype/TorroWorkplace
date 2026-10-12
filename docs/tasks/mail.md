@@ -476,7 +476,7 @@ ihre Texte im Bericht.
   Passwort falsch), Breit/Mittel/Schmal, hell/dunkel; Tests der Nachrichten.
 
 ### M5.2 Steuerzentrale: Kontoseite Mail
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.7, M2.8 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
 - **Oberfläche** (Einstellungen nach dem Vorbild TorroMail, ohne dessen Rechte und Cache-Stufen): Status je Dienst
   (Mail, Calendars, Tasks) mit letztem Abgleich; Absendername; Signatur (mehrzeilig); „Show new mail in Inbox“:

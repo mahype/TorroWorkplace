@@ -16,10 +16,10 @@ use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
-    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, IssuedKey, Key, Request, Response,
-    Status,
+    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, FolderChoice, IssuedKey, Key,
+    MailView, OpenRoleView, Request, Response, ServiceState, Status,
 };
-use torro_mail::{Endpoint, Security};
+use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
 use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
@@ -47,6 +47,15 @@ pub enum Open {
     AccountDetail,
     /// The detail page of the demo's GitHub account.
     GithubDetail,
+    /// The detail page of the first demo mail account (task M5.2): synced mail and calendars, a
+    /// signature, and the question for the folder of sent mail.
+    MailDetail,
+    /// The detail page of the second demo mail account: mail only, with a problem.
+    MailDetailProblem,
+    /// "Change password" of the first demo mail account.
+    MailPassword,
+    /// "Server settings" of the first demo mail account.
+    MailServers,
     /// The section menu ("Accounts ▾"); only the medium and narrow header have it.
     Menu,
     /// The sidebar drawer of the medium and narrow layouts.
@@ -88,7 +97,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 37] = [
+    pub const ALL: [(&'static str, Open); 41] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -107,6 +116,10 @@ impl Open {
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
+        ("mail-detail", Open::MailDetail),
+        ("mail-detail-problem", Open::MailDetailProblem),
+        ("mail-password", Open::MailPassword),
+        ("mail-servers", Open::MailServers),
         ("menu", Open::Menu),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
@@ -318,10 +331,12 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
         },
-        // Two mail accounts (task M3.4), so the agents' "Mail accounts" have something to choose
-        // from. Their ids are `mail:<address>`, as the core makes them.
-        mail_account("anna@mailbox.org", "imap.mailbox.org", now - Duration::minutes(2)),
-        mail_account("anna@work.example.net", "imap.work.example.net", now - Duration::minutes(6)),
+        // Two mail accounts (tasks M3.4, M5.2), so the agents' "Mail accounts" have something to
+        // choose from and the account page shows both kinds: one with calendars and tasks, a
+        // signature and a folder role the server left open, one that is mail only and cannot
+        // reach its server. Their ids are `mail:<address>`, as the core makes them.
+        mailbox_account(now),
+        work_mail_account(now),
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
         id: id.into(),
@@ -402,8 +417,21 @@ pub fn demo_data() -> Data {
     }
 }
 
-/// A connected mail account of the demo: no calendars or lists, as long as it is mail only.
+/// A connected mail account of the demo: no calendars or lists, as long as it is mail only. Its
+/// SMTP server is the IMAP server's name with `smtp` for `imap`.
 fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> AccountInfo {
+    let endpoint = |host: String, port, security| Endpoint { host, port, security };
+    let view = MailView {
+        address: address.into(),
+        sender_name: String::new(),
+        imap: endpoint(server.into(), 993, Security::Tls),
+        smtp: endpoint(server.replacen("imap", "smtp", 1), 587, Security::StartTls),
+        caldav: None,
+        settings: MailSettings::default(),
+        open_roles: Vec::new(),
+        mail: ServiceState { last_sync: Some(last_sync), problem: None },
+        calendars: None,
+    };
     AccountInfo {
         id: format!("mail:{address}"),
         kind: "mail".into(),
@@ -416,8 +444,47 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         },
         collections: Vec::new(),
         scopes: None,
-        mail: None,
+        mail: Some(view),
     }
+}
+
+/// The first demo mail account: mail, calendars and tasks all on and synced, a signature, only
+/// mail "For me" in the inbox, and the question which folder holds sent mail with two candidates.
+/// (The CalDAV account of the same provider above is the same sign-in; the demo lists both.)
+fn mailbox_account(now: DateTime<Utc>) -> AccountInfo {
+    let mut account = mail_account("anna@mailbox.org", "imap.mailbox.org", now - Duration::minutes(2));
+    if let Some(mail) = account.mail.as_mut() {
+        mail.sender_name = "Anna Example".into();
+        mail.caldav = Some("https://dav.mailbox.org/".into());
+        mail.settings = MailSettings {
+            signature: Some("Anna Example\nExample GmbH".into()),
+            notify: Notify::ForMeOnly,
+            services: Services { mail: true, calendars: true, tasks: true },
+            ..MailSettings::default()
+        };
+        mail.open_roles = vec![OpenRoleView {
+            role: Role::Sent,
+            candidates: vec![
+                FolderChoice { name: "Sent".into(), path: "INBOX.Sent".into() },
+                FolderChoice { name: "Sent Items".into(), path: "INBOX.Sent Items".into() },
+            ],
+        }];
+        mail.calendars = Some(ServiceState { last_sync: Some(now - Duration::minutes(9)), problem: None });
+    }
+    account
+}
+
+/// The second demo mail account: mail only, and the server has not answered for two days.
+fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
+    let mut account = mail_account("anna@work.example.net", "imap.work.example.net", now - Duration::days(2));
+    let problem = "The server did not answer".to_string();
+    if let AccountState::Connected { problem: state_problem, .. } = &mut account.state {
+        *state_problem = Some(problem.clone());
+    }
+    if let Some(mail) = account.mail.as_mut() {
+        mail.mail.problem = Some(problem);
+    }
+    account
 }
 
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
@@ -927,6 +994,21 @@ mod tests {
         assert!(codex.rights.reaches_mail_account(mail[0]) && !codex.rights.reaches_mail_account(mail[1]));
         let default = data.clients.iter().find(|client| client.kind == "claude-code").expect("Claude Code");
         assert_eq!(default.rights.outbound, Outbound::WithApproval, "the templates ask");
+    }
+
+    #[test]
+    fn the_demo_mail_accounts_show_every_part_of_their_page() {
+        let data = demo_data();
+        let mail: Vec<&MailView> = data.accounts.iter().filter_map(|account| account.mail.as_ref()).collect();
+        let [first, second] = mail[..] else { panic!("two mail accounts") };
+        assert!(first.settings.services.calendars && first.settings.services.tasks && first.caldav.is_some());
+        assert!(first.calendars.is_some() && first.settings.signature.is_some());
+        let [open] = &first.open_roles[..] else { panic!("one open role") };
+        assert_eq!((open.role, open.candidates.len()), (Role::Sent, 2));
+        assert!(second.caldav.is_none() && second.mail.problem.is_some(), "mail only, with a problem");
+        for (name, state) in [("mail-detail", Open::MailDetail), ("mail-servers", Open::MailServers)] {
+            assert!(Open::ALL.contains(&(name, state)), "{name}");
+        }
     }
 
     #[test]
