@@ -1299,8 +1299,9 @@ static CONNECT_MAIL: Command = Command {
     mcp: Mcp::Never,
     description: "Signs in to a mail account (IMAP and SMTP, and on request the calendars and tasks of the same \
                   sign-in over CalDAV) with the password a person typed in the control centre: checks it with the \
-                  servers without sending anything, keeps it in the system keychain and adds the account. Returns \
-                  the account, never the password. Only the app key may use it.",
+                  servers without sending anything, keeps it in the system keychain and adds the account. A CalDAV \
+                  account of the same sign-in is taken over and leaves the account list. Returns the account, \
+                  never the password. Only the app key may use it.",
 };
 
 static UPDATE_MAIL_ACCOUNT: Command = Command {

@@ -308,23 +308,35 @@ pub enum Request {
         /// Show the account's task lists (collections with tasks) in the suite.
         tasks: bool,
     },
-    /// Signs in to a mail account with a password (task M2.1, carried out by M2.7; until then
-    /// answered `unsupported`): IMAP and SMTP, and with `calendars` or `tasks` the CalDAV address
-    /// `caldav` of the same sign-in.
+    /// Signs in to a mail account with a password (tasks M2.1, M2.7): IMAP and SMTP, and with
+    /// `calendars` or `tasks` the CalDAV address `caldav` of the same sign-in.
     ///
-    /// The core checks the IMAP and the SMTP sign-in (without sending anything) and, when asked
-    /// for, CalDAV; then it keeps the password in the system keychain only, under the account id
-    /// `mail:<address>` (`torro_mail::account_id`), and adds the account. Connecting an account that
-    /// exists already replaces only servers and password: settings, hidden collections and rights
-    /// stay. A CalDAV account (`accounts.connect_caldav`) of the same sign-in is taken over.
+    /// The core checks that every server's host is on the public internet, then the IMAP sign-in
+    /// (listing the folders), the SMTP sign-in (without sending anything) and, for calendars or
+    /// tasks, the CalDAV sign-in; a refusal stops there. Then it keeps the password in the system
+    /// keychain only, under the account id `mail:<address>` (`torro_mail::account_id`), adds the
+    /// account and starts its sync; with calendars or tasks the account syncs them too.
+    ///
+    /// Connecting an account that exists already replaces only servers and password: settings
+    /// (`calendars` and `tasks` are ignored then; change them with `accounts.update_mail_account`),
+    /// hidden collections and rights stay, and without `caldav` the stored CalDAV address stays.
+    /// A CalDAV address is kept only while calendars or tasks are on, so that only an address that
+    /// took the password is ever stored. A CalDAV account (`accounts.connect_caldav`) of the same
+    /// sign-in (same login name at the same CalDAV host) is taken over: it leaves the account
+    /// list, its hidden collections and the clients' selections of its calendars and task lists
+    /// name them by their new ids, and the same collections are never synced twice.
     ///
     /// Answered with [`Response::MailConnected`], never with the password. Error codes: `error`
     /// for an address `torro_mail::account_id` refuses (empty, without one `@`, with `/`, white
-    /// space or control characters) or an empty login name or password; `auth` when a server
-    /// refuses the password (the message says which: IMAP, SMTP or CalDAV); `not-found`,
-    /// `offline`, `unsupported`. Only the app key may send it: every client key gets `forbidden`,
-    /// whatever its rights, because it hands the core a secret (`docs/api.md`, "Was nie nach außen
-    /// geht", 5); it never waits for an approval either.
+    /// space or control characters), an empty login name or password, a login name with `/`, a
+    /// server without host or port, a sender name with a line break, a CalDAV address that is no
+    /// https address (plain `http` only for `localhost`), a host that is not on the public
+    /// internet (`localhost` included) or a server that answers unexpectedly; `auth` when a server refuses the password (the message says which: IMAP,
+    /// SMTP or CalDAV); `not-found` when calendars or tasks are asked for without a CalDAV address
+    /// or no CalDAV answers there; `offline`; `unsupported` for an SMTP server without a secure
+    /// sign-in. Only the app key may send it: every client key gets `forbidden`, whatever its
+    /// rights, because it hands the core a secret (`docs/api.md`, "Was nie nach außen geht", 5); it
+    /// never waits for an approval either.
     #[serde(rename = "accounts.connect_mail")]
     ConnectMail {
         /// The account's e-mail address; the account id is made from it.
@@ -351,12 +363,17 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caldav: Option<String>,
     },
-    /// Changes the settings of the mail account `id` (task M2.1, carried out by M2.7; until then
-    /// answered `unsupported`): only the fields given, the others stay. Never servers or password:
-    /// those change only with `accounts.connect_mail`, so no agent can steer the password to
-    /// another server. Answered with [`Response::Ok`]; `not-found` for an id that is no mail
-    /// account. An admin command: a client always waits for a person's approval, whose summary
-    /// names the account from the core, the changed fields and the start of a new signature.
+    /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
+    /// others stay. Never servers or password: those change only with `accounts.connect_mail`, so
+    /// no agent can steer the password to another server. Answered with [`Response::Ok`];
+    /// `not-found` for an id that is no mail account; `error` for a sender name with a line break
+    /// (or over 200 characters), a signature over 8 KiB, calendars or tasks for an account without
+    /// a CalDAV address (connect it again with one) or a folder role the server did not leave
+    /// open; `conflict` for calendars or tasks while a CalDAV account of the same sign-in syncs
+    /// them (connecting the mail account again takes it over). Checking `folder_roles` asks the
+    /// server, so it can also fail as the server does (`auth`, `offline`). An admin command: a
+    /// client always waits for a person's approval, whose summary names the account from the
+    /// core, the changed fields and the start of a new signature.
     #[serde(rename = "accounts.update_mail_account")]
     UpdateMailAccount {
         /// The account: `mail:<address>` from `accounts.list_accounts`.
@@ -376,9 +393,9 @@ pub enum Request {
         services: Option<Services>,
         /// The folder for a role the server left open (two candidates with content): role and the
         /// folder's path as `mail.list_folders` lists it. Only the roles named are set; choices for
-        /// other roles stay. The handler (task M2.7) takes only roles the server left open and only
-        /// one of their candidate folders, else `error`; the approval's summary names each role
-        /// with its path.
+        /// other roles stay. Only roles the server leaves open are taken, each only to one of its
+        /// candidate folders, else `error` and nothing changes; the approval's summary names each
+        /// role with its path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder_roles: Option<BTreeMap<Role, String>>,
     },
@@ -1280,11 +1297,13 @@ pub enum Response {
     },
     /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
     MailConnected {
-        /// The account as [`Request::Accounts`] lists it.
+        /// The account as [`Request::Accounts`] lists it: one entry, also when it syncs calendars
+        /// and tasks too.
         account: AccountInfo,
-        /// The CalDAV address has at least one collection with events.
+        /// The CalDAV address has at least one collection with events; `false` for an account
+        /// without calendars and tasks, whose CalDAV address was not asked.
         calendars: bool,
-        /// The CalDAV address has at least one collection with tasks.
+        /// The CalDAV address has at least one collection with tasks; `false` as for `calendars`.
         tasks: bool,
         /// Roles the server offers two candidate folders with content for; the person picks one
         /// with `accounts.update_mail_account` (`folder_roles`). Empty when every role is clear.

@@ -297,7 +297,7 @@ ihre Texte im Bericht.
   mit Wiederverbinden, zwei Konten getrennt, falsches Passwort → Problem am Konto.
 
 ### M2.7 Mail-Konto verbinden
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.2, M2.4, M2.6 · **Dateien:** `crates/torroworkplace/src/{core,account,pim}.rs`,
   `crates/torroworkplace/src/mail/service.rs`
 - Handler `accounts.connect_mail`: IMAP-Anmeldung prüfen, SMTP-Anmeldung prüfen (ohne zu senden), Passwort nur in
