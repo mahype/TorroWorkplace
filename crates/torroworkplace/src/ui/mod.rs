@@ -450,6 +450,22 @@ impl Ui {
                 messages.extend(github.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
             }
+            Open::MailDetail | Open::MailDetailProblem | Open::MailPassword | Open::MailServers => {
+                // The first demo mail account is the healthy one with calendars, the second the
+                // one with a problem.
+                let nth = usize::from(open == Open::MailDetailProblem);
+                let mail = accounts::listed(&self.data.accounts).filter(|account| account.kind == "mail").nth(nth);
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                if let Some(account) = mail {
+                    messages.push(Message::Accounts(accounts::Message::Open(account.id.clone())));
+                    match open {
+                        Open::MailPassword => messages.push(Message::Accounts(accounts::Message::ChangePassword)),
+                        Open::MailServers => messages.push(Message::Accounts(accounts::Message::ChangeServers)),
+                        _ => {}
+                    }
+                }
+                messages
+            }
             Open::AccountDetail | Open::Remove => {
                 let mut messages = vec![Message::Select(Section::Accounts)];
                 messages.extend(first_account.map(|id| Message::Accounts(accounts::Message::Open(id))));
