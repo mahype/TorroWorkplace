@@ -21,6 +21,7 @@ mod cli;
 mod clients;
 mod core;
 mod daemon;
+mod inbox;
 mod mcp;
 mod notify;
 mod pim;

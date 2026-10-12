@@ -135,7 +135,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   `clients.json` lädt; API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
 ### E1.2 Kern: Speicher und Befehle
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** E1.1 · **Dateien:** `crates/torroworkplace/src/inbox.rs` (neu),
   `crates/torroworkplace/src/{core,clients,daemon}.rs`, `crates/torroworkplace/Cargo.toml`, Wurzel-`Cargo.toml`
   (`rusqlite` mit `bundled`)

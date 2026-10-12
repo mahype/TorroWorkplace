@@ -7,6 +7,8 @@
 //! - the tray icon (Linux: ksni; it runs its own D-Bus task on the same runtime),
 //! - a refresher that rebuilds the tray menu after every command and on window manager
 //!   events (debounced),
+//! - the inbox routine: wakes snoozed entries every minute and removes old done ones once a day
+//!   ([`tend_inbox`]),
 //!
 //! and ends on "Beenden", Ctrl+C or when the socket server fails. Every command, from the
 //! tray or the socket, goes through [`Core::handle`].
@@ -120,6 +122,7 @@ async fn serve(headless: bool) -> Result<(), String> {
     pim.start();
     let core = Arc::new(Core::new(backend, store, pim, clients));
     core.start();
+    tokio::spawn(tend_inbox(Arc::clone(&core)));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -240,6 +243,39 @@ async fn refresher(core: Arc<Core>, mut requests: mpsc::UnboundedReceiver<()>, f
         tokio::time::sleep(Duration::from_millis(150)).await;
         while requests.try_recv().is_ok() {}
         front.show(core.snapshot().await).await;
+    }
+}
+
+/// How often the inbox wakes snoozed entries that are due. The apps poll at about the same pace,
+/// and listing wakes entries too, so a minute is late enough.
+const INBOX_WAKE_EVERY: Duration = Duration::from_secs(60);
+
+/// Wakes snoozed inbox entries every [`INBOX_WAKE_EVERY`] and removes the ones done 30 days ago
+/// once a day, the first time right at start. A failure is logged once until the next success,
+/// not every minute.
+async fn tend_inbox(core: Arc<Core>) {
+    let mut cleaned: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut failing = false;
+    loop {
+        let now = chrono::Utc::now();
+        let clean_up = cleaned.is_none_or(|at| now - at >= chrono::TimeDelta::days(1));
+        match core.inbox().tend(now, clean_up) {
+            Ok((_, removed)) => {
+                if clean_up {
+                    cleaned = Some(now);
+                    if removed > 0 {
+                        eprintln!("torroworkplace: removed {removed} inbox entries done 30 days ago");
+                    }
+                }
+                failing = false;
+            }
+            Err(err) if !failing => {
+                eprintln!("torroworkplace: inbox: {err}");
+                failing = true;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(INBOX_WAKE_EVERY).await;
     }
 }
 

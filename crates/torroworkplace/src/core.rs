@@ -11,6 +11,7 @@ use chrono::{Local, Utc};
 use tokio::sync::Mutex;
 use torro_core::AppId;
 use torro_core::settings::ListOrderEntry;
+use torro_ipc::api::Area;
 use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_pim::AccountState;
 use torro_setups::capture::{auto_name, capture};
@@ -23,6 +24,7 @@ use torro_wm::{Backend, Events, WindowManager, WmError};
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::approvals::{Approvals, ApprovalsError, Decision, Facts};
 use crate::clients::{Caller, Clients, ClientsError, Refused};
+use crate::inbox::Inbox;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 
@@ -91,6 +93,9 @@ pub struct Core {
     /// Client commands that wait for a person (task A.3): the user's `approvals.json`
     /// ([`Approvals::system`]); tests keep theirs in a temporary directory.
     approvals: Arc<Approvals>,
+    /// The inbox (task E1.2): the user's `inbox.sqlite` ([`Inbox::system`]); tests keep theirs
+    /// in a temporary directory.
+    inbox: Inbox,
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
@@ -115,6 +120,7 @@ impl Core {
             settings,
             clients,
             approvals: Arc::new(Approvals::system()),
+            inbox: Inbox::system(),
             github: Arc::new(GithubAccounts::system()),
             start_accounts: start_accounts_page,
         }
@@ -125,6 +131,18 @@ impl Core {
     pub(crate) fn with_approvals(mut self, approvals: Approvals) -> Core {
         self.approvals = Arc::new(approvals);
         self
+    }
+
+    /// The core with `inbox` instead of the user's, for tests in other modules.
+    #[cfg(test)]
+    pub(crate) fn with_inbox(mut self, inbox: Inbox) -> Core {
+        self.inbox = inbox;
+        self
+    }
+
+    /// The inbox, for the daemon's routine (waking snoozed entries, cleaning up).
+    pub fn inbox(&self) -> &Inbox {
+        &self.inbox
     }
 
     /// Starts the background work [`Core::new`] leaves out: asks the person again about the
@@ -199,10 +217,35 @@ impl Core {
             return Ok(no_collection(&collection));
         }
         let operation = request.operation();
+        // The inbox needs to know who asks, not only what it may see: its own entries, its kind.
+        let inbox_client = match operation.area() {
+            Area::Inbox => match self.client_info(&id, &rights) {
+                Some(info) => Some(info),
+                None => return Err(Refused::Forbidden { command: operation.name() }),
+            },
+            _ => None,
+        };
+        // Nobody is asked to approve what the inbox would refuse anyway.
+        if let Some(info) = &inbox_client
+            && let Some(refused) = self.inbox.refusal(&request, Some(info))
+        {
+            return Ok(refused);
+        }
         if rights.needs_approval(operation.access) {
             return self.ask_approval(&id, request).await;
         }
+        if let Some(info) = inbox_client {
+            return Ok(self.inbox.handle(request, Some(&info), Utc::now()));
+        }
         Ok(self.handle_within(request, reach).await)
+    }
+
+    /// The client `id` as `clients.list_clients` shows it, with the `rights` it was admitted
+    /// with; `None` when it was removed meanwhile.
+    fn client_info(&self, id: &str, rights: &torro_ipc::api::Rights) -> Option<torro_ipc::ClientInfo> {
+        let mut info = self.clients.list().into_iter().find(|info| info.id == id)?;
+        info.rights = rights.clone();
+        Some(info)
     }
 
     /// Keeps `request` of the client `client` as an open approval and answers `pending`; the
@@ -279,15 +322,18 @@ impl Core {
     /// itself is not asked for again.
     async fn run_approved(&self, client: &str, request: Request) -> Response {
         let command = request.operation().name();
-        let rights = self.clients.list().into_iter().find(|info| info.id == client).map(|info| info.rights);
-        let Some(rights) = rights else {
+        let Some(info) = self.clients.list().into_iter().find(|info| info.id == client) else {
             let message = format!("the client that asked for {command} was removed meanwhile");
             return Response::Error { code: "forbidden".into(), message };
         };
+        let rights = &info.rights;
         if !rights.allows(request.operation()) {
             return Refused::Forbidden { command }.response();
         }
-        let reach = Reach::Client(&rights);
+        if request.operation().area() == Area::Inbox {
+            return self.inbox.handle(request, Some(&info), Utc::now());
+        }
+        let reach = Reach::Client(rights);
         if let Some(collection) = self.out_of_reach(reach, &request).await {
             return no_collection(&collection);
         }
@@ -464,7 +510,8 @@ impl Core {
             Request::ListApprovals => self.list_approvals(None).await,
             Request::ApprovalStatus { id } => self.approval_status(None, &id).await,
             Request::DecideApproval { id, allow } => self.decide_approval(&id, allow).await,
-            // The core keeps the inbox from task E1.2 on.
+            // A client's inbox commands come through `handle_from` or `run_approved`, which know
+            // who asks; without that the inbox cannot tell a client's own entries apart.
             request @ (Request::ListItems { .. }
             | Request::GetItem { .. }
             | Request::ListSources
@@ -475,12 +522,9 @@ impl Core {
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
             | Request::ListRules
-            | Request::RemoveRule { .. }) => Response::Error {
-                code: "unsupported".into(),
-                message: format!(
-                    "{} is not available yet: the inbox comes with a later version",
-                    request.operation().name()
-                ),
+            | Request::RemoveRule { .. }) => match reach {
+                Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
+                Reach::Suite => self.inbox.handle(request, None, Utc::now()),
             },
         }
     }
@@ -776,6 +820,7 @@ mod tests {
             crate::clients::tests::open_in(dir),
         )
         .with_approvals(crate::approvals::tests::quiet_in(dir))
+        .with_inbox(crate::inbox::tests::inbox_in(dir))
     }
 
     /// What a client on the socket gets back for `request` with `key`.
@@ -2110,5 +2155,79 @@ mod tests {
         assert!(matches!(core.handle(set).await, Response::Account { .. }));
         assert_eq!(core.handle(Request::Sync).await, Response::Ok);
         assert_eq!(list_ids(&core, None, Request::TaskCollections).await, [list.id]);
+    }
+
+    /// Full access with the admin switch of the inbox on, so muting waits for a person.
+    fn inbox_admin() -> Rights {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        rights
+    }
+
+    fn notice(title: &str) -> Request {
+        Request::PostItem {
+            kind: torro_inbox::Kind::Notice,
+            title: title.into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: Some("t".into()),
+            agent: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_inbox_knows_who_asks_on_the_socket() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        let (_, hook_key) = core.clients.add("Claude Code hooks", "hook", Rights::hook()).await.expect("added");
+
+        let Response::Posted { id: Some(id) } = ask(&core, Some(&key), notice("Tests pass")).await else {
+            panic!("a post answers with its id");
+        };
+        let Response::Item { item } = ask(&core, Some(&app_key), Request::GetItem { id: id.clone() }).await else {
+            panic!("the app key reads every entry");
+        };
+        assert_eq!(item.source, torro_inbox::SourceRef::agent("claude-code"), "the source comes from the client");
+
+        let list = || Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+        assert_eq!(code(&ask(&core, Some(&hook_key), list()).await), "not-found");
+        assert!(matches!(ask(&core, Some(&hook_key), notice("Done")).await, Response::Posted { id: Some(_) }));
+        // The hook's thread "t" is its own; the client's entry stays open.
+        let resolve = Request::ResolveItems { thread_key: "t".into() };
+        assert_eq!(ask(&core, Some(&hook_key), resolve).await, Response::Ok);
+        let Response::Item { item } = ask(&core, Some(&key), Request::GetItem { id }).await else {
+            panic!("the client reads its own entry");
+        };
+        assert_eq!(item.state, torro_inbox::State::New);
+
+        // Inside the core a client's inbox command without its identity runs nothing.
+        let rights = RightsTemplate::FullAccess.rights();
+        assert_eq!(code(&core.handle_within(list(), Reach::Client(&rights)).await), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn the_inbox_refuses_before_a_person_is_asked_and_runs_what_they_allow() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, inbox_admin()).await;
+        let suite = Request::MuteSource { source: torro_inbox::SourceRef::suite(), muted: true };
+        assert_eq!(code(&ask(&core, Some(&key), suite).await), "forbidden", "no approval to ask for");
+        let mut narrow = inbox_admin();
+        narrow.inbox_sources = Selection::Only(vec!["agent:claude-code".into()]);
+        let (_, narrow_key) = client(&core, narrow).await;
+        let hidden = Request::MuteSource { source: torro_inbox::SourceRef::script("nobody"), muted: true };
+        assert_eq!(code(&ask(&core, Some(&narrow_key), hidden).await), "not-found");
+
+        let mute = Request::MuteSource { source: torro_inbox::SourceRef::agent("claude-code"), muted: true };
+        let asked = waits(ask(&core, Some(&key), mute).await);
+        assert_eq!(asked.command, "inbox.mute_source");
+        assert!(matches!(ask(&core, Some(&key), notice("Not yet muted")).await, Response::Posted { id: Some(_) }));
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(decided.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert_eq!(ask(&core, Some(&key), notice("Muted now")).await, Response::Posted { id: None });
     }
 }
