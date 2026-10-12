@@ -839,7 +839,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Approval", "Freigabe"),
     ("Selected", "Ausgewählte"),
     ("Admin commands", "Verwaltungsbefehle"),
-    ("Each time with your approval", "Jedes Mal mit deiner Freigabe"),
     ("Connect and remove accounts", "Konten verbinden und entfernen"),
     ("Change settings", "Einstellungen ändern"),
     ("Mute sources and keep rules", "Quellen stummschalten und Regeln merken"),
@@ -864,12 +863,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("GitHub repositories", "GitHub-Repositorys"),
     ("Inbox sources", "Eingangsquellen"),
     ("Includes calendars added later.", "Auch später hinzugefügte Kalender."),
-    ("Calendars you don't tick don't exist for this agent.", "Kalender ohne Haken gibt es für diesen Agenten nicht."),
     (
         "Includes lists added later, GitHub filter lists too.",
         "Auch später hinzugefügte Listen, auch GitHub-Filterlisten.",
     ),
-    ("Lists you don't tick don't exist for this agent.", "Listen ohne Haken gibt es für diesen Agenten nicht."),
     (
         "Every repository your GitHub token reaches, private ones too.",
         "Jedes Repository, das dein GitHub-Token erreicht, auch private.",
@@ -910,7 +907,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Scripts and other programs that use the API with their own key.",
         "Skripte und andere Programme, die die API mit eigenem Schlüssel nutzen.",
     ),
-    ("No agents connected.", "Keine Agenten verbunden."),
     ("Reports for", "Meldet für"),
     ("No agent", "Kein Agent"),
     ("Reports and resolves its own entries, sees none", "Meldet und löst eigene Einträge auf, sieht keine"),
@@ -1018,10 +1014,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Gib ihn deinem Programm als {variable} mit. Er wird nur dieses eine Mal angezeigt; Torro Workplace behält nur einen Fingerabdruck davon.",
     ),
     (
-        "Connect agent sets up Claude Code, Codex, Claude Desktop or Cursor, or creates a key for a script.",
-        "„Agent verbinden“ richtet Claude Code, Codex, Claude Desktop oder Cursor ein oder erstellt einen Schlüssel für ein Skript.",
-    ),
-    (
         "Torro Workplace could not be taken out of the agent's configuration: {problem}",
         "Torro Workplace ließ sich nicht aus der Konfiguration des Agenten entfernen: {problem}",
     ),
@@ -1080,4 +1072,25 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The key file {file} holds no key, so nothing was reported.",
         "Die Schlüsseldatei {file} enthält keinen Schlüssel, darum wurde nichts gemeldet.",
     ),
+    // Control centre: agents page polish (A.6b)
+    ("yesterday {time}", "gestern {time}"),
+    ("{area} · each time with your approval", "{area} · jedes Mal mit deiner Freigabe"),
+    ("Hook", "Hook"),
+    ("No agents connected", "Keine Agenten verbunden"),
+    (
+        "Choose Connect agent to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
+        "Wähle „Agent verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop oder Cursor einzurichten oder einen Schlüssel für ein Skript zu erstellen.",
+    ),
+    (
+        "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its inbox hooks are removed too.",
+        "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Agent verbinden“ sie eingerichtet hat, werden auch sein Konfigurationseintrag und seine Eingangs-Hooks entfernt.",
+    ),
+    ("Disconnect these hooks?", "Diese Hooks trennen?"),
+    (
+        "{name} stop reporting at once: their key stops working and they are taken out of the agent's settings.",
+        "{name} melden sofort nichts mehr: Ihr Schlüssel funktioniert nicht mehr, und sie werden aus den Einstellungen des Agenten entfernt.",
+    ),
+    ("Disconnect this script?", "Dieses Skript trennen?"),
+    ("Calendars left off don't exist for this agent.", "Ausgeschaltete Kalender gibt es für diesen Agenten nicht."),
+    ("Lists left off don't exist for this agent.", "Ausgeschaltete Listen gibt es für diesen Agenten nicht."),
 ];
