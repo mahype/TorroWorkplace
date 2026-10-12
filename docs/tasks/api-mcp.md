@@ -153,6 +153,31 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
 - **Abnahme:** Agent kann sich nicht selbst freigeben; Neustart verliert nichts; Ablauf greift;
   Admin-Befehl eines Agenten wartet auch bei „Freigabe vorher: Nie“.
 
+### A.3b Freigaben absichern (aus der API-Prüfung von A.3)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** A.3 · **Dateien:** `crates/torroworkplace/src/{approvals,pim,core,notify,main}.rs`,
+  `crates/torroworkplace/src/cli.rs` (nur `ctl approvals`), `crates/torro-ipc/src/api.rs` (nur Katalogbeschreibung),
+  `docs/api.md`, `.claude/skills/torro-api/SKILL.md`
+- **Hoch: Die Zusammenfassung darf nicht lügen.** Heute baut sie Titel und Datum aus den Angaben des Clients,
+  ausgeführt wird aber über `href`. Für alle Befehle mit `href` (`DeleteEvent`, `DeleteTodo`, `SaveEvent`/`SaveTodo`
+  mit `href`, Verschieben, `UnpinIssue`) kommen Titel, Beginn und Kalender bzw. Liste aus dem Cache des Kerns;
+  unbekannt → ehrlich „unknown event“ bzw. „unknown task“; Änderungen zeigen „'alt' → 'neu'“. Sammlungen,
+  Filterlisten und Vorlagen mit Anzeigenamen statt Kennung. Test: Client schickt falschen Titel → die
+  Zusammenfassung zeigt den echten.
+- **Mittel:** `quote()` entfernt auch Format-Zeichen (Unicode Cf: Zero-Width, Bidi-Steuerung) mit Test.
+  Offene Freigaben beim Start des Dienstes erneut ankündigen. Bis A.8 ein Weg ohne Linux-Benachrichtigung:
+  `torroworkplace ctl approvals` (Liste) und `ctl allow|deny <id>` (App-Schlüssel).
+- **Mittel, Regeln:** `pending` ist eine Antwort-Variante, kein Fehlercode: Skill `torro-api` korrigieren;
+  in `docs/api.md` „Versionen“ festhalten, dass Clients unbekannte `result`-Werte tolerieren müssen; MCP
+  meldet „waiting“ weiter als Tool-Fehler mit Kennung (so dokumentieren).
+- **Niedrig:** Ein-/Ausgabefehler gegenüber Clients ohne Pfad (Pfad nur ins Log); Benachrichtigung nach einer
+  Entscheidung schließen und das Warten begrenzen; leerer Client-Name → Client-Kennung; Katalog
+  `approval_status`: MCP-Tools warten schon bis 60 s selbst. In `notify.rs`/`api.md` vermerken, dass
+  D-Bus-`ActionInvoked` nicht nach Absender gefiltert wird (Modell: keine Sandbox gegen Code desselben Nutzers).
+- **API/MCP:** keine neuen Befehle (die `ctl`-Befehle nutzen `approvals.*`).
+- **Abnahme:** Test mit falschem Titel; Cf-Test; Neustart kündigt an (Fake-Benachrichtiger); `ctl approvals`
+  im Temp-Verzeichnis; `torro-api-review` ohne hohen Befund.
+
 ### A.4 MCP-Server
 - [x] erledigt
 - **Modell:** Opus · **Braucht:** A.1 (zusammenführen erst nach A.2) · **Dateien:** `crates/torroworkplace/src/mcp.rs` (neu), `crates/torroworkplace/src/main.rs`, `crates/torroworkplace/Cargo.toml`, `Cargo.toml`
