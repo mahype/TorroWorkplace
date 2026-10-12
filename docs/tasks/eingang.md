@@ -17,7 +17,7 @@ Agenten (Claude Code, Codex, Gemini CLI) und die App `torroinbox`. Mail kommt mi
 > M-, G-, P-Aufgaben).
 
 ```
-E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b ── E3.2c   ← sofort möglich
+E1.1a ─┬─ E3.1 ── E3.2 ── E3.2b ── E3.2c ── E3.3a   ← sofort möglich
        ├─ E2.2a
        │
 A.3 (api-mcp.md)
@@ -25,12 +25,12 @@ A.3 (api-mcp.md)
        └─ E1.1 ── E1.2 ─┬─ E1.3 ── E2.2 ─┬─ E2.3 (braucht A.7)
                         │                └─ E2.4
                         ├─ E2.1
-                        ├─ E3.3 (nach A.8), E3.6, E3.7
+                        ├─ E3.3b (nach A.8), E3.6, E3.7
                         └─ E3.4 (braucht E2.1)
 E3.5 braucht E3.2, E1.2, P.2 · E2.5 braucht E2.3, E3.2, A.8 und die Freigabe ihres Sicherheitsteils
 ```
 
-**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1, E3.2, E3.2b und E3.2c legen nur neue Crates an (plus je eine
+**Ausnahme von der Wartebedingung:** E1.1a, E2.2a, E3.1, E3.2, E3.2b, E3.2c und E3.3a legen nur neue Crates an (plus je eine
 Zeile in der Wurzel-`Cargo.toml`) und laufen mit Demo-Daten. Sie dürfen sofort starten.
 
 ## Sicherheitsregeln des Eingangs (gelten für alle Aufgaben)
@@ -351,15 +351,23 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 - **API/MCP:** keine.
 - **Abnahme:** `torro-design-review` ohne Muss-Befund.
 
-### E3.3 Mini, Leiste und Tray
+### E3.3a Mini und Leiste
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** E3.1, A.8 (gleiche Tray-Datei) · **Dateien:** `crates/torroinbox/src/glance.rs` (neu),
-  `crates/torroinbox/src/app.rs`, `crates/torroworkplace/src/tray/linux.rs`
-- Mini/Leiste: „3 for you“ und die drei obersten Einträge; Dringendes hervorgehoben (Design-Regel:
-  nicht in Torro-Rot).
+- **Modell:** Opus · **Braucht:** E3.2c · **Dateien:** `crates/torroinbox/src/glance.rs` (neu),
+  `crates/torroinbox/src/{app,main}.rs` (nur `mod` und Umschalten der Ansicht)
+- Mini/Leiste sind Anzeigen, keine Mini-Apps (Design-Regel): „3 for you“ und die drei obersten Einträge
+  mit Quellen-Symbol; Dringendes hervorgehoben (nicht in Torro-Rot); leer: ruhiger Satz. Klick öffnet die
+  App groß bzw. den Eintrag (wie die Glance-Ansichten von torrotasks und torrocalendar).
+- **API/MCP:** keine; liest über `InboxSource`.
+- **Abnahme:** `torro-design-review` für Mini und Leiste, hell und dunkel; Tests der Nachrichten.
+
+### E3.3b Tray-Zahl
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** E1.2, A.8 (gleiche Tray-Datei) · **Dateien:**
+  `crates/torroworkplace/src/tray/linux.rs`
 - Tray: **eine** Zahl für offene Einträge „für mich“ (Freigaben sind jetzt Einträge, die Zahl aus A.8
   geht darin auf), Untermenü mit den fünf neuesten, „Open Inbox“.
-- **Abnahme:** Sichtprüfung Mini/Leiste; Test der Tray-Zahl.
+- **Abnahme:** Test der Tray-Zahl.
 
 ### E3.4 Desktop-Benachrichtigungen und Ruhe
 - [ ] erledigt
