@@ -233,7 +233,7 @@ ihre Texte im Bericht.
   Autoconfig, App-Passwort), Fake-Resolver und `httpmock`, ohne Netz.
 
 ### M2.3 IMAP: Verbindung, Ordner, Rollen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.1 · **Dateien:** `crates/torro-mail-imap/src/{imap,folders}.rs`,
   `crates/torro-mail-imap/tests/*`
 - Verbinden mit TLS oder STARTTLS (rustls, System- bzw. webpki-Wurzeln), `LOGIN`/`AUTHENTICATE PLAIN`,
