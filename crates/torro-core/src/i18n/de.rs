@@ -1534,4 +1534,76 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("unread", "ungelesen"),
     ("{n} messages, among them {subject}", "{n} Nachrichten, darunter {subject}"),
     ("{n} unknown messages", "{n} unbekannte Nachrichten"),
+    // Sending mail (M3.3) and the mail account page (M5.2)
+    (
+        "A recipient is not a valid address. Nothing was sent.",
+        "Ein Empfänger ist keine gültige Adresse. Nichts wurde gesendet.",
+    ),
+    ("Added under new mail, replies and forwards.", "Wird unter neue E-Mails, Antworten und Weiterleitungen gesetzt."),
+    (
+        "Enter the password of {account} to check the servers.",
+        "Gib das Passwort von {account} ein, um die Server zu prüfen.",
+    ),
+    ("Folders", "Ordner"),
+    ("Mail servers", "E-Mail-Server"),
+    ("Off", "Aus"),
+    ("Only \"For me\"", "Nur „Für mich“"),
+    (
+        "Only \"For me\" leaves out newsletters and other automatic mail.",
+        "„Nur für mich“ lässt Newsletter und andere automatische E-Mails aus.",
+    ),
+    ("Send an unknown draft", "Einen unbekannten Entwurf senden"),
+    ("Send {subject} from {account} to {recipients}", "{subject} von {account} an {recipients} senden"),
+    (
+        "Sent mail cannot be kept track of on this device. Nothing was sent.",
+        "Gesendete Mails können auf diesem Gerät nicht nachverfolgt werden. Nichts wurde gesendet.",
+    ),
+    ("Server settings", "Servereinstellungen"),
+    ("Server settings…", "Servereinstellungen …"),
+    ("Show new mail in Inbox", "Neue E-Mails im Eingang anzeigen"),
+    ("Signature", "Signatur"),
+    (
+        "The draft changed after the approval was asked for. Nothing was sent; ask again.",
+        "Der Entwurf wurde nach der Anfrage geändert. Nichts wurde gesendet; frag erneut.",
+    ),
+    ("The draft has no recipient.", "Der Entwurf hat keinen Empfänger."),
+    (
+        "The outgoing mail server answered unexpectedly. Nothing was sent.",
+        "Der Postausgangsserver hat unerwartet geantwortet. Nichts wurde gesendet.",
+    ),
+    (
+        "The outgoing mail server cannot be reached. Nothing was sent; try again later.",
+        "Der Postausgangsserver ist nicht erreichbar. Nichts wurde gesendet; versuch es später noch einmal.",
+    ),
+    (
+        "The outgoing mail server does not support what sending needs. Nothing was sent.",
+        "Der Postausgangsserver unterstützt nicht, was zum Senden nötig ist. Nichts wurde gesendet.",
+    ),
+    (
+        "The outgoing mail server refused the message ({code}). Nothing was sent.",
+        "Der Postausgangsserver hat die Nachricht abgelehnt ({code}). Nichts wurde gesendet.",
+    ),
+    (
+        "The outgoing mail server refused the password. Nothing was sent.",
+        "Der Postausgangsserver hat das Passwort abgelehnt. Nichts wurde gesendet.",
+    ),
+    (
+        "The server has more than one folder that could hold it. Your choice is remembered.",
+        "Der Server hat mehr als einen Ordner, der dafür infrage kommt. Deine Wahl wird gemerkt.",
+    ),
+    (
+        "This account has no calendar address, so calendars and tasks are not available.",
+        "Dieses Konto hat keine Kalenderadresse, daher sind Kalender und Aufgaben nicht verfügbar.",
+    ),
+    ("This draft is being sent right now.", "Dieser Entwurf wird gerade gesendet."),
+    ("Use this folder", "Diesen Ordner verwenden"),
+    ("Which folder holds archived mail?", "Welcher Ordner enthält archivierte E-Mails?"),
+    ("Which folder holds deleted mail?", "Welcher Ordner enthält gelöschte E-Mails?"),
+    ("Which folder holds drafts?", "Welcher Ordner enthält Entwürfe?"),
+    ("Which folder holds new mail?", "Welcher Ordner enthält neue E-Mails?"),
+    ("Which folder holds sent mail?", "Welcher Ordner enthält gesendete E-Mails?"),
+    ("Which folder holds spam?", "Welcher Ordner enthält Spam?"),
+    ("{first} and {n} more", "{first} und {n} weitere"),
+    ("{summary}, 1 attachment", "{summary}, 1 Anhang"),
+    ("{summary}, {n} attachments", "{summary}, {n} Anhänge"),
 ];

@@ -409,6 +409,28 @@ ihre Texte im Bericht.
   bleibt „Ask me each time“. **API/MCP:** nutzt `clients.update_client` (Never, Punkt 2).
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten.
 
+### M3.5 Nacharbeit Senden und Kontoseite (aus den Berichten von M3.3/M5.2)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M3.3, M5.2 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torroworkplace/src/mail/{send,service}.rs`,
+  `crates/torroworkplace/src/ui/{approvals,accounts,wizard}.rs`, `docs/api.md`
+- **Freigabe mit Einzelheiten:** `ApprovalInfo` bekommt das optionale Feld `details: Vec<String>` (verträglich);
+  beim Senden alle Empfänger (An, Cc, Bcc), Anhänge mit Namen und Größe, der Textanfang – alles aus dem Entwurf im
+  Kern. Die Seite „Approvals“ der Steuerzentrale zeigt sie aufklappbar. **API:** `approvals.list_approvals` (gibt es).
+  **MCP:** dasselbe Tool zeigt die Einzelheiten nur dem Client, der gefragt hat (wie heute die Zusammenfassung).
+- **Katalogtext `mail.send_draft`:** Bcc wird mitgezählt; bei `unknown` bleibt der Entwurf und wird nicht erneut
+  gesendet.
+- **Kalender später hinzufügen:** `connect_mail` behält die gespeicherte CalDAV-Adresse beim erneuten Verbinden,
+  auch wenn Kalender und Aufgaben aus sind; mit `calendars`/`tasks` und `caldav` an einem bestehenden Konto werden
+  sie geprüft und eingeschaltet (heute ignoriert). Die Kontoseite bietet dafür in „Server settings…“ die
+  CalDAV-Adresse immer an.
+- **Aufräumen:** Journal-Einträge „Kopie abgelegt“ ohne Entwurf werden beim Start entfernt; `ServerFields` und
+  die Port-Logik aus `ui/wizard.rs` und `ui/accounts.rs` an einer Stelle; die Demo zeigt kein CalDAV-Konto neben
+  dem Mail-Konto derselben Anmeldung; die Kontoseite übernimmt Änderungen von außen, solange kein Entwurf offen ist.
+- **Abnahme:** Tests für Einzelheiten (nur aus dem Kern, nicht für fremde Clients), CalDAV-Adresse bleibt und
+  Kalender lassen sich später einschalten, Journal-Aufräumen; Sichtprüfung Approvals und Kontoseite;
+  `torro-api-review` ohne Befund.
+
 ### E4.1 Mail als Quelle im Eingang
 - [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.6 · **Dateien:** `crates/torro-inbox/src/{item,rules,source}.rs`,
