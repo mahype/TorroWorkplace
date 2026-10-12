@@ -5,6 +5,8 @@
 //! - [`service`]: the mail accounts of the core, each with its IDLE connection, its command
 //!   connection and its store (task M2.6); the commands (M3.1 to M3.3) start there.
 //! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
+//! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
+//!   E4.1).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -29,6 +31,7 @@ use std::time::{Duration, SystemTime};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+pub mod inbox_feed;
 pub mod service;
 pub mod store;
 pub mod sync;

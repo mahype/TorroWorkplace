@@ -1002,6 +1002,10 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 trf("Open {app} from {entry}", &[("app", &quote(name)), ("entry", &entry())])
             }
             Some(Link::Window) => trf("Bring the agent window of {entry} to the front", &[("entry", &entry())]),
+            // A mail opens in the Inbox app (task E4.1).
+            Some(Link::Mail { .. }) => {
+                trf("Open {app} from {entry}", &[("app", &quote(AppId::INBOX.display_name)), ("entry", &entry())])
+            }
             None => trf("Show {entry} on the screen", &[("entry", &entry())]),
         },
         // The title that will be written: the client's, or – left out or blank – the entry's. The
@@ -1021,6 +1025,10 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 ),
             }
         }
+        // Done marks the mail of a mail entry read on its server (task E4.1).
+        Request::SetItemDone { done: true, .. } if is_mail(facts.item.as_ref()) => {
+            trf("Mark {entry} as done and its mail as read", &[("entry", &entry())])
+        }
         Request::SetItemDone { done: true, .. } => trf("Mark {entry} as done", &[("entry", &entry())]),
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
         Request::SnoozeItem { until: Some(until), .. } => trf(
@@ -1030,6 +1038,16 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::SnoozeItem { until: None, .. } => trf("Stop snoozing {entry}", &[("entry", &entry())]),
         Request::SetItemLane { lane, remember: false, .. } => {
             trf("Move {entry} to {lane}", &[("entry", &entry()), ("lane", &lane_name(*lane))])
+        }
+        // For mail the lane is kept for the sender, not the account (task E4.1).
+        Request::SetItemLane { lane, remember: true, .. }
+            if facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).is_some() =>
+        {
+            let sender = facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).unwrap_or_default();
+            trf(
+                "Move {entry} to {lane} and send later mail from {sender} there too",
+                &[("entry", &entry()), ("lane", &lane_name(*lane)), ("sender", &format!("\"{}\"", quote(&sender)))],
+            )
         }
         Request::SetItemLane { lane, remember: true, .. } => {
             let source =
@@ -1049,6 +1067,14 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             Some(Rule { source, effect: RuleEffect::Muted, .. }) => {
                 trf("Unmute {source} in the inbox", &[("source", &source_name(source))])
             }
+            Some(Rule { source, sender: Some(sender), effect: RuleEffect::Lane { lane }, .. }) => trf(
+                "Stop sending mail from {sender} of {source} to {lane}",
+                &[
+                    ("sender", &format!("\"{}\"", quote(sender))),
+                    ("source", &source_name(source)),
+                    ("lane", &lane_name(*lane)),
+                ],
+            ),
             Some(Rule { source, effect: RuleEffect::Lane { lane }, .. }) => trf(
                 "Stop sending notices of {source} to {lane}",
                 &[("source", &source_name(source)), ("lane", &lane_name(*lane))],
@@ -1068,6 +1094,11 @@ fn web_host(url: &str) -> Option<String> {
     let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
     (!host.is_empty()).then(|| host.to_string())
+}
+
+/// `item` is an entry of a mail account (task E4.1).
+fn is_mail(item: Option<&Item>) -> bool {
+    item.is_some_and(|item| item.source.kind == torro_inbox::SourceKind::Mail)
 }
 
 /// A source for a summary: its label and its key, `"Codex" (agent:codex)`, both quoted.
@@ -1952,7 +1983,7 @@ pub(crate) mod tests {
         assert_eq!(snooze, trf("Stop snoozing {entry}", &[("entry", &unknown)]));
 
         let rule = |effect| InboxFacts {
-            rule: Some(Rule { id: "r1".into(), source: source.clone(), effect, created: Utc::now() }),
+            rule: Some(Rule { id: "r1".into(), source: source.clone(), sender: None, effect, created: Utc::now() }),
             ..InboxFacts::default()
         };
         let remove = Request::RemoveRule { id: "r1".into() };
@@ -1965,6 +1996,52 @@ pub(crate) mod tests {
             trf("Stop sending notices of {source} to {lane}", &[("source", &named), ("lane", &tr("Info"))])
         );
         assert_eq!(inbox_summary(&remove, &InboxFacts::default()), tr("Remove an unknown inbox rule"));
+
+        // Mail (task E4.1): done marks the mail read, a kept lane is the sender's, opening shows the
+        // Inbox app.
+        let mail = Item {
+            source: SourceRef::mail("anna@example.org"),
+            kind: torro_inbox::Kind::Message,
+            from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("News@Shop.example".into()) }),
+            link: Some(Link::Mail { message: "m:1".into() }),
+            ..inbox_entry("Weekly news")
+        };
+        let mail = InboxFacts { item: Some(mail), ..InboxFacts::default() };
+        let news = "\"Weekly news\"";
+        let done = inbox_summary(&Request::SetItemDone { id: "e1".into(), done: true }, &mail);
+        assert_eq!(done, trf("Mark {entry} as done and its mail as read", &[("entry", &news)]));
+        assert_eq!(
+            inbox_summary(&lane(true), &mail),
+            trf(
+                "Move {entry} to {lane} and send later mail from {sender} there too",
+                &[("entry", &news), ("lane", &tr("For me")), ("sender", &"\"news@shop.example\"")]
+            )
+        );
+        assert_eq!(
+            inbox_summary(&Request::OpenItem { id: "e1".into() }, &mail),
+            trf("Open {app} from {entry}", &[("app", &"Torro Inbox"), ("entry", &news)])
+        );
+        let sender_rule = InboxFacts {
+            rule: Some(Rule {
+                id: "r2".into(),
+                source: SourceRef::mail("anna@example.org"),
+                sender: Some("news@shop.example".into()),
+                effect: RuleEffect::Lane { lane: Lane::ForMe },
+                created: Utc::now(),
+            }),
+            ..InboxFacts::default()
+        };
+        assert_eq!(
+            inbox_summary(&Request::RemoveRule { id: "r2".into() }, &sender_rule),
+            trf(
+                "Stop sending mail from {sender} of {source} to {lane}",
+                &[
+                    ("sender", &"\"news@shop.example\""),
+                    ("source", &"\"anna@example.org\" (mail:anna@example.org)"),
+                    ("lane", &tr("For me")),
+                ]
+            )
+        );
 
         let post = Request::PostItem {
             kind: torro_inbox::Kind::Notice,

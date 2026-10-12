@@ -98,7 +98,8 @@ pub fn panel<'a>(item: &'a Item, view_name: String, now: DateTime<Utc>, footer: 
         }
         body = body.push(column![section(tr("Message")), panel::inset(block)].spacing(space::XS));
     }
-    if let Some(link) = link.filter(|link| *link != Link::Window) {
+    // A mail is shown in this app itself (task E4.2), not opened from a link row.
+    if let Some(link) = link.filter(|link| !matches!(link, Link::Window | Link::Mail { .. })) {
         body = body.push(widgets::prop_section(tr("Link"), vec![link_row(item, &link)]));
     }
     if let Some(note) = untrusted {
@@ -159,7 +160,7 @@ pub fn openable(item: &Item) -> Option<Link> {
 fn link_row<'a>(item: &Item, link: &Link) -> Element<'a, Message> {
     let mark = match link {
         Link::Window => Icon::AppWindow,
-        Link::Url { .. } | Link::App { .. } => Icon::ArrowUpRight,
+        Link::Url { .. } | Link::App { .. } | Link::Mail { .. } => Icon::ArrowUpRight,
     };
     widgets::prop_row(Some(Mark::Icon(mark)), one_line_text(link_label(link)), Some(Message::OpenItem(item.id.clone())))
 }
@@ -174,6 +175,7 @@ fn link_label(link: &Link) -> String {
             trf("Open {app}", &[("app", &name)])
         }
         Link::Window => tr("Go to window").to_owned(),
+        Link::Mail { .. } => trf("Open {app}", &[("app", &AppId::INBOX.display_name)]),
     }
 }
 

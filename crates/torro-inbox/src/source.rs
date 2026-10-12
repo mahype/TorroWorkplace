@@ -24,7 +24,7 @@ pub trait InboxSource: Send + Sync {
     fn list_items(&self, filter: ItemFilter) -> impl Future<Output = Result<Vec<Item>, InboxError>> + Send;
 
     /// Every source that has entries or is muted, for the sidebar, ordered by
-    /// [`SourceRef`] (suite, then agents, then scripts, each by name).
+    /// [`SourceRef`] (suite, then agents, then scripts, then mail accounts, each by name).
     fn list_sources(&self) -> impl Future<Output = Result<Vec<SourceInfo>, InboxError>> + Send;
 
     /// Marks the entry done, or open again with `done: false` ([`rules::set_done`]). Returns it as
