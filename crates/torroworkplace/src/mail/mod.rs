@@ -10,6 +10,7 @@
 //! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
 //!   E4.1).
 //! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
+//! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -36,6 +37,7 @@ use torro_core::paths::AppPaths;
 
 pub mod inbox_feed;
 pub mod read;
+pub mod send;
 pub mod service;
 pub mod store;
 pub mod sync;

@@ -63,8 +63,9 @@ use torro_mail_imap::smtp::{SmtpError, SmtpSubmitter};
 use torro_pim::{AccountState, ProviderError};
 use torro_pim_caldav::discover::is_public;
 
+use super::send::Outbox;
 use super::store::MailStore;
-use super::{ATTACHMENT_MAX_AGE, AttachmentCache, MailDirs, MailStoreError, sync};
+use super::{ATTACHMENT_MAX_AGE, AttachmentCache, MailDirs, MailStoreError, send, sync};
 use crate::account::github::{SystemTokens, TokenStore};
 use crate::account::keychain;
 use crate::inbox::{AccountCheck, Health, Trouble};
@@ -830,6 +831,9 @@ pub struct MailService {
     /// The calendar service, which holds the calendar part of a mail account (task M2.7);
     /// [`MailService::with_calendars`]. `None` in the mail service's own tests.
     calendars: Option<Arc<PimService>>,
+    /// The send journal and the kept Sent copies (task M3.3), opened on first use
+    /// ([`MailService::outbox`]).
+    outbox: tokio::sync::OnceCell<Arc<Outbox>>,
 }
 
 impl MailService {
@@ -864,6 +868,7 @@ impl MailService {
             events: broadcast::channel(EVENTS).0,
             writing: Mutex::new(()),
             calendars: None,
+            outbox: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -883,12 +888,14 @@ impl MailService {
         self
     }
 
-    /// Loads the mail accounts and starts their workers ([`MailService::reload`]), and deletes
+    /// Loads the mail accounts and starts their workers ([`MailService::reload`]), files the Sent
+    /// copies still waiting now and every minute ([`send::keep_copying`], task M3.3), and deletes
     /// fetched attachments older than a day now and every hour. The core calls it once.
     pub fn start(self: &Arc<Self>) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
             service.reload().await;
+            tokio::spawn(send::keep_copying(Arc::clone(&service)));
             let Some(dirs) = service.dirs.clone() else { return };
             let cache = AttachmentCache::new(&dirs);
             loop {
@@ -1225,6 +1232,11 @@ impl MailService {
             drop(entry);
         }
         let Some(dirs) = self.dirs.clone() else { return Ok(()) };
+        // Sent copies that wait for its Sent folder hold whole messages: they go too (task M3.3).
+        if let Ok(outbox) = self.outbox().await {
+            let account = id.to_string();
+            let _ = tokio::task::spawn_blocking(move || outbox.forget_account(&account)).await;
+        }
         let id = id.to_string();
         match tokio::task::spawn_blocking(move || MailStore::remove(&dirs, &id)).await {
             Ok(removed) => removed.map_err(|err| err.to_string()),
@@ -1335,6 +1347,57 @@ impl MailService {
         if let Some(entry) = self.entries.read().await.iter().find(|entry| entry.mailbox.id() == id) {
             entry.mailbox.note_folders(list);
         }
+    }
+
+    /// The account's settings (task M3.3: the signature put under a sent message).
+    /// [`MailError::NotFound`] for an unknown account or one whose mail is off.
+    pub(crate) async fn settings(&self, account: &str) -> Result<MailSettings, MailError> {
+        Ok(self.mailbox_of(account).await?.settings.clone())
+    }
+
+    /// Who hands the mail of `account` to its SMTP server (task M3.3): its SMTP server, login and
+    /// password, after the host was found to be public like every IMAP host
+    /// ([`Connector::check_host`]). Nothing is sent yet. [`MailError::Auth`] when the password was
+    /// refused before (the same password signs in to SMTP), [`MailError::NoPassword`],
+    /// [`MailError::NotPublic`] and [`MailError::Offline`] as for connecting.
+    pub(crate) async fn smtp(&self, account: &str) -> Result<SmtpSubmitter, MailError> {
+        let mailbox = self.mailbox_of(account).await?;
+        if mailbox.refused() {
+            return Err(MailError::Auth);
+        }
+        let password = mailbox.password.clone().ok_or(MailError::NoPassword)?;
+        let server = &mailbox.config.smtp;
+        self.connector.check_host(&server.host, server.port).await?;
+        Ok(SmtpSubmitter::new(server.clone(), mailbox.account.login_name.clone(), password))
+    }
+
+    /// The SMTP server of `account` refused its password (task M3.3): the account shows "Password
+    /// was refused" as for a refused IMAP sign-in, and nothing signs in with that password again
+    /// (IMAP or SMTP, [`MailService::smtp`]) until the account is connected anew, so no server
+    /// locks the account for repeated tries. An unknown account is nothing to note.
+    pub(crate) async fn note_password_refused(&self, account: &str) {
+        if let Ok(mailbox) = self.mailbox_of(account).await {
+            mailbox.note_failure(&MailError::Auth);
+        }
+    }
+
+    /// The send journal and the Sent copies waiting to be filed (task M3.3, [`Outbox`]), opened
+    /// under `<data>/mail/` on first use and shared by every send, so two sends of the same draft
+    /// never run at once. [`MailError::Store`] without a home directory or when it cannot be made.
+    pub(crate) async fn outbox(&self) -> Result<Arc<Outbox>, MailError> {
+        let dirs = self.dirs.clone().ok_or_else(|| {
+            MailError::Store(MailStoreError::Io(io::Error::other("no home directory to keep sent mail in")))
+        })?;
+        let opened = self
+            .outbox
+            .get_or_try_init(|| async move {
+                match tokio::task::spawn_blocking(move || Outbox::open(&dirs)).await {
+                    Ok(opened) => opened.map(Arc::new),
+                    Err(err) => Err(MailStoreError::Io(io::Error::other(err.to_string()))),
+                }
+            })
+            .await?;
+        Ok(Arc::clone(opened))
     }
 
     async fn mailbox_of(&self, account: &str) -> Result<Arc<Mailbox>, MailError> {

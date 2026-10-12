@@ -278,8 +278,11 @@ pub struct Facts {
 ///
 /// - `mail.send_draft`, from [`MailFacts::draft`]: `Send "<subject>" from <account> to
 ///   <first recipient>`, then ` and <n> more` when there are more recipients (Cc and Bcc counted),
-///   then `, <n> attachments` when there are any. The full list of recipients belongs in the
-///   approval's detail view. Without the draft: "Send an unknown draft".
+///   then `, <n> attachments` when there are any, then `, Bcc: <address>, …` naming every blind
+///   copy (the first [`BCC_SHOWN`], then ` and <n> more`), then `: "<start of the text>"` (task
+///   M3.3). A blind copy is how mail would leave unseen, so the summary never folds it into the
+///   count alone. The full list of recipients belongs in the approval's detail view (the API has
+///   none yet). Without the draft: "Send an unknown draft".
 /// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages,
 ///   among them "<first subject>", to "<folder>"` for several; the folder by the name the store
 ///   has, a role without a folder by its word ("Archive"). Messages the store does not hold count
@@ -292,7 +295,7 @@ pub struct Facts {
 ///   stored>"`, or "Replace an unknown draft".
 ///
 /// Task M3.2 fills [`DraftFacts::subject`] only (replacing a draft); M3.3 counts the recipients
-/// with Bcc and the attachments of the stored draft for sending.
+/// with Bcc and the attachments of the stored draft for sending (`crate::mail::send`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MailFacts {
     /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
@@ -315,11 +318,19 @@ pub struct DraftFacts {
     pub subject: String,
     /// The first recipient's address (`To`, else `Cc`, else `Bcc`); `None` without recipients.
     pub first_recipient: Option<String>,
-    /// All recipients: `To`, `Cc` and `Bcc` together.
+    /// All recipients: `To`, `Cc` and `Bcc` together, each address once.
     pub recipients: usize,
     /// The attachments, files and forwarded parts together.
     pub attachments: usize,
+    /// For `mail.send_draft` (task M3.3): the start of the text that goes out, on one line; empty
+    /// for a draft without text. The summary shows its first 60 characters ([`quote`]).
+    pub text_start: String,
+    /// For `mail.send_draft` (task M3.3): the Bcc addresses, which the summary names one by one.
+    pub bcc: Vec<String>,
 }
+
+/// How many Bcc addresses a summary of `mail.send_draft` names before it says "and <n> more".
+pub const BCC_SHOWN: usize = 5;
 
 /// An event or task as the core caches it, for [`Facts::item`].
 #[derive(Debug, Clone, PartialEq)]
@@ -367,6 +378,10 @@ struct Entry {
     /// Missing in approvals stored before task E1.2c, and for every other command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pin: Option<EntryPin>,
+    /// For `mail.send_draft` (task M3.3): the fingerprint of the message the person was shown
+    /// ([`Approvals::open_with_fingerprint`]). Missing for every other command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -450,8 +465,10 @@ pub enum Decision {
     /// Allowed: the approval is [`ApprovalState::Running`]. Run `request` for the client `client`
     /// (rights and collections checked again) and store its answer with [`Approvals::finish`].
     /// With a `pin`, the inbox entry the request names must still hold it ([`EntryPin::holds`]),
-    /// else the core answers `conflict` and runs nothing.
-    Run { client: String, request: Box<Request>, pin: Option<EntryPin> },
+    /// else the core answers `conflict` and runs nothing. With a `fingerprint`
+    /// ([`Approvals::open_with_fingerprint`], `mail.send_draft`), the message built now must have
+    /// the same one, else the core answers `conflict` and sends nothing.
+    Run { client: String, request: Box<Request>, pin: Option<EntryPin>, fingerprint: Option<String> },
 }
 
 /// The open and recent approvals of the core.
@@ -526,6 +543,36 @@ impl Approvals {
         summary: String,
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
+        self.open_entry(client, client_name, request, (pin, None), summary, now).await
+    }
+
+    /// [`Approvals::open`] for a command that must run on exactly what the person was shown
+    /// (task M3.3, `mail.send_draft`): `fingerprint` names it (for a mail, the SHA-256 of the
+    /// built message and its envelope). It is stored with the approval, handed back with the
+    /// decision ([`Decision::Run`]), and the caller compares it with what it would run then. It is
+    /// never shown to the client: it is no code to confirm with.
+    pub async fn open_with_fingerprint(
+        &self,
+        client: &str,
+        client_name: &str,
+        request: Request,
+        fingerprint: String,
+        summary: String,
+        now: DateTime<Utc>,
+    ) -> Result<ApprovalInfo, ApprovalsError> {
+        self.open_entry(client, client_name, request, (None, Some(fingerprint)), summary, now).await
+    }
+
+    /// [`Approvals::open`] with the entry's pin and fingerprint.
+    async fn open_entry(
+        &self,
+        client: &str,
+        client_name: &str,
+        request: Request,
+        (pin, fingerprint): (Option<EntryPin>, Option<String>),
+        summary: String,
+        now: DateTime<Utc>,
+    ) -> Result<ApprovalInfo, ApprovalsError> {
         let command = request.operation().command;
         if command.mcp == Mcp::Never {
             return Err(ApprovalsError::KeptBack(command.name));
@@ -556,7 +603,7 @@ impl Approvals {
             decided: None,
             state: ApprovalState::Pending,
         };
-        state.entries.push(Entry { info: info.clone(), request, pin });
+        state.entries.push(Entry { info: info.clone(), request, pin, fingerprint });
         if let Err(err) = self.write(&state).await {
             state.entries.pop();
             return Err(err);
@@ -655,7 +702,12 @@ impl Approvals {
         entry.info.state = if allow { ApprovalState::Running } else { ApprovalState::Denied };
         let request = Box::new(entry.request.clone());
         let decision = match allow {
-            true => Decision::Run { client: entry.info.client.clone(), request, pin: entry.pin },
+            true => Decision::Run {
+                client: entry.info.client.clone(),
+                request,
+                pin: entry.pin,
+                fingerprint: entry.fingerprint.clone(),
+            },
             false => Decision::Denied { approval: entry.info.clone(), request },
         };
         if let Err(err) = self.write(&state).await {
@@ -984,6 +1036,13 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                     &[("subject", &subject(&draft.subject)), ("account", &quote(account))],
                 )
             }
+        },
+        Request::SendDraft { .. } => match facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) {
+            Some(draft) => {
+                let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or_default();
+                draft_sent(draft, account)
+            }
+            None => tr("Send an unknown draft").to_string(),
         },
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
@@ -1326,6 +1385,38 @@ fn mail_messages(facts: Option<&MailFacts>, count: usize) -> String {
     }
 }
 
+/// The summary of sending `draft` from the account with the address `account` (task M3.3, rules
+/// at [`MailFacts`]): subject, account, first recipient and how many more, attachments, the start
+/// of the text.
+fn draft_sent(draft: &DraftFacts, account: &str) -> String {
+    let first = quote(draft.first_recipient.as_deref().unwrap_or_default());
+    let recipients = match draft.recipients.saturating_sub(1) {
+        0 => first,
+        more => trf("{first} and {n} more", &[("first", &first), ("n", &more)]),
+    };
+    let mut said = trf(
+        "Send {subject} from {account} to {recipients}",
+        &[("subject", &subject(&draft.subject)), ("account", &quote(account)), ("recipients", &recipients)],
+    );
+    match draft.attachments {
+        0 => {}
+        1 => said = trf("{summary}, 1 attachment", &[("summary", &said)]),
+        n => said = trf("{summary}, {n} attachments", &[("summary", &said), ("n", &n)]),
+    }
+    if !draft.bcc.is_empty() {
+        let shown: Vec<String> = draft.bcc.iter().take(BCC_SHOWN).map(|address| quote(address)).collect();
+        let list = match draft.bcc.len().saturating_sub(BCC_SHOWN) {
+            0 => shown.join(", "),
+            more => trf("{first} and {n} more", &[("first", &shown.join(", ")), ("n", &more)]),
+        };
+        said = trf("{summary}, Bcc: {list}", &[("summary", &said), ("list", &list)]);
+    }
+    match quote(&draft.text_start) {
+        empty if empty.is_empty() => said,
+        text => format!("{said}: \"{text}\""),
+    }
+}
+
 /// A subject quoted for a summary ([`quote`]); "(no subject)" for an empty one.
 fn subject(text: &str) -> String {
     match quote(text) {
@@ -1509,10 +1600,11 @@ pub(crate) mod tests {
         let first = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         let second = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
 
-        let Ok(Decision::Run { client, request, pin }) = approvals.decide(&first.id, true, at(1)).await else {
+        let Ok(Decision::Run { client, request, pin, fingerprint }) = approvals.decide(&first.id, true, at(1)).await
+        else {
             panic!("allowed runs");
         };
-        assert_eq!((client.as_str(), *request, pin), ("c1", delete("a"), None));
+        assert_eq!((client.as_str(), *request, pin, fingerprint), ("c1", delete("a"), None, None));
         assert_eq!(approvals.status(None, &first.id, at(1)).await.expect("kept").state, ApprovalState::Running);
         let done = approvals.finish(&first.id, Response::Ok, at(1)).await.expect("finished");
         assert_eq!(done.state, ApprovalState::Done { response: Box::new(Response::Ok) });
@@ -1965,6 +2057,75 @@ pub(crate) mod tests {
         let replace = Request::SaveDraft { draft: draft(Some("m:1")) };
         assert_eq!(summary(&replace, &stored), trf("Replace the draft {subject}", &[("subject", &"\"Stored\"")]));
         assert_eq!(summary(&replace, &Facts::default()), tr("Replace an unknown draft"));
+    }
+
+    /// Task M3.3: sending names the stored draft: subject, account, first recipient and how many
+    /// more (Bcc counted), attachments and the start of the text, all made harmless.
+    #[test]
+    fn sending_a_draft_is_summed_up_from_the_stored_draft() {
+        let send = Request::SendDraft { id: "m:1".into() };
+        let held = |draft: DraftFacts| Facts {
+            mail: Some(MailFacts {
+                account: Some("anna@mailbox.org".into()),
+                draft: Some(draft),
+                ..MailFacts::default()
+            }),
+            ..Facts::default()
+        };
+        let lunch = DraftFacts {
+            subject: "Lunch".into(),
+            first_recipient: Some("bernd@example.com".into()),
+            recipients: 3,
+            attachments: 2,
+            text_start: "Dear Bernd, \"see\" you {at} noon.".into(),
+            bcc: Vec::new(),
+        };
+        let recipients = trf("{first} and {n} more", &[("first", &"bernd@example.com"), ("n", &2)]);
+        let base = trf(
+            "Send {subject} from {account} to {recipients}",
+            &[("subject", &"\"Lunch\""), ("account", &"anna@mailbox.org"), ("recipients", &recipients)],
+        );
+        let with_files = trf("{summary}, {n} attachments", &[("summary", &base), ("n", &2)]);
+        let expected = format!("{with_files}: \"Dear Bernd, 'see' you (at) noon.\"");
+        assert_eq!(summary(&send, &held(lunch.clone())), expected);
+
+        let alone = DraftFacts { recipients: 1, attachments: 1, text_start: String::new(), ..lunch };
+        let base = trf(
+            "Send {subject} from {account} to {recipients}",
+            &[("subject", &"\"Lunch\""), ("account", &"anna@mailbox.org"), ("recipients", &"bernd@example.com")],
+        );
+        assert_eq!(summary(&send, &held(alone.clone())), trf("{summary}, 1 attachment", &[("summary", &base)]));
+
+        // Every blind copy is named, the first five, then how many more.
+        let hidden = |n: usize| (0..n).map(|i| format!("eve{i}@evil.example")).collect::<Vec<_>>();
+        let one = DraftFacts { attachments: 0, bcc: hidden(1), ..alone.clone() };
+        let said = trf("{summary}, Bcc: {list}", &[("summary", &base), ("list", &"eve0@evil.example")]);
+        assert_eq!(summary(&send, &held(one)), said);
+        let many = DraftFacts { attachments: 0, bcc: hidden(7), ..alone };
+        let five = hidden(5).join(", ");
+        let list = trf("{first} and {n} more", &[("first", &five), ("n", &2)]);
+        assert_eq!(summary(&send, &held(many)), trf("{summary}, Bcc: {list}", &[("summary", &base), ("list", &list)]));
+        assert_eq!(summary(&send, &Facts::default()), tr("Send an unknown draft"));
+    }
+
+    /// Task M3.3: the fingerprint of what the person was shown survives a restart and comes back
+    /// with the decision; approvals without one read as before.
+    #[tokio::test]
+    async fn an_approval_keeps_the_fingerprint_of_what_it_shows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let send = Request::SendDraft { id: "m:1".into() };
+        let asked = approvals
+            .open_with_fingerprint("c1", "One", send.clone(), "f00d".into(), "Send".into(), at(0))
+            .await
+            .expect("opened");
+        let restarted = quiet_in(dir.path());
+        let Ok(Decision::Run { fingerprint, request, .. }) = restarted.decide(&asked.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!((fingerprint.as_deref(), *request), (Some("f00d"), send));
+        let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
+        assert!(!listed.contains("f00d"), "the client never sees it: {listed}");
     }
 
     #[test]
