@@ -96,7 +96,7 @@
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Vector, keyboard};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Size, Vector, keyboard};
 use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
@@ -332,6 +332,23 @@ pub fn titlebar<'a, M: Clone + 'a>(
     #[cfg(not(target_os = "macos"))]
     {
         content.into()
+    }
+}
+
+/// The room `content` gets under the band of [`titlebar`], for a window of `size` in layout units
+/// at the zoom factor `zoom`: views that count what fits (the glances, a dialog sized to the window)
+/// measure with it, so nothing is cut off at the bottom. Other platforms have no band and get `size`
+/// back unchanged.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn below_titlebar(size: Size, zoom: f32) -> Size {
+    #[cfg(target_os = "macos")]
+    {
+        // As in `titlebar`: the band is TITLEBAR points, which is TITLEBAR / zoom in layout units.
+        Size::new(size.width, (size.height - TITLEBAR / zoom).max(0.0))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        size
     }
 }
 
@@ -799,6 +816,20 @@ mod tests {
             let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, Msg::Close);
             let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, Msg::Close);
         }
+    }
+
+    #[test]
+    fn content_gets_the_height_below_the_band() {
+        let window = Size::new(240.0, 160.0);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(below_titlebar(window, 1.0), Size::new(240.0, 160.0 - TITLEBAR));
+            // At 200 % the band is half as many layout units, as `titlebar` draws it.
+            assert_eq!(below_titlebar(window, 2.0), Size::new(240.0, 160.0 - TITLEBAR / 2.0));
+            assert_eq!(below_titlebar(Size::new(240.0, 10.0), 1.0).height, 0.0, "never negative");
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(below_titlebar(window, 1.5), window);
     }
 
     #[test]

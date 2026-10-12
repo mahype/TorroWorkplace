@@ -1251,6 +1251,12 @@ impl App {
         layout::of(self.size)
     }
 
+    /// The room under the title band, which the glances and the filter dialog fill
+    /// ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
+    }
+
     /// Mini or strip: a display without header, sidebar, menus or dialogs.
     fn is_glance(&self) -> bool {
         matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
@@ -1442,8 +1448,8 @@ impl App {
         let data =
             GlanceData { todos: &self.todos, colors: self.colors(), today: self.today, error: self.error.as_deref() };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
@@ -1464,7 +1470,7 @@ impl App {
         let list_menu = Anchor::new();
         // In a narrow window the filter list dialog is a view of its own.
         if let Some(dialog) = self.filter_dialog.as_ref().filter(|dialog| dialog.is_full(class)) {
-            return dialog.view(class, self.size).map(Message::Filter);
+            return dialog.view(class, self.content_size()).map(Message::Filter);
         }
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
@@ -1486,7 +1492,8 @@ impl App {
                 widgets::floating(&list_menu, Placement::Below(Align::End), self.list_menu(), Message::CloseMenu)
             }
         });
-        let dialog = self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.size).map(Message::Filter));
+        let dialog =
+            self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.content_size()).map(Message::Filter));
         // The property editors and the "…" menu of the detail.
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail

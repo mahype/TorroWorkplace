@@ -625,3 +625,19 @@ R.1 ─┬─ R.2 ─┐
 - Neue Texte: keine.
 - Abnahme: Test für `Surface::of` in allen Größenklassen und für das Band mit beiden Flächen;
   Sichtprüfung auf macOS in Breit, Schmal und Mini, hell und dunkel.
+
+### U.8 Kurzansichten rechnen mit der Höhe unter dem Titelband (macOS)
+- [x] erledigt (Sichtprüfung Mini auf macOS hell: Kalender, Aufgaben, Inbox ohne abgeschnittene Zeile; Leiste und Filterdialog nicht angesehen)
+- **Modell:** Opus · **Braucht:** U.6 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`
+- Seit U.6 nimmt das Band auf macOS oben 28 Punkte weg. Die Kurzansichten (Mini, Leiste) und der Dialog
+  für Filterlisten rechneten aber mit der ganzen Fensterhöhe; in Mini wurde deshalb die letzte Zeile
+  abgeschnitten (Aufgaben: „+13 more“, Inbox: Zeile ohne Titel).
+- `shell::below_titlebar(size, zoom)` gibt die Größe unter dem Band zurück (auf anderen Systemen die
+  Größe unverändert). Kalender, Aufgaben und Inbox geben diese Größe an ihre Kurzansichten, die Aufgaben
+  auch an den Dialog für Filterlisten. Die Größenklassen bleiben bei der Fenstergröße.
+- Die Steuerzentrale misst schon unter dem Band (`responsive` innerhalb von `shell::titlebar`) und bleibt
+  unverändert.
+- Neue Texte: keine.
+- Abnahme: Test für `below_titlebar` (Zoom, nie negativ, andere Systeme unverändert); Sichtprüfung auf
+  macOS: Mini von Kalender, Aufgaben und Inbox ohne abgeschnittene Zeile.

@@ -994,8 +994,8 @@ impl App {
         let (start, end) = self.load_range();
         let data = ViewData { items: self.items(), start, end, anchor: self.now.date(), now: self.now, selected: None };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
@@ -1409,6 +1409,11 @@ impl App {
     /// The layout class of the window.
     fn class(&self) -> SizeClass {
         layout::of(self.size)
+    }
+
+    /// The room under the title band, which the glances fill ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
     }
 
     /// The view on screen: the chosen one, or what the narrow layout shows for it ([`shown_in`]).

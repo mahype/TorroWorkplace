@@ -1546,6 +1546,11 @@ impl<S: InboxSource + 'static> App<S> {
         layout::of(self.size)
     }
 
+    /// The room under the title band, which the glances fill ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
+    }
+
     /// Mini or strip: a display without header, sidebar, menus, panel or keys.
     fn is_glance(&self) -> bool {
         matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
@@ -1605,8 +1610,8 @@ impl<S: InboxSource + 'static> App<S> {
             error: self.error.as_ref().map(|failure| failure.what),
         };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
