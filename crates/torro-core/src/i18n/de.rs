@@ -1102,4 +1102,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Make a task \"{title}\" in \"{list}\" due {when} from {entry}",
         "Aufgabe „{title}“ in „{list}“ fällig {when} aus {entry} anlegen",
     ),
+    ("No repository", "Ohne Repository"),
+    ("No matches", "Keine Treffer"),
+    ("Nothing on GitHub matches this list right now", "Auf GitHub passt gerade nichts zu dieser Liste"),
+    ("Couldn't refresh from GitHub", "Aktualisieren von GitHub fehlgeschlagen"),
+    ("Showing the first 1,000 matches", "Die ersten 1.000 Treffer werden angezeigt"),
+    ("Unpin", "Anheften aufheben"),
+    ("Unpin failed: {error}", "Anheften aufheben fehlgeschlagen: {error}"),
 ];
