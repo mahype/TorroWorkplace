@@ -655,6 +655,28 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   fmt/clippy/test (auch `TORRO_LANG=de`) grün; Screenshots Woche, Zeitstrahl, Radar und
   Einstellungszeile, hell/dunkel.
 
+### K.34 Zeitstrahl der Leiste: Titel auch für kurze Termine
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.29 · **Dateien:** `crates/torrocalendar/src/views/glance.rs`
+- Befund aus der Sichtprüfung von U.8 (Leiste 1100×220, Demo am 13.10. um 10:30): Termine von
+  30 Minuten sind im Zeitstrahl der Leiste nur ein schmaler Block ohne Text – „Daily Standup“ um
+  09:30 und „1:1 with Lena“ um 14:30. `block` kürzt den Titel auf die Blockbreite, und bei rund
+  25 Punkten bleibt nicht einmal Platz für „…“.
+- Ist der Block zu schmal für einen lesbaren Titel (mindestens ein paar Zeichen und „…“), steht der
+  Titel **rechts neben dem Block** auf der freien Spur, in derselben Bahn (`lanes`), bis kurz vor den
+  nächsten Block dieser Bahn bzw. das Ende der Spur, und wird dort mit „…“ gekürzt. Ohne Fläche
+  dahinter: `CAPTION` in `TEXT` bzw. verblasst wie der Block, wenn er vorbei ist (`Tone`). Die
+  Uhrzeit folgt nur, wenn noch eine Zeile Platz hat. Passt auch daneben nichts Lesbares, bleibt es
+  beim Block (wie heute).
+- Die Jetzt-Linie und ihr Etikett bleiben obenauf; Text neben dem Block darf sie kreuzen, aber nie
+  das Etikett verdecken.
+- Leiste ist eine Anzeige: keine Tooltips, keine neue Bedienung.
+- Neue Texte: keine.
+- Abnahme: Tests für die Lage des Titels (im Block, daneben, gar nicht) mit festen Breiten,
+  darunter zwei kurze Termine direkt hintereinander in derselben Bahn und ein kurzer Termin am Ende
+  der Spur; Sichtprüfung `torrocalendar --demo --now 2026-10-13T10:30` in der Leiste hell und
+  dunkel.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag

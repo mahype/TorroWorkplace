@@ -641,3 +641,28 @@ R.1 ─┬─ R.2 ─┐
 - Neue Texte: keine.
 - Abnahme: Test für `below_titlebar` (Zoom, nie negativ, andere Systeme unverändert); Sichtprüfung auf
   macOS: Mini von Kalender, Aufgaben und Inbox ohne abgeschnittene Zeile.
+
+### U.9 Abdunklung auch über dem Titelband (macOS)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** U.7 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`
+- Befund aus der Sichtprüfung von U.8: Liegt ein Abdunkler (`SCRIM`) über dem Fenster – Dialog
+  (`widgets::modal`), Schublade (`Shell::drawer`), Seitenpaneel über dem Inhalt (`panel::place` mit
+  `PanelMode::Over`) –, bleibt das 28 Punkte hohe Band aus U.6 hell. Oben steht dann ein heller
+  Streifen über dem abgedunkelten Fenster.
+- `shell::titlebar` erfährt, ob der Inhalt gerade abgedunkelt ist, und legt dann denselben `SCRIM`
+  über die Bandfarbe. Das Band bleibt zum Ziehen da (ein Druck darauf schließt nichts). Form der
+  Schnittstelle (eigener Parameter oder ein kleiner Typ zusammen mit `Surface`) beim Umsetzen
+  entscheiden und im Bericht nennen.
+- Jede App leitet „abgedunkelt“ aus demselben Zustand ab, der den Abdunkler zeigt – keine zweite
+  Buchführung. Kalender: Schublade, Editor/Detail als Paneel über dem Inhalt. Aufgaben: Schublade,
+  Detail über dem Inhalt, Dialoge für Filterlisten (nicht die schmale Vollansicht ohne Abdunkler).
+  Inbox: Schublade, Paneel über dem Inhalt. Steuerzentrale: Schublade und ihre Dialoge (Konto
+  entfernen, Vorlage löschen/umbenennen …).
+- Andere Systeme bleiben unverändert (dort gibt es kein Band).
+- Neue Texte: keine.
+- Abnahme: Tests je App, dass jeder Zustand mit Abdunkler das Band abdunkelt und die Zustände ohne
+  es nicht tun; Test für das Band in beiden Fällen. Sichtprüfung auf macOS hell und dunkel mit
+  `--demo --open` (Kalender `editor`, `drawer`; Aufgaben `filter-new`, `drawer`; Steuerzentrale
+  `remove`): Band und Fenster gleich abgedunkelt, kein heller Streifen.
