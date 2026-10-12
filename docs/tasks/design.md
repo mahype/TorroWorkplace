@@ -624,3 +624,65 @@ R.1 ─┬─ R.2 ─┐
 - Neue Texte: keine.
 - Abnahme: Tests für die Fenstereinstellung auf macOS und für das Band; Sichtprüfung auf macOS
   (Ampeln liegen im Band, nichts darunter, Fenster lässt sich am Band ziehen) in Breit und Schmal.
+
+### U.7 Titelband in der Farbe der Fläche darunter (macOS)
+- [x] erledigt (Sichtprüfung Kalender auf macOS: Mittel und Breit hell/dunkel, Schmal und Mini hell; Schmal dunkel nicht gesehen)
+- **Modell:** Opus · **Braucht:** U.6 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`
+- Das Band aus U.6 hatte immer die Fensterfarbe `BG`. Das passt nur über Seitenleiste und Leiste (Breit,
+  Mittel). In Schmal und in den Kurzansichten (Mini, Leiste) liegt darunter `PANEL`; dort stand ein Streifen
+  in anderer Farbe über dem Inhalt (hell grau über Weiß).
+- `shell::titlebar` bekommt die Fläche darunter als `shell::Surface` (`Window` = `BG`, `Panel` = `PANEL`).
+  `Surface::of(class)` nennt die Fläche des Fensteraufbaus: `Window` in Breit und Mittel, sonst `Panel`.
+  Die Apps geben `Window` auch für Zustände ohne Fensteraufbau auf dem Fenstergrund (Anmelden, Laden und
+  Fehler der Kurzansicht).
+- Andere Systeme bleiben unverändert (dort gibt es kein Band).
+- Neue Texte: keine.
+- Abnahme: Test für `Surface::of` in allen Größenklassen und für das Band mit beiden Flächen;
+  Sichtprüfung auf macOS in Breit, Schmal und Mini, hell und dunkel.
+
+### U.8 Kurzansichten rechnen mit der Höhe unter dem Titelband (macOS)
+- [x] erledigt (Sichtprüfung auf macOS hell: Mini und Leiste von Kalender, Aufgaben, Inbox ohne abgeschnittene Zeile; Dialog für Filterlisten in einem niedrigen Fenster mit gleichem Abstand oben und unten)
+- **Modell:** Opus · **Braucht:** U.6 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`
+- Seit U.6 nimmt das Band auf macOS oben 28 Punkte weg. Die Kurzansichten (Mini, Leiste) und der Dialog
+  für Filterlisten rechneten aber mit der ganzen Fensterhöhe; in Mini wurde deshalb die letzte Zeile
+  abgeschnitten (Aufgaben: „+13 more“, Inbox: Zeile ohne Titel).
+- `shell::below_titlebar(size, zoom)` gibt die Größe unter dem Band zurück (auf anderen Systemen die
+  Größe unverändert). Kalender, Aufgaben und Inbox geben diese Größe an ihre Kurzansichten, die Aufgaben
+  auch an den Dialog für Filterlisten. Die Größenklassen bleiben bei der Fenstergröße.
+- Die Steuerzentrale misst schon unter dem Band (`responsive` innerhalb von `shell::titlebar`) und bleibt
+  unverändert.
+- Neue Texte: keine.
+- Abnahme: Test für `below_titlebar` (Zoom, nie negativ, andere Systeme unverändert); Sichtprüfung auf
+  macOS: Mini von Kalender, Aufgaben und Inbox ohne abgeschnittene Zeile.
+
+### U.9 Abdunklung auch über dem Titelband (macOS)
+- [x] erledigt (Sichtprüfung auf macOS hell und dunkel: Kalender-Editor in Mittel und Schmal, Kalender-Schublade, Filterdialog der Aufgaben, Dialog „remove“ der Steuerzentrale)
+- **Umsetzung:** `shell::Cover` (`Nothing`, `Dialog`, `Drawer`, `Panel`, `Filled(Surface)`) als
+  weiterer Parameter von `shell::titlebar`. Das Band ist nicht einfach ganz abgedunkelt, sondern
+  folgt dem, was oben liegt: über der Schublade deren Fläche, über dem Paneel in Mittel dessen Fläche,
+  daneben abgedunkelt; füllt das Paneel das Fenster (Schmal), nimmt das Band dessen Fläche.
+- **Modell:** Opus · **Braucht:** U.7 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/app.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`
+- Befund aus der Sichtprüfung von U.8: Liegt ein Abdunkler (`SCRIM`) über dem Fenster – Dialog
+  (`widgets::modal`), Schublade (`Shell::drawer`), Seitenpaneel über dem Inhalt (`panel::place` mit
+  `PanelMode::Over`) –, bleibt das 28 Punkte hohe Band aus U.6 hell. Oben steht dann ein heller
+  Streifen über dem abgedunkelten Fenster.
+- `shell::titlebar` erfährt, ob der Inhalt gerade abgedunkelt ist, und legt dann denselben `SCRIM`
+  über die Bandfarbe. Das Band bleibt zum Ziehen da (ein Druck darauf schließt nichts). Form der
+  Schnittstelle (eigener Parameter oder ein kleiner Typ zusammen mit `Surface`) beim Umsetzen
+  entscheiden und im Bericht nennen.
+- Jede App leitet „abgedunkelt“ aus demselben Zustand ab, der den Abdunkler zeigt – keine zweite
+  Buchführung. Kalender: Schublade, Editor/Detail als Paneel über dem Inhalt. Aufgaben: Schublade,
+  Detail über dem Inhalt, Dialoge für Filterlisten (nicht die schmale Vollansicht ohne Abdunkler).
+  Inbox: Schublade, Paneel über dem Inhalt. Steuerzentrale: Schublade und ihre Dialoge (Konto
+  entfernen, Vorlage löschen/umbenennen …).
+- Andere Systeme bleiben unverändert (dort gibt es kein Band).
+- Neue Texte: keine.
+- Abnahme: Tests je App, dass jeder Zustand mit Abdunkler das Band abdunkelt und die Zustände ohne
+  es nicht tun; Test für das Band in beiden Fällen. Sichtprüfung auf macOS hell und dunkel mit
+  `--demo --open` (Kalender `editor`, `drawer`; Aufgaben `filter-new`, `drawer`; Steuerzentrale
+  `remove`): Band und Fenster gleich abgedunkelt, kein heller Streifen.

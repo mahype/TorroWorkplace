@@ -8,9 +8,15 @@
 //! The collections come with whether they are private to the user (task G.6b,
 //! [`CalDavClient::collections_with_privacy`]): theirs and writable by nobody else, as Nextcloud
 //! reports owner and sharees. The core resolves GitHub links only there.
+//!
+//! The password comes in as a [`Secret`] and never shows in `Debug` (task M7.1): a client sits in
+//! the core's account state, which may be printed while debugging.
+
+use std::fmt;
 
 use chrono::{DateTime, Utc};
 use reqwest::{Method, StatusCode, Url};
+use torro_core::account::Secret;
 use torro_pim::{Collection, CollectionKind, Event, ProviderError, Todo};
 
 use crate::{CalDavAccount, http_error, ical};
@@ -29,18 +35,62 @@ const COLLECTIONS_PROPFIND: &str = r#"<d:propfind xmlns:d="DAV:" xmlns:c="urn:ie
 </d:propfind>"#;
 
 /// A signed-in connection to one CalDAV account.
-#[derive(Debug, Clone)]
+///
+/// `Debug` shows server and user, never the password.
+#[derive(Clone)]
 pub struct CalDavClient {
     pub(crate) http: reqwest::Client,
     pub(crate) base: Url,
     pub(crate) username: String,
+    /// Plain text only for the `Authorization` header of each request; it arrives as a
+    /// [`Secret`] and is left out of `Debug`.
     pub(crate) password: String,
 }
 
+impl fmt::Debug for CalDavClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CalDavClient")
+            .field("base", &self.base.as_str())
+            .field("username", &self.username)
+            .field("password", &"…")
+            .finish()
+    }
+}
+
+/// What a CalDAV account offers, as its collections show it (task M7.1): calendars (events,
+/// VEVENT) and task lists (VTODO). A collection that names neither or both counts for both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Services {
+    /// At least one collection holds events.
+    pub calendars: bool,
+    /// At least one collection holds tasks.
+    pub tasks: bool,
+}
+
+impl Services {
+    /// The services `collections` offer.
+    pub fn of(collections: &[Collection]) -> Services {
+        Services {
+            calendars: collections.iter().any(|c| c.kind.has_events()),
+            tasks: collections.iter().any(|c| c.kind.has_todos()),
+        }
+    }
+}
+
 impl CalDavClient {
-    pub fn new(http: reqwest::Client, account: &CalDavAccount, password: String) -> Result<Self, ProviderError> {
+    /// A client for `account`, signing every request in with `password`. Fails only for an
+    /// account URL that does not parse.
+    pub fn new(http: reqwest::Client, account: &CalDavAccount, password: Secret) -> Result<Self, ProviderError> {
         let base = Url::parse(&account.url).map_err(|err| ProviderError::Other(format!("{}: {err}", account.url)))?;
-        Ok(CalDavClient { http, base, username: account.username.clone(), password })
+        Ok(CalDavClient { http, base, username: account.username.clone(), password: password.expose().to_string() })
+    }
+
+    /// Signs in and reports what the account offers (task M7.1): asks for the
+    /// `current-user-principal` and the calendar home, then reads its collections ([`Services`]).
+    /// An account without any collection offers nothing. Errors: `Auth` when the server refuses
+    /// the password, `Offline` when it cannot be reached, `Other` when no CalDAV answers there.
+    pub async fn services(&self) -> Result<Services, ProviderError> {
+        Ok(Services::of(&self.collections().await?))
     }
 
     /// `url` when it lies on this client's server (same origin as the account URL), else an
@@ -462,7 +512,7 @@ END:VCALENDAR
     fn only_urls_on_the_accounts_server_are_used() {
         let account =
             CalDavAccount { url: "https://cloud.example.org/remote.php/dav/".into(), username: "anna".into() };
-        let client = CalDavClient::new(reqwest::Client::new(), &account, "secret".into()).expect("client");
+        let client = CalDavClient::new(reqwest::Client::new(), &account, Secret::new("secret")).expect("client");
         let url = |text: &str| Url::parse(text).expect("url");
         for good in [COLLECTION, "https://cloud.example.org:443/other/path/", "https://CLOUD.example.org/x.ics"] {
             assert!(client.on_server(url(good)).is_ok(), "{good}");
@@ -525,7 +575,7 @@ END:VCALENDAR
         );
         let account =
             CalDavAccount { url: "https://cloud.example.org/remote.php/dav/".into(), username: "anna".into() };
-        let client = CalDavClient::new(reqwest::Client::new(), &account, "secret".into()).expect("client");
+        let client = CalDavClient::new(reqwest::Client::new(), &account, Secret::new("secret")).expect("client");
         let url = |text: &str| Url::parse(text).expect("url");
         let home = url("https://cloud.example.org/remote.php/dav/calendars/anna/");
         let principal = url("https://cloud.example.org/remote.php/dav/principals/users/anna/");
@@ -578,5 +628,37 @@ END:VCALENDAR
         )));
         let none = roxmltree::Document::parse(r#"<d:prop xmlns:d="DAV:"/>"#).expect("xml");
         assert!(writable(none.root_element()));
+    }
+
+    #[test]
+    fn the_password_stays_out_of_debug_output() {
+        let account = CalDavAccount { url: "https://dav.example.org/".into(), username: "anna".into() };
+        let client = CalDavClient::new(reqwest::Client::new(), &account, Secret::new("hunter2")).expect("client");
+        let shown = format!("{client:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(shown.contains("anna") && shown.contains("dav.example.org"), "{shown}");
+    }
+
+    #[test]
+    fn services_follow_the_kinds_of_the_collections() {
+        let of = |kinds: &[CollectionKind]| {
+            let collections: Vec<Collection> = kinds
+                .iter()
+                .map(|&kind| Collection {
+                    id: "x".into(),
+                    name: "x".into(),
+                    kind,
+                    color: None,
+                    writable: true,
+                    source: None,
+                })
+                .collect();
+            Services::of(&collections)
+        };
+        assert_eq!(of(&[]), Services { calendars: false, tasks: false });
+        assert_eq!(of(&[CollectionKind::Events]), Services { calendars: true, tasks: false });
+        assert_eq!(of(&[CollectionKind::Todos]), Services { calendars: false, tasks: true });
+        assert_eq!(of(&[CollectionKind::Events, CollectionKind::Todos]), Services { calendars: true, tasks: true });
+        assert_eq!(of(&[CollectionKind::Both]), Services { calendars: true, tasks: true });
     }
 }

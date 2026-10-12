@@ -68,31 +68,43 @@
 //!   write to a list could otherwise place a link to the user's private issue there and read its
 //!   title once the core wrote it in – or have the user's tick close an issue they never meant
 //!   (task G.6c).
+//! - **CalDAV accounts of mail providers** (task M7.1): `accounts.discover_services` searches the
+//!   service of an address without signing in (`torro_pim_caldav::discover`, guarded against
+//!   probing private networks), `accounts.connect_caldav` signs in with a password
+//!   ([`PimService::connect_caldav`]), stores it through [`SignIn`] and syncs the account like a
+//!   Nextcloud, each with its own state. Revoking an app password, the remote wipe and Nextcloud's
+//!   placeholder names stay Nextcloud's; a refused password shows as "Password was refused".
 
 use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use chrono::{DateTime, Duration as Span, Local, Utc};
 use tokio::sync::{Mutex, RwLock};
+use torro_core::account::{AccountKind, Secret};
 use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::model::{GitHubKind, GitHubState, Link};
 use torro_pim::source::move_plan;
-use torro_pim::{AccountState, Collection, Event, EventTime, PimAccount, ProviderError, Todo, combined_state};
-use torro_pim_caldav::CalDavClient;
+use torro_pim::{
+    AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo, combined_state,
+};
+use torro_pim_caldav::discover::{self, DiscoverError, Discoverer, NoDns};
 use torro_pim_caldav::nextcloud;
 use torro_pim_caldav::write::item_url;
+use torro_pim_caldav::{CalDavAccount, CalDavClient, Services};
 use torro_pim_github::api::{self as github_api, MAX_MATCHES};
 use torro_pim_github::lists::{self, FilterFile};
 use torro_pim_github::{Api, FilterList, IssueRef, address, item, scope};
 
 use torro_core::i18n::{tr, trf};
 
+use crate::account::github::{SystemTokens, TokenStore};
 use crate::account::{self, Connected, Stored};
 use crate::approvals::{Facts, Known};
 use crate::inbox::{AccountCheck, Health, Trouble};
@@ -141,6 +153,10 @@ struct Slot {
     /// Nextcloud rate-limits the check, and asking again on every failed request would not
     /// change the answer; a successful sync or a new sign-in clears it.
     wipe_checked: bool,
+    /// The services a person chose when connecting this CalDAV account (task M7.1): at the first
+    /// sync that works, the collections of a service not chosen are hidden ([`chosen`]), then
+    /// this is cleared. `None` for every other account and afterwards.
+    choice: Option<Services>,
 }
 
 impl Slot {
@@ -157,6 +173,7 @@ impl Slot {
             window: None,
             todos: Vec::new(),
             wipe_checked: false,
+            choice: None,
         }
     }
 
@@ -173,7 +190,7 @@ impl Slot {
                 Slot {
                     problem: Some(problem),
                     trouble,
-                    ..Slot::new(Connected { account, app_password: String::new() }, None)
+                    ..Slot::new(Connected { account, app_password: Secret::default() }, None)
                 }
             }
         }
@@ -183,10 +200,19 @@ impl Slot {
         &self.connected.account.id
     }
 
-    /// `anna@cloud.example.org`: the name the user knows the account by.
+    fn is_nextcloud(&self) -> bool {
+        self.connected.account.kind == AccountKind::Nextcloud
+    }
+
+    /// The name the user knows the account by: `anna@cloud.example.org` for a Nextcloud; for a
+    /// CalDAV account its login when that is an e-mail address, else `anna@<provider>`.
     fn label(&self) -> String {
         let account = &self.connected.account;
-        format!("{}@{}", account.login_name, host(&account.server))
+        match (account.kind, &account.display_name) {
+            (AccountKind::CalDav, _) if account.login_name.contains('@') => account.login_name.clone(),
+            (AccountKind::CalDav, Some(provider)) => format!("{}@{provider}", account.login_name),
+            _ => format!("{}@{}", account.login_name, host(&account.server)),
+        }
     }
 
     /// The collection URL in `collection`, an id of this account.
@@ -221,7 +247,7 @@ impl Slot {
         let account = &self.connected.account;
         AccountInfo {
             id: account.id.clone(),
-            kind: "nextcloud".into(),
+            kind: account.kind.name().into(),
             label: self.label(),
             state: self.state(),
             collections: self.collections.clone(),
@@ -498,6 +524,76 @@ fn details_of(item: &item::Item) -> Option<torro_pim::model::GitHubDetails> {
     item.to_todo("", 0).link.and_then(|link| link.github)
 }
 
+/// Where a CalDAV sign-in (task M7.1) searches the service and keeps the account: the account
+/// list, the keychain and the discovery. The daemon's are the user's ([`SignIn::system`]); every
+/// other service, tests included, gets [`SignIn::offline`], which stores nothing and asks no DNS.
+pub struct SignIn {
+    /// `accounts.json`; `None` without a home directory, and then nothing can be stored.
+    accounts_file: Option<PathBuf>,
+    /// Where the password goes: the system keychain, under the account id.
+    secrets: Arc<dyn TokenStore>,
+    /// Built by `make_discoverer` on first use, since building its HTTP client costs time every
+    /// core (and every test) would pay at start; `None` when no HTTP client could be built, and
+    /// searching then fails with a message.
+    discoverer: OnceLock<Option<Arc<Discoverer>>>,
+    make_discoverer: fn() -> Option<Discoverer>,
+}
+
+impl SignIn {
+    /// The user's account list and keychain, discovery on the system's DNS.
+    fn system() -> SignIn {
+        SignIn {
+            accounts_file: torro_core::account::accounts_file().ok(),
+            secrets: Arc::new(SystemTokens),
+            discoverer: OnceLock::new(),
+            make_discoverer: || {
+                Discoverer::system()
+                    .map_err(|err| eprintln!("torroworkplace: no HTTP client for finding CalDAV services: {err}"))
+                    .ok()
+            },
+        }
+    }
+
+    /// No account list, a keychain that keeps nothing ([`NoKeychain`]) and a DNS that knows no
+    /// name ([`NoDns`]): discovery answers from its table alone, a sign-in stores nothing.
+    fn offline() -> SignIn {
+        SignIn {
+            accounts_file: None,
+            secrets: Arc::new(NoKeychain),
+            discoverer: OnceLock::new(),
+            make_discoverer: || Discoverer::new(Arc::new(NoDns)).ok(),
+        }
+    }
+
+    /// The discovery of this service, built on first use.
+    fn discoverer(&self) -> Option<&Discoverer> {
+        self.discoverer.get_or_init(|| (self.make_discoverer)().map(Arc::new)).as_deref()
+    }
+}
+
+impl fmt::Debug for SignIn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignIn").field("accounts_file", &self.accounts_file).finish_non_exhaustive()
+    }
+}
+
+/// A keychain that keeps nothing: for a service that must never store a secret ([`SignIn::offline`]).
+struct NoKeychain;
+
+impl TokenStore for NoKeychain {
+    fn get(&self, _account: &torro_core::Account) -> Result<Option<Secret>, String> {
+        Ok(None)
+    }
+
+    fn set(&self, _account: &torro_core::Account, _secret: &Secret) -> Result<(), String> {
+        Err("this service keeps no passwords".into())
+    }
+
+    fn delete(&self, _account: &torro_core::Account) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct PimService {
@@ -512,18 +608,21 @@ pub struct PimService {
     filters_file: Option<PathBuf>,
     /// One change of `filter-lists.json` at a time: read, change, write.
     filters_writing: Mutex<()>,
+    /// Where CalDAV sign-ins search and store (task M7.1).
+    sign_in: SignIn,
 }
 
 impl PimService {
-    /// The service on the user's settings ([`SettingsStore::system`]), as the daemon runs it.
-    /// Does not touch the network; [`PimService::start`] loads the accounts.
+    /// The service on the user's settings ([`SettingsStore::system`]), account list and keychain,
+    /// as the daemon runs it. Does not touch the network; [`PimService::start`] loads the
+    /// accounts.
     pub fn new() -> PimService {
         let filters_file = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.config.join(lists::FILE));
-        PimService { filters_file, ..PimService::with_settings(SettingsStore::system()) }
+        PimService { filters_file, sign_in: SignIn::system(), ..PimService::with_settings(SettingsStore::system()) }
     }
 
     /// The service on `settings`; tests pass a store in a temp directory. Does not touch the
-    /// network.
+    /// network, and a CalDAV sign-in stores nothing ([`SignIn::offline`]).
     pub fn with_settings(settings: SettingsStore) -> PimService {
         let http = match torro_pim_caldav::http_client() {
             Ok(http) => Some(http),
@@ -539,6 +638,7 @@ impl PimService {
             settings,
             filters_file: None,
             filters_writing: Mutex::new(()),
+            sign_in: SignIn::offline(),
         }
     }
 
@@ -546,6 +646,24 @@ impl PimService {
     #[cfg(test)]
     pub fn with_filter_file(settings: SettingsStore, filters_file: PathBuf) -> PimService {
         PimService { filters_file: Some(filters_file), ..PimService::with_settings(settings) }
+    }
+
+    /// This service with CalDAV sign-ins storing into `accounts_file` and `secrets` and searching
+    /// with `discoverer`, for tests.
+    #[cfg(test)]
+    pub fn with_sign_in(
+        self,
+        accounts_file: PathBuf,
+        secrets: Arc<dyn TokenStore>,
+        discoverer: Discoverer,
+    ) -> PimService {
+        let sign_in = SignIn {
+            accounts_file: Some(accounts_file),
+            secrets,
+            discoverer: OnceLock::from(Some(Arc::new(discoverer))),
+            make_discoverer: || None,
+        };
+        PimService { sign_in, ..self }
     }
 
     /// The settings this service reads; the core uses the same ones.
@@ -602,6 +720,11 @@ impl PimService {
     pub async fn handle_within(self: &Arc<Self>, request: Request, reach: Reach<'_>) -> Response {
         match request {
             Request::ConnectNextcloud { server } => self.connect(server).await,
+            Request::DiscoverServices { address } => self.discover(&address).await,
+            Request::ConnectCalDav { address, server, login_name, password, calendars, tasks } => {
+                let wanted = Services { calendars, tasks };
+                self.connect_caldav(&address, server.as_deref(), &login_name, password, wanted).await
+            }
             // `sync` runs the remote wipe check itself.
             Request::Sync => match self.sync().await {
                 Ok(()) => Response::Ok,
@@ -751,6 +874,8 @@ impl PimService {
             | Request::ConnectNextcloud { .. }
             | Request::ConnectGithub
             | Request::SetGithubToken { .. }
+            | Request::DiscoverServices { .. }
+            | Request::ConnectCalDav { .. }
             | Request::Sync
             | Request::CalendarCollections
             | Request::TaskCollections
@@ -791,6 +916,20 @@ impl PimService {
             | Request::MuteSource { .. }
             | Request::ListRules
             | Request::RemoveRule { .. } => return None,
+            // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
+            // task M2.1).
+            Request::ConnectMail { .. }
+            | Request::UpdateMailAccount { .. }
+            | Request::MailFolders { .. }
+            | Request::SearchMail { .. }
+            | Request::GetMail { .. }
+            | Request::GetMailThread { .. }
+            | Request::GetMailAttachment { .. }
+            | Request::SetMailFlags { .. }
+            | Request::MoveMail { .. }
+            | Request::DeleteMail { .. }
+            | Request::SaveDraft { .. }
+            | Request::SendDraft { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {
@@ -883,19 +1022,25 @@ impl PimService {
     }
 
     /// Removes the account `id` and nothing else: revokes its app password on the server (best
-    /// effort), forgets the account and its secret, drops its cache (task S.2) and takes its
-    /// collections out of the hidden ones (task A.0d). Answered with [`Response::Ok`]; an
-    /// unknown id is `not-found` (task M1.4), a keychain or file that cannot be changed `error`.
-    /// An account without its app password is removed without asking its server.
+    /// effort, Nextcloud only: a CalDAV account's password is the user's own), forgets the account
+    /// and its secret, drops its cache (task S.2) and takes its collections out of the hidden ones
+    /// (task A.0d). Answered with [`Response::Ok`]; an unknown id is `not-found` (task M1.4), a
+    /// keychain or file that cannot be changed `error`. An account without its app password is
+    /// removed without asking its server.
     pub async fn remove_account(&self, id: &str) -> Response {
-        let found = self.state.read().await.slot(id).map(|slot| (slot.connected.clone(), slot.client.is_some()));
-        let Some((connected, reachable)) = found else {
+        let found = self
+            .state
+            .read()
+            .await
+            .slot(id)
+            .map(|slot| (slot.connected.clone(), slot.client.is_some() && slot.is_nextcloud()));
+        let Some((connected, revocable)) = found else {
             return error("not-found", format!("no account {id:?}"));
         };
         // Revoke first: afterwards the secret is gone and the device would stay valid in
         // the user's "Devices & sessions" for good. Offline or refused only costs a log line.
         match &self.http {
-            _ if !reachable => {}
+            _ if !revocable => {}
             Some(http) => {
                 if let Err(err) = account::revoke(http, &connected).await {
                     eprintln!("torroworkplace: app password not revoked on the server: {err}");
@@ -958,17 +1103,23 @@ impl PimService {
 
     /// The server of account `id` refused its app password: asks once whether this device is to
     /// be wiped and does so for this account (task S.12). Otherwise the account stays and shows
-    /// "sign-in refused" until the user signs in again.
+    /// "sign-in refused" until the user signs in again. Only for Nextcloud: other CalDAV servers
+    /// know no remote wipe, and asking them would send the password to a path they never named.
     async fn on_refused(&self, id: &str) {
         let Some(http) = self.http.clone() else {
             return;
         };
-        let Some((connected, label)) =
-            self.state.read().await.slot(id).map(|slot| (slot.connected.clone(), slot.label()))
+        let Some((connected, label)) = self
+            .state
+            .read()
+            .await
+            .slot(id)
+            .filter(|slot| slot.is_nextcloud())
+            .map(|slot| (slot.connected.clone(), slot.label()))
         else {
             return;
         };
-        let (server, token) = (connected.account.server.as_str(), connected.app_password.as_str());
+        let (server, token) = (connected.account.server.as_str(), connected.app_password.expose());
         let forget = id.to_string();
         let wiped = self
             .wipe_if_requested(
@@ -1108,6 +1259,144 @@ impl PimService {
         Response::LoginStarted { login_url }
     }
 
+    /// `accounts.discover_services` (task M7.1): what [`Discoverer::discover`] finds for
+    /// `address`, as [`Response::Discovery`]; the reason a provider is not supported in the
+    /// core's language. `error` for an input without an internet domain, `offline` when nothing
+    /// answered. Logs nothing: the address is the person's.
+    async fn discover(&self, address: &str) -> Response {
+        let Some(discoverer) = self.sign_in.discoverer() else {
+            return error("error", "no HTTP client".into());
+        };
+        match discoverer.discover(address).await {
+            Ok(found) => Response::Discovery {
+                provider: found.provider,
+                urls: found.urls,
+                unsupported: found.unsupported.map(|why| tr(why.reason()).to_string()),
+            },
+            Err(err) => discover_error(err),
+        }
+    }
+
+    /// `accounts.connect_caldav` (task M7.1, app key only): signs in to `login_name` with
+    /// `password` at `server`, or else at each address discovery finds for `address` until one
+    /// answers ([`CalDavClient::services`]); stores the password in the keychain and the account
+    /// in the account list ([`account::store`]); adds the account, or gives the one with the same
+    /// id the new password and server while its hidden collections stay; and syncs it in the
+    /// background. A new account hides the collections of the services not in `wanted` at its
+    /// first sync ([`chosen`]).
+    ///
+    /// Answered with [`Response::Connected`]. Codes: `auth` (the server refused the password; no
+    /// other address is tried then), `not-found`, `unsupported`, `offline`, `error`. No answer,
+    /// message or log line holds the password, and nothing is stored before the server took it.
+    async fn connect_caldav(
+        self: &Arc<Self>,
+        address: &str,
+        server: Option<&str>,
+        login_name: &str,
+        password: Secret,
+        wanted: Services,
+    ) -> Response {
+        let login = login_name.trim();
+        if login.is_empty() || login.contains('/') {
+            return error("error", tr("Enter the user name; it cannot contain \"/\".").into());
+        }
+        if password.is_blank() {
+            return error("error", tr("Enter the password.").into());
+        }
+        let Some(http) = self.http.clone() else {
+            return error("error", "no HTTP client".into());
+        };
+        let (provider, candidates) = match self.candidates(address, server).await {
+            Ok(found) => found,
+            Err(answer) => return *answer,
+        };
+        let mut failure = ("not-found", tr("No calendar service answers at this address."));
+        let mut signed_in = None;
+        for url in candidates {
+            let dav = CalDavAccount { url: url.clone(), username: login.to_string() };
+            let Ok(client) = CalDavClient::new(http.clone(), &dav, password.clone()) else { continue };
+            match client.services().await {
+                Ok(services) => {
+                    signed_in = Some((url, client, services));
+                    break;
+                }
+                Err(ProviderError::Auth) => return error("auth", tr("Password was refused").into()),
+                Err(ProviderError::Offline) => failure = ("offline", tr("The server cannot be reached.")),
+                Err(_) => failure = ("not-found", tr("No calendar service answers at this address.")),
+            }
+        }
+        let Some((url, client, services)) = signed_in else {
+            return error(failure.0, failure.1.into());
+        };
+        let connected =
+            Connected { account: torro_core::Account::caldav(&url, login, &provider), app_password: password };
+        let (file, secrets, storing) =
+            (self.sign_in.accounts_file.clone(), Arc::clone(&self.sign_in.secrets), connected.clone());
+        let stored = account::keychain(move || {
+            account::store(file.as_deref(), &*secrets, &storing.account, &storing.app_password)
+        })
+        .await;
+        if let Err(err) = stored {
+            eprintln!("torroworkplace: a CalDAV account could not be stored: {err}");
+            return error("error", err);
+        }
+        let id = connected.account.id.clone();
+        let info = {
+            let mut state = self.state.write().await;
+            match state.slot_mut(&id) {
+                // "Change password…": only the sign-in changes; what the person hid stays hidden.
+                Some(slot) => {
+                    slot.connected = connected;
+                    slot.client = Some(client);
+                    slot.problem = None;
+                    slot.trouble = None;
+                    slot.info()
+                }
+                None => {
+                    let slot = Slot { choice: Some(wanted), ..Slot::new(connected, Some(client)) };
+                    let info = slot.info();
+                    state.accounts.push(slot);
+                    info
+                }
+            }
+        };
+        let service = Arc::clone(self);
+        tokio::spawn(async move {
+            // `sync_account` logs a failure itself.
+            let _ = service.sync_account(&id).await;
+        });
+        Response::Connected { account: info, calendars: services.calendars, tasks: services.tasks }
+    }
+
+    /// Where [`PimService::connect_caldav`] tries to sign in, with the provider's name: the typed
+    /// `server` alone ([`discover::server_address`]), else every address discovery finds for
+    /// `address`. `Err` is the answer to send: `unsupported` with the reason, `not-found` when
+    /// nothing was found, and the errors of [`PimService::discover`], boxed
+    /// because a [`Response`] is large.
+    async fn candidates(&self, address: &str, server: Option<&str>) -> Result<(String, Vec<String>), Box<Response>> {
+        if let Some(server) = server.map(str::trim).filter(|server| !server.is_empty()) {
+            let url = discover::server_address(server)
+                .map_err(|_| Box::new(error("error", tr("Enter the server as an https address.").into())))?;
+            let provider = discover::domain_of(address).map_or_else(|| host_of(&url), |d| discover::provider_name(&d));
+            return Ok((provider, vec![url]));
+        }
+        let Some(discoverer) = self.sign_in.discoverer() else {
+            return Err(Box::new(error("error", "no HTTP client".into())));
+        };
+        let answer = match discoverer.discover(address).await {
+            Ok(found) => match found.unsupported {
+                Some(why) => Err(error("unsupported", tr(why.reason()).into())),
+                None if found.urls.is_empty() => Err(error(
+                    "not-found",
+                    tr("No calendar service was found for this address. Enter the server address.").into(),
+                )),
+                None => Ok((found.provider, found.urls)),
+            },
+            Err(err) => Err(discover_error(err)),
+        };
+        answer.map_err(Box::new)
+    }
+
     /// Syncs every account, one after the other. A failure of one account is kept in its state
     /// (and logged) and does not keep the others from syncing; the result is the first failure.
     /// Without any account: not connected.
@@ -1130,8 +1419,14 @@ impl PimService {
     /// password runs the remote wipe check.
     async fn sync_account(&self, id: &str) -> Result<(), ProviderError> {
         let _running = self.syncing.lock().await;
-        let client = self.state.read().await.slot(id).and_then(|slot| slot.client.clone()).ok_or_else(not_connected)?;
-        let result = fetch_all(&client, id).await;
+        let (client, nextcloud) = self
+            .state
+            .read()
+            .await
+            .slot(id)
+            .and_then(|slot| Some((slot.client.clone()?, slot.is_nextcloud())))
+            .ok_or_else(not_connected)?;
+        let result = fetch_all(&client, id, nextcloud).await;
         let mut state = self.state.write().await;
         let Some(slot) = state.slot_mut(id) else {
             // The account was removed while the sync ran; nothing of it is kept.
@@ -1139,6 +1434,14 @@ impl PimService {
         };
         match result {
             Ok(Fetched { collections, private, events, window, todos }) => {
+                // Before the collections reach the cache, so no app sees them shown first.
+                if let Some(wanted) = slot.choice.take() {
+                    for collection in collections.iter().filter(|c| !chosen(wanted, c.kind)) {
+                        if let Err(err) = self.settings.set_collection_shown(&collection.id, false) {
+                            eprintln!("torroworkplace: a service not chosen for {id} stays shown: {err}");
+                        }
+                    }
+                }
                 slot.collections = collections;
                 slot.private = private;
                 slot.events = events;
@@ -1152,7 +1455,10 @@ impl PimService {
             }
             Err(err) => {
                 eprintln!("torroworkplace: sync of {id} failed: {err}");
-                slot.problem = Some(err.to_string());
+                slot.problem = Some(match (&err, slot.connected.account.kind) {
+                    (ProviderError::Auth, AccountKind::CalDav) => tr("Password was refused").to_string(),
+                    _ => err.to_string(),
+                });
                 slot.trouble = Some(failing(slot.trouble, &err, Utc::now()));
                 drop(state);
                 if err == ProviderError::Auth {
@@ -2534,8 +2840,9 @@ struct Fetched {
 }
 
 /// Everything the cache of `account` holds, fetched from its server; the server's URLs become
-/// collection ids with the account in front.
-async fn fetch_all(client: &CalDavClient, account: &str) -> Result<Fetched, ProviderError> {
+/// collection ids with the account in front. Nextcloud's placeholder names are translated only
+/// for a `nextcloud` account: on another server they are what the user named the collection.
+async fn fetch_all(client: &CalDavClient, account: &str, nextcloud: bool) -> Result<Fetched, ProviderError> {
     let today = Local::now().date_naive();
     let start = today - Span::days(WINDOW_BACK_DAYS);
     let end = today + Span::days(WINDOW_AHEAD_DAYS);
@@ -2550,7 +2857,7 @@ async fn fetch_all(client: &CalDavClient, account: &str) -> Result<Fetched, Prov
     let mut events = Vec::new();
     let mut todos = Vec::new();
     for collection in &mut collections {
-        if let Some(name) = placeholder_name(&collection.name) {
+        if let Some(name) = placeholder_name(&collection.name).filter(|_| nextcloud) {
             collection.name = name.to_string();
         }
         let url = std::mem::take(&mut collection.id);
@@ -2565,6 +2872,17 @@ async fn fetch_all(client: &CalDavClient, account: &str) -> Result<Fetched, Prov
         collection.id = id;
     }
     Ok(Fetched { collections, private, events, window, todos })
+}
+
+/// Whether a collection of `kind` serves a service of `wanted` (task M7.1): one with events and
+/// tasks stays when either is chosen.
+fn chosen(wanted: Services, kind: CollectionKind) -> bool {
+    (wanted.calendars && kind.has_events()) || (wanted.tasks && kind.has_todos())
+}
+
+/// The host of `url` (`https://dav.example.org/x/` → `dav.example.org`), else `url` itself.
+fn host_of(url: &str) -> String {
+    reqwest::Url::parse(url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_else(|| url.into())
 }
 
 /// Nextcloud stores translation keys instead of names for the collections it creates on its
@@ -2711,6 +3029,14 @@ fn error(code: &str, message: String) -> Response {
     Response::Error { code: code.into(), message }
 }
 
+/// The answer when discovery could not search at all (task M7.1).
+fn discover_error(err: DiscoverError) -> Response {
+    match err {
+        DiscoverError::NoDomain => error("error", tr("Enter an e-mail address or a domain name.").into()),
+        DiscoverError::Offline => error("offline", tr("The server cannot be reached.").into()),
+    }
+}
+
 /// A provider failure with the code `torro_ipc::pim::PimClient` maps back.
 fn provider_error(err: &ProviderError) -> Response {
     let code = match err {
@@ -2734,7 +3060,7 @@ pub(crate) mod tests {
     pub(crate) fn connected() -> Connected {
         Connected {
             account: torro_core::Account::nextcloud("https://cloud.example.org/", "anna"),
-            app_password: "secret".into(),
+            app_password: Secret::new("secret"),
         }
     }
 
@@ -3380,7 +3706,7 @@ pub(crate) mod tests {
         let service = refused_service().await;
         let bob = Connected {
             account: torro_core::Account::nextcloud("https://other.example.org", "bob"),
-            app_password: "other".into(),
+            app_password: Secret::new("other"),
         };
         service
             .state
@@ -3433,7 +3759,7 @@ pub(crate) mod tests {
         let service = service_with(settings.clone());
         let bob = Connected {
             account: torro_core::Account::nextcloud("https://other.example.org", "bob"),
-            app_password: "other".into(),
+            app_password: Secret::new("other"),
         };
         {
             let mut state = service.state.write().await;
@@ -3611,10 +3937,10 @@ pub(crate) mod tests {
     fn slot_on(base: &str) -> Slot {
         let origin = base.trim_end_matches("/remote.php/dav/");
         let connected =
-            Connected { account: torro_core::Account::nextcloud(origin, "anna"), app_password: "secret".into() };
+            Connected { account: torro_core::Account::nextcloud(origin, "anna"), app_password: Secret::new("secret") };
         let http = reqwest::Client::builder().no_proxy().build().expect("http client");
         let dav = torro_pim_caldav::CalDavAccount { url: base.into(), username: "anna".into() };
-        let client = CalDavClient::new(http, &dav, "secret".into()).expect("client");
+        let client = CalDavClient::new(http, &dav, Secret::new("secret")).expect("client");
         let id = connected.account.id.clone();
         let collections: Vec<Collection> = [WORK, HOME]
             .iter()
@@ -3699,6 +4025,217 @@ pub(crate) mod tests {
             Response::Error { code, .. } => code,
             _ => "ok",
         }
+    }
+
+    // CalDAV accounts of mail providers (task M7.1). The password must never show in an answer,
+    // an error, a `Debug` output, a file or a request to anywhere but its own server.
+
+    const PASSWORD: &str = "hunter2-mailbox";
+
+    /// A calendar `work` with events only and a list `tasks` with tasks only, the list named like
+    /// Nextcloud's placeholder: on another server it is what the user called it.
+    const SPLIT_HOME: &str = r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/remote.php/dav/calendars/anna/work/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>Work</d:displayname><c:supported-calendar-component-set><c:comp name="VEVENT"/></c:supported-calendar-component-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response><d:response><d:href>/remote.php/dav/calendars/anna/tasks/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/><c:calendar/></d:resourcetype><d:displayname>DEFAULT_TASK_CALENDAR_NAME</d:displayname><c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#;
+
+    /// A CalDAV server with [`SPLIT_HOME`] and nothing in it.
+    fn split_server(seen: &Seen) -> Reply {
+        match (seen.method.as_str(), seen.path.as_str()) {
+            ("PROPFIND", "/remote.php/dav/") => (207, None, PRINCIPAL),
+            ("PROPFIND", "/remote.php/dav/principals/users/anna/") => (207, None, HOME_SET),
+            ("PROPFIND", "/remote.php/dav/calendars/anna/") => (207, None, SPLIT_HOME),
+            ("REPORT", _) => (207, None, NOTHING),
+            _ => (404, None, ""),
+        }
+    }
+
+    /// A service with an HTTP client, its settings, account list and keychain (in memory) in
+    /// `dir`, and discovery that asks no DNS.
+    fn caldav_service(dir: &std::path::Path) -> (Arc<PimService>, crate::account::github::tests::MemoryTokens) {
+        let secrets = crate::account::github::tests::MemoryTokens::default();
+        let discoverer = Discoverer::new(Arc::new(NoDns)).expect("discovery");
+        let service = PimService::with_settings(SettingsStore::at(dir.join("settings.json"))).with_sign_in(
+            dir.join(torro_core::account::ACCOUNTS_FILE),
+            Arc::new(secrets.clone()),
+            discoverer,
+        );
+        (Arc::new(service), secrets)
+    }
+
+    /// Anna's sign-in at `server` with `password`, choosing `calendars` and `tasks`.
+    fn sign_in_at(server: Option<&str>, password: &str, calendars: bool, tasks: bool) -> Request {
+        Request::ConnectCalDav {
+            address: "anna@example.org".into(),
+            server: server.map(str::to_string),
+            login_name: "anna".into(),
+            password: Secret::new(password),
+            calendars,
+            tasks,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_caldav_account_signs_in_stores_its_password_and_hides_what_was_not_chosen() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (base, record) = fake_server(split_server).await;
+        let (service, secrets) = caldav_service(dir.path());
+
+        let response = service.handle_within(sign_in_at(Some(&base), PASSWORD, true, false), Reach::Suite).await;
+        let Response::Connected { account, calendars, tasks } = response.clone() else {
+            panic!("connected, got {response:?}")
+        };
+        assert_eq!((calendars, tasks), (true, true), "what the server offers, whatever was chosen");
+        let id = torro_core::Account::caldav(&base, "anna", "example.org").id;
+        assert_eq!(
+            (account.id.as_str(), account.kind.as_str(), account.label.as_str()),
+            (id.as_str(), "caldav", "anna@example.org")
+        );
+        assert!(!serde_json::to_string(&response).expect("json").contains(PASSWORD));
+        assert_eq!(secrets.get_plain(&id).as_deref(), Some(PASSWORD), "the password is in the keychain");
+        let listed = std::fs::read_to_string(dir.path().join(torro_core::account::ACCOUNTS_FILE)).expect("listed");
+        assert!(listed.contains(&id) && !listed.contains(PASSWORD), "{listed}");
+
+        service.sync_account(&id).await.expect("synced");
+        let hidden = service.settings.current().hidden_collections;
+        let tasks_list = collection_id(&id, &format!("{}calendars/anna/tasks/", base));
+        let work = collection_id(&id, &format!("{}calendars/anna/work/", base));
+        assert_eq!(hidden, [tasks_list], "tasks were not chosen");
+        let state = service.state.read().await;
+        let names: Vec<&str> = state.accounts[0].collections.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Work", "DEFAULT_TASK_CALENDAR_NAME"], "no Nextcloud placeholder names elsewhere");
+        assert!(state.accounts[0].collections.iter().any(|c| c.id == work));
+        assert!(!format!("{:?}", state.accounts).contains(PASSWORD), "no Debug output shows it");
+        assert!(lines(&record).iter().all(|line| line.starts_with("PROPFIND") || line.starts_with("REPORT")));
+    }
+
+    #[tokio::test]
+    async fn a_refused_password_is_auth_and_nothing_is_stored() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (base, _) = fake_server(|_| (401, None, "")).await;
+        let (service, secrets) = caldav_service(dir.path());
+        let response = service.handle_within(sign_in_at(Some(&base), PASSWORD, true, true), Reach::Suite).await;
+        let Response::Error { code, message } = &response else { panic!("refused, got {response:?}") };
+        assert_eq!((code.as_str(), message.as_str()), ("auth", tr("Password was refused")));
+        assert!(!format!("{response:?}").contains(PASSWORD));
+        let id = torro_core::Account::caldav(&base, "anna", "example.org").id;
+        assert_eq!(secrets.get_plain(&id), None);
+        assert!(!dir.path().join(torro_core::account::ACCOUNTS_FILE).exists());
+        assert!(service.state.read().await.accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn signing_in_again_replaces_only_the_password() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (base, _) = fake_server(split_server).await;
+        let (service, secrets) = caldav_service(dir.path());
+        let first = service.handle_within(sign_in_at(Some(&base), PASSWORD, true, false), Reach::Suite).await;
+        let Response::Connected { account, .. } = first else { panic!("connected, got {first:?}") };
+        service.sync_account(&account.id).await.expect("synced");
+        let hidden = service.settings.current().hidden_collections;
+        assert_eq!(hidden.len(), 1);
+
+        // "Change password…" chooses nothing: what the person hid stays hidden, nothing new hides.
+        let again = service.handle_within(sign_in_at(Some(&base), "new-password", false, false), Reach::Suite).await;
+        assert!(matches!(again, Response::Connected { .. }), "{again:?}");
+        service.sync_account(&account.id).await.expect("synced");
+        assert_eq!(service.settings.current().hidden_collections, hidden);
+        assert_eq!(secrets.get_plain(&account.id).as_deref(), Some("new-password"));
+        assert_eq!(service.state.read().await.accounts.len(), 1);
+        let listed =
+            torro_core::account::load_from(&dir.path().join(torro_core::account::ACCOUNTS_FILE)).expect("read");
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_nextcloud_and_a_caldav_account_sync_apart_and_only_nextcloud_is_asked_to_wipe() {
+        let (good, good_record) = fake_server(healthy_server).await;
+        let (refusing, refusing_record) = fake_server(|_| (401, None, "")).await;
+        // With an HTTP client, so a remote wipe check could be sent; only Nextcloud may get one.
+        let service = Arc::new(PimService::with_settings(SettingsStore::without_file()));
+        let mailbox = Connected {
+            account: torro_core::Account::caldav(&refusing, "anna@example.org", "example.org"),
+            app_password: Secret::new(PASSWORD),
+        };
+        let http = reqwest::Client::builder().no_proxy().build().expect("http client");
+        let client = account::caldav(&http, &mailbox).expect("client");
+        {
+            let mut state = service.state.write().await;
+            state.accounts.push(slot_on(&good));
+            state.accounts.push(Slot::new(mailbox, Some(client)));
+        }
+
+        assert_eq!(service.sync().await, Err(ProviderError::Auth), "the failure of one account is reported");
+        let state = service.state.read().await;
+        let (nextcloud, caldav) = (&state.accounts[0], &state.accounts[1]);
+        assert_eq!((nextcloud.problem.as_deref(), nextcloud.last_sync.is_some()), (None, true));
+        assert_eq!(caldav.problem.as_deref(), Some(tr("Password was refused")));
+        assert!(matches!(caldav.trouble, Some((Trouble::SignInRefused, _))));
+        assert!(lines(&good_record).iter().any(|line| line.starts_with("REPORT")));
+        assert_eq!(lines(&refusing_record), ["PROPFIND /remote.php/dav/"], "no wipe check, no revoke");
+        drop(state);
+        let kinds: Vec<String> = service.accounts_within(Reach::Suite).await.into_iter().map(|a| a.kind).collect();
+        assert_eq!(kinds, ["nextcloud", "caldav"]);
+    }
+
+    #[tokio::test]
+    async fn discovery_answers_from_the_table_and_refuses_what_is_no_domain() {
+        let service = service();
+        let ask = |address: &str| Request::DiscoverServices { address: address.into() };
+        let gmail = service.handle_within(ask("anna@gmail.com"), Reach::Suite).await;
+        let reason = tr(discover::Unsupported::Google.reason()).to_string();
+        assert_eq!(gmail, Response::Discovery { provider: "Gmail".into(), urls: vec![], unsupported: Some(reason) });
+        let mailbox = service.handle_within(ask("anna@mailbox.org"), Reach::Suite).await;
+        assert_eq!(
+            mailbox,
+            Response::Discovery {
+                provider: "mailbox.org".into(),
+                urls: vec!["https://dav.mailbox.org/".into()],
+                unsupported: None
+            }
+        );
+        for refused in ["anna@192.168.1.1", "anna@localhost", ""] {
+            assert_eq!(code_of(&service.handle_within(ask(refused), Reach::Suite).await), "error", "{refused:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_without_a_usable_address_or_login_stores_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (service, secrets) = caldav_service(dir.path());
+        let ask = |request: Request| {
+            let service = Arc::clone(&service);
+            async move { service.handle_within(request, Reach::Suite).await }
+        };
+        let with = |address: &str, login_name: &str| Request::ConnectCalDav {
+            address: address.into(),
+            server: None,
+            login_name: login_name.into(),
+            password: Secret::new(PASSWORD),
+            calendars: true,
+            tasks: true,
+        };
+        assert_eq!(code_of(&ask(with("anna@gmail.com", "anna")).await), "unsupported");
+        assert_eq!(code_of(&ask(sign_in_at(None, PASSWORD, true, true)).await), "not-found", "nothing found");
+        let plain = sign_in_at(Some("http://dav.example.org/"), PASSWORD, true, true);
+        assert_eq!(code_of(&ask(plain).await), "error", "no password over plain http");
+        assert_eq!(code_of(&ask(with("anna@example.org", "a/b")).await), "error");
+        assert_eq!(code_of(&ask(sign_in_at(Some("dav.example.org"), " ", true, true)).await), "error");
+        let answer = ask(sign_in_at(Some("http://dav.example.org/"), PASSWORD, true, true)).await;
+        assert!(!format!("{answer:?}").contains(PASSWORD));
+        assert!(!dir.path().join(torro_core::account::ACCOUNTS_FILE).exists());
+        assert!(
+            service.state.read().await.accounts.is_empty()
+                && secrets.get_plain("caldav:anna@dav.example.org").is_none()
+        );
+    }
+
+    #[test]
+    fn a_collection_with_both_stays_while_either_service_is_chosen() {
+        let both = Services { calendars: true, tasks: true };
+        let calendars = Services { calendars: true, tasks: false };
+        let neither = Services::default();
+        assert!(chosen(calendars, CollectionKind::Both) && chosen(calendars, CollectionKind::Events));
+        assert!(!chosen(calendars, CollectionKind::Todos));
+        assert!(chosen(both, CollectionKind::Todos));
+        assert!(!chosen(neither, CollectionKind::Both));
     }
 
     // Several accounts (task M1.1).

@@ -2,8 +2,11 @@
 //!
 //! An account is set up once and serves every app. Where and as whom lives in
 //! `accounts.json` in the core's config directory; the secret (for Nextcloud the app
-//! password from Login Flow v2, for GitHub the token) lives in the system keychain: Secret
-//! Service on Linux, Keychain on macOS, Credential Manager on Windows.
+//! password from Login Flow v2, for GitHub the token, for a CalDAV account of a mail provider its
+//! password or app password, for a mail account the password of its IMAP and SMTP servers) lives in
+//! the system keychain: Secret Service on Linux, Keychain on macOS, Credential Manager on Windows.
+//! A mail account keeps its servers and settings next to it in `accounts.json` (types from
+//! `torro-mail`, task M2.1).
 //!
 //! A secret on its way there travels as a [`Secret`], which never shows its value in `Debug`.
 
@@ -15,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
+use torro_mail::{InvalidAddress, MailAccountConfig, MailSettings, Security};
 
 use crate::AppId;
 use crate::paths::AppPaths;
@@ -44,6 +48,28 @@ pub enum AccountKind {
     /// GitHub: issues and pull requests (task G.1). Written `github`.
     #[serde(rename = "github")]
     GitHub,
+    /// Any other CalDAV server, usually the calendars and tasks of a mail provider (mailbox.org,
+    /// Posteo, Fastmail, iCloud …; task M7.1), signed in to with a password or app password.
+    /// Written `caldav`.
+    #[serde(rename = "caldav")]
+    CalDav,
+    /// A mail account (task M2.1): IMAP and SMTP, and on request the calendars and tasks of the
+    /// same sign-in over CalDAV. Its servers are in [`Account::mail`], what the person set for it
+    /// in [`Account::mail_settings`]. Written `mail`.
+    Mail,
+}
+
+impl AccountKind {
+    /// How the kind is written in `accounts.json` and in the API (`AccountInfo::kind`):
+    /// `nextcloud`, `github`, `caldav`, `mail`.
+    pub fn name(self) -> &'static str {
+        match self {
+            AccountKind::Nextcloud => "nextcloud",
+            AccountKind::GitHub => "github",
+            AccountKind::CalDav => "caldav",
+            AccountKind::Mail => "mail",
+        }
+    }
 }
 
 /// Where GitHub accounts live: the `server` of every [`Account::github`].
@@ -54,8 +80,8 @@ pub const GITHUB_SERVER: &str = "https://github.com";
 /// `Debug` shows `Secret(…)`, never the value, so a secret cannot slip into a log, an error
 /// message or an answer by accident. It serializes as the plain string (a request has to carry
 /// it), and its JSON Schema is a `string` marked `writeOnly`. Comparing looks at every byte,
-/// whatever differs first. Meant for every secret a request carries (GitHub tokens since G.1;
-/// the CalDAV password of task M7 can take it over).
+/// whatever differs first. Meant for every secret a request carries: GitHub tokens since G.1, the
+/// CalDAV password since M7.1, also inside the CalDAV client's connection data.
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
@@ -120,6 +146,19 @@ pub struct Account {
     pub server: String,
     /// The name the server knows the user by (Nextcloud: `loginName`).
     pub login_name: String,
+    /// What to call the account besides its login: for a CalDAV account the provider or the
+    /// domain it was found at (`mailbox.org`, `iCloud`). `None` for the other kinds, and in
+    /// lists written before task M7.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Where a mail account's servers are ([`AccountKind::Mail`], task M2.1); `None` for the other
+    /// kinds and in lists written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<MailAccountConfig>,
+    /// What the person set for a mail account (signature, notifications, services); `None` for the
+    /// other kinds and in lists written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_settings: Option<MailSettings>,
 }
 
 impl Account {
@@ -130,6 +169,62 @@ impl Account {
             kind: AccountKind::Nextcloud,
             server: server.trim_end_matches('/').to_string(),
             login_name: login_name.to_string(),
+            display_name: None,
+            mail: None,
+            mail_settings: None,
+        }
+    }
+
+    /// The mail account of `config.address` (task M2.1), signed in to as `login_name`:
+    ///
+    /// - id `mail:<address>` ([`torro_mail::account_id`]): an address with `/`, white space or
+    ///   control characters is refused ([`InvalidAddress`]), so the id never holds a `/` and never
+    ///   names a client key's keychain entry;
+    /// - `server` the IMAP server as `imaps://<host>:<port>` (TLS) or `imap://<host>:<port>`
+    ///   (STARTTLS), for showing; the servers themselves are in `mail`;
+    /// - `display_name` the provider or the domain (`mailbox.org`);
+    /// - `mail` the config as given, `mail_settings` the given settings.
+    ///
+    /// The password is not part of it: it goes to the keychain under the id ([`Account::set_secret`]).
+    pub fn mail(
+        config: MailAccountConfig,
+        login_name: &str,
+        display_name: &str,
+        settings: MailSettings,
+    ) -> Result<Account, InvalidAddress> {
+        let id = torro_mail::account_id(&config.address)?;
+        let scheme = match config.imap.security {
+            Security::Tls => "imaps",
+            Security::StartTls => "imap",
+        };
+        Ok(Account {
+            id,
+            kind: AccountKind::Mail,
+            server: format!("{scheme}://{}:{}", config.imap.host, config.imap.port),
+            login_name: login_name.to_string(),
+            display_name: Some(display_name.to_string()),
+            mail: Some(config),
+            mail_settings: Some(settings),
+        })
+    }
+
+    /// The CalDAV account of `login_name` at the DAV address `server` (task M7.1): id
+    /// `caldav:<login>@<host>`, where `<host>` is the host of `server`, with its port when that is
+    /// not the scheme's own (`caldav:anna@mailbox.org@dav.mailbox.org`). `server` is kept as
+    /// given: it is the address the CalDAV client starts at. `display_name` names the provider.
+    ///
+    /// The caller checks `login_name`: not empty and without `/`, because collection ids are
+    /// split at the first `/` after the account id. The id starts with `caldav:`, so it never
+    /// names a client key's keychain entry ([`RESERVED_ID_PREFIX`]).
+    pub fn caldav(server: &str, login_name: &str, display_name: &str) -> Account {
+        Account {
+            id: format!("caldav:{login_name}@{}", authority(server)),
+            kind: AccountKind::CalDav,
+            server: server.to_string(),
+            login_name: login_name.to_string(),
+            display_name: Some(display_name.to_string()),
+            mail: None,
+            mail_settings: None,
         }
     }
 
@@ -141,6 +236,9 @@ impl Account {
             kind: AccountKind::GitHub,
             server: GITHUB_SERVER.to_string(),
             login_name: login.to_string(),
+            display_name: None,
+            mail: None,
+            mail_settings: None,
         }
     }
 
@@ -171,6 +269,16 @@ impl Account {
         }
         keyring::Entry::new(KEYCHAIN_SERVICE, &self.id).map_err(|err| AccountError::Keychain(err.to_string()))
     }
+}
+
+/// `https://dav.example.org:8443/dav/` → `dav.example.org:8443`: host and port of a URL, without
+/// scheme, user, path or the scheme's own port, lowercased.
+fn authority(server: &str) -> String {
+    let rest = server.split_once("://").map_or(server, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let own_port = if server.starts_with("http://") { ":80" } else { ":443" };
+    authority.strip_suffix(own_port).unwrap_or(authority).to_ascii_lowercase()
 }
 
 /// Why reading or writing accounts failed.
@@ -264,6 +372,74 @@ mod tests {
         let account = Account::nextcloud("https://cloud.example.org/", "anna");
         assert_eq!(account.id, "nextcloud:anna@cloud.example.org");
         assert_eq!(account.server, "https://cloud.example.org");
+    }
+
+    #[test]
+    fn caldav_ids_name_login_and_host_and_keep_the_server() {
+        let account = Account::caldav("https://dav.mailbox.org/", "anna@mailbox.org", "mailbox.org");
+        assert_eq!(account.id, "caldav:anna@mailbox.org@dav.mailbox.org");
+        assert_eq!(account.server, "https://dav.mailbox.org/");
+        assert_eq!((account.kind, account.display_name.as_deref()), (AccountKind::CalDav, Some("mailbox.org")));
+        assert_eq!(Account::caldav("https://Posteo.de:8443/", "anna", "Posteo").id, "caldav:anna@posteo.de:8443");
+        assert_eq!(Account::caldav("https://dav.example.org:443/x/", "anna", "x").id, "caldav:anna@dav.example.org");
+        assert_eq!(Account::caldav("http://127.0.0.1:5232/", "anna", "x").id, "caldav:anna@127.0.0.1:5232");
+        assert!(!is_reserved_id(&Account::caldav("https://client-x.example.org/", "client-1", "x").id));
+
+        let json = serde_json::to_value(&account).expect("json");
+        assert_eq!((json["kind"].as_str(), json["display_name"].as_str()), (Some("caldav"), Some("mailbox.org")));
+        assert_eq!(serde_json::from_value::<Account>(json).expect("read back"), account);
+        assert_eq!(AccountKind::CalDav.name(), "caldav");
+        assert_eq!(AccountKind::Nextcloud.name(), "nextcloud");
+    }
+
+    #[test]
+    fn lists_from_before_display_names_read_as_before() {
+        let json = r#"[{"id":"nextcloud:anna@cloud","kind":"nextcloud","server":"https://cloud","login_name":"anna"}]"#;
+        let accounts: Vec<Account> = serde_json::from_str(json).expect("an older list");
+        assert_eq!(accounts[0].display_name, None);
+        assert_eq!((&accounts[0].mail, &accounts[0].mail_settings), (&None, &None));
+        let written = serde_json::to_string(&accounts).expect("json");
+        assert!(!written.contains("display_name") && !written.contains("mail"), "{written}");
+    }
+
+    fn mailbox_org() -> MailAccountConfig {
+        use torro_mail::Endpoint;
+        MailAccountConfig {
+            address: "Anna@Mailbox.org".into(),
+            sender_name: "Anna".into(),
+            imap: Endpoint { host: "imap.mailbox.org".into(), port: 993, security: Security::Tls },
+            smtp: Endpoint { host: "smtp.mailbox.org".into(), port: 587, security: Security::StartTls },
+            caldav: Some("https://dav.mailbox.org/".into()),
+        }
+    }
+
+    #[test]
+    fn mail_accounts_are_named_after_the_address_and_keep_config_and_settings() {
+        let settings = MailSettings { signature: Some("-- \nAnna".into()), ..MailSettings::default() };
+        let account = Account::mail(mailbox_org(), "anna@mailbox.org", "mailbox.org", settings.clone()).expect("valid");
+        assert_eq!(account.id, "mail:Anna@mailbox.org");
+        assert_eq!((account.kind, account.server.as_str()), (AccountKind::Mail, "imaps://imap.mailbox.org:993"));
+        assert_eq!(account.mail_settings.as_ref(), Some(&settings));
+        assert!(!is_reserved_id(&account.id));
+        let json = serde_json::to_value(&account).expect("json");
+        assert_eq!((json["kind"].as_str(), json["mail"]["imap"]["port"].as_u64()), (Some("mail"), Some(993)));
+        assert_eq!(serde_json::from_value::<Account>(json).expect("read back"), account);
+        assert_eq!(AccountKind::Mail.name(), "mail");
+
+        let starttls = MailAccountConfig {
+            imap: torro_mail::Endpoint { host: "mail.example.org".into(), port: 143, security: Security::StartTls },
+            ..mailbox_org()
+        };
+        let account = Account::mail(starttls, "anna", "example.org", MailSettings::default()).expect("valid");
+        assert_eq!(account.server, "imap://mail.example.org:143");
+    }
+
+    #[test]
+    fn mail_accounts_refuse_addresses_with_a_slash() {
+        for address in ["anna/x@mailbox.org", "anna@mailbox.org/", "client-1", "anna\u{0}@mailbox.org"] {
+            let config = MailAccountConfig { address: address.into(), ..mailbox_org() };
+            assert!(Account::mail(config, "anna", "x", MailSettings::default()).is_err(), "{address:?}");
+        }
     }
 
     #[test]

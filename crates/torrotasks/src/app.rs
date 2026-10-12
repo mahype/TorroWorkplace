@@ -92,7 +92,7 @@ use torro_core::settings::ListOrder;
 use torro_gui::connect::{self, Connect};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -1251,6 +1251,12 @@ impl App {
         layout::of(self.size)
     }
 
+    /// The room under the title band, which the glances and the filter dialog fill
+    /// ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
+    }
+
     /// Mini or strip: a display without header, sidebar, menus or dialogs.
     fn is_glance(&self) -> bool {
         matches!(self.class(), SizeClass::Mini | SizeClass::Strip)
@@ -1400,7 +1406,31 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(self.content()), self.zoom.factor(), Message::DragWindow))
+        let content = self.zoom.view(self.content());
+        let (surface, cover) = (self.surface(), self.cover());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: a filter list dialog,
+    /// else the drawer. The narrow editor fills the window as a view of its own ([`App::window`]);
+    /// signing in and the glance have neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if !self.connected() || self.is_glance() {
+            return Cover::Nothing;
+        }
+        match &self.filter_dialog {
+            Some(dialog) if dialog.is_full(class) => Cover::Filled(Surface::Panel),
+            dialog => Cover::dialog(dialog.is_some()).or(Cover::drawer(class, self.drawer)),
+        }
+    }
+
+    /// The surface at the top of [`App::content`], which the title band takes: the window background
+    /// while signing in and for the glance before the first load ([`App::unloaded`]), else that of
+    /// the layout.
+    fn surface(&self) -> Surface {
+        let connected = matches!(self.account, Some(AccountState::Connected { .. }));
+        if !connected || (self.is_glance() && !self.loaded) { Surface::Window } else { Surface::of(self.class()) }
     }
 
     fn content(&self) -> Element<'_, Message> {
@@ -1433,8 +1463,8 @@ impl App {
         let data =
             GlanceData { todos: &self.todos, colors: self.colors(), today: self.today, error: self.error.as_deref() };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
@@ -1455,7 +1485,7 @@ impl App {
         let list_menu = Anchor::new();
         // In a narrow window the filter list dialog is a view of its own.
         if let Some(dialog) = self.filter_dialog.as_ref().filter(|dialog| dialog.is_full(class)) {
-            return dialog.view(class, self.size).map(Message::Filter);
+            return dialog.view(class, self.content_size()).map(Message::Filter);
         }
         let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
@@ -1477,7 +1507,8 @@ impl App {
                 widgets::floating(&list_menu, Placement::Below(Align::End), self.list_menu(), Message::CloseMenu)
             }
         });
-        let dialog = self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.size).map(Message::Filter));
+        let dialog =
+            self.filter_dialog.as_ref().map(|dialog| dialog.view(class, self.content_size()).map(Message::Filter));
         // The property editors and the "…" menu of the detail.
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail
@@ -3854,6 +3885,28 @@ mod tests {
         connected(&mut app);
         let _ = app.update(Message::Loaded(Ok((collections, todos))));
         app
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(app.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut dialog = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        dialog.drawer = true;
+        for (size, cover) in [
+            (Size::new(1600.0, 1000.0), Cover::Dialog),
+            (Size::new(800.0, 600.0), Cover::Dialog),
+            (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)),
+        ] {
+            let _ = dialog.update(Message::Resized(size));
+            assert_eq!(dialog.cover(), cover, "{size:?}: the dialog, but not the narrow editor's own view");
+        }
     }
 
     #[test]

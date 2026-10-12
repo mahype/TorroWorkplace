@@ -34,7 +34,7 @@
 //! cannot be written is not opened (the core refuses the command), a decision that cannot be
 //! written is not taken.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -49,6 +49,7 @@ use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::{Item, Lane, Link, Rule, RuleEffect, SourceRef};
 use torro_ipc::api::Mcp;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
+use torro_mail::Role;
 use torro_pim::{Event, EventTime, Todo};
 use torro_setups::LoadMode;
 
@@ -264,6 +265,55 @@ pub struct Facts {
     /// For `tasks.add_link`: the list is a GitHub filter list, so the item is pinned there, not
     /// written as a task (task G.6b).
     pub pins: bool,
+    /// For the `mail.*` commands: what the core's mail store holds about what they name ([`MailFacts`]).
+    /// `None` for every other command, and until the store exists (tasks M3.2, M3.3). For
+    /// `accounts.update_mail_account` the account's label is [`Facts::name`].
+    pub mail: Option<MailFacts>,
+}
+
+/// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
+/// approval's summary (rules set by task M2.1; looked up and worded by M3.2 and M3.3). Looked up
+/// in the core's mail store by the ids the command runs with, after the client's reach was
+/// checked, never taken from the client's text. Every text goes through [`quote`]. The summaries:
+///
+/// - `mail.send_draft`, from [`MailFacts::draft`]: `Send "<subject>" from <account> to
+///   <first recipient>`, then ` and <n> more` when there are more recipients (Cc and Bcc counted),
+///   then `, <n> attachments` when there are any. The full list of recipients belongs in the
+///   approval's detail view. Without the draft: "Send an unknown draft".
+/// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages to
+///   "<folder>", among them "<first subject>"` for several; a role is named by its word ("Archive").
+///   Messages the store does not hold count as unknown ("Move 2 unknown messages to …").
+/// - `mail.delete_messages`: as moving, with "Delete" and, for `permanent`, "for good" at the end.
+/// - `mail.set_flags` (only with `confirm: on_every_change`): `Mark "<subject>" read` and the like,
+///   or `Change the flags of <n> messages`.
+/// - `mail.save_draft`: a new draft `Save a draft "<subject>" in <account>`; replacing one
+///   `Replace the draft "<subject as stored>"`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MailFacts {
+    /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
+    /// summary then shows the account id the command runs with.
+    pub account: Option<String>,
+    /// How many messages the command names (`ids`), known or not.
+    pub count: usize,
+    /// The subjects of the named messages the store holds, in the order of `ids`.
+    pub subjects: Vec<String>,
+    /// For `mail.move_messages`: the display name of the target folder, the role's word for a role.
+    pub folder: Option<String>,
+    /// For `mail.send_draft` and for `mail.save_draft` with an id: the draft as the core stores it.
+    pub draft: Option<DraftFacts>,
+}
+
+/// A draft as the core stores it, for [`MailFacts::draft`]: what the person must see before it
+/// leaves, counted from the stored draft, never from the request.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DraftFacts {
+    pub subject: String,
+    /// The first recipient's address (`To`, else `Cc`, else `Bcc`); `None` without recipients.
+    pub first_recipient: Option<String>,
+    /// All recipients: `To`, `Cc` and `Bcc` together.
+    pub recipients: usize,
+    /// The attachments, files and forwarded parts together.
+    pub attachments: usize,
 }
 
 /// An event or task as the core caches it, for [`Facts::item`].
@@ -831,6 +881,22 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::ConnectNextcloud { server } => trf("Connect the Nextcloud at {server}", &[("server", &quote(server))]),
         Request::ConnectGithub => tr("Connect a GitHub account").to_string(),
         Request::RemoveAccount { id } => trf("Remove the account {account}", &[("account", &named(id))]),
+        Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => trf(
+            "Change the mail account {account}: {changes}",
+            &[
+                ("account", &named(id)),
+                (
+                    "changes",
+                    &mail_account_changes(
+                        sender_name.as_deref(),
+                        signature.as_deref(),
+                        notify.is_some(),
+                        services.as_ref(),
+                        folder_roles.as_ref(),
+                    ),
+                ),
+            ],
+        ),
         Request::Sync => tr("Sync all accounts").to_string(),
         Request::SetSetting { key, value } => trf(
             "Change the setting {key} to {value}",
@@ -1129,6 +1195,62 @@ fn when(start: &EventTime, today: chrono::NaiveDate) -> String {
             let local = to_local(*at);
             format!("{} {}", format_short_date(local.date(), today), format_time(local.time()))
         }
+    }
+}
+
+/// What `accounts.update_mail_account` changes, in words, for its summary (task M2.1): each field
+/// given, new names and the start of a new signature quoted, the services by what is switched on
+/// (switching one on widens what agents see), each folder role with the path it gets
+/// (`Sent → "INBOX.Sent"`, the path quoted: it decides where sent mail goes). "nothing" when no
+/// field is given.
+fn mail_account_changes(
+    sender_name: Option<&str>,
+    signature: Option<&str>,
+    notify: bool,
+    services: Option<&torro_mail::Services>,
+    folder_roles: Option<&BTreeMap<Role, String>>,
+) -> String {
+    let mut changes = Vec::new();
+    match sender_name {
+        Some("") => changes.push(tr("no sender name").to_string()),
+        Some(name) => changes.push(trf("sender name \"{name}\"", &[("name", &quote(name))])),
+        None => {}
+    }
+    match signature {
+        Some("") => changes.push(tr("no signature").to_string()),
+        Some(text) => changes.push(trf("signature \"{start}\"", &[("start", &quote(text))])),
+        None => {}
+    }
+    if notify {
+        changes.push(tr("inbox notifications").to_string());
+    }
+    if let Some(services) = services {
+        let on: Vec<&str> =
+            [(services.mail, tr("mail")), (services.calendars, tr("calendars")), (services.tasks, tr("tasks"))]
+                .into_iter()
+                .filter_map(|(on, name)| on.then_some(name))
+                .collect();
+        let list = if on.is_empty() { tr("none").to_string() } else { on.join(", ") };
+        changes.push(trf("services: {list}", &[("list", &list)]));
+    }
+    for (role, path) in folder_roles.into_iter().flatten() {
+        changes.push(trf("{role} → \"{path}\"", &[("role", &role_word(*role)), ("path", &quote(path))]));
+    }
+    if changes.is_empty() {
+        return tr("nothing").to_string();
+    }
+    changes.join(", ")
+}
+
+/// The word for a folder role, as the inbox app names the folders.
+fn role_word(role: Role) -> &'static str {
+    match role {
+        Role::Inbox => tr("Inbox"),
+        Role::Drafts => tr("Drafts"),
+        Role::Sent => tr("Sent"),
+        Role::Archive => tr("Archive"),
+        Role::Junk => tr("Junk"),
+        Role::Trash => tr("Trash"),
     }
 }
 
@@ -1660,6 +1782,53 @@ pub(crate) mod tests {
             summary(&add("github:torro/app#12"), &bugs),
             trf("Pin {item} to filter list \"{list}\"", &[item, ("list", &"Open bugs")])
         );
+    }
+
+    /// Task M2.1: the account by the name the core knows, the fields that change, the start of a
+    /// new signature, and the services by what is switched on.
+    #[test]
+    fn changing_a_mail_account_names_it_and_what_changes() {
+        let update = |signature: Option<&str>, services| Request::UpdateMailAccount {
+            id: "mail:anna@mailbox.org".into(),
+            sender_name: None,
+            signature: signature.map(str::to_string),
+            notify: Some(torro_mail::Notify::Off),
+            services,
+            folder_roles: None,
+        };
+        let anna = Facts { name: Some("anna@mailbox.org".into()), ..Facts::default() };
+        let long = format!("Best regards\n{}", "x".repeat(100));
+        let said = summary(&update(Some(&long), None), &anna);
+        let start = quote(&long);
+        let changes = format!("{}, {}", trf("signature \"{start}\"", &[("start", &start)]), tr("inbox notifications"));
+        assert_eq!(
+            said,
+            trf(
+                "Change the mail account {account}: {changes}",
+                &[("account", &"anna@mailbox.org"), ("changes", &changes)]
+            )
+        );
+        assert!(!said.contains('\n') && start.ends_with('…'), "one line, the start only: {said}");
+
+        let services = torro_mail::Services { mail: true, calendars: true, tasks: false };
+        let said = summary(&update(Some(""), Some(services)), &Facts::default());
+        let list = format!("{}, {}", tr("mail"), tr("calendars"));
+        let changes = [
+            tr("no signature").to_string(),
+            tr("inbox notifications").to_string(),
+            trf("services: {list}", &[("list", &list)]),
+        ]
+        .join(", ");
+        let account: (&str, &dyn std::fmt::Display) = ("account", &"mail:anna@mailbox.org");
+        assert_eq!(said, trf("Change the mail account {account}: {changes}", &[account, ("changes", &changes)]));
+        assert_eq!(mail_account_changes(None, None, false, None, None), tr("nothing"));
+
+        // Each role with the path it gets, the path made harmless.
+        let roles = BTreeMap::from([(Role::Sent, "INBOX.Sent \"x\"".to_string()), (Role::Drafts, "Drafts".into())]);
+        let said = mail_account_changes(None, None, false, None, Some(&roles));
+        let drafts = trf("{role} → \"{path}\"", &[("role", &tr("Drafts")), ("path", &"Drafts")]);
+        let sent = trf("{role} → \"{path}\"", &[("role", &tr("Sent")), ("path", &"INBOX.Sent 'x'")]);
+        assert_eq!(said, format!("{drafts}, {sent}"));
     }
 
     #[test]

@@ -23,9 +23,11 @@
 pub mod api;
 pub mod client;
 pub mod inbox;
+pub mod mail;
 pub mod pim;
 pub mod server;
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -37,12 +39,14 @@ pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
+use torro_mail::{Draft, Endpoint, Flag, Folder, Message, MessageSummary, Notify, Role, Services};
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
 use crate::api::{Rights, RightsTemplate};
+use crate::mail::{Delivery, MailSource, MoveTarget};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
 ///
@@ -241,6 +245,136 @@ pub enum Request {
         /// A personal access token from github.com, classic (`ghp_…`) or fine-grained
         /// (`github_pat_…`). It goes into the system keychain only and is never part of an answer.
         token: Secret,
+    },
+    /// Searches the calendar and task service (CalDAV) of the mail provider of `address`, without
+    /// signing in (task M7.1, `torro_pim_caldav::discover`). Only the domain is looked at and
+    /// asked about, never the part before `@`: DNS SRV `_caldavs._tcp.<domain>` with its TXT
+    /// `path`, then `https://<domain>/.well-known/caldav` and `https://caldav.<domain>/…` (at most
+    /// five redirects, https only), then a table of known providers. Names and redirects that lead
+    /// to loopback, private, link-local or ULA addresses are never contacted.
+    ///
+    /// Answered with [`Response::Discovery`]: candidate addresses, none, or "not supported" with
+    /// the reason (Gmail, Outlook.com); all of them are answers, not errors. Error codes: `error`
+    /// for an input that names no internet domain (an IP address, `localhost`, no dot),
+    /// `offline` when neither DNS nor a server answered and the table does not know the domain.
+    #[serde(rename = "accounts.discover_services")]
+    DiscoverServices {
+        /// An e-mail address (`anna@mailbox.org`) or a domain (`mailbox.org`).
+        address: String,
+    },
+    /// Signs in to a CalDAV account with a password (task M7.1): the calendars and tasks of a mail
+    /// provider (mailbox.org, Posteo, Fastmail, iCloud …) or of any other CalDAV server.
+    ///
+    /// The core tries `server`, or else the addresses `accounts.discover_services` finds for
+    /// `address`, one after the other, checks `current-user-principal` and the calendar home, and
+    /// learns whether the server has calendars (VEVENT) and task lists (VTODO). Then it keeps the
+    /// password in the system keychain only, under the account id `caldav:<login>@<host>`, adds
+    /// the account, hides the collections of a service not chosen (`calendars`, `tasks`; a
+    /// collection with both is hidden only when neither is chosen) at its first sync, and syncs it
+    /// in the background. Connecting an account that exists already replaces only its password and
+    /// server: `calendars`, `tasks` are ignored then, hidden collections and rights stay.
+    ///
+    /// Answered with [`Response::Connected`]: the account as `accounts.list_accounts` lists it and
+    /// what the server offers, never the password. Error codes: `auth` when the server refuses
+    /// the password, `not-found` when no CalDAV answers at the address (or nothing was found for
+    /// `address`), `unsupported` for a provider that does not work (the message says why),
+    /// `offline`, and `error` for an empty login name or password, a login name with `/`, a server
+    /// that is no https address or a keychain that refuses. Only the app key may send it: every
+    /// client key gets `forbidden`, whatever its rights, because it hands the core a secret
+    /// (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval either.
+    #[serde(rename = "accounts.connect_caldav")]
+    ConnectCalDav {
+        /// The e-mail address the account belongs to. Its domain names the provider and, without
+        /// `server`, is searched like `accounts.discover_services`.
+        address: String,
+        /// The CalDAV address to sign in at, as `accounts.discover_services` found it or a person
+        /// typed it (`https://` is added when missing; plain `http` only for `localhost`). Leave
+        /// out to search it from `address`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
+        /// The user name at the server, usually the e-mail address. Must not hold `/`.
+        login_name: String,
+        /// The password or app password. It goes into the system keychain only and is never part
+        /// of an answer, an error message, a log or an approval.
+        password: Secret,
+        /// Show the account's calendars (collections with events) in the suite.
+        calendars: bool,
+        /// Show the account's task lists (collections with tasks) in the suite.
+        tasks: bool,
+    },
+    /// Signs in to a mail account with a password (task M2.1, carried out by M2.7; until then
+    /// answered `unsupported`): IMAP and SMTP, and with `calendars` or `tasks` the CalDAV address
+    /// `caldav` of the same sign-in.
+    ///
+    /// The core checks the IMAP and the SMTP sign-in (without sending anything) and, when asked
+    /// for, CalDAV; then it keeps the password in the system keychain only, under the account id
+    /// `mail:<address>` (`torro_mail::account_id`), and adds the account. Connecting an account that
+    /// exists already replaces only servers and password: settings, hidden collections and rights
+    /// stay. A CalDAV account (`accounts.connect_caldav`) of the same sign-in is taken over.
+    ///
+    /// Answered with [`Response::MailConnected`], never with the password. Error codes: `error`
+    /// for an address `torro_mail::account_id` refuses (empty, without one `@`, with `/`, white
+    /// space or control characters) or an empty login name or password; `auth` when a server
+    /// refuses the password (the message says which: IMAP, SMTP or CalDAV); `not-found`,
+    /// `offline`, `unsupported`. Only the app key may send it: every client key gets `forbidden`,
+    /// whatever its rights, because it hands the core a secret (`docs/api.md`, "Was nie nach außen
+    /// geht", 5); it never waits for an approval either.
+    #[serde(rename = "accounts.connect_mail")]
+    ConnectMail {
+        /// The account's e-mail address; the account id is made from it.
+        address: String,
+        /// The name put next to the address in `From:`; leave out for none.
+        #[serde(default)]
+        sender_name: String,
+        /// The IMAP server, as `accounts.discover_services` found it or a person typed it.
+        imap: Endpoint,
+        /// The SMTP server (submission).
+        smtp: Endpoint,
+        /// The user name at the servers, usually the e-mail address.
+        login_name: String,
+        /// The password or app password, the same for IMAP, SMTP and CalDAV. It goes into the
+        /// system keychain only and is never part of an answer, an error message, a log or an
+        /// approval.
+        password: Secret,
+        /// Show the calendars of `caldav` in the suite.
+        calendars: bool,
+        /// Show the task lists of `caldav` in the suite.
+        tasks: bool,
+        /// The CalDAV address of the same sign-in (from `accounts.discover_services`); leave out
+        /// for a mail-only account.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caldav: Option<String>,
+    },
+    /// Changes the settings of the mail account `id` (task M2.1, carried out by M2.7; until then
+    /// answered `unsupported`): only the fields given, the others stay. Never servers or password:
+    /// those change only with `accounts.connect_mail`, so no agent can steer the password to
+    /// another server. Answered with [`Response::Ok`]; `not-found` for an id that is no mail
+    /// account. An admin command: a client always waits for a person's approval, whose summary
+    /// names the account from the core, the changed fields and the start of a new signature.
+    #[serde(rename = "accounts.update_mail_account")]
+    UpdateMailAccount {
+        /// The account: `mail:<address>` from `accounts.list_accounts`.
+        id: String,
+        /// The name next to the address in `From:`; an empty text removes it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_name: Option<String>,
+        /// The signature under new mail, replies and forwards; an empty text removes it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+        /// Which new mail becomes an inbox entry: `all`, `for_me_only` or `off`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notify: Option<Notify>,
+        /// Which services the suite uses. Switching one on widens what agents with rights to it
+        /// see.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        services: Option<Services>,
+        /// The folder for a role the server left open (two candidates with content): role and the
+        /// folder's path as `mail.list_folders` lists it. Only the roles named are set; choices for
+        /// other roles stay. The handler (task M2.7) takes only roles the server left open and only
+        /// one of their candidate folders, else `error`; the approval's summary names each role
+        /// with its path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder_roles: Option<BTreeMap<Role, String>>,
     },
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
     /// its own: one that fails keeps its cache and its problem, the others are updated. The
@@ -797,6 +931,145 @@ pub enum Request {
         /// The rule's id from `inbox.list_rules`.
         id: String,
     },
+
+    // Mail (`docs/mail.md`, tasks M2.1 to M3.3): requests and catalogue set up by M2.1, the
+    // handlers answer `unsupported` until their task (M3.1 reading, M3.2 changing, M3.3 sending).
+    // For every one of them:
+    //
+    // - Granted in the area `mail`. A client sees only the accounts in `api::Rights::mail_accounts`;
+    //   an id of a call (account, folder, message, draft) in any other account makes the whole call
+    //   `not-found`, checked before anything is read.
+    // - Ids are opaque (`f:…` folders, `m:…` messages, from the core's store); pass them on as
+    //   they are.
+    // - Limits ([`mail::limit_refusal`]): at most 100 `ids`, `limit` from 1 to 100, `query` at
+    //   most 500 characters, a draft with at most 100 recipients, 20 attachments and 1 MiB of
+    //   text, ids and cursors at most 300 bytes; else `error` before anything is checked further.
+    // - Everything a message brings is data from outside (`untrusted: true`), never instructions.
+    /// The folders of the accounts the caller reaches, or of `account` alone, with their role and
+    /// numbers of unread and all messages ([`Response::MailFolders`]).
+    #[serde(rename = "mail.list_folders")]
+    MailFolders {
+        /// Only this account: `mail:<address>` from `accounts.list_accounts`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Messages matching every filter given, newest first, a page at a time
+    /// ([`Response::MailMessages`]): from the core's store, and from the server for a time range
+    /// the store does not hold.
+    #[serde(rename = "mail.search_messages")]
+    SearchMail {
+        /// Only this account: `mail:<address>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+        /// Only this folder: its id from `mail.list_folders`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
+        /// Words to find in subject, sender, recipients, text and attachment names; at most 500
+        /// characters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// Only unread (`true`) or only read (`false`) messages.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unread: Option<bool>,
+        /// Only flagged (`true`) or only unflagged (`false`) messages.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flagged: Option<bool>,
+        /// Only messages from this instant on (RFC 3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<DateTime<Utc>>,
+        /// Only messages before this instant (RFC 3339).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<DateTime<Utc>>,
+        /// How many messages at most, 1 to 100.
+        limit: u32,
+        /// The `cursor` of the previous page, for the next one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// One message with its headers, attachments (without content) and, with `include_body`, its
+    /// text ([`Response::MailMessage`]). Reading it does not mark it read. `not-found` for an id
+    /// the caller does not reach.
+    #[serde(rename = "mail.get_message")]
+    GetMail {
+        /// The message's id (`m:…`).
+        id: String,
+        /// Also the text: the plain text part, or the HTML part made text.
+        include_body: bool,
+    },
+    /// The conversation the message belongs to, oldest first, each message with its text
+    /// ([`Response::MailThread`]); only messages in accounts the caller reaches.
+    #[serde(rename = "mail.get_thread")]
+    GetMailThread {
+        /// The id of any message of the conversation (`m:…`).
+        id: String,
+    },
+    /// Fetches one attachment into the core's attachment folder (removed after a day) and answers
+    /// where it is ([`Response::MailAttachment`]); the file name is cleaned, so it always lands in
+    /// that folder. At most 50 MiB.
+    #[serde(rename = "mail.get_attachment")]
+    GetMailAttachment {
+        /// The message's id (`m:…`).
+        id: String,
+        /// The attachment: its `part` from `attachments` of `mail.get_message`.
+        attachment: String,
+    },
+    /// Adds and removes flags of messages on the server ([`Response::Ok`]).
+    #[serde(rename = "mail.set_flags")]
+    SetMailFlags {
+        /// The messages (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// Flags to set: `seen`, `flagged`, `answered`.
+        #[serde(default)]
+        add: Vec<Flag>,
+        /// Flags to clear.
+        #[serde(default)]
+        remove: Vec<Flag>,
+    },
+    /// Moves messages to a folder of their own account ([`Response::Ok`]); they keep their ids.
+    /// Into the trash (`{"role": "trash"}` or a folder with that role) is deleting and needs
+    /// delete access ([`Request::operation`] for the role; the core for a folder id). Messages of
+    /// several accounts, or a folder of another account, are `unsupported`.
+    #[serde(rename = "mail.move_messages")]
+    MoveMail {
+        /// The messages (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// `{"folder": "<id>"}` or `{"role": "inbox" | "archive" | "junk" | "trash"}`.
+        to: MoveTarget,
+    },
+    /// Deletes messages ([`Response::Ok`]): into the account's trash, or with `permanent` for good,
+    /// which works only for messages in the trash already (`error` for the others, nothing is
+    /// removed then).
+    #[serde(rename = "mail.delete_messages")]
+    DeleteMail {
+        /// The messages (`m:…`), 1 to 100.
+        ids: Vec<String>,
+        /// Remove for good instead of moving to the trash; only for messages in the trash.
+        #[serde(default)]
+        permanent: bool,
+    },
+    /// Saves a draft into the account's drafts folder and answers it with its id
+    /// ([`Response::MailDraft`]). With the `id` of a saved draft it replaces that draft, which
+    /// needs delete access ([`Request::operation`]).
+    ///
+    /// The core remembers who wrote a draft: a client key replaces and sends only its own drafts,
+    /// any other (also one the person wrote) is `not-found` (security rule 2). Files
+    /// (`DraftAttachment::File`) are taken from the app key anywhere, from a client key only out of
+    /// the core's attachment folder, never through a symbolic link and at most 25 MiB each; any
+    /// other path is `forbidden` (security rule 1).
+    #[serde(rename = "mail.save_draft")]
+    SaveDraft { draft: Draft },
+    /// Sends a saved draft, keeps a copy in the sent folder and removes the draft
+    /// ([`Response::MailSent`]). The message is built from the draft as the core stores it, never
+    /// from text sent along. For a client key `api::Rights::outbound` decides: `never` is
+    /// `forbidden`, `with_approval` waits for a person ([`Response::Pending`]; the summary names
+    /// account, subject, the first recipient, the number of all recipients with Bcc and of
+    /// attachments), `free` sends unless the client's `confirm` asks for every change. A draft
+    /// changed after the approval was asked for is not sent. A client sends only its own drafts.
+    #[serde(rename = "mail.send_draft")]
+    SendDraft {
+        /// The draft's id from `mail.save_draft`.
+        id: String,
+    },
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -901,6 +1174,28 @@ pub enum Response {
     /// The control centre was opened so a person can finish the request there (a client's
     /// [`Request::ConnectGithub`]); nothing has changed yet.
     Opened,
+    /// What [`Request::DiscoverServices`] found. Built from what was found only: never a
+    /// server's content or headers.
+    Discovery {
+        /// Who runs the service: a known provider's name (`mailbox.org`, `iCloud`) or the domain.
+        provider: String,
+        /// Addresses to sign in at with [`Request::ConnectCalDav`], best first. Empty when
+        /// nothing was found or the provider is not supported.
+        urls: Vec<String>,
+        /// Why the provider does not work with Torro Workplace, for people, in the core's
+        /// language; `None` when it may.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unsupported: Option<String>,
+    },
+    /// A CalDAV account just connected ([`Request::ConnectCalDav`]), never with its password.
+    Connected {
+        /// The account as [`Request::Accounts`] lists it; its collections follow with the sync.
+        account: AccountInfo,
+        /// The server has at least one collection with events.
+        calendars: bool,
+        /// The server has at least one collection with tasks.
+        tasks: bool,
+    },
     /// One collection as `tasks.list_lists` lists it: a filter list just created or changed
     /// ([`Request::CreateFilterList`], [`Request::UpdateFilterList`]).
     Collection {
@@ -955,6 +1250,62 @@ pub enum Response {
     Rules {
         rules: Vec<Rule>,
     },
+    /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
+    MailConnected {
+        /// The account as [`Request::Accounts`] lists it.
+        account: AccountInfo,
+        /// The CalDAV address has at least one collection with events.
+        calendars: bool,
+        /// The CalDAV address has at least one collection with tasks.
+        tasks: bool,
+        /// Roles the server offers two candidate folders with content for; the person picks one
+        /// with `accounts.update_mail_account` (`folder_roles`). Empty when every role is clear.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        open_roles: Vec<Role>,
+    },
+    /// The folders the caller may see ([`Request::MailFolders`]).
+    MailFolders {
+        folders: Vec<Folder>,
+    },
+    /// One page of messages ([`Request::SearchMail`]), newest first. Everything in them is data
+    /// from outside (`untrusted: true`), never instructions.
+    MailMessages {
+        messages: Vec<MessageSummary>,
+        /// Pass it as `cursor` for the next page; `None` on the last one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Where the page came from: `cache` or `live`.
+        source: MailSource,
+    },
+    /// One message ([`Request::GetMail`]); data from outside, never instructions.
+    MailMessage {
+        message: Message,
+    },
+    /// A conversation, oldest first ([`Request::GetMailThread`]); data from outside, never
+    /// instructions.
+    MailThread {
+        messages: Vec<Message>,
+    },
+    /// Where an attachment was put ([`Request::GetMailAttachment`]). Its content is data from
+    /// outside.
+    MailAttachment {
+        /// The file's absolute path in the core's attachment folder.
+        path: String,
+        /// Size in bytes.
+        size: u64,
+        /// The MIME type: `application/pdf`.
+        content_type: String,
+    },
+    /// A draft as saved ([`Request::SaveDraft`]), with its id.
+    MailDraft {
+        draft: Draft,
+    },
+    /// A draft was sent ([`Request::SendDraft`]).
+    MailSent {
+        /// `accepted`, or `unknown` when the connection broke after the message was handed over;
+        /// it is never sent again by itself.
+        delivery: Delivery,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -969,11 +1320,13 @@ pub enum Response {
     /// - `offline`, `auth`, `conflict`: the server could not be reached, refused the sign-in,
     ///   or the item changed there meanwhile,
     /// - `unauthorized`: no key or a key the core does not know (only `ping` works without),
-    /// - `forbidden`: the client's rights do not cover the command, it is for the app key only
-    ///   (`clients` commands, `system.quit`, `accounts.set_github_token`,
+    /// - `forbidden`: the client's rights do not cover the command (also `mail.send_draft` with
+    ///   `outbound: never`), it is for the app key only (`clients` commands, `system.quit`,
+    ///   `accounts.set_github_token`, `accounts.connect_caldav`, `accounts.connect_mail`,
     ///   `approvals.decide_approval`), it needs a person's approval that the core could not
-    ///   record (`approvals.json` cannot be written), or a security rule of the inbox refuses it
-    ///   (a client changing an approval or an entry of the suite, or posting an approval),
+    ///   record (`approvals.json` cannot be written), or a security rule of the inbox or of mail
+    ///   refuses it (a client changing an approval or an entry of the suite, or posting an
+    ///   approval; a client attaching a file from outside the core's attachment folder),
     /// - `error`: anything else.
     ///
     /// A command that waits for a person's approval is no error: it is answered with
@@ -997,9 +1350,11 @@ pub struct AccountInfo {
     /// `torro_core::Account::id`, e.g. `nextcloud:anna@cloud.example.org`; the front part of
     /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
-    /// Provider: `nextcloud` or `github` (later `slack`, …).
+    /// Provider: `nextcloud`, `github`, `caldav` (a mail provider's or any other CalDAV
+    /// server, task M7.1) or `mail` (task M2.1; later `slack`, …).
     pub kind: String,
-    /// `anna@cloud.example.org`; for GitHub the login.
+    /// `anna@cloud.example.org`; for GitHub the login; for CalDAV the login when it is an e-mail
+    /// address, else `<login>@<provider>`.
     pub label: String,
     pub state: AccountState,
     /// All collections of the account, hidden ones included; for GitHub its filter lists.
@@ -1064,9 +1419,11 @@ pub struct ActivityEntry {
     pub command: String,
     /// What the command named, each as `kind:value`: `collection:<id>`, `account:<id>`,
     /// `inbox:<id>`, `approval:<id>`, `client:<id>`, `rule:<id>`, `source:<source>`,
-    /// `setting:<key>`, `app:<binary>`, and `item:<hash>` or `template:<hash>` (16 hex digits of
-    /// a SHA-256) for ids that can carry a readable name (CalDAV hrefs, issue URLs, template ids
-    /// made from the template's name).
+    /// `setting:<key>`, `app:<binary>`, and `item:<hash>`, `template:<hash>`, `message:<hash>` or
+    /// `folder:<hash>` (16 hex digits of a SHA-256) for ids that can carry a readable name or that
+    /// would let lines be matched with a mailbox (CalDAV hrefs, issue URLs, template ids made from
+    /// the template's name, mail messages, drafts and folders). Never recipients, subjects, search
+    /// terms, file or folder names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<String>,
     /// `ok`, `pending` (waits for a person), `denied` (a person said no), or the error code
@@ -1257,6 +1614,79 @@ mod tests {
         let json = serde_json::to_string(&request).expect("serializes");
         assert_eq!(json, r#"{"method":"accounts.set_github_token","token":"ghp_secret"}"#);
         assert_eq!(serde_json::from_str::<Request>(&json).expect("parses"), request);
+    }
+
+    #[test]
+    fn a_caldav_password_does_not_show_in_debug_output() {
+        let request = Request::ConnectCalDav {
+            address: "anna@mailbox.org".into(),
+            server: None,
+            login_name: "anna@mailbox.org".into(),
+            password: Secret::new("hunter2-secret"),
+            calendars: true,
+            tasks: false,
+        };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
+        let json = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(json["method"], "accounts.connect_caldav");
+        assert!(json.get("server").is_none());
+        assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), request);
+    }
+
+    #[test]
+    fn a_mail_password_does_not_show_in_debug_output() {
+        let server = |host: &str, port, security| Endpoint { host: host.into(), port, security };
+        let request = Request::ConnectMail {
+            address: "anna@mailbox.org".into(),
+            sender_name: String::new(),
+            imap: server("imap.mailbox.org", 993, torro_mail::Security::Tls),
+            smtp: server("smtp.mailbox.org", 587, torro_mail::Security::StartTls),
+            login_name: "anna@mailbox.org".into(),
+            password: Secret::new("hunter2-secret"),
+            calendars: false,
+            tasks: false,
+            caldav: None,
+        };
+        let envelope = Envelope { v: 1, key: Some(Key::new("torro_app_00")), request: request.clone() };
+        assert!(!format!("{envelope:?}").contains("hunter2"), "{envelope:?}");
+        let json = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(
+            (json["method"].as_str(), json["imap"]["security"].as_str()),
+            (Some("accounts.connect_mail"), Some("tls"))
+        );
+        assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), request);
+    }
+
+    #[test]
+    fn mail_answers_are_answers_of_their_own() {
+        let page = Response::MailMessages { messages: Vec::new(), cursor: None, source: MailSource::Cache };
+        let json = serde_json::to_value(&page).expect("json");
+        assert_eq!((json["result"].as_str(), json["source"].as_str()), (Some("mail-messages"), Some("cache")));
+        assert!(json.get("cursor").is_none());
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), page);
+        let sent = serde_json::to_value(Response::MailSent { delivery: Delivery::Unknown }).expect("json");
+        assert_eq!((sent["result"].as_str(), sent["delivery"].as_str()), (Some("mail-sent"), Some("unknown")));
+    }
+
+    #[test]
+    fn discoveries_and_connections_are_answers_of_their_own() {
+        let found = Response::Discovery {
+            provider: "mailbox.org".into(),
+            urls: vec!["https://dav.mailbox.org/".into()],
+            unsupported: None,
+        };
+        let json = serde_json::to_value(&found).expect("json");
+        assert_eq!(json["result"], "discovery");
+        assert!(json.get("unsupported").is_none());
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), found);
+        let account: AccountInfo = serde_json::from_str(
+            r#"{"id":"caldav:anna@dav.mailbox.org","kind":"caldav","label":"anna@mailbox.org",
+            "state":{"state":"not-connected"},"collections":[]}"#,
+        )
+        .expect("an account");
+        let connected = Response::Connected { account, calendars: true, tasks: true };
+        assert_eq!(serde_json::to_value(&connected).expect("json")["result"], "connected");
     }
 
     #[test]

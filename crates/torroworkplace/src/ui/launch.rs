@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Local, Utc};
 use torro_core::AppId;
-use torro_core::i18n::trf;
+use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
     AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, IssuedKey, Key, Request, Response,
     Status,
@@ -23,6 +23,7 @@ use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
+use super::wizard;
 use super::{Appearance, Data, Section};
 
 /// A state the control centre can start in (`--demo --open <state>`).
@@ -34,6 +35,12 @@ pub enum Open {
     WizardGithub,
     /// The add-account dialog at the field for a GitHub token.
     WizardToken,
+    /// The add-account dialog on the mail provider path (task M7.2), at the state the script of
+    /// [`wizard::demo_messages`] leads to; the demo's search answers for a few domains
+    /// ([`demo_answer`]).
+    WizardMail(wizard::Demo),
+    /// "Change password" of the demo's CalDAV account.
+    ChangePassword,
     /// The detail page of the first demo account.
     AccountDetail,
     /// The detail page of the demo's GitHub account.
@@ -79,10 +86,19 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 24] = [
+    pub const ALL: [(&'static str, Open); 33] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
+        ("wizard-mail", Open::WizardMail(wizard::Demo::Address)),
+        ("wizard-mail-found", Open::WizardMail(wizard::Demo::Found)),
+        ("wizard-mail-unsupported", Open::WizardMail(wizard::Demo::Unsupported)),
+        ("wizard-mail-none", Open::WizardMail(wizard::Demo::NotFound)),
+        ("wizard-mail-password", Open::WizardMail(wizard::Demo::Password)),
+        ("wizard-mail-refused", Open::WizardMail(wizard::Demo::Refused)),
+        ("wizard-mail-services", Open::WizardMail(wizard::Demo::Services)),
+        ("wizard-mail-done", Open::WizardMail(wizard::Demo::Done)),
+        ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
         ("menu", Open::Menu),
@@ -275,6 +291,27 @@ pub fn demo_data() -> Data {
             collections: Vec::new(),
             scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
         },
+        // A mail provider's calendars and tasks (task M7.2).
+        AccountInfo {
+            id: "caldav:anna@mailbox.org@dav.mailbox.org".into(),
+            kind: "caldav".into(),
+            label: "anna@mailbox.org".into(),
+            state: AccountState::Connected {
+                server: "https://dav.mailbox.org/".into(),
+                login_name: "anna@mailbox.org".into(),
+                last_sync: Some(now - Duration::minutes(9)),
+                problem: None,
+            },
+            collections: vec![
+                team("demo:/mailbox/calendars/private/", "Private", CollectionKind::Events, "#3FB984"),
+                team("demo:/mailbox/tasks/inbox/", "Inbox", CollectionKind::Todos, "#A78BFA"),
+            ],
+            scopes: None,
+        },
+        // Two mail accounts (task M3.4), so the agents' "Mail accounts" have something to choose
+        // from. Their ids are `mail:<address>`, as the core makes them.
+        mail_account("anna@mailbox.org", "imap.mailbox.org", now - Duration::minutes(2)),
+        mail_account("anna@work.example.net", "imap.work.example.net", now - Duration::minutes(6)),
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
         id: id.into(),
@@ -355,6 +392,23 @@ pub fn demo_data() -> Data {
     }
 }
 
+/// A connected mail account of the demo: no calendars or lists, as long as it is mail only.
+fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> AccountInfo {
+    AccountInfo {
+        id: format!("mail:{address}"),
+        kind: "mail".into(),
+        label: address.into(),
+        state: AccountState::Connected {
+            server: format!("https://{server}"),
+            login_name: address.into(),
+            last_sync: Some(last_sync),
+            problem: None,
+        },
+        collections: Vec::new(),
+        scopes: None,
+    }
+}
+
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
 /// and the nightly build muted, as the demo's sources list has it.
 fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
@@ -392,6 +446,10 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     set(&mut codex, Area::Accounts, Level::NoAccess, false);
     set(&mut codex, Area::Settings, Level::NoAccess, false);
     set(&mut codex, Area::Inbox, Level::Write, true);
+    // Mail from one account, which it may send from without asking: the page's warning shows.
+    set(&mut codex, Area::Mail, Level::Write, false);
+    codex.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
+    codex.outbound = Outbound::Free;
     codex.calendars = Selection::Only(first_calendar.into_iter().collect());
     codex.github_repos = Selection::Only(vec!["anna-dev/torro-workplace".into(), "acme".into()]);
     codex.inbox_sources = Selection::Only(vec!["agent:codex".into(), "script:backup".into()]);
@@ -402,6 +460,8 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         task_lists: Selection::Only(Vec::new()),
         github_repos: Selection::Only(Vec::new()),
         inbox_sources: Selection::Only(vec!["script:backup".into()]),
+        mail_accounts: Selection::Only(Vec::new()),
+        outbound: Outbound::Never,
         confirm: Confirm::Never,
     };
     vec![
@@ -425,6 +485,19 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
 pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
     let client_of = |id: &str| data.clients.iter().find(|client| client.id == id);
     match request {
+        Request::DiscoverServices { address } => Some(demo_discovery(address)),
+        // "wrong" is the password the demo's provider refuses; nothing is stored either way.
+        Request::ConnectCalDav { password, .. } if password.expose() == "wrong" => {
+            Some(Response::Error { code: "auth".into(), message: tr("Password was refused").into() })
+        }
+        Request::ConnectCalDav { login_name, .. } => {
+            let account =
+                data.accounts.iter().find(|account| account.kind == "caldav").cloned().map(|mut account| {
+                    account.label = login_name.clone();
+                    account
+                })?;
+            Some(Response::Connected { account, calendars: true, tasks: true })
+        }
         Request::ClientActivity { id } => {
             let client = client_of(id)?;
             Some(Response::Activity { entries: demo_activity(client, Utc::now()) })
@@ -451,6 +524,27 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             Some(Response::ClientKey { client, key })
         }
         _ => None,
+    }
+}
+
+/// What the demo's search finds for `address`, like the core's table of providers: mailbox.org and
+/// iCloud are found, Gmail is not supported, any other domain answers nothing.
+fn demo_discovery(address: &str) -> Response {
+    let domain = address.rsplit_once('@').map_or(address, |(_, domain)| domain).trim().to_lowercase();
+    let (provider, urls, unsupported) = match domain.as_str() {
+        "mailbox.org" => ("mailbox.org", vec!["https://dav.mailbox.org/"], None),
+        "icloud.com" => ("iCloud", vec!["https://caldav.icloud.com/"], None),
+        "gmail.com" => (
+            "Gmail",
+            Vec::new(),
+            Some(tr("Google calendars need a sign-in through Google, which Torro Workplace does not support yet.")),
+        ),
+        other => (other, Vec::new(), None),
+    };
+    Response::Discovery {
+        provider: provider.to_string(),
+        urls: urls.into_iter().map(str::to_string).collect(),
+        unsupported: unsupported.map(str::to_string),
     }
 }
 
@@ -656,5 +750,65 @@ mod tests {
         assert!(open >= 2, "the approvals page has open ones to decide");
         assert!(data.approvals.len() > open, "and decided ones below");
         assert!(data.approvals.iter().all(|approval| approval.expires > approval.created));
+    }
+
+    #[test]
+    fn the_demo_searches_like_the_core_table() {
+        let found = |address: &str| match demo_discovery(address) {
+            Response::Discovery { provider, urls, unsupported } => (provider, urls, unsupported),
+            other => panic!("expected Discovery, got {other:?}"),
+        };
+        assert_eq!(found("anna@mailbox.org"), ("mailbox.org".into(), vec!["https://dav.mailbox.org/".into()], None));
+        assert_eq!(found("ANNA@iCloud.com").0, "iCloud");
+        let (provider, urls, unsupported) = found("anna@gmail.com");
+        assert_eq!((provider.as_str(), urls.is_empty()), ("Gmail", true));
+        let why = tr("Google calendars need a sign-in through Google, which Torro Workplace does not support yet.");
+        assert_eq!(unsupported.as_deref(), Some(why));
+        assert_eq!(found("anna@example.org"), ("example.org".into(), vec![], None), "nothing answers");
+    }
+
+    #[test]
+    fn the_demo_signs_in_with_any_password_but_the_refused_one() {
+        use torro_core::account::Secret;
+        let data = demo_data();
+        let connect = |password: &str| Request::ConnectCalDav {
+            address: "anna@mailbox.org".into(),
+            server: None,
+            login_name: "anna@mailbox.org".into(),
+            password: Secret::new(password),
+            calendars: true,
+            tasks: false,
+        };
+        assert!(matches!(
+            demo_answer(&connect("wrong"), &data),
+            Some(Response::Error { ref code, ref message }) if code == "auth" && message == tr("Password was refused")
+        ));
+        assert!(matches!(
+            demo_answer(&connect("anything"), &data),
+            Some(Response::Connected { calendars: true, tasks: true, .. })
+        ));
+    }
+
+    #[test]
+    fn the_demo_has_two_mail_accounts_and_an_agent_that_sends_freely() {
+        let data = demo_data();
+        let mail: Vec<&str> =
+            data.accounts.iter().filter(|account| account.kind == "mail").map(|account| account.id.as_str()).collect();
+        assert_eq!(mail, ["mail:anna@mailbox.org", "mail:anna@work.example.net"]);
+        assert!(mail.iter().all(|id| torro_mail::is_account_id(id)), "ids as the core makes them");
+        let codex = data.clients.iter().find(|client| client.kind == "codex").expect("Codex");
+        assert!(super::super::agents::sends_freely(&codex.rights));
+        assert!(codex.rights.reaches_mail_account(mail[0]) && !codex.rights.reaches_mail_account(mail[1]));
+        let default = data.clients.iter().find(|client| client.kind == "claude-code").expect("Claude Code");
+        assert_eq!(default.rights.outbound, Outbound::WithApproval, "the templates ask");
+    }
+
+    #[test]
+    fn the_demo_has_a_mail_provider_account() {
+        let data = demo_data();
+        let caldav = data.accounts.iter().find(|account| account.kind == "caldav").expect("a CalDAV account");
+        assert!(matches!(caldav.state, AccountState::Connected { problem: None, .. }));
+        assert!(caldav.collections.iter().any(|collection| collection.kind.has_events()));
+        assert!(caldav.collections.iter().any(|collection| collection.kind.has_todos()));
     }
 }

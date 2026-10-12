@@ -96,7 +96,7 @@
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{button, column, container, mouse_area, opaque, row, rule, scrollable, stack};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Vector, keyboard};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Padding, Shadow, Size, Vector, keyboard};
 use serde::{Deserialize, Serialize};
 
 use torro_core::AppId;
@@ -284,26 +284,158 @@ impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
 #[cfg(target_os = "macos")]
 const TITLEBAR: f32 = 28.0;
 
+/// The surface at the top of a window, right under the band of [`titlebar`]: the band takes its
+/// colour, so the top of every window reads as one piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// The window background `bg`: the sidebar or the rail (wide, medium), and the states that lie
+    /// on the window itself (signing in, loading or failing before a layout exists).
+    Window,
+    /// The content panel `panel`: the flush narrow window and the glance of mini and strip.
+    Panel,
+}
+
+impl Surface {
+    /// The surface at the top of the window [`shell`] lays out in `class`, or of the glance in mini
+    /// and strip: the window background where a sidebar or rail runs up to the top, else the panel.
+    pub fn of(class: SizeClass) -> Surface {
+        match sidebar_mode(class, SidebarMode::Expanded) {
+            Some(_) => Surface::Window,
+            None => Surface::Panel,
+        }
+    }
+}
+
+/// What an open overlay lays over the top of the window, so the band of [`titlebar`] repeats it:
+/// the scrim where the window is dimmed, the surface of a drawer or side panel where one runs up to
+/// the top. Without it the band stays light over a dimmed window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Cover {
+    /// Nothing open: the band is the [`Surface`] alone.
+    #[default]
+    Nothing,
+    /// A dialog ([`widgets::modal`]): the whole width dimmed.
+    Dialog,
+    /// The drawer ([`Shell::drawer`]): the sidebar's surface on its width at the left, dimmed beside it.
+    Drawer,
+    /// A side panel over the content ([`crate::panel::place`] in the medium layout): dimmed, and the
+    /// panel's surface on its width at the right.
+    Panel,
+    /// An overlay that fills the window (the side panel in the narrow layout): the band is its
+    /// surface, and nothing below it shows.
+    Filled(Surface),
+}
+
+impl Cover {
+    /// [`Cover::Dialog`] while a dialog is `open`.
+    pub fn dialog(open: bool) -> Cover {
+        if open { Cover::Dialog } else { Cover::Nothing }
+    }
+
+    /// [`Cover::Drawer`] while the drawer is `open` in `class`. [`Shell`] shows it only in the medium
+    /// and narrow layouts; wide has the sidebar, and mini and strip show a glance without the shell.
+    pub fn drawer(class: SizeClass, open: bool) -> Cover {
+        let shown = open && matches!(class, SizeClass::Medium | SizeClass::Narrow);
+        if shown { Cover::Drawer } else { Cover::Nothing }
+    }
+
+    /// The cover of a side panel `open` in `class`: [`Cover::Panel`] over a dimmed medium window,
+    /// [`Cover::Filled`] where it fills the window (narrow, also over the drawer), nothing in wide,
+    /// where it stands beside the content.
+    pub fn panel(class: SizeClass, open: bool) -> Cover {
+        match class {
+            _ if !open => Cover::Nothing,
+            SizeClass::Medium => Cover::Panel,
+            SizeClass::Narrow => Cover::Filled(Surface::Panel),
+            SizeClass::Wide | SizeClass::Mini | SizeClass::Strip => Cover::Nothing,
+        }
+    }
+
+    /// This cover, or `below` when nothing is open here: apps name their overlays from the top down
+    /// (`Cover::dialog(…).or(Cover::panel(…)).or(Cover::drawer(…))`), as they lie in the window.
+    pub fn or(self, below: Cover) -> Cover {
+        if self == Cover::Nothing { below } else { self }
+    }
+}
+
 /// Puts the band of the window's own title bar above `content` on macOS, where the window has none
 /// (see [`crate::window`]): the traffic lights sit in it, so nothing of the content lies under them.
-/// The band takes the window background and is pressed to drag the window; `on_drag` goes to the
-/// app's `update`, which returns [`crate::drag_window`]. `zoom` is the factor of the app's
-/// `scale_factor`, so the band stays [`TITLEBAR`] points high at any zoom. Other platforms keep their
-/// own title bar and get `content` back unchanged.
+/// The band takes the colour of `surface`, the top of `content`, with what `cover` lays over it,
+/// and is pressed to drag the window (also while the window is dimmed); `on_drag` goes to the app's
+/// `update`, which returns [`crate::drag_window`]. `zoom` is the factor of the app's `scale_factor`,
+/// so the band stays [`TITLEBAR`] points high at any zoom. Other platforms keep their own title bar
+/// and get `content` back unchanged.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
-pub fn titlebar<'a, M: Clone + 'a>(content: impl Into<Element<'a, M>>, zoom: f32, on_drag: M) -> Element<'a, M> {
+pub fn titlebar<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M>>,
+    zoom: f32,
+    surface: Surface,
+    cover: Cover,
+    on_drag: M,
+) -> Element<'a, M> {
     #[cfg(target_os = "macos")]
     {
         // The band is in layout units, which `scale_factor` multiplies; dividing keeps it in points.
-        let band = container(blank().width(Fill).height(Fill))
-            .width(Fill)
-            .height(TITLEBAR / zoom)
-            .style(style::container::sidebar);
+        let band = container(band(surface, cover)).width(Fill).height(TITLEBAR / zoom);
         column![mouse_area(band).on_press(on_drag), container(content).width(Fill).height(Fill)].into()
     }
     #[cfg(not(target_os = "macos"))]
     {
         content.into()
+    }
+}
+
+/// The band of [`titlebar`]: `surface`, and over it the parts of `cover`, with the widths the drawer
+/// and the side panel have below it (both in layout units, as the band is).
+#[cfg(target_os = "macos")]
+fn band<'a, M: 'a>(surface: Surface, cover: Cover) -> Element<'a, M> {
+    let style_of = |surface| -> fn(&iced::Theme) -> container::Style {
+        match surface {
+            Surface::Window => style::container::sidebar,
+            Surface::Panel => style::container::panel_flush,
+        }
+    };
+    let base = style_of(surface);
+    let plain = |style: fn(&iced::Theme) -> container::Style| container(blank()).width(Fill).height(Fill).style(style);
+    let dimmed = move || container(plain(scrim)).width(Fill).height(Fill).style(base);
+    match cover {
+        Cover::Nothing => plain(base).into(),
+        Cover::Filled(top) => plain(style_of(top)).into(),
+        Cover::Dialog => dimmed().into(),
+        Cover::Drawer => {
+            // As the drawer draws it: its line on its own surface (see `drawer`).
+            let side = container(blank()).width(size::SIDEBAR - LINE).height(Fill);
+            let drawer = container(row![side, rule::vertical(LINE).style(style::rule)])
+                .height(Fill)
+                .style(style::container::sidebar);
+            row![drawer, dimmed()].into()
+        }
+        Cover::Panel => {
+            let panel = container(blank()).width(size::PANEL).height(Fill).style(style::container::panel_flush);
+            row![dimmed(), panel].into()
+        }
+    }
+}
+
+/// The scrim that dims the window behind a dialog, the drawer or a side panel over the content.
+fn scrim(theme: &iced::Theme) -> container::Style {
+    container::Style { background: Some(Background::Color(palette(theme).scrim)), ..container::Style::default() }
+}
+
+/// The room `content` gets under the band of [`titlebar`], for a window of `size` in layout units
+/// at the zoom factor `zoom`: views that count what fits (the glances, a dialog sized to the window)
+/// measure with it, so nothing is cut off at the bottom. Other platforms have no band and get `size`
+/// back unchanged.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn below_titlebar(size: Size, zoom: f32) -> Size {
+    #[cfg(target_os = "macos")]
+    {
+        // As in `titlebar`: the band is TITLEBAR points, which is TITLEBAR / zoom in layout units.
+        Size::new(size.width, (size.height - TITLEBAR / zoom).max(0.0))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        size
     }
 }
 
@@ -358,11 +490,7 @@ fn inset_window<'a, M: 'a>(
 /// behind a dialog) and the drawer casts the menu shadow to the right; a click on the scrim
 /// dismisses.
 fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<'a, M> {
-    let scrim = container(blank().width(Fill).height(Fill)).style(|t| container::Style {
-        background: Some(Background::Color(palette(t).scrim)),
-        ..container::Style::default()
-    });
-    let catcher = opaque(mouse_area(scrim).on_press(on_dismiss));
+    let catcher = opaque(mouse_area(container(blank().width(Fill).height(Fill)).style(scrim)).on_press(on_dismiss));
     // The edge is a rule on the drawer's own surface: Iced leaves a translucent border see-through,
     // and the content below would shine through it.
     let side = container(sidebar).width(size::SIDEBAR - LINE).height(Fill).padding(space::S);
@@ -767,8 +895,62 @@ mod tests {
 
     #[test]
     fn titlebar_wraps_any_content() {
-        let _: Element<'_, Msg> = titlebar(blank(), 1.0, Msg::Close);
-        let _: Element<'_, Msg> = titlebar(blank(), 1.5, Msg::Close);
+        for surface in [Surface::Window, Surface::Panel] {
+            let filled = Cover::Filled(Surface::Panel);
+            for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
+                let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, cover, Msg::Close);
+                let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, cover, Msg::Close);
+            }
+        }
+    }
+
+    #[test]
+    fn the_band_is_covered_where_an_overlay_reaches_the_top() {
+        use SizeClass::{Medium, Mini, Narrow, Strip, Wide};
+        assert_eq!(Cover::dialog(true), Cover::Dialog);
+        assert_eq!(Cover::dialog(false), Cover::Nothing);
+        // The drawer only exists beside a shell without the sidebar.
+        for (class, cover) in [(Wide, Cover::Nothing), (Medium, Cover::Drawer), (Narrow, Cover::Drawer)] {
+            assert_eq!(Cover::drawer(class, true), cover, "{class:?}");
+        }
+        assert_eq!(Cover::drawer(Mini, true), Cover::Nothing, "a glance has no drawer");
+        assert_eq!(Cover::drawer(Medium, false), Cover::Nothing);
+        // The panel dims only in medium: beside in wide, the whole window in narrow.
+        let filled = Cover::Filled(Surface::Panel);
+        for (class, cover) in [(Wide, Cover::Nothing), (Medium, Cover::Panel), (Narrow, filled)] {
+            assert_eq!(Cover::panel(class, true), cover, "{class:?}");
+        }
+        assert_eq!(Cover::panel(Strip, true), Cover::Nothing);
+        assert_eq!(Cover::panel(Medium, false), Cover::Nothing);
+        // The top one wins.
+        assert_eq!(Cover::dialog(true).or(Cover::Drawer), Cover::Dialog);
+        assert_eq!(Cover::dialog(false).or(Cover::panel(Medium, true)).or(Cover::Drawer), Cover::Panel);
+        assert_eq!(Cover::panel(Narrow, true).or(Cover::Drawer), filled, "the narrow panel hides the drawer");
+        assert_eq!(Cover::Nothing.or(Cover::Nothing), Cover::Nothing);
+    }
+
+    #[test]
+    fn content_gets_the_height_below_the_band() {
+        let window = Size::new(240.0, 160.0);
+        #[cfg(target_os = "macos")]
+        {
+            assert_eq!(below_titlebar(window, 1.0), Size::new(240.0, 160.0 - TITLEBAR));
+            // At 200 % the band is half as many layout units, as `titlebar` draws it.
+            assert_eq!(below_titlebar(window, 2.0), Size::new(240.0, 160.0 - TITLEBAR / 2.0));
+            assert_eq!(below_titlebar(Size::new(240.0, 10.0), 1.0).height, 0.0, "never negative");
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(below_titlebar(window, 1.5), window);
+    }
+
+    #[test]
+    fn the_band_takes_the_surface_at_the_top_of_each_class() {
+        // Sidebar or rail run up to the top on the window background; elsewhere the panel does.
+        assert_eq!(Surface::of(SizeClass::Wide), Surface::Window);
+        assert_eq!(Surface::of(SizeClass::Medium), Surface::Window);
+        assert_eq!(Surface::of(SizeClass::Narrow), Surface::Panel);
+        assert_eq!(Surface::of(SizeClass::Mini), Surface::Panel);
+        assert_eq!(Surface::of(SizeClass::Strip), Surface::Panel);
     }
 
     #[test]

@@ -38,9 +38,13 @@ pub const MIN_TILE: f32 = 104.0;
 pub const LANES: usize = 2;
 /// At most this many all-day dots under the count.
 const ALL_DAY_DOTS: usize = 3;
-/// Share of the calendar colour over the ring's track in an arc. A named value so the colour of
-/// the radar's events (task K.29) can set it for the large and the mini dials alike.
-pub const FILL: f32 = 0.75;
+/// Share of the calendar colour over the ring's track in an event's arc in light mode, for the
+/// large and the mini dials alike (task K.29, set by screenshot): busy time stands out clearly from
+/// the track, and dark text keeps 4.5:1 on it for every calendar colour.
+pub const FILL_LIGHT: f32 = 0.45;
+/// The same in dark mode. More would leave mid-light colours (the default `#7FB2FF`, orange) too
+/// light for light text and too dark for dark text.
+pub const FILL_DARK: f32 = 0.50;
 /// The width of the ring (`docs/tasks`: about 12).
 const RING: f32 = space::M;
 /// The ticks at 12, 3, 6 and 9 hang in from the edge of the dial this far…
@@ -56,11 +60,16 @@ const ARC_MIN: f32 = 3.0;
 /// The start edge reaches this far over the ring on both sides.
 const EDGE_OVERHANG: f32 = 2.0;
 
-/// The colour of an event's arc in calendar colour `colour` over `ground` (the panel, or the
-/// night): [`FILL`] of the colour over the ring's track, so busy time stands out clearly from the
-/// empty track. K.29 sets the strength of the radar's colours here.
+/// [`FILL_DARK`] or [`FILL_LIGHT`], as `p` is the dark or the light palette.
+pub fn fill(p: &Palette) -> f32 {
+    if p.panel.relative_luminance() < 0.5 { FILL_DARK } else { FILL_LIGHT }
+}
+
+/// The colour of an event's arc on a mini dial in calendar colour `colour` over `ground` (the
+/// panel, or the night): [`fill`] of the colour over the ring's neutral track (one ring holds every
+/// calendar here), so busy time stands out clearly from the empty track.
 pub fn arc_colour(p: &Palette, colour: Color, ground: Color) -> Color {
-    mix(mix(ground, p.text, TRACK), colour, FILL)
+    mix(mix(ground, p.text, TRACK), colour, fill(p))
 }
 
 /// The days after `anchor` that get a mini radar, in order (over the end of a month or year

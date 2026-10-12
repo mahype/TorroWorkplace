@@ -26,6 +26,9 @@ torro-pim.workspace = true
 torro-inbox.workspace = true
 torro-pim-caldav.workspace = true
 torro-pim-github.workspace = true
+# Mail accounts (task M2.1 sets them up for M2.2 to M3.3).
+torro-mail.workspace = true
+torro-mail-imap.workspace = true
 torro-ipc.workspace = true
 torro-tui.workspace = true
 torro-wm.workspace = true

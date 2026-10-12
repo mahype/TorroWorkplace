@@ -60,7 +60,7 @@ use torro_core::i18n::tr;
 use torro_core::settings::Settings;
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -425,6 +425,25 @@ impl Ui {
                 }
                 messages
             }
+            Open::WizardMail(demo) => {
+                let mut messages =
+                    vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)];
+                messages.extend(
+                    wizard::demo_messages(demo)
+                        .into_iter()
+                        .map(|message| Message::Accounts(accounts::Message::Wizard(message))),
+                );
+                messages
+            }
+            Open::ChangePassword => {
+                let caldav = accounts::listed(&self.data.accounts).find(|account| account.kind == "caldav");
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                if let Some(account) = caldav {
+                    messages.push(Message::Accounts(accounts::Message::Open(account.id.clone())));
+                    messages.push(Message::Accounts(accounts::Message::ChangePassword));
+                }
+                messages
+            }
             Open::GithubDetail => {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
                 let mut messages = vec![Message::Select(Section::Accounts)];
@@ -736,7 +755,20 @@ impl Ui {
             SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
             class => self.window(class),
         });
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), Message::DragWindow))
+        // The glances lie on the panel even while loading, so the layout alone decides the band.
+        let surface = Surface::of(layout::of(self.size));
+        let content = self.zoom.view(window);
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, self.cover(), Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: the page's dialog, else
+    /// the drawer. A glance has neither.
+    fn cover(&self) -> Cover {
+        let class = layout::of(self.size);
+        if matches!(class, SizeClass::Mini | SizeClass::Strip) {
+            return Cover::Nothing;
+        }
+        Cover::dialog(self.page_overlay().is_some()).or(Cover::drawer(class, self.drawer))
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
@@ -1126,6 +1158,24 @@ mod tests {
     }
 
     #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut ui = started(&["--demo"]);
+        let _ = ui.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(ui.cover(), Cover::Nothing);
+        ui.drawer = true;
+        assert_eq!(ui.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = ui.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(ui.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut remove = started(&["--demo", "--open", "remove"]);
+        remove.drawer = true;
+        for size in [Size::new(1600.0, 1000.0), Size::new(800.0, 600.0), Size::new(420.0, 780.0)] {
+            let _ = remove.update(Message::Resized(size));
+            assert_eq!(remove.cover(), Cover::Dialog, "{size:?}: the dialog dims the whole window");
+        }
+    }
+
+    #[test]
     fn the_sidebar_collapses_in_wide_and_opens_the_drawer_elsewhere() {
         let mut ui = started(&["--demo"]);
         assert_eq!(ui.sidebar, SidebarMode::Expanded, "expanded until ui.json says otherwise");
@@ -1433,6 +1483,23 @@ mod tests {
             let github = started(&["--demo", "--open", state]);
             assert!(github.accounts.busy() || github.page_overlay().is_some(), "{state}: the dialog is open");
         }
+        for state in [
+            "wizard-mail",
+            "wizard-mail-found",
+            "wizard-mail-unsupported",
+            "wizard-mail-none",
+            "wizard-mail-password",
+            "wizard-mail-refused",
+            "wizard-mail-services",
+            "wizard-mail-done",
+        ] {
+            let mail = started(&["--demo", "--open", state]);
+            assert_eq!(mail.section, Section::Accounts, "{state}");
+            assert!(mail.accounts.wizard.is_some() && mail.page_overlay().is_some(), "{state}: the dialog is open");
+        }
+        let password = started(&["--demo", "--open", "change-password"]);
+        assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@mailbox.org@dav.mailbox.org"));
+        assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
 
@@ -1476,6 +1543,7 @@ mod tests {
         assert_eq!(demo.perform(Action::OpenUrl("https://example.org".into())).units(), 0);
         assert_eq!(demo.update(Message::Tick).units(), 0, "no reload from a service");
         assert_eq!(demo.update(Message::Sent(Ok(Response::Ok))).units(), 0);
+        let accounts = demo.data.accounts.len();
         // What the pages and the shell do on their own account.
         let messages = [
             Message::Apps(apps::Message::Open("torrotasks".into())),
@@ -1497,7 +1565,7 @@ mod tests {
             let text = format!("{message:?}");
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
-        assert_eq!(demo.data.accounts.len(), 3, "removing an account in the demo changes nothing");
+        assert_eq!(demo.data.accounts.len(), accounts, "removing an account in the demo changes nothing");
         assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 3, "nor do the inbox's controls");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);

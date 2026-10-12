@@ -42,13 +42,14 @@ use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
-use torro_gui::shell::{self, SidebarMode, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail, collection_color};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
+use torro_pim::account::account_of;
 use torro_pim::demo::DemoSource;
 use torro_pim::{AccountState, Collection, Event, PimAccount, PimSource};
 
@@ -947,7 +948,28 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(shell::titlebar(self.zoom.view(self.content()), self.zoom.factor(), Message::DragWindow))
+        let content = self.zoom.view(self.content());
+        let (surface, cover) = (self.surface(), self.cover());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+    }
+
+    /// What lies over the top of the window, which the title band repeats: the editor's panel over
+    /// the view, else the drawer. Nothing while signing in or in a glance, which have neither.
+    fn cover(&self) -> Cover {
+        let class = self.class();
+        if !self.connected() || is_glance(class) {
+            return Cover::Nothing;
+        }
+        Cover::panel(class, self.editor.is_some()).or(Cover::drawer(class, self.drawer))
+    }
+
+    /// The surface at the top of [`App::content`], which the title band takes: the window background
+    /// while signing in and for the glance's loading and error state, else that of the layout.
+    fn surface(&self) -> Surface {
+        let class = self.class();
+        let connected = matches!(self.account, Some(AccountState::Connected { .. }));
+        let bare_glance = is_glance(class) && (self.error.is_some() || !self.loaded);
+        if !connected || bare_glance { Surface::Window } else { Surface::of(class) }
     }
 
     fn content(&self) -> Element<'_, Message> {
@@ -983,8 +1005,8 @@ impl App {
         let (start, end) = self.load_range();
         let data = ViewData { items: self.items(), start, end, anchor: self.now.date(), now: self.now, selected: None };
         match class {
-            SizeClass::Strip => glance::strip(&data, self.size),
-            _ => glance::mini(&data, self.size),
+            SizeClass::Strip => glance::strip(&data, self.content_size()),
+            _ => glance::mini(&data, self.content_size()),
         }
     }
 
@@ -1360,10 +1382,18 @@ impl App {
         }
     }
 
-    /// The ids of the visible event calendars in the order of the sidebar: the radar's rings.
-    fn calendar_order(&self) -> Vec<String> {
+    /// The visible event calendars in the order of the sidebar, with their names, colours and the
+    /// hosts of their accounts: the radar's rings.
+    fn calendar_order(&self) -> Vec<views::radar::Ring> {
         let visible = self.calendars().into_iter().filter(|(calendar, _, _)| !self.hidden.contains(&calendar.id));
-        visible.map(|(calendar, _, _)| calendar.id.clone()).collect()
+        visible
+            .map(|(calendar, colour, _)| views::radar::Ring {
+                id: calendar.id.clone(),
+                name: calendar.name.clone(),
+                host: account_of(&calendar.id, &self.accounts, |a| a.id.as_str()).map(|a| a.host().to_string()),
+                colour,
+            })
+            .collect()
     }
 
     /// Where the radar's window starts: the start of the anchor's day turned by [`App::turn`].
@@ -1390,6 +1420,11 @@ impl App {
     /// The layout class of the window.
     fn class(&self) -> SizeClass {
         layout::of(self.size)
+    }
+
+    /// The room under the title band, which the glances fill ([`shell::below_titlebar`]).
+    fn content_size(&self) -> Size {
+        shell::below_titlebar(self.size, self.zoom.factor())
     }
 
     /// The view on screen: the chosen one, or what the narrow layout shows for it ([`shown_in`]).
@@ -1793,6 +1828,27 @@ mod tests {
     }
 
     #[test]
+    fn the_radar_gets_the_visible_calendars_with_name_colour_and_host() {
+        let mut app = launched(&["--demo"]);
+        let rings = app.calendar_order();
+        let named: Vec<(&str, Option<&str>)> = rings.iter().map(|r| (r.name.as_str(), r.host.as_deref())).collect();
+        assert_eq!(
+            named,
+            [
+                ("Work", Some("work.example.org")),
+                ("Personal", Some("home.example.org")),
+                ("Family", Some("home.example.org"))
+            ]
+        );
+        let work = app.collections.iter().find(|c| c.id == rings[0].id).expect("work");
+        assert_eq!(rings[0].colour, collection_color(work.color.as_deref()));
+        // A hidden calendar has no ring.
+        let _ = app.update(Message::ToggleCollection(rings[1].id.clone()));
+        let names: Vec<String> = app.calendar_order().into_iter().map(|r| r.name).collect();
+        assert_eq!(names, ["Work", "Family"]);
+    }
+
+    #[test]
     fn a_group_is_named_by_its_host_unless_two_shown_accounts_share_it() {
         let anna = account("nextcloud:anna@cloud.example.org");
         let bob = account("nextcloud:bob@imt.example.org");
@@ -2091,6 +2147,28 @@ mod tests {
         let _ = app.update(Message::AccountLoaded(Ok(two_accounts())));
         let _ = app.update(Message::Loaded(Ok((collections, events))));
         app
+    }
+
+    #[test]
+    fn the_title_band_repeats_what_lies_over_the_window() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Resized(Size::new(800.0, 600.0)));
+        assert_eq!(app.cover(), Cover::Nothing);
+        app.drawer = true;
+        assert_eq!(app.cover(), Cover::Drawer, "the drawer over a medium window");
+        let _ = app.update(Message::Resized(Size::new(240.0, 160.0)));
+        assert_eq!(app.cover(), Cover::Nothing, "a glance shows no drawer");
+
+        let mut edit = launched(&["--demo", "--open", "editor"]);
+        edit.drawer = true;
+        for (size, cover) in [
+            (Size::new(800.0, 600.0), Cover::Panel),
+            (Size::new(420.0, 780.0), Cover::Filled(Surface::Panel)),
+            (Size::new(1600.0, 1000.0), Cover::Nothing),
+        ] {
+            let _ = edit.update(Message::Resized(size));
+            assert_eq!(edit.cover(), cover, "{size:?}: the editor's panel lies above the drawer");
+        }
     }
 
     #[test]
