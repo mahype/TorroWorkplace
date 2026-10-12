@@ -300,9 +300,11 @@ pub fn escape(state: &State) -> Option<Message> {
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
+        // The dialog asks for TorroMail's accounts as it opens (task M7.4).
         Message::AddAccount => {
-            state.wizard = Some(wizard::State::new());
-            Action::None
+            let (wizard, ask) = wizard::State::open();
+            state.wizard = Some(wizard);
+            ask
         }
         Message::Wizard(wizard::Message::Close) => {
             state.wizard = None;
@@ -1659,8 +1661,10 @@ mod tests {
     fn the_dialog_takes_only_its_own_answers() {
         let mut state = State::default();
         assert!(!answered(&mut state, &Err("no template".into())), "no dialog: the shell shows it");
-        update(&mut state, Message::AddAccount, &Data::default());
-        assert!(!answered(&mut state, &Err("no template".into())), "the dialog waits for nothing yet");
+        let ask = update(&mut state, Message::AddAccount, &Data::default());
+        assert!(matches!(ask, Action::Send(Request::TorroMailAccounts)), "it opens asking for TorroMail's accounts");
+        assert!(answered(&mut state, &Ok(Response::TorroMailAccounts { accounts: Vec::new() })));
+        assert!(!answered(&mut state, &Err("no template".into())), "the dialog waits for nothing else");
     }
 
     #[test]

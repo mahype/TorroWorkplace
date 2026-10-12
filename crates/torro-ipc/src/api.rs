@@ -822,6 +822,8 @@ impl Request {
             Request::RemoveRule { .. } => &REMOVE_RULE,
             Request::ConnectMail { .. } => &CONNECT_MAIL,
             Request::UpdateMailAccount { .. } => &UPDATE_MAIL_ACCOUNT,
+            Request::TorroMailAccounts => &LIST_TORROMAIL_ACCOUNTS,
+            Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
             Request::MailFolders { .. } => &LIST_FOLDERS,
             Request::SearchMail { .. } => &SEARCH_MESSAGES,
             Request::GetMail { .. } => &GET_MESSAGE,
@@ -898,6 +900,8 @@ pub static CATALOGUE: &[&Command] = &[
     &CONNECT_CALDAV,
     &CONNECT_MAIL,
     &UPDATE_MAIL_ACCOUNT,
+    &LIST_TORROMAIL_ACCOUNTS,
+    &IMPORT_TORROMAIL_ACCOUNT,
     &REMOVE_ACCOUNT,
     &GET_SETTINGS,
     &SET_SETTING,
@@ -1327,6 +1331,34 @@ static UPDATE_MAIL_ACCOUNT: Command = Command {
                   (`services`; switching mail, calendars or tasks on widens what agents with rights to them see) \
                   and the folder for a role the server left open. Only the fields given change; servers and \
                   password never. Always waits for the person's approval.",
+};
+
+// Read access: it shows what the separate TorroMail app stored (addresses, servers, user names),
+// never a password; the core does not even ask TorroMail's keychain for it (task M7.4).
+static LIST_TORROMAIL_ACCOUNTS: Command = Command {
+    name: "accounts.list_torromail_accounts",
+    area: Area::Accounts,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists accounts of the separate TorroMail app (address, server, user), without passwords: data of \
+                  a separate app, for information only; they are not connected to the suite. Each says whether the \
+                  suite has a mail account with the address already and, when it cannot be taken over, why (OAuth, \
+                  JMAP). Only a person can take one over, in Torro Workplace.",
+};
+
+// Never an MCP tool, and for the app key only: it moves a password from TorroMail's keychain
+// entry into the core (`docs/api.md`, "Was nie nach außen geht", 5). An agent could otherwise
+// pull another app's credentials into the suite; the person's consent is the click in the
+// control centre.
+static IMPORT_TORROMAIL_ACCOUNT: Command = Command {
+    name: "accounts.import_torromail_account",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Copies an account of the separate TorroMail app into the suite as a mail account, for mail \
+                  only: servers and user from TorroMail's state, the password from TorroMail's keychain entry. \
+                  Checks both servers, keeps the password in the system keychain and returns the account, never \
+                  the password. TorroMail keeps its account. Only the app key may use it.",
 };
 
 static REMOVE_ACCOUNT: Command = Command {
@@ -1961,6 +1993,8 @@ mod tests {
             Request::ListRules,
             Request::RemoveRule { id: "r1".into() },
             connect_mail(),
+            Request::TorroMailAccounts,
+            Request::ImportTorroMailAccount { id: "4c1d".into() },
             Request::UpdateMailAccount {
                 id: "mail:anna@mailbox.org".into(),
                 sender_name: None,
@@ -2094,6 +2128,7 @@ mod tests {
                         | "accounts.set_github_token"
                         | "accounts.connect_caldav"
                         | "accounts.connect_mail"
+                        | "accounts.import_torromail_account"
                         | "approvals.decide_approval"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
@@ -2856,6 +2891,13 @@ mod tests {
             rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
         }
         assert!(!rights.allows(connect_mail().operation()));
+        // Task M7.4: taking a password over from TorroMail is the same, listing is reading.
+        let import = Request::ImportTorroMailAccount { id: "4c1d".into() };
+        assert!(!rights.allows(import.operation()));
+        assert_eq!((import.operation().access, import.operation().command.mcp), (Access::Admin, Mcp::Never));
+        let list = Request::TorroMailAccounts.operation();
+        assert_eq!((list.area(), list.access, list.command.mcp), (Area::Accounts, Access::Read, Mcp::Tool));
+        assert!(RightsTemplate::ReadOnly.rights().allows(list));
         let update = samples().into_iter().find(|r| matches!(r, Request::UpdateMailAccount { .. })).expect("sample");
         assert!(rights.allows(update.operation()), "settings are an admin command agents may get");
         assert!(rights.needs_approval_of(update.operation()), "and always wait for a person");

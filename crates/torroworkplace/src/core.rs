@@ -30,6 +30,7 @@ use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
+use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
@@ -413,6 +414,9 @@ pub struct Core {
     /// account of the same sign-in could both pass their check, and the settings would say
     /// "calendars on" while the calendar service refused the duplicate.
     calendar_sign_ins: Mutex<()>,
+    /// The separate TorroMail app, read only (task M7.4): the user's ([`TorroMail::system`]);
+    /// none in tests unless they bring one ([`Core::with_torromail`]).
+    torromail: TorroMail,
 }
 
 impl Core {
@@ -444,7 +448,15 @@ impl Core {
             make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
             searches: Searches::default(),
             calendar_sign_ins: Mutex::new(()),
+            torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
         }
+    }
+
+    /// The core with `torromail` instead of the user's TorroMail, for tests.
+    #[cfg(test)]
+    fn with_torromail(mut self, torromail: TorroMail) -> Core {
+        self.torromail = torromail;
+        self
     }
 
     /// The core with `discoverer` as its mail search, for tests.
@@ -1221,6 +1233,9 @@ impl Core {
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
             }
+            Request::TorroMailAccounts => self.torromail_accounts().await,
+            // A client never reaches the import either (`Rights::allows`, rule 5).
+            Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
             Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => {
                 let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles };
                 self.update_mail_account(&id, change).await
@@ -1655,6 +1670,89 @@ impl Core {
         let client = torro_pim_caldav::CalDavClient::pinned(&dav, password.clone(), &addresses)
             .map_err(|_| SignInError::Failed(Service::CalDav))?;
         client.services().await.map_err(|err| SignInError::caldav(&err))
+    }
+
+    /// `accounts.list_torromail_accounts` (task M7.4): TorroMail's accounts as its `state.json`
+    /// has them, each marked `connected` when the suite has a mail account with its address. No
+    /// keychain is read and nothing is logged: the addresses are the person's.
+    async fn torromail_accounts(&self) -> Response {
+        let stored = match self.torromail.accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        if stored.is_empty() {
+            return Response::TorroMailAccounts { accounts: Vec::new() };
+        }
+        // Our accounts unreadable is an error, not "none connected".
+        let ours = match self.mail.stored_accounts().await {
+            Ok(ours) => ours,
+            Err(message) => return refusal("error", message),
+        };
+        let accounts = stored.iter().map(|account| account.listed(has_mail_account(&ours, &account.email))).collect();
+        Response::TorroMailAccounts { accounts }
+    }
+
+    /// `accounts.import_torromail_account` (task M7.4; app key only, `Rights::allows` keeps every
+    /// client key out): connects TorroMail's account `id` as [`Core::connect_mail`] does. In this
+    /// order, so nothing is read from a keychain for an account that cannot be taken over:
+    ///
+    /// 1. the account from TorroMail's `state.json` (`not-found` when it has no such id), one the
+    ///    suite can take (`unsupported`: OAuth, JMAP, half set up) and has not yet (`conflict`:
+    ///    connecting it again would replace what the person set here);
+    /// 2. its password from TorroMail's keychain entry (`not-found` without one, `error` when the
+    ///    keychain refuses; both say to enter the password instead);
+    /// 3. [`Core::connect_mail`] with TorroMail's IMAP and SMTP server, user and sender name and no
+    ///    CalDAV address: the password goes to no server but the two the list showed the person.
+    ///    Calendars and tasks are added on the account's page afterwards.
+    ///
+    /// The suite's accounts that cannot be read are `error`. TorroMail's file and keychain entry
+    /// are only read. The password goes to the two servers and the suite's keychain only, never
+    /// into an answer, a message or a log.
+    async fn import_torromail_account(&self, id: &str) -> Response {
+        let stored = match self.torromail.accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        let Some(account) = stored.into_iter().find(|account| account.id == id) else {
+            return refusal("not-found", tr("TorroMail has no such account.").into());
+        };
+        let (Some(imap), Some(smtp), None) = (account.imap.clone(), account.smtp.clone(), account.unsupported()) else {
+            let why = account.unsupported().unwrap_or_else(|| tr("Not completely set up in TorroMail."));
+            return refusal("unsupported", why.into());
+        };
+        match self.mail.stored_accounts().await {
+            Ok(ours) if has_mail_account(&ours, &account.email) => {
+                return refusal("conflict", tr("This account is connected already.").into());
+            }
+            Ok(_) => {}
+            Err(message) => return refusal("error", message),
+        }
+        let password = match self.torromail.password(&account).await {
+            Ok(Some(password)) if !password.is_blank() => password,
+            Ok(_) => {
+                let message = tr("TorroMail has no password for this account. Enter it to connect.");
+                return refusal("not-found", message.into());
+            }
+            Err(err) => {
+                // The keychain's own words, never the account: it is the person's.
+                eprintln!("torroworkplace: TorroMail's keychain entry could not be read: {err}");
+                let message = tr("The password could not be read from TorroMail. Enter it to connect.");
+                return refusal("error", message.into());
+            }
+        };
+        // Mail only: the password goes to no server but the two the list showed the person.
+        let sign_in = MailSignIn {
+            address: account.email,
+            sender_name: account.name,
+            imap,
+            smtp,
+            login_name: account.username,
+            password,
+            calendars: false,
+            tasks: false,
+            caldav: None,
+        };
+        self.connect_mail(sign_in).await
     }
 
     /// After a mail account `to` took over the CalDAV account `from` and was stored (task M2.7):
@@ -2147,6 +2245,12 @@ fn mail_not_yet(request: &Request) -> Response {
 /// An error answer with `code` and `message`.
 fn refusal(code: &str, message: String) -> Response {
     Response::Error { code: code.into(), message }
+}
+
+/// `ours` holds the mail account of `address` (`mail:<address>`, task M7.4).
+fn has_mail_account(ours: &[torro_core::Account], address: &str) -> bool {
+    torro_mail::account_id(address)
+        .is_ok_and(|id| ours.iter().any(|account| account.kind == AccountKind::Mail && account.id == id))
 }
 
 /// What `accounts.connect_mail` brings (task M2.7), as [`Request::ConnectMail`] has it.
@@ -5744,6 +5848,153 @@ mod tests {
         assert!(world.lock().expect("world").closed.is_empty());
         assert_ne!(github_state(&ticked), Some(torro_pim::model::GitHubState::Closed), "the answer says so");
         assert_eq!(puts(&fake).len(), 1, "only the task is written: {:?}", fake.lines());
+    }
+
+    // Taking accounts over from TorroMail (task M7.4): its `state.json` in a temporary directory,
+    // its keychain in memory. TorroMail's file and entries must stay as they were.
+
+    use crate::account::torromail::tests::{MemorySecrets, state_json, torromail_account};
+
+    /// TorroMail's ids of Anna's account and of a Gmail account: UUIDs, as TorroMail makes them.
+    const ANNA_TM: &str = "4c1d5e2a-0b6f-4a8e-9c3d-1e2f3a4b5c6d";
+    const GMAIL_TM: &str = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+
+    /// A core with a home for its mail accounts in `dir` (and an empty keychain), so it can tell
+    /// which of TorroMail's accounts it has already.
+    fn homed(core: Core, dir: &std::path::Path) -> Core {
+        core.with_mail(service_with_smtp(dir, &MemoryTokens::default(), MAIL_PASSWORD).0)
+    }
+
+    /// TorroMail with `accounts` in `dir/torromail/state.json` and `secrets` as its keychain.
+    fn torromail_in(dir: &std::path::Path, accounts: &[serde_json::Value], secrets: &MemorySecrets) -> TorroMail {
+        let file = dir.join("torromail").join(crate::account::torromail::STATE_FILE);
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("folder made");
+        std::fs::write(&file, state_json(accounts)).expect("state written");
+        TorroMail::new(Some(file), Arc::new(secrets.clone()))
+    }
+
+    /// TorroMail's account of Anna at `imap` (a fake server on the loopback interface) and the
+    /// fake SMTP check, signed in to as `anna`.
+    fn anna_in_torromail(imap: &torro_mail::Endpoint) -> serde_json::Value {
+        let mut account = torromail_account(ANNA_TM, "anna@example.org", (&imap.host, imap.port), ("127.0.0.1", 587));
+        account["imapSecurity"] = serde_json::to_value(imap.security).expect("security");
+        account
+    }
+
+    /// Rule 5 of "Was nie nach außen geht": no client key takes a password over from TorroMail, not
+    /// even with every admin switch, nothing waits for an approval and TorroMail's keychain is not
+    /// even asked. Listing is reading: it shows addresses and servers, never a password.
+    #[tokio::test]
+    async fn only_the_app_key_takes_an_account_over_from_torromail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemorySecrets::with(ANNA_TM, "hunter2-TM");
+        let imap =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let torromail = torromail_in(dir.path(), &[anna_in_torromail(&imap)], &secrets);
+        let core = homed(audited(dir.path()), dir.path()).with_torromail(torromail);
+        let import = Request::ImportTorroMailAccount { id: ANNA_TM.into() };
+
+        let (_, key) = client(&core, every_admin_switch()).await;
+        assert_eq!(code(&ask(&core, Some(&key), import.clone()).await), "forbidden");
+        assert!(secrets.asked().is_empty(), "TorroMail's keychain was not asked");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let Response::TorroMailAccounts { accounts } = ask(&core, Some(&reader), Request::TorroMailAccounts).await
+        else {
+            panic!("listed")
+        };
+        assert_eq!(accounts.len(), 1);
+        assert_eq!((accounts[0].address.as_str(), accounts[0].connected), ("anna@example.org", false));
+        assert!(!serde_json::to_string(&accounts).expect("json").contains("hunter2"));
+        assert!(secrets.asked().is_empty(), "listing reads no keychain");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("anna") && !log.contains("4c1d"), "{log}");
+    }
+
+    /// The person takes Anna's account over: servers and user from TorroMail's state, the password
+    /// from its keychain into the suite's keychain only. TorroMail keeps file and password; a second
+    /// import is a conflict, and the list says the account is connected.
+    #[tokio::test]
+    async fn an_account_of_torromail_connects_with_its_password_copied() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let suite_keychain = MemoryTokens::default();
+        let (core, smtp) = mail_core(dir.path(), &suite_keychain, MAIL_PASSWORD);
+        let theirs = MemorySecrets::with(ANNA_TM, MAIL_PASSWORD);
+        let core = core.with_torromail(torromail_in(dir.path(), &[anna_in_torromail(&server.endpoint)], &theirs));
+        let state = dir.path().join("torromail").join(crate::account::torromail::STATE_FILE);
+        let before = std::fs::read(&state).expect("state");
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let import = Request::ImportTorroMailAccount { id: ANNA_TM.into() };
+        let answer = ask(&core, Some(&app_key), import.clone()).await;
+        let Response::MailConnected { account, calendars, tasks, .. } = answer.clone() else {
+            panic!("connected, got {answer:?}")
+        };
+        assert_eq!((account.id.as_str(), calendars, tasks), (ANNA_MAIL, false, false), "mail only");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "the app key waits for no approval");
+        assert_eq!(suite_keychain.get_plain(ANNA_MAIL).as_deref(), Some(MAIL_PASSWORD));
+        assert_eq!(smtp.lock().expect("record").clone(), ["127.0.0.1:587 anna"], "signed in as TorroMail's user");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let config = stored[0].mail.clone().expect("a mail account");
+        assert_eq!((config.sender_name.as_str(), stored[0].login_name.as_str()), ("Anna Example", "anna"));
+
+        assert_eq!(std::fs::read(&state).expect("state"), before, "TorroMail's state is untouched");
+        let kept = theirs.passwords.lock().expect("lock").get(ANNA_TM).cloned();
+        assert_eq!(kept.as_deref(), Some(MAIL_PASSWORD), "TorroMail keeps its password");
+        let Response::TorroMailAccounts { accounts } = ask(&core, Some(&app_key), Request::TorroMailAccounts).await
+        else {
+            panic!("listed")
+        };
+        assert!(accounts[0].connected, "the list says so");
+        let again = ask(&core, Some(&app_key), import).await;
+        assert_eq!(code(&again), "conflict");
+        assert_eq!(theirs.asked(), [ANNA_TM], "the keychain was asked once");
+        // The password is in no answer and no file of the suite (TorroMail's keychain is a map).
+        nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &again]);
+    }
+
+    /// What cannot be taken over says why, before any keychain is read; a missing or refused
+    /// password says to enter it instead.
+    #[tokio::test]
+    async fn torromail_accounts_that_cannot_be_taken_over_say_why() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let imap =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let mut oauth = torromail_account(GMAIL_TM, "anna@gmail.com", ("imap.gmail.com", 993), ("smtp.gmail.com", 465));
+        oauth["loginMethod"] = "oauth".into();
+        let secrets = MemorySecrets::with(GMAIL_TM, "token");
+        let accounts = [anna_in_torromail(&imap), oauth];
+        let import = |id: &str| Request::ImportTorroMailAccount { id: id.into() };
+
+        let core_with = |secrets: &MemorySecrets| {
+            homed(core(dir.path()), dir.path()).with_torromail(torromail_in(dir.path(), &accounts, secrets))
+        };
+        let first = core_with(&secrets);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(code(&ask(&first, Some(&app_key), import("nobody")).await), "not-found");
+        let refused = ask(&first, Some(&app_key), import(GMAIL_TM)).await;
+        let why = tr("Signs in with Google or Microsoft, which Torro Workplace does not support yet.");
+        assert_eq!(refused, Response::Error { code: "unsupported".into(), message: why.into() });
+        assert!(secrets.asked().is_empty(), "no keychain read for what cannot be taken over");
+        let missing = ask(&first, Some(&app_key), import(ANNA_TM)).await;
+        assert_eq!(code(&missing), "not-found", "TorroMail has no password for Anna: {missing:?}");
+
+        let refusing = MemorySecrets { refuse: true, ..MemorySecrets::default() };
+        let answer = ask(&core_with(&refusing), Some(&app_key), import(ANNA_TM)).await;
+        let message = tr("The password could not be read from TorroMail. Enter it to connect.");
+        assert_eq!(answer, Response::Error { code: "error".into(), message: message.into() });
+
+        // No TorroMail at all: nothing to list.
+        let none = ask(&core(dir.path()), Some(&app_key), Request::TorroMailAccounts).await;
+        assert_eq!(none, Response::TorroMailAccounts { accounts: Vec::new() });
+        // The suite's own accounts cannot be read (no home): an error, never "none connected".
+        let untouched = MemorySecrets::with(ANNA_TM, "hunter2-TM");
+        let homeless = core(dir.path()).with_torromail(torromail_in(dir.path(), &accounts, &untouched));
+        assert_eq!(code(&ask(&homeless, Some(&app_key), Request::TorroMailAccounts).await), "error");
+        assert_eq!(code(&ask(&homeless, Some(&app_key), import(ANNA_TM)).await), "error");
+        assert!(untouched.asked().is_empty(), "nor is the keychain read then");
     }
 
     // Mail (task M2.1): the requests exist, the rights hold, the handlers wait for their tasks.

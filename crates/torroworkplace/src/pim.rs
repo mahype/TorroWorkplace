@@ -983,6 +983,8 @@ impl PimService {
             // task M2.1).
             Request::ConnectMail { .. }
             | Request::UpdateMailAccount { .. }
+            | Request::TorroMailAccounts
+            | Request::ImportTorroMailAccount { .. }
             | Request::MailFolders { .. }
             | Request::SearchMail { .. }
             | Request::GetMail { .. }

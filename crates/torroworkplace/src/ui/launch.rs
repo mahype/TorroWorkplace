@@ -17,7 +17,7 @@ use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
     AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, FolderChoice, IssuedKey, Key,
-    MailView, OpenRoleView, Request, Response, ServiceState, Status,
+    MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -97,7 +97,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 41] = [
+    pub const ALL: [(&'static str, Open); 44] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -113,6 +113,9 @@ impl Open {
         ("wizard-mail-services", Open::WizardMail(wizard::Demo::Services)),
         ("wizard-mail-mail-only", Open::WizardMail(wizard::Demo::MailOnly)),
         ("wizard-mail-done", Open::WizardMail(wizard::Demo::Done)),
+        ("wizard-torromail-failed", Open::WizardMail(wizard::Demo::TorroMailFailed)),
+        ("wizard-torromail-password", Open::WizardMail(wizard::Demo::TorroMailPassword)),
+        ("wizard-torromail-done", Open::WizardMail(wizard::Demo::TorroMailDone)),
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
@@ -579,6 +582,23 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             tasks: *tasks && caldav.is_some(),
             open_roles: Vec::new(),
         }),
+        // TorroMail (task M7.4): four accounts, one of them connected already; Fastmail's keychain
+        // entry cannot be read, so its take-over fails and offers the password field.
+        Request::TorroMailAccounts => Some(Response::TorroMailAccounts { accounts: demo_torromail(data) }),
+        Request::ImportTorroMailAccount { id } if id == DEMO_LOCKED => Some(Response::Error {
+            code: "error".into(),
+            message: tr("The password could not be read from TorroMail. Enter it to connect.").into(),
+        }),
+        Request::ImportTorroMailAccount { id } => {
+            let account = demo_torromail(data).into_iter().find(|account| &account.id == id)?;
+            let imap = account.imap?;
+            Some(Response::MailConnected {
+                account: mail_account(&account.address, &imap.host, Utc::now()),
+                calendars: false,
+                tasks: false,
+                open_roles: Vec::new(),
+            })
+        }
         Request::ConnectCalDav { login_name, .. } => {
             let account =
                 data.accounts.iter().find(|account| account.kind == "caldav").cloned().map(|mut account| {
@@ -614,6 +634,36 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         }
         _ => None,
     }
+}
+
+/// TorroMail's id of the demo account whose keychain entry cannot be read.
+pub const DEMO_LOCKED: &str = "tm-fastmail";
+
+/// The accounts the demo's TorroMail has (task M7.4): one the suite can take (Posteo), one whose
+/// password cannot be read ([`DEMO_LOCKED`]), Gmail with OAuth (not supported) and the mailbox.org
+/// account the demo has connected already, so every kind of row shows.
+fn demo_torromail(data: &Data) -> Vec<TorroMailAccount> {
+    let server = |host: &str, port, security| Some(Endpoint { host: host.into(), port, security });
+    let account = |id: &str, address: &str, provider: &str, imap: &str, smtp: &str| TorroMailAccount {
+        id: id.into(),
+        address: address.into(),
+        sender_name: "Anna Example".into(),
+        provider: provider.into(),
+        imap: server(imap, 993, Security::Tls),
+        smtp: server(smtp, 587, Security::StartTls),
+        login_name: address.into(),
+        unsupported: None,
+        connected: data.accounts.iter().any(|known| known.id == format!("mail:{address}")),
+    };
+    let mut gmail = account("tm-gmail", "anna.example@gmail.com", "Gmail", "imap.gmail.com", "smtp.gmail.com");
+    gmail.unsupported =
+        Some(tr("Signs in with Google or Microsoft, which Torro Workplace does not support yet.").into());
+    vec![
+        account("tm-posteo", "anna.example@posteo.de", "Posteo", "posteo.de", "posteo.de"),
+        account(DEMO_LOCKED, "anna@fastmail.com", "Fastmail", "imap.fastmail.com", "smtp.fastmail.com"),
+        gmail,
+        account("tm-mailbox", "anna@mailbox.org", "mailbox.org", "imap.mailbox.org", "smtp.mailbox.org"),
+    ]
 }
 
 /// The answer of a server that refuses the password, naming the server like the core does.

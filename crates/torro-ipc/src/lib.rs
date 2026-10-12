@@ -402,6 +402,40 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder_roles: Option<BTreeMap<Role, String>>,
     },
+    /// Lists the accounts of the separate TorroMail app (task M7.4), read from its `state.json`
+    /// (macOS `~/Library/Application Support/TorroMail`, Windows `AppData/Local/TorroMail`, else
+    /// `$XDG_STATE_HOME/torromail` or `~/.local/state/torromail`). They are not connected to the
+    /// suite; `accounts.import_torromail_account` copies one. Nothing of TorroMail changes.
+    ///
+    /// Answered with [`Response::TorroMailAccounts`]: address, sender name, servers and user name
+    /// of each, never a password (the core does not read TorroMail's keychain for this), and
+    /// whether the suite has a mail account with the address already. An empty list when
+    /// TorroMail is not installed or has no accounts. Error code `error` when its `state.json`
+    /// cannot be read; an account in it that is not complete is left out.
+    #[serde(rename = "accounts.list_torromail_accounts")]
+    TorroMailAccounts,
+    /// Copies the account `id` of the separate TorroMail app into the suite as a mail account
+    /// (task M7.4): address, sender name, IMAP and SMTP server and user name from TorroMail's
+    /// `state.json`, the password from TorroMail's keychain entry (service `TorroMail`, account
+    /// `id`). Then it connects the account as `accounts.connect_mail` does (both servers checked,
+    /// the password into the suite's keychain only), for mail only: the password goes to no server
+    /// but the IMAP and SMTP servers TorroMail has and the list showed. Calendars and tasks of the
+    /// same sign-in are added on the account's page afterwards. TorroMail keeps its account and its
+    /// keychain entry; nothing there is changed or deleted.
+    ///
+    /// Answered with [`Response::MailConnected`], never with the password. Error codes:
+    /// `not-found` when TorroMail has no account `id` or no password for it; `unsupported` for an
+    /// account that signs in with OAuth (Google, Microsoft) or uses JMAP (the message says why);
+    /// `conflict` when the suite has a mail account with the address already; `error` when the
+    /// keychain entry cannot be read (the message says to enter the password instead), and every
+    /// code of `accounts.connect_mail`. Only the app key may send it: every client key gets
+    /// `forbidden`, whatever its rights, because it moves a secret of another app into the core
+    /// (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval either.
+    #[serde(rename = "accounts.import_torromail_account")]
+    ImportTorroMailAccount {
+        /// The account's id in TorroMail, as `accounts.list_torromail_accounts` lists it.
+        id: String,
+    },
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
     /// its own: one that fails keeps its cache and its problem, the others are updated. The
     /// answer is the first failure, else [`Response::Ok`].
@@ -1313,6 +1347,12 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_roles: Vec<Role>,
     },
+    /// The accounts of the separate TorroMail app ([`Request::TorroMailAccounts`]), never with a
+    /// password. On the wire `torromail-accounts`, the app's name in one word.
+    #[serde(rename = "torromail-accounts")]
+    TorroMailAccounts {
+        accounts: Vec<TorroMailAccount>,
+    },
     /// The folders the caller may see ([`Request::MailFolders`]).
     MailFolders {
         folders: Vec<Folder>,
@@ -1421,6 +1461,40 @@ pub struct AccountInfo {
     /// and left out of the JSON then, so older clients read the answer as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<MailView>,
+}
+
+/// One account of the separate TorroMail app as `accounts.list_torromail_accounts` lists it (task
+/// M7.4): what TorroMail stored, never a password.
+///
+/// An account the suite can take over has `unsupported: None` and both servers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorroMailAccount {
+    /// TorroMail's id of the account; `accounts.import_torromail_account` takes it.
+    pub id: String,
+    /// The account's e-mail address.
+    pub address: String,
+    /// The name TorroMail puts next to the address; empty for none.
+    #[serde(default)]
+    pub sender_name: String,
+    /// TorroMail's label of the provider (`IMAP/SMTP`, `mailbox.org`, `Gmail`), as it stored it.
+    #[serde(default)]
+    pub provider: String,
+    /// The IMAP server; `None` when TorroMail has none for the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imap: Option<Endpoint>,
+    /// The SMTP server; `None` when TorroMail has none for the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp: Option<Endpoint>,
+    /// The user name at the servers.
+    #[serde(default)]
+    pub login_name: String,
+    /// Why the suite cannot take the account over (it signs in with OAuth, it uses JMAP, its
+    /// servers are missing), for people, in the core's language; `None` when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<String>,
+    /// The suite has a mail account with this address already (`mail:<address>`).
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// A mail account as `accounts.list_accounts` lists it in [`AccountInfo::mail`] (task M2.8): what
@@ -1782,6 +1856,37 @@ mod tests {
             (Some("accounts.connect_mail"), Some("tls"))
         );
         assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), request);
+    }
+
+    /// Task M7.4: the import names TorroMail's account only; the list carries no password field
+    /// at all and leaves out what is not there.
+    #[test]
+    fn torromail_requests_and_their_answer_on_the_wire() {
+        let import = Request::ImportTorroMailAccount { id: "4c1d".into() };
+        let json = serde_json::to_value(&import).expect("json");
+        assert_eq!(json, serde_json::json!({"method": "accounts.import_torromail_account", "id": "4c1d"}));
+        assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), import);
+        let list = serde_json::to_value(Request::TorroMailAccounts).expect("json");
+        assert_eq!(list, serde_json::json!({"method": "accounts.list_torromail_accounts"}));
+
+        let account = TorroMailAccount {
+            id: "4c1d".into(),
+            address: "anna@mailbox.org".into(),
+            sender_name: "Anna".into(),
+            provider: "mailbox.org".into(),
+            imap: Some(Endpoint { host: "imap.mailbox.org".into(), port: 993, security: torro_mail::Security::Tls }),
+            smtp: None,
+            login_name: "anna@mailbox.org".into(),
+            unsupported: None,
+            connected: false,
+        };
+        let answer = Response::TorroMailAccounts { accounts: vec![account] };
+        let json = serde_json::to_value(&answer).expect("json");
+        assert_eq!(json["result"], "torromail-accounts");
+        let listed = &json["accounts"][0];
+        assert!(listed.get("smtp").is_none() && listed.get("unsupported").is_none(), "{listed}");
+        assert!(listed.get("password").is_none());
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), answer);
     }
 
     #[test]
