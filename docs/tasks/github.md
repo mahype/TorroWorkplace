@@ -378,6 +378,127 @@ K.21 (frei)
 - Abnahme: Tests (Haken in geteilter Liste schließt nichts, an GitHub geht nichts; Ziehen legt Verweis an bzw.
   verschiebt), Sichtprüfung des Ziehziels.
 
+## Neue Liste: Aufgabenliste oder GitHub-Filterliste
+
+Entschieden 2026-10-12: Statt „New filter list…“ je GitHub-Konto gibt es **einen** Eintrag „New list…“. Er fragt
+zuerst, was entstehen soll: **Task list** (eigene Aufgaben in Nextcloud) oder **GitHub filter list**. Die
+Filterliste beginnt mit dem **Repository**; Labels, Meilensteine und Personen kommen aus dem Repo und werden
+angeklickt statt getippt. Das zuletzt gewählte Repo ist vorausgewählt, **für alle Konten gemeinsam**. Zur Auswahl
+stehen nur Repos, die das angemeldete GitHub-Konto erreicht (keine freie Suche über ganz GitHub). Jedes
+Bedienelement zeigt deutlich, dass es gedrückt und gewählt ist. Reihenfolge: zuerst die Aufgabenliste (G.7, G.8),
+dann die GitHub-Seite (G.9–G.11).
+
+Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY9vesEQXySaX – Aufbau des Dialogs:
+
+- **Auswahl** (560 breit): zwei Karten „Task list“ / „GitHub filter list“ mit Icon, Satz darunter, Tasten 1 / 2.
+- **Task list** (520 breit): Konto (nur bei mehreren Nextcloud-Konten, als Chips), Name (Fokus), Farbe (5 Punkte),
+  Vorschau der Seitenleistenzeile, Fuß „Cancel“ / „Create list“. Zurück-Pfeil oben links.
+- **GitHub filter list** (960 breit, Formular links, Vorschau 300 rechts): Repository (Auswahlfeld mit Suche,
+  „Last used“), Start from (Vorlagen-Chips), Show und State (Segmente), Labels (Chips mit Farbpunkt, Mehrfachwahl,
+  Häkchen), Assignee (Anyone / Me / Unassigned / Personen), Milestone (Any / … / No milestone), „More filters“
+  aufklappbar (Author, Review requested, Sort, Without labels), Trennlinie, Name (vorgeschlagen aus den Filtern,
+  „Suggested from your filters“) und Farbe, „GitHub search“ aufklappbar (die geschriebene Anfrage, von Hand
+  änderbar, Einfügen von Anfrage oder Adresse, weitere Anfrage). Vorschau: „7 matches“, erste fünf Treffer,
+  „Checking…“ während gefragt wird, leerer Zustand mit Rat.
+- **Nach dem Anlegen:** Dialog zu, neue Liste in der Seitenleiste gewählt, Meldung „List "{name}" created“.
+
+### G.7 Aufgabenliste anlegen: Kern, API, MCP
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-pim-caldav/src/{client,write}.rs`,
+  `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp,approvals}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`
+- Neue Aufgabenliste in einem Nextcloud-Konto: CalDAV `MKCALENDAR` im Kalender-Zuhause des Kontos mit
+  `displayname`, `calendar-color` (Apple-Namensraum, `#RRGGBBFF` wie Nextcloud) und
+  `supported-calendar-component-set` = nur `VTODO`. Der Pfad ist ein neuer, nie wiederverwendeter Name
+  (Kleinbuchstaben aus dem Namen plus Zufallsteil); besteht er schon (`405`/`409`), neuer Versuch, kein
+  Überschreiben. Danach ist die Liste sofort in `tasks.list_lists` (Cache aktualisieren, kein Warten auf den Sync).
+- **API:** `Request::CreateTaskList { account, name, color }` · `tasks.create_list` · Write · Bereich `Tasks`.
+  Antwort: die neue `Collection`. Fehler: `not-found` (Konto unbekannt oder für den Client unsichtbar),
+  `unsupported` (Konto ohne CalDAV, z. B. GitHub), `offline`, `auth`, `error` (leerer Name).
+- **MCP:** `tasks_create_list`.
+- **Oberfläche:** G.8.
+- **Rechte:** Clients brauchen `write` im Bereich `tasks`; die neue Liste kommt nie von selbst in eine Auswahl
+  „nur diese“ (`task_lists`), wie bei Filterlisten. Braucht der Befehl eine Freigabe, lautet sie
+  „Create task list "{name}" in {account}“ (Konto-Name aus dem Kern, nicht vom Client). Protokoll nur mit
+  Konto- und Listen-Kennung, nie mit dem Namen.
+- Katalogbeschreibung nennt die Nebenwirkung („Creates a new task list on the account's server …“). API-Referenz
+  neu erzeugen.
+- Nicht Teil: Umbenennen, Farbe ändern, Löschen einer Aufgabenliste (eigene Aufgabe, wenn gewünscht).
+- Abnahme: Tests mit aufgezeichneten CalDAV-Antworten (Anfrage-Körper, Pfad-Kollision, Fehler), Handler-Test
+  (Liste danach in `list_lists`), Rechte (Client ohne `write` → `forbidden`, neue Liste nicht in `Only`-Auswahl),
+  MCP-Tool baut den richtigen Request.
+
+### G.8 Oberfläche: „New list…“ mit Auswahl und Aufgabenliste
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.7 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs`,
+  `crates/torrotasks/src/new_list.rs` (neu), ggf. `crates/torro-gui/src/widgets.rs` (Auswahlkarte)
+- Ein Eintrag „New list…“ (Icon `Plus`) unter allen Listen der Seitenleiste und im Navigationsmenü, statt
+  „New filter list…“ je GitHub-Konto. Öffnet die Auswahl (siehe Entwurf oben); Tasten 1 / 2 wählen, Escape
+  schließt. „GitHub filter list“ öffnet den Dialog aus G.4 (bis G.11 ihn ersetzt); ohne GitHub-Konto ist die Karte
+  aus und sagt „Connect a GitHub account in Settings first.“; ohne Nextcloud-Konto ebenso für „Task list“.
+- Dialog „New task list“: Konto (nur bei mehreren), Name, Farbe, Vorschau der Zeile; „Create list“ schickt
+  `tasks.create_list`, zeigt solange „Creating…“ mit Drehsymbol, schließt dann, wählt die neue Liste und meldet
+  „List "{name}" created“. Fehler unter dem Feld bzw. als Meldung mit „Retry“. Breit/Mittel über dem Fenster,
+  Schmal als eigene Ansicht (wie der Filterlisten-Dialog).
+- **API/MCP:** `tasks.create_list` aus G.7; die Auswahl selbst ist reine Oberfläche.
+- Übersetzungen im Bericht nennen.
+- Abnahme: Tests (Auswahl → richtiger Dialog, Request mit Konto/Name/Farbe, neue Liste gewählt), Sichtprüfung in
+  allen Größen hell und dunkel.
+
+### G.9 GitHub: Repos, Labels, Meilensteine und Personen lesen
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** G.2 · **Dateien:** `crates/torro-pim-github/src/{api,graphql}.rs`,
+  `crates/torro-pim/src/source.rs`, `crates/torroworkplace/src/{pim,core,mcp}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `docs/api-reference.md`
+- Die Lese-Requests, die G.4 noch fehlten („eine Auswahl aus GitHub bräuchte einen eigenen Lese-Request“):
+  - `Request::ListGithubRepos { account }` · `tasks.list_github_repos` · Read · Bereich `Github`: die Repos, die
+    das angemeldete Konto erreicht (GraphQL `viewer.repositories`, Zugehörigkeit Eigentümer, Mitarbeiter,
+    Organisationsmitglied; nicht archiviert), neueste Änderung zuerst, je Repo `owner/name`, privat ja/nein.
+  - `Request::DescribeGithubRepo { account, repo }` · `tasks.describe_github_repo` · Read · Bereich `Github`: in
+    **einer** Abfrage Labels (Name, Farbe), offene Meilensteine (Titel) und zuweisbare Personen (Login) des Repos.
+- **MCP:** `tasks_list_github_repos`, `tasks_describe_github_repo`. **Oberfläche:** G.11.
+- **Rechte:** Für Clients filtert der Kern die Repo-Liste gegen `github_repos`; ein Repo außerhalb → `not-found`
+  (wie nicht vorhanden). Der Token verlässt den Kern nie. Protokoll nur mit Konto und `owner/repo`.
+- Antworten kurz zwischenspeichern (bis zum nächsten Abgleich), damit der Dialog nicht bei jedem Öffnen fragt.
+- Abnahme: Tests aus aufgezeichneten GraphQL-Antworten (Fixtures), Rechte-Fälle, MCP-Tools bauen die Requests.
+
+### G.10 Rückmeldung: Chips, Segmente und Knöpfe zeigen ihren Zustand
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** – · **Dateien:** `crates/torro-gui/src/{style,widgets}.rs`,
+  `crates/torro-gui/examples/gallery.rs`
+- Befund vom Nutzer: Im Filterlisten-Dialog merkt man beim Klicken nicht, dass etwas passiert. Zuerst per
+  Screenshot klären, welche Bausteine keinen Hover-, Gedrückt- oder Gewählt-Zustand zeigen (Chips der Vorlagen,
+  Auswahllisten, Segmente).
+- Bausteine nach Skill `torro-design` Abschnitt 5 und dem Entwurf (Brett „States and feedback“): wählbarer Chip
+  (`widgets::choice_chip(label, mark, on, on_press)`: gewählt = `SELECTED`, stärkerer Rand, Häkchen), Mehrfachwahl
+  mit Farbpunkt für Labels, Segment mit deutlichem aktivem Feld, Primärknopf mit Zustand „busy“ (Drehsymbol, Text
+  „Creating…“, nimmt keine zweiten Klicks), Fokusring auf allen. Auswahl bleibt neutral, nie Rot.
+- **Oberfläche/API/MCP:** keine neuen Requests.
+- Abnahme: Galerie zeigt alle Zustände hell und dunkel; `scripts/design-check.sh` sauber.
+
+### G.11 Dialog „GitHub filter list“ neu: Repo zuerst, Werte zum Anklicken
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.8, G.9, G.10 · **Dateien:** `crates/torrotasks/src/{app,filter}.rs`,
+  `crates/torro-gui/src/ui_state.rs` (zuletzt gewähltes Repo)
+- Aufbau wie im Entwurf oben. Die Anfrage bleibt die Wahrheit (G.4): das Formular schreibt nur die Wörter, die es
+  kennt, alles andere bleibt stehen; die Rundreise-Tests aus G.4 bleiben grün.
+- **Repo zuerst:** Auswahlfeld mit Suche aus `tasks.list_github_repos`; vorausgewählt das zuletzt gewählte Repo,
+  gespeichert in `ui.json` (`torro_gui::ui_state`, wie die Seitenleiste) **ohne Konto**, also für alle Konten
+  gleich; erreicht das gewählte Konto es nicht, das erste Repo der Liste. Repo wechseln entfernt Labels und
+  Meilenstein, die es dort nicht gibt.
+- **Werte zum Anklicken** aus `tasks.describe_github_repo`: Labels (mit / ohne) als Chips mit Farbpunkt,
+  Meilenstein und Personen als Chips; Typ, Status, Sortierung als Segmente; Author, Review requested, Sort und
+  Without labels unter „More filters“ (aufgeklappt, wenn etwas davon gesetzt ist). Lädt es noch: ruhige
+  Platzhalter; scheitert es: Hinweis mit „Retry“, das Suchfeld bleibt benutzbar.
+- **Name** wird aus den Filtern vorgeschlagen („Bugs · TorroWorkplace“, Vorlagenname · Repo), bis man tippt.
+- **Bearbeiten** („Edit filter…“) nutzt denselben Aufbau; hat die Liste mehrere Anfragen oder mehrere Repos in
+  einer Anfrage, ist „GitHub search“ aufgeklappt und das Repo-Feld zeigt „Several repositories“.
+- **API/MCP:** nur vorhandene Requests (G.2, G.9); das zuletzt gewählte Repo ist eine Einstellung der Oberfläche
+  wie der Zustand der Seitenleiste.
+- Übersetzungen im Bericht nennen.
+- Abnahme: Tests (Repo vorausgewählt und gemerkt, Chips ↔ Anfrage, Repo-Wechsel, Vorschlag des Namens,
+  Bearbeiten mit mehreren Repos), Sichtprüfung in allen Größen hell und dunkel.
+
 ## K Kalender
 
 ### K.21 Fällige Aufgaben im Kalender
