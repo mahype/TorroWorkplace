@@ -391,6 +391,8 @@ pub struct App {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     AccountLoaded(Result<Vec<PimAccount>, String>),
     /// An account's title in the sidebar: fold or unfold its calendars.
     ToggleAccount(String),
@@ -680,6 +682,7 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Only accounts that can hold calendars: GitHub alone is "No calendar account yet".
@@ -944,7 +947,7 @@ impl App {
 
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
-        widgets::ctrl_guard(self.zoom.view(self.content()))
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(self.content()), self.zoom.factor(), Message::DragWindow))
     }
 
     fn content(&self) -> Element<'_, Message> {
@@ -1148,6 +1151,7 @@ impl App {
                 }
             }
             Ok(groups) => {
+                let shown: Vec<&PimAccount> = groups.iter().filter_map(|group| group.account).collect();
                 for group in groups {
                     let Some(account) = group.account else {
                         items.push(widgets::sidebar_group_in(mode, tr("Calendars"), None));
@@ -1156,7 +1160,7 @@ impl App {
                     };
                     let unfolded = !self.folded.contains(&account.id);
                     let toggle = Some((unfolded, Message::ToggleAccount(account.id.clone())));
-                    items.push(widgets::sidebar_group_in(mode, account.label.as_str(), toggle));
+                    items.push(widgets::sidebar_group_in(mode, group_title(account, &shown), toggle));
                     // The rail has no title to unfold with, so it shows every calendar.
                     if unfolded || mode == SidebarMode::Rail {
                         items.extend(group.items.into_iter().map(row));
@@ -1199,10 +1203,13 @@ impl App {
                 }
             }
             // A menu has no folding: every account is a section named after it.
-            Ok(groups) => sections.extend(groups.into_iter().map(|group| {
-                let title = group.account.map_or_else(|| tr("Calendars"), |account| account.label.as_str());
-                MenuSection::titled(title, group.items.into_iter().map(item).collect())
-            })),
+            Ok(groups) => {
+                let shown: Vec<&PimAccount> = groups.iter().filter_map(|group| group.account).collect();
+                sections.extend(groups.into_iter().map(|group| {
+                    let title = group.account.map_or_else(|| tr("Calendars"), |account| group_title(account, &shown));
+                    MenuSection::titled(title, group.items.into_iter().map(item).collect())
+                }))
+            }
         }
         widgets::menu(sections)
     }
@@ -1243,17 +1250,15 @@ impl App {
     }
 
     /// The properties column of the wide layout: what is left of the day beside the day view
-    /// (`views::week::day_props`), the radar's list beside the radar. The other views fill the
-    /// width and have none.
+    /// (`views::week::day_props`), the radar's mini radars of the coming days beside the radar. The
+    /// other views fill the width and have none.
     fn props(&self, class: SizeClass) -> Option<Element<'_, Message>> {
         if !shell::has_props(class) || !self.loaded || self.error.is_some() {
             return None;
         }
         match self.shown() {
             CalView::Day => Some(views::week::day_props(&self.view_data())),
-            CalView::Radar => {
-                Some(views::radar::list(&self.view_data(), &self.calendar_order(), self.turn, self.night))
-            }
+            CalView::Radar => Some(views::radar::list(&self.view_data(), self.night)),
             _ => None,
         }
     }
@@ -1435,10 +1440,11 @@ impl App {
             }
             CalView::Agenda => (self.anchor, self.anchor + Days::days(AGENDA_DAYS)),
             CalView::Timeline => (self.anchor - Days::days(1), self.anchor + Days::days(TIMELINE_DAYS)),
-            // The day and every window its dial can turn to: from the evening before (twelve hours
+            // The day and every window its dial can turn to – from the evening before (twelve hours
             // back from 06:00) to the noon two days on (a day ahead from late tonight, twelve
-            // hours long). The anchor's own events are always in, so its start does not jump.
-            CalView::Radar => (self.anchor - Days::days(1), self.anchor + Days::days(3)),
+            // hours long) – and the seven days of its mini radars, so they are full without loading
+            // on their own. The anchor's own events are always in, so its start does not jump.
+            CalView::Radar => (self.anchor - Days::days(1), self.anchor + Days::days(views::radar::COMING_DAYS + 1)),
         }
     }
 
@@ -1630,6 +1636,14 @@ fn same_event(a: &Event, b: &Event) -> bool {
     a.uid == b.uid && a.collection == b.collection && (!a.recurring || a.start == b.start)
 }
 
+/// The title of an account's group in the sidebar and the menu (task K.31): its host, which is
+/// short and still tells accounts apart. Only when another shown account has the same host, the
+/// full address, so the two groups stay apart. `shown` holds the accounts that have a group.
+fn group_title<'a>(account: &'a PimAccount, shown: &[&PimAccount]) -> &'a str {
+    let twin = shown.iter().any(|other| other.id != account.id && other.host() == account.host());
+    if twin { account.label.as_str() } else { account.host() }
+}
+
 /// The error state's text when the account or the events could not be loaded.
 fn load_failed(err: &str) -> String {
     trf("The calendar could not be loaded: {error}", &[("error", &err)])
@@ -1776,6 +1790,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_group_is_named_by_its_host_unless_two_shown_accounts_share_it() {
+        let anna = account("nextcloud:anna@cloud.example.org");
+        let bob = account("nextcloud:bob@imt.example.org");
+        let twin = account("nextcloud:bob@cloud.example.org");
+        assert_eq!(group_title(&anna, &[&anna, &bob]), "cloud.example.org", "other hosts: the host");
+        assert_eq!(group_title(&anna, &[&anna, &twin]), "nextcloud:anna@cloud.example.org", "same host: address");
+        assert_eq!(group_title(&twin, &[&anna, &twin]), "nextcloud:bob@cloud.example.org", "both get the address");
+        assert_eq!(group_title(&anna, &[&anna]), "cloud.example.org", "an account alone is not its own twin");
+        assert_eq!(group_title(&anna, &[]), "cloud.example.org", "no group shown: the host");
     }
 
     #[test]
@@ -2139,7 +2165,11 @@ mod tests {
     fn the_radar_pages_days_and_turns_the_hour_on_the_dial() {
         let mut app = radar_app();
         assert_eq!((app.shown(), app.radar_start()), (CalView::Radar, at(13, 14, 20)), "today at now");
-        assert_eq!(app.range(), (date(2026, 10, 12), date(2026, 10, 16)));
+        assert_eq!(
+            app.range(),
+            (date(2026, 10, 12), date(2026, 10, 21)),
+            "the evening before to the mini radars' last day"
+        );
         let _ = app.update(Message::Turn(views::radar::HOUR_STEP));
         let _ = app.update(Message::Turn(-views::radar::WHEEL_STEP));
         assert_eq!((app.turn, app.radar_start()), (45, at(13, 15, 5)), "an hour on, a quarter back");
@@ -2218,8 +2248,29 @@ mod tests {
         let _ = app.update(Message::Resized(NARROW));
         let _ = app.update(Message::GoTo(date(2026, 11, 5)));
         assert_eq!((app.shown(), app.anchor), (CalView::Radar, date(2026, 11, 5)));
-        assert_eq!(app.load_range(), (date(2026, 11, 2), date(2026, 11, 9)), "the strip's week and the radar's days");
+        assert_eq!(app.load_range(), (date(2026, 11, 2), date(2026, 11, 13)), "the strip's week and the radar's days");
         let _ = app.view();
+    }
+
+    #[test]
+    fn a_mini_radar_opens_its_day_in_the_radar_unturned() {
+        let mut app = radar_app();
+        // The range reaches through the seventh day after the shown one, so its mini radar is full.
+        let (_, after) = app.range();
+        assert_eq!(after, app.anchor + Days::days(views::radar::COMING_DAYS + 1));
+        let _ = app.view();
+        // A tile sends `GoTo` its day: the radar stays and opens it at its start, unturned.
+        let _ = app.update(Message::Turn(90));
+        let _ = app.update(Message::GoTo(date(2026, 10, 16)));
+        assert_eq!(
+            (app.view, app.shown(), app.anchor, app.turn),
+            (CalView::Radar, CalView::Radar, date(2026, 10, 16), 0)
+        );
+        assert_eq!(app.radar_start().date(), date(2026, 10, 16));
+        for class in [Size::new(800.0, 600.0), NARROW] {
+            let _ = app.update(Message::Resized(class));
+            let _ = app.view();
+        }
     }
 
     #[test]

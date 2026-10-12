@@ -733,6 +733,8 @@ pub struct App<S> {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     /// The window has this size (at start and after every resize).
     Resized(Size),
     /// The source's answer for the view it was asked for; answers for another view are dropped.
@@ -953,6 +955,7 @@ impl<S: InboxSource + 'static> App<S> {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
             Message::Loaded(view, result) => {
                 // An answer for a view the user has left since would show the wrong entries.
@@ -1554,11 +1557,15 @@ impl<S: InboxSource + 'static> App<S> {
         if self.is_glance() {
             // The panel, menus, the drawer and the hint stay in the state and come back with a
             // larger window.
-            return widgets::ctrl_guard(self.zoom.view(self.glance(class)));
+            return widgets::ctrl_guard(shell::titlebar(
+                self.zoom.view(self.glance(class)),
+                self.zoom.factor(),
+                Message::DragWindow,
+            ));
         }
         // Always two layers, so the window keeps its state when the hint comes and goes.
         let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
-        widgets::ctrl_guard(self.zoom.view(window))
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), Message::DragWindow))
     }
 
     /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.

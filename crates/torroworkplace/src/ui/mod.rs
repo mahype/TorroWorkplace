@@ -292,6 +292,8 @@ pub struct Ui {
     reason = "an answer can carry a whole task and is handled once; boxing would only add an allocation"
 )]
 pub enum Message {
+    /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
+    DragWindow,
     Select(Section),
     /// Open or close a menu.
     ToggleMenu(Menu),
@@ -539,6 +541,7 @@ impl Ui {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         let action = match message {
+            Message::DragWindow => return torro_gui::drag_window(),
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
@@ -733,7 +736,7 @@ impl Ui {
             SizeClass::Strip => glance::strip(&self.data, self.loaded, size),
             class => self.window(class),
         });
-        widgets::ctrl_guard(self.zoom.view(window))
+        widgets::ctrl_guard(shell::titlebar(self.zoom.view(window), self.zoom.factor(), Message::DragWindow))
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {

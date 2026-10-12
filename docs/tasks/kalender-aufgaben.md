@@ -450,6 +450,146 @@ Stellen anfassen; deutsche Übersetzungen nur im Bericht nennen (die Koordinatio
   ohne Nacht, Doppelklick-Erkennung; API-Referenz neu erzeugt; fmt/clippy/test (auch `TORRO_LANG=de`)
   grün; Sichtprüfung der Karte und der Einstellungszeile, hell/dunkel.
 
+### Radar: ruhiger, farbiger, mit Mini-Radaren (2026-10-12)
+
+Wunsch des Nutzers (2026-10-12): Die Mitte des Radars zeigt zu viel. „Free for 1 h 20 min“ und „3 h
+free“ stimmen nicht: Ein Zeitraum ohne Termin ist nicht unbedingt freie Zeit. Termine sollen
+kräftiger farbig sein, beim Überfahren einen Tooltip und den Zeiger `Pointer` zeigen und möglichst
+ihren Titel tragen. Rechts sollen statt der Terminliste kleine Radare der nächsten Tage stehen, die
+zeigen, wie voll diese Tage sind.
+
+Alle drei Aufgaben sind **reine Ansichten** wie K.22: Termine kommen über `Events`, ein Klick auf ein
+Mini-Radar nutzt das vorhandene `Message::GoTo`. Kein neuer Request, kein Katalogeintrag, kein
+MCP-Tool – Agenten bekommen dieselben Termine über `list_events`; welcher Tag gezeigt wird, ist
+Fensterzustand. Deutsche Übersetzungen nur im Bericht nennen (die Koordination trägt sie ein und
+entfernt Einträge, die nicht mehr gebraucht werden).
+
+**Reihenfolge:** K.28, K.30 und K.31 laufen parallel (in `radar.rs` nur die genannten Stellen anfassen),
+danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
+
+### K.28 Radar: ruhige Mitte, ohne „freie Zeit“
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** K.25, K.27 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`
+  (nur `middle`, `free_until`, `free_time`, `free_note`, `Plan::free`/`running`/`next`/`next_inside`/
+  `all_day`, Kopfkommentar, Tests dazu), `crates/torrocalendar/src/views/radar/layout.rs` (nur
+  `free` und seine Tests)
+- **Oberfläche:**
+  - **Mitte** nur noch: Datum (`META`, `TEXT_3`), Uhrzeit (`DISPLAY`, tabellarisch) und – beim
+    Vorausschauen bzw. an einem anderen Tag – ein runder Icon-Knopf `Clock`
+    (`widgets::icon_button`) mit Tooltip „Back to now“ (`widgets::with_tooltip`), der
+    `Message::Today` schickt. Der Knopf hat denselben Text als Beschriftung für Screenreader.
+  - **Fällt weg:** laufender Termin mit „40 min left“, „Free for …“, „Nothing planned“,
+    „Free until …“, „Next 15:00 · Titel“ und die Ganztägig-Chips in der Mitte.
+  - **Fällt weg:** „3 h free“ entlang des Bogens (`free_time`) samt `layout::free`. Wochenraster,
+    Zeitstrahl und Agenda behalten ihre freie Zeit (`free_gaps` bleibt unberührt).
+  - Die Terminliste daneben bleibt in dieser Aufgabe unverändert (die ersetzt K.30).
+- **API / MCP:** keiner (siehe oben).
+- **Abnahme:** Tests: Mitte ohne Termin-Texte (heute, anderer Tag mit Knopf, gedreht mit Knopf),
+  keine Tests mehr für `layout::free`; im Bericht die Texte nennen, die aus `de.rs` entfallen können;
+  fmt, clippy, test (auch `TORRO_LANG=de`) grün; `--demo --open radar --now 2026-10-13T14:20`
+  Sichtprüfung heute und an einem anderen Tag, hell und dunkel.
+
+### K.29 Radar: kräftige Termine mit Titel, Zeiger, Tooltip, Kalendernamen und Mond
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** K.28, K.30, K.31 · **Dateien:** `crates/torrocalendar/src/views/radar.rs`,
+  `crates/torrocalendar/src/views/radar/layout.rs`, `crates/torrocalendar/src/views/radar/mini.rs`
+  (nur die Farbe der Bögen), `crates/torrocalendar/src/app.rs` (nur die Kalendernamen an das Radar)
+- **Oberfläche:**
+  - **Farbe:** Termine im Radar deutlich kräftiger als die Tönung im Wochenraster: Füllung =
+    Kalenderfarbe mit eigener Konstante `FILL` über der Spur (Startwert hell ~45 %, dunkel ~55 %,
+    per Screenshot festlegen), Balken am Beginn voll. Der Titel muss auf jeder Kalenderfarbe der
+    Demo lesbar bleiben (Kontrast ≥ 4.5:1); reicht `text` nicht, Text nach Helligkeit der Füllung
+    hell oder dunkel wählen. Vergangene Termine bleiben verblasst, freie Spur bleibt leise. Gilt
+    nur fürs Radar; die anderen Ansichten behalten `Palette::tinted`. Die Mini-Radare (K.30)
+    nehmen dieselbe Konstante.
+  - **Titel im Bogen:** öfter sichtbar. Schmale Bahnen ab 16 bekommen den Titel in `MICRO` statt
+    gar keinen; `TEXT_MIN` und `MIN_TITLE_LETTERS` so wählen, dass in der Demo (Breit und Mittel)
+    jeder Termin ab 45 min seinen Titel trägt. Ist er dann unscharf, im Bericht sagen.
+  - **Zeiger:** über einem Termin `Pointer`, über dem übrigen Zifferblatt weiter `Grab`. Zuerst
+    prüfen, warum der Nutzer keinen Pointer sieht (Verdacht: Ebenen über dem `Canvas` – `stack` mit
+    der Mitte, `widgets::anchored` – oder Treffer-Radien), Ursache im Bericht nennen und beheben.
+  - **Tooltip:** Ruht die Maus `timeline::TOOLTIP_DELAY` auf einem Termin, erscheint im `Canvas`
+    eine Karte wie der Mond-Tooltip: Farbpunkt + Titel (`BODY_STRONG`, gekürzt mit „…“), darunter
+    „14:00–15:00“ (`META`, tabellarisch, `TEXT_2`) und – falls vorhanden – der Ort mit `MapPin`.
+    Neben dem Zeiger, nie über den Rand des `Canvas`. Verschwindet beim Verlassen, Drücken und
+    Ziehen.
+  - **Welcher Ring welcher Kalender ist** (Wunsch des Nutzers 2026-10-12):
+    - Die Spur jedes Rings leise in seiner Kalenderfarbe getönt (statt `TEXT` 7 %; Startwert ~10 %,
+      per Screenshot so, dass Termine weiter klar davor stehen und die Nacht erkennbar bleibt).
+    - Der Kalendername steht in jedem Ring entlang des Bogens **kurz vor der Startkante**, wo das
+      letzte Viertel ausgeblendet und der Ring leer ist: Farbpunkt + Name (`MICRO`, `TEXT_2`, voll
+      deckend, nicht mit ausgeblendet), endet ~8 vor der Kante, gekürzt mit „…“; passt er nicht
+      (Bahn < 14 oder zu wenig Bogen), nur der Farbpunkt. Er dreht mit dem Zifferblatt mit.
+    - Ruht die Maus auf der leeren Spur eines Rings, sagt der Tooltip den Kalendernamen (der
+      Zeiger bleibt `Grab`).
+    - Die Namen kommen aus der Kalenderliste der App (`calendar_order` liefert heute nur Ids);
+      dafür darf `app.rs` die Namen neben den Ids an `views::radar::view` geben (nur diese Stelle).
+    - Tragen zwei sichtbare Kalender denselben Namen (z. B. „Persönlich“ in zwei Konten), steht
+      hinter dem Namen der Host des Kontos (`PimAccount::host` aus K.31): „Persönlich ·
+      cloud.imt24.de“, im Tooltip immer.
+  - **Mond sichtbar machen** (Wunsch des Nutzers 2026-10-12, Screenshot: auf der dunklen Nacht kaum
+    zu sehen): Icon 16 statt `SIZE_SM`, in `TEXT_2` auf einer kleinen runden Plakette (~22, `PANEL`
+    mit `LINE`-Rand), Kontrast ≥ 3:1 gegen den Grund in hell und dunkel. Er steht an der ersten
+    halben Stunde der Nacht, die **nicht** im ausgeblendeten Viertel liegt; nur wenn die ganze
+    Nacht dort liegt, blendet er wie bisher mit aus. Ziel für Doppelklick und Tooltip wandern mit.
+- **API / MCP:** keiner.
+- **Abnahme:** Tests: Farbe/Kontrast der Füllung über hell und dunkel (feste Demo-Farben), Titel-Regel
+  (Bahnbreite → Schrift/kein Titel), `mouse_interaction` über Termin/Spur/außen, Tooltip-Zustand
+  (Verzögerung, Wechsel des Termins, Verschwinden beim Drücken), Lage am Rand, Kalendername je Ring
+  (Lage vor der Kante, gekürzt, nur Punkt bei schmaler Bahn, Tooltip auf leerer Spur); fmt, clippy, test
+  (auch `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
+
+### K.30 Radar: Mini-Radare der nächsten Tage
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.25 · **Dateien:** `crates/torrocalendar/src/views/radar/mini.rs`
+  (neu), `crates/torrocalendar/src/views/radar.rs` (nur `view`, `list`, `narrow`, `ListAt`,
+  `list_view`, `list_row`, `time_width`, `Plan::listed`, `mod mini;`, Tests dazu),
+  `crates/torrocalendar/src/views/radar/layout.rs` (nur Sichtbarkeit von Helfern, wenn nötig),
+  `crates/torrocalendar/src/app.rs` (nur `range` für `CalView::Radar` und `props`)
+- **Oberfläche:**
+  - Wo heute die Liste „Next 9 hours“ / „Fading out“ steht (Breit: Eigenschaften-Spalte, solange kein
+    Termin geöffnet ist; Mittel: rechts daneben; Schmal: unter dem Zifferblatt), stehen jetzt unter
+    der Überschrift „Coming days“ (`prop_section`) **Mini-Radare der 7 Tage nach dem gezeigten Tag**.
+    Die Liste fällt weg.
+  - **Raster:** Breit und Mittel 2 Spalten, Schmal so viele Spalten à mindestens 104, wie passen.
+    Kachel: oben „Wed 14“ (`CAPTION`, `TEXT_2`; morgen „Tomorrow“), darunter das Mini-Zifferblatt.
+  - **Mini-Zifferblatt** (vereinfacht, ein `Canvas` je Kachel oder einer für alle): dasselbe
+    12-h-Fenster, mit dem das große Radar diesen Tag öffnen würde (`layout::day_start`, Versatz 0),
+    damit der Klick genau das zeigt. **Ein** Ring (~12) mit allen Kalendern, Überschneidungen in
+    höchstens 2 Bahnen, Termine als Bögen in Kalenderfarbe (Konstante teilen, K.29 stellt sie
+    nach); Nacht als Sektor in `night`; Striche nur bei 12/3/6/9; keine Ziffern, kein Text im Bogen,
+    kein Ausblenden. In der Mitte die Zahl der Termine mit Uhrzeit (`BODY_STRONG`) bzw. „–“;
+    ganztägige als bis zu 3 Farbpunkte darunter.
+  - **Bedienung:** Hover hinterlegt die Kachel (`HOVER`) mit Zeiger `Pointer`; Klick →
+    `Message::GoTo(tag)` (bleibt im Radar, Versatz 0). Kachel per Tab erreichbar (Knopf), Tooltip
+    und Beschriftung „Wednesday, 14 October · 3 events“.
+  - **Laden:** `range` des Radars reicht bis zum Ende des siebten Tages (plus den Abend davor, wie
+    heute), damit die Mini-Radare ohne eigenes Laden voll sind.
+- **API / MCP:** keiner.
+- **Abnahme:** Tests: die 7 Tage (auch über Monats- und Jahresende), Fensterbeginn je Kachel gleich
+  dem des großen Radars, Bahnen bei Überschneidung, Zählung (ganztägig nicht mitgezählt), Klick →
+  `GoTo` und Radar bleibt, `range` deckt 7 Tage, Spaltenzahl je Breite; fmt, clippy, test (auch
+  `TORRO_LANG=de`) grün; Screenshots Breit, Mittel, Schmal hell/dunkel; `torro-design-review`.
+
+### K.31 Konten in den Seitenleisten nur mit Host
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** – · **Dateien:** `crates/torro-pim/src/account.rs` (neue Methode),
+  `crates/torrocalendar/src/app.rs` (nur Gruppentitel der Seitenleiste und des Kalendermenüs),
+  `crates/torrotasks/src/app.rs` (nur `account_title`)
+- Wunsch des Nutzers (2026-10-12): In der Seitenleiste steht „wagesve@nextcloud.rheinschmiede.net“ –
+  zu lang, wird abgeschnitten. Es reicht der Host.
+- **Neu:** `PimAccount::host(&self) -> &str`: der Teil von `label` nach dem letzten `@`, sonst
+  `label` (auch leer oder ohne `@`). `label` selbst bleibt unverändert (die Steuerzentrale zeigt
+  weiter die volle Adresse).
+- **Oberfläche:** Kalender und Aufgaben zeigen als Gruppentitel der Konten (Seitenleiste, Rail,
+  Menü in Mittel/Schmal) den Host: „nextcloud.rheinschmiede.net“, „cloud.imt24.de“. Haben zwei
+  gezeigte Konten denselben Host, bleibt bei diesen die volle Adresse. GitHub-Konten bleiben
+  „GitHub · login“. Der Tooltip bzw. die Beschriftung für Screenreader nennt die volle Adresse,
+  wenn der Baustein das hergibt (sonst berichten).
+- **API / MCP:** keiner – Anzeige; `label` geht unverändert über `PimAccounts`.
+- **Abnahme:** Tests: `host` (mit `@`, mehrere `@`, ohne, leer), Gruppentitel in beiden Apps mit
+  zwei Hosts und mit gleichem Host; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag

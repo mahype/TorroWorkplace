@@ -77,19 +77,37 @@ pub fn settings() -> iced::Settings {
 
 /// Window settings for an app: its fixed app id (Wayland app id / X11 class, which
 /// Hyprland rules and workspace templates match on) and a sensible default size.
+///
+/// On macOS the window has no title bar of its own: the title is hidden, the bar is transparent and
+/// the content runs up to the top edge, so the bar takes the colour of the sidebar. The traffic
+/// lights then sit over the content, and [`shell::titlebar`] keeps them clear and drags the window.
 // Only Linux reads the app id here (Wayland app id); macOS and Windows identify windows otherwise.
-#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+#[cfg_attr(not(target_os = "linux"), allow(unused_mut, unused_variables))]
 pub fn window(app: torro_core::AppId) -> iced::window::Settings {
-    iced::window::Settings {
+    let mut settings = iced::window::Settings {
         size: iced::Size::new(1100.0, 760.0),
         min_size: Some(iced::Size::new(200.0, 120.0)),
-        #[cfg(target_os = "linux")]
-        platform_specific: iced::window::settings::PlatformSpecific {
-            application_id: app.window_class.to_string(),
-            ..Default::default()
-        },
         ..Default::default()
+    };
+    #[cfg(target_os = "linux")]
+    {
+        settings.platform_specific.application_id = app.window_class.to_string();
     }
+    #[cfg(target_os = "macos")]
+    {
+        settings.platform_specific = iced::window::settings::PlatformSpecific {
+            title_hidden: true,
+            titlebar_transparent: true,
+            fullsize_content_view: true,
+        };
+    }
+    settings
+}
+
+/// The task that drags the window with the mouse, as the native title bar does. Apps return it from
+/// their `update` for the message [`shell::titlebar`] sends when its band is pressed.
+pub fn drag_window<T: Send + 'static>() -> iced::Task<T> {
+    iced::window::latest().and_then(iced::window::drag)
 }
 
 #[cfg(test)]
@@ -166,6 +184,15 @@ mod tests {
             };
             assert_eq!(weight_class(data), Some(weight), "{name}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_windows_have_no_title_bar_of_their_own() {
+        let platform = window(torro_core::AppId::CALENDAR).platform_specific;
+        assert!(platform.title_hidden);
+        assert!(platform.titlebar_transparent);
+        assert!(platform.fullsize_content_view);
     }
 
     #[test]
