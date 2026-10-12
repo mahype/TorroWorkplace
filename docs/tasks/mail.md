@@ -381,7 +381,9 @@ ihre Texte im Bericht.
   `not-found`.
 
 ### M3.3 Senden mit Freigabe
-- [ ] erledigt
+- [x] erledigt (dazu `mail/mod.rs` für `pub mod send;`; offen: Detailansicht der Freigabe mit allen Empfängern
+  braucht ein Feld in `ApprovalInfo` (torro-ipc), bis dahin nennt die Zusammenfassung jede Bcc-Adresse;
+  Katalogtext von `mail.send_draft`: Bcc mitgezählt, Entwurf bleibt bei `unknown`)
 - **Modell:** Opus · **Braucht:** M2.4, M3.2 · **Dateien:** `crates/torroworkplace/src/{core,mcp,approvals}.rs`,
   `crates/torroworkplace/src/mail/{service,send}.rs`
 - `mail.send_draft`: baut die Nachricht aus dem Entwurf im Kern, sendet nach der Versandregel (M2.4), legt die

@@ -640,6 +640,12 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Sending (task M3.3): only the client's own drafts, in reachable accounts.
+        if let Some(refused) =
+            crate::mail::send::client_refusal(&self.mail, &id, Reach::Client(&rights), &request).await
+        {
+            return Ok(refused);
+        }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
         if !rights.allows(request.operation()) {
             return Err(Refused::Forbidden { command: request.operation().name() });
@@ -699,6 +705,11 @@ impl Core {
         if question || rights.needs_approval_of(operation) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
             return self.ask_approval(&id, request).await;
         }
+        // A client sends as itself: its own drafts only, checked again where it runs (task M3.3).
+        if let Request::SendDraft { id: draft } = &request {
+            let author = DraftAuthor::Client(id.clone());
+            return Ok(crate::mail::send::send_draft(&self.mail, reach, &author, draft, None).await);
+        }
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
         }
@@ -756,6 +767,7 @@ impl Core {
         let command = request.operation().name();
         let info = self.clients.list().into_iter().find(|info| info.id == client);
         let name = info.as_ref().map(|info| info.name.clone());
+        let mut fingerprint = None;
         let (request, pin, summary) = match (&request, request.operation().area()) {
             (Request::AskPermission { tool, details, project }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
@@ -763,6 +775,20 @@ impl Core {
                 }
                 let agent = info.as_ref().map_or_else(|| client.to_string(), asker);
                 let summary = crate::approvals::question_summary(&agent, tool, project.as_deref(), details);
+                (request, None, summary)
+            }
+            // Sending (task M3.3): the summary from the message built from the stored draft, and
+            // the approval pinned to it. A draft that cannot be built is nothing to ask about.
+            (Request::SendDraft { id: draft }, _) => {
+                let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
+                let author = DraftAuthor::Client(client.to_string());
+                let reach = Reach::Client(&info.rights);
+                let (mail, pinned) = match crate::mail::send::approval(&self.mail, reach, &author, draft).await {
+                    Ok(prepared) => prepared,
+                    Err(refused) => return Ok(refused),
+                };
+                fingerprint = Some(pinned);
+                let summary = crate::approvals::summary(&request, &Facts { mail: Some(mail), ..Facts::default() });
                 (request, None, summary)
             }
             (_, Area::Inbox) => {
@@ -790,7 +816,13 @@ impl Core {
             }
         };
         let name = name.unwrap_or_default();
-        match self.approvals.open(client, &name, request, pin, summary, Utc::now()).await {
+        let opened = match fingerprint {
+            Some(fingerprint) => {
+                self.approvals.open_with_fingerprint(client, &name, request, fingerprint, summary, Utc::now()).await
+            }
+            None => self.approvals.open(client, &name, request, pin, summary, Utc::now()).await,
+        };
+        match opened {
             Ok(approval) => {
                 crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
                 if crate::approvals::is_question(&approval) {
@@ -865,8 +897,8 @@ impl Core {
         if decided.is_ok() {
             crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
         }
-        let (client, request, pin) = match decided {
-            Ok(Decision::Run { client, request, pin }) => (client, *request, pin),
+        let (client, request, pin, fingerprint) = match decided {
+            Ok(Decision::Run { client, request, pin, fingerprint }) => (client, *request, pin, fingerprint),
             Ok(Decision::Denied { approval, request }) => {
                 // The ids of what was asked for, as the line of the request itself has them.
                 let denied = torro_ipc::ActivityEntry {
@@ -883,7 +915,7 @@ impl Core {
             Err(err) => return err.response(),
         };
         let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
-        let response = self.run_approved(&client, request, pin).await;
+        let response = self.run_approved(&client, request, pin, fingerprint.as_deref()).await;
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -899,8 +931,16 @@ impl Core {
     /// not of when it asked: steps 1 and 2 of [`Core::handle_from`] once more, since a person may
     /// have narrowed the rights, removed the client or hidden a collection meanwhile. The approval
     /// itself is not asked for again. An `inbox.*` command with a `pin` runs only on its entry as
-    /// the person was shown it ([`Core::inbox_request`]), else `conflict`.
-    async fn run_approved(&self, client: &str, request: Request, pin: Option<EntryPin>) -> Response {
+    /// the person was shown it ([`Core::inbox_request`]), else `conflict`; `mail.send_draft` only
+    /// when the message built now has the `fingerprint` of the one the person was shown (task
+    /// M3.3), else `conflict` and nothing is sent.
+    async fn run_approved(
+        &self,
+        client: &str,
+        request: Request,
+        pin: Option<EntryPin>,
+        fingerprint: Option<&str>,
+    ) -> Response {
         let command = request.operation().name();
         let Some(info) = self.clients.list().into_iter().find(|info| info.id == client) else {
             let message = format!("the client that asked for {command} was removed meanwhile");
@@ -930,6 +970,13 @@ impl Core {
         }
         if let Request::SaveDraft { draft } = request {
             return self.save_draft(draft, reach, DraftAuthor::Client(client.to_string())).await;
+        }
+        // Sending runs only on what the person was shown: an approval without a fingerprint
+        // (none is ever stored without one) matches nothing.
+        if let Request::SendDraft { id: draft } = &request {
+            let author = DraftAuthor::Client(client.to_string());
+            let approved = Some(fingerprint.unwrap_or_default());
+            return crate::mail::send::send_draft(&self.mail, reach, &author, draft, approved).await;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -1181,7 +1228,15 @@ impl Core {
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }) => crate::mail::read::answer(&self.mail, reach, request).await,
-            request @ Request::SendDraft { .. } => mail_not_yet(&request),
+            // Sending (task M3.3): the person sends any draft; a client's send carries its id and
+            // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
+            request @ Request::SendDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
+                (Some(refused), _, _) => refused,
+                (None, Request::SendDraft { id }, Reach::Suite) => {
+                    crate::mail::send::send_draft(&self.mail, reach, &DraftAuthor::App, id, None).await
+                }
+                _ => refusal("forbidden", "a client's draft is sent with its own id as the author".into()),
+            },
             request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
@@ -5658,28 +5713,8 @@ mod tests {
         assert!(!format!("{homeless:?}").contains("hunter2"));
         let none = Response::MailFolders { folders: Vec::new() };
         assert_eq!(ask(&core, Some(&app_key), Request::MailFolders { account: None }).await, none, "reading: M3.1");
-        assert_eq!(code(&ask(&core, Some(&app_key), Request::SendDraft { id: "m:1".into() }).await), "unsupported");
-    }
-
-    /// `Rights::outbound`: never is `forbidden`, with approval waits even with `confirm: never`,
-    /// free runs (here into `unsupported`) unless `confirm` asks for every change.
-    #[tokio::test]
-    async fn sending_waits_or_is_refused_as_outbound_says() {
-        use torro_ipc::api::{Confirm, Outbound};
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let send = || Request::SendDraft { id: "m:1".into() };
-        let with = |outbound, confirm| Rights { outbound, confirm, ..RightsTemplate::FullAccess.rights() };
-
-        let (_, never) = client(&core, with(Outbound::Never, Confirm::Never)).await;
-        assert_eq!(code(&ask(&core, Some(&never), send()).await), "forbidden");
-        let (_, asking) = client(&core, with(Outbound::WithApproval, Confirm::Never)).await;
-        let asked = waits(ask(&core, Some(&asking), send()).await);
-        assert_eq!(asked.command, "mail.send_draft");
-        let (_, free) = client(&core, with(Outbound::Free, Confirm::Never)).await;
-        assert_eq!(code(&ask(&core, Some(&free), send()).await), "unsupported", "runs at once");
-        let (_, careful) = client(&core, with(Outbound::Free, Confirm::OnEveryChange)).await;
-        waits(ask(&core, Some(&careful), send()).await);
+        let no_draft = ask(&core, Some(&app_key), Request::SendDraft { id: "m:1".into() }).await;
+        assert_eq!(code(&no_draft), "not-found", "sending: M3.3, but there is no such draft");
     }
 
     /// An account outside a client's `mail_accounts` is `not-found` before anything else, limits
@@ -6347,5 +6382,128 @@ mod tests {
         let mut drafts = on_server(&server, "Drafts");
         drafts.sort();
         assert_eq!(drafts, ["The agent's, better", "The person's"]);
+    }
+
+    // Sending mail (task M3.3): Anna's account on the fake IMAP server and a fake SMTP server; the
+    // clients send through the core as agents do.
+
+    use crate::mail::send::tests::FakeSmtp;
+
+    /// A [`changing_mail_core`] with an audit log and an SMTP server that accepts everything.
+    async fn sending_core(dir: &std::path::Path) -> (Core, crate::mail::sync::fake::FakeImap, Key, Arc<FakeSmtp>) {
+        let (core, server, app_key) = changing_mail_core(dir).await;
+        let core = core.with_audit(crate::audit::tests::audit_in(dir));
+        let smtp = FakeSmtp::answering(torro_mail_imap::smtp::Submitted::Accepted);
+        core.mail.outbox().await.expect("an outbox").use_fake(Arc::clone(&smtp));
+        (core, server, app_key, smtp)
+    }
+
+    /// Full mail rights with `outbound` and `confirm`.
+    fn sender(outbound: torro_ipc::api::Outbound, confirm: torro_ipc::api::Confirm) -> Rights {
+        Rights { outbound, confirm, ..with_mail_level(Level::Full) }
+    }
+
+    /// The draft `subject` to Bernd, Cc Dora, Bcc Carla, saved with `key`; its id.
+    async fn lunch_draft(core: &Core, key: &Key, subject: &str) -> String {
+        let mut lunch = draft(subject);
+        lunch.cc = vec![torro_mail::MailAddress { name: None, address: "dora@example.com".into() }];
+        lunch.bcc = vec![torro_mail::MailAddress { name: None, address: "carla@example.net".into() }];
+        saved_draft(ask(core, Some(key), Request::SaveDraft { draft: lunch }).await).id.expect("an id")
+    }
+
+    fn mail_sent() -> Response {
+        Response::MailSent { delivery: torro_ipc::mail::Delivery::Accepted }
+    }
+
+    /// `with_approval` waits, summed up from the stored draft (all recipients with Bcc); the
+    /// person's yes sends it with its copy in Sent. `never` is `forbidden`, `free` sends at once
+    /// unless `confirm` asks for every change, the app key sends straight away. Recipients and
+    /// subjects stay out of the audit log.
+    #[tokio::test]
+    async fn sending_waits_or_is_refused_as_outbound_says() {
+        use torro_ipc::api::{Confirm, Outbound};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key, smtp) = sending_core(dir.path()).await;
+        let send = |id: &str| Request::SendDraft { id: id.into() };
+
+        let (_, asking) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
+        let lunch = lunch_draft(&core, &asking, "Lunch").await;
+        let asked = waits(ask(&core, Some(&asking), send(&lunch)).await);
+        assert_eq!(asked.command, "mail.send_draft");
+        let shown = crate::approvals::DraftFacts {
+            subject: "Lunch".into(),
+            first_recipient: Some("bernd@example.com".into()),
+            recipients: 3,
+            attachments: 0,
+            text_start: "Dear Bernd, see you.".into(),
+            bcc: vec!["carla@example.net".into()],
+        };
+        let facts = crate::approvals::MailFacts {
+            account: Some("anna@example.org".into()),
+            count: 1,
+            draft: Some(shown),
+            ..Default::default()
+        };
+        let expected = crate::approvals::summary(&send(&lunch), &Facts { mail: Some(facts), ..Facts::default() });
+        assert_eq!(asked.summary, expected);
+        assert!(asked.summary.contains("bernd@example.com"), "{}", asked.summary);
+        assert!(asked.summary.contains("Bcc: carla@example.net"), "the blind copy is named: {}", asked.summary);
+        assert!(smtp.sent().is_empty(), "nothing went out yet");
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(decided.state, torro_ipc::ApprovalState::Done { response: Box::new(mail_sent()) });
+        assert_eq!(smtp.sent().len(), 1);
+        assert_eq!(on_server(&server, "Sent"), ["Lunch"]);
+        assert!(!on_server(&server, "Drafts").contains(&"Lunch".to_string()));
+
+        let (_, never) = client(&core, sender(Outbound::Never, Confirm::Never)).await;
+        let own = lunch_draft(&core, &never, "Never").await;
+        assert_eq!(code(&ask(&core, Some(&never), send(&own)).await), "forbidden");
+        let (_, free) = client(&core, sender(Outbound::Free, Confirm::Never)).await;
+        let own = lunch_draft(&core, &free, "Free").await;
+        assert_eq!(ask(&core, Some(&free), send(&own)).await, mail_sent(), "runs at once");
+        let (_, careful) = client(&core, sender(Outbound::Free, Confirm::OnEveryChange)).await;
+        let careful_draft = draft("Careful");
+        let asked = waits(ask(&core, Some(&careful), Request::SaveDraft { draft: careful_draft.clone() }).await);
+        let saved = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = saved.state else { panic!("ran: {saved:?}") };
+        let own = saved_draft(*response).id.expect("an id");
+        let asked = waits(ask(&core, Some(&careful), send(&own)).await);
+        assert_eq!(asked.command, "mail.send_draft", "free, but this client asks for every change");
+        let persons = saved_draft(ask(&core, Some(&app_key), Request::SaveDraft { draft: draft("Mine") }).await);
+        assert_eq!(
+            ask(&core, Some(&app_key), send(&persons.id.expect("an id"))).await,
+            mail_sent(),
+            "the person sends"
+        );
+        assert_eq!(smtp.sent().len(), 3);
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["bernd", "dora", "carla", "Lunch", "Dear Bernd"] {
+            assert!(!log.contains(content), "{content} in the audit log: {log}");
+        }
+    }
+
+    /// A client sends only its own drafts (the person's are `not-found`, nobody is asked), and an
+    /// approval is pinned to what it showed: a draft saved again after the question sends nothing.
+    #[tokio::test]
+    async fn a_changed_draft_voids_its_approval_and_the_persons_drafts_stay_out_of_reach() {
+        use torro_ipc::api::{Confirm, Outbound};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key, smtp) = sending_core(dir.path()).await;
+        let (_, key) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
+        let persons = lunch_draft(&core, &app_key, "The person's").await;
+        assert_eq!(code(&ask(&core, Some(&key), Request::SendDraft { id: persons }).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+
+        let own = lunch_draft(&core, &key, "Lunch").await;
+        let asked = waits(ask(&core, Some(&key), Request::SendDraft { id: own.clone() }).await);
+        let changed = torro_mail::Draft { id: Some(own.clone()), ..draft("Lunch, and bring Eve") };
+        saved_draft(ask(&core, Some(&key), Request::SaveDraft { draft: changed }).await);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran: {decided:?}") };
+        assert_eq!(code(&response), "conflict");
+        assert!(smtp.sent().is_empty(), "nothing went out");
+        assert!(on_server(&server, "Sent").is_empty());
+        assert!(on_server(&server, "Drafts").contains(&"Lunch, and bring Eve".to_string()), "the draft stays");
     }
 }
