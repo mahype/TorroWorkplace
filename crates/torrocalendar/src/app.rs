@@ -1185,8 +1185,9 @@ impl App {
     /// bottom "Open Tasks ↗" and "Settings" (the latter in the band on macOS).
     ///
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
-    /// menu, and without them the drawer still fits a window 600 high. As the rail (`mode`, U.2) it
-    /// leaves out the small month, which has no icon form, and keeps the views as icons.
+    /// menu already. As the rail (`mode`, U.2) it leaves out the small month, which has no icon
+    /// form, and keeps the views as icons. What does not fit the window's height scrolls between
+    /// the switcher and the footer ([`shell::sidebar`], U.12).
     fn sidebar<'a>(&'a self, mode: SidebarMode, class: SizeClass, switcher: &Anchor) -> Element<'a, Message> {
         let mut items = Vec::new();
         if mode == SidebarMode::Expanded {
