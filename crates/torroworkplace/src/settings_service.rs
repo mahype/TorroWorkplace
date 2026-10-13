@@ -119,6 +119,43 @@ impl SettingsStore {
         })
     }
 
+    /// Hides and orders every collection of the account `from` under the id it has under the
+    /// account `to` as well (`<from>/<URL>` → `<to>/<URL>`), keeping the old ids: the first step
+    /// when a mail account takes over the CalDAV account of the same sign-in (task M2.7), taken
+    /// before the takeover is stored. Hidden collections keep agents out too, so a calendar the
+    /// person hid must never show under its new id, not even for a moment; the old ids go once
+    /// the takeover is stored ([`SettingsStore::forget_account`]). One atomic write, only when
+    /// something changed.
+    pub fn copy_collections(&self, from: &str, to: &str) -> Result<(), String> {
+        let renamed =
+            |id: &str| torro_pim::account::local_id(id, from).map(|url| torro_pim::account::collection_id(to, url));
+        self.change(|settings| {
+            let hidden: Vec<String> = settings.hidden_collections.iter().filter_map(|id| renamed(id)).collect();
+            for id in hidden {
+                if !settings.hidden_collections.contains(&id) {
+                    settings.hidden_collections.push(id);
+                }
+            }
+            let orders: Vec<_> =
+                settings.list_orders.iter().filter_map(|(id, order)| Some((renamed(id)?, *order))).collect();
+            for (id, order) in orders {
+                settings.list_orders.entry(id).or_insert(order);
+            }
+        })
+    }
+
+    /// Takes every collection of the account `from` out of the hidden ones and the list orders
+    /// ([`SettingsStore::forget_collections`] for all ids `<from>/…`): for an account that is gone,
+    /// such as a CalDAV account a mail account took over (task M2.7) after
+    /// [`SettingsStore::copy_collections`].
+    pub fn forget_account(&self, from: &str) -> Result<(), String> {
+        let settings = self.current();
+        let of_account = |id: &&String| torro_pim::account::local_id(id, from).is_some();
+        let ids: Vec<String> =
+            settings.hidden_collections.iter().chain(settings.list_orders.keys()).filter(of_account).cloned().collect();
+        self.forget_collections(&ids)
+    }
+
     /// Puts `owner` in front of every hidden collection whose id is still a bare URL from before
     /// several accounts existed (task M1.1, [`torro_pim::account::qualify_legacy_id`]): back then
     /// there was one account, `owner`. Runs once when the core starts; writes the file (atomically,

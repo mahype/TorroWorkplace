@@ -486,6 +486,8 @@ fn describe(request: &Request) -> String {
         // task M2.1); message and folder ids would let lines be matched with a mailbox.
         Request::ConnectMail { .. } => "connect mail".into(),
         Request::UpdateMailAccount { .. } => "update mail account".into(),
+        Request::TorroMailAccounts => "torromail accounts".into(),
+        Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::SearchMail { .. } => "search mail".into(),
         Request::GetMail { .. } => "get mail".into(),

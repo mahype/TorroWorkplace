@@ -602,6 +602,104 @@ impl Clients {
         Ok((info, Key::new(key)))
     }
 
+    /// Gives every collection of the account `from` in the clients' calendar and task list
+    /// selections the id it has under the account `to` (`<from>/<URL>` → `<to>/<URL>`), when a
+    /// mail account takes over the CalDAV account of the same sign-in (task M2.7): the clients
+    /// keep reaching the same calendars and lists, nothing more. Mail accounts are never added to
+    /// `mail_accounts` here. Writes `clients.json` (atomically) only when something changed. When
+    /// that fails, memory goes back to the old ids like the file: they name no collection any
+    /// more, so the clients reach none of them (fail closed) until the person grants them anew.
+    pub async fn rename_collections(&self, from: &str, to: &str) -> Result<(), ClientsError> {
+        let _changing = self.shared.changing.lock().await;
+        let renamed =
+            |id: &str| torro_pim::account::local_id(id, from).map(|url| torro_pim::account::collection_id(to, url));
+        let before: Vec<(String, Rights)> = {
+            let mut state = self.lock();
+            let mut before = Vec::new();
+            for entry in &mut state.clients {
+                let rights = &mut entry.record.rights;
+                let old = rights.clone();
+                for selection in [&mut rights.calendars, &mut rights.task_lists] {
+                    if let Selection::Only(ids) = selection {
+                        for id in ids.iter_mut() {
+                            if let Some(new) = renamed(id) {
+                                *id = new;
+                            }
+                        }
+                    }
+                }
+                if *rights != old {
+                    before.push((entry.record.id.clone(), old));
+                }
+            }
+            before
+        };
+        if before.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self.persist().await {
+            for (id, old) in before {
+                let _ = self.with_client(&id, |record| record.rights = old);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Takes the account `id` out of every client's rights before the account is removed
+    /// (`accounts.remove_account`, task M2.7b): its id from `mail_accounts` and `inbox_sources`
+    /// (a mail account's id is also its inbox source, `mail:<address>`), and its collections
+    /// (`<id>/<url>`) from `calendars` and `task_lists`. Otherwise an agent would get its reach
+    /// back without asking when the same address is connected again. Works for every kind of
+    /// account (Nextcloud, CalDAV, GitHub's filter lists, mail); `All` stays `All`.
+    ///
+    /// `accounts` are the ids of all accounts the core knows (with `id` or without): a collection
+    /// belongs to the account with the longest id it starts with (`torro_pim::account::account_of`),
+    /// so removing `nextcloud:anna@example.org` keeps the collections of
+    /// `nextcloud:anna@example.org/nc`. Writes `clients.json` (atomically, all clients in one
+    /// write) only when something changed; when that fails, memory goes back as well, nothing
+    /// is forgotten and the error says so.
+    pub async fn forget_account(&self, id: &str, accounts: &[String]) -> Result<(), ClientsError> {
+        let _changing = self.shared.changing.lock().await;
+        let mut owners: Vec<&str> = accounts.iter().map(String::as_str).filter(|known| *known != id).collect();
+        owners.push(id);
+        let belongs = |collection: &str| {
+            torro_pim::account::account_of(collection, &owners, |owner: &&str| owner).is_some_and(|owner| *owner == id)
+        };
+        let before: Vec<(String, Rights)> = {
+            let mut state = self.lock();
+            let mut before = Vec::new();
+            for entry in &mut state.clients {
+                let rights = &mut entry.record.rights;
+                let old = rights.clone();
+                for selection in [&mut rights.calendars, &mut rights.task_lists] {
+                    if let Selection::Only(ids) = selection {
+                        ids.retain(|collection| !belongs(collection));
+                    }
+                }
+                for selection in [&mut rights.mail_accounts, &mut rights.inbox_sources] {
+                    if let Selection::Only(ids) = selection {
+                        ids.retain(|selected| selected != id);
+                    }
+                }
+                if *rights != old {
+                    before.push((entry.record.id.clone(), old));
+                }
+            }
+            before
+        };
+        if before.is_empty() {
+            return Ok(());
+        }
+        if let Err(err) = self.persist().await {
+            for (client, old) in before {
+                let _ = self.with_client(&client, |record| record.rights = old);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Removes a client. Its key stops working at once, even when the file or the keychain
     /// cannot be updated; that is then reported as an error.
     pub async fn remove(&self, id: &str) -> Result<(), ClientsError> {
@@ -1790,5 +1888,49 @@ pub(crate) mod tests {
         let mode = |path: &Path| fs::metadata(path).expect("exists").permissions().mode() & 0o777;
         assert_eq!(mode(&state), 0o700);
         assert_eq!(mode(&parent), 0o755, "a parent that was there keeps its mode");
+    }
+
+    /// Task M2.7b: a removed account leaves every selection, in memory and in `clients.json`;
+    /// another account whose id starts with the same text keeps its collections, `All` stays.
+    #[tokio::test]
+    async fn forgetting_an_account_takes_it_out_of_every_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (anna, nested) = ("mail:anna@example.org", "nextcloud:anna@cloud.example.org/nc");
+        let (cloud, github) = ("nextcloud:anna@cloud.example.org", "github:anna");
+        let at = |account: &str, url: &str| format!("{account}/{url}");
+        let mut rights = read_only();
+        rights.mail_accounts = Selection::Only(vec![anna.into(), "mail:bob@example.org".into()]);
+        rights.inbox_sources = Selection::Only(vec![anna.into(), "agent:codex".into()]);
+        rights.calendars = Selection::Only(vec![
+            at(anna, "https://dav.example.org/work/"),
+            at(cloud, "https://cloud.example.org/remote.php/dav/calendars/anna/home/"),
+            at(nested, "https://cloud.example.org/nc/remote.php/dav/calendars/anna/home/"),
+        ]);
+        rights.task_lists = Selection::Only(vec![at(anna, "https://dav.example.org/todo/"), at(github, "list-1")]);
+        let (agent, _) = clients.add("Agent", "claude-code", rights).await.expect("added");
+        let mut everything = read_only();
+        everything.mail_accounts = Selection::All;
+        let (all, _) = clients.add("All", "codex", everything).await.expect("added");
+        let known: Vec<String> = [anna, cloud, nested, github].map(String::from).to_vec();
+
+        clients.forget_account(anna, &known).await.expect("forgotten");
+        clients.forget_account(cloud, &known).await.expect("forgotten");
+        clients.forget_account(github, &known).await.expect("forgotten");
+        let expected = |rights: &Rights| {
+            assert_eq!(rights.mail_accounts, Selection::Only(vec!["mail:bob@example.org".into()]));
+            assert_eq!(rights.inbox_sources, Selection::Only(vec!["agent:codex".into()]));
+            assert_eq!(
+                rights.calendars,
+                Selection::Only(vec![at(nested, "https://cloud.example.org/nc/remote.php/dav/calendars/anna/home/")])
+            );
+            assert_eq!(rights.task_lists, Selection::Only(vec![]));
+        };
+        let listed = |id: &str| clients.list().into_iter().find(|client| client.id == id).expect("listed").rights;
+        expected(&listed(&agent.id));
+        assert_eq!(listed(&all.id).mail_accounts, Selection::All);
+        let reopened = open_in(dir.path());
+        let stored = reopened.records().into_iter().find(|record| record.id == agent.id).expect("stored").rights;
+        expected(&stored);
     }
 }

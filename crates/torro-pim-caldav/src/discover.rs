@@ -27,6 +27,10 @@
 //!   two DNS questions, at most [`MAX_TARGETS`] SRV targets and two well-known addresses a call;
 //! - the answer holds only addresses built from what was found, never a server's content or its
 //!   headers. Logging is the caller's business: it names the command, never the address.
+//!
+//! The mail discovery of `torro-mail-imap` (task M2.2) asks through the same [`Resolver`] (with
+//! its MX records) and keeps the same guards: [`checked_domain`] for every host name it is
+//! handed, [`is_public`] for every address, and [`GuardedDns`] for its HTTP client.
 
 use std::cmp::Reverse;
 use std::future::Future;
@@ -39,7 +43,9 @@ use hickory_resolver::TokioResolver;
 use hickory_resolver::proto::rr::RData;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::{Method, Url};
-use torro_pim::ProviderError;
+/// The error of a [`Lookup`], here so that resolvers outside this crate (mail discovery, the
+/// core's tests) need no dependency of their own on `torro-pim`.
+pub use torro_pim::ProviderError;
 
 /// How many redirects a well-known address may take (RFC 6764 asks clients to follow them).
 pub const MAX_REDIRECTS: usize = 5;
@@ -115,6 +121,16 @@ pub struct SrvRecord {
     pub target: String,
 }
 
+/// One MX record (RFC 5321 §5.1): where mail for a domain goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MxRecord {
+    /// Lower is tried first.
+    pub preference: u16,
+    /// The host name, with or without the final dot; `.` is a "null MX": the domain takes no
+    /// mail (RFC 7505).
+    pub exchange: String,
+}
+
 /// The name lookups discovery needs. Behind a trait so the tests answer from a table and never
 /// ask a real DNS server; the core uses [`SystemResolver`].
 ///
@@ -125,6 +141,10 @@ pub trait Resolver: Send + Sync {
     fn srv<'a>(&'a self, name: &'a str) -> Lookup<'a, SrvRecord>;
     /// The TXT records of `name`, each as one string (its pieces joined).
     fn txt<'a>(&'a self, name: &'a str) -> Lookup<'a, String>;
+    /// The MX records of `name` (`example.org`), in any order; the caller sorts them by
+    /// preference. Mail discovery (task M2.2) only reads the host names, it never connects to
+    /// them.
+    fn mx<'a>(&'a self, name: &'a str) -> Lookup<'a, MxRecord>;
     /// The IPv4 and IPv6 addresses of `host`. The HTTP requests of discovery resolve through
     /// this too, after [`is_public`] (or the test's rule) checked every address.
     fn ips<'a>(&'a self, host: &'a str) -> Lookup<'a, IpAddr>;
@@ -194,6 +214,23 @@ impl Resolver for SystemResolver {
         })
     }
 
+    fn mx<'a>(&'a self, name: &'a str) -> Lookup<'a, MxRecord> {
+        Box::pin(async move {
+            match self.dns()?.mx_lookup(format!("{name}.")).await {
+                Ok(lookup) => Ok(lookup
+                    .answers()
+                    .iter()
+                    .filter_map(|record| match &record.data {
+                        RData::MX(mx) => Some(MxRecord { preference: mx.preference, exchange: mx.exchange.to_ascii() }),
+                        _ => None,
+                    })
+                    .collect()),
+                Err(err) if err.is_no_records_found() => Ok(Vec::new()),
+                Err(_) => Err(ProviderError::Offline),
+            }
+        })
+    }
+
     fn ips<'a>(&'a self, host: &'a str) -> Lookup<'a, IpAddr> {
         Box::pin(async move {
             match tokio::net::lookup_host((host, 0)).await {
@@ -215,6 +252,10 @@ impl Resolver for NoDns {
     }
 
     fn txt<'a>(&'a self, _name: &'a str) -> Lookup<'a, String> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn mx<'a>(&'a self, _name: &'a str) -> Lookup<'a, MxRecord> {
         Box::pin(async { Ok(Vec::new()) })
     }
 
@@ -285,8 +326,10 @@ const LOCAL_NAMES: &[&str] =
 
 /// `name` as a lowercase ASCII domain with at least two labels, or `None`: IP addresses (also
 /// the odd IPv4 forms like `0x7f.1`), ports, paths, user names, special-use names
-/// ([`LOCAL_NAMES`]) and anything a host name cannot hold are refused.
-fn checked_domain(name: &str) -> Option<String> {
+/// ([`LOCAL_NAMES`]), names longer than 253 characters and anything a host name cannot hold are
+/// refused. A final dot is dropped. For every host name discovery is handed by DNS or a server
+/// (SRV and MX targets, hosts in autoconfig documents) before it is asked or passed on.
+pub fn checked_domain(name: &str) -> Option<String> {
     let name = name.trim().trim_end_matches('.');
     let odd = |c: char| c.is_whitespace() || matches!(c, '/' | '\\' | ':' | '@' | '[' | ']' | '?' | '#' | '%');
     if name.is_empty() || name.len() > 253 || name.contains(odd) {
@@ -456,10 +499,20 @@ impl Web {
 }
 
 /// The DNS of discovery's HTTP client: the [`Resolver`], with every name refused that has an
-/// address `allowed` refuses. reqwest connects only to what this returns.
-struct GuardedDns {
+/// address `allowed` refuses. reqwest connects only to what this returns
+/// (`ClientBuilder::dns_resolver`); together with `no_proxy()` a name cannot resolve one way for
+/// the check and another way for the connection.
+pub struct GuardedDns {
     resolver: Arc<dyn Resolver>,
     allowed: fn(IpAddr) -> bool,
+}
+
+impl GuardedDns {
+    /// Names resolved through `resolver`, refused unless every address passes `allowed`
+    /// ([`is_public`] outside tests).
+    pub fn new(resolver: Arc<dyn Resolver>, allowed: fn(IpAddr) -> bool) -> GuardedDns {
+        GuardedDns { resolver, allowed }
+    }
 }
 
 impl Resolve for GuardedDns {
@@ -521,7 +574,7 @@ impl Discoverer {
                 attempt.error("a redirect to an address discovery does not follow")
             }
         });
-        let guarded = GuardedDns { resolver: Arc::clone(&resolver), allowed: web.allowed };
+        let guarded = GuardedDns::new(Arc::clone(&resolver), web.allowed);
         let http = reqwest::Client::builder()
             // No device name here: discovery asks servers that are not the user's yet.
             .user_agent("Torro Workplace")
@@ -709,6 +762,7 @@ mod tests {
         srv: HashMap<String, Vec<SrvRecord>>,
         txt: HashMap<String, Vec<String>>,
         ips: HashMap<String, Vec<IpAddr>>,
+        mx: HashMap<String, Vec<MxRecord>>,
         /// Every lookup fails, as without network.
         offline: bool,
         asked: Mutex<Vec<String>>,
@@ -750,6 +804,10 @@ mod tests {
 
         fn txt<'a>(&'a self, name: &'a str) -> Lookup<'a, String> {
             Box::pin(async move { self.answer(&self.txt, name) })
+        }
+
+        fn mx<'a>(&'a self, name: &'a str) -> Lookup<'a, MxRecord> {
+            Box::pin(async move { self.answer(&self.mx, name) })
         }
 
         fn ips<'a>(&'a self, host: &'a str) -> Lookup<'a, IpAddr> {

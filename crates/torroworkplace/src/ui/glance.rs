@@ -178,6 +178,7 @@ mod tests {
             state,
             collections: Vec::new(),
             scopes: None,
+            mail: None,
         }
     }
 

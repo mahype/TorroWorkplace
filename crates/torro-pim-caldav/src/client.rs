@@ -11,10 +11,17 @@
 //!
 //! The password comes in as a [`Secret`] and never shows in `Debug` (task M7.1): a client sits in
 //! the core's account state, which may be printed while debugging.
+//!
+//! A sign-in to a host the core checked first connects to the checked addresses only
+//! ([`CalDavClient::pinned`], task M2.7b), so the name cannot point elsewhere for the connection.
 
 use std::fmt;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::{Method, StatusCode, Url};
 use torro_core::account::Secret;
 use torro_pim::{Collection, CollectionKind, Event, ProviderError, Todo};
@@ -57,6 +64,25 @@ impl fmt::Debug for CalDavClient {
     }
 }
 
+/// The DNS of a [`CalDavClient::pinned`] client: its one host name resolves to the addresses the
+/// core checked, every other name to nothing.
+struct PinnedDns {
+    /// As the account URL writes it (lowercase; an IPv6 literal in brackets is never asked).
+    host: String,
+    addresses: Vec<SocketAddr>,
+}
+
+impl Resolve for PinnedDns {
+    fn resolve(&self, name: Name) -> Resolving {
+        let found = name.as_str().eq_ignore_ascii_case(&self.host).then(|| self.addresses.clone());
+        Box::pin(async move {
+            let addresses = found.ok_or("refused: not the checked host of this sign-in")?;
+            let addresses: Addrs = Box::new(addresses.into_iter());
+            Ok(addresses)
+        })
+    }
+}
+
 /// What a CalDAV account offers, as its collections show it (task M7.1): calendars (events,
 /// VEVENT) and task lists (VTODO). A collection that names neither or both counts for both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,6 +109,33 @@ impl CalDavClient {
     pub fn new(http: reqwest::Client, account: &CalDavAccount, password: Secret) -> Result<Self, ProviderError> {
         let base = Url::parse(&account.url).map_err(|err| ProviderError::Other(format!("{}: {err}", account.url)))?;
         Ok(CalDavClient { http, base, username: account.username.clone(), password: password.expose().to_string() })
+    }
+
+    /// A client for `account` that connects to `addresses` only (task M2.7b), for signing in to
+    /// a server whose host was just checked: the core resolves the host, makes sure every address
+    /// is on the public internet and hands over exactly those, so a name that answers differently
+    /// the second time (DNS rebinding) never gets the password. The host name stays what TLS
+    /// checks the certificate against; the port comes from the account URL.
+    ///
+    /// It has its own HTTP client: no proxy (a proxy would resolve the name itself), and every
+    /// other host name fails to resolve ([`PinnedDns`]), so not even a redirect leaves the
+    /// checked addresses. Short-lived: meant for one sign-in, not for the account's sync. Fails
+    /// for an account URL that does not parse, one without a host, and an empty `addresses`.
+    pub fn pinned(account: &CalDavAccount, password: Secret, addresses: &[SocketAddr]) -> Result<Self, ProviderError> {
+        let base = Url::parse(&account.url).map_err(|err| ProviderError::Other(format!("{}: {err}", account.url)))?;
+        let host = base.host_str().ok_or_else(|| ProviderError::Other(format!("{} has no host", account.url)))?;
+        if addresses.is_empty() {
+            return Err(ProviderError::Other(format!("no address to connect to for {host}")));
+        }
+        let dns = PinnedDns { host: host.to_string(), addresses: addresses.to_vec() };
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .dns_resolver(Arc::new(dns))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|err| ProviderError::Other(err.to_string()))?;
+        CalDavClient::new(http, account, password)
     }
 
     /// Signs in and reports what the account offers (task M7.1): asks for the
@@ -417,6 +470,39 @@ mod tests {
     use super::*;
 
     const COLLECTION: &str = "https://cloud.example.org/remote.php/dav/calendars/anna/personal/";
+
+    /// Task M2.7b: a pinned client asks the checked address under the host's name (which never
+    /// resolves: `.invalid`), and follows no redirect to another name.
+    #[tokio::test]
+    async fn a_pinned_client_reaches_only_the_checked_address() {
+        let server = httpmock::MockServer::start_async().await;
+        let port = server.port();
+        let asked = server
+            .mock_async(|when, then| {
+                when.path("/dav/").header("host", format!("caldav.invalid:{port}"));
+                then.status(401);
+            })
+            .await;
+        let away = server
+            .mock_async(|when, then| {
+                when.path("/moved/");
+                then.status(302).header("Location", format!("http://elsewhere.invalid:{port}/dav/"));
+            })
+            .await;
+        let checked = [SocketAddr::from(([127, 0, 0, 1], port))];
+        let account =
+            |path: &str| CalDavAccount { url: format!("http://caldav.invalid:{port}{path}"), username: "anna".into() };
+
+        let client = CalDavClient::pinned(&account("/dav/"), Secret::new("secret"), &checked).expect("client");
+        assert!(matches!(client.services().await, Err(ProviderError::Auth)), "the server was asked");
+        assert_eq!(asked.calls_async().await, 1);
+        assert!(!format!("{client:?}").contains("secret"));
+
+        let moved = CalDavClient::pinned(&account("/moved/"), Secret::new("secret"), &checked).expect("client");
+        assert!(moved.services().await.is_err());
+        assert_eq!((away.calls_async().await, asked.calls_async().await), (1, 1), "the redirect went nowhere");
+        assert!(CalDavClient::pinned(&account("/dav/"), Secret::new("secret"), &[]).is_err());
+    }
 
     #[test]
     fn events_get_href_and_etag_from_their_response() {

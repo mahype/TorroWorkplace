@@ -1,0 +1,47 @@
+From: =?UTF-8?Q?J=C3=BCrgen_M=C3=BCller?= <juergen@example.de>
+To: anna@example.org
+Reply-To: team@example.de
+Subject: Unterlagen
+Date: Wed, 14 Oct 2026 12:00:00 +0200
+Message-ID: <docs-2@example.de>
+In-Reply-To: <docs-1@example.org>
+References: <docs-0@example.de> <docs-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: multipart/related; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hallo Anna,
+
+anbei die Präsentation.
+
+--inner
+Content-Type: image/png
+Content-ID: <logo@example.de>
+Content-Disposition: inline
+Content-Transfer-Encoding: base64
+
+iVBORw0KGgo=
+
+--inner--
+
+--outer
+Content-Type: application/pdf
+Content-Disposition: attachment; filename*=UTF-8''Pr%C3%A4sentation.pdf
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJcOkw7zDtsOfCg==
+
+--outer
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="invoice‮fdp.exe"
+Content-Transfer-Encoding: base64
+
+TVo=
+
+--outer--

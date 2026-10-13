@@ -270,6 +270,9 @@ freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
    „with approval“ in allen Vorlagen. `Rights`, `Area` und `AccountKind` werden dafür erweitert
    (freigegeben).
 6. **Lesen für Agenten** ja/nein je Konto (Stufe im Bereich Mail), ohne „nur Kopfzeilen“.
-7. **Bibliotheken:** `async-imap` (tokio), `mail-parser`, `mail-builder`, `lettre`, alles über rustls.
+7. **Bibliotheken:** `mail-parser`, `mail-builder`, `lettre`, alles über rustls. **IMAP** ist eine eigene,
+   kleine Schicht auf tokio und rustls (entschieden 2026-10-12 nach M2.3): `async-imap` kann `XLIST` und
+   `NAMESPACE` nicht lesen, liefert Antwortcodes wie `[AUTHENTICATIONFAILED]` nur als Text und kann in IDLE
+   abstürzen.
 
 Aufgaben: [tasks/mail.md](tasks/mail.md) (M2–M5, E4).

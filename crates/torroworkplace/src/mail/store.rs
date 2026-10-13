@@ -107,6 +107,7 @@ CREATE TABLE drafts (
 /// drafts, so the core remembers the author of each one. A draft nobody registered (written in
 /// another mail program) belongs to the person: [`MailStore::draft_author`] gives `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "used from drafts, task M3.2")]
 pub enum DraftAuthor {
     /// The person, through the app key (Inbox app, control centre).
     App,
@@ -114,6 +115,7 @@ pub enum DraftAuthor {
     Client(String),
 }
 
+#[allow(dead_code, reason = "used from drafts, task M3.2")]
 impl DraftAuthor {
     fn to_column(&self) -> String {
         match self {
@@ -264,19 +266,50 @@ impl MailStore {
 
     /// Deletes the store of `account`: its file and the `-wal`/`-shm` files. Close the store first
     /// (drop it). Nothing there is nothing to do. Called when the account is removed.
+    #[allow(dead_code, reason = "used from accounts.remove_account, task M2.7")]
     pub fn remove(dirs: &MailDirs, account: &str) -> Result<(), MailStoreError> {
-        let path = file_for(dirs, account);
-        for file in [path.clone(), side_file(&path, "-wal"), side_file(&path, "-shm")] {
-            match std::fs::remove_file(&file) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err.into()),
+        remove_files(&file_for(dirs, account))
+    }
+
+    /// Deletes the stores in `dirs.data` that belong to none of `accounts` (`mail:<address>`),
+    /// each with `-wal` and `-shm`; returns how many stores went. A store whose account was
+    /// removed while Windows still kept its file open stays behind; this clean-up, run at start and
+    /// every hour, deletes it later. Other files in the folder are left alone, and so is a store
+    /// changed less than `min_age` ago: one connected just now may not be in `accounts` yet.
+    pub fn remove_unknown(
+        dirs: &MailDirs,
+        accounts: &[String],
+        min_age: std::time::Duration,
+    ) -> Result<usize, MailStoreError> {
+        let known: Vec<PathBuf> = accounts.iter().map(|account| file_for(dirs, account)).collect();
+        let entries = match std::fs::read_dir(&dirs.data) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(err.into()),
+        };
+        let mut removed = 0;
+        for entry in entries {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+            // The store itself, or a `-wal`/`-shm` left without it.
+            let Some(stem) =
+                ["", "-wal", "-shm"].iter().find_map(|suffix| name.strip_suffix(&format!(".sqlite{suffix}")))
+            else {
+                continue;
+            };
+            let store = dirs.data.join(format!("{stem}.sqlite"));
+            if known.contains(&store) || !path.is_file() || changed_within(&path, min_age) {
+                continue;
+            }
+            if remove_files(&store).is_ok() && name.ends_with(".sqlite") {
+                removed += 1;
             }
         }
-        Ok(())
+        Ok(removed)
     }
 
     /// The account this store belongs to (`mail:<address>`).
+    #[allow(dead_code, reason = "used from the mail commands, task M3.1")]
     pub fn account(&self) -> &str {
         &self.account
     }
@@ -339,12 +372,14 @@ impl MailStore {
     }
 
     /// One folder by id.
+    #[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
     pub fn folder(&self, id: &str) -> Result<Option<Folder>, MailStoreError> {
         let sql = format!("{FOLDER_SELECT} WHERE f.id = ?1");
         Ok(self.db.query_row(&sql, [id], |row| folder_from_row(&self.account, row)).optional()?)
     }
 
     /// The folder with this role, if the account has one.
+    #[allow(dead_code, reason = "used from mail.move_messages, task M3.2")]
     pub fn folder_by_role(&self, role: Role) -> Result<Option<Folder>, MailStoreError> {
         let sql = format!("{FOLDER_SELECT} WHERE f.role = ?1 ORDER BY f.path LIMIT 1");
         Ok(self.db.query_row(&sql, [role_name(role)], |row| folder_from_row(&self.account, row)).optional()?)
@@ -449,6 +484,7 @@ impl MailStore {
     }
 
     /// Sets the flags of a message to exactly `flags`. `false`: no such message.
+    #[allow(dead_code, reason = "used from mail.set_flags, task M3.2")]
     pub fn set_flags(&self, id: &str, flags: &[Flag]) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("UPDATE messages SET flags = ?2 WHERE id = ?1", params![id, flag_bits(flags)])? > 0)
     }
@@ -500,6 +536,7 @@ impl MailStore {
     /// Moves a message to another folder under its UID there; the id stays (a client may hold on
     /// to it). `uidvalidity` is the target folder's, as for [`upsert_message`](Self::upsert_message).
     /// `false`: no such message.
+    #[allow(dead_code, reason = "used from mail.move_messages and drafts, task M3.2")]
     pub fn relocate_message(&self, id: &str, folder: &str, uidvalidity: u32, uid: u32) -> Result<bool, MailStoreError> {
         self.check_uidvalidity(folder, uidvalidity)?;
         // A row already at the target UID would be a leftover of an older sync; the moved
@@ -514,6 +551,7 @@ impl MailStore {
 
     /// Removes one message with its text and index entry (`false`: no such message). A draft's
     /// author stays until [`forget_draft`](Self::forget_draft).
+    #[allow(dead_code, reason = "used from mail.delete_messages, task M3.2")]
     pub fn delete_message(&self, id: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("DELETE FROM messages WHERE id = ?1", [id])? > 0)
     }
@@ -610,6 +648,7 @@ impl MailStore {
     }
 
     /// The messages of a folder, newest first; `limit` and `offset` page through them.
+    #[allow(dead_code, reason = "used from mail.search_messages, task M3.1")]
     pub fn list_messages(&self, folder: &str, limit: u32, offset: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
         let query = SearchQuery { folder: Some(folder.to_string()), ..SearchQuery::default() };
         self.search(&query, limit, offset)
@@ -657,10 +696,23 @@ impl MailStore {
 
     /// All messages of a conversation (any folder), oldest first. The thread of a message is
     /// `summary(id)?.thread_id`.
+    #[allow(dead_code, reason = "used from mail.get_thread, task M3.1")]
     pub fn thread(&self, thread_id: &str) -> Result<Vec<MessageSummary>, MailStoreError> {
         let sql = format!("SELECT {SUMMARY_COLUMNS} FROM messages m WHERE m.thread_id = ?1 ORDER BY m.date, m.seq");
         let mut statement = self.db.prepare(&sql)?;
         let rows = statement.query_map([thread_id], |row| summary_from_row(&self.account, row))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The newest `limit` messages of a conversation (any folder), oldest first: a thread a sender
+    /// made up to be huge stays bounded (`mail.get_thread`, task M3.1).
+    pub fn thread_newest(&self, thread_id: &str, limit: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
+        let sql = format!(
+            "SELECT * FROM (SELECT {SUMMARY_COLUMNS}, m.seq AS seq_order FROM messages m WHERE m.thread_id = ?1
+             ORDER BY m.date DESC, m.seq DESC LIMIT ?2) ORDER BY date, seq_order"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(params![thread_id, limit], |row| summary_from_row(&self.account, row))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -669,6 +721,7 @@ impl MailStore {
     /// Reserves the id of a new draft and remembers its `author`. The id is a message id: build
     /// the message in the drafts folder with [`NewMessage::id`] set to it. To replace a draft,
     /// [`relocate_message`](Self::relocate_message) it to its new UID so the id stays.
+    #[allow(dead_code, reason = "used from drafts, task M3.2")]
     pub fn new_draft_id(&self, author: &DraftAuthor) -> Result<String, MailStoreError> {
         let id = self.fresh_id("m:", "messages")?;
         self.db.execute(
@@ -680,6 +733,7 @@ impl MailStore {
 
     /// Who wrote the draft. `None`: nobody registered it, so it is the person's (written in
     /// another program) and a client key may not touch it (`not-found`).
+    #[allow(dead_code, reason = "used from drafts, task M3.2")]
     pub fn draft_author(&self, id: &str) -> Result<Option<DraftAuthor>, MailStoreError> {
         let author: Option<String> =
             self.db.query_row("SELECT author FROM drafts WHERE id = ?1", [id], |row| row.get(0)).optional()?;
@@ -687,6 +741,7 @@ impl MailStore {
     }
 
     /// Forgets the author of a draft that was sent or deleted. `false`: it was not registered.
+    #[allow(dead_code, reason = "used from drafts, task M3.2")]
     pub fn forget_draft(&self, id: &str) -> Result<bool, MailStoreError> {
         Ok(self.db.execute("DELETE FROM drafts WHERE id = ?1", [id])? > 0)
     }
@@ -723,6 +778,33 @@ impl MailStore {
 fn file_for(dirs: &MailDirs, account: &str) -> PathBuf {
     let hash: String = Sha256::digest(account.as_bytes()).iter().take(16).map(|byte| format!("{byte:02x}")).collect();
     dirs.data.join(format!("{hash}.sqlite"))
+}
+
+/// `path` was changed less than `age` ago (or its age cannot be told, which counts as recent).
+fn changed_within(path: &Path, age: std::time::Duration) -> bool {
+    let modified = std::fs::metadata(path).and_then(|meta| meta.modified());
+    modified.map_or(true, |at| at.elapsed().map_or(true, |elapsed| elapsed < age))
+}
+
+/// Deletes the store `path` with its `-wal` and `-shm`; a missing file is no error. On Windows a
+/// file someone still has open (or a virus scanner looks into just after it was closed) cannot be
+/// deleted: tried again for up to two seconds before giving up.
+fn remove_files(path: &Path) -> Result<(), MailStoreError> {
+    for file in [path.to_path_buf(), side_file(path, "-wal"), side_file(path, "-shm")] {
+        let mut tries = 0;
+        loop {
+            match std::fs::remove_file(&file) {
+                Ok(()) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) if cfg!(windows) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn side_file(path: &Path, suffix: &str) -> PathBuf {
@@ -1361,6 +1443,23 @@ mod tests {
     }
 
     #[test]
+    fn a_bounded_thread_keeps_its_newest_messages_oldest_first() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", None);
+        let ids: Vec<String> = [1, 5, 9]
+            .into_iter()
+            .map(|day| {
+                let mut new = message(day, &format!("Day {day}"));
+                new.thread_id = "long".into();
+                add(&store, &inbox, &new)
+            })
+            .collect();
+        let newest = store.thread_newest("long", 2).expect("thread");
+        assert_eq!(newest.iter().map(|m| m.id.clone()).collect::<Vec<_>>(), [ids[1].clone(), ids[2].clone()]);
+        assert_eq!(store.thread_newest("long", 100).expect("thread").len(), 3);
+    }
+
+    #[test]
     fn drafts_remember_their_author_and_unknown_ones_belong_to_the_person() {
         let (_tmp, _dirs, store) = open();
         let drafts = folder(&store, "Drafts", Some(Role::Drafts));
@@ -1420,6 +1519,40 @@ mod tests {
         // A new store for the removed account starts empty.
         let fresh = MailStore::open(&dirs, ACCOUNT).expect("again");
         assert!(fresh.folders().expect("folders").is_empty());
+    }
+
+    #[test]
+    fn stores_of_unknown_accounts_are_cleaned_up_and_nothing_else() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dirs = MailDirs::new(tmp.path(), tmp.path());
+        drop(MailStore::open(&dirs, ACCOUNT).expect("anna"));
+        drop(MailStore::open(&dirs, "mail:bob@example.org").expect("bob"));
+        let gone = file_for(&dirs, "mail:bob@example.org");
+        std::fs::write(side_file(&gone, "-wal"), b"x").expect("a wal left behind");
+        std::fs::write(dirs.data.join("notes.txt"), b"x").expect("another file");
+        std::fs::create_dir_all(dirs.data.join("send-journal")).expect("a folder");
+
+        assert_eq!(
+            MailStore::remove_unknown(&dirs, &[ACCOUNT.to_string()], std::time::Duration::ZERO).expect("cleaned"),
+            1
+        );
+        assert!(file_for(&dirs, ACCOUNT).exists(), "a known account keeps its store");
+        assert!(!gone.exists() && !side_file(&gone, "-wal").exists(), "the unknown one goes with its wal");
+        assert!(dirs.data.join("notes.txt").exists() && dirs.data.join("send-journal").exists());
+        assert_eq!(
+            MailStore::remove_unknown(&dirs, &[ACCOUNT.to_string()], std::time::Duration::ZERO).expect("again"),
+            0
+        );
+        let none = MailDirs::new(&tmp.path().join("missing"), tmp.path());
+        assert_eq!(
+            MailStore::remove_unknown(&none, &[], std::time::Duration::ZERO).expect("no folder, nothing to do"),
+            0
+        );
+        // A store changed just now stays: its account may be connecting at this moment.
+        drop(MailStore::open(&dirs, "mail:carla@example.org").expect("carla"));
+        let fresh = file_for(&dirs, "mail:carla@example.org");
+        assert_eq!(MailStore::remove_unknown(&dirs, &[], std::time::Duration::from_secs(3600)).expect("young"), 0);
+        assert!(fresh.exists());
     }
 
     #[cfg(unix)]

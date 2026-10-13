@@ -16,6 +16,13 @@
 //!   the core itself with all rights, like the tray. A click on the popup opens `torroinbox`
 //!   (`apps.open_app`); jumping to the entry would need a way to tell the running app, which does
 //!   not exist yet.
+//! - **Mail** (task E4.4): a new mail entry in "For me" has the buttons "Archive" (`mail.move_messages`
+//!   to the account's archive) and "Mark read" (`mail.set_flags`, `seen`) instead, applied to every
+//!   message of the entry's conversation; the feed (task E4.1) then finishes the entry by itself.
+//!   Mail arriving within [`MAIL_SETTLE`] of each other is collected and shown as **one** popup
+//!   ("3 new messages from Anna, Ben, Chris", [`Popup::MailBundle`]); a single mail shows as itself.
+//!   Subject and sender are foreign text: put on one line, cut, and without `<` and `>` ([`foreign_line`]),
+//!   so no server reads a link or markup out of them.
 //! - **Urgent ones** (an agent waits, an approval) come with critical urgency and a sound; the
 //!   others ask the notification server to stay silent.
 //! - **No floods:** at most [`BUNDLE_AFTER`] popups within [`BUNDLE_WITHIN`]. When more arrive,
@@ -39,8 +46,10 @@ use std::time::Duration;
 use chrono::{DateTime, TimeDelta, Utc};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_inbox::{Item, Kind, Lane, State};
+use torro_inbox::{Item, Kind, Lane, Link, SourceKind, State};
+use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_ipc::{Request, Response};
+use torro_mail::Flag;
 use torro_pim::{Event, EventTime};
 
 use crate::core::Core;
@@ -61,6 +70,25 @@ const TICK: Duration = Duration::from_secs(15);
 /// A burst of changes (a hook reporting twice, a merge) settles this long before the core looks.
 const SETTLE: Duration = Duration::from_millis(300);
 
+/// New mail waits this long for more to follow, so a handful arriving one after the other is one
+/// popup ("3 new messages from …") instead of a flood. Counted from the first of them.
+pub const MAIL_SETTLE: TimeDelta = TimeDelta::seconds(8);
+
+/// How often the core looks again while mail is collected, so [`MAIL_SETTLE`] ends on time.
+const MAIL_TICK: Duration = Duration::from_secs(2);
+
+/// The longest subject of a mail popup, in characters.
+const MAIL_SUBJECT_MAX: usize = 100;
+
+/// The longest sender name in a mail popup, in characters.
+const MAIL_SENDER_MAX: usize = 40;
+
+/// How many sender names a summary of several mails lists; more are counted ("and 2 more").
+const SENDERS_SHOWN: usize = 3;
+
+/// `mail.set_flags` and `mail.move_messages` take at most this many messages.
+const MAIL_IDS_MAX: usize = 100;
+
 /// How long the core listens for the buttons of one popup; then it closes it. The entry stays in
 /// the inbox.
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -79,6 +107,10 @@ pub struct EntryPopup {
     /// Who reported it: the sender if the source names one, and the source.
     pub source: String,
     pub urgent: bool,
+    /// For a mail entry the messages "Archive" and "Mark read" act on (`m:…`): the newest one
+    /// from the entry, all of its conversation once the core looked them up ([`run`]). Empty for
+    /// every other entry.
+    pub mail: Vec<String>,
 }
 
 /// What to put on the desktop.
@@ -88,6 +120,10 @@ pub enum Popup {
     Entry(EntryPopup),
     /// Several entries at once: "{n} new for you". Urgent when one of them is.
     Bundle { count: usize, urgent: bool },
+    /// Several new mail entries that came within [`MAIL_SETTLE`]: "{n} new messages from …". Has no
+    /// buttons, the messages are in the inbox. `senders` are the distinct names (cleaned, cut), newest
+    /// first; it is empty when none of the mails names a sender.
+    MailBundle { count: usize, senders: Vec<String> },
     /// After a busy event: how many entries held back during it are still open, and the event's
     /// title when quiet spanned only one event.
     AfterQuiet { count: usize, event: Option<String> },
@@ -101,6 +137,12 @@ impl Popup {
         match self {
             Popup::Entry(entry) => (entry.title.clone(), entry.source.clone()),
             Popup::Bundle { count, .. } => (trf("{n} new for you", &[("n", count)]), see()),
+            Popup::MailBundle { count, senders } if senders.is_empty() => {
+                (trf("{n} new for you", &[("n", count)]), see())
+            }
+            Popup::MailBundle { count, senders } => {
+                (trf("{n} new messages from {senders}", &[("n", count), ("senders", &sender_list(senders))]), see())
+            }
             Popup::AfterQuiet { count, event: Some(event) } if !event.trim().is_empty() => {
                 let event = crate::inbox::cap(event.trim(), EVENT_TITLE_MAX);
                 (trf("While you were in “{event}”: {n} for you", &[("event", &event), ("n", count)]), see())
@@ -117,7 +159,7 @@ impl Popup {
         match self {
             Popup::Entry(entry) => entry.urgent,
             Popup::Bundle { urgent, .. } => *urgent,
-            Popup::AfterQuiet { .. } => false,
+            Popup::MailBundle { .. } | Popup::AfterQuiet { .. } => false,
         }
     }
 
@@ -125,8 +167,27 @@ impl Popup {
     pub fn entry(&self) -> Option<&str> {
         match self {
             Popup::Entry(entry) => Some(&entry.id),
-            Popup::Bundle { .. } | Popup::AfterQuiet { .. } => None,
+            Popup::Bundle { .. } | Popup::MailBundle { .. } | Popup::AfterQuiet { .. } => None,
         }
+    }
+
+    /// The messages "Archive" and "Mark read" act on: set for a popup of one mail entry, `None`
+    /// for everything else (which gets "Done" and "Snooze 1 h", or no buttons).
+    pub fn messages(&self) -> Option<&[String]> {
+        match self {
+            Popup::Entry(entry) if !entry.mail.is_empty() => Some(&entry.mail),
+            _ => None,
+        }
+    }
+}
+
+/// The names of `senders` for a summary: the first [`SENDERS_SHOWN`] separated by commas, the rest
+/// counted.
+fn sender_list(senders: &[String]) -> String {
+    let shown = senders.iter().take(SENDERS_SHOWN).cloned().collect::<Vec<_>>().join(", ");
+    match senders.len().saturating_sub(SENDERS_SHOWN) {
+        0 => shown,
+        more => trf("{names} and {n} more", &[("names", &shown), ("n", &more)]),
     }
 }
 
@@ -141,13 +202,21 @@ pub enum Answer {
     Snooze,
     /// A click on the popup itself.
     Open,
+    /// "Archive", on a mail.
+    Archive,
+    /// "Mark read", on a mail.
+    MarkRead,
 }
 
 /// The request `answer` to `popup` sends at `now`: "Done" marks the entry done, "Snooze 1 h" puts
-/// it off until `now` + [`SNOOZE_FOR`], a click opens the inbox app. `None` for buttons a popup
-/// does not have ("Done" on a summary).
+/// it off until `now` + [`SNOOZE_FOR`], a click opens the inbox app. On a mail "Archive" moves its
+/// messages to the account's archive and "Mark read" sets `seen` on them. `None` for buttons a
+/// popup does not have ("Done" on a summary, "Archive" on anything but a mail).
 pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Request> {
+    let messages = || popup.messages().map(|ids| ids.iter().take(MAIL_IDS_MAX).cloned().collect::<Vec<_>>());
     match answer {
+        Answer::Archive => Some(Request::MoveMail { ids: messages()?, to: MoveTarget::Role(MoveRole::Archive) }),
+        Answer::MarkRead => Some(Request::SetMailFlags { ids: messages()?, add: vec![Flag::Seen], remove: Vec::new() }),
         Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true }),
         Answer::Snooze => Some(Request::SnoozeItem { id: popup.entry()?.to_string(), until: Some(now + SNOOZE_FOR) }),
         Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string() }),
@@ -180,6 +249,19 @@ pub struct Popups {
     held: Vec<EntryPopup>,
     /// The entries quiet held back, while a busy event runs.
     quiet: Option<Spell>,
+    /// New mail collected for [`MAIL_SETTLE`], oldest first (task E4.4).
+    mail: Vec<MailArrival>,
+}
+
+/// One new mail entry waiting for more mail to come with it.
+#[derive(Debug)]
+struct MailArrival {
+    entry: EntryPopup,
+    /// The sender's name, cleaned and cut; `None` when the mail names none.
+    sender: Option<String>,
+    /// When it was first seen; a merge into the same entry keeps it, so a steady trickle cannot
+    /// hold the popup back for ever.
+    since: DateTime<Utc>,
 }
 
 /// One stretch of quiet: from the first entry held back until no busy event runs any more.
@@ -201,12 +283,19 @@ impl Popups {
     /// the calendar only then keeps the idle core idle.
     pub fn needs_calendar(&self, open: &[Item]) -> bool {
         let Some(known) = &self.known else { return false };
-        self.quiet.is_some() || open.iter().any(|item| arrived(known, item) && !item.urgent)
+        self.quiet.is_some() || !self.mail.is_empty() || open.iter().any(|item| arrived(known, item) && !item.urgent)
     }
 
-    /// Whether something waits for a later look: popups held back for room, or a quiet spell.
+    /// Whether something waits for a later look: popups held back for room, mail being collected,
+    /// or a quiet spell.
     pub fn waiting(&self) -> bool {
-        !self.held.is_empty() || self.quiet.is_some()
+        !self.held.is_empty() || !self.mail.is_empty() || self.quiet.is_some()
+    }
+
+    /// How long to wait for the next look while [`Popups::waiting`]: shorter while mail is collected,
+    /// so its popup is not late by a whole [`TICK`].
+    fn tick(&self) -> Duration {
+        if self.mail.is_empty() { TICK } else { MAIL_TICK }
     }
 
     /// One look at `now` with `open`, the open entries "for me" (as `Inbox::for_me` lists them),
@@ -223,15 +312,15 @@ impl Popups {
         let mut popups = Vec::new();
         match busy {
             Some(event) => {
+                // Mail collected before the event began is held back with the rest.
+                for arrival in std::mem::take(&mut self.mail) {
+                    self.silence(&arrival.entry.id, event);
+                }
                 for item in arrivals {
                     if item.urgent {
                         self.hold(entry(item));
                     } else {
-                        let spell = self.quiet.get_or_insert_with(Spell::default);
-                        spell.entries.insert(item.id.clone());
-                        if !spell.events.iter().any(|known| known == event) {
-                            spell.events.push(event.to_string());
-                        }
+                        self.silence(&item.id, event);
                     }
                 }
             }
@@ -240,14 +329,68 @@ impl Popups {
                     popups.push(popup);
                 }
                 for item in arrivals {
-                    self.hold(entry(item));
+                    if is_mail(item) {
+                        self.collect(item, now);
+                    } else {
+                        self.hold(entry(item));
+                    }
                 }
             }
         }
         self.make_room(now, popups.len());
         self.held.retain(|held| open.iter().any(|item| item.id == held.id));
+        self.mail.retain(|arrival| open.iter().any(|item| item.id == arrival.entry.id));
+        popups.extend(self.flush_mail(now));
         popups.extend(self.release(now));
         popups
+    }
+
+    /// Holds back the entry `id` for the quiet spell of the busy event `event`.
+    fn silence(&mut self, id: &str, event: &str) {
+        let spell = self.quiet.get_or_insert_with(Spell::default);
+        spell.entries.insert(id.to_string());
+        if !spell.events.iter().any(|known| known == event) {
+            spell.events.push(event.to_string());
+        }
+    }
+
+    /// Collects the new mail `item` for [`Popups::flush_mail`]; a merge into an entry already
+    /// collected replaces it.
+    fn collect(&mut self, item: &Item, now: DateTime<Utc>) {
+        let (entry, sender) = (entry(item), sender_name(item));
+        match self.mail.iter_mut().find(|arrival| arrival.entry.id == entry.id) {
+            Some(arrival) => {
+                arrival.entry = entry;
+                arrival.sender = sender;
+            }
+            None => self.mail.push(MailArrival { entry, sender, since: now }),
+        }
+    }
+
+    /// Ends the collecting of mail once its first has waited [`MAIL_SETTLE`]: one mail is a popup of
+    /// its own (it goes through [`Popups::release`] like any entry), several are one
+    /// [`Popup::MailBundle`] while the minute has room, else they wait and bundle as "for you".
+    fn flush_mail(&mut self, now: DateTime<Utc>) -> Option<Popup> {
+        let first = self.mail.first()?;
+        if now - first.since < MAIL_SETTLE {
+            return None;
+        }
+        let group = std::mem::take(&mut self.mail);
+        let room = BUNDLE_AFTER.saturating_sub(self.shown.len());
+        if group.len() == 1 || room == 0 {
+            for arrival in group {
+                self.hold(arrival.entry);
+            }
+            return None;
+        }
+        let mut senders: Vec<String> = Vec::new();
+        for sender in group.iter().filter_map(|arrival| arrival.sender.as_ref()) {
+            if !senders.contains(sender) {
+                senders.push(sender.clone());
+            }
+        }
+        self.shown.push_back(now);
+        Some(Popup::MailBundle { count: group.len(), senders })
     }
 
     /// Keeps `entry` for the next popup, once: a merge while it waits replaces it.
@@ -306,13 +449,59 @@ fn arrived(known: &HashMap<String, DateTime<Utc>>, item: &Item) -> bool {
         && known.get(&item.id) != Some(&item.updated)
 }
 
-/// The popup of one entry: its title, and who reported it ("Lena · backup").
+/// `item` is mail the feed filed (task E4.1): foreign text, with buttons of its own.
+fn is_mail(item: &Item) -> bool {
+    item.source.kind == SourceKind::Mail && item.kind == Kind::Message
+}
+
+/// `text` from outside for a notification: on one line, without control and direction characters,
+/// `<` and `>` turned into `‹` and `›` (a notification server may read markup, even in a summary),
+/// cut to `max` characters.
+fn foreign_line(text: &str, max: usize) -> String {
+    let direction = |c: char| matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let cleaned: String = text
+        .chars()
+        .map(|c| match c {
+            '<' => '‹',
+            '>' => '›',
+            c if c.is_whitespace() => ' ',
+            c => c,
+        })
+        .filter(|&c| !c.is_control() && !direction(c))
+        .collect();
+    crate::inbox::cap(&cleaned.split_whitespace().collect::<Vec<_>>().join(" "), max)
+}
+
+/// The sender of `item` for a popup: the name, else the address; `None` when it has neither.
+fn sender_name(item: &Item) -> Option<String> {
+    let from = item.from.as_ref()?;
+    let name = foreign_line(&from.name, MAIL_SENDER_MAX);
+    let named =
+        if name.is_empty() { foreign_line(from.address.as_deref().unwrap_or_default(), MAIL_SENDER_MAX) } else { name };
+    (!named.is_empty()).then_some(named)
+}
+
+/// The popup of one entry: its title, and who reported it ("Lena · backup"). Mail is cleaned and
+/// cut ([`foreign_line`]) and carries its message for "Archive" and "Mark read".
 fn entry(item: &Item) -> EntryPopup {
+    if is_mail(item) {
+        let account = item.source.label();
+        let source = match sender_name(item) {
+            Some(sender) => format!("{sender} · {account}"),
+            None => account,
+        };
+        let mail = match &item.link {
+            Some(Link::Mail { message }) => vec![message.clone()],
+            _ => Vec::new(),
+        };
+        let title = foreign_line(&item.title, MAIL_SUBJECT_MAX);
+        return EntryPopup { id: item.id.clone(), title, source, urgent: false, mail };
+    }
     let source = match &item.from {
         Some(from) if !from.name.trim().is_empty() => format!("{} · {}", from.name.trim(), item.source.label()),
         _ => item.source.label(),
     };
-    EntryPopup { id: item.id.clone(), title: item.title.clone(), source, urgent: item.urgent }
+    EntryPopup { id: item.id.clone(), title: item.title.clone(), source, urgent: item.urgent, mail: Vec::new() }
 }
 
 /// The busy event that makes it quiet at `now`, among `events` of the shown calendars: one that
@@ -375,7 +564,9 @@ pub async fn run(core: Arc<Core>, desktop: Arc<dyn Desktop>) {
             Ok(for_me) => {
                 failing = false;
                 let busy = if popups.needs_calendar(&for_me.newest) { busy_title(&core, now).await } else { None };
-                show_all(popups.step(now, &for_me.newest, busy.as_deref()), desktop.as_ref(), &send);
+                let mut shown = popups.step(now, &for_me.newest, busy.as_deref());
+                shown.iter_mut().for_each(|popup| whole_conversation(core.inbox(), popup));
+                show_all(shown, desktop.as_ref(), &send);
             }
             // Logged once per outage; the tray reports the same file.
             Err(err) if !failing => {
@@ -384,7 +575,7 @@ pub async fn run(core: Arc<Core>, desktop: Arc<dyn Desktop>) {
             }
             Err(_) => {}
         }
-        let tick = popups.waiting();
+        let (tick, every) = (popups.waiting(), popups.tick());
         tokio::select! {
             changed = changes.changed() => {
                 if changed.is_err() {
@@ -393,8 +584,20 @@ pub async fn run(core: Arc<Core>, desktop: Arc<dyn Desktop>) {
                 tokio::time::sleep(SETTLE).await;
                 changes.borrow_and_update();
             }
-            () = tokio::time::sleep(TICK), if tick => {}
+            () = tokio::time::sleep(every), if tick => {}
         }
+    }
+}
+
+/// Lets "Archive" and "Mark read" of a mail popup act on every message of its entry (the
+/// conversation), not only the newest. An entry whose messages cannot be read keeps the newest.
+fn whole_conversation(inbox: &crate::inbox::Inbox, popup: &mut Popup) {
+    if let Popup::Entry(entry) = popup
+        && !entry.mail.is_empty()
+        && let Ok(all) = inbox.mail_messages(&entry.id)
+        && !all.is_empty()
+    {
+        entry.mail = all;
     }
 }
 
@@ -443,7 +646,9 @@ async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> not
         .summary(&summary)
         .body(&crate::notify::plain(&body))
         .action("default", tr("Open inbox"));
-    if popup.entry().is_some() {
+    if popup.messages().is_some() {
+        notification.action("archive", tr("Archive")).action("read", tr("Mark read"));
+    } else if popup.entry().is_some() {
         notification.action("done", tr("Done")).action("snooze", tr("Snooze 1 h"));
     }
     if popup.urgent() {
@@ -460,6 +665,8 @@ async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> not
                 "default" => Some(Answer::Open),
                 "done" => Some(Answer::Done),
                 "snooze" => Some(Answer::Snooze),
+                "archive" => Some(Answer::Archive),
+                "read" => Some(Answer::MarkRead),
                 _ => None,
             },
             _ => None,
@@ -724,6 +931,152 @@ mod tests {
         let bundle = Popup::Bundle { count: 4, urgent: false };
         assert_eq!((request(Answer::Done, &bundle, now), request(Answer::Snooze, &bundle, now)), (None, None));
         assert_eq!(request(Answer::Open, &bundle, now), open, "a summary opens the inbox too");
+    }
+
+    /// A new mail entry "for me" from `sender` in `anna@example.org`, updated at `updated`.
+    fn mail(id: &str, sender: &str, updated: DateTime<Utc>) -> Item {
+        Item {
+            source: SourceRef::mail("anna@example.org"),
+            kind: Kind::Message,
+            title: format!("Subject {id}"),
+            from: Some(Sender { name: sender.into(), address: Some(format!("{}@example.com", sender.to_lowercase())) }),
+            link: Some(Link::Mail { message: format!("m:{id}") }),
+            ..item(id, updated)
+        }
+    }
+
+    #[test]
+    fn a_single_mail_waits_for_company_and_then_pops_up_with_its_buttons() {
+        let mut popups = started();
+        let open = [mail("a", "Lena", at(0, 1))];
+        assert_eq!(popups.step(at(0, 1), &open, None), [], "collected, in case more follow");
+        assert!(popups.waiting() && popups.needs_calendar(&open));
+        assert_eq!(popups.tick(), MAIL_TICK);
+        assert_eq!(popups.step(at(0, 8), &open, None), [], "7 s are not enough");
+        let [popup] = popups.step(at(0, 9), &open, None).try_into().expect("one popup");
+        assert_eq!(popup, popup_of(&open[0]));
+        assert_eq!(popup.text(), ("Subject a".to_string(), "Lena · anna@example.org".to_string()));
+        assert_eq!(popup.messages(), Some(["m:a".to_string()].as_slice()), "Archive and Mark read act on it");
+        assert!(!popups.waiting());
+        assert_eq!(popups.tick(), TICK);
+        assert_eq!(popups.step(at(0, 20), &open, None), [], "only once");
+    }
+
+    #[test]
+    fn mail_one_after_the_other_is_one_popup_naming_the_senders() {
+        let mut popups = started();
+        let mut open = vec![mail("a", "Lena", at(0, 1))];
+        assert_eq!(popups.step(at(0, 1), &open, None), []);
+        open.insert(0, mail("b", "Ben", at(0, 4)));
+        assert_eq!(popups.step(at(0, 4), &open, None), []);
+        open.insert(0, mail("c", "Lena", at(0, 7)));
+        assert_eq!(popups.step(at(0, 7), &open, None), []);
+        // The wait counts from the first mail, not from the last.
+        let bundle = Popup::MailBundle { count: 3, senders: vec!["Lena".into(), "Ben".into()] };
+        assert_eq!(popups.step(at(0, 9), &open, None), vec![bundle.clone()]);
+        assert_eq!(
+            bundle.text(),
+            (
+                trf("{n} new messages from {senders}", &[("n", &3), ("senders", &"Lena, Ben")]),
+                tr("Open the inbox to see them.").to_string()
+            )
+        );
+        assert_eq!((bundle.urgent(), bundle.entry(), bundle.messages()), (false, None, None), "no buttons");
+        assert!(!popups.waiting());
+    }
+
+    #[test]
+    fn a_mail_that_was_handled_meanwhile_does_not_pop_up() {
+        let mut popups = started();
+        let (a, b) = (mail("a", "Lena", at(0, 1)), mail("b", "Ben", at(0, 2)));
+        assert_eq!(popups.step(at(0, 2), &[a.clone(), b.clone()], None), []);
+        let [popup] = popups.step(at(0, 10), std::slice::from_ref(&b), None).try_into().expect("b alone");
+        assert_eq!(popup, popup_of(&b), "a was read on the phone: b is a popup of its own");
+        assert_eq!(popups.step(at(0, 11), &[], None), [], "a was read meanwhile");
+        assert!(!popups.waiting());
+    }
+
+    #[test]
+    fn mail_is_quiet_in_a_busy_event_and_counted_afterwards() {
+        let mut popups = started();
+        let (a, b) = (mail("a", "Lena", at(0, 1)), mail("b", "Ben", at(5, 0)));
+        assert_eq!(popups.step(at(0, 1), std::slice::from_ref(&a), None), []);
+        // The event began while the mail was collected: it is held back with the rest.
+        assert_eq!(popups.step(at(0, 3), std::slice::from_ref(&a), Some("Workshop")), []);
+        assert_eq!(popups.step(at(5, 0), &[a.clone(), b.clone()], Some("Workshop")), []);
+        assert_eq!(
+            popups.step(at(30, 0), &[a, b], None),
+            [Popup::AfterQuiet { count: 2, event: Some("Workshop".into()) }]
+        );
+        assert!(!popups.waiting());
+    }
+
+    #[test]
+    fn mail_without_room_in_the_minute_waits_for_room() {
+        let mut popups = started();
+        let mut open: Vec<Item> = ["x", "y", "z"].iter().map(|id| item(id, at(0, 1))).collect();
+        assert_eq!(popups.step(at(0, 1), &open, None).len(), 3, "the minute's room is used up");
+        open.insert(0, mail("a", "Lena", at(0, 2)));
+        open.insert(0, mail("b", "Ben", at(0, 3)));
+        assert_eq!(popups.step(at(0, 3), &open, None), []);
+        assert_eq!(popups.step(at(0, 12), &open, None), [], "no room: they wait, not collected any more");
+        assert_eq!(popups.tick(), TICK);
+        assert_eq!(popups.step(at(1, 5), &open, None), [popup_of(&open[0]), popup_of(&open[1])], "then on their own");
+    }
+
+    #[test]
+    fn mail_texts_are_foreign_text_on_one_line_without_markup() {
+        let nasty = "Pay <a href=\"https://evil.example\">now</a>\n\u{202E}now & then";
+        let item = Item { title: nasty.into(), ..mail("a", "<b>Lena</b>\n", at(0, 1)) };
+        let (summary, body) = popup_of(&item).text();
+        assert_eq!(summary, "Pay ‹a href=\"https://evil.example\"›now‹/a› now & then");
+        assert_eq!(body, "‹b›Lena‹/b› · anna@example.org");
+        let long = Item { title: "x".repeat(300), ..mail("b", &"y".repeat(100), at(0, 1)) };
+        let (summary, body) = popup_of(&long).text();
+        assert_eq!(summary.chars().count(), MAIL_SUBJECT_MAX);
+        assert!(summary.ends_with('…') && body.starts_with(&format!("{}…", "y".repeat(MAIL_SENDER_MAX - 1))));
+        let unnamed = Item { from: Some(Sender { name: " ".into(), address: Some("pat@example.com".into()) }), ..long };
+        assert_eq!(popup_of(&unnamed).text().1, "pat@example.com · anna@example.org");
+        let nobody = Item { from: None, ..item.clone() };
+        assert_eq!(popup_of(&nobody).text().1, "anna@example.org");
+    }
+
+    #[test]
+    fn many_senders_are_counted_after_the_third() {
+        let names: Vec<String> = ["A", "B", "C", "D", "E"].iter().map(ToString::to_string).collect();
+        assert_eq!(sender_list(&names[..3]), "A, B, C");
+        assert_eq!(sender_list(&names), trf("{names} and {n} more", &[("names", &"A, B, C"), ("n", &2)]));
+        let nameless = Popup::MailBundle { count: 4, senders: Vec::new() };
+        assert_eq!(nameless.text().0, trf("{n} new for you", &[("n", &4)]));
+    }
+
+    #[test]
+    fn archive_and_mark_read_act_on_the_messages_of_a_mail() {
+        let mut popup = popup_of(&mail("a", "Lena", at(0, 1)));
+        if let Popup::Entry(entry) = &mut popup {
+            entry.mail = vec!["m:1".into(), "m:2".into()];
+        }
+        let now = at(10, 0);
+        assert_eq!(
+            request(Answer::Archive, &popup, now),
+            Some(Request::MoveMail { ids: vec!["m:1".into(), "m:2".into()], to: MoveTarget::Role(MoveRole::Archive) })
+        );
+        assert_eq!(
+            request(Answer::MarkRead, &popup, now),
+            Some(Request::SetMailFlags {
+                ids: vec!["m:1".into(), "m:2".into()],
+                add: vec![Flag::Seen],
+                remove: vec![]
+            })
+        );
+        // Nothing else has these buttons.
+        let other = popup_of(&item("b", at(0, 1)));
+        let bundle = Popup::MailBundle { count: 2, senders: vec!["Lena".into()] };
+        for popup in [other, bundle] {
+            assert_eq!((request(Answer::Archive, &popup, now), request(Answer::MarkRead, &popup, now)), (None, None));
+        }
+        let open = Some(Request::OpenApp { app: "torroinbox".into() });
+        assert_eq!(request(Answer::Open, &popup, now), open, "a click opens the inbox");
     }
 
     /// Records what it was asked to show and answers each popup with `answer`.

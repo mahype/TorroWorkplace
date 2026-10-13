@@ -123,6 +123,26 @@ pub enum Icon {
     Bug,
     /// Unpin an item from its filter list (task G.3b).
     PinOff,
+    /// A mail account, an unread message, "Mark unread" (task E4.2).
+    Mail,
+    /// A read message, "Mark read".
+    MailOpen,
+    /// Reply to a message.
+    Reply,
+    /// Reply to everyone on a message.
+    ReplyAll,
+    /// Forward a message.
+    Forward,
+    /// Archive a message, the archive folder.
+    Archive,
+    /// Attachments of a message.
+    Paperclip,
+    /// A mail folder without a special role.
+    Folder,
+    /// The sent folder.
+    Send,
+    /// The junk (spam) folder.
+    ShieldAlert,
 }
 
 impl Icon {
@@ -200,6 +220,16 @@ impl Icon {
         Icon::UserCheck,
         Icon::Bug,
         Icon::PinOff,
+        Icon::Mail,
+        Icon::MailOpen,
+        Icon::Reply,
+        Icon::ReplyAll,
+        Icon::Forward,
+        Icon::Archive,
+        Icon::Paperclip,
+        Icon::Folder,
+        Icon::Send,
+        Icon::ShieldAlert,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -287,6 +317,16 @@ impl Icon {
             Icon::UserCheck => include_bytes!("../assets/icons/user-check.svg"),
             Icon::Bug => include_bytes!("../assets/icons/bug.svg"),
             Icon::PinOff => include_bytes!("../assets/icons/pin-off.svg"),
+            Icon::Mail => include_bytes!("../assets/icons/mail.svg"),
+            Icon::MailOpen => include_bytes!("../assets/icons/mail-open.svg"),
+            Icon::Reply => include_bytes!("../assets/icons/reply.svg"),
+            Icon::ReplyAll => include_bytes!("../assets/icons/reply-all.svg"),
+            Icon::Forward => include_bytes!("../assets/icons/forward.svg"),
+            Icon::Archive => include_bytes!("../assets/icons/archive.svg"),
+            Icon::Paperclip => include_bytes!("../assets/icons/paperclip.svg"),
+            Icon::Folder => include_bytes!("../assets/icons/folder.svg"),
+            Icon::Send => include_bytes!("../assets/icons/send.svg"),
+            Icon::ShieldAlert => include_bytes!("../assets/icons/shield-alert.svg"),
         }
     }
 }

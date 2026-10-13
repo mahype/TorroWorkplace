@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use crate::item::{Item, Kind, Lane, Link, SourceKind, State};
+use crate::item::{Item, Kind, Lane, Link, Sender, SourceKind, State};
 
 /// Days a done entry is kept before [`expired`] says it goes.
 pub const KEEP_DONE_DAYS: i64 = 30;
@@ -27,28 +27,55 @@ pub enum Poster {
 
 /// Lane and urgency of an entry of `kind`; `wanted` is the lane the poster asked for.
 ///
-/// Fixed for every kind but [`Kind::Notice`], so nobody can make their entries urgent:
-/// waiting agents and approvals are for me and urgent, finished agents and account problems
-/// for me; a notice goes where it was wanted ([`Lane::Info`] when nothing was asked) and is
-/// never urgent.
+/// Fixed for every kind but [`Kind::Notice`] and [`Kind::Message`], so nobody can make their
+/// entries urgent: waiting agents and approvals are for me and urgent, finished agents and account
+/// problems for me; a notice goes where it was wanted ([`Lane::Info`] when nothing was asked), a
+/// message too ([`Lane::ForMe`] when nothing was asked, the core asks [`mail_lane`]); neither is
+/// ever urgent.
 pub fn placement(kind: Kind, wanted: Option<Lane>) -> (Lane, bool) {
     match kind {
         Kind::AgentWaiting | Kind::Approval => (Lane::ForMe, true),
         Kind::AgentDone | Kind::AccountProblem => (Lane::ForMe, false),
         Kind::Notice => (wanted.unwrap_or(Lane::Info), false),
+        Kind::Message => (wanted.unwrap_or(Lane::ForMe), false),
     }
+}
+
+/// The lane of a new mail (task E4.1, `docs/eingang.md`, "Sortieren"): a lane the person
+/// remembered for its sender (`remembered`, from moving one of its mails with "remember") first,
+/// since the person decided it; else [`Lane::Info`] for mail sent by machines or to lists
+/// (`bulk`: `List-Id`, `List-Unsubscribe`, `Precedence: bulk`, `Auto-Submitted`), else
+/// [`Lane::ForMe`].
+pub fn mail_lane(bulk: bool, remembered: Option<Lane>) -> Lane {
+    remembered.unwrap_or(if bulk { Lane::Info } else { Lane::ForMe })
+}
+
+/// How a lane is kept for a mail's sender ([`crate::Rule::sender`]): the sender's address in small
+/// letters, without surrounding space; `None` without an address.
+pub fn sender_key(from: Option<&Sender>) -> Option<String> {
+    let address = from?.address.as_deref()?.trim().to_lowercase();
+    (!address.is_empty()).then_some(address)
+}
+
+/// The sender a lane is kept for when `item` is moved with "remember" (task E4.1): for an entry of
+/// a mail account its [`sender_key`]; `None` for other entries (their source is remembered) and
+/// for mail without a sender's address (nothing can be remembered).
+pub fn mail_sender(item: &Item) -> Option<String> {
+    (item.source.kind == SourceKind::Mail).then(|| sender_key(item.from.as_ref())).flatten()
 }
 
 /// The kind an entry posted as `kind` by `poster` gets; `None` when the post is refused
 /// (`forbidden`). Security rule 3: approvals and account problems come only from the core,
-/// agent states only from hooks (or the core) and turn into a [`Kind::Notice`] from anyone else.
+/// agent states only from hooks (or the core) and turn into a [`Kind::Notice`] from anyone else;
+/// messages (mail) only from the core, a [`Kind::Notice`] from anyone else.
 pub fn admitted_kind(kind: Kind, poster: Poster) -> Option<Kind> {
     match (kind, poster) {
         (Kind::Approval | Kind::AccountProblem, Poster::Core) => Some(kind),
         (Kind::Approval | Kind::AccountProblem, _) => None,
         (Kind::AgentWaiting | Kind::AgentDone, Poster::Core | Poster::Hook) => Some(kind),
         (Kind::AgentWaiting | Kind::AgentDone, Poster::Client) => Some(Kind::Notice),
-        (Kind::Notice, _) => Some(Kind::Notice),
+        (Kind::Message, Poster::Core) => Some(Kind::Message),
+        (Kind::Message | Kind::Notice, _) => Some(Kind::Notice),
     }
 }
 
@@ -61,14 +88,15 @@ pub fn human_only(item: &Item) -> bool {
 
 /// The entry's link may be opened. Security rule 6: web links only with `http` or `https`,
 /// apps only those `known_app` accepts (the apps of `apps.list_apps` and the control centre),
-/// windows only on entries a hook reported (the agent kinds, which only hooks create).
-/// `false` without a link.
+/// windows only on entries a hook reported (the agent kinds, which only hooks create), messages
+/// only on entries of a mail source (which only the core files). `false` without a link.
 pub fn may_open(item: &Item, known_app: impl Fn(&str) -> bool) -> bool {
     match &item.link {
         None => false,
         Some(Link::Url { url }) => is_web(url),
         Some(Link::App { app }) => known_app(app),
         Some(Link::Window) => matches!(item.kind, Kind::AgentWaiting | Kind::AgentDone),
+        Some(Link::Mail { .. }) => item.source.kind == SourceKind::Mail,
     }
 }
 
@@ -207,6 +235,32 @@ mod tests {
         }
         assert_eq!(placement(Kind::Notice, None), (Lane::Info, false));
         assert_eq!(placement(Kind::Notice, Some(Lane::ForMe)), (Lane::ForMe, false), "never urgent");
+        assert_eq!(placement(Kind::Message, None), (Lane::ForMe, false));
+        assert_eq!(placement(Kind::Message, Some(Lane::Info)), (Lane::Info, false), "never urgent");
+    }
+
+    #[test]
+    fn mail_from_lists_and_machines_is_info_unless_the_person_said_otherwise() {
+        assert_eq!(mail_lane(false, None), Lane::ForMe);
+        assert_eq!(mail_lane(true, None), Lane::Info);
+        assert_eq!(mail_lane(true, Some(Lane::ForMe)), Lane::ForMe, "a remembered sender beats the headers");
+        assert_eq!(mail_lane(false, Some(Lane::Info)), Lane::Info);
+    }
+
+    #[test]
+    fn a_mails_lane_is_kept_for_its_sender_in_small_letters() {
+        let from = |address: Option<&str>| Sender { name: "Shop".into(), address: address.map(String::from) };
+        assert_eq!(sender_key(Some(&from(Some(" News@Shop.Example ")))).as_deref(), Some("news@shop.example"));
+        assert_eq!(sender_key(Some(&from(Some("  ")))), None);
+        assert_eq!(sender_key(Some(&from(None))), None);
+        assert_eq!(sender_key(None), None);
+        let mail = Item {
+            source: SourceRef::mail("anna@example.org"),
+            from: Some(from(Some("News@Shop.example"))),
+            ..item("1", Kind::Message)
+        };
+        assert_eq!(mail_sender(&mail).as_deref(), Some("news@shop.example"));
+        assert_eq!(mail_sender(&Item { from: mail.from.clone(), ..item("2", Kind::Notice) }), None, "not mail");
     }
 
     #[test]
@@ -223,6 +277,10 @@ mod tests {
         }
         for poster in [Poster::Core, Poster::Hook, Poster::Client] {
             assert_eq!(admitted_kind(Kind::Notice, poster), Some(Kind::Notice));
+        }
+        assert_eq!(admitted_kind(Kind::Message, Poster::Core), Some(Kind::Message));
+        for poster in [Poster::Hook, Poster::Client] {
+            assert_eq!(admitted_kind(Kind::Message, poster), Some(Kind::Notice), "only the core files mail");
         }
     }
 
@@ -251,6 +309,10 @@ mod tests {
         assert!(may_open(&with(Kind::AgentDone, Link::Window), known));
         assert!(!may_open(&with(Kind::Notice, Link::Window), known), "window only on hook entries");
         assert!(!may_open(&item("1", Kind::Notice), known), "no link");
+        let message = Link::Mail { message: "m:1".into() };
+        let mail = Item { source: SourceRef::mail("anna@example.org"), ..with(Kind::Message, message.clone()) };
+        assert!(may_open(&mail, known));
+        assert!(!may_open(&with(Kind::Notice, message), known), "a message only on mail entries");
     }
 
     #[test]

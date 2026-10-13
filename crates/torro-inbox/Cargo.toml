@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 torro-core.workspace = true
+torro-mail.workspace = true
 chrono.workspace = true
 schemars.workspace = true
 serde.workspace = true

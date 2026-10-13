@@ -30,6 +30,19 @@
 //! marks the entry done; the hint says in which list. There is no undo: taking the task back
 //! would delete it, and deleting is for the tasks app.
 //!
+//! Mail (task E4.2, `mail.rs`): the sidebar lists the folders of the mail accounts with their
+//! unread numbers – under "Mail" with one account, under each account's address with two or more
+//! (foldable, as the calendars group by account). A folder is a view of its own
+//! ([`View::Folder`]): its messages in the same list, a page at a time ("Load more"), with a search
+//! field above them. The panel shows the whole mail (`mail.get_message`), for a folder's message
+//! and for a mail entry of "For me" or "Info" alike, with Reply, Reply all, Forward, Archive,
+//! Delete, Flag and Mark unread. Opening a folder's message marks it read, as mail apps do; an
+//! entry is read once it is done. Archive (`e` in a folder) and Delete (`#`) move the message and
+//! offer an undo that moves it back. Reply (`r`), Reply all (`a`) and Forward (`f`) start the
+//! compose window (task E4.3) as its own process. `--source mail` makes a window of mail only: its
+//! sidebar holds the folders alone and it starts on the first account's inbox ([`View::Mail`]
+//! until the folders are in).
+//!
 //! Security rule 1 (`docs/tasks/eingang.md`): approvals, account problems and the suite's entries
 //! belong to the human. This window is the human (it holds the app key), so it may change them,
 //! with two limits of its own: an approval has no "done" (it closes once decided), and the suite
@@ -62,9 +75,13 @@ use torro_inbox::source::TaskList;
 use torro_inbox::{
     InboxError, InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter,
 };
+use torro_ipc::mail::{MoveRole, MoveTarget};
+use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 
+use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
+use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
@@ -229,6 +246,9 @@ pub enum Undo {
     Edit(Edit),
     /// Sets the source's "muted" back to the value given (`inbox.mute_source`).
     Mute(SourceRef, bool),
+    /// Moves archived or deleted mail back where it was (`mail.move_messages`), and opens the
+    /// entry `reopen` again – the core closed it when its mail left the inbox.
+    Mail { edit: MailEdit, reopen: Option<String> },
 }
 
 /// The hint at the bottom of the window: what just happened, with "Undo" when it can be undone.
@@ -363,6 +383,16 @@ pub enum Sent {
         title: Option<String>,
         due: Option<NaiveDate>,
     },
+    /// A change of mail (`mail.set_flags`, `mail.move_messages`, `mail.delete_messages`).
+    Mail(MailEdit, Option<Hint>),
+    /// `mail.get_message` for the message with this id.
+    Letter(String),
+    /// The compose window, started with these arguments ([`mail::compose_args`]).
+    Compose(Vec<String>),
+    /// `mail.get_attachment`: message and part, to open it.
+    Attachment(String, String),
+    /// The next page of the folder, from this cursor.
+    More(String),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -379,19 +409,26 @@ pub enum View {
     Done,
     /// Open entries of one source, both lanes.
     Source(SourceRef),
+    /// The messages of a mail folder, searched or whole (task E4.2): no entries, `mail.*` only.
+    Folder(FolderView),
+    /// A window of mail only (`--source mail`) before its folders are in: it becomes the first
+    /// account's inbox, or says that there is no mail account.
+    Mail,
 }
 
 impl View {
-    /// The filter for `inbox.list_items` that selects the entries of this view.
-    pub fn filter(&self) -> ItemFilter {
+    /// The filter for `inbox.list_items` that selects the entries of this view; `None` for the
+    /// views of mail, which list messages instead of entries.
+    pub fn filter(&self) -> Option<ItemFilter> {
         let (lane, source, state) = match self {
             View::ForMe => (Some(Lane::ForMe), None, StateFilter::Open),
             View::Info => (Some(Lane::Info), None, StateFilter::Open),
             View::Snoozed => (None, None, StateFilter::Snoozed),
             View::Done => (None, None, StateFilter::Done),
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
+            View::Folder(_) | View::Mail => return None,
         };
-        ItemFilter { lane, source, state: Some(state), ..ItemFilter::default() }
+        Some(ItemFilter { lane, source, state: Some(state), ..ItemFilter::default() })
     }
 
     /// The name in the sidebar, the header and the panel's path.
@@ -402,6 +439,8 @@ impl View {
             View::Snoozed => tr("Snoozed").into(),
             View::Done => tr("Done").into(),
             View::Source(source) => source.label(),
+            View::Folder(folder) => folder.name.clone(),
+            View::Mail => tr("Mail").into(),
         }
     }
 
@@ -412,7 +451,22 @@ impl View {
             View::Snoozed => Icon::Clock,
             View::Done => Icon::CircleCheck,
             View::Source(source) => list::source_icon(source),
+            View::Folder(folder) => mail::folder_icon(folder.role),
+            View::Mail => Icon::Mail,
         }
+    }
+
+    /// The folder this view shows, if it is one.
+    pub fn folder(&self) -> Option<&FolderView> {
+        match self {
+            View::Folder(folder) => Some(folder),
+            _ => None,
+        }
+    }
+
+    /// A view of mail: a folder, or a window of mail waiting for its folders.
+    pub fn is_mail(&self) -> bool {
+        matches!(self, View::Folder(_) | View::Mail)
     }
 }
 
@@ -476,10 +530,16 @@ pub enum Open {
     /// The panel of the first entry of "For me" that is no approval, with the dialog of "Make
     /// task" open at its footer (task E3.5).
     Task,
+    /// The first account's inbox as a folder (task E4.2).
+    Folder,
+    /// That inbox with its newest message in the panel.
+    Mail,
+    /// "For me" with its first mail entry in the panel, the whole mail loaded.
+    MailEntry,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 18] = [
+    const ALL: [(&'static str, Open); 21] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -498,6 +558,9 @@ impl Open {
         ("mute", Open::Mute),
         ("undo", Open::Undo),
         ("task", Open::Task),
+        ("folder", Open::Folder),
+        ("mail", Open::Mail),
+        ("mail-entry", Open::MailEntry),
     ];
 }
 
@@ -512,6 +575,14 @@ impl Open {
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
 ///   on that lane or source, for one window per slice of the inbox (E3.6). Works without `--demo`;
 ///   a workspace template stores the window's command line, so the slice comes back with it.
+///   `--source mail` is a window of mail only (task E4.2): the folders of the mail accounts, starting
+///   on the first account's inbox ([`View::Mail`]).
+/// - `--compose` (with `--reply <id>`, `--reply-all <id>` or `--forward <id>`, and `--account <id>`)
+///   is the compose window of task E4.3 ([`compose`]), which the panel's Reply, Reply all and
+///   Forward start ([`mail::compose_command`]) and the "New" button starts without an id. It is a
+///   window of its own and shows no inbox; its `--open` states are [`compose::Open`]'s.
+///   `--reply`, `--reply-all`, `--forward` and `--account` without `--compose` are refused
+///   ([`LaunchError::NeedsCompose`]), so a mistyped command never opens the inbox instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub demo: bool,
@@ -520,6 +591,8 @@ pub struct Launch {
     pub now: Option<NaiveDateTime>,
     /// The view of `--lane` or `--source`; `None` starts on "For me".
     pub view: Option<View>,
+    /// `--compose`: the window writes a message instead of showing the inbox.
+    pub compose: Option<compose::Start>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, like the other apps.
@@ -535,6 +608,8 @@ pub enum LaunchError {
     BadNow(String),
     /// Two flags that each choose the start view, like `--lane` and `--source`.
     Conflict(&'static str, &'static str),
+    /// `--reply`, `--reply-all`, `--forward` or `--account` without `--compose`.
+    NeedsCompose(&'static str),
 }
 
 impl fmt::Display for LaunchError {
@@ -549,6 +624,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "--now expects YYYY-MM-DDTHH:MM, e.g. 2026-10-12T10:30; got {value:?}")
             }
             LaunchError::Conflict(one, other) => write!(f, "{one} and {other} cannot be used together"),
+            LaunchError::NeedsCompose(flag) => write!(f, "{flag} only works together with --compose"),
         }
     }
 }
@@ -556,7 +632,7 @@ impl fmt::Display for LaunchError {
 impl std::error::Error for LaunchError {}
 
 /// The value of `--flag value` or `--flag=value`; `None` when the flag is not there.
-fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a str>, LaunchError> {
+pub(crate) fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a str>, LaunchError> {
     let mut words = args.iter();
     while let Some(word) = words.next() {
         if word == flag {
@@ -579,8 +655,11 @@ impl Launch {
             value: value.to_owned(),
             valid: valid.join(", "),
         };
+        let compose = compose::Start::parse(args, demo)?;
+        // The compose window reads `--open` itself, with states of its own.
         let open = match flag_value(args, "--open")? {
             None => None,
+            Some(_) if compose.is_some() => None,
             Some(_) if !demo => return Err(LaunchError::NeedsDemo("--open")),
             Some(word) => match Open::ALL.iter().find(|(name, _)| *name == word) {
                 Some(&(_, open)) => Some(open),
@@ -602,7 +681,7 @@ impl Launch {
             ),
         };
         let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, view })
+        Ok(Launch { demo, open, appearance, now, view, compose })
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -628,13 +707,14 @@ fn start_view(args: &[String]) -> Result<Option<View>, LaunchError> {
     };
     let source = match flag_value(args, "--source")? {
         None => None,
+        Some("mail") => Some(View::Mail),
         Some(key) => match key.parse::<SourceRef>() {
             Ok(source) => Some(View::Source(source)),
             Err(_) => {
                 return Err(LaunchError::UnknownValue {
                     flag: "--source",
                     value: key.to_owned(),
-                    valid: "suite, agent:<name>, script:<name>".to_owned(),
+                    valid: "suite, mail, agent:<name>, script:<name>, mail:<address>".to_owned(),
                 });
             }
         },
@@ -660,6 +740,12 @@ pub struct Loaded {
     /// sources count (open entries, both lanes), so the sidebar's numbers add up.
     pub info: usize,
     pub sources: Vec<SourceInfo>,
+    /// The folders of the mail accounts, for the sidebar (task E4.2); empty without mail, and
+    /// when they could not be read – the entries still show then.
+    pub folders: Vec<Folder>,
+    /// The messages of a folder's view: its first page (as many as were listed before, when the
+    /// view is loaded again). `None` in the other views.
+    pub mail: Option<MailPage>,
 }
 
 /// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
@@ -676,6 +762,13 @@ impl Failure {
     fn new(what: &'static str, why: impl Into<String>) -> Failure {
         Failure { what, why: why.into() }
     }
+}
+
+/// The whole mail of one message, for the panel: `loaded` is `None` while `mail.get_message` runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Letter {
+    pub id: String,
+    pub loaded: Option<Result<Mail, String>>,
 }
 
 pub struct App<S> {
@@ -724,6 +817,28 @@ pub struct App<S> {
     /// The approval whose decision is on its way (task E3.8): its Allow and Deny are disabled
     /// until the core answered, so a second click cannot decide it twice.
     deciding: Option<String>,
+    /// The folders of the mail accounts (task E4.2), as last loaded.
+    folders: Vec<Folder>,
+    /// The messages of the folder's view, newest first; the cursor and the panel name them by id.
+    messages: Vec<MessageSummary>,
+    /// The cursor of the folder's next page; `None` on its last page.
+    more: Option<String>,
+    /// The panel shows the message under the cursor (a folder's view): the counterpart of `detail`
+    /// for messages, which have no entry to keep.
+    reading: bool,
+    /// The whole mail in the panel: of the message under the cursor in a folder, or of the mail
+    /// entry in the panel ([`App::wanted_letter`]).
+    letter: Option<Letter>,
+    /// The folder whose messages `messages` holds; another folder's view shows loading until its
+    /// messages are in.
+    listed: Option<String>,
+    /// What is typed into the folder's search field.
+    search: String,
+    /// The accounts folded away or unfolded by the person (`true`: unfolded); the others follow
+    /// [`App::account_open`].
+    folds: Vec<(String, bool)>,
+    /// A window of mail only (`--source mail`): the sidebar lists the folders alone.
+    mail_only: bool,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -848,29 +963,85 @@ pub enum Message {
     AppOpened(Result<(), String>),
     /// Open the control centre.
     OpenSettings,
+    /// From a folder's list: the message with this id under the cursor and in the panel.
+    SelectMail(String),
+    /// The whole mail for the panel, or why it could not be read.
+    LetterLoaded(String, Result<Box<Mail>, String>),
+    /// From the panel or a key: do this with the message with this id.
+    Mail(MailAction, String),
+    /// The source's answer to a [`MailEdit`], with the hint to show (`None`: none, or an undo).
+    MailEdited(Result<(), String>, Option<Hint>),
+    /// "Load more" at the end of a folder's messages.
+    MoreMail,
+    /// The next page of the folder's view it was asked for.
+    MoreLoaded(View, Result<MailPage, String>),
+    /// What is typed into the search field.
+    SearchInput(String),
+    /// `Enter` in the search field: show the folder searched for it.
+    Search,
+    /// "Clear search": the whole folder again.
+    ClearSearch,
+    /// An attachment of a message (message id, part) to fetch and open.
+    OpenAttachment(String, String),
+    /// What became of opening an attachment.
+    AttachmentOpened(Result<Opened, String>),
+    /// A web address in a mail's text was clicked.
+    OpenMailLink(String),
+    /// The title of an account's group: fold its folders away or show them.
+    ToggleAccount(String),
+    /// The compose window could not be started.
+    ComposeStarted(Result<(), String>),
 }
 
 /// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
 /// `empty` (the forced empty state) asks nothing and answers an empty inbox.
-pub async fn fetch<S: InboxSource>(inbox: Arc<S>, view: View, empty: bool) -> Result<Loaded, String> {
+///
+/// Also the folders of the mail accounts, and for a folder's view its first `limit` messages
+/// (task E4.2). Folders that cannot be read leave the sidebar without mail rather than the inbox
+/// without entries; a folder's messages that cannot be read are the view's error.
+pub async fn fetch<S: InboxSource + MailSource>(
+    inbox: Arc<S>,
+    view: View,
+    empty: bool,
+    limit: u32,
+) -> Result<Loaded, String> {
     if empty {
-        return Ok(Loaded { items: Vec::new(), for_me: Vec::new(), info: 0, sources: Vec::new() });
+        let none = Loaded {
+            items: Vec::new(),
+            for_me: Vec::new(),
+            info: 0,
+            sources: Vec::new(),
+            folders: Vec::new(),
+            mail: view.folder().map(|_| MailPage { messages: Vec::new(), next: None }),
+        };
+        return Ok(none);
     }
     let failed = |err: torro_inbox::InboxError| err.to_string();
-    let items = inbox.list_items(view.filter()).await.map_err(failed)?;
+    let for_me_filter = || View::ForMe.filter().unwrap_or_default();
+    let items = match view.filter() {
+        Some(filter) => inbox.list_items(filter).await.map_err(failed)?,
+        None => Vec::new(),
+    };
     let for_me = match view {
         View::ForMe => items.clone(),
-        _ => inbox.list_items(View::ForMe.filter()).await.map_err(failed)?,
+        _ => inbox.list_items(for_me_filter()).await.map_err(failed)?,
     };
     let info = match view {
         View::Info => items.len(),
-        _ => inbox.list_items(View::Info.filter()).await.map_err(failed)?.len(),
+        _ => inbox.list_items(View::Info.filter().unwrap_or_default()).await.map_err(failed)?.len(),
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
-    Ok(Loaded { items, for_me, info, sources })
+    let folders = inbox.mail_folders().await.unwrap_or_default();
+    let mail = match view.folder() {
+        Some(folder) => {
+            Some(inbox.search_mail(folder.id.clone(), folder.query.clone(), limit, None).await.map_err(failed)?)
+        }
+        None => None,
+    };
+    Ok(Loaded { items, for_me, info, sources, folders, mail })
 }
 
-impl<S: InboxSource + 'static> App<S> {
+impl<S: InboxSource + MailSource + 'static> App<S> {
     pub fn new(inbox: Arc<S>, suite: Source, launch: Launch) -> (App<S>, Task<Message>) {
         let open = launch.open;
         let offset = launch.now.map_or(TimeDelta::zero(), |now| datetime::to_utc(now) - Utc::now());
@@ -887,6 +1058,9 @@ impl<S: InboxSource + 'static> App<S> {
                 Some(Open::Info) => View::Info,
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
+                // The first inbox, once the folders are in.
+                Some(Open::Folder | Open::Mail) => View::Mail,
+                Some(Open::MailEntry) => View::ForMe,
                 _ => launch.view.clone().unwrap_or(View::ForMe),
             },
             items: Vec::new(),
@@ -905,6 +1079,15 @@ impl<S: InboxSource + 'static> App<S> {
             last_list: None,
             hint: None,
             deciding: None,
+            folders: Vec::new(),
+            messages: Vec::new(),
+            more: None,
+            reading: false,
+            letter: None,
+            listed: None,
+            search: String::new(),
+            folds: Vec::new(),
+            mail_only: launch.view == Some(View::Mail),
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -948,7 +1131,7 @@ impl<S: InboxSource + 'static> App<S> {
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
             // Escape closes an open menu, drawer or the panel; nothing listens while none is open.
-            if self.menu.is_some() || self.drawer || self.detail.is_some() {
+            if self.menu.is_some() || self.drawer || self.panel_open() {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
         }
@@ -970,6 +1153,14 @@ impl<S: InboxSource + 'static> App<S> {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
+        let letter = self.follow_letter();
+        Task::batch([task, letter])
+    }
+
+    /// What `message` does; [`App::update`] lets the panel's mail follow afterwards.
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
@@ -986,7 +1177,10 @@ impl<S: InboxSource + 'static> App<S> {
             Message::Show(view) => {
                 self.close_menus();
                 self.detail = None;
+                self.reading = false;
                 self.cursor = None;
+                // A folder from the sidebar comes whole; its search field starts empty.
+                self.search = view.folder().and_then(|folder| folder.query.clone()).unwrap_or_default();
                 if view != self.view {
                     self.view = view;
                     return self.load();
@@ -1000,7 +1194,7 @@ impl<S: InboxSource + 'static> App<S> {
                 }
             }
             Message::OpenForMe(id) => return self.open_for_me(id),
-            Message::CloseDetail => self.detail = None,
+            Message::CloseDetail => self.close_panel(),
             Message::SetDone(id, done) => return self.edit(Edit::Done { id, done }),
             Message::Edit(edit) => return self.edit(edit),
             Message::Edited(result, after) => return self.edited(result, after),
@@ -1103,7 +1297,14 @@ impl<S: InboxSource + 'static> App<S> {
             }
             Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
             Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app.to_owned())),
-            // The inbox has nothing to create and no search yet; the buttons only close what is open.
+            // The search is a folder's (task E4.2): the button focuses its field there. "New" writes a
+            // message when there is a mail account to write from (task E4.3); the inbox has nothing
+            // else to create. Elsewhere the buttons only close what is open.
+            Message::Switcher(Switcher::Search) if self.view.folder().is_some() => return self.focus_search(),
+            Message::Switcher(Switcher::New) if !self.folders.is_empty() => {
+                self.close_menus();
+                return self.compose_new();
+            }
             Message::Switcher(Switcher::New | Switcher::Search) => self.close_menus(),
             Message::ToggleNav => self.toggle_menu(Menu::Nav),
             Message::ShowDrawer => {
@@ -1117,7 +1318,7 @@ impl<S: InboxSource + 'static> App<S> {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
                 } else {
-                    self.detail = None;
+                    self.close_panel();
                 }
             }
             Message::OpenApp(app) => {
@@ -1133,8 +1334,300 @@ impl<S: InboxSource + 'static> App<S> {
                 self.close_menus();
                 connect::open_settings();
             }
+            Message::SelectMail(id) => {
+                self.close_menus();
+                if self.messages.iter().any(|message| message.id == id) {
+                    self.cursor = Some(id);
+                    self.reading = true;
+                }
+            }
+            Message::LetterLoaded(id, result) => {
+                if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
+                    letter.loaded = Some(result.map(|mail| *mail));
+                }
+            }
+            Message::Mail(action, id) => return self.mail_action(action, id),
+            Message::MailEdited(Ok(()), hint) => {
+                if let Some(hint) = hint {
+                    self.hint = Some(Hint { shown: Instant::now(), ..hint });
+                }
+                return self.load();
+            }
+            Message::MailEdited(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't change the mail."), err));
+                return self.load();
+            }
+            Message::MoreMail => return self.more_mail(),
+            Message::MoreLoaded(view, result) => {
+                if view != self.view {
+                    return Task::none();
+                }
+                match result {
+                    Ok(page) => {
+                        let known: Vec<String> = self.messages.iter().map(|message| message.id.clone()).collect();
+                        self.messages.extend(page.messages.into_iter().filter(|message| !known.contains(&message.id)));
+                        self.more = page.next;
+                    }
+                    Err(err) => self.error = Some(Failure::new(tr("Couldn't load more messages."), err)),
+                }
+            }
+            Message::SearchInput(text) => self.search = text,
+            Message::Search => return self.search_folder(self.search.clone()),
+            Message::ClearSearch => {
+                self.search.clear();
+                return self.search_folder(String::new());
+            }
+            Message::OpenAttachment(id, part) => {
+                #[cfg(test)]
+                self.sent.push(Sent::Attachment(id.clone(), part.clone()));
+                let inbox = self.inbox.clone();
+                return Task::perform(mail::open_attachment(inbox, id, part), Message::AttachmentOpened);
+            }
+            Message::AttachmentOpened(Ok(opened)) => self.note(mail::opened_text(&opened)),
+            Message::AttachmentOpened(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't open the attachment."), err));
+            }
+            // Only web addresses become links ([`mail::pieces`]); checked again here all the same.
+            Message::OpenMailLink(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                return self.open_url(url);
+            }
+            Message::OpenMailLink(_) => {}
+            Message::ToggleAccount(account) => {
+                let first = mail::by_account(&self.folders).first().is_some_and(|group| group.account == account);
+                let open = !self.account_open(&account, first);
+                self.folds.retain(|(folded, _)| *folded != account);
+                self.folds.push((account, open));
+            }
+            Message::ComposeStarted(Ok(())) => {}
+            Message::ComposeStarted(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
+            }
         }
         Task::none()
+    }
+
+    /// Whether the panel is open: an entry's, or a folder's message.
+    fn panel_open(&self) -> bool {
+        self.detail.is_some() || (self.view.is_mail() && self.reading)
+    }
+
+    /// Closes the panel, whichever it is.
+    fn close_panel(&mut self) {
+        self.detail = None;
+        self.reading = false;
+    }
+
+    /// The message whose whole mail the panel wants: in a folder the one under the cursor while
+    /// the panel is open, elsewhere the mail of the entry in the panel.
+    fn wanted_letter(&self) -> Option<String> {
+        if self.view.is_mail() {
+            let id = self.cursor.as_ref().filter(|_| self.reading)?;
+            return self.messages.iter().any(|message| message.id == *id).then(|| id.clone());
+        }
+        match self.detail.as_ref()?.link.as_ref()? {
+            Link::Mail { message } => Some(message.clone()),
+            Link::Url { .. } | Link::App { .. } | Link::Window => None,
+        }
+    }
+
+    /// Asks for the mail the panel wants ([`App::wanted_letter`]) when it is another than the one
+    /// held, and drops it when the panel wants none. A folder's message opened in the panel is
+    /// marked read, as mail apps do; an entry's mail is read once the entry is done (the core).
+    fn follow_letter(&mut self) -> Task<Message> {
+        let wanted = self.wanted_letter();
+        if wanted.as_deref() == self.letter.as_ref().map(|letter| letter.id.as_str()) {
+            return Task::none();
+        }
+        let Some(id) = wanted else {
+            self.letter = None;
+            return Task::none();
+        };
+        self.letter = Some(Letter { id: id.clone(), loaded: None });
+        #[cfg(test)]
+        self.sent.push(Sent::Letter(id.clone()));
+        let inbox = self.inbox.clone();
+        let asked = id.clone();
+        let fetch = Task::perform(
+            async move { inbox.get_mail(asked).await.map(Box::new).map_err(|err| err.to_string()) },
+            move |result| Message::LetterLoaded(id.clone(), result),
+        );
+        let unread = self
+            .letter
+            .as_ref()
+            .and_then(|letter| self.messages.iter().find(|message| message.id == letter.id))
+            .filter(|message| self.view.is_mail() && !message.flags.contains(&Flag::Seen))
+            .map(|message| message.id.clone());
+        match unread {
+            Some(id) => Task::batch([fetch, self.mail_edit(mail::edit_of(MailAction::Read(true), &id), None)]),
+            None => fetch,
+        }
+    }
+
+    /// Carries out a mail button or key for the message `id`: Reply, Reply all and Forward open the
+    /// compose window; Archive and Delete move it and offer to move it back; Flag and read change
+    /// its flags.
+    fn mail_action(&mut self, action: MailAction, id: String) -> Task<Message> {
+        self.close_menus();
+        if let Some(kind) = Compose::of(action) {
+            return self.compose(kind, &id);
+        }
+        let Some(edit) = mail::edit_of(action, &id) else { return Task::none() };
+        let delete = action == MailAction::Delete;
+        if !matches!(action, MailAction::Archive | MailAction::Delete) {
+            return self.mail_edit(Some(edit), None);
+        }
+        if delete && self.in_trash(&id) {
+            self.note(tr("This message is in the trash already.").to_owned());
+            return Task::none();
+        }
+        let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
+        let reopen = self.entry_of(&id);
+        let hint = Hint {
+            text: mail::moved_text(delete).to_owned(),
+            undo: Some(Undo::Mail { edit: back, reopen }),
+            shown: Instant::now(),
+        };
+        self.take_out(&id);
+        self.mail_edit(Some(edit), Some(hint))
+    }
+
+    /// Sends `edit` (nothing for `None`), changing the flags shown at once; the answer comes as
+    /// [`Message::MailEdited`] with `hint`.
+    fn mail_edit(&mut self, edit: Option<MailEdit>, hint: Option<Hint>) -> Task<Message> {
+        let Some(edit) = edit else { return Task::none() };
+        for message in self.messages.iter_mut().filter(|message| edit.ids().contains(&message.id)) {
+            message.flags = mail::flags_after(&message.flags, &edit);
+        }
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut()
+            && edit.ids().contains(&mail.summary.id)
+        {
+            mail.summary.flags = mail::flags_after(&mail.summary.flags, &edit);
+        }
+        #[cfg(test)]
+        self.sent.push(Sent::Mail(edit.clone(), hint.clone()));
+        let inbox = self.inbox.clone();
+        Task::perform(edit.apply(inbox), move |result| Message::MailEdited(result, hint.clone()))
+    }
+
+    /// Takes the message `id` off a folder's list at once (archived, deleted): the cursor – and
+    /// the panel – move to the row that took its place, so `e`, `e`, `e` works through a folder.
+    fn take_out(&mut self, id: &str) {
+        let Some(place) = self.messages.iter().position(|message| message.id == id) else { return };
+        self.messages.remove(place);
+        if self.cursor.as_deref() == Some(id) {
+            let last = self.messages.len().checked_sub(1);
+            self.cursor = last.map(|last| self.messages[place.min(last)].id.clone());
+            if self.cursor.is_none() {
+                self.reading = false;
+            }
+        }
+    }
+
+    /// Where the message `id` goes back to on undo: its folder, as listed or loaded; an entry's
+    /// mail lives in its account's inbox.
+    fn home_of(&self, id: &str) -> MoveTarget {
+        let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.folder.clone());
+        let loaded = || match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => Some(mail.summary.folder.clone()),
+            _ => None,
+        };
+        listed.or_else(loaded).map_or(MoveTarget::Role(MoveRole::Inbox), MoveTarget::Folder)
+    }
+
+    /// The open entry of the message `id` in the list, which the core closes when its mail leaves
+    /// the inbox; undo opens it again.
+    fn entry_of(&self, id: &str) -> Option<String> {
+        self.items
+            .iter()
+            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == id) && item.state.is_open())
+            .map(|item| item.id.clone())
+    }
+
+    /// Whether the message `id` lies in a trash folder.
+    fn in_trash(&self, id: &str) -> bool {
+        let folder = match self.messages.iter().find(|message| message.id == id) {
+            Some(message) => Some(message.folder.as_str()),
+            None => match &self.letter {
+                Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => {
+                    Some(mail.summary.folder.as_str())
+                }
+                _ => None,
+            },
+        };
+        folder.is_some_and(|folder| self.folders.iter().any(|f| f.id == folder && f.role == Some(Role::Trash)))
+    }
+
+    /// Starts the compose window for the message `id` ([`mail::compose_command`], task E4.3).
+    fn compose(&mut self, kind: Compose, id: &str) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::Compose(mail::compose_args(kind, id, self.launch.demo)));
+        let command = mail::compose_command(kind, id, self.launch.demo);
+        Task::perform(async move { mail::start(command) }, Message::ComposeStarted)
+    }
+
+    /// Starts the compose window for a new message ([`compose::new_command`], task E4.3).
+    fn compose_new(&mut self) -> Task<Message> {
+        #[cfg(test)]
+        self.sent.push(Sent::Compose(compose::new_args(self.launch.demo)));
+        let command = compose::new_command(self.launch.demo);
+        Task::perform(async move { mail::start(command) }, Message::ComposeStarted)
+    }
+
+    /// The message a mail key (`r`, `a`, `f`, `#`, `e` in a folder) acts on: in a folder the one
+    /// under the cursor, elsewhere the mail of the entry under the cursor.
+    fn mail_target(&self) -> Option<String> {
+        if self.view.is_mail() {
+            let id = self.cursor.as_ref()?;
+            return self.messages.iter().any(|message| message.id == *id).then(|| id.clone());
+        }
+        match self.cursor_item()?.link.as_ref()? {
+            Link::Mail { message } => Some(message.clone()),
+            Link::Url { .. } | Link::App { .. } | Link::Window => None,
+        }
+    }
+
+    /// A mail key: `action` for [`App::mail_target`]; nothing without one.
+    fn key_mail(&mut self, action: MailAction) -> Task<Message> {
+        match self.mail_target() {
+            Some(id) => self.mail_action(action, id),
+            None => Task::none(),
+        }
+    }
+
+    /// Shows the folder searched for `query` (the whole folder for a blank one).
+    fn search_folder(&mut self, query: String) -> Task<Message> {
+        let Some(folder) = self.view.folder() else { return Task::none() };
+        let searched = folder.searching(&query);
+        if searched == *folder {
+            return Task::none();
+        }
+        self.view = View::Folder(searched);
+        self.cursor = None;
+        self.reading = false;
+        self.load()
+    }
+
+    /// Puts the keyboard into the search field of a folder.
+    fn focus_search(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.view.folder().is_none() {
+            return Task::none();
+        }
+        operation::focus(mail::SEARCH)
+    }
+
+    /// "Load more": the folder's next page.
+    fn more_mail(&mut self) -> Task<Message> {
+        let (Some(folder), Some(cursor)) = (self.view.folder().cloned(), self.more.clone()) else {
+            return Task::none();
+        };
+        #[cfg(test)]
+        self.sent.push(Sent::More(cursor.clone()));
+        let (inbox, view) = (self.inbox.clone(), self.view.clone());
+        let next = async move {
+            inbox.search_mail(folder.id, folder.query, mail::PAGE, Some(cursor)).await.map_err(|err| err.to_string())
+        };
+        Task::perform(next, move |result| Message::MoreLoaded(view.clone(), result))
     }
 
     /// Opens the entry `id` if it is the one in the panel: a message can outlive the entry it came
@@ -1160,7 +1653,8 @@ impl<S: InboxSource + 'static> App<S> {
                 Link::Url { url } => return self.open_url(url),
                 Link::App { app } if app == AppId::WORKPLACE.binary => return self.update(Message::OpenSettings),
                 Link::App { app } => return self.update(Message::OpenApp(app)),
-                Link::Window => {}
+                // A mail is shown in this app (task E4.2); the demo source only marks it seen.
+                Link::Window | Link::Mail { .. } => {}
             }
         }
         #[cfg(test)]
@@ -1222,11 +1716,29 @@ impl<S: InboxSource + 'static> App<S> {
         self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
         self.sources = loaded.sources;
+        self.folders = loaded.folders;
+        let page = loaded.mail.unwrap_or(MailPage { messages: Vec::new(), next: None });
+        self.messages = page.messages;
+        self.more = page.next;
+        self.listed = self.view.folder().map(|folder| folder.id.clone());
         self.loaded = true;
         // The forced error line stays over every load, so it can be photographed.
         self.error = (self.launch.open == Some(Open::Failed))
             .then(|| Failure::new(tr("Couldn't change the entry."), DEMO_ERROR));
-        if self.cursor_item().is_none() {
+        // A window of mail starts on the first account's inbox once the folders are known.
+        if self.view == View::Mail
+            && let Some(inbox) = mail::first_inbox(&self.folders)
+        {
+            self.view = View::Folder(FolderView::of(inbox));
+            return self.load();
+        }
+        if self.view.is_mail() {
+            if self.cursor.as_ref().is_none_or(|id| !self.messages.iter().any(|message| message.id == *id)) {
+                let last = self.messages.len().checked_sub(1);
+                let row = place.zip(last).and_then(|(place, last)| self.messages.get(place.min(last)));
+                self.cursor = row.map(|message| message.id.clone());
+            }
+        } else if self.cursor_item().is_none() {
             let last = self.items.len().checked_sub(1);
             self.cursor =
                 place.zip(last).and_then(|(place, last)| self.items.get(place.min(last))).map(|i| i.id.clone());
@@ -1267,6 +1779,9 @@ impl<S: InboxSource + 'static> App<S> {
     /// Where the cursor's row is in the list.
     fn cursor_place(&self) -> Option<usize> {
         let id = self.cursor.as_deref()?;
+        if self.view.is_mail() {
+            return self.messages.iter().position(|message| message.id == id);
+        }
         self.items.iter().position(|item| item.id == id)
     }
 
@@ -1294,6 +1809,13 @@ impl<S: InboxSource + 'static> App<S> {
             Command::Next => self.step(true),
             Command::Previous => self.step(false),
             Command::Open => self.open_cursor(),
+            // In a folder `e` archives: a message has no "done" of its own.
+            Command::Done if self.view.is_mail() => self.key_mail(MailAction::Archive),
+            Command::Reply => self.key_mail(MailAction::Reply),
+            Command::ReplyAll => self.key_mail(MailAction::ReplyAll),
+            Command::Forward => self.key_mail(MailAction::Forward),
+            Command::Delete => self.key_mail(MailAction::Delete),
+            Command::Search => self.focus_search(),
             Command::Done => match self.cursor_item().cloned() {
                 Some(item) if detail::is_approval(&item) => {
                     self.note(tr("An approval closes once it is decided.").to_owned());
@@ -1332,13 +1854,19 @@ impl<S: InboxSource + 'static> App<S> {
     /// Moves the cursor one row down or up and stops at the first and last row; with no cursor
     /// yet, down chooses the first row and up the last. The open panel shows the new row.
     fn step(&mut self, forward: bool) -> Task<Message> {
-        let Some(last) = self.items.len().checked_sub(1) else { return Task::none() };
+        let rows = if self.view.is_mail() { self.messages.len() } else { self.items.len() };
+        let Some(last) = rows.checked_sub(1) else { return Task::none() };
         let next = match (self.cursor_place(), forward) {
             (None, true) => 0,
             (None, false) => last,
             (Some(place), true) => (place + 1).min(last),
             (Some(place), false) => place.saturating_sub(1),
         };
+        if self.view.is_mail() {
+            // The panel, when open, follows the cursor ([`App::follow_letter`]).
+            self.cursor = Some(self.messages[next].id.clone());
+            return self.reveal(next);
+        }
         let item = self.items[next].clone();
         self.cursor = Some(item.id.clone());
         if self.detail.is_some() {
@@ -1352,7 +1880,14 @@ impl<S: InboxSource + 'static> App<S> {
     fn reveal(&mut self, index: usize) -> Task<Message> {
         let Some((offset, height)) = self.scroll else { return Task::none() };
         let row = list::row_height(self.two_line());
-        let Some((top, bottom)) = list::row_span(&self.items, index, row) else { return Task::none() };
+        // A folder's messages have no group heads: every row is as high as the next.
+        let span = if self.view.is_mail() {
+            let top = index as f32 * row;
+            (index < self.messages.len()).then_some((top, top + row))
+        } else {
+            list::row_span(&self.items, index, row)
+        };
+        let Some((top, bottom)) = span else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -1366,12 +1901,19 @@ impl<S: InboxSource + 'static> App<S> {
     }
 
     /// Enter: opens what the entry under the cursor links to – its page, its app, the agent's
-    /// window – as [`App::open_entry`] does; an entry without such a link opens in the panel.
+    /// window – as [`App::open_entry`] does; an entry without such a link, and a mail (task E4.2),
+    /// opens in the panel. In a folder Enter opens the message under the cursor in the panel.
     fn open_cursor(&mut self) -> Task<Message> {
+        if self.view.is_mail() {
+            return match self.cursor.clone() {
+                Some(id) => self.update(Message::SelectMail(id)),
+                None => Task::none(),
+            };
+        }
         let Some(item) = self.cursor_item().cloned() else { return Task::none() };
         match detail::openable(&item) {
+            Some(Link::Mail { .. }) | None => self.update(Message::Select(item.id)),
             Some(_) => self.open_entry(&item),
-            None => self.update(Message::Select(item.id)),
         }
     }
 
@@ -1497,6 +2039,21 @@ impl<S: InboxSource + 'static> App<S> {
         match undo {
             Undo::Edit(edit) => self.send(edit, None),
             Undo::Mute(source, muted) => self.mute(source, muted, false),
+            Undo::Mail { edit, reopen } => {
+                #[cfg(test)]
+                self.sent.push(Sent::Mail(edit.clone(), None));
+                // First the mail back into its folder, then the entry open again: the other way
+                // round the core could close the entry once more while the mail is still away.
+                let inbox = self.inbox.clone();
+                let back = async move {
+                    edit.apply(inbox.clone()).await?;
+                    if let Some(id) = reopen {
+                        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                };
+                Task::perform(back, |result| Message::MailEdited(result, None))
+            }
         }
     }
 
@@ -1632,7 +2189,7 @@ impl<S: InboxSource + 'static> App<S> {
         if self.is_glance() {
             return Cover::Nothing;
         }
-        Cover::panel(class, self.detail.is_some()).or(Cover::drawer(class, self.drawer))
+        Cover::panel(class, self.panel_open()).or(Cover::drawer(class, self.drawer))
     }
 
     /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.
@@ -1664,6 +2221,7 @@ impl<S: InboxSource + 'static> App<S> {
             // Only an entry open in the panel: a keyboard cursor left over from a larger window is no
             // reason to single out a row of a display.
             selected: self.detail.as_ref().map(|item| item.id.as_str()),
+            folders: &self.folders,
             now: self.now,
             error: self.error.as_ref().map(|failure| failure.what),
         };
@@ -1724,16 +2282,23 @@ impl<S: InboxSource + 'static> App<S> {
             Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(task_at, below, self.task_dialog(), Message::CloseMenu)),
         };
-        let detail = self.detail.as_ref().map(|item| {
-            let footer = detail::Footer {
-                anchors: anchors.clone(),
-                muted: self.is_muted(&item.source),
-                deciding: self.deciding.is_some(),
-                // The panel fills narrow windows: no room for the words of "Move to …".
-                compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
-            };
-            detail::panel(item, self.view.name(), self.now, footer)
-        });
+        let detail = if self.view.is_mail() {
+            // A folder's message: the mail alone, no entry around it.
+            self.reading().filter(|_| self.reading).map(|reading| mail::panel(&reading, self.view.folder()))
+        } else {
+            self.detail.as_ref().map(|item| {
+                let footer = detail::Footer {
+                    anchors: anchors.clone(),
+                    muted: self.is_muted(&item.source),
+                    deciding: self.deciding.is_some(),
+                    // The panel fills narrow windows: no room for the words of "Move to …".
+                    compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
+                };
+                // A mail entry shows its whole mail in place of the entry's short text.
+                let letter = self.reading().map(|reading| mail::body(&reading));
+                detail::panel(item, self.view.name(), self.now, footer, letter)
+            })
+        };
         let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
         shell::shell(class, sidebar, header, placed.body, None)
             .rail(rail)
@@ -1748,7 +2313,7 @@ impl<S: InboxSource + 'static> App<S> {
     fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
         let (name, icon) = (self.view.name(), self.view.icon());
         // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
-        let note = (self.loaded && !self.items.is_empty()).then(|| self.count_note());
+        let note = (self.loaded && !self.lists_nothing()).then(|| self.count_note());
         let trailing = [widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh))];
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
         // as in the medium layout, and every view stays one click away.
@@ -1776,8 +2341,41 @@ impl<S: InboxSource + 'static> App<S> {
 
     /// The quiet number after the title: how many entries the view lists. The title already says
     /// which view it is, so the number stands alone (as in torrotasks' header).
+    ///
+    /// A folder counts all its messages (a page shows only the newest); a search counts what it
+    /// found so far.
     fn count_note(&self) -> String {
-        self.items.len().to_string()
+        match self.view.folder() {
+            Some(folder) if folder.query.is_none() => {
+                let all = self.folders.iter().find(|f| f.id == folder.id).map(|f| f.total as usize);
+                all.unwrap_or(self.messages.len()).to_string()
+            }
+            Some(_) => self.messages.len().to_string(),
+            None if self.view.is_mail() => String::new(),
+            None => self.items.len().to_string(),
+        }
+    }
+
+    /// Whether the view lists nothing (the empty state says so; no "0" beside the title).
+    fn lists_nothing(&self) -> bool {
+        if self.view.is_mail() { self.messages.is_empty() } else { self.items.is_empty() }
+    }
+
+    /// The panel's view of the mail held ([`App::letter`]): headers from the list while the whole
+    /// of it loads, links in the text colour, the flag in the attention colour.
+    fn reading(&self) -> Option<Reading<'_>> {
+        let letter = self.letter.as_ref()?;
+        let colours = palette(&self.theme());
+        Some(Reading {
+            id: &letter.id,
+            summary: self.messages.iter().find(|message| message.id == letter.id),
+            loaded: letter.loaded.as_ref(),
+            now: self.now,
+            link: colours.text,
+            attention: colours.attention_text,
+            in_trash: self.in_trash(&letter.id),
+            dated: self.view.is_mail(),
+        })
     }
 
     /// Two lines per row (title over preview): mini and narrow windows. The strip is wide enough
@@ -1795,20 +2393,45 @@ impl<S: InboxSource + 'static> App<S> {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
-        let data = list::ListData {
-            items: &self.items,
-            view: &self.view,
-            selected: self.cursor.as_deref(),
-            now: self.now,
-            anchor: row_anchor.clone(),
-            two_line: self.two_line(),
-            attention: palette(&self.theme()).attention_text,
-        };
+        let attention = palette(&self.theme()).attention_text;
         let mut content = column![];
+        // The search stands above the error line: it belongs to the folder, the error to the list.
+        if let Some(folder) = self.view.folder() {
+            content = content.push(mail::search_bar(&self.search, folder));
+        }
         if let Some(failure) = &self.error {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::S).left(space::L)));
         }
-        let list = container(content.push(list::view(data)).width(Fill).height(Fill)).width(Fill);
+        let rows = if self.view.is_mail() {
+            let folder = self.view.folder();
+            // Another folder's messages are still held until this one's come: show loading.
+            if folder.is_some_and(|folder| self.listed.as_ref() != Some(&folder.id)) {
+                widgets::loading()
+            } else {
+                mail::list(mail::MailList {
+                    messages: &self.messages,
+                    folder,
+                    no_accounts: self.folders.is_empty(),
+                    selected: self.cursor.as_deref(),
+                    now: self.now,
+                    anchor: row_anchor.clone(),
+                    two_line: self.two_line(),
+                    more: self.more.is_some(),
+                    attention,
+                })
+            }
+        } else {
+            list::view(list::ListData {
+                items: &self.items,
+                view: &self.view,
+                selected: self.cursor.as_deref(),
+                now: self.now,
+                anchor: row_anchor.clone(),
+                two_line: self.two_line(),
+                attention,
+            })
+        };
+        let list = container(content.push(rows).width(Fill).height(Fill)).width(Fill);
         // Only the wide layout caps the width: in the medium one the content is at most a little
         // over `CONTENT_MAX` anyway, and a cap there would leave a thin empty strip at the right
         // (at 800 wide about 20) that reads as a mistake rather than as a margin.
@@ -1855,17 +2478,84 @@ impl<S: InboxSource + 'static> App<S> {
         (views, sources)
     }
 
+    /// The folders of the mail accounts by account (task E4.2), for the sidebar and the menu: one
+    /// group titled "Mail" with a single account, else one per account titled with its address,
+    /// as the calendars group by account. A folder counts its unread messages where that is news
+    /// ([`mail::counts_unread`]); no "0".
+    fn mail_groups(&self) -> Vec<MailGroup> {
+        let groups = mail::by_account(&self.folders);
+        let single = groups.len() == 1;
+        groups
+            .into_iter()
+            .enumerate()
+            .map(|(i, group)| MailGroup {
+                title: if single { tr("Mail").to_owned() } else { mail::address(group.account).to_owned() },
+                account: group.account.to_owned(),
+                open: single || self.account_open(group.account, i == 0),
+                rows: group
+                    .folders
+                    .into_iter()
+                    .map(|folder| {
+                        let count = usize::try_from(folder.unread)
+                            .ok()
+                            .filter(|&unread| unread > 0 && mail::counts_unread(folder.role));
+                        NavEntry {
+                            mark: Mark::Icon(mail::folder_icon(folder.role)),
+                            label: mail::folder_name(folder),
+                            count,
+                            active: self.view.folder().is_some_and(|shown| shown.id == folder.id),
+                            view: View::Folder(FolderView::of(folder)),
+                        }
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Whether the folders of `account` (the `first` one listed or not) show: as the person folded
+    /// or unfolded it, else only the account of the folder shown – or the first account while no
+    /// folder is shown. Two accounts with all their folders would push the rest of the sidebar out
+    /// of a window of ordinary height.
+    fn account_open(&self, account: &str, first: bool) -> bool {
+        if let Some(&(_, open)) = self.folds.iter().find(|(folded, _)| folded == account) {
+            return open;
+        }
+        match self.view.folder() {
+            Some(folder) => folder.account == account,
+            None => first,
+        }
+    }
+
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. The rail leaves the
     /// sources out: all agents share one icon and all scripts another, so as bare icons they
-    /// could not be told apart; the navigation menu and the drawer still list them.
+    /// could not be told apart; the navigation menu and the drawer still list them. The same goes
+    /// for the folders of the mail accounts, except in a window of mail only, whose rail would be
+    /// empty without them (their names are the tooltips).
     fn sidebar<'a>(&'a self, mode: SidebarMode, switcher: &Anchor) -> Element<'a, Message> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
             widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::Show(e.view))
         };
-        let mut items: Vec<Element<'a, Message>> = views.into_iter().map(row).collect();
-        if !sources.is_empty() && mode == SidebarMode::Expanded {
+        let mut items: Vec<Element<'a, Message>> =
+            if self.mail_only { Vec::new() } else { views.into_iter().map(row).collect() };
+        if mode == SidebarMode::Expanded || self.mail_only {
+            let groups = self.mail_groups();
+            let single = groups.len() == 1;
+            for group in groups {
+                let toggle = (!single).then(|| (group.open, Message::ToggleAccount(group.account.clone())));
+                items.push(widgets::sidebar_group_in(mode, group.title, toggle));
+                match (group.open, mode) {
+                    (true, _) => items.extend(group.rows.into_iter().map(row)),
+                    // The rail has no title to unfold with: a folded account keeps its inbox there.
+                    (false, SidebarMode::Rail) => {
+                        items.extend(group.rows.into_iter().filter(NavEntry::is_inbox).map(row))
+                    }
+                    (false, SidebarMode::Expanded) => {}
+                }
+            }
+        }
+        if !sources.is_empty() && mode == SidebarMode::Expanded && !self.mail_only {
             items.push(widgets::sidebar_group_in(mode, tr("Sources"), None));
             items.extend(sources.into_iter().map(row));
         }
@@ -1888,8 +2578,21 @@ impl<S: InboxSource + 'static> App<S> {
             let trail = e.trail();
             MenuItem::new(e.mark, e.label, Message::Show(e.view)).trail(trail).current(e.active)
         };
-        let mut sections = vec![MenuSection::new(views.into_iter().map(item).collect())];
-        if !sources.is_empty() {
+        let mut sections = Vec::new();
+        if !self.mail_only {
+            sections.push(MenuSection::new(views.into_iter().map(item).collect()));
+        }
+        // A menu has no folding: every account is a section named after it, with all its folders
+        // only while one of them is shown (or for a single account), else its inbox alone – the
+        // drawer unfolds the rest. So the menu fits a window of ordinary height.
+        let groups = self.mail_groups();
+        let single = groups.len() == 1;
+        for group in groups {
+            let open = single || self.view.folder().is_some_and(|folder| folder.account == group.account);
+            let rows = group.rows.into_iter().filter(|row| open || row.is_inbox()).map(item).collect();
+            sections.push(MenuSection::titled(group.title, rows));
+        }
+        if !sources.is_empty() && !self.mail_only {
             sections.push(MenuSection::titled(tr("Sources"), sources.into_iter().map(item).collect()));
         }
         sections.push(MenuSection::new(vec![MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings)]));
@@ -2060,6 +2763,13 @@ impl<S: InboxSource + 'static> App<S> {
                     return self.ask_task(&item.id);
                 }
             }
+            Some(Open::Mail) => {
+                self.cursor = self.messages.first().map(|message| message.id.clone());
+                self.reading = self.cursor.is_some();
+            }
+            Some(Open::MailEntry) => {
+                self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
+            }
             _ => {}
         }
         if let Some(detail) = &self.detail {
@@ -2078,8 +2788,28 @@ impl<S: InboxSource + 'static> App<S> {
         }
         let empty = self.launch.open == Some(Open::Empty);
         let inbox = self.inbox.clone();
-        Task::perform(fetch(inbox, view.clone(), empty), move |result| Message::Loaded(view.clone(), result))
+        let limit = self.page_limit();
+        Task::perform(fetch(inbox, view.clone(), empty, limit), move |result| Message::Loaded(view.clone(), result))
     }
+
+    /// How many messages a load of the view asks for: a page, or as many as "Load more" brought
+    /// in already when the same folder is loaded again (at most what one request may ask).
+    fn page_limit(&self) -> u32 {
+        let same = self.view.folder().is_some_and(|folder| self.listed.as_ref() == Some(&folder.id));
+        let shown = if same { u32::try_from(self.messages.len()).unwrap_or(u32::MAX) } else { 0 };
+        shown.clamp(mail::PAGE, torro_ipc::mail::MAX_LIMIT)
+    }
+}
+
+/// The folders of one mail account in the sidebar and the navigation menu ([`App::mail_groups`]).
+struct MailGroup {
+    /// "Mail", or the account's address when there are several.
+    title: String,
+    /// `mail:<address>`, for folding.
+    account: String,
+    /// Its folders show ([`App::account_open`]); always with a single account.
+    open: bool,
+    rows: Vec<NavEntry>,
 }
 
 /// A row of the sidebar and the navigation menu.
@@ -2093,6 +2823,11 @@ struct NavEntry {
 }
 
 impl NavEntry {
+    /// The row of an inbox folder, which a folded account keeps in the rail and the menu.
+    fn is_inbox(&self) -> bool {
+        self.view.folder().is_some_and(|folder| folder.role == Some(Role::Inbox))
+    }
+
     fn trail(&self) -> Trail {
         self.count.map_or(Trail::None, Trail::Count)
     }
@@ -2216,9 +2951,9 @@ mod tests {
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
-    fn load<S: InboxSource + 'static>(app: &mut App<S>) {
+    fn load<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
-        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty));
+        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit()));
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
@@ -2230,6 +2965,11 @@ mod tests {
         load(&mut app);
         app
     }
+
+    /// The open entries of "For me" in the demo, waiting first: the three waiting ones, then by time,
+    /// the mail entries among them.
+    const FOR_ME: [&str; 9] =
+        ["demo-1", "demo-3", "demo-2", "demo-mail-1", "demo-4", "demo-6", "demo-mail-4", "demo-5", "demo-mail-2"];
 
     fn ids<S>(app: &App<S>) -> Vec<&str> {
         app.items.iter().map(|item| item.id.as_str()).collect()
@@ -2300,11 +3040,17 @@ mod tests {
     #[test]
     fn views_ask_for_their_entries() {
         let open = Some(StateFilter::Open);
-        assert_eq!(View::ForMe.filter(), ItemFilter { lane: Some(Lane::ForMe), state: open, ..ItemFilter::default() });
-        assert_eq!(View::Info.filter(), ItemFilter { lane: Some(Lane::Info), state: open, ..ItemFilter::default() });
-        assert_eq!(View::Snoozed.filter().state, Some(StateFilter::Snoozed));
-        assert_eq!(View::Done.filter().state, Some(StateFilter::Done));
-        let codex = View::Source(SourceRef::agent("codex")).filter();
+        assert_eq!(
+            View::ForMe.filter(),
+            Some(ItemFilter { lane: Some(Lane::ForMe), state: open, ..ItemFilter::default() })
+        );
+        assert_eq!(
+            View::Info.filter(),
+            Some(ItemFilter { lane: Some(Lane::Info), state: open, ..ItemFilter::default() })
+        );
+        assert_eq!(View::Snoozed.filter().and_then(|f| f.state), Some(StateFilter::Snoozed));
+        assert_eq!(View::Done.filter().and_then(|f| f.state), Some(StateFilter::Done));
+        let codex = View::Source(SourceRef::agent("codex")).filter().expect("entries");
         assert_eq!((codex.lane, codex.source, codex.state), (None, Some(SourceRef::agent("codex")), open));
         assert_eq!(View::ForMe.name(), tr("For me"));
         assert_eq!(View::Source(SourceRef::agent("claude-code")).name(), "Claude Code");
@@ -2313,12 +3059,12 @@ mod tests {
     #[test]
     fn for_me_shows_urgent_entries_first_and_counts_them() {
         let app = loaded(&[]);
-        assert_eq!(ids(&app), ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"]);
-        assert_eq!(app.for_me.len(), 6);
-        assert_eq!(app.count_note(), "6", "only the number: the title already says For me");
+        assert_eq!(ids(&app), FOR_ME);
+        assert_eq!(app.for_me.len(), 9);
+        assert_eq!(app.count_note(), "9", "only the number: the title already says For me");
         let groups = list::groups(&app.items);
-        assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..6)], "waiting entries get a head");
-        assert_eq!(app.sources.len(), 7, "suite, two agents, four scripts");
+        assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..9)], "waiting entries get a head");
+        assert_eq!(app.sources.len(), 9, "suite, two agents, four scripts, two mail accounts");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
     }
 
@@ -2327,9 +3073,9 @@ mod tests {
         let mut app = loaded(&[]);
         let _ = app.update(Message::Show(View::Info));
         load(&mut app);
-        assert_eq!(ids(&app), ["demo-8", "demo-9", "demo-7"]);
-        assert_eq!(app.for_me.len(), 6, "the sidebar still counts For me");
-        assert_eq!(app.count_note(), "3");
+        assert_eq!(ids(&app), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7"]);
+        assert_eq!(app.for_me.len(), 9, "the sidebar still counts For me");
+        assert_eq!(app.count_note(), "5");
         let _ = app.update(Message::Show(View::Source(SourceRef::suite())));
         load(&mut app);
         assert_eq!(ids(&app), ["demo-3", "demo-5"]);
@@ -2341,7 +3087,7 @@ mod tests {
         let _ = app.update(Message::Show(View::Info));
         load(&mut app);
         let for_me: Vec<&str> = app.for_me.iter().map(|item| item.id.as_str()).collect();
-        assert_eq!(for_me, ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"], "not Info's entries");
+        assert_eq!(for_me, FOR_ME, "not Info's entries");
         assert_eq!(glance::waiting(&app.for_me), 3);
     }
 
@@ -2405,10 +3151,10 @@ mod tests {
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
         let mut app = loaded(&[]);
-        let for_me = block_on(fetch(app.inbox.clone(), View::ForMe, false));
+        let for_me = block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE));
         let _ = app.update(Message::Show(View::Done));
         let _ = app.update(Message::Loaded(View::ForMe, for_me));
-        assert_eq!(ids(&app).len(), 6, "still the old list, not taken for Done");
+        assert_eq!(ids(&app).len(), FOR_ME.len(), "still the old list, not taken for Done");
         load(&mut app);
         assert_eq!(ids(&app), ["demo-11"]);
     }
@@ -2455,9 +3201,10 @@ mod tests {
         );
         load(&mut app);
         assert!(!ids(&app).contains(&"demo-6"));
-        assert_eq!(app.for_me.len(), 5);
-        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-5"), "the row in its place");
-        assert_eq!(app.cursor.as_deref(), Some("demo-5"));
+        assert_eq!(app.for_me.len(), FOR_ME.len() - 1);
+        let next = Some("demo-mail-4");
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), next, "the row in its place");
+        assert_eq!(app.cursor.as_deref(), next);
         let reopened =
             block_on(app.inbox.set_item_done("demo-6".into(), false)).map(Box::new).map_err(|e| e.to_string());
         let _ = app.update(Message::Changed(reopened));
@@ -2533,11 +3280,11 @@ mod tests {
         assert_eq!(labels, [tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
         assert_eq!(
             views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
-            [Trail::Count(6), Trail::Count(3)],
+            [Trail::Count(9), Trail::Count(5)],
             "For me and Info count their open entries"
         );
         let by_source: usize = sources.iter().filter_map(|e| e.count).sum();
-        assert_eq!(by_source, 6 + 3, "the sources add up to For me plus Info");
+        assert_eq!(by_source, 9 + 5, "the sources add up to For me plus Info");
         assert_eq!(sources.first().map(|e| e.label.clone()), Some(tr("Suite").to_owned()));
         assert_eq!(sources.first().map(NavEntry::trail), Some(Trail::Count(2)));
         block_on(app.inbox.mute_source(SourceRef::script("backup"), true)).expect("mute");
@@ -2650,7 +3397,7 @@ mod tests {
 
     // ----- Triage (E3.2) ---------------------------------------------------------------------
 
-    fn press<S: InboxSource + 'static>(app: &mut App<S>, key: Key) -> Task<Message> {
+    fn press<S: InboxSource + MailSource + 'static>(app: &mut App<S>, key: Key) -> Task<Message> {
         app.update(Message::Key(key))
     }
 
@@ -2708,9 +3455,9 @@ mod tests {
         assert_eq!(cursor(&app), Some("demo-1"), "stops at the first row");
         let mut app = loaded(&[]);
         let _ = press(&mut app, Key::Up);
-        assert_eq!(cursor(&app), Some("demo-5"), "up starts at the bottom");
+        assert_eq!(cursor(&app), Some("demo-mail-2"), "up starts at the bottom");
         let _ = press(&mut app, Key::Down);
-        assert_eq!(cursor(&app), Some("demo-5"), "stops at the last row");
+        assert_eq!(cursor(&app), Some("demo-mail-2"), "stops at the last row");
         let mut empty = loaded(&["--open", "empty"]);
         let _ = press(&mut empty, Key::Down);
         assert_eq!(cursor(&empty), None);
@@ -2744,7 +3491,7 @@ mod tests {
         let _ = app.update(Message::CloseDetail);
         let _ = press(&mut app, Key::Down);
         assert!(app.detail.is_none(), "a closed panel stays closed");
-        assert_eq!(cursor(&app), Some("demo-4"));
+        assert_eq!(cursor(&app), Some("demo-mail-1"));
     }
 
     #[test]
@@ -3248,5 +3995,333 @@ mod tests {
                 let _ = app.view();
             }
         }
+    }
+
+    // Mail (task E4.2).
+
+    /// The view of the demo folder `id`.
+    fn folder_view<S>(app: &App<S>, id: &str) -> View {
+        View::Folder(FolderView::of(app.folders.iter().find(|folder| folder.id == id).expect("a demo folder")))
+    }
+
+    /// The demo app on the work account's inbox, loaded.
+    fn in_folder(id: &str) -> App<DemoSource> {
+        let mut app = loaded(&[]);
+        let view = folder_view(&app, id);
+        let _ = app.update(Message::Show(view));
+        load(&mut app);
+        app
+    }
+
+    fn message_ids<S>(app: &App<S>) -> Vec<&str> {
+        app.messages.iter().map(|message| message.id.as_str()).collect()
+    }
+
+    /// Runs the last mail change the window started against the demo, hands the answer to
+    /// `update` as the task would, and loads the view again.
+    fn deliver_mail(app: &mut App<DemoSource>) {
+        let Some(Sent::Mail(edit, hint)) = app.sent.pop() else { panic!("no mail change to deliver") };
+        let result = block_on(edit.apply(app.inbox.clone()));
+        let _ = app.update(Message::MailEdited(result, hint));
+        load(app);
+    }
+
+    /// The whole mail `id` from the demo, handed to the panel as the task would.
+    fn deliver_letter(app: &mut App<DemoSource>, id: &str) {
+        let mail =
+            block_on(MailSource::get_mail(app.inbox.as_ref(), id.into())).map(Box::new).map_err(|err| err.to_string());
+        let _ = app.update(Message::LetterLoaded(id.into(), mail));
+    }
+
+    fn draw_everywhere<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+    }
+
+    #[test]
+    fn a_window_of_mail_starts_on_the_first_inbox_and_lists_folders_only() {
+        let launch = Launch::parse(&args(&["--source", "mail"])).expect("valid parameters");
+        assert_eq!(launch.view, Some(View::Mail));
+        let mut app = loaded(&["--source", "mail"]);
+        assert!(app.mail_only);
+        assert_eq!(app.listed, None, "the folders are in and the inbox chosen, not yet its mail");
+        load(&mut app);
+        assert_eq!(app.view.folder().map(|folder| folder.id.as_str()), Some("f:work-inbox"));
+        assert_eq!(message_ids(&app), ["m:w1", "m:w2", "m:w3", "m:w4", "m:w5", "m:w6"], "newest first");
+        assert_eq!(app.count_note(), "6");
+        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Inbox"))]));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+        let _ = app.view();
+    }
+
+    #[test]
+    fn without_a_mail_account_the_window_of_mail_says_so() {
+        let launch = Launch::parse(&args(&["--source", "mail"])).expect("valid parameters");
+        let mut app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        load(&mut app);
+        assert_eq!(app.view, View::Mail, "nothing to start on");
+        assert!(app.loaded && app.folders.is_empty());
+        draw_everywhere(&mut app);
+    }
+
+    #[test]
+    fn the_compose_window_reads_what_the_panel_starts_it_with() {
+        for (kind, flag) in
+            [(Compose::Reply, "--reply"), (Compose::ReplyAll, "--reply-all"), (Compose::Forward, "--forward")]
+        {
+            let started = mail::compose_args(kind, "m:w1", true);
+            let launch = Launch::parse(&started).expect("the arguments the panel starts the window with");
+            let compose = launch.compose.expect("a compose window");
+            assert_eq!(compose.kind.message(), Some("m:w1"), "{flag}");
+            assert_eq!((launch.open, launch.view), (None, None), "it shows no inbox");
+        }
+        let new = Launch::parse(&compose::new_args(false)).expect("a new message");
+        assert_eq!(new.compose.map(|start| start.kind), Some(compose::Kind::New));
+        let account = Launch::parse(&args(&["--compose", "--account", "anna@example.org"])).expect("an account");
+        assert_eq!(account.compose.and_then(|start| start.account), Some("mail:anna@example.org".into()));
+    }
+
+    #[test]
+    fn compose_flags_are_refused_where_they_make_no_sense() {
+        let refused = |words: &[&str]| Launch::parse(&args(words)).expect_err("refused");
+        assert_eq!(refused(&["--reply", "m:w1"]), LaunchError::NeedsCompose("--reply"));
+        assert_eq!(refused(&["--account", "anna@example.org"]), LaunchError::NeedsCompose("--account"));
+        assert_eq!(
+            refused(&["--compose", "--reply", "m:w1", "--forward", "m:w2"]),
+            LaunchError::Conflict("--reply", "--forward")
+        );
+        assert_eq!(refused(&["--compose", "--reply"]), LaunchError::MissingValue("--reply"));
+        assert_eq!(refused(&["--compose", "--open", "cc"]), LaunchError::NeedsDemo("--open"));
+        assert!(matches!(refused(&["--compose", "--demo", "--open", "nope"]), LaunchError::UnknownValue { .. }));
+        let demo = Launch::parse(&args(&["--compose", "--demo", "--open", "cc"])).expect("a state of the window");
+        assert_eq!(demo.compose.and_then(|start| start.open), Some(compose::Open::Cc));
+    }
+
+    #[test]
+    fn the_new_button_writes_a_message_when_there_is_a_mail_account() {
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Switcher(Switcher::New));
+        assert_eq!(app.sent.last(), Some(&Sent::Compose(vec!["--compose".into(), "--demo".into()])));
+        let mut none = demo(&["--demo"]);
+        let _ = none.update(Message::Switcher(Switcher::New));
+        assert!(!none.sent.iter().any(|sent| matches!(sent, Sent::Compose(_))), "no account, no window");
+    }
+
+    #[test]
+    fn the_sidebar_groups_the_folders_by_account() {
+        let mut app = loaded(&[]);
+        let groups = app.mail_groups();
+        let titles: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
+        assert_eq!(titles, ["anna@work.example.org", "anna@example.org"], "two accounts: one group each");
+        assert_eq!(groups.iter().map(|group| group.open).collect::<Vec<_>>(), [true, false], "the first unfolded");
+        let work: Vec<(&str, Option<usize>)> =
+            groups[0].rows.iter().map(|row| (row.label.as_str(), row.count)).collect();
+        assert_eq!(
+            work,
+            [
+                (tr("Inbox"), Some(3)),
+                (tr("Drafts"), None),
+                (tr("Sent"), None),
+                (tr("Archive"), None),
+                (tr("Junk"), None),
+                (tr("Trash"), None),
+                ("Projects", None)
+            ],
+            "unread counted where it is news, no 0"
+        );
+        let _ = app.update(Message::ToggleAccount("mail:anna@work.example.org".into()));
+        assert!(!app.mail_groups()[0].open, "folded by hand");
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.view();
+        let _ = app.update(Message::ToggleAccount("mail:anna@work.example.org".into()));
+        assert!(app.mail_groups()[0].open);
+        let view = folder_view(&app, "f:private-inbox");
+        let _ = app.update(Message::Show(view));
+        let groups = app.mail_groups();
+        assert!(groups[1].open, "the account of the folder shown unfolds");
+        assert!(groups[1].rows[0].active, "the folder shown is the active row");
+    }
+
+    #[test]
+    fn opening_a_message_loads_the_whole_mail_and_marks_it_read() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        assert!(app.panel_open());
+        assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w1"));
+        assert!(app.sent.contains(&Sent::Letter("m:w1".into())));
+        assert!(app.messages[0].flags.contains(&Flag::Seen), "read at once in the list");
+        let read = MailEdit::Flags { ids: vec!["m:w1".into()], add: vec![Flag::Seen], remove: Vec::new() };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(read, None)), "and on the server");
+        deliver_letter(&mut app, "m:w1");
+        assert!(matches!(app.letter.as_ref().and_then(|letter| letter.loaded.as_ref()), Some(Ok(_))));
+        draw_everywhere(&mut app);
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w2"), "the panel follows");
+        let _ = app.update(Message::Escape);
+        assert!(!app.panel_open() && app.letter.is_none());
+        let _ = press(&mut app, Key::Enter);
+        assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w2"), "Enter opens it again");
+    }
+
+    #[test]
+    fn e_archives_in_a_folder_and_undo_moves_it_back() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::E);
+        assert_eq!(cursor(&app), Some("m:w2"), "the next row takes its place");
+        let ids = vec!["m:w1".to_owned()];
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("an archive with a hint") };
+        assert_eq!(edit, MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Archive) });
+        assert_eq!(hint.text, tr("Archived"));
+        let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        deliver_mail(&mut app);
+        assert!(!message_ids(&app).contains(&"m:w1"));
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Archived")));
+        let _ = press(&mut app, Key::U);
+        deliver_mail(&mut app);
+        assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox, with the same id");
+    }
+
+    #[test]
+    fn mail_keys_work_on_mail_entries_too() {
+        let mut app = at("demo-mail-1");
+        for (key, kind) in [(Key::R, Compose::Reply), (Key::A, Compose::ReplyAll), (Key::F, Compose::Forward)] {
+            let _ = press(&mut app, key);
+            assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(kind, "m:w1", true))), "{key:?}");
+        }
+        let _ = press(&mut app, Key::Hash);
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("a delete with a hint") };
+        assert_eq!(edit, MailEdit::Delete { ids: vec!["m:w1".into()] });
+        assert_eq!(hint.text, tr("Moved to Trash"));
+        let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Inbox) };
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }));
+        deliver_mail(&mut app);
+        assert!(!ids(&app).contains(&"demo-mail-1"), "its mail left the inbox: the entry is done");
+
+        let mut app = at("demo-1");
+        let before = app.sent.len();
+        for key in [Key::R, Key::A, Key::F, Key::Hash] {
+            let _ = press(&mut app, key);
+        }
+        assert_eq!(app.sent.len(), before, "no mail behind a waiting agent");
+    }
+
+    #[test]
+    fn enter_opens_a_mail_entry_in_the_panel_with_its_mail() {
+        let mut app = at("demo-mail-1");
+        let _ = press(&mut app, Key::Enter);
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-mail-1"));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Open(_))), "shown here, not opened elsewhere");
+        assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w1"));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(..))), "read once the entry is done");
+        draw_everywhere(&mut app);
+        deliver_letter(&mut app, "m:w1");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Select("demo-1".into()));
+        assert!(app.letter.is_none(), "no mail behind an agent's entry");
+    }
+
+    #[test]
+    fn mail_in_the_trash_is_not_deleted_again() {
+        let mut app = in_folder("f:work-trash");
+        let _ = press(&mut app, Key::Down);
+        let before = app.sent.len();
+        let _ = press(&mut app, Key::Hash);
+        assert_eq!(app.sent.len(), before);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This message is in the trash already.")));
+    }
+
+    #[test]
+    fn a_search_shows_what_it_found_and_clearing_it_the_whole_folder() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SearchInput("minutes".into()));
+        let _ = app.update(Message::Search);
+        assert_eq!(app.view.folder().and_then(|folder| folder.query.as_deref()), Some("minutes"));
+        load(&mut app);
+        assert_eq!(message_ids(&app), ["m:w6"]);
+        assert_eq!(app.count_note(), "1", "what it found");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::ClearSearch);
+        assert_eq!((app.search.as_str(), app.view.folder().and_then(|f| f.query.clone())), ("", None));
+        load(&mut app);
+        assert_eq!(app.messages.len(), 6);
+        let _ = app.update(Message::SearchInput("nothing like this".into()));
+        let _ = app.update(Message::Search);
+        load(&mut app);
+        assert!(app.messages.is_empty());
+        draw_everywhere(&mut app);
+    }
+
+    #[test]
+    fn flags_change_at_once_and_on_the_server() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w4".into()));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(..))), "read already");
+        let _ = app.update(Message::Mail(MailAction::Flag(true), "m:w4".into()));
+        assert!(app.messages[3].flags.contains(&Flag::Flagged));
+        let flag = MailEdit::Flags { ids: vec!["m:w4".into()], add: vec![Flag::Flagged], remove: Vec::new() };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
+        deliver_mail(&mut app);
+        let _ = app.update(Message::Mail(MailAction::Read(false), "m:w4".into()));
+        deliver_mail(&mut app);
+        let w4 = app.messages.iter().find(|message| message.id == "m:w4").expect("listed");
+        assert_eq!(w4.flags, [Flag::Flagged], "flagged and unread, from the server");
+    }
+
+    #[test]
+    fn load_more_asks_for_the_next_page_and_adds_it() {
+        let mut app = in_folder("f:work-inbox");
+        app.more = Some("4".into());
+        let _ = app.update(Message::MoreMail);
+        assert_eq!(app.sent.last(), Some(&Sent::More("4".into())));
+        let page =
+            block_on(MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 4, Some("4".into())))
+                .map_err(|err| err.to_string());
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), page));
+        assert_eq!(app.messages.len(), 6, "nothing twice");
+        assert_eq!(app.more, None);
+        assert_eq!(app.page_limit(), mail::PAGE, "a load asks for a page at least");
+    }
+
+    #[test]
+    fn attachments_and_links_open_only_what_they_name() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::OpenAttachment("m:w1".into(), "2".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Attachment("m:w1".into(), "2".into())));
+        let before = app.sent.len();
+        let _ = app.update(Message::OpenMailLink("file:///etc/passwd".into()));
+        assert_eq!(app.sent.len(), before, "only web addresses");
+        let _ = app.update(Message::OpenMailLink("https://intranet.work.example.org/budget/q4".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Link("https://intranet.work.example.org/budget/q4".into())));
+        let opened = Opened::Folder(std::path::PathBuf::from("/tmp/setup.exe"));
+        let _ = app.update(Message::AttachmentOpened(Ok(opened.clone())));
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(mail::opened_text(&opened)));
+    }
+
+    #[test]
+    fn the_mail_states_open_and_draw_in_every_size() {
+        let mut folder = loaded(&["--open", "folder"]);
+        load(&mut folder);
+        assert_eq!(folder.view.folder().map(|f| f.id.as_str()), Some("f:work-inbox"));
+        assert!(!folder.panel_open());
+        draw_everywhere(&mut folder);
+
+        let mut open = loaded(&["--open", "mail"]);
+        load(&mut open);
+        assert!(open.panel_open());
+        assert_eq!(open.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w1"));
+        deliver_letter(&mut open, "m:w1");
+        draw_everywhere(&mut open);
+
+        let mut entry = loaded(&["--open", "mail-entry"]);
+        assert_eq!(entry.detail.as_ref().map(|item| item.id.as_str()), Some("demo-mail-1"));
+        assert_eq!(entry.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w1"));
+        deliver_letter(&mut entry, "m:w1");
+        draw_everywhere(&mut entry);
     }
 }

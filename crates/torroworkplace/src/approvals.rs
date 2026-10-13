@@ -49,7 +49,7 @@ use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::{Item, Lane, Link, Rule, RuleEffect, SourceRef};
 use torro_ipc::api::Mcp;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
-use torro_mail::Role;
+use torro_mail::{MailAddress, Role};
 use torro_pim::{Event, EventTime, Todo};
 use torro_setups::LoadMode;
 
@@ -278,16 +278,24 @@ pub struct Facts {
 ///
 /// - `mail.send_draft`, from [`MailFacts::draft`]: `Send "<subject>" from <account> to
 ///   <first recipient>`, then ` and <n> more` when there are more recipients (Cc and Bcc counted),
-///   then `, <n> attachments` when there are any. The full list of recipients belongs in the
-///   approval's detail view. Without the draft: "Send an unknown draft".
-/// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages to
-///   "<folder>", among them "<first subject>"` for several; a role is named by its word ("Archive").
-///   Messages the store does not hold count as unknown ("Move 2 unknown messages to …").
-/// - `mail.delete_messages`: as moving, with "Delete" and, for `permanent`, "for good" at the end.
-/// - `mail.set_flags` (only with `confirm: on_every_change`): `Mark "<subject>" read` and the like,
-///   or `Change the flags of <n> messages`.
-/// - `mail.save_draft`: a new draft `Save a draft "<subject>" in <account>`; replacing one
-///   `Replace the draft "<subject as stored>"`.
+///   then `, <n> attachments` when there are any, then `, Bcc: <address>, …` naming every blind
+///   copy (the first [`BCC_SHOWN`], then ` and <n> more`), then `: "<start of the text>"` (task
+///   M3.3). A blind copy is how mail would leave unseen, so the summary never folds it into the
+///   count alone. Every recipient, the attachments and more of the text are in the approval's
+///   details ([`details`], task M3.5). Without the draft: "Send an unknown draft".
+/// - `mail.move_messages`: `Move "<subject>" to "<folder>"` for one message, `Move <n> messages,
+///   among them "<first subject>", to "<folder>"` for several; the folder by the name the store
+///   has, a role without a folder by its word ("Archive"). Messages the store does not hold count
+///   as unknown ("Move 2 unknown messages to …"). An empty subject is "(no subject)".
+/// - `mail.delete_messages`: as moving, `Delete …` and, for `permanent`, `Delete … for good`.
+/// - `mail.set_flags` (only with `confirm: on_every_change`): `Mark "<subject>" as read, not
+///   flagged` and the like.
+/// - `mail.save_draft`: a new draft `Save a draft "<subject>" in <account>` (the subject the client
+///   sent, since that is what will be written); replacing one `Replace the draft "<subject as
+///   stored>"`, or "Replace an unknown draft".
+///
+/// Task M3.2 fills [`DraftFacts::subject`] only (replacing a draft); M3.3 counts the recipients
+/// with Bcc and the attachments of the stored draft for sending (`crate::mail::send`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MailFacts {
     /// The account's address as the core knows it (`anna@mailbox.org`); `None` when unknown: the
@@ -310,11 +318,35 @@ pub struct DraftFacts {
     pub subject: String,
     /// The first recipient's address (`To`, else `Cc`, else `Bcc`); `None` without recipients.
     pub first_recipient: Option<String>,
-    /// All recipients: `To`, `Cc` and `Bcc` together.
+    /// All recipients: `To`, `Cc` and `Bcc` together, each address once.
     pub recipients: usize,
     /// The attachments, files and forwarded parts together.
     pub attachments: usize,
+    /// For `mail.send_draft` (task M3.3): the start of the text that goes out, on one line; empty
+    /// for a draft without text. The summary shows its first 60 characters ([`quote`]).
+    pub text_start: String,
+    /// For `mail.send_draft` (task M3.3): the Bcc addresses, which the summary names one by one.
+    pub bcc: Vec<String>,
+    /// For the details of `mail.send_draft` (task M3.5, [`details`]): the `To` recipients as the
+    /// draft has them, with their names.
+    pub to: Vec<MailAddress>,
+    /// For the details of `mail.send_draft`: the `Cc` recipients, with their names.
+    pub cc: Vec<MailAddress>,
+    /// For the details of `mail.send_draft`: every attachment that goes out, in the draft's order.
+    pub files: Vec<FileFact>,
 }
+
+/// One attachment of a draft that is sent, for the details of its approval ([`details`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileFact {
+    /// The file name as it goes out (made safe by the core).
+    pub name: String,
+    /// Its size in bytes.
+    pub size: u64,
+}
+
+/// How many Bcc addresses a summary of `mail.send_draft` names before it says "and <n> more".
+pub const BCC_SHOWN: usize = 5;
 
 /// An event or task as the core caches it, for [`Facts::item`].
 #[derive(Debug, Clone, PartialEq)]
@@ -362,6 +394,10 @@ struct Entry {
     /// Missing in approvals stored before task E1.2c, and for every other command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pin: Option<EntryPin>,
+    /// For `mail.send_draft` (task M3.3): the fingerprint of the message the person was shown
+    /// ([`Approvals::open_with_fingerprint`]). Missing for every other command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -445,8 +481,10 @@ pub enum Decision {
     /// Allowed: the approval is [`ApprovalState::Running`]. Run `request` for the client `client`
     /// (rights and collections checked again) and store its answer with [`Approvals::finish`].
     /// With a `pin`, the inbox entry the request names must still hold it ([`EntryPin::holds`]),
-    /// else the core answers `conflict` and runs nothing.
-    Run { client: String, request: Box<Request>, pin: Option<EntryPin> },
+    /// else the core answers `conflict` and runs nothing. With a `fingerprint`
+    /// ([`Approvals::open_with_fingerprint`], `mail.send_draft`), the message built now must have
+    /// the same one, else the core answers `conflict` and sends nothing.
+    Run { client: String, request: Box<Request>, pin: Option<EntryPin>, fingerprint: Option<String> },
 }
 
 /// The open and recent approvals of the core.
@@ -522,6 +560,39 @@ impl Approvals {
         summary: String,
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
+        self.open_entry(client, client_name, request, (pin, None), (summary, Vec::new()), now).await
+    }
+
+    /// [`Approvals::open`] for a command that must run on exactly what the person was shown
+    /// (task M3.3, `mail.send_draft`): `fingerprint` names it (for a mail, the SHA-256 of the
+    /// built message and its envelope). It is stored with the approval, handed back with the
+    /// decision ([`Decision::Run`]), and the caller compares it with what it would run then. It is
+    /// never shown to the client: it is no code to confirm with.
+    ///
+    /// `(summary, details)` is what the person is shown: the summary ([`summary`]) and the lines
+    /// below it ([`details`], task M3.5), both stored in [`ApprovalInfo`].
+    pub async fn open_with_fingerprint(
+        &self,
+        client: &str,
+        client_name: &str,
+        request: Request,
+        fingerprint: String,
+        (summary, details): (String, Vec<String>),
+        now: DateTime<Utc>,
+    ) -> Result<ApprovalInfo, ApprovalsError> {
+        self.open_entry(client, client_name, request, (None, Some(fingerprint)), (summary, details), now).await
+    }
+
+    /// [`Approvals::open`] with the entry's pin and fingerprint, and the details it shows.
+    async fn open_entry(
+        &self,
+        client: &str,
+        client_name: &str,
+        request: Request,
+        (pin, fingerprint): (Option<EntryPin>, Option<String>),
+        (summary, details): (String, Vec<String>),
+        now: DateTime<Utc>,
+    ) -> Result<ApprovalInfo, ApprovalsError> {
         let command = request.operation().command;
         if command.mcp == Mcp::Never {
             return Err(ApprovalsError::KeptBack(command.name));
@@ -547,12 +618,13 @@ impl Approvals {
             client_name: if client_name.trim().is_empty() { client } else { client_name }.to_string(),
             command: command.name.to_string(),
             summary,
+            details,
             created: now,
             expires: now + lifetime(&request),
             decided: None,
             state: ApprovalState::Pending,
         };
-        state.entries.push(Entry { info: info.clone(), request, pin });
+        state.entries.push(Entry { info: info.clone(), request, pin, fingerprint });
         if let Err(err) = self.write(&state).await {
             state.entries.pop();
             return Err(err);
@@ -651,7 +723,12 @@ impl Approvals {
         entry.info.state = if allow { ApprovalState::Running } else { ApprovalState::Denied };
         let request = Box::new(entry.request.clone());
         let decision = match allow {
-            true => Decision::Run { client: entry.info.client.clone(), request, pin: entry.pin },
+            true => Decision::Run {
+                client: entry.info.client.clone(),
+                request,
+                pin: entry.pin,
+                fingerprint: entry.fingerprint.clone(),
+            },
             false => Decision::Denied { approval: entry.info.clone(), request },
         };
         if let Err(err) = self.write(&state).await {
@@ -952,6 +1029,48 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 false => trf("Add a link to {item} to \"{list}\"", &args),
             }
         }
+        Request::SetMailFlags { ids, add, remove } => trf(
+            "Mark {messages} as {flags}",
+            &[("messages", &mail_messages(facts.mail.as_ref(), ids.len())), ("flags", &flag_words(add, remove))],
+        ),
+        Request::MoveMail { ids, to } => {
+            // The folder as the store names it; for a role the core found no folder for, its word.
+            let folder = match (facts.mail.as_ref().and_then(|mail| mail.folder.as_deref()), to) {
+                (Some(folder), _) => quote(folder),
+                (None, torro_ipc::mail::MoveTarget::Role(role)) => role_word(role.role()).to_string(),
+                (None, torro_ipc::mail::MoveTarget::Folder(id)) => quote(id),
+            };
+            trf(
+                "Move {messages} to \"{folder}\"",
+                &[("messages", &mail_messages(facts.mail.as_ref(), ids.len())), ("folder", &folder)],
+            )
+        }
+        Request::DeleteMail { ids, permanent } => {
+            let messages = mail_messages(facts.mail.as_ref(), ids.len());
+            match permanent {
+                true => trf("Delete {messages} for good", &[("messages", &messages)]),
+                false => trf("Delete {messages}", &[("messages", &messages)]),
+            }
+        }
+        Request::SaveDraft { draft } => match (&draft.id, facts.mail.as_ref().and_then(|mail| mail.draft.as_ref())) {
+            (Some(_), Some(stored)) => trf("Replace the draft {subject}", &[("subject", &subject(&stored.subject))]),
+            (Some(_), None) => tr("Replace an unknown draft").to_string(),
+            // A new draft: what will be written is the client's text, in the account the core knows.
+            (None, _) => {
+                let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or(&draft.account);
+                trf(
+                    "Save a draft {subject} in {account}",
+                    &[("subject", &subject(&draft.subject)), ("account", &quote(account))],
+                )
+            }
+        },
+        Request::SendDraft { .. } => match facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) {
+            Some(draft) => {
+                let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or_default();
+                draft_sent(draft, account)
+            }
+            None => tr("Send an unknown draft").to_string(),
+        },
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
@@ -1009,6 +1128,10 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 trf("Open {app} from {entry}", &[("app", &quote(name)), ("entry", &entry())])
             }
             Some(Link::Window) => trf("Bring the agent window of {entry} to the front", &[("entry", &entry())]),
+            // A mail opens in the Inbox app (task E4.1).
+            Some(Link::Mail { .. }) => {
+                trf("Open {app} from {entry}", &[("app", &quote(AppId::INBOX.display_name)), ("entry", &entry())])
+            }
             None => trf("Show {entry} on the screen", &[("entry", &entry())]),
         },
         // The title that will be written: the client's, or – left out or blank – the entry's. The
@@ -1028,6 +1151,10 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 ),
             }
         }
+        // Done marks the mail of a mail entry read on its server (task E4.1).
+        Request::SetItemDone { done: true, .. } if is_mail(facts.item.as_ref()) => {
+            trf("Mark {entry} as done and its mail as read", &[("entry", &entry())])
+        }
         Request::SetItemDone { done: true, .. } => trf("Mark {entry} as done", &[("entry", &entry())]),
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
         Request::SnoozeItem { until: Some(until), .. } => trf(
@@ -1037,6 +1164,16 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::SnoozeItem { until: None, .. } => trf("Stop snoozing {entry}", &[("entry", &entry())]),
         Request::SetItemLane { lane, remember: false, .. } => {
             trf("Move {entry} to {lane}", &[("entry", &entry()), ("lane", &lane_name(*lane))])
+        }
+        // For mail the lane is kept for the sender, not the account (task E4.1).
+        Request::SetItemLane { lane, remember: true, .. }
+            if facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).is_some() =>
+        {
+            let sender = facts.item.as_ref().and_then(torro_inbox::rules::mail_sender).unwrap_or_default();
+            trf(
+                "Move {entry} to {lane} and send later mail from {sender} there too",
+                &[("entry", &entry()), ("lane", &lane_name(*lane)), ("sender", &format!("\"{}\"", quote(&sender)))],
+            )
         }
         Request::SetItemLane { lane, remember: true, .. } => {
             let source =
@@ -1056,6 +1193,14 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             Some(Rule { source, effect: RuleEffect::Muted, .. }) => {
                 trf("Unmute {source} in the inbox", &[("source", &source_name(source))])
             }
+            Some(Rule { source, sender: Some(sender), effect: RuleEffect::Lane { lane }, .. }) => trf(
+                "Stop sending mail from {sender} of {source} to {lane}",
+                &[
+                    ("sender", &format!("\"{}\"", quote(sender))),
+                    ("source", &source_name(source)),
+                    ("lane", &lane_name(*lane)),
+                ],
+            ),
             Some(Rule { source, effect: RuleEffect::Lane { lane }, .. }) => trf(
                 "Stop sending notices of {source} to {lane}",
                 &[("source", &source_name(source)), ("lane", &lane_name(*lane))],
@@ -1075,6 +1220,11 @@ fn web_host(url: &str) -> Option<String> {
     let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
     (!host.is_empty()).then(|| host.to_string())
+}
+
+/// `item` is an entry of a mail account (task E4.1).
+fn is_mail(item: Option<&Item>) -> bool {
+    item.is_some_and(|item| item.source.kind == torro_inbox::SourceKind::Mail)
 }
 
 /// A source for a summary: its label and its key, `"Codex" (agent:codex)`, both quoted.
@@ -1249,6 +1399,133 @@ fn mail_account_changes(
     changes.join(", ")
 }
 
+/// The messages a mail command names, from what the store holds ([`MailFacts`]): one known
+/// message by its subject, several by their number and the first subject, else "an unknown
+/// message" or "<n> unknown messages". `count` is how many ids the request names.
+fn mail_messages(facts: Option<&MailFacts>, count: usize) -> String {
+    let first = facts.and_then(|facts| facts.subjects.first());
+    match (count, first) {
+        (1, Some(first)) => subject(first),
+        (_, Some(first)) => trf("{n} messages, among them {subject}", &[("n", &count), ("subject", &subject(first))]),
+        (1, None) => tr("an unknown message").to_string(),
+        (_, None) => trf("{n} unknown messages", &[("n", &count)]),
+    }
+}
+
+/// The summary of sending `draft` from the account with the address `account` (task M3.3, rules
+/// at [`MailFacts`]): subject, account, first recipient and how many more, attachments, the start
+/// of the text.
+fn draft_sent(draft: &DraftFacts, account: &str) -> String {
+    let first = quote(draft.first_recipient.as_deref().unwrap_or_default());
+    let recipients = match draft.recipients.saturating_sub(1) {
+        0 => first,
+        more => trf("{first} and {n} more", &[("first", &first), ("n", &more)]),
+    };
+    let mut said = trf(
+        "Send {subject} from {account} to {recipients}",
+        &[("subject", &subject(&draft.subject)), ("account", &quote(account)), ("recipients", &recipients)],
+    );
+    match draft.attachments {
+        0 => {}
+        1 => said = trf("{summary}, 1 attachment", &[("summary", &said)]),
+        n => said = trf("{summary}, {n} attachments", &[("summary", &said), ("n", &n)]),
+    }
+    if !draft.bcc.is_empty() {
+        let shown: Vec<String> = draft.bcc.iter().take(BCC_SHOWN).map(|address| quote(address)).collect();
+        let list = match draft.bcc.len().saturating_sub(BCC_SHOWN) {
+            0 => shown.join(", "),
+            more => trf("{first} and {n} more", &[("first", &shown.join(", ")), ("n", &more)]),
+        };
+        said = trf("{summary}, Bcc: {list}", &[("summary", &said), ("list", &list)]);
+    }
+    match quote(&draft.text_start) {
+        empty if empty.is_empty() => said,
+        text => format!("{said}: \"{text}\""),
+    }
+}
+
+/// The longest piece of text from outside in a line of the details ([`details`]), in characters:
+/// room for a long subject, an address and the start of the text (`mime` keeps 200 of it).
+pub const DETAIL_MAX: usize = 200;
+
+/// What the summary of `request` leaves out, one line each, in the core's language (task M3.5,
+/// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and for a draft the
+/// core does not hold. For sending, from [`MailFacts::draft`], in this order:
+///
+/// - `Subject: "<subject>"` ("(no subject)" for none);
+/// - `To: <address>` per recipient, `<address> ("<name>")` with a name, then `Cc: …`, then
+///   `Bcc: <address>`: every recipient, the address first, so a name cannot hide where it goes;
+/// - `Attachment: "<file name>", <size>` per attachment ("12 KB");
+/// - `Text: "<start of the text>"` unless it is empty.
+///
+/// Every text from the draft is made harmless as in the summary ([`quote`]: one line, no format
+/// characters, no double quotes, no braces), but cut at [`DETAIL_MAX`] characters instead of 60.
+/// The person sees all of it, so nothing is left out but the end of a long text.
+pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    let Request::SendDraft { .. } = request else { return Vec::new() };
+    let Some(draft) = facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) else { return Vec::new() };
+    let long = |text: &str| quote_up_to(text, DETAIL_MAX);
+    let recipient = |who: &MailAddress| match who.name.as_deref().map(long).filter(|name| !name.is_empty()) {
+        Some(name) => format!("{} (\"{name}\")", long(&who.address)),
+        None => long(&who.address),
+    };
+    let subject = match long(&draft.subject) {
+        empty if empty.is_empty() => tr("(no subject)").to_string(),
+        quoted => format!("\"{quoted}\""),
+    };
+    let mut lines = vec![trf("Subject: {subject}", &[("subject", &subject)])];
+    lines.extend(draft.to.iter().map(|who| trf("To: {recipient}", &[("recipient", &recipient(who))])));
+    lines.extend(draft.cc.iter().map(|who| trf("Cc: {recipient}", &[("recipient", &recipient(who))])));
+    lines.extend(draft.bcc.iter().map(|address| trf("Bcc: {recipient}", &[("recipient", &long(address))])));
+    lines.extend(draft.files.iter().map(|file| {
+        let name = format!("\"{}\"", long(&file.name));
+        trf("Attachment: {name}, {size}", &[("name", &name), ("size", &size_words(file.size))])
+    }));
+    match long(&draft.text_start) {
+        empty if empty.is_empty() => {}
+        text => lines.push(trf("Text: {text}", &[("text", &format!("\"{text}\""))])),
+    }
+    lines
+}
+
+/// A size in bytes as people read it: "860 B", "3 KB", "12 MB" (rounded up, as the inbox app
+/// writes it).
+fn size_words(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    if bytes < KB {
+        trf("{n} B", &[("n", &bytes)])
+    } else if bytes < KB * KB {
+        trf("{n} KB", &[("n", &bytes.div_ceil(KB))])
+    } else {
+        trf("{n} MB", &[("n", &bytes.div_ceil(KB * KB))])
+    }
+}
+
+/// A subject quoted for a summary ([`quote`]); "(no subject)" for an empty one.
+fn subject(text: &str) -> String {
+    match quote(text) {
+        empty if empty.is_empty() => tr("(no subject)").to_string(),
+        quoted => format!("\"{quoted}\""),
+    }
+}
+
+/// What `mail.set_flags` does, in words: "read, not flagged". "unchanged" when nothing changes.
+fn flag_words(add: &[torro_mail::Flag], remove: &[torro_mail::Flag]) -> String {
+    use torro_mail::Flag;
+    let set = add.iter().map(|flag| match flag {
+        Flag::Seen => tr("read"),
+        Flag::Flagged => tr("flagged"),
+        Flag::Answered => tr("answered"),
+    });
+    let cleared = remove.iter().map(|flag| match flag {
+        Flag::Seen => tr("unread"),
+        Flag::Flagged => tr("not flagged"),
+        Flag::Answered => tr("not answered"),
+    });
+    let words: Vec<&str> = set.chain(cleared).collect();
+    if words.is_empty() { tr("unchanged").to_string() } else { words.join(", ") }
+}
+
 /// The word for a folder role, as the inbox app names the folders.
 fn role_word(role: Role) -> &'static str {
     match role {
@@ -1266,6 +1543,11 @@ fn role_word(role: Role) -> &'static str {
 /// (so the text cannot end the quoted part and pretend to be the core's words), braces round ones
 /// (so it cannot fill a placeholder), and at most [`QUOTE_MAX`] characters with `…`.
 fn quote(text: &str) -> String {
+    quote_up_to(text, QUOTE_MAX)
+}
+
+/// [`quote`] cut at `max` characters instead of [`QUOTE_MAX`].
+fn quote_up_to(text: &str, max: usize) -> String {
     let cleaned: String = text
         .chars()
         .filter(|c| !is_format(*c))
@@ -1279,7 +1561,7 @@ fn quote(text: &str) -> String {
         .collect();
     let words: Vec<&str> = cleaned.split_whitespace().collect();
     let one_line = words.join(" ");
-    match one_line.char_indices().nth(QUOTE_MAX) {
+    match one_line.char_indices().nth(max) {
         Some((cut, _)) => format!("{}…", &one_line[..cut]),
         None => one_line,
     }
@@ -1407,10 +1689,11 @@ pub(crate) mod tests {
         let first = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         let second = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
 
-        let Ok(Decision::Run { client, request, pin }) = approvals.decide(&first.id, true, at(1)).await else {
+        let Ok(Decision::Run { client, request, pin, fingerprint }) = approvals.decide(&first.id, true, at(1)).await
+        else {
             panic!("allowed runs");
         };
-        assert_eq!((client.as_str(), *request, pin), ("c1", delete("a"), None));
+        assert_eq!((client.as_str(), *request, pin, fingerprint), ("c1", delete("a"), None, None));
         assert_eq!(approvals.status(None, &first.id, at(1)).await.expect("kept").state, ApprovalState::Running);
         let done = approvals.finish(&first.id, Response::Ok, at(1)).await.expect("finished");
         assert_eq!(done.state, ApprovalState::Done { response: Box::new(Response::Ok) });
@@ -1794,6 +2077,207 @@ pub(crate) mod tests {
     /// Task M2.1: the account by the name the core knows, the fields that change, the start of a
     /// new signature, and the services by what is switched on.
     #[test]
+    fn changing_mail_is_summed_up_from_the_store() {
+        use torro_ipc::mail::{MoveRole, MoveTarget};
+        use torro_mail::Flag;
+        let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
+        let held = |subjects: &[&str], folder: Option<&str>| Facts {
+            mail: Some(MailFacts {
+                account: Some("anna@mailbox.org".into()),
+                count: subjects.len(),
+                subjects: subjects.iter().map(|s| s.to_string()).collect(),
+                folder: folder.map(str::to_string),
+                draft: None,
+            }),
+            ..Facts::default()
+        };
+        let hello = subject("Hello");
+        assert_eq!(hello, "\"Hello\"");
+        let delete = |n, permanent| Request::DeleteMail { ids: ids(n), permanent };
+        assert_eq!(
+            summary(&delete(1, false), &held(&["Hello"], None)),
+            trf("Delete {messages}", &[("messages", &hello)])
+        );
+        let two = trf("{n} messages, among them {subject}", &[("n", &2), ("subject", &hello)]);
+        assert_eq!(
+            summary(&delete(2, true), &held(&["Hello", "Bye"], None)),
+            trf("Delete {messages} for good", &[("messages", &two)])
+        );
+        let unknown = trf("{n} unknown messages", &[("n", &3)]);
+        assert_eq!(summary(&delete(3, false), &Facts::default()), trf("Delete {messages}", &[("messages", &unknown)]));
+        assert_eq!(subject(" "), tr("(no subject)"));
+
+        let to_archive = Request::MoveMail { ids: ids(1), to: MoveTarget::Role(MoveRole::Archive) };
+        let named = trf("Move {messages} to \"{folder}\"", &[("messages", &hello), ("folder", &"Archiv")]);
+        assert_eq!(summary(&to_archive, &held(&["Hello"], Some("Archiv"))), named);
+        let by_role = trf("Move {messages} to \"{folder}\"", &[("messages", &hello), ("folder", &tr("Archive"))]);
+        assert_eq!(summary(&to_archive, &held(&["Hello"], None)), by_role);
+
+        let flags = Request::SetMailFlags { ids: ids(1), add: vec![Flag::Seen], remove: vec![Flag::Flagged] };
+        let words = format!("{}, {}", tr("read"), tr("not flagged"));
+        let marked = trf("Mark {messages} as {flags}", &[("messages", &hello), ("flags", &words)]);
+        assert_eq!(summary(&flags, &held(&["Hello"], None)), marked);
+
+        // A new draft names the client's subject (what will be written), a replaced one the stored.
+        let draft = |id: Option<&str>| torro_mail::Draft {
+            id: id.map(str::to_string),
+            account: "mail:anna@mailbox.org".into(),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Claimed \"title\"".into(),
+            body: String::new(),
+            in_reply_to: None,
+            attachments: Vec::new(),
+        };
+        let new = summary(&Request::SaveDraft { draft: draft(None) }, &held(&[], None));
+        let said = trf(
+            "Save a draft {subject} in {account}",
+            &[("subject", &"\"Claimed 'title'\""), ("account", &"anna@mailbox.org")],
+        );
+        assert_eq!(new, said);
+        let stored = Facts {
+            mail: Some(MailFacts {
+                draft: Some(DraftFacts { subject: "Stored".into(), ..Default::default() }),
+                ..Default::default()
+            }),
+            ..Facts::default()
+        };
+        let replace = Request::SaveDraft { draft: draft(Some("m:1")) };
+        assert_eq!(summary(&replace, &stored), trf("Replace the draft {subject}", &[("subject", &"\"Stored\"")]));
+        assert_eq!(summary(&replace, &Facts::default()), tr("Replace an unknown draft"));
+    }
+
+    /// Task M3.3: sending names the stored draft: subject, account, first recipient and how many
+    /// more (Bcc counted), attachments and the start of the text, all made harmless.
+    #[test]
+    fn sending_a_draft_is_summed_up_from_the_stored_draft() {
+        let send = Request::SendDraft { id: "m:1".into() };
+        let held = |draft: DraftFacts| Facts {
+            mail: Some(MailFacts {
+                account: Some("anna@mailbox.org".into()),
+                draft: Some(draft),
+                ..MailFacts::default()
+            }),
+            ..Facts::default()
+        };
+        let lunch = DraftFacts {
+            subject: "Lunch".into(),
+            first_recipient: Some("bernd@example.com".into()),
+            recipients: 3,
+            attachments: 2,
+            text_start: "Dear Bernd, \"see\" you {at} noon.".into(),
+            ..DraftFacts::default()
+        };
+        let recipients = trf("{first} and {n} more", &[("first", &"bernd@example.com"), ("n", &2)]);
+        let base = trf(
+            "Send {subject} from {account} to {recipients}",
+            &[("subject", &"\"Lunch\""), ("account", &"anna@mailbox.org"), ("recipients", &recipients)],
+        );
+        let with_files = trf("{summary}, {n} attachments", &[("summary", &base), ("n", &2)]);
+        let expected = format!("{with_files}: \"Dear Bernd, 'see' you (at) noon.\"");
+        assert_eq!(summary(&send, &held(lunch.clone())), expected);
+
+        let alone = DraftFacts { recipients: 1, attachments: 1, text_start: String::new(), ..lunch };
+        let base = trf(
+            "Send {subject} from {account} to {recipients}",
+            &[("subject", &"\"Lunch\""), ("account", &"anna@mailbox.org"), ("recipients", &"bernd@example.com")],
+        );
+        assert_eq!(summary(&send, &held(alone.clone())), trf("{summary}, 1 attachment", &[("summary", &base)]));
+
+        // Every blind copy is named, the first five, then how many more.
+        let hidden = |n: usize| (0..n).map(|i| format!("eve{i}@evil.example")).collect::<Vec<_>>();
+        let one = DraftFacts { attachments: 0, bcc: hidden(1), ..alone.clone() };
+        let said = trf("{summary}, Bcc: {list}", &[("summary", &base), ("list", &"eve0@evil.example")]);
+        assert_eq!(summary(&send, &held(one)), said);
+        let many = DraftFacts { attachments: 0, bcc: hidden(7), ..alone };
+        let five = hidden(5).join(", ");
+        let list = trf("{first} and {n} more", &[("first", &five), ("n", &2)]);
+        assert_eq!(summary(&send, &held(many)), trf("{summary}, Bcc: {list}", &[("summary", &base), ("list", &list)]));
+        assert_eq!(summary(&send, &Facts::default()), tr("Send an unknown draft"));
+    }
+
+    /// Task M3.5: the details of sending list every recipient with the address first, every
+    /// attachment with its size and the start of the text, made harmless like the summary but
+    /// longer; every other command has none.
+    #[test]
+    fn sending_lists_every_recipient_attachment_and_the_text_in_the_details() {
+        let send = Request::SendDraft { id: "m:1".into() };
+        let who =
+            |name: Option<&str>, address: &str| MailAddress { name: name.map(str::to_string), address: address.into() };
+        let long_text = format!("Dear Bernd,\n\u{202E}see {{you}} \"soon\". {}", "x".repeat(300));
+        let draft = DraftFacts {
+            to: vec![who(Some("Bernd \"Boss\" Example"), "bernd@example.com"), who(None, "dora@example.com")],
+            cc: vec![who(Some("  "), "carl@example.org")],
+            bcc: vec!["eve@example.net".into()],
+            files: vec![
+                FileFact { name: "plan.pdf".into(), size: 2_340 },
+                FileFact { name: "photo.jpg".into(), size: 3 * 1024 * 1024 },
+                FileFact { name: "a.txt".into(), size: 860 },
+            ],
+            text_start: long_text,
+            ..DraftFacts::default()
+        };
+        let facts = Facts { mail: Some(MailFacts { draft: Some(draft), ..MailFacts::default() }), ..Facts::default() };
+        let lines = details(&send, &facts);
+        let recipient = |label: &'static str, value: &str| trf(label, &[("recipient", &value)]);
+        let file = |name: &str, size: String| trf("Attachment: {name}, {size}", &[("name", &name), ("size", &size)]);
+        assert_eq!(
+            lines[..8],
+            [
+                trf("Subject: {subject}", &[("subject", &tr("(no subject)"))]),
+                recipient("To: {recipient}", "bernd@example.com (\"Bernd 'Boss' Example\")"),
+                recipient("To: {recipient}", "dora@example.com"),
+                recipient("Cc: {recipient}", "carl@example.org"),
+                recipient("Bcc: {recipient}", "eve@example.net"),
+                file("\"plan.pdf\"", trf("{n} KB", &[("n", &3)])),
+                file("\"photo.jpg\"", trf("{n} MB", &[("n", &3)])),
+                file("\"a.txt\"", trf("{n} B", &[("n", &860)])),
+            ]
+        );
+        let text = &lines[8];
+        assert!(text.contains("Dear Bernd, see (you) 'soon'."), "harmless, on one line: {text}");
+        assert!(!text.contains('\u{202E}') && !text.contains('\n'));
+        assert!(text.ends_with("…\"") && text.chars().count() < DETAIL_MAX + 20, "cut at {DETAIL_MAX}: {text}");
+        assert_eq!(lines.len(), 9);
+
+        assert!(details(&send, &Facts::default()).is_empty(), "an unknown draft has none");
+        let delete = Request::DeleteTemplate { id: "dev".into() };
+        assert!(details(&delete, &facts).is_empty(), "nor has any other command");
+    }
+
+    /// Task M3.3: the fingerprint of what the person was shown survives a restart and comes back
+    /// with the decision; approvals without one read as before.
+    #[tokio::test]
+    async fn an_approval_keeps_the_fingerprint_of_what_it_shows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let send = Request::SendDraft { id: "m:1".into() };
+        let asked = approvals
+            .open_with_fingerprint(
+                "c1",
+                "One",
+                send.clone(),
+                "f00d".into(),
+                ("Send".into(), vec!["To: b".into()]),
+                at(0),
+            )
+            .await
+            .expect("opened");
+        assert_eq!(asked.details, ["To: b"]);
+        let restarted = quiet_in(dir.path());
+        let kept = restarted.status(Some("c1"), &asked.id, at(1)).await.expect("kept");
+        assert_eq!(kept.details, ["To: b"], "the details survive a restart");
+        assert!(matches!(restarted.status(Some("c2"), &asked.id, at(1)).await, Err(ApprovalsError::NotFound(_))));
+        let Ok(Decision::Run { fingerprint, request, .. }) = restarted.decide(&asked.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!((fingerprint.as_deref(), *request), (Some("f00d"), send));
+        let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
+        assert!(!listed.contains("f00d"), "the client never sees it: {listed}");
+    }
+
+    #[test]
     fn changing_a_mail_account_names_it_and_what_changes() {
         let update = |signature: Option<&str>, services| Request::UpdateMailAccount {
             id: "mail:anna@mailbox.org".into(),
@@ -1959,7 +2443,7 @@ pub(crate) mod tests {
         assert_eq!(snooze, trf("Stop snoozing {entry}", &[("entry", &unknown)]));
 
         let rule = |effect| InboxFacts {
-            rule: Some(Rule { id: "r1".into(), source: source.clone(), effect, created: Utc::now() }),
+            rule: Some(Rule { id: "r1".into(), source: source.clone(), sender: None, effect, created: Utc::now() }),
             ..InboxFacts::default()
         };
         let remove = Request::RemoveRule { id: "r1".into() };
@@ -1972,6 +2456,52 @@ pub(crate) mod tests {
             trf("Stop sending notices of {source} to {lane}", &[("source", &named), ("lane", &tr("Info"))])
         );
         assert_eq!(inbox_summary(&remove, &InboxFacts::default()), tr("Remove an unknown inbox rule"));
+
+        // Mail (task E4.1): done marks the mail read, a kept lane is the sender's, opening shows the
+        // Inbox app.
+        let mail = Item {
+            source: SourceRef::mail("anna@example.org"),
+            kind: torro_inbox::Kind::Message,
+            from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("News@Shop.example".into()) }),
+            link: Some(Link::Mail { message: "m:1".into() }),
+            ..inbox_entry("Weekly news")
+        };
+        let mail = InboxFacts { item: Some(mail), ..InboxFacts::default() };
+        let news = "\"Weekly news\"";
+        let done = inbox_summary(&Request::SetItemDone { id: "e1".into(), done: true }, &mail);
+        assert_eq!(done, trf("Mark {entry} as done and its mail as read", &[("entry", &news)]));
+        assert_eq!(
+            inbox_summary(&lane(true), &mail),
+            trf(
+                "Move {entry} to {lane} and send later mail from {sender} there too",
+                &[("entry", &news), ("lane", &tr("For me")), ("sender", &"\"news@shop.example\"")]
+            )
+        );
+        assert_eq!(
+            inbox_summary(&Request::OpenItem { id: "e1".into() }, &mail),
+            trf("Open {app} from {entry}", &[("app", &"Torro Inbox"), ("entry", &news)])
+        );
+        let sender_rule = InboxFacts {
+            rule: Some(Rule {
+                id: "r2".into(),
+                source: SourceRef::mail("anna@example.org"),
+                sender: Some("news@shop.example".into()),
+                effect: RuleEffect::Lane { lane: Lane::ForMe },
+                created: Utc::now(),
+            }),
+            ..InboxFacts::default()
+        };
+        assert_eq!(
+            inbox_summary(&Request::RemoveRule { id: "r2".into() }, &sender_rule),
+            trf(
+                "Stop sending mail from {sender} of {source} to {lane}",
+                &[
+                    ("sender", &"\"news@shop.example\""),
+                    ("source", &"\"anna@example.org\" (mail:anna@example.org)"),
+                    ("lane", &tr("For me")),
+                ]
+            )
+        );
 
         let post = Request::PostItem {
             kind: torro_inbox::Kind::Notice,

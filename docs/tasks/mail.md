@@ -97,7 +97,7 @@ M1.1 (tasks/github.md) ── M7.1 ─┬─ M7.2 ── M7.4
 - **API/MCP:** keine.
 
 ### M7.4 Aus TorroMail übernehmen
-- [ ] erledigt
+- [x] erledigt (nur Mail: kein CalDAV beim Import, Kalender auf der Kontoseite mit M3.5; `docs/api-reference.md` gibt es noch nicht, A.9)
 - **Hinweis 2026-10-12:** TorroMail läuft parallel weiter; die Übernahme kopiert nur, TorroMail behält alles.
   Nach M2.7 übernimmt sie auch IMAP/SMTP (`imapHost`, `imapPort`, `imapSecurity`, `smtp*`, `username`, `name`,
   `email` aus `state.json`) und legt ein Mail-Konto (`accounts.connect_mail`) statt nur CalDAV an.
@@ -123,7 +123,8 @@ vollständig in den Kern; gelesen und geschrieben wird im Eingang `torroinbox` (
 Agenten bekommen eigene `mail_*`-Tools in `torroworkplace mcp`. **TorroMail läuft parallel weiter**, es
 gibt keinen gemeinsamen Code: Übernommen wird das Wissen (Dienstsuche, Ordnernamen, Versandregel,
 Vertrags-Fixtures unter `../TorroMail/contracts/` und `../TorroMail/crates/*/tests/`). Bibliotheken:
-`async-imap` (tokio), `mail-parser`, `mail-builder`, `lettre`, alles über rustls.
+`mail-parser`, `mail-builder`, `lettre`, alles über rustls; IMAP als eigene Schicht (M2.3, siehe
+[mail.md](../mail.md), Entscheidung 7).
 
 Ein Mail-Konto ist **eine Anmeldung mit Diensten**: Mail (IMAP + SMTP), dazu auf Wunsch Kalender und
 Aufgaben über CalDAV derselben Anmeldung (M7.1). Ein Passwort im Schlüsselbund.
@@ -201,7 +202,7 @@ ihre Texte im Bericht.
      ersetzen und senden nur eigene Entwürfe; fremde (auch die des Menschen) → `not-found`.
   3. **Protokoll** (`audit::ids`): Konto wie bei Sammlungen, Nachrichten-Kennungen nur als Prüfsumme; nie
      Empfänger, Betreff, Suchbegriff, Dateiname, Ordnername.
-  4. **Keine Geheimnisse in Logs:** Protokoll-Trace von `async-imap`/`lettre` nie einschalten; Konfigurationen
+  4. **Keine Geheimnisse in Logs:** Protokoll-Trace der IMAP-Schicht und von `lettre` nie einschalten; Konfigurationen
      tragen kein `Secret` in `Debug`.
   5. **Dateien:** `<data>/mail/` und `<cache>/mail-attachments/` 0700, alle Dateien darin (auch SQLite `-wal`/
      `-shm` und das SMTP-Journal) 0600.
@@ -211,7 +212,7 @@ ihre Texte im Bericht.
   braucht Delete; Adresse mit `/` abgelehnt; API-Referenz neu erzeugt; `torro-api-review` ohne Befund.
 
 ### M2.2 Dienstsuche für Mail
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.1 (Resolver-Trait und Schutzregeln aus M7.1) · **Dateien:**
   `crates/torro-mail-imap/src/discover.rs`, `crates/torro-mail-imap/tests/fixtures/*`, `crates/torro-ipc/src/lib.rs`
   (nur `Response::Discovery` um optionale Mail-Felder erweitern), `crates/torroworkplace/src/core.rs` (Handler)
@@ -233,7 +234,7 @@ ihre Texte im Bericht.
   Autoconfig, App-Passwort), Fake-Resolver und `httpmock`, ohne Netz.
 
 ### M2.3 IMAP: Verbindung, Ordner, Rollen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.1 · **Dateien:** `crates/torro-mail-imap/src/{imap,folders}.rs`,
   `crates/torro-mail-imap/tests/*`
 - Verbinden mit TLS oder STARTTLS (rustls, System- bzw. webpki-Wurzeln), `LOGIN`/`AUTHENTICATE PLAIN`,
@@ -251,7 +252,7 @@ ihre Texte im Bericht.
   zwei Kandidaten → offen, MOVE ohne MOVE-Capability, UIDVALIDITY-Wechsel erkannt.
 
 ### M2.4 SMTP und MIME
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.1 · **Dateien:** `crates/torro-mail-imap/src/{smtp,mime}.rs`,
   `crates/torro-mail-imap/tests/*`
 - `mime`: Nachricht lesen mit `mail-parser` (Text bevorzugt, HTML nur zu Text umgewandelt, nie Fremdinhalte
@@ -282,7 +283,7 @@ ihre Texte im Bericht.
   Ordner, Aufräumen alter Anhänge, Entfernen des Kontos; Rechte 0700/0600 auch für `-wal`/`-shm` (Unix).
 
 ### M2.6 Mail-Sync im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.3, M2.5 · **Dateien:** neu `crates/torroworkplace/src/mail/{service,sync}.rs`,
   `crates/torroworkplace/src/{daemon,core,account}.rs`
 - `MailService` je Konto (wie `PimService` nach Konto geschlüsselt): eine IDLE-Verbindung auf dem Posteingang
@@ -296,7 +297,7 @@ ihre Texte im Bericht.
   mit Wiederverbinden, zwei Konten getrennt, falsches Passwort → Problem am Konto.
 
 ### M2.7 Mail-Konto verbinden
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.2, M2.4, M2.6 · **Dateien:** `crates/torroworkplace/src/{core,account,pim}.rs`,
   `crates/torroworkplace/src/mail/service.rs`
 - Handler `accounts.connect_mail`: IMAP-Anmeldung prüfen, SMTP-Anmeldung prüfen (ohne zu senden), Passwort nur in
@@ -316,8 +317,48 @@ ihre Texte im Bericht.
   übernommen (Auswahlen umgeschrieben), Entfernen löscht Speicher und Geheimnis; das
   Passwort erscheint nirgends (Antwort, `Debug`, Fehler, Protokoll, `approvals.json`).
 
+### M2.7b Konten absichern (aus den Berichten von M2.6/M2.7)
+- [x] erledigt (zusätzlich angefasst: `torro-mail-imap/src/smtp.rs` additiv `SmtpSubmitter::pinned_to`,
+  `torroworkplace/src/pim.rs` für gefundene CalDAV-Adressen und den Kalenderteil von Mail-Konten,
+  Beschreibung von `accounts.remove_account` in `torro-ipc/src/api.rs` und `docs/api.md`; offen: der Sync
+  reiner CalDAV-Konten (M7.1) prüft keine öffentliche Adresse, weil ein eingetippter Server im eigenen Netz
+  stehen darf)
+- **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,clients,account}.rs`,
+  `crates/torroworkplace/src/mail/service.rs`, `crates/torro-mail-imap/src/imap.rs` (nur additiv),
+  `crates/torro-pim-caldav/src/client.rs` (nur additiv)
+- **Rechte vergessen beim Entfernen:** `accounts.remove_account` nimmt die Kennung des Kontos (und seiner
+  Sammlungen) aus allen Auswahlen in `clients.json` (`mail_accounts`, `calendars`, `task_lists`, `inbox_sources`),
+  atomar. Sonst bekommt ein Agent beim erneuten Verbinden derselben Adresse seinen Zugang still zurück.
+- **Geprüfte Adresse festhalten (DNS-Rebinding):** Prüfung „öffentlicher Host“ und Verbindung lösen heute getrennt
+  auf (Dienstsuche, `connect_caldav`, `connect_mail`, Mail-Sync). Verbinden mit der geprüften IP, Hostname nur für
+  SNI und Zertifikat (`Session::connect_to(addr, &Endpoint, …)`; für reqwest `resolve`).
+- **Ordner-Rollen Ende-zu-Ende:** Fake-IMAP mit STATUS und zwei Kandidaten; `connect_mail` meldet die offene Rolle,
+  `update_mail_account { folder_roles }` setzt sie.
+- **Wettlauf** `update_mail_account` (Kalender an) gegen `connect_caldav`: unter einer Sperre entscheiden.
+- **Oberfläche/API/MCP:** keine neuen Befehle.
+- **Abnahme:** Tests für alle vier Punkte; `torro-api-review` ohne Befund.
+
+### M2.8 Mail-Konto lesen (Lücke aus M5.2)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torro-ipc/src/{lib,api,pim}.rs`,
+  `crates/torroworkplace/src/{core,account,pim}.rs`, `crates/torroworkplace/src/mail/{service,sync}.rs`,
+  `crates/torroworkplace/src/ui/{accounts,agents,glance,launch,overview,wizard}.rs` (nur `mail: None` in
+  `AccountInfo`-Literalen), `docs/api.md`
+- Die Kontoseite (M5.2) kann heute nichts von einem Mail-Konto lesen. `AccountInfo` bekommt das optionale Feld
+  `mail: Option<MailView>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`, verträglich):
+  `MailView { address, sender_name, imap: Endpoint, smtp: Endpoint, caldav: Option<String>, settings: MailSettings,
+  open_roles: Vec<OpenRoleView { role, candidates: Vec<FolderChoice { name, path }> }>, mail: ServiceState,
+  calendars: Option<ServiceState> }` mit `ServiceState { last_sync, problem }` je Dienst. Nie ein Geheimnis.
+- **Erneut verbinden ändert nur, was die Anfrage nennt:** `ConnectMail` mit leerem `sender_name` behält den
+  gespeicherten; Doc-Kommentar und Test. (Sonst löscht „Change password…“ den Absendernamen.)
+- **API:** `accounts.list_accounts` (Read) liefert das Feld nur für Mail-Konten, die der Client erreicht;
+  Beschreibung um einen Satz ergänzen. **MCP:** dasselbe Tool. **Oberfläche:** M5.2.
+- **Abnahme:** Test: Mail-Konto in `list_accounts` mit Einstellungen, Servern, offener Rolle samt Kandidaten,
+  Zustand je Dienst; Client ohne Freigabe sieht es nicht; kein Passwort in der Antwort; erneutes Verbinden mit
+  leerem Absendernamen behält ihn; `torro-api-review` ohne Befund.
+
 ### M3.1 Mail lesen: Befehle und MCP
-- [ ] erledigt
+- [x] erledigt (freigegeben: `Session::uid_search_text` in `imap.rs`, Test-Fake in `mail/sync.rs`, `MailStore::thread_newest` in `store.rs`)
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,mcp}.rs`,
   `crates/torroworkplace/src/mail/{service,read}.rs`
 - Handler für `mail.list_folders`, `mail.search_messages` (Cache mit FTS5; liegt der Zeitraum außerhalb des Caches,
@@ -331,7 +372,7 @@ ihre Texte im Bericht.
   `../` landet im verwalteten Ordner; `get_message` setzt kein `\Seen`; Protokoll ohne Suchbegriff, Ordnername und Dateiname.
 
 ### M3.2 Mail ändern: Flags, Verschieben, Löschen, Entwürfe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/{core,mcp,approvals}.rs`,
   `crates/torroworkplace/src/mail/{service,write}.rs`
 - `mail.set_flags`, `mail.move_messages` (Rolle → Ordner des Kontos; nur innerhalb eines Kontos, sonst
@@ -346,7 +387,9 @@ ihre Texte im Bericht.
   `not-found`.
 
 ### M3.3 Senden mit Freigabe
-- [ ] erledigt
+- [x] erledigt (dazu `mail/mod.rs` für `pub mod send;`; offen: Detailansicht der Freigabe mit allen Empfängern
+  braucht ein Feld in `ApprovalInfo` (torro-ipc), bis dahin nennt die Zusammenfassung jede Bcc-Adresse;
+  Katalogtext von `mail.send_draft`: Bcc mitgezählt, Entwurf bleibt bei `unknown`)
 - **Modell:** Opus · **Braucht:** M2.4, M3.2 · **Dateien:** `crates/torroworkplace/src/{core,mcp,approvals}.rs`,
   `crates/torroworkplace/src/mail/{service,send}.rs`
 - `mail.send_draft`: baut die Nachricht aus dem Entwurf im Kern, sendet nach der Versandregel (M2.4), legt die
@@ -370,8 +413,32 @@ ihre Texte im Bericht.
   bleibt „Ask me each time“. **API/MCP:** nutzt `clients.update_client` (Never, Punkt 2).
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten.
 
+### M3.5 Nacharbeit Senden und Kontoseite (aus den Berichten von M3.3/M5.2)
+- [x] erledigt (dazu: neu `ui/server_fields.rs`; `ui/mod.rs` Modul, Haken im `Loaded`-Handler und Demo-Kennung im
+  Test; Demo in `ui/launch.rs`; `details: Vec::new()` in `ApprovalInfo`-Literalen der Tests von `notify.rs`,
+  `hook.rs`, `cli.rs`, `inbox.rs`, `torro-ipc/src/inbox.rs`)
+- **Modell:** Opus · **Braucht:** M3.3, M5.2 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,approvals}.rs`, `crates/torroworkplace/src/mail/{send,service}.rs`,
+  `crates/torroworkplace/src/ui/{approvals,accounts,wizard}.rs`, `docs/api.md`
+- **Freigabe mit Einzelheiten:** `ApprovalInfo` bekommt das optionale Feld `details: Vec<String>` (verträglich);
+  beim Senden alle Empfänger (An, Cc, Bcc), Anhänge mit Namen und Größe, der Textanfang – alles aus dem Entwurf im
+  Kern. Die Seite „Approvals“ der Steuerzentrale zeigt sie aufklappbar. **API:** `approvals.list_approvals` (gibt es).
+  **MCP:** dasselbe Tool zeigt die Einzelheiten nur dem Client, der gefragt hat (wie heute die Zusammenfassung).
+- **Katalogtext `mail.send_draft`:** Bcc wird mitgezählt; bei `unknown` bleibt der Entwurf und wird nicht erneut
+  gesendet.
+- **Kalender später hinzufügen:** `connect_mail` behält die gespeicherte CalDAV-Adresse beim erneuten Verbinden,
+  auch wenn Kalender und Aufgaben aus sind; mit `calendars`/`tasks` und `caldav` an einem bestehenden Konto werden
+  sie geprüft und eingeschaltet (heute ignoriert). Die Kontoseite bietet dafür in „Server settings…“ die
+  CalDAV-Adresse immer an.
+- **Aufräumen:** Journal-Einträge „Kopie abgelegt“ ohne Entwurf werden beim Start entfernt; `ServerFields` und
+  die Port-Logik aus `ui/wizard.rs` und `ui/accounts.rs` an einer Stelle; die Demo zeigt kein CalDAV-Konto neben
+  dem Mail-Konto derselben Anmeldung; die Kontoseite übernimmt Änderungen von außen, solange kein Entwurf offen ist.
+- **Abnahme:** Tests für Einzelheiten (nur aus dem Kern, nicht für fremde Clients), CalDAV-Adresse bleibt und
+  Kalender lassen sich später einschalten, Journal-Aufräumen; Sichtprüfung Approvals und Kontoseite;
+  `torro-api-review` ohne Befund.
+
 ### E4.1 Mail als Quelle im Eingang
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** M2.6 · **Dateien:** `crates/torro-inbox/src/{item,rules,source}.rs`,
   `crates/torroworkplace/src/{inbox,inbox_notify}.rs`, `crates/torroworkplace/src/mail/service.rs`
 - `SourceKind::Mail`, Name = Konto-Kennung (Schlüssel `mail:<adresse>`, in `inbox_sources` auswählbar). Neue,
@@ -391,7 +458,7 @@ ihre Texte im Bericht.
   Mail-Eintrag `forbidden`.
 
 ### E4.2 Eingang: Ordner und ganze Mail
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `torroinbox/src/main.rs` (`mod mail`, Grenze `MailSource`), `torroinbox/src/list.rs` (Helfer `pub(crate)`, Mail-Symbol), `Cargo.toml` von `torro-inbox` und `torroinbox` (`torro-mail`), Lucide-Symbole in `torro-gui/assets/icons/`)
 - **Modell:** Sonnet · **Braucht:** E4.1, M3.1, M3.2 · **Dateien:** `crates/torroinbox/src/{app,list,detail,keys}.rs`,
   neu `crates/torroinbox/src/mail.rs`, `crates/torro-ipc/src/inbox.rs` (Client-Aufrufe), Demo-Daten in
   `crates/torro-inbox/src/demo.rs`
@@ -405,7 +472,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung mit `--demo` (zwei Mail-Konten), Breit/Mittel/Schmal, hell/dunkel; Tests der Nachrichten.
 
 ### E4.3 Schreibfenster
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `Cargo.toml` und `torroinbox/Cargo.toml` (`rfd` für die Dateiauswahl, `serde_json` und `tempfile` für Tests), `torro-inbox/src/demo.rs` (Demo-Antworten für `save_draft`/`send_draft`), Schalter „New“ in `torroinbox/src/app.rs`)
 - **Modell:** Sonnet · **Braucht:** M3.3, E4.2 · **Dateien:** neu `crates/torroinbox/src/compose.rs`,
   `crates/torroinbox/src/{main,app}.rs`
 - **Oberfläche:** Eigenes Fenster (`torroinbox --compose [--reply <id>|--forward <id>]`, Fensterklasse
@@ -416,7 +483,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten; Senden-Fehler lässt den Entwurf stehen.
 
 ### E4.4 Mini, Leiste, Benachrichtigung für Mail
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** E4.2 · **Dateien:** `crates/torroinbox/src/glance.rs`,
   `crates/torroworkplace/src/inbox_notify.rs`
 - **Oberfläche:** Mini/Leiste zeigen ungelesene Mails je Konto und die drei neuesten Absender; Desktop-Benachrichtigung
@@ -425,7 +492,7 @@ ihre Texte im Bericht.
 - **Abnahme:** Sichtprüfung Mini/Leiste, Tests der Nachrichten.
 
 ### M5.1 Steuerzentrale: Mail-Konto im Assistenten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.7, M7.2 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts}.rs`
 - **Oberfläche:** Der Anbieter aus M7.2 heißt „Mail account“. Schritt 1 Adresse → `accounts.discover_services`;
   gefundener Anbieter; „Advanced“ klappt IMAP/SMTP (Host, Port, Sicherheit), Anmeldename und CalDAV-URL auf
@@ -437,8 +504,8 @@ ihre Texte im Bericht.
   Passwort falsch), Breit/Mittel/Schmal, hell/dunkel; Tests der Nachrichten.
 
 ### M5.2 Steuerzentrale: Kontoseite Mail
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** M2.7 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** M2.7, M2.8 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`
 - **Oberfläche** (Einstellungen nach dem Vorbild TorroMail, ohne dessen Rechte und Cache-Stufen): Status je Dienst
   (Mail, Calendars, Tasks) mit letztem Abgleich; Absendername; Signatur (mehrzeilig); „Show new mail in Inbox“:
   All / Only „For me“ / Off; Dienste an/aus; „Change password…“ und „Server settings…“ (beide über

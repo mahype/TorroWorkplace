@@ -1047,6 +1047,7 @@ mod tests {
             client_name: "Claude Code hooks".into(),
             command: command.into(),
             summary: "Claude Code wants to use Bash: ls".into(),
+            details: Vec::new(),
             created: now,
             expires: now + crate::approvals::QUESTION_LIFETIME,
             decided: None,

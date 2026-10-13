@@ -7,15 +7,21 @@
 //! Every request of a client key, and every run of one a person allowed, gets a line in the audit
 //! log without any content ([`crate::audit`]).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock, PoisonError};
 
 use chrono::{Local, Utc};
 use tokio::sync::Mutex;
 use torro_core::AppId;
+use torro_core::account::AccountKind;
+use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
 use torro_ipc::api::{Access, Area};
 use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
+use torro_mail::MailSettings;
+use torro_mail_imap::discover::{LoginHint, MailDiscoverer, MailDiscovery};
 use torro_pim::AccountState;
+use torro_pim_caldav::discover::NoDns;
 use torro_setups::capture::{auto_name, capture};
 use torro_setups::launch::{Launcher, SystemLauncher, command_for};
 use torro_setups::restore::{RestoreOptions, restore};
@@ -24,10 +30,13 @@ use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
+use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
+use crate::mail::service::{MailService, Service, SignInError};
+use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 use crate::ui::Section;
@@ -90,6 +99,129 @@ fn open_in_browser(url: &str) -> Result<(), String> {
 /// What tests open instead of a browser: nothing, so no test starts one by accident.
 fn no_browser(_url: &str) -> Result<(), String> {
     Err("no browser in tests".into())
+}
+
+/// The mail discovery of the daemon (task M2.2): the system's DNS and the public internet.
+/// `None` (and a line on stderr) when no HTTP client can be built; searching then finds no mail
+/// servers, the calendar search still answers.
+fn system_mail_discoverer() -> Option<MailDiscoverer> {
+    MailDiscoverer::system()
+        .map_err(|err| eprintln!("torroworkplace: no HTTP client for finding mail servers: {err}"))
+        .ok()
+}
+
+/// The mail discovery of tests: a DNS that knows no name ([`NoDns`]), so only the table answers
+/// and no test reaches the network.
+fn offline_mail_discoverer() -> Option<MailDiscoverer> {
+    MailDiscoverer::new(Arc::new(NoDns)).ok()
+}
+
+/// How many `accounts.discover_services` one client key may run at a time (task M2.2): each
+/// search asks DNS and web servers, so an agent must not turn the core into a stream of them.
+const MAX_SEARCHES: usize = 2;
+
+/// The searches each client key runs right now, by client id.
+#[derive(Default)]
+struct Searches {
+    running: std::sync::Mutex<HashMap<String, usize>>,
+}
+
+impl Searches {
+    /// A slot for one more search of `client`; `None` when it runs [`MAX_SEARCHES`] already.
+    /// The slot is given back when it is dropped, also when the request is cancelled midway.
+    fn enter(&self, client: &str) -> Option<SearchSlot<'_>> {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = running.entry(client.to_string()).or_default();
+        if *count >= MAX_SEARCHES {
+            return None;
+        }
+        *count += 1;
+        Some(SearchSlot { searches: self, client: client.to_string() })
+    }
+}
+
+/// One running search of a client ([`Searches::enter`]).
+struct SearchSlot<'a> {
+    searches: &'a Searches,
+    client: String,
+}
+
+impl Drop for SearchSlot<'_> {
+    fn drop(&mut self) {
+        let mut running = self.searches.running.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = running.get_mut(&self.client) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                running.remove(&self.client);
+            }
+        }
+    }
+}
+
+/// The answer to a client that runs [`MAX_SEARCHES`] searches already.
+fn too_many_searches() -> Response {
+    Response::Error {
+        code: "busy".into(),
+        message: format!("{MAX_SEARCHES} searches of this client are running; ask again when one has answered"),
+    }
+}
+
+/// `calendars`, the CalDAV search's answer, with what the mail search found for `address` (task
+/// M2.2), as `accounts.discover_services` answers:
+///
+/// - an error of the CalDAV search stays the answer (no domain: the mail search has none either),
+///   except `offline` when the mail search found something: then that is the answer;
+/// - the mail servers, the login name ([`login_name`]), the app password and the reason in the
+///   core's language are added; the provider is the mail search's name once it found something
+///   (it knows the base domain of the MX: `familie.example` at mailbox.org is "mailbox.org");
+/// - without CalDAV addresses and without a reason against them, the table's CalDAV address of
+///   the provider (GMX, a domain whose mail goes to mailbox.org) is the one.
+///
+/// `mail` is `None` when the mail search failed or had no HTTP client.
+fn with_mail(calendars: Response, mail: Option<MailDiscovery>, address: &str) -> Response {
+    let mail = mail.filter(|mail| mail.imap.is_some() || mail.unsupported.is_some() || mail.caldav.is_some());
+    let (provider, urls, unsupported) = match (calendars, &mail) {
+        (Response::Discovery { provider, urls, unsupported, .. }, _) => (provider, urls, unsupported),
+        (Response::Error { code, .. }, Some(_)) if code == "offline" => (String::new(), Vec::new(), None),
+        (other, _) => return other,
+    };
+    let Some(mail) = mail else {
+        return Response::Discovery {
+            provider,
+            urls,
+            unsupported,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
+        };
+    };
+    let urls = match (urls.is_empty() && unsupported.is_none(), mail.caldav) {
+        (true, Some(caldav)) => vec![caldav],
+        _ => urls,
+    };
+    Response::Discovery {
+        provider: mail.provider,
+        urls,
+        unsupported,
+        imap: mail.imap,
+        smtp: mail.smtp,
+        login_hint: mail.login.and_then(|hint| login_name(address, hint)),
+        app_password: mail.app_password,
+        mail_unsupported: mail.unsupported.map(|why| torro_core::i18n::tr(why.reason()).to_string()),
+    }
+}
+
+/// The login name `hint` asks for, made of `address` as the person gave it: the whole address or
+/// its part before the last `@`. `None` for a bare domain, which has no login name in it.
+fn login_name(address: &str, hint: LoginHint) -> Option<String> {
+    let address = address.trim();
+    let (local, _) = address.rsplit_once('@').filter(|(local, _)| !local.is_empty())?;
+    match hint {
+        LoginHint::Address => Some(address.to_string()),
+        LoginHint::LocalPart => Some(local.to_string()),
+    }
 }
 
 /// Brings the window of a coding agent to the front (task E2.4): of `pids`, the hook's parent
@@ -259,11 +391,32 @@ pub struct Core {
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
+    /// The mail accounts (task M2.6): their sync, command connections and stores. The user's
+    /// ([`MailService::system`]), loaded only by [`Core::start`]; tests use their own, and one
+    /// without a home directory unless they bring it ([`MailService::without_home`]).
+    mail: Arc<MailService>,
     /// Starts a new control centre on a section ([`start_control_centre`]); tests count the
     /// calls instead.
     start_control_centre: fn(Section) -> Result<(), String>,
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
+    /// The mail search of `accounts.discover_services` (task M2.2), built by
+    /// `make_mail_discoverer` on first use (its HTTP client costs time every core would pay at
+    /// start); `None` when no HTTP client could be built.
+    mail_discovery: OnceLock<Option<Arc<MailDiscoverer>>>,
+    make_mail_discoverer: fn() -> Option<MailDiscoverer>,
+    /// The searches each client key runs ([`MAX_SEARCHES`]).
+    searches: Searches,
+    /// One decision at a time about who syncs the calendars of a sign-in (task M2.7b): held by
+    /// `accounts.connect_caldav`, `accounts.connect_mail` and `accounts.update_mail_account` when
+    /// it switches services, each from its check ("does another account sync these?") to the
+    /// calendar service's answer. Otherwise a CalDAV account and the calendar part of a mail
+    /// account of the same sign-in could both pass their check, and the settings would say
+    /// "calendars on" while the calendar service refused the duplicate.
+    calendar_sign_ins: Mutex<()>,
+    /// The separate TorroMail app, read only (task M7.4): the user's ([`TorroMail::system`]);
+    /// none in tests unless they bring one ([`Core::with_torromail`]).
+    torromail: TorroMail,
 }
 
 impl Core {
@@ -274,6 +427,9 @@ impl Core {
     /// ([`Approvals::system`]), read on first use.
     pub fn new(backend: Backend, store: Store, pim: Arc<PimService>, clients: Clients) -> Core {
         let settings = pim.settings().clone();
+        // Tests bring their own mail accounts (`Core::with_mail`); none may reach the user's.
+        let mail = if cfg!(test) { MailService::without_home() } else { MailService::system() };
+        let mail = Arc::new(mail.with_calendars(Arc::clone(&pim)));
         Core {
             backend,
             store,
@@ -285,15 +441,63 @@ impl Core {
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
             github: Arc::new(GithubAccounts::system()),
+            mail,
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
+            mail_discovery: OnceLock::new(),
+            make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
+            searches: Searches::default(),
+            calendar_sign_ins: Mutex::new(()),
+            torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
         }
+    }
+
+    /// The core with `torromail` instead of the user's TorroMail, for tests.
+    #[cfg(test)]
+    fn with_torromail(mut self, torromail: TorroMail) -> Core {
+        self.torromail = torromail;
+        self
+    }
+
+    /// The core with `discoverer` as its mail search, for tests.
+    #[cfg(test)]
+    fn with_mail_discoverer(mut self, discoverer: MailDiscoverer) -> Core {
+        self.mail_discovery = OnceLock::from(Some(Arc::new(discoverer)));
+        self
+    }
+
+    /// The mail search, built on first use.
+    fn mail_discoverer(&self) -> Option<&MailDiscoverer> {
+        self.mail_discovery.get_or_init(|| (self.make_mail_discoverer)().map(Arc::new)).as_deref()
+    }
+
+    /// `accounts.discover_services` (tasks M7.1, M2.2): the calendar service's CalDAV search and
+    /// the mail search side by side, joined by [`with_mail`]. Logs nothing: the address is the
+    /// person's.
+    async fn discover_services(&self, address: String, reach: Reach<'_>) -> Response {
+        let calendars = self.pim.handle_within(Request::DiscoverServices { address: address.clone() }, reach);
+        let mail = async {
+            match self.mail_discoverer() {
+                Some(discoverer) => discoverer.discover(&address).await.ok(),
+                None => None,
+            }
+        };
+        let (calendars, mail) = tokio::join!(calendars, mail);
+        with_mail(calendars, mail, &address)
     }
 
     /// The core with `approvals` instead of the user's, for tests in other modules.
     #[cfg(test)]
     pub(crate) fn with_approvals(mut self, approvals: Approvals) -> Core {
         self.approvals = Arc::new(approvals);
+        self
+    }
+
+    /// The core with `mail` instead of the user's mail accounts, for tests; it joins the calendar
+    /// part of a mail account from this core's calendar service, as the user's does.
+    #[cfg(test)]
+    pub(crate) fn with_mail(mut self, mail: MailService) -> Core {
+        self.mail = Arc::new(mail.with_calendars(Arc::clone(&self.pim)));
         self
     }
 
@@ -320,14 +524,15 @@ impl Core {
     /// approvals still open (their notifications went with the core before, task A.3b), loads the
     /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
     /// five minutes (task G.2), and files approvals and account problems in the inbox now and
-    /// every minute (task E2.1, [`crate::inbox::tend_suite`]). The daemon calls it once, next to
+    /// every minute (task E2.1, [`crate::inbox::tend_suite`]). Starts the sync of the mail
+    /// accounts (task M2.6, [`MailService::start`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(&self) {
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
-        let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
+        let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {
             loop {
-                crate::inbox::tend_suite(&inbox, &approvals, &pim, &github, Utc::now()).await;
+                crate::inbox::tend_suite(&inbox, &approvals, &pim, &github, &mail, Utc::now()).await;
                 tokio::time::sleep(crate::inbox::SUITE_EVERY).await;
             }
         });
@@ -338,6 +543,8 @@ impl Core {
             }
         });
         self.github.start();
+        self.start_mail_feed(torro_core::account::accounts_file().ok());
+        self.mail.start();
         let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
         tokio::spawn(async move {
             // The tokens come from the keychain in the background; the first refresh waits for
@@ -359,6 +566,13 @@ impl Core {
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
         });
+    }
+
+    /// Files new mail of the mail accounts in the inbox from now on, each account's `notify` read
+    /// from `accounts_file` (task E4.1, [`crate::mail::inbox_feed`]). Part of [`Core::start`],
+    /// before the mail sync starts, so no change is missed.
+    pub(crate) fn start_mail_feed(&self, accounts_file: Option<std::path::PathBuf>) {
+        crate::mail::inbox_feed::start(Arc::clone(&self.inbox), Arc::clone(&self.mail), accounts_file);
     }
 
     /// A request from the socket with the key the client sent. Every request from outside the
@@ -438,6 +652,24 @@ impl Core {
         {
             return Ok(refused);
         }
+        // Changing mail (task M3.2): message and folder ids in reachable accounts only, a client's
+        // own drafts and files from the managed folder only; a move into a trash folder is
+        // deleting, and the rights are checked again for that.
+        if let Some(refused) =
+            crate::mail::write::client_refusal(&self.mail, &id, Reach::Client(&rights), &request).await
+        {
+            return Ok(refused);
+        }
+        // Sending (task M3.3): only the client's own drafts, in reachable accounts.
+        if let Some(refused) =
+            crate::mail::send::client_refusal(&self.mail, &id, Reach::Client(&rights), &request).await
+        {
+            return Ok(refused);
+        }
+        let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
+        if !rights.allows(request.operation()) {
+            return Err(Refused::Forbidden { command: request.operation().name() });
+        }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
         // the tasks rights and the list come first (task E3.5).
         if let Request::CreateTaskFromItem { collection, .. } = &request
@@ -493,8 +725,25 @@ impl Core {
         if question || rights.needs_approval_of(operation) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
             return self.ask_approval(&id, request).await;
         }
+        // A client sends as itself: its own drafts only, checked again where it runs (task M3.3).
+        if let Request::SendDraft { id: draft } = &request {
+            let author = DraftAuthor::Client(id.clone());
+            return Ok(crate::mail::send::send_draft(&self.mail, reach, &author, draft, None).await);
+        }
         if let Some(info) = inbox_client {
             return Ok(self.inbox_request(request, Some(&info), None).await);
+        }
+        // Held until the answer is out (task M2.2); a person's searches are not counted.
+        let _search = match &request {
+            Request::DiscoverServices { .. } => match self.searches.enter(&id) {
+                Some(slot) => Some(slot),
+                None => return Ok(too_many_searches()),
+            },
+            _ => None,
+        };
+        // A draft is the client's (security rule 2 of task M2.1): the core remembers who wrote it.
+        if let Request::SaveDraft { draft } = request {
+            return Ok(self.save_draft(draft, reach, DraftAuthor::Client(id)).await);
         }
         Ok(self.handle_within(request, reach).await)
     }
@@ -538,6 +787,7 @@ impl Core {
         let command = request.operation().name();
         let info = self.clients.list().into_iter().find(|info| info.id == client);
         let name = info.as_ref().map(|info| info.name.clone());
+        let mut fingerprint = None;
         let (request, pin, summary) = match (&request, request.operation().area()) {
             (Request::AskPermission { tool, details, project }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
@@ -545,6 +795,23 @@ impl Core {
                 }
                 let agent = info.as_ref().map_or_else(|| client.to_string(), asker);
                 let summary = crate::approvals::question_summary(&agent, tool, project.as_deref(), details);
+                (request, None, summary)
+            }
+            // Sending (task M3.3): the summary from the message built from the stored draft, and
+            // the approval pinned to it. A draft that cannot be built is nothing to ask about.
+            (Request::SendDraft { id: draft }, _) => {
+                let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
+                let author = DraftAuthor::Client(client.to_string());
+                let reach = Reach::Client(&info.rights);
+                let (mail, pinned) = match crate::mail::send::approval(&self.mail, reach, &author, draft).await {
+                    Ok(prepared) => prepared,
+                    Err(refused) => return Ok(*refused),
+                };
+                // Everything the summary leaves out goes into the details (task M3.5), from the
+                // same draft.
+                let facts = Facts { mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
             (_, Area::Inbox) => {
@@ -572,7 +839,14 @@ impl Core {
             }
         };
         let name = name.unwrap_or_default();
-        match self.approvals.open(client, &name, request, pin, summary, Utc::now()).await {
+        let opened = match fingerprint {
+            Some((fingerprint, details)) => {
+                let shown = (summary, details);
+                self.approvals.open_with_fingerprint(client, &name, request, fingerprint, shown, Utc::now()).await
+            }
+            None => self.approvals.open(client, &name, request, pin, summary, Utc::now()).await,
+        };
+        match opened {
             Ok(approval) => {
                 crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
                 if crate::approvals::is_question(&approval) {
@@ -618,6 +892,9 @@ impl Core {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *id).map(|a| a.label), ..Facts::default() }
             }
+            request if crate::mail::write::changes_mail(request) => {
+                Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
+            }
             request => self.pim.facts(request).await,
         }
     }
@@ -644,8 +921,8 @@ impl Core {
         if decided.is_ok() {
             crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
         }
-        let (client, request, pin) = match decided {
-            Ok(Decision::Run { client, request, pin }) => (client, *request, pin),
+        let (client, request, pin, fingerprint) = match decided {
+            Ok(Decision::Run { client, request, pin, fingerprint }) => (client, *request, pin, fingerprint),
             Ok(Decision::Denied { approval, request }) => {
                 // The ids of what was asked for, as the line of the request itself has them.
                 let denied = torro_ipc::ActivityEntry {
@@ -662,7 +939,7 @@ impl Core {
             Err(err) => return err.response(),
         };
         let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
-        let response = self.run_approved(&client, request, pin).await;
+        let response = self.run_approved(&client, request, pin, fingerprint.as_deref()).await;
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -678,8 +955,16 @@ impl Core {
     /// not of when it asked: steps 1 and 2 of [`Core::handle_from`] once more, since a person may
     /// have narrowed the rights, removed the client or hidden a collection meanwhile. The approval
     /// itself is not asked for again. An `inbox.*` command with a `pin` runs only on its entry as
-    /// the person was shown it ([`Core::inbox_request`]), else `conflict`.
-    async fn run_approved(&self, client: &str, request: Request, pin: Option<EntryPin>) -> Response {
+    /// the person was shown it ([`Core::inbox_request`]), else `conflict`; `mail.send_draft` only
+    /// when the message built now has the `fingerprint` of the one the person was shown (task
+    /// M3.3), else `conflict` and nothing is sent.
+    async fn run_approved(
+        &self,
+        client: &str,
+        request: Request,
+        pin: Option<EntryPin>,
+        fingerprint: Option<&str>,
+    ) -> Response {
         let command = request.operation().name();
         let Some(info) = self.clients.list().into_iter().find(|info| info.id == client) else {
             let message = format!("the client that asked for {command} was removed meanwhile");
@@ -703,6 +988,19 @@ impl Core {
         }
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
+        }
+        if let Some(refused) = crate::mail::write::client_refusal(&self.mail, client, reach, &request).await {
+            return refused;
+        }
+        if let Request::SaveDraft { draft } = request {
+            return self.save_draft(draft, reach, DraftAuthor::Client(client.to_string())).await;
+        }
+        // Sending runs only on what the person was shown: an approval without a fingerprint
+        // (none is ever stored without one) matches nothing.
+        if let Request::SendDraft { id: draft } = &request {
+            let author = DraftAuthor::Client(client.to_string());
+            let approved = Some(fingerprint.unwrap_or_default());
+            return crate::mail::send::send_draft(&self.mail, reach, &author, draft, approved).await;
         }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
@@ -822,9 +1120,13 @@ impl Core {
             }
             // A client never reaches `connect_caldav`: `Rights::allows` refuses every command kept
             // from agents (`docs/api.md`, "Was nie nach außen geht", 5).
+            Request::DiscoverServices { address } => self.discover_services(address, reach).await,
+            // Decided under the lock a mail account's calendars take too (task M2.7b).
+            request @ Request::ConnectCalDav { .. } => {
+                let _deciding = self.calendar_sign_ins.lock().await;
+                self.pim.handle_within(request, reach).await
+            }
             pim @ (Request::ConnectNextcloud { .. }
-            | Request::DiscoverServices { .. }
-            | Request::ConnectCalDav { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
             | Request::Events { .. }
@@ -862,14 +1164,7 @@ impl Core {
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
-            Request::RemoveAccount { id } if self.github.knows(&id).await => match self.github.remove(&id).await {
-                Ok(()) => {
-                    self.pim.forget_filter_lists(&id).await;
-                    Response::Ok
-                }
-                Err(message) => Response::Error { code: "error".into(), message },
-            },
-            Request::RemoveAccount { id } => self.pim.remove_account(&id).await,
+            Request::RemoveAccount { id } => self.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
                 Ok(template) => Response::Saved { template },
                 Err(err) => error(&err),
@@ -924,18 +1219,51 @@ impl Core {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 Reach::Suite => self.inbox_request(request, None, None).await,
             },
-            request @ (Request::ConnectMail { .. }
-            | Request::UpdateMailAccount { .. }
-            | Request::MailFolders { .. }
+            // A client never reaches `connect_mail` (`Rights::allows`, as for `connect_caldav`).
+            Request::ConnectMail {
+                address,
+                sender_name,
+                imap,
+                smtp,
+                login_name,
+                password,
+                calendars,
+                tasks,
+                caldav,
+            } => {
+                let sign_in =
+                    MailSignIn { address, sender_name, imap, smtp, login_name, password, calendars, tasks, caldav };
+                // Who syncs the calendars of this sign-in is decided under one lock (task M2.7b).
+                let _deciding = self.calendar_sign_ins.lock().await;
+                self.connect_mail(sign_in).await
+            }
+            Request::TorroMailAccounts => self.torromail_accounts().await,
+            // A client never reaches the import either (`Rights::allows`, rule 5).
+            Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
+            Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => {
+                let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles };
+                self.update_mail_account(&id, change).await
+            }
+            // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
+            // sees only, so an id of another account is `not-found` before anything is read.
+            request @ (Request::MailFolders { .. }
             | Request::SearchMail { .. }
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
-            | Request::GetMailAttachment { .. }
-            | Request::SetMailFlags { .. }
+            | Request::GetMailAttachment { .. }) => crate::mail::read::answer(&self.mail, reach, request).await,
+            // Sending (task M3.3): the person sends any draft; a client's send carries its id and
+            // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
+            request @ Request::SendDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
+                (Some(refused), _, _) => refused,
+                (None, Request::SendDraft { id }, Reach::Suite) => {
+                    crate::mail::send::send_draft(&self.mail, reach, &DraftAuthor::App, id, None).await
+                }
+                _ => refusal("forbidden", "a client's draft is sent with its own id as the author".into()),
+            },
+            request @ (Request::SetMailFlags { .. }
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
-            | Request::SaveDraft { .. }
-            | Request::SendDraft { .. }) => mail_not_yet(&request),
+            | Request::SaveDraft { .. }) => self.change_mail(request, reach).await,
         }
     }
 
@@ -981,7 +1309,13 @@ impl Core {
                 {
                     return refused;
                 }
-                self.inbox.handle(request, client, Utc::now())
+                let done = matches!(request, Request::SetItemDone { done: true, .. });
+                let response = self.inbox.handle(request, client, Utc::now());
+                // Done with a mail entry marks its mail read on the server (task E4.1).
+                if let (true, Response::Item { item }) = (done, &response) {
+                    crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, item);
+                }
+                response
             }
         }
     }
@@ -1050,8 +1384,13 @@ impl Core {
             failed => return failed,
         };
         let done = Request::SetItemDone { id: id.to_string(), done: true };
-        if let Response::Error { message, .. } = self.inbox.handle(done, client, Utc::now()) {
-            eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
+        match self.inbox.handle(done, client, Utc::now()) {
+            Response::Error { message, .. } => {
+                eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
+            }
+            // A mail entry's mail is read now (task E4.1).
+            Response::Item { item } => crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, &item),
+            _ => {}
         }
         Response::Todo { todo: saved }
     }
@@ -1107,18 +1446,504 @@ impl Core {
         }
     }
 
-    /// Every account as `reach` may see it: the calendar service's accounts, then the GitHub
-    /// accounts with their filter lists as collections (never with their secrets), and a sign-in
-    /// that runs last, as `accounts.list_accounts` promises.
+    /// Every account as `reach` may see it: the calendar service's accounts, then the mail
+    /// accounts (a client's only as far as its rights reach), then the GitHub accounts with their
+    /// filter lists as collections (never with their secrets), and a sign-in that runs last, as
+    /// `accounts.list_accounts` promises.
+    ///
+    /// A mail account that syncs calendars too is listed once (task M2.7): its mail part with the
+    /// collections of its calendar part, the problems of both ([`joined_info`]). A client that
+    /// does not reach the mail account sees its calendar part only while its rights show it some
+    /// of that part's calendars or task lists, and then without the mail view (task M2.8).
     async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
         let mut accounts = self.pim.accounts_within(reach).await;
         let mut github = self.github.infos().await;
         for account in &mut github {
             account.collections = self.pim.filter_lists_within(&account.id, reach).await;
         }
+        let mut others = Vec::new();
+        for mail in self.mail.infos(reach).await {
+            match accounts.iter().position(|account| account.id == mail.id) {
+                Some(at) => others.push(joined_info(mail, accounts.remove(at))),
+                None => others.push(mail),
+            }
+        }
+        // The calendar part of a mail account a client does not reach (task M2.8): listed only
+        // for the calendars and task lists its rights show it, never with the mail view; with
+        // none of them it is as if it did not exist.
+        if let Reach::Client(rights) = reach {
+            accounts.retain(|account| {
+                account.kind != AccountKind::Mail.name()
+                    || rights.reaches_mail_account(&account.id)
+                    || !account.collections.is_empty()
+            });
+        }
+        others.extend(github);
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
-        accounts.splice(at..at, github);
+        accounts.splice(at..at, others);
         accounts
+    }
+
+    /// The changing mail commands (task M3.2, [`crate::mail::write`]): `mail.set_flags`,
+    /// `mail.move_messages`, `mail.delete_messages`, and `mail.save_draft` of the app key (a
+    /// client's draft goes through [`Core::save_draft`] with its id). The limits first
+    /// ([`torro_ipc::mail::limit_refusal`]), as for a client; `reach` decides which accounts the ids
+    /// are looked up in.
+    async fn change_mail(&self, request: Request, reach: Reach<'_>) -> Response {
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        match request {
+            Request::SetMailFlags { ids, add, remove } => {
+                crate::mail::write::set_flags(&self.mail, reach, &ids, &add, &remove).await
+            }
+            Request::MoveMail { ids, to } => crate::mail::write::move_messages(&self.mail, reach, &ids, &to).await,
+            Request::DeleteMail { ids, permanent } => {
+                crate::mail::write::delete_messages(&self.mail, reach, &ids, permanent).await
+            }
+            // Only the suite writes as the person; a client's draft never reaches here unnamed.
+            Request::SaveDraft { draft } => match reach {
+                Reach::Suite => self.save_draft(draft, reach, DraftAuthor::App).await,
+                Reach::Client(_) => {
+                    refusal("forbidden", "a client's draft is saved with its own id as the author".into())
+                }
+            },
+            other => mail_not_yet(&other),
+        }
+    }
+
+    /// `mail.save_draft` written by `author` (security rule 2 of task M2.1), after the limits.
+    async fn save_draft(&self, draft: torro_mail::Draft, reach: Reach<'_>, author: DraftAuthor) -> Response {
+        let request = Request::SaveDraft { draft };
+        if let Some(refused) = torro_ipc::mail::limit_refusal(&request) {
+            return refused;
+        }
+        let Request::SaveDraft { draft } = request else { return mail_not_yet(&request) };
+        crate::mail::write::save_draft(&self.mail, reach, draft, author).await
+    }
+
+    /// `accounts.connect_mail` (task M2.7; app key only, `Rights::allows` keeps every client key
+    /// out): checks the sign-in, stores it and starts the account. In this order:
+    ///
+    /// 1. what was given: the address ([`torro_mail::account_id`]), login, password, servers and
+    ///    sender name (`error`); then the stored accounts (`error` without a home directory, before
+    ///    any server is asked);
+    /// 2. connecting an account that exists keeps its settings, hidden collections and rights, but
+    ///    `calendars` and `tasks` switch those services on (task M3.5: adding calendars to an
+    ///    account connected for mail only; never off). Without `caldav` the stored CalDAV address
+    ///    stays, also while calendars and tasks are off, and with an empty `sender_name` the stored
+    ///    sender name (task M2.8). Calendars or tasks without a CalDAV address are `not-found`;
+    /// 3. IMAP and SMTP ([`MailService::check_sign_in`]), then the CalDAV address when calendars or
+    ///    tasks are wanted or it is new ([`Core::check_caldav`]: public host, connected at the
+    ///    checked addresses only, task M2.7b); every host must be public. A refusal is `auth` and
+    ///    names the server; nothing is stored before all of them took the password;
+    /// 4. once the account syncs calendars or tasks, the CalDAV account of the same sign-in
+    ///    (`account::caldav_sign_in`), if there is one, is taken over: the list names the mail
+    ///    account instead in the same write
+    ///    ([`MailService::save_account`]), its collections keep their settings and selections
+    ///    under the new ids ([`Core::take_over_choices`], hidden ones before anything is stored),
+    ///    and the calendar service swaps the two in one step ([`PimService::put_mail_account`]),
+    ///    so they never sync side by side;
+    /// 5. the mail sync starts anew ([`MailService::restart`]), also after a refused password.
+    ///
+    /// Answered with [`Response::MailConnected`]: the account as `accounts.list_accounts` lists
+    /// it, what the CalDAV address offers and the folder roles the server leaves open. The
+    /// password goes to the keychain and the servers only.
+    async fn connect_mail(&self, sign_in: MailSignIn) -> Response {
+        let MailSignIn { address, sender_name, imap, smtp, login_name, password, calendars, tasks, caldav } = sign_in;
+        let id = match torro_mail::account_id(&address) {
+            Ok(id) => id,
+            Err(invalid) => return refusal("error", invalid.to_string()),
+        };
+        let login = login_name.trim();
+        if login.is_empty() || login.contains('/') {
+            return refusal("error", tr("Enter the user name; it cannot contain \"/\".").into());
+        }
+        if password.is_blank() {
+            return refusal("error", tr("Enter the password.").into());
+        }
+        if let Some(refused) = mail_text_refusal(Some(&sender_name), None) {
+            return refused;
+        }
+        for (service, server) in [(Service::Imap, &imap), (Service::Smtp, &smtp)] {
+            if server.host.trim().is_empty() || server.port == 0 {
+                return refusal(
+                    "error",
+                    trf("Enter the {service} server and its port.", &[("service", &service.name())]),
+                );
+            }
+        }
+        let stored = match self.mail.stored_accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        let existing = stored.iter().find(|account| account.id == id && account.kind == AccountKind::Mail);
+        let mut settings = existing.and_then(|account| account.mail_settings.clone()).unwrap_or_else(|| MailSettings {
+            services: torro_mail::Services { mail: true, calendars, tasks },
+            ..MailSettings::default()
+        });
+        // Adding calendars and tasks later (task M3.5): at an account that exists they are switched
+        // on, never off (that is `accounts.update_mail_account`).
+        settings.services.calendars |= calendars;
+        settings.services.tasks |= tasks;
+        let stored_caldav = existing.and_then(|account| account.mail.as_ref()?.caldav.clone());
+        let caldav = match caldav.as_deref().map(str::trim).filter(|typed| !typed.is_empty()) {
+            Some(typed) => match torro_pim_caldav::discover::server_address(typed) {
+                Ok(url) => Some(url),
+                Err(_) => return refusal("error", tr("Enter the server as an https address.").into()),
+            },
+            None => stored_caldav.clone(),
+        };
+        // The stored CalDAV address stays while calendars and tasks are off, so they can be
+        // switched on later; it took the password when it was stored. A new one is checked here.
+        let wants_calendars = settings.services.calendars || settings.services.tasks;
+        let check_caldav = wants_calendars || caldav != stored_caldav;
+        if wants_calendars && caldav.is_none() {
+            let message = tr("No calendar service was found for this address. Enter the server address.");
+            return refusal("not-found", message.into());
+        }
+        // Connecting again changes only what the request names: "Change password…" sends no
+        // sender name and must not remove the stored one (task M2.8).
+        let sender_name = match sender_name.trim() {
+            "" => existing.and_then(|account| Some(account.mail.as_ref()?.sender_name.clone())).unwrap_or_default(),
+            typed => typed.to_string(),
+        };
+        let config =
+            torro_mail::MailAccountConfig { address: address.trim().to_string(), sender_name, imap, smtp, caldav };
+        let open_roles = match self.mail.check_sign_in(&config, login, &password, &settings.folder_roles).await {
+            Ok(open) => open,
+            Err(failed) => return failed.response(),
+        };
+        let offered = match config.caldav.as_deref().filter(|_| check_caldav) {
+            Some(url) => match self.check_caldav(url, login, &password).await {
+                Ok(offered) => offered,
+                Err(failed) => return failed.response(),
+            },
+            None => torro_pim_caldav::Services::default(),
+        };
+        let provider = existing.and_then(|account| account.display_name.clone()).unwrap_or_else(|| {
+            torro_pim_caldav::discover::domain_of(&config.address)
+                .map_or_else(String::new, |domain| torro_pim_caldav::discover::provider_name(&domain))
+        });
+        let account = match torro_core::Account::mail(config, login, &provider, settings) {
+            Ok(account) => account,
+            Err(invalid) => return refusal("error", invalid.to_string()),
+        };
+        // Only an account that syncs calendars takes the CalDAV account of its sign-in over; a kept
+        // address alone (calendars and tasks off) leaves it as it is.
+        let replaces = crate::account::caldav_sign_in(&account)
+            .filter(|_| crate::account::syncs_calendars(&account))
+            .and_then(|caldav_id| stored.iter().find(|a| a.kind == AccountKind::CalDav && a.id == caldav_id).cloned());
+        // What the person hid stays hidden under the new ids before anything is stored: hidden
+        // collections keep agents out too.
+        if let Some(old) = &replaces
+            && let Err(err) = self.settings.copy_collections(&old.id, &id)
+        {
+            return refusal("error", format!("the hidden calendars and task lists cannot be taken over: {err}"));
+        }
+        if let Err(message) = self.mail.save_account(&account, &password, replaces.as_ref()).await {
+            eprintln!("torroworkplace: a mail account could not be stored: {message}");
+            return refusal("error", message);
+        }
+        if let Some(old) = &replaces {
+            self.take_over_choices(&old.id, &id).await;
+        }
+        if let Err(err) =
+            self.pim.put_mail_account(account, password, replaces.as_ref().map(|old| old.id.as_str())).await
+        {
+            eprintln!("torroworkplace: the calendars of {id} are not synced: {err}");
+        }
+        self.mail.restart(&id).await;
+        match self.accounts_within(Reach::Suite).await.into_iter().find(|info| info.id == id) {
+            Some(account) => {
+                Response::MailConnected { account, calendars: offered.calendars, tasks: offered.tasks, open_roles }
+            }
+            None => refusal("error", format!("the mail account {id:?} was stored but is not listed")),
+        }
+    }
+
+    /// Checks the CalDAV address `url` of a mail account (task M2.7): its host is public
+    /// ([`MailService::check_public`]) and, at exactly the addresses checked (task M2.7b,
+    /// `CalDavClient::pinned`), it takes `login` and `password`. Answers with what it offers
+    /// (`CalDavClient::services`). Stores, caches and logs nothing.
+    async fn check_caldav(
+        &self,
+        url: &str,
+        login: &str,
+        password: &torro_ipc::Secret,
+    ) -> Result<torro_pim_caldav::Services, SignInError> {
+        let parsed = reqwest::Url::parse(url).map_err(|_| SignInError::Failed(Service::CalDav))?;
+        let host = parsed.host_str().ok_or(SignInError::Failed(Service::CalDav))?;
+        let port = parsed.port_or_known_default().ok_or(SignInError::Failed(Service::CalDav))?;
+        // `Url` writes an IPv6 host in brackets; the resolver wants it without.
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        let addresses = self.mail.check_public(Service::CalDav, host, port).await?;
+        let dav = torro_pim_caldav::CalDavAccount { url: url.to_string(), username: login.to_string() };
+        let client = torro_pim_caldav::CalDavClient::pinned(&dav, password.clone(), &addresses)
+            .map_err(|_| SignInError::Failed(Service::CalDav))?;
+        client.services().await.map_err(|err| SignInError::caldav(&err))
+    }
+
+    /// `accounts.list_torromail_accounts` (task M7.4): TorroMail's accounts as its `state.json`
+    /// has them, each marked `connected` when the suite has a mail account with its address. No
+    /// keychain is read and nothing is logged: the addresses are the person's.
+    async fn torromail_accounts(&self) -> Response {
+        let stored = match self.torromail.accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        if stored.is_empty() {
+            return Response::TorroMailAccounts { accounts: Vec::new() };
+        }
+        // Our accounts unreadable is an error, not "none connected".
+        let ours = match self.mail.stored_accounts().await {
+            Ok(ours) => ours,
+            Err(message) => return refusal("error", message),
+        };
+        let accounts = stored.iter().map(|account| account.listed(has_mail_account(&ours, &account.email))).collect();
+        Response::TorroMailAccounts { accounts }
+    }
+
+    /// `accounts.import_torromail_account` (task M7.4; app key only, `Rights::allows` keeps every
+    /// client key out): connects TorroMail's account `id` as [`Core::connect_mail`] does. In this
+    /// order, so nothing is read from a keychain for an account that cannot be taken over:
+    ///
+    /// 1. the account from TorroMail's `state.json` (`not-found` when it has no such id), one the
+    ///    suite can take (`unsupported`: OAuth, JMAP, half set up) and has not yet (`conflict`:
+    ///    connecting it again would replace what the person set here);
+    /// 2. its password from TorroMail's keychain entry (`not-found` without one, `error` when the
+    ///    keychain refuses; both say to enter the password instead);
+    /// 3. [`Core::connect_mail`] with TorroMail's IMAP and SMTP server, user and sender name and no
+    ///    CalDAV address: the password goes to no server but the two the list showed the person.
+    ///    Calendars and tasks are added on the account's page afterwards.
+    ///
+    /// The suite's accounts that cannot be read are `error`. TorroMail's file and keychain entry
+    /// are only read. The password goes to the two servers and the suite's keychain only, never
+    /// into an answer, a message or a log.
+    async fn import_torromail_account(&self, id: &str) -> Response {
+        let stored = match self.torromail.accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        let Some(account) = stored.into_iter().find(|account| account.id == id) else {
+            return refusal("not-found", tr("TorroMail has no such account.").into());
+        };
+        let (Some(imap), Some(smtp), None) = (account.imap.clone(), account.smtp.clone(), account.unsupported()) else {
+            let why = account.unsupported().unwrap_or_else(|| tr("Not completely set up in TorroMail."));
+            return refusal("unsupported", why.into());
+        };
+        match self.mail.stored_accounts().await {
+            Ok(ours) if has_mail_account(&ours, &account.email) => {
+                return refusal("conflict", tr("This account is connected already.").into());
+            }
+            Ok(_) => {}
+            Err(message) => return refusal("error", message),
+        }
+        let password = match self.torromail.password(&account).await {
+            Ok(Some(password)) if !password.is_blank() => password,
+            Ok(_) => {
+                let message = tr("TorroMail has no password for this account. Enter it to connect.");
+                return refusal("not-found", message.into());
+            }
+            Err(err) => {
+                // The keychain's own words, never the account: it is the person's.
+                eprintln!("torroworkplace: TorroMail's keychain entry could not be read: {err}");
+                let message = tr("The password could not be read from TorroMail. Enter it to connect.");
+                return refusal("error", message.into());
+            }
+        };
+        // Mail only: the password goes to no server but the two the list showed the person.
+        let sign_in = MailSignIn {
+            address: account.email,
+            sender_name: account.name,
+            imap,
+            smtp,
+            login_name: account.username,
+            password,
+            calendars: false,
+            tasks: false,
+            caldav: None,
+        };
+        self.connect_mail(sign_in).await
+    }
+
+    /// After a mail account `to` took over the CalDAV account `from` and was stored (task M2.7):
+    /// the old ids leave the hidden collections and list orders, whose new ids were added before
+    /// the takeover was stored ([`SettingsStore::copy_collections`]), and the clients' calendar
+    /// and task list selections name the collections by their new ids
+    /// ([`Clients::rename_collections`]). A file that cannot be written is logged; the account is
+    /// connected anyway, and both ways fail safe: old ids left behind name nothing, and clients
+    /// whose selections were not renamed reach none of the collections.
+    async fn take_over_choices(&self, from: &str, to: &str) {
+        if let Err(err) = self.settings.forget_account(from) {
+            eprintln!("torroworkplace: the old ids of the hidden collections of {from} stay: {err}");
+        }
+        if let Err(err) = self.clients.rename_collections(from, to).await {
+            eprintln!("torroworkplace: the clients' selections of {from} were not taken over: {err}");
+        }
+    }
+
+    /// `accounts.update_mail_account` (task M2.7): changes only the settings of the mail account
+    /// `id` that `change` names, never servers or password ([`MailService::update`] refuses that).
+    ///
+    /// - `sender_name` and `signature` as given ([`mail_text_refusal`]); an empty one removes it.
+    /// - `services`: calendars or tasks need the stored CalDAV address (else `error`: connect the
+    ///   account again with one) and no CalDAV account of the same sign-in beside it (else
+    ///   `conflict`: connecting the mail account again takes it over), so the same collections are
+    ///   never synced twice. The calendar service follows at once
+    ///   ([`PimService::put_mail_account`]). The address is not signed in to here: it took the
+    ///   password when it was stored, and is kept while calendars and tasks are off (task M3.5),
+    ///   so the next sync is what tries it again; a problem shows at the account like any failed
+    ///   sync. A stored address can be replaced (`accounts.connect_mail`), not removed.
+    /// - `folder_roles`: only roles the server leaves open now, each only to one of its candidate
+    ///   folders ([`MailService::open_roles`], asked at the server), else `error`; the other picks
+    ///   stay.
+    ///
+    /// Answered with [`Response::Ok`]; `not-found` for an id that is no mail account.
+    async fn update_mail_account(&self, id: &str, change: MailSettingsChange) -> Response {
+        let MailSettingsChange { sender_name, signature, notify, services, folder_roles } = change;
+        if let Some(refused) = mail_text_refusal(sender_name.as_deref(), signature.as_deref()) {
+            return refused;
+        }
+        // Switching services decides who syncs the calendars of this sign-in: from the check for a
+        // CalDAV account beside it to the calendar service's answer, under the lock
+        // `accounts.connect_caldav` takes too (task M2.7b).
+        let _deciding = match services {
+            Some(_) => Some(self.calendar_sign_ins.lock().await),
+            None => None,
+        };
+        let stored = match self.mail.stored_accounts().await {
+            Ok(stored) => stored,
+            Err(message) => return refusal("error", message),
+        };
+        let Some(current) = stored.iter().find(|account| account.id == id && account.kind == AccountKind::Mail) else {
+            return refusal("not-found", format!("no mail account {id:?}"));
+        };
+        if let Some(wanted) = services
+            && (wanted.calendars || wanted.tasks)
+        {
+            let Some(caldav_id) = crate::account::caldav_sign_in(current) else {
+                let message = tr("This account has no calendar address. Connect it again with one.");
+                return refusal("error", message.into());
+            };
+            if stored.iter().any(|account| account.kind == AccountKind::CalDav && account.id == caldav_id) {
+                let message = tr(
+                    "A calendar account of the same sign-in syncs these calendars already. Connect the mail account again to take it over.",
+                );
+                return refusal("conflict", message.into());
+            }
+        }
+        if let Some(roles) = folder_roles.as_ref().filter(|roles| !roles.is_empty()) {
+            let open = match self.mail.open_roles(id).await {
+                Ok(open) => open,
+                Err(err) => return err.response(),
+            };
+            if let Some(refused) = folder_roles_refusal(&open, roles) {
+                return refused;
+            }
+        }
+        let updated = self
+            .mail
+            .update(id, move |account| {
+                if let (Some(name), Some(mail)) = (sender_name, account.mail.as_mut()) {
+                    mail.sender_name = name.trim().to_string();
+                }
+                let settings = account.mail_settings.get_or_insert_with(MailSettings::default);
+                if let Some(signature) = signature {
+                    settings.signature = (!signature.trim().is_empty()).then_some(signature);
+                }
+                if let Some(notify) = notify {
+                    settings.notify = notify;
+                }
+                if let Some(services) = services {
+                    settings.services = services;
+                }
+                settings.folder_roles.extend(folder_roles.unwrap_or_default());
+            })
+            .await;
+        let account = match updated {
+            Ok(Some(account)) => account,
+            Ok(None) => return refusal("not-found", format!("no mail account {id:?}")),
+            Err(message) => return refusal("error", message),
+        };
+        if services.is_some() {
+            let put = match self.mail.password(&account).await {
+                Ok(Some(password)) => self.pim.put_mail_account(account, password, None).await,
+                // Switching calendars off needs no password.
+                Ok(None) if !crate::account::syncs_calendars(&account) => {
+                    self.pim.put_mail_account(account, torro_ipc::Secret::default(), None).await
+                }
+                Ok(None) => Err("no password is stored; the calendars follow once it is connected again".into()),
+                Err(err) => Err(format!("the password cannot be read, the calendars follow at the next start: {err}")),
+            };
+            if let Err(err) = put {
+                eprintln!("torroworkplace: the calendars of {id} are not synced: {err}");
+            }
+        }
+        Response::Ok
+    }
+
+    /// `accounts.remove_account` (tasks M1.4, G.1, M7.1, M2.7): a GitHub account with its filter
+    /// lists, a mail account ([`Core::remove_mail_account`]), else a Nextcloud or CalDAV account
+    /// (`PimService::remove_account`).
+    ///
+    /// An id the core does not know is `not-found`, and nothing changes. Otherwise the account
+    /// first leaves every client's rights (task M2.7b, [`Clients::forget_account`]): connecting the
+    /// same address again later must not give an agent its reach back unasked. When `clients.json`
+    /// cannot be written, nothing is removed (`error`); when removing fails after that, the
+    /// clients stay without the account, which fails safe (the person grants it anew).
+    async fn remove_account(&self, id: &str) -> Response {
+        let known: Vec<String> = self.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
+        // A mail account the mail service could not load is still removed from the list.
+        let stored_mail = id.starts_with(torro_mail::ACCOUNT_PREFIX)
+            && self
+                .mail
+                .stored_accounts()
+                .await
+                .is_ok_and(|stored| stored.iter().any(|a| a.id == id && a.kind == AccountKind::Mail));
+        if !stored_mail && !known.iter().any(|known| known == id) {
+            return refusal("not-found", format!("no account {id:?}"));
+        }
+        if let Err(err) = self.clients.forget_account(id, &known).await {
+            eprintln!("torroworkplace: the clients' rights to {id} could not be taken back: {err}");
+            return refusal("error", err.to_string());
+        }
+        if self.github.knows(id).await {
+            return match self.github.remove(id).await {
+                Ok(()) => {
+                    self.pim.forget_filter_lists(id).await;
+                    Response::Ok
+                }
+                Err(message) => Response::Error { code: "error".into(), message },
+            };
+        }
+        if id.starts_with(torro_mail::ACCOUNT_PREFIX) {
+            return self.remove_mail_account(id).await;
+        }
+        self.pim.remove_account(id).await
+    }
+
+    /// `accounts.remove_account` for a mail account (`mail:<address>`, task M2.7), decided by the
+    /// account list, not by what the mail service loaded: its password, its entry in
+    /// `accounts.json` and its store ([`MailService::remove`]), then its calendar part with its
+    /// cache and hidden collections ([`PimService::forget_mail_account`]) once the account is gone
+    /// from the list, also when deleting the store failed after that. `not-found` for an id the
+    /// list does not name as a mail account.
+    async fn remove_mail_account(&self, id: &str) -> Response {
+        let listed = |stored: &[torro_core::Account]| stored.iter().any(|a| a.id == id && a.kind == AccountKind::Mail);
+        match self.mail.stored_accounts().await {
+            Ok(stored) if listed(&stored) => {}
+            Ok(_) => return refusal("not-found", format!("no account {id:?}")),
+            Err(message) => return refusal("error", message),
+        }
+        let removed = self.mail.remove(id).await;
+        if self.mail.stored_accounts().await.is_ok_and(|stored| !listed(&stored)) {
+            self.pim.forget_mail_account(id).await;
+        }
+        match removed {
+            Ok(()) => Response::Ok,
+            Err(message) => refusal("error", message),
+        }
     }
 
     /// The GitHub access of the account that owns the filter list `collection`, if any.
@@ -1140,21 +1965,24 @@ impl Core {
         answer
     }
 
-    /// Syncs the calendar accounts, then checks the GitHub tokens again. Neither stops the
-    /// other; the answer is the first failure. Without a Nextcloud account but with a GitHub
-    /// one there is something to sync, so the calendar service's `not-connected` does not count.
+    /// Syncs the calendar accounts and the mail accounts side by side, then checks the GitHub
+    /// tokens again. None stops the others; the answer is the first failure, in that order. A
+    /// client syncs only the mail accounts its rights reach and hears only of their failures.
+    /// Without a calendar account but with a GitHub or mail account there is something to sync,
+    /// so the calendar service's `not-connected` does not count then (a mail account without a
+    /// password answers `auth` instead).
     async fn sync(&self, reach: Reach<'_>) -> Response {
-        let pim = self.pim.handle_within(Request::Sync, reach).await;
+        let (pim, mail) = tokio::join!(self.pim.handle_within(Request::Sync, reach), self.mail.sync_all(reach));
         let github = self.github.check_all().await;
         // A list that fails keeps its items and shows its problem; it does not fail the sync.
         refresh_filter_lists(&self.pim, &self.github).await;
-        let only_github = matches!(&pim, Response::Error { code, .. } if code == "not-connected")
-            && !self.github.infos().await.is_empty();
-        match (pim, github) {
-            (_, Err(err)) if only_github => github_error(&err),
-            (_, Ok(())) if only_github => Response::Ok,
-            (Response::Ok, Err(err)) => github_error(&err),
-            (pim, _) => pim,
+        let no_calendars = matches!(&pim, Response::Error { code, .. } if code == "not-connected")
+            && (!self.github.infos().await.is_empty() || self.mail.syncs_any(reach).await);
+        let pim = if no_calendars { Response::Ok } else { pim };
+        match (pim, mail, github) {
+            (Response::Ok, Err(err), _) => err.response(),
+            (Response::Ok, Ok(()), Err(err)) => github_error(&err),
+            (pim, _, _) => pim,
         }
     }
 
@@ -1396,29 +2224,148 @@ fn no_collection(collection: &str) -> Response {
 /// `Rights::mail_accounts` (task M2.1), the same as for an account that does not exist; `None`
 /// when the request names none or one the client reaches. Checked before approvals and handlers,
 /// and again when an approved request runs. Ids of folders and messages name their account only
-/// through the mail store: M3.1 and M3.2 must resolve every [`Request::message_ids`] and the folder
-/// (`folder`, a `MoveTarget::Folder`) there and check their accounts the same way, here before
-/// `ask_approval` and again in `run_approved`, and upgrade a move into a trash folder to delete
-/// access before the rights are checked.
+/// through the mail store:
+///
+/// - The reading commands (task M3.1, [`crate::mail::read`]) resolve them in their handler, in the
+///   stores of the accounts the caller reaches only (`MailService::stores`): an id of any other
+///   account is `not-found` before anything is read. Reading never waits for an approval, and
+///   `run_approved` ends in `handle_within` too, so that is the same check.
+/// - Commands that can wait for an approval (M3.2, M3.3) must resolve every
+///   [`Request::message_ids`] and the folder (a `MoveTarget::Folder`) the same way before
+///   `ask_approval` and again in `run_approved`, and upgrade a move into a trash folder to delete
+///   access before the rights are checked.
+///
+/// Changing or removing a mail account (`accounts.update_mail_account`, `accounts.remove_account`
+/// with a `mail:` id, task M2.7) names its account too: a client changes only accounts it reaches,
+/// as `accounts.list_accounts` shows it only those.
 fn mail_out_of_reach(rights: &torro_ipc::api::Rights, request: &Request) -> Option<Response> {
-    let account = request.mail_account().filter(|account| !rights.reaches_mail_account(account))?;
+    let named = match request {
+        Request::UpdateMailAccount { id, .. } => Some(id.as_str()),
+        Request::RemoveAccount { id } if id.starts_with(torro_mail::ACCOUNT_PREFIX) => Some(id.as_str()),
+        request => request.mail_account(),
+    };
+    let account = named.filter(|account| !rights.reaches_mail_account(account))?;
     Some(Response::Error { code: "not-found".into(), message: format!("no mail account {account:?}") })
 }
 
-/// The answer to a mail request until its task carries it out (M2.7 connecting and settings, M3.1
-/// reading, M3.2 changing, M3.3 sending): the limits and the address are checked as they will be
-/// then ([`torro_ipc::mail::limit_refusal`], [`torro_mail::account_id`]), then `unsupported`.
+/// The answer to a mail request until its task carries it out (M3.1 reading, M3.2 changing, M3.3
+/// sending): the limits are checked as they will be then ([`torro_ipc::mail::limit_refusal`]),
+/// then `unsupported`.
 fn mail_not_yet(request: &Request) -> Response {
     if let Some(refused) = torro_ipc::mail::limit_refusal(request) {
         return refused;
     }
-    if let Request::ConnectMail { address, .. } = request
-        && let Err(invalid) = torro_mail::account_id(address)
-    {
-        return Response::Error { code: "error".into(), message: invalid.to_string() };
-    }
     let message = format!("{} is not available yet", request.operation().name());
     Response::Error { code: "unsupported".into(), message }
+}
+
+/// An error answer with `code` and `message`.
+fn refusal(code: &str, message: String) -> Response {
+    Response::Error { code: code.into(), message }
+}
+
+/// `ours` holds the mail account of `address` (`mail:<address>`, task M7.4).
+fn has_mail_account(ours: &[torro_core::Account], address: &str) -> bool {
+    torro_mail::account_id(address)
+        .is_ok_and(|id| ours.iter().any(|account| account.kind == AccountKind::Mail && account.id == id))
+}
+
+/// What `accounts.connect_mail` brings (task M2.7), as [`Request::ConnectMail`] has it.
+struct MailSignIn {
+    address: String,
+    sender_name: String,
+    imap: torro_mail::Endpoint,
+    smtp: torro_mail::Endpoint,
+    login_name: String,
+    password: torro_ipc::Secret,
+    calendars: bool,
+    tasks: bool,
+    caldav: Option<String>,
+}
+
+/// What `accounts.update_mail_account` changes (task M2.7), as [`Request::UpdateMailAccount`] has
+/// it: `None` keeps a setting.
+struct MailSettingsChange {
+    sender_name: Option<String>,
+    signature: Option<String>,
+    notify: Option<torro_mail::Notify>,
+    services: Option<torro_mail::Services>,
+    folder_roles: Option<std::collections::BTreeMap<torro_mail::Role, String>>,
+}
+
+/// The longest sender name, in characters, a mail account takes.
+const SENDER_NAME_MAX: usize = 200;
+
+/// The longest signature, in bytes, a mail account takes.
+const SIGNATURE_MAX: usize = 8 * 1024;
+
+/// `error` for a sender name with a line break or another control character (it goes into the
+/// `From:` header) or longer than [`SENDER_NAME_MAX`] characters, and for a signature over
+/// [`SIGNATURE_MAX`] bytes; `None` when both fit or are not given.
+fn mail_text_refusal(sender_name: Option<&str>, signature: Option<&str>) -> Option<Response> {
+    if sender_name.is_some_and(|name| name.chars().count() > SENDER_NAME_MAX || name.chars().any(char::is_control)) {
+        let message = format!("the sender name may hold at most {SENDER_NAME_MAX} characters and no line breaks");
+        return Some(refusal("error", message));
+    }
+    if signature.is_some_and(|signature| signature.len() > SIGNATURE_MAX) {
+        return Some(refusal("error", format!("the signature may hold at most {SIGNATURE_MAX} bytes")));
+    }
+    None
+}
+
+/// `error` unless every pick of `roles` names a role the server leaves `open` and one of its
+/// candidate folders (task M2.7): a pick can settle a role the server left open, never move one
+/// it gave a folder itself (an agent could otherwise make "Trash" the inbox).
+fn folder_roles_refusal(
+    open: &[torro_mail_imap::folders::OpenRole],
+    roles: &std::collections::BTreeMap<torro_mail::Role, String>,
+) -> Option<Response> {
+    let fits = |(role, path): (&torro_mail::Role, &String)| {
+        open.iter().any(|open| open.role == *role && open.candidates.contains(path))
+    };
+    if roles.iter().all(fits) {
+        return None;
+    }
+    let message = tr("Only a role the server left open can be set, and only to one of its folders.");
+    Some(refusal("error", message.into()))
+}
+
+/// The mail part `mail` and the calendar part `calendars` of one mail account as the one entry
+/// `accounts.list_accounts` lists (task M2.7): the mail part with the collections of the calendar
+/// part. Its last sync is the older one of both parts (the one that synced, when the other never
+/// did), and its problem says what went wrong in either; two different problems both, named by
+/// their part. The calendar part's own state goes into the mail view's `calendars` (task M2.8),
+/// next to the mail part's.
+fn joined_info(mut mail: AccountInfo, calendars: AccountInfo) -> AccountInfo {
+    if let Some(view) = &mut mail.mail {
+        view.calendars = Some(match &calendars.state {
+            AccountState::Connected { last_sync, problem, .. } => {
+                torro_ipc::ServiceState { last_sync: *last_sync, problem: problem.clone() }
+            }
+            _ => torro_ipc::ServiceState::default(),
+        });
+    }
+    let state = match (mail.state, calendars.state) {
+        (
+            AccountState::Connected { server, login_name, last_sync, problem },
+            AccountState::Connected { last_sync: synced, problem: failed, .. },
+        ) => {
+            let last_sync = match (last_sync, synced) {
+                (Some(mail), Some(calendars)) => Some(mail.min(calendars)),
+                (mail, calendars) => mail.or(calendars),
+            };
+            let problem = match (problem, failed) {
+                (Some(mail), Some(calendars)) if mail != calendars => Some(trf(
+                    "Mail: {mail} · Calendars and tasks: {calendars}",
+                    &[("mail", &mail), ("calendars", &calendars)],
+                )),
+                (mail, calendars) => mail.or(calendars),
+            };
+            AccountState::Connected { server, login_name, last_sync, problem }
+        }
+        (state, _) => state,
+    };
+    AccountInfo { state, collections: calendars.collections, ..mail }
 }
 
 /// The task list a `list_order` value names; `None` for a value that does not fit, which the
@@ -1480,6 +2427,7 @@ mod tests {
     use torro_core::i18n::{tr, trf};
     use torro_inbox::AgentKind;
     use torro_ipc::api::{Area, AreaRights, Level, Rights, RightsTemplate, Selection};
+    use torro_mail_imap::discover::MailUnsupported;
 
     use super::*;
 
@@ -1937,7 +2885,7 @@ mod tests {
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
 
         let discover = Request::DiscoverServices { address: "anna.secret@gmail.com".into() };
-        let Response::Discovery { provider, urls, unsupported } = ask(&core, Some(&key), discover).await else {
+        let Response::Discovery { provider, urls, unsupported, .. } = ask(&core, Some(&key), discover).await else {
             panic!("a client may search")
         };
         assert_eq!((provider.as_str(), urls.len(), unsupported.is_some()), ("Gmail", 0, true));
@@ -1955,6 +2903,142 @@ mod tests {
         let answer = ask(&core, Some(&app_key), connect).await;
         assert!(!format!("{answer:?}").contains("hunter2"), "{answer:?}");
         assert_eq!(code(&answer), "offline");
+    }
+
+    #[tokio::test]
+    async fn the_search_answers_with_calendars_and_mail_servers_together() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let search = |address: &str| Request::DiscoverServices { address: address.into() };
+        let endpoint = |host: &str, port: u16, security: torro_mail::Security| {
+            Some(torro_mail::Endpoint { host: host.into(), port, security })
+        };
+        use torro_mail::Security::{StartTls, Tls};
+
+        let mailbox = ask(&core, Some(&key), search(" anna@mailbox.org ")).await;
+        assert_eq!(
+            mailbox,
+            Response::Discovery {
+                provider: "mailbox.org".into(),
+                urls: vec!["https://dav.mailbox.org/".into()],
+                unsupported: None,
+                imap: endpoint("imap.mailbox.org", 993, Tls),
+                smtp: endpoint("smtp.mailbox.org", 587, StartTls),
+                login_hint: Some("anna@mailbox.org".into()),
+                app_password: false,
+                mail_unsupported: None,
+            }
+        );
+        // The CalDAV search does not know GMX; the mail table names its CalDAV address.
+        let Response::Discovery { provider, urls, .. } = ask(&core, Some(&key), search("gmx.de")).await else {
+            panic!("an answer")
+        };
+        assert_eq!((provider.as_str(), urls), ("GMX", vec!["https://caldav.gmx.net/".to_string()]));
+        // Gmail: calendars not supported, mail only with an app password.
+        let Response::Discovery { unsupported, imap, app_password, mail_unsupported, login_hint, .. } =
+            ask(&core, Some(&key), search("anna@gmail.com")).await
+        else {
+            panic!("an answer")
+        };
+        assert!(unsupported.is_some() && app_password);
+        assert_eq!(imap, endpoint("imap.gmail.com", 993, Tls));
+        assert_eq!(mail_unsupported.as_deref(), Some(tr(MailUnsupported::Google.reason())));
+        assert_eq!(login_hint.as_deref(), Some("anna@gmail.com"));
+        // Nothing known and nothing on the network (tests ask no DNS): calendars' answer alone.
+        let Response::Discovery { imap, login_hint, .. } = ask(&core, Some(&key), search("a@example.org")).await else {
+            panic!("an answer")
+        };
+        assert_eq!((imap, login_hint), (None, None));
+        assert_eq!(code(&ask(&core, Some(&key), search("anna@192.168.1.1")).await), "error");
+    }
+
+    #[test]
+    fn the_login_name_is_made_of_the_address_as_given() {
+        assert_eq!(login_name(" Anna@Example.org ", LoginHint::Address).as_deref(), Some("Anna@Example.org"));
+        assert_eq!(login_name("anna@example.org", LoginHint::LocalPart).as_deref(), Some("anna"));
+        assert_eq!(login_name("example.org", LoginHint::Address), None);
+        assert_eq!(login_name("@example.org", LoginHint::LocalPart), None);
+    }
+
+    #[test]
+    fn a_mail_answer_stands_in_for_an_offline_calendar_search() {
+        let offline = Response::Error { code: "offline".into(), message: "x".into() };
+        let mut found = MailDiscovery::nothing("example.org");
+        found.imap = Some(torro_mail::Endpoint {
+            host: "imap.example.org".into(),
+            port: 993,
+            security: torro_mail::Security::Tls,
+        });
+        let Response::Discovery { provider, urls, imap, .. } = with_mail(offline.clone(), Some(found), "example.org")
+        else {
+            panic!("the mail servers are an answer")
+        };
+        assert_eq!((provider.as_str(), urls.len(), imap.is_some()), ("example.org", 0, true));
+        assert_eq!(with_mail(offline.clone(), Some(MailDiscovery::nothing("example.org")), "x"), offline);
+        assert_eq!(with_mail(offline.clone(), None, "x"), offline);
+    }
+
+    /// A DNS that never answers MX questions: the mail search waits until its budget runs out.
+    struct StalledDns;
+
+    impl torro_pim_caldav::discover::Resolver for StalledDns {
+        fn srv<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> torro_pim_caldav::discover::Lookup<'a, torro_pim_caldav::discover::SrvRecord> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn txt<'a>(&'a self, _: &'a str) -> torro_pim_caldav::discover::Lookup<'a, String> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn mx<'a>(
+            &'a self,
+            _: &'a str,
+        ) -> torro_pim_caldav::discover::Lookup<'a, torro_pim_caldav::discover::MxRecord> {
+            Box::pin(std::future::pending())
+        }
+        fn ips<'a>(&'a self, _: &'a str) -> torro_pim_caldav::discover::Lookup<'a, std::net::IpAddr> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_runs_at_most_two_searches_at_a_time() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stalled = MailDiscoverer::new(Arc::new(StalledDns)).expect("discovery");
+        let core = Arc::new(core(dir.path()).with_mail_discoverer(stalled));
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let (_, other) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let search = || Request::DiscoverServices { address: "anna@example.org".into() };
+        let running: Vec<_> = (0..2)
+            .map(|_| {
+                let (core, key) = (Arc::clone(&core), key.clone());
+                tokio::spawn(async move { ask(&core, Some(&key), search()).await })
+            })
+            .collect();
+        let started = std::time::Instant::now();
+        while core.searches.running.lock().expect("lock").values().sum::<usize>() < 2 {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5), "both searches start");
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(code(&ask(&core, Some(&key), search()).await), "busy");
+        // Another client and the app key are not held up by it.
+        let waits = |key: Key| {
+            let core = Arc::clone(&core);
+            async move {
+                tokio::time::timeout(std::time::Duration::from_millis(100), ask(&core, Some(&key), search())).await
+            }
+        };
+        assert!(waits(other).await.is_err(), "another client's search runs");
+        assert!(waits(crate::clients::tests::app_key(dir.path())).await.is_err(), "the person's search runs");
+        // A cancelled search gives its slot back.
+        for search in running {
+            search.abort();
+            let _ = search.await;
+        }
+        assert!(waits(key).await.is_err(), "running again, not busy");
+        assert!(core.searches.running.lock().expect("lock").is_empty());
     }
 
     #[tokio::test]
@@ -2402,6 +3486,73 @@ mod tests {
         let asked = waits(ask(&core, Some(&key), Request::ConnectGithub).await);
         assert_eq!(asked.command, "accounts.connect_github");
         assert_eq!(ACCOUNT_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1, "nothing opened yet");
+    }
+
+    /// Task M2.6: `accounts.sync` syncs the mail accounts too and answers with a refused password;
+    /// `accounts.list_accounts` lists them with their problem, and a client only those its rights
+    /// reach.
+    #[tokio::test]
+    async fn mail_accounts_are_synced_listed_and_kept_from_clients_that_do_not_reach_them() {
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::{self, FakeImap};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (good, bad) = (FakeImap::start(PASSWORD).await, FakeImap::start("another password").await);
+        good.add("INBOX", &fake::mail("Hello", 0, None), &[]);
+        let secrets = MemoryTokens::default();
+        let anna = mail_account("anna@example.org", &good.endpoint);
+        let bernd = mail_account("bernd@example.org", &bad.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&anna, PASSWORD), (&bernd, PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        let core = core(dir.path()).with_mail(mail);
+
+        let answer = core.handle(Request::Sync).await;
+        assert_eq!(answer, Response::Error { code: "auth".into(), message: tr("Password was refused").into() });
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        let states: Vec<(&str, &str, bool, Option<&str>)> = accounts
+            .iter()
+            .map(|account| match &account.state {
+                AccountState::Connected { last_sync, problem, .. } => {
+                    (account.id.as_str(), account.kind.as_str(), last_sync.is_some(), problem.as_deref())
+                }
+                other => panic!("connected, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [
+                (anna.id.as_str(), "mail", true, None),
+                (bernd.id.as_str(), "mail", false, Some(tr("Password was refused")))
+            ]
+        );
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![anna.id.clone()]);
+        let (_, key) = client(&core, rights.clone()).await;
+        let Response::Accounts { accounts } = ask(&core, Some(&key), Request::Accounts).await else {
+            panic!("accounts")
+        };
+        let ids: Vec<&str> = accounts.iter().map(|account| account.id.as_str()).collect();
+        assert_eq!(ids, [anna.id.as_str()], "Bernd's account is as if it did not exist");
+        // Nor does its sync run for the client, or its refused password answer it.
+        let logins = bad.logins();
+        assert_eq!(core.handle_within(Request::Sync, Reach::Client(&rights)).await, Response::Ok);
+        assert_eq!(bad.logins(), logins);
+
+        // The refused password becomes an entry of the suite in the inbox (task E2.1).
+        crate::inbox::tend_suite(&core.inbox, &core.approvals, &core.pim, &core.github, &core.mail, Utc::now()).await;
+        let suite = Request::ListItems {
+            lane: None,
+            source: Some(torro_inbox::SourceRef::suite()),
+            state: None,
+            since: None,
+            limit: None,
+        };
+        let Response::Items { items } = core.handle(suite).await else { panic!("items") };
+        let titles: Vec<(torro_inbox::Kind, &str)> =
+            items.iter().map(|item| (item.kind, item.title.as_str())).collect();
+        let refused = trf("Sign-in to {account} was refused", &[("account", &"bernd@example.org")]);
+        assert_eq!(titles, [(torro_inbox::Kind::AccountProblem, refused.as_str())]);
     }
 
     /// The sections test cores and [`show_control_centre`] started a control centre on.
@@ -4735,6 +5886,153 @@ mod tests {
         assert_eq!(puts(&fake).len(), 1, "only the task is written: {:?}", fake.lines());
     }
 
+    // Taking accounts over from TorroMail (task M7.4): its `state.json` in a temporary directory,
+    // its keychain in memory. TorroMail's file and entries must stay as they were.
+
+    use crate::account::torromail::tests::{MemorySecrets, state_json, torromail_account};
+
+    /// TorroMail's ids of Anna's account and of a Gmail account: UUIDs, as TorroMail makes them.
+    const ANNA_TM: &str = "4c1d5e2a-0b6f-4a8e-9c3d-1e2f3a4b5c6d";
+    const GMAIL_TM: &str = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+
+    /// A core with a home for its mail accounts in `dir` (and an empty keychain), so it can tell
+    /// which of TorroMail's accounts it has already.
+    fn homed(core: Core, dir: &std::path::Path) -> Core {
+        core.with_mail(service_with_smtp(dir, &MemoryTokens::default(), MAIL_PASSWORD).0)
+    }
+
+    /// TorroMail with `accounts` in `dir/torromail/state.json` and `secrets` as its keychain.
+    fn torromail_in(dir: &std::path::Path, accounts: &[serde_json::Value], secrets: &MemorySecrets) -> TorroMail {
+        let file = dir.join("torromail").join(crate::account::torromail::STATE_FILE);
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("folder made");
+        std::fs::write(&file, state_json(accounts)).expect("state written");
+        TorroMail::new(Some(file), Arc::new(secrets.clone()))
+    }
+
+    /// TorroMail's account of Anna at `imap` (a fake server on the loopback interface) and the
+    /// fake SMTP check, signed in to as `anna`.
+    fn anna_in_torromail(imap: &torro_mail::Endpoint) -> serde_json::Value {
+        let mut account = torromail_account(ANNA_TM, "anna@example.org", (&imap.host, imap.port), ("127.0.0.1", 587));
+        account["imapSecurity"] = serde_json::to_value(imap.security).expect("security");
+        account
+    }
+
+    /// Rule 5 of "Was nie nach außen geht": no client key takes a password over from TorroMail, not
+    /// even with every admin switch, nothing waits for an approval and TorroMail's keychain is not
+    /// even asked. Listing is reading: it shows addresses and servers, never a password.
+    #[tokio::test]
+    async fn only_the_app_key_takes_an_account_over_from_torromail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemorySecrets::with(ANNA_TM, "hunter2-TM");
+        let imap =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let torromail = torromail_in(dir.path(), &[anna_in_torromail(&imap)], &secrets);
+        let core = homed(audited(dir.path()), dir.path()).with_torromail(torromail);
+        let import = Request::ImportTorroMailAccount { id: ANNA_TM.into() };
+
+        let (_, key) = client(&core, every_admin_switch()).await;
+        assert_eq!(code(&ask(&core, Some(&key), import.clone()).await), "forbidden");
+        assert!(secrets.asked().is_empty(), "TorroMail's keychain was not asked");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let Response::TorroMailAccounts { accounts } = ask(&core, Some(&reader), Request::TorroMailAccounts).await
+        else {
+            panic!("listed")
+        };
+        assert_eq!(accounts.len(), 1);
+        assert_eq!((accounts[0].address.as_str(), accounts[0].connected), ("anna@example.org", false));
+        assert!(!serde_json::to_string(&accounts).expect("json").contains("hunter2"));
+        assert!(secrets.asked().is_empty(), "listing reads no keychain");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("anna") && !log.contains("4c1d"), "{log}");
+    }
+
+    /// The person takes Anna's account over: servers and user from TorroMail's state, the password
+    /// from its keychain into the suite's keychain only. TorroMail keeps file and password; a second
+    /// import is a conflict, and the list says the account is connected.
+    #[tokio::test]
+    async fn an_account_of_torromail_connects_with_its_password_copied() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let suite_keychain = MemoryTokens::default();
+        let (core, smtp) = mail_core(dir.path(), &suite_keychain, MAIL_PASSWORD);
+        let theirs = MemorySecrets::with(ANNA_TM, MAIL_PASSWORD);
+        let core = core.with_torromail(torromail_in(dir.path(), &[anna_in_torromail(&server.endpoint)], &theirs));
+        let state = dir.path().join("torromail").join(crate::account::torromail::STATE_FILE);
+        let before = std::fs::read(&state).expect("state");
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let import = Request::ImportTorroMailAccount { id: ANNA_TM.into() };
+        let answer = ask(&core, Some(&app_key), import.clone()).await;
+        let Response::MailConnected { account, calendars, tasks, .. } = answer.clone() else {
+            panic!("connected, got {answer:?}")
+        };
+        assert_eq!((account.id.as_str(), calendars, tasks), (ANNA_MAIL, false, false), "mail only");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "the app key waits for no approval");
+        assert_eq!(suite_keychain.get_plain(ANNA_MAIL).as_deref(), Some(MAIL_PASSWORD));
+        assert_eq!(smtp.lock().expect("record").clone(), ["127.0.0.1:587 anna"], "signed in as TorroMail's user");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let config = stored[0].mail.clone().expect("a mail account");
+        assert_eq!((config.sender_name.as_str(), stored[0].login_name.as_str()), ("Anna Example", "anna"));
+
+        assert_eq!(std::fs::read(&state).expect("state"), before, "TorroMail's state is untouched");
+        let kept = theirs.passwords.lock().expect("lock").get(ANNA_TM).cloned();
+        assert_eq!(kept.as_deref(), Some(MAIL_PASSWORD), "TorroMail keeps its password");
+        let Response::TorroMailAccounts { accounts } = ask(&core, Some(&app_key), Request::TorroMailAccounts).await
+        else {
+            panic!("listed")
+        };
+        assert!(accounts[0].connected, "the list says so");
+        let again = ask(&core, Some(&app_key), import).await;
+        assert_eq!(code(&again), "conflict");
+        assert_eq!(theirs.asked(), [ANNA_TM], "the keychain was asked once");
+        // The password is in no answer and no file of the suite (TorroMail's keychain is a map).
+        nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &again]);
+    }
+
+    /// What cannot be taken over says why, before any keychain is read; a missing or refused
+    /// password says to enter it instead.
+    #[tokio::test]
+    async fn torromail_accounts_that_cannot_be_taken_over_say_why() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let imap =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let mut oauth = torromail_account(GMAIL_TM, "anna@gmail.com", ("imap.gmail.com", 993), ("smtp.gmail.com", 465));
+        oauth["loginMethod"] = "oauth".into();
+        let secrets = MemorySecrets::with(GMAIL_TM, "token");
+        let accounts = [anna_in_torromail(&imap), oauth];
+        let import = |id: &str| Request::ImportTorroMailAccount { id: id.into() };
+
+        let core_with = |secrets: &MemorySecrets| {
+            homed(core(dir.path()), dir.path()).with_torromail(torromail_in(dir.path(), &accounts, secrets))
+        };
+        let first = core_with(&secrets);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(code(&ask(&first, Some(&app_key), import("nobody")).await), "not-found");
+        let refused = ask(&first, Some(&app_key), import(GMAIL_TM)).await;
+        let why = tr("Signs in with Google or Microsoft, which Torro Workplace does not support yet.");
+        assert_eq!(refused, Response::Error { code: "unsupported".into(), message: why.into() });
+        assert!(secrets.asked().is_empty(), "no keychain read for what cannot be taken over");
+        let missing = ask(&first, Some(&app_key), import(ANNA_TM)).await;
+        assert_eq!(code(&missing), "not-found", "TorroMail has no password for Anna: {missing:?}");
+
+        let refusing = MemorySecrets { refuse: true, ..MemorySecrets::default() };
+        let answer = ask(&core_with(&refusing), Some(&app_key), import(ANNA_TM)).await;
+        let message = tr("The password could not be read from TorroMail. Enter it to connect.");
+        assert_eq!(answer, Response::Error { code: "error".into(), message: message.into() });
+
+        // No TorroMail at all: nothing to list.
+        let none = ask(&core(dir.path()), Some(&app_key), Request::TorroMailAccounts).await;
+        assert_eq!(none, Response::TorroMailAccounts { accounts: Vec::new() });
+        // The suite's own accounts cannot be read (no home): an error, never "none connected".
+        let untouched = MemorySecrets::with(ANNA_TM, "hunter2-TM");
+        let homeless = core(dir.path()).with_torromail(torromail_in(dir.path(), &accounts, &untouched));
+        assert_eq!(code(&ask(&homeless, Some(&app_key), Request::TorroMailAccounts).await), "error");
+        assert_eq!(code(&ask(&homeless, Some(&app_key), import(ANNA_TM)).await), "error");
+        assert!(untouched.asked().is_empty(), "nor is the keychain read then");
+    }
+
     // Mail (task M2.1): the requests exist, the rights hold, the handlers wait for their tasks.
 
     fn connect_mail(address: &str) -> Request {
@@ -4763,7 +6061,8 @@ mod tests {
 
     /// Rule 5 of "Was nie nach außen geht": no client key signs in to mail, not even with every
     /// admin switch, and nothing waits for an approval; the password shows nowhere. The app key
-    /// gets a refused address as `error` and anything else as `unsupported` until task M2.7.
+    /// gets a refused address as `error`, and so a core without a home directory, before any
+    /// server is asked; such a core has no mail to read, and sending waits for its task.
     #[tokio::test]
     async fn only_the_app_key_connects_mail_and_mail_waits_for_its_tasks() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -4779,33 +6078,13 @@ mod tests {
         let app_key = crate::clients::tests::app_key(dir.path());
         let slash = ask(&core, Some(&app_key), connect_mail("anna/x@mailbox.org")).await;
         assert_eq!(code(&slash), "error", "{slash:?}");
-        let later = ask(&core, Some(&app_key), connect_mail("anna@mailbox.org")).await;
-        assert_eq!(code(&later), "unsupported");
-        assert!(!format!("{later:?}").contains("hunter2"));
-        for request in [Request::MailFolders { account: None }, Request::SendDraft { id: "m:1".into() }] {
-            assert_eq!(code(&ask(&core, Some(&app_key), request).await), "unsupported");
-        }
-    }
-
-    /// `Rights::outbound`: never is `forbidden`, with approval waits even with `confirm: never`,
-    /// free runs (here into `unsupported`) unless `confirm` asks for every change.
-    #[tokio::test]
-    async fn sending_waits_or_is_refused_as_outbound_says() {
-        use torro_ipc::api::{Confirm, Outbound};
-        let dir = tempfile::tempdir().expect("temp dir");
-        let core = core(dir.path());
-        let send = || Request::SendDraft { id: "m:1".into() };
-        let with = |outbound, confirm| Rights { outbound, confirm, ..RightsTemplate::FullAccess.rights() };
-
-        let (_, never) = client(&core, with(Outbound::Never, Confirm::Never)).await;
-        assert_eq!(code(&ask(&core, Some(&never), send()).await), "forbidden");
-        let (_, asking) = client(&core, with(Outbound::WithApproval, Confirm::Never)).await;
-        let asked = waits(ask(&core, Some(&asking), send()).await);
-        assert_eq!(asked.command, "mail.send_draft");
-        let (_, free) = client(&core, with(Outbound::Free, Confirm::Never)).await;
-        assert_eq!(code(&ask(&core, Some(&free), send()).await), "unsupported", "runs at once");
-        let (_, careful) = client(&core, with(Outbound::Free, Confirm::OnEveryChange)).await;
-        waits(ask(&core, Some(&careful), send()).await);
+        let homeless = ask(&core, Some(&app_key), connect_mail("anna@mailbox.org")).await;
+        assert_eq!(code(&homeless), "error", "nothing could be stored: {homeless:?}");
+        assert!(!format!("{homeless:?}").contains("hunter2"));
+        let none = Response::MailFolders { folders: Vec::new() };
+        assert_eq!(ask(&core, Some(&app_key), Request::MailFolders { account: None }).await, none, "reading: M3.1");
+        let no_draft = ask(&core, Some(&app_key), Request::SendDraft { id: "m:1".into() }).await;
+        assert_eq!(code(&no_draft), "not-found", "sending: M3.3, but there is no such draft");
     }
 
     /// An account outside a client's `mail_accounts` is `not-found` before anything else, limits
@@ -4819,19 +6098,1152 @@ mod tests {
         let (_, key) = client(&core, rights.clone()).await;
         let folders = |account: &str| Request::MailFolders { account: Some(account.into()) };
         assert_eq!(code(&ask(&core, Some(&key), folders("mail:bob@mailbox.org")).await), "not-found");
-        assert_eq!(code(&ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await), "unsupported");
+        // A granted account passes to the handler, which knows no such account in this core.
+        let unknown = crate::mail::service::MailError::NotFound.response();
+        assert_eq!(ask(&core, Some(&key), folders("mail:anna@mailbox.org")).await, unknown);
 
-        // Deleting waits for a person with `confirm: on_delete`, but not over the limit.
+        // Over the limit is `error`; a message no reachable store knows is `not-found` before
+        // anyone is asked (task M3.2; waiting for a person: `changing_mail_waits_…`).
         let ids = |n: usize| (0..n).map(|i| format!("m:{i}")).collect::<Vec<_>>();
         let delete = |n| Request::DeleteMail { ids: ids(n), permanent: false };
         assert_eq!(code(&ask(&core, Some(&key), delete(101)).await), "error");
-        waits(ask(&core, Some(&key), delete(1)).await);
+        assert_eq!(code(&ask(&core, Some(&key), delete(1)).await), "not-found");
         let to_trash =
             Request::MoveMail { ids: ids(1), to: torro_ipc::mail::MoveTarget::Role(torro_ipc::mail::MoveRole::Trash) };
-        waits(ask(&core, Some(&key), to_trash.clone()).await);
+        assert_eq!(code(&ask(&core, Some(&key), to_trash.clone()).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
 
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Write, admin: false });
         let (_, writer) = client(&core, rights).await;
         assert_eq!(code(&ask(&core, Some(&writer), to_trash).await), "forbidden", "the trash needs full");
+    }
+
+    // Connecting mail accounts (task M2.7): a fake IMAP server, a fake SMTP check and a fake CalDAV
+    // server, all on the loopback interface. The password must show nowhere but in the keychain.
+
+    use crate::mail::service::tests::{PASSWORD as MAIL_PASSWORD, service_with_smtp};
+    use crate::mail::sync::fake::FakeImap;
+
+    /// A core whose mail accounts live in `dir` with the keychain `secrets`, and whose SMTP server
+    /// takes `smtp_password`; with the record of what SMTP was asked.
+    fn mail_core(
+        dir: &std::path::Path,
+        secrets: &MemoryTokens,
+        smtp_password: &str,
+    ) -> (Core, Arc<std::sync::Mutex<Vec<String>>>) {
+        let (mail, asked) = service_with_smtp(dir, secrets, smtp_password);
+        (core(dir).with_mail(mail), asked)
+    }
+
+    /// Anna's sign-in at the IMAP server `imap` with `password`; calendars and tasks at `caldav`
+    /// when given.
+    fn anna_signs_in(imap: &torro_mail::Endpoint, password: &str, caldav: Option<&str>) -> Request {
+        Request::ConnectMail {
+            address: "anna@example.org".into(),
+            sender_name: "Anna".into(),
+            imap: imap.clone(),
+            smtp: torro_mail::Endpoint {
+                host: "127.0.0.1".into(),
+                port: 587,
+                security: torro_mail::Security::StartTls,
+            },
+            login_name: "anna".into(),
+            password: torro_ipc::Secret::new(password),
+            calendars: caldav.is_some(),
+            tasks: caldav.is_some(),
+            caldav: caldav.map(str::to_string),
+        }
+    }
+
+    const ANNA_MAIL: &str = "mail:anna@example.org";
+
+    fn mail_accounts_file(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join("config").join(torro_core::account::ACCOUNTS_FILE)
+    }
+
+    /// No file of `dir` holds `secret`, nor do the answers in `answers`.
+    fn nowhere(dir: &std::path::Path, secret: &str, answers: &[&Response]) {
+        for answer in answers {
+            assert!(!format!("{answer:?}").contains(secret), "{answer:?}");
+            assert!(!serde_json::to_string(answer).expect("json").contains(secret));
+        }
+        let mut dirs = vec![dir.to_path_buf()];
+        while let Some(next) = dirs.pop() {
+            for entry in std::fs::read_dir(&next).expect("readable").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if let Ok(text) = std::fs::read(&path) {
+                    let text = String::from_utf8_lossy(&text);
+                    assert!(!text.contains(secret), "{} holds the password", path.display());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_mail_account_connects_with_its_password_in_the_keychain_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let (core, smtp) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let answer = ask(&core, Some(&app_key), anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        let Response::MailConnected { account, calendars, tasks, open_roles } = answer.clone() else {
+            panic!("connected, got {answer:?}")
+        };
+        assert_eq!(
+            (account.id.as_str(), account.kind.as_str(), account.label.as_str()),
+            (ANNA_MAIL, "mail", "anna@example.org")
+        );
+        assert_eq!((calendars, tasks, open_roles), (false, false, vec![]), "mail only, every role clear");
+        assert_eq!(secrets.get_plain(ANNA_MAIL).as_deref(), Some(MAIL_PASSWORD));
+        assert_eq!(smtp.lock().expect("record").clone(), ["127.0.0.1:587 anna"], "SMTP was asked once");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let config = stored[0].mail.clone().expect("a mail account");
+        assert_eq!((config.sender_name.as_str(), config.caldav), ("Anna", None));
+        assert!(stored[0].mail_settings.as_ref().is_some_and(|s| s.services.mail && !s.services.calendars));
+
+        // The account syncs and is listed; its password shows nowhere.
+        crate::mail::service::tests::eventually("the first sync", || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { return false };
+            accounts.iter().any(|a| matches!(a.state, AccountState::Connected { last_sync: Some(_), .. }))
+        })
+        .await;
+        let listed = core.handle(Request::Accounts).await;
+        assert!(!format!("{:?}", core.mail.infos(Reach::Suite).await).contains(MAIL_PASSWORD));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval was asked for");
+        nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &listed]);
+    }
+
+    /// Task M3.1: a client reads the mail of its account; the audit log names the account and
+    /// hashed ids, never the words searched, a folder's name or an attachment's file name.
+    #[tokio::test]
+    async fn reading_mail_logs_no_words_folder_names_or_file_names() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let raw = format!(
+            "From: Bernd <bernd@example.com>\r\nTo: anna@example.org\r\nSubject: Bonus\r\nDate: {date}\r\n\
+             Message-ID: <bonus@example.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
+             --b\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n--b\r\nContent-Type: application/pdf\r\n\
+             Content-Disposition: attachment; filename=\"salary-2026.pdf\"\r\n\r\n%PDF\r\n--b--\r\n"
+        );
+        server.add("Archive", &raw, &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = audited(dir.path()).with_mail(mail);
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, key) = client(&core, rights).await;
+
+        let Response::MailFolders { folders } = ask(&core, Some(&key), Request::MailFolders { account: None }).await
+        else {
+            panic!("folders")
+        };
+        let archive = folders.into_iter().find(|folder| folder.name == "Archive").map(|folder| folder.id);
+        let search = Request::SearchMail {
+            account: Some(ANNA_MAIL.into()),
+            folder: archive,
+            query: Some("salary".into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+        };
+        let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
+        let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
+        let Response::MailMessage { message } =
+            ask(&core, Some(&key), Request::GetMail { id: id.clone(), include_body: true }).await
+        else {
+            panic!("a message")
+        };
+        let part = message.attachments.first().map(|attachment| attachment.part.clone()).expect("an attachment");
+        let fetched = ask(&core, Some(&key), Request::GetMailAttachment { id, attachment: part }).await;
+        assert!(matches!(&fetched, Response::MailAttachment { path, .. } if path.ends_with("salary-2026.pdf")));
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["salary", "Archive", "Bonus", ".pdf", "See attached"] {
+            assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
+        }
+        let shown: Vec<(String, String)> =
+            audit_lines(dir.path()).into_iter().map(|line| (line.command, line.result)).collect();
+        let ok = |command: &str| (command.to_string(), "ok".to_string());
+        let read = ["mail.list_folders", "mail.search_messages", "mail.get_message", "mail.get_attachment"];
+        assert_eq!(shown, read.map(ok));
+
+        // A key granted another account gets `not-found` for the same message id, whatever it asks.
+        let mut other = RightsTemplate::ReadOnly.rights();
+        other.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, other).await;
+        let message = messages[0].id.clone();
+        let fetches = server.lines().iter().filter(|line| line.contains("UID FETCH")).count();
+        for request in [
+            Request::GetMail { id: message.clone(), include_body: true },
+            Request::GetMailThread { id: message.clone() },
+            Request::GetMailAttachment { id: message, attachment: "1".into() },
+        ] {
+            assert_eq!(code(&ask(&core, Some(&stranger), request).await), "not-found");
+        }
+        let after = server.lines().iter().filter(|line| line.contains("UID FETCH")).count();
+        assert_eq!(after, fetches, "nothing was fetched for the stranger");
+    }
+
+    #[tokio::test]
+    async fn a_refused_password_names_its_server_and_stores_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(|_| (401, None, "")).await;
+        let secrets = MemoryTokens::default();
+        let refused = |service: &str| Response::Error {
+            code: "auth".into(),
+            message: trf("The {service} server refused the password.", &[("service", &service)]),
+        };
+
+        // IMAP refuses: SMTP is not even asked.
+        let (core, smtp) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let wrong = core.handle(anna_signs_in(&server.endpoint, "wrong-imap-SECRET", None)).await;
+        assert_eq!(wrong, refused("IMAP"));
+        assert!(smtp.lock().expect("record").is_empty(), "no second server asked after a refusal");
+
+        // IMAP takes it, SMTP refuses.
+        let (core, _) = mail_core(dir.path(), &secrets, "another password");
+        let smtp_refused = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        assert_eq!(smtp_refused, refused("SMTP"));
+
+        // IMAP and SMTP take it, CalDAV refuses.
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let caldav_refused = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert_eq!(caldav_refused, refused("CalDAV"));
+
+        // Calendars without a CalDAV address are not found; a sender name with a line break, an
+        // empty password and a bad address are errors before any server is asked.
+        let mut no_dav = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+        if let Request::ConnectMail { calendars, .. } = &mut no_dav {
+            *calendars = true;
+        }
+        assert_eq!(code(&core.handle(no_dav).await), "not-found");
+        let logins = server.logins();
+        let mut injected = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+        if let Request::ConnectMail { sender_name, .. } = &mut injected {
+            *sender_name = "Anna\r\nBcc: eve@example.org".into();
+        }
+        assert_eq!(code(&core.handle(injected).await), "error");
+        assert_eq!(code(&core.handle(anna_signs_in(&server.endpoint, " ", None)).await), "error");
+        assert_eq!(server.logins(), logins, "refused before any sign-in");
+
+        assert_eq!(secrets.get_plain(ANNA_MAIL), None);
+        assert!(!mail_accounts_file(dir.path()).exists(), "nothing stored");
+        assert!(core.mail.infos(Reach::Suite).await.is_empty());
+        nowhere(dir.path(), MAIL_PASSWORD, &[&wrong, &smtp_refused, &caldav_refused]);
+        nowhere(dir.path(), "wrong-imap-SECRET", &[&wrong]);
+    }
+
+    #[tokio::test]
+    async fn connecting_again_keeps_the_settings_and_changing_them_never_touches_the_servers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let first = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        assert!(matches!(first, Response::MailConnected { .. }), "{first:?}");
+
+        let update = Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: Some("Anna Example".into()),
+            signature: Some("-- \nAnna".into()),
+            notify: Some(torro_mail::Notify::ForMeOnly),
+            services: None,
+            folder_roles: None,
+        };
+        assert_eq!(core.handle(update).await, Response::Ok);
+
+        // Connecting again keeps the settings: servers and password only. Calendars asked for
+        // without any CalDAV address are not found (task M3.5: they would be switched on).
+        let mut again = anna_signs_in(&server.endpoint, MAIL_PASSWORD, None);
+        if let Request::ConnectMail { sender_name, .. } = &mut again {
+            *sender_name = "Anna Example".into();
+        }
+        let mut with_calendars = again.clone();
+        if let Request::ConnectMail { calendars, .. } = &mut with_calendars {
+            *calendars = true;
+        }
+        assert_eq!(code(&core.handle(with_calendars).await), "not-found");
+        assert!(matches!(core.handle(again).await, Response::MailConnected { .. }));
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(stored.len(), 1);
+        let settings = stored[0].mail_settings.clone().expect("settings");
+        assert_eq!(settings.signature.as_deref(), Some("-- \nAnna"));
+        assert_eq!(settings.notify, torro_mail::Notify::ForMeOnly);
+        assert!(!settings.services.calendars, "nothing switched on without an address");
+
+        // No setting reaches the servers: calendars need a CalDAV address, a role the server gave
+        // a folder itself cannot be moved, and nothing changed meanwhile.
+        let with = |services, folder_roles| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services,
+            folder_roles,
+        };
+        let calendars = torro_mail::Services { mail: true, calendars: true, tasks: false };
+        assert_eq!(code(&core.handle(with(Some(calendars), None)).await), "error");
+        let trash_as_inbox = std::collections::BTreeMap::from([(torro_mail::Role::Inbox, "Archive".to_string())]);
+        assert_eq!(code(&core.handle(with(None, Some(trash_as_inbox))).await), "error");
+        let mut unknown = with(None, None);
+        if let Request::UpdateMailAccount { id, .. } = &mut unknown {
+            *id = "mail:bob@example.org".into();
+        }
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+        let after = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(after[0].mail, stored[0].mail, "servers as they were");
+        assert_eq!(after[0].mail_settings, stored[0].mail_settings, "settings as they were");
+
+        // An agent changes or removes only a mail account it reaches, and only with approval.
+        let mut elsewhere = every_admin_switch();
+        elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, outsider) = client(&core, elsewhere).await;
+        assert_eq!(code(&ask(&core, Some(&outsider), with(None, None)).await), "not-found");
+        let remove = Request::RemoveAccount { id: ANNA_MAIL.into() };
+        assert_eq!(code(&ask(&core, Some(&outsider), remove).await), "not-found");
+        let mut granted = every_admin_switch();
+        granted.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, insider) = client(&core, granted).await;
+        let asked = waits(ask(&core, Some(&insider), with(None, None)).await);
+        assert_eq!(asked.command, "accounts.update_mail_account");
+    }
+
+    /// Task M3.5: an account connected for mail only gets its calendars and tasks later by being
+    /// connected again with them and a CalDAV address, which is checked first (under the lock of
+    /// calendar sign-ins); the address then stays when the account is connected again with
+    /// calendars and tasks off, without being asked again, and the switch turns them on again.
+    #[tokio::test]
+    async fn calendars_are_added_later_and_the_caldav_address_stays() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, asked) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let stored = || {
+            let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+            let account = stored.into_iter().find(|account| account.id == ANNA_MAIL).expect("the account");
+            (account.mail.and_then(|mail| mail.caldav), account.mail_settings.map(|s| s.services).unwrap_or_default())
+        };
+        let mail_only = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        assert!(matches!(mail_only, Response::MailConnected { calendars: false, .. }), "{mail_only:?}");
+        assert_eq!(stored().0, None);
+
+        // Adding them waits for the decision about the sign-in's calendars like every other way.
+        let add = anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav));
+        let deciding = core.calendar_sign_ins.lock().await;
+        let waiting = tokio::time::timeout(std::time::Duration::from_millis(200), core.handle(add.clone())).await;
+        assert!(waiting.is_err(), "waits for the lock");
+        drop(deciding);
+        let added = core.handle(add).await;
+        assert!(matches!(added, Response::MailConnected { calendars: true, tasks: true, .. }), "{added:?}");
+        let (caldav, services) = stored();
+        assert!(caldav.as_deref().is_some_and(|url| url.starts_with(&dav)), "{caldav:?}");
+        assert!(services.calendars && services.tasks, "switched on");
+        assert!(!asked.lock().expect("record").is_empty(), "the address was checked");
+        // The calendars sync in the background once switched on; that sync asks the server too,
+        // so it must be over before the requests are counted below.
+        crate::mail::service::tests::eventually("the calendars synced", || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { return false };
+            anna_view(&accounts).and_then(|view| view.calendars).is_some_and(|state| state.last_sync.is_some())
+        })
+        .await;
+
+        // Off, then connected again without calendars (a new password): the address stays and is
+        // not asked; the switch alone turns calendars on again.
+        let switch = |calendars| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
+            folder_roles: None,
+        };
+        assert_eq!(core.handle(switch(false)).await, Response::Ok);
+        let before = asked.lock().expect("record").len();
+        let again = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        assert!(matches!(again, Response::MailConnected { calendars: false, .. }), "{again:?}");
+        let (kept, services) = stored();
+        assert_eq!(kept, caldav, "the address stays while calendars and tasks are off");
+        assert!(!services.calendars && !services.tasks, "nothing was switched on");
+        assert_eq!(asked.lock().expect("record").len(), before, "a kept address is not asked");
+        assert_eq!(core.handle(switch(true)).await, Response::Ok);
+        assert!(stored().1.calendars);
+        nowhere(dir.path(), MAIL_PASSWORD, &[&mail_only, &added, &again]);
+    }
+
+    /// The mail view of `accounts`' entry `ANNA_MAIL` (task M2.8), if it has one.
+    fn anna_view(accounts: &[AccountInfo]) -> Option<torro_ipc::MailView> {
+        accounts.iter().find(|account| account.id == ANNA_MAIL).and_then(|account| account.mail.clone())
+    }
+
+    /// Task M2.8: `accounts.list_accounts` holds what the account's page shows (servers, settings,
+    /// open roles with their folders, the state of mail and calendars), only for keys that reach
+    /// the account, never with the password; connecting again without a sender name keeps it.
+    #[tokio::test]
+    async fn a_mail_account_is_listed_with_what_its_page_shows() {
+        use torro_ipc::{FolderChoice, OpenRoleView};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let connected = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        let listed = || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+            accounts
+        };
+        crate::mail::service::tests::eventually("both parts synced", || async {
+            anna_view(&listed().await).is_some_and(|view| {
+                view.mail.last_sync.is_some() && view.calendars.is_some_and(|state| state.last_sync.is_some())
+            })
+        })
+        .await;
+        core.mail.note_folders_of(ANNA_MAIL, &crate::mail::service::tests::sent_left_open()).await;
+
+        let view = anna_view(&listed().await).expect("a mail view");
+        assert_eq!((view.address.as_str(), view.sender_name.as_str()), ("anna@example.org", "Anna"));
+        assert_eq!((&view.imap, view.smtp.host.as_str(), view.smtp.port), (&server.endpoint, "127.0.0.1", 587));
+        assert!(view.caldav.as_deref().is_some_and(|url| url.starts_with(&dav)), "{:?}", view.caldav);
+        assert_eq!(view.settings.services, torro_mail::Services { mail: true, calendars: true, tasks: true });
+        let choice = |name: &str, path: &str| FolderChoice { name: name.into(), path: path.into() };
+        assert_eq!(
+            view.open_roles,
+            [OpenRoleView {
+                role: torro_mail::Role::Sent,
+                candidates: vec![choice("Sent", "Sent"), choice("Gesendet", "INBOX.Gesendet")]
+            }]
+        );
+        assert_eq!((view.mail.problem, view.calendars.and_then(|state| state.problem)), (None, None));
+
+        // A key sees the view only of a mail account its rights reach.
+        let with_mail = |accounts: Vec<String>| {
+            let mut rights = RightsTemplate::ReadOnly.rights();
+            rights.mail_accounts = Selection::Only(accounts);
+            rights
+        };
+        let mut calendar_reader = with_mail(vec!["mail:bob@example.org".into()]);
+        calendar_reader.calendars = Selection::All;
+        let (_, outsider) = client(&core, calendar_reader).await;
+        let (_, insider) = client(&core, with_mail(vec![ANNA_MAIL.into()])).await;
+        let outside = ask(&core, Some(&outsider), Request::Accounts).await;
+        let Response::Accounts { accounts } = &outside else { panic!("accounts, got {outside:?}") };
+        let part = accounts.iter().find(|account| account.id == ANNA_MAIL).expect("the calendars it may read");
+        assert!(part.mail.is_none() && !part.collections.is_empty(), "{part:?}");
+        let mut nothing = with_mail(vec!["mail:bob@example.org".into()]);
+        (nothing.calendars, nothing.task_lists) = (Selection::Only(vec![]), Selection::Only(vec![]));
+        let (_, stranger) = client(&core, nothing).await;
+        let unseen = ask(&core, Some(&stranger), Request::Accounts).await;
+        let Response::Accounts { accounts } = &unseen else { panic!("accounts, got {unseen:?}") };
+        assert!(accounts.iter().all(|account| account.id != ANNA_MAIL), "as if it did not exist: {accounts:?}");
+        let inside = ask(&core, Some(&insider), Request::Accounts).await;
+        let Response::Accounts { accounts } = &inside else { panic!("accounts, got {inside:?}") };
+        assert!(anna_view(accounts).is_some());
+        nowhere(dir.path(), MAIL_PASSWORD, &[&connected, &outside, &unseen, &inside]);
+
+        // "Change password…" sends no sender name: the stored one stays.
+        let mut again = anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav));
+        if let Request::ConnectMail { sender_name, .. } = &mut again {
+            sender_name.clear();
+        }
+        let answer = core.handle(again).await;
+        let Response::MailConnected { account, .. } = &answer else { panic!("connected, got {answer:?}") };
+        assert_eq!(account.mail.as_ref().map(|view| view.sender_name.as_str()), Some("Anna"));
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(stored[0].mail.as_ref().map(|config| config.sender_name.as_str()), Some("Anna"));
+    }
+
+    #[tokio::test]
+    async fn a_caldav_account_of_the_same_sign_in_is_taken_over_with_its_choices() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+
+        // Anna's CalDAV account (task M7.1) with a hidden calendar and an agent that may read it.
+        let old = torro_core::Account::caldav(&dav, "anna", "example.org");
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), std::slice::from_ref(&old)).expect("stored");
+        secrets.put(&old.id, MAIL_PASSWORD);
+        core.pim.pretend_connected(old.clone(), MAIL_PASSWORD).await;
+        core.pim.sync().await.expect("synced");
+        let work = |account: &str| format!("{account}/{dav}calendars/anna/work/");
+        assert_eq!(
+            core.handle(Request::SetCollectionShown { collection: work(&old.id), shown: false }).await,
+            Response::Ok
+        );
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.calendars = Selection::Only(vec![work(&old.id)]);
+        let (agent, _) = client(&core, rights).await;
+
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        let Response::MailConnected { calendars, tasks, .. } = answer else { panic!("connected, got {answer:?}") };
+        assert!(calendars && tasks, "what the CalDAV address offers");
+
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let ids: Vec<&str> = stored.iter().map(|account| account.id.as_str()).collect();
+        assert_eq!(ids, [ANNA_MAIL], "the CalDAV account is gone, in the same write");
+        assert_eq!(secrets.get_plain(&old.id), None, "and its password");
+        assert_eq!(core.settings.current().hidden_collections, [work(ANNA_MAIL)], "still hidden, under its new id");
+        let selection = core.clients.list().into_iter().find(|c| c.id == agent).expect("the agent").rights.calendars;
+        assert_eq!(selection, Selection::Only(vec![work(ANNA_MAIL)]), "the agent reaches the same calendar");
+
+        // One account, one sync: the calendar part is the mail account's.
+        crate::mail::service::tests::eventually("the calendars of the mail account", || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { return false };
+            accounts.len() == 1 && accounts[0].collections.iter().any(|c| c.id == work(ANNA_MAIL))
+        })
+        .await;
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        assert_eq!((accounts[0].id.as_str(), accounts[0].kind.as_str()), (ANNA_MAIL, "mail"));
+        let pim_ids: Vec<String> = core.pim.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
+        assert_eq!(pim_ids, [ANNA_MAIL], "the old account syncs no more");
+        let checks = core.mail.account_checks(Utc::now()).await.expect("loaded");
+        assert_eq!(checks.len(), 1);
+        assert!(core.pim.calendar_health(ANNA_MAIL, Utc::now()).await.is_some(), "joined into the one check");
+
+        // A CalDAV sign-in to the same calendars is refused now.
+        let caldav_again = Request::ConnectCalDav {
+            address: "anna@example.org".into(),
+            server: Some(dav.clone()),
+            login_name: "anna".into(),
+            password: torro_ipc::Secret::new(MAIL_PASSWORD),
+            calendars: true,
+            tasks: true,
+        };
+        assert_eq!(code(&core.handle(caldav_again).await), "conflict");
+
+        // Calendars switched off and a CalDAV account of the same sign-in beside it: switching them
+        // on again would sync the same collections twice.
+        let switch = |calendars| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
+            folder_roles: None,
+        };
+        assert_eq!(core.handle(switch(false)).await, Response::Ok);
+        assert!(core.pim.accounts_within(Reach::Suite).await.is_empty(), "calendars off: no calendar sync");
+        let mut beside = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        beside.push(old.clone());
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), &beside).expect("stored");
+        assert_eq!(code(&core.handle(switch(true)).await), "conflict");
+        nowhere(dir.path(), MAIL_PASSWORD, &[]);
+    }
+
+    /// A hidden calendar keeps agents out too: when its new id cannot be hidden, nothing is taken
+    /// over and nothing is stored, so it never shows to an agent with every calendar.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_takeover_that_cannot_keep_a_calendar_hidden_stores_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let old = torro_core::Account::caldav(&dav, "anna", "example.org");
+        torro_core::account::save_to(&mail_accounts_file(dir.path()), std::slice::from_ref(&old)).expect("stored");
+        secrets.put(&old.id, MAIL_PASSWORD);
+        core.pim.pretend_connected(old.clone(), MAIL_PASSWORD).await;
+        core.pim.sync().await.expect("synced");
+        let work = format!("{}/{dav}calendars/anna/work/", old.id);
+        assert_eq!(
+            core.handle(Request::SetCollectionShown { collection: work.clone(), shown: false }).await,
+            Response::Ok
+        );
+        let mut every_calendar = RightsTemplate::ReadOnly.rights();
+        every_calendar.calendars = Selection::All;
+        let (_, key) = client(&core, every_calendar).await;
+
+        let config = dir.path().join("config");
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o500)).expect("read-only");
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o700)).expect("writable again");
+
+        assert_eq!(code(&answer), "error", "{answer:?}");
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert_eq!(stored, std::slice::from_ref(&old), "nothing taken over");
+        assert_eq!(secrets.get_plain(ANNA_MAIL), None);
+        assert_eq!(core.settings.current().hidden_collections, [work]);
+        let Response::Collections { collections } = ask(&core, Some(&key), Request::CalendarCollections).await else {
+            panic!("calendars")
+        };
+        assert!(collections.is_empty(), "the hidden calendar stays out of the agent's sight: {collections:?}");
+    }
+
+    #[tokio::test]
+    async fn removing_a_mail_account_deletes_its_store_and_its_password() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(answer, Response::MailConnected { .. }), "{answer:?}");
+        let stores = || {
+            std::fs::read_dir(dir.path().join("data").join("mail"))
+                .map(|files| files.flatten().map(|file| file.file_name().to_string_lossy().into_owned()).collect())
+                .unwrap_or_else(|_| Vec::<String>::new())
+        };
+        crate::mail::service::tests::eventually("the store", || async { !stores().is_empty() }).await;
+
+        assert_eq!(core.handle(Request::RemoveAccount { id: ANNA_MAIL.into() }).await, Response::Ok);
+        assert_eq!(secrets.get_plain(ANNA_MAIL), None);
+        assert!(torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("read").is_empty());
+        assert!(stores().iter().all(|file| !file.contains("sqlite")), "{:?}", stores());
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        assert!(accounts.is_empty(), "neither the mail nor the calendar part: {accounts:?}");
+        assert_eq!(code(&core.handle(Request::RemoveAccount { id: ANNA_MAIL.into() }).await), "not-found");
+    }
+
+    /// Task M2.7b: removing an account takes it out of every agent's rights (mail account, inbox
+    /// source, its calendars), so connecting the same address again gives nobody its reach back.
+    #[tokio::test]
+    async fn removing_an_account_takes_it_out_of_every_agents_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(answer, Response::MailConnected { .. }), "{answer:?}");
+        let work = format!("{ANNA_MAIL}/{dav}calendars/anna/work/");
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        rights.inbox_sources = Selection::Only(vec![ANNA_MAIL.into(), "agent:codex".into()]);
+        rights.calendars = Selection::Only(vec![work.clone()]);
+        let (agent, key) = client(&core, rights).await;
+        let folders = Request::MailFolders { account: Some(ANNA_MAIL.into()) };
+        assert!(matches!(ask(&core, Some(&key), folders.clone()).await, Response::MailFolders { .. }));
+
+        // An id the core does not know (a prefix of Anna's included) changes nobody's rights.
+        for unknown in ["mail:anna@example", "mail:bob@example.org"] {
+            assert_eq!(code(&core.handle(Request::RemoveAccount { id: unknown.into() }).await), "not-found");
+        }
+        let kept = core.clients.list().into_iter().find(|c| c.id == agent).expect("the agent").rights;
+        assert_eq!(kept.calendars, Selection::Only(vec![work.clone()]));
+
+        assert_eq!(core.handle(Request::RemoveAccount { id: ANNA_MAIL.into() }).await, Response::Ok);
+        let rights = core.clients.list().into_iter().find(|c| c.id == agent).expect("the agent").rights;
+        assert_eq!(
+            (rights.mail_accounts, rights.inbox_sources, rights.calendars),
+            (Selection::Only(vec![]), Selection::Only(vec!["agent:codex".into()]), Selection::Only(vec![]))
+        );
+        let file = std::fs::read_to_string(crate::clients::tests::clients_file(dir.path())).expect("clients.json");
+        assert!(!file.contains("anna@example.org"), "{file}");
+
+        // The same address connected again: the agent does not reach it.
+        let again = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(again, Response::MailConnected { .. }), "{again:?}");
+        assert_eq!(code(&ask(&core, Some(&key), folders).await), "not-found");
+        let Response::Collections { collections } = ask(&core, Some(&key), Request::CalendarCollections).await else {
+            panic!("calendars")
+        };
+        assert!(collections.is_empty(), "{collections:?}");
+    }
+
+    /// Task M2.7b: a role the server leaves open (two folders named for junk, both with mail) goes
+    /// from the sign-in's answer to the account's page, the person's pick settles it, and the next
+    /// folder sync no longer shows it open.
+    #[tokio::test]
+    async fn an_open_folder_role_is_reported_listed_and_settled_by_the_person() {
+        use torro_ipc::{FolderChoice, OpenRoleView};
+        use torro_mail::Role;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add_folder("Junk", "\\HasNoChildren", 21);
+        server.add_folder("Spam", "\\HasNoChildren", 22);
+        server.add("Junk", &crate::mail::sync::fake::mail("Offer", 1, None), &[]);
+        server.add("Spam", &crate::mail::sync::fake::mail("Prize", 2, None), &[]);
+        let secrets = MemoryTokens::default();
+        let (core, _) = mail_core(dir.path(), &secrets, MAIL_PASSWORD);
+
+        let answer = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, None)).await;
+        let Response::MailConnected { open_roles, .. } = &answer else { panic!("connected, got {answer:?}") };
+        assert_eq!(open_roles, &[Role::Junk]);
+        let view = || async {
+            let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+            anna_view(&accounts).expect("a mail view")
+        };
+        let choice = |path: &str| FolderChoice { name: path.into(), path: path.into() };
+        let open = OpenRoleView { role: Role::Junk, candidates: vec![choice("Junk"), choice("Spam")] };
+        crate::mail::service::tests::eventually("the open role on the page", || async {
+            view().await.open_roles == [open.clone()]
+        })
+        .await;
+
+        let pick = |path: &str| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: None,
+            folder_roles: Some(std::collections::BTreeMap::from([(Role::Junk, path.to_string())])),
+        };
+        assert_eq!(code(&core.handle(pick("INBOX")).await), "error", "only one of the candidates");
+        assert_eq!(core.handle(pick("Spam")).await, Response::Ok);
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let roles = stored[0].mail_settings.as_ref().map(|settings| settings.folder_roles.clone());
+        assert_eq!(roles, Some(std::collections::BTreeMap::from([(Role::Junk, "Spam".to_string())])));
+        // The account starts over with the pick; once its folders were synced nothing is open.
+        crate::mail::service::tests::eventually("the role settled", || async {
+            let view = view().await;
+            view.mail.last_sync.is_some() && view.open_roles.is_empty()
+        })
+        .await;
+    }
+
+    /// Task M2.7b: switching a mail account's calendars on and signing in to the same calendars
+    /// as a CalDAV account at the same time: exactly one of them syncs them, and the settings say
+    /// so (never "calendars on" while the calendar service refused the duplicate).
+    #[tokio::test]
+    async fn calendars_switched_on_and_a_caldav_sign_in_of_the_same_login_never_both_win() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let (dav, _) = crate::pim::tests::fake_server(crate::pim::tests::healthy_server).await;
+        let secrets = MemoryTokens::default();
+        // CalDAV sign-ins store into the same account list and keychain as the mail accounts.
+        let discoverer = torro_pim_caldav::discover::Discoverer::new(Arc::new(NoDns)).expect("discovery");
+        let pim = PimService::with_filter_file(SettingsStore::at(settings_file(dir.path())), filters_file(dir.path()))
+            .with_sign_in(mail_accounts_file(dir.path()), Arc::new(secrets.clone()), discoverer);
+        let (mail, _) = service_with_smtp(dir.path(), &secrets, MAIL_PASSWORD);
+        let core = Core::new(
+            Backend::Unsupported { name: "test".into() },
+            Store::at(dir.path().to_path_buf()),
+            Arc::new(pim),
+            crate::clients::tests::open_in(dir.path()),
+        )
+        .with_approvals(crate::approvals::tests::quiet_in(dir.path()))
+        .with_inbox(crate::inbox::tests::inbox_in(dir.path()))
+        .with_mail(mail);
+        let switch = |calendars| Request::UpdateMailAccount {
+            id: ANNA_MAIL.into(),
+            sender_name: None,
+            signature: None,
+            notify: None,
+            services: Some(torro_mail::Services { mail: true, calendars, tasks: false }),
+            folder_roles: None,
+        };
+        let caldav = Request::ConnectCalDav {
+            address: "anna@example.org".into(),
+            server: Some(dav.clone()),
+            login_name: "anna".into(),
+            password: torro_ipc::Secret::new(MAIL_PASSWORD),
+            calendars: true,
+            tasks: true,
+        };
+        let connected = core.handle(anna_signs_in(&server.endpoint, MAIL_PASSWORD, Some(&dav))).await;
+        assert!(matches!(connected, Response::MailConnected { .. }), "{connected:?}");
+        assert_eq!(core.handle(switch(false)).await, Response::Ok);
+
+        // Both decide under one lock: while it is held, neither gets anywhere.
+        let deciding = core.calendar_sign_ins.lock().await;
+        let both = async { tokio::join!(core.handle(switch(true)), core.handle(caldav)) };
+        tokio::pin!(both);
+        let waited = tokio::time::timeout(std::time::Duration::from_millis(200), &mut both).await;
+        assert!(waited.is_err(), "both wait for the decision");
+        let before = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        assert!(before.iter().all(|account| account.kind != AccountKind::CalDav), "nothing decided yet");
+        drop(deciding);
+        let (switched, signed_in) = both.await;
+        let stored = torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("stored");
+        let calendars_on = stored
+            .iter()
+            .find(|account| account.id == ANNA_MAIL)
+            .and_then(|account| account.mail_settings.as_ref())
+            .is_some_and(|settings| settings.services.calendars);
+        let caldav_stored = stored.iter().any(|account| account.kind == AccountKind::CalDav);
+        let syncing: Vec<String> = core.pim.accounts_within(Reach::Suite).await.into_iter().map(|a| a.id).collect();
+        match (&switched, &signed_in) {
+            (Response::Ok, Response::Error { code, .. }) => {
+                assert_eq!(code, "conflict");
+                assert!(calendars_on && !caldav_stored, "{stored:?}");
+                assert_eq!(syncing, [ANNA_MAIL]);
+            }
+            (Response::Error { code, .. }, Response::Connected { account, .. }) => {
+                assert_eq!(code, "conflict");
+                assert!(!calendars_on && caldav_stored, "{stored:?}");
+                assert_eq!(syncing, std::slice::from_ref(&account.id));
+            }
+            other => panic!("exactly one wins, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_mail_account_with_calendars_is_listed_once_with_the_problems_of_both() {
+        let now = Utc::now();
+        let part = |last_sync, problem: Option<&str>, collections| AccountInfo {
+            id: ANNA_MAIL.into(),
+            kind: "mail".into(),
+            label: "anna@example.org".into(),
+            state: AccountState::Connected {
+                server: "imaps://imap.example.org:993".into(),
+                login_name: "anna".into(),
+                last_sync,
+                problem: problem.map(str::to_string),
+            },
+            collections,
+            scopes: None,
+            mail: None,
+        };
+        let work = torro_pim::Collection {
+            id: format!("{ANNA_MAIL}/https://dav.example.org/work/"),
+            name: "Work".into(),
+            kind: torro_pim::CollectionKind::Events,
+            color: None,
+            writable: true,
+            source: None,
+        };
+        let earlier = now - chrono::Duration::minutes(5);
+        let joined =
+            joined_info(part(Some(now), None, vec![]), part(Some(earlier), Some("offline"), vec![work.clone()]));
+        assert_eq!(joined.collections, std::slice::from_ref(&work));
+        assert_eq!(
+            joined.state,
+            AccountState::Connected {
+                server: "imaps://imap.example.org:993".into(),
+                login_name: "anna".into(),
+                last_sync: Some(earlier),
+                problem: Some("offline".into())
+            }
+        );
+        let both = joined_info(part(None, Some("refused"), vec![]), part(Some(now), Some("offline"), vec![]));
+        let said =
+            trf("Mail: {mail} · Calendars and tasks: {calendars}", &[("mail", &"refused"), ("calendars", &"offline")]);
+        assert!(
+            matches!(both.state, AccountState::Connected { last_sync: Some(_), problem: Some(p), .. } if p == said)
+        );
+        let same = joined_info(part(None, Some("refused"), vec![]), part(None, Some("refused"), vec![]));
+        assert!(matches!(same.state, AccountState::Connected { problem: Some(p), .. } if p == "refused"));
+
+        // The mail view keeps each part's own state (task M2.8).
+        let server =
+            torro_mail::Endpoint { host: "imap.example.org".into(), port: 993, security: torro_mail::Security::Tls };
+        let view = torro_ipc::MailView {
+            address: "anna@example.org".into(),
+            sender_name: String::new(),
+            imap: server.clone(),
+            smtp: server,
+            caldav: None,
+            settings: MailSettings::default(),
+            open_roles: Vec::new(),
+            mail: torro_ipc::ServiceState { last_sync: Some(now), problem: None },
+            calendars: None,
+        };
+        let viewed = AccountInfo { mail: Some(view), ..part(Some(now), None, vec![]) };
+        let joined = joined_info(viewed, part(Some(earlier), Some("offline"), vec![])).mail.expect("the view stays");
+        assert_eq!(joined.mail, torro_ipc::ServiceState { last_sync: Some(now), problem: None });
+        let calendars = torro_ipc::ServiceState { last_sync: Some(earlier), problem: Some("offline".into()) };
+        assert_eq!(joined.calendars, Some(calendars));
+    }
+
+    #[test]
+    fn a_folder_pick_settles_only_an_open_role_with_one_of_its_folders() {
+        use torro_mail::Role;
+        use torro_mail_imap::folders::OpenRole;
+        let open = [OpenRole { role: Role::Sent, candidates: vec!["Sent".into(), "INBOX.Sent".into()] }];
+        let pick = |role, path: &str| std::collections::BTreeMap::from([(role, path.to_string())]);
+        assert_eq!(folder_roles_refusal(&open, &pick(Role::Sent, "INBOX.Sent")), None);
+        assert!(folder_roles_refusal(&open, &pick(Role::Sent, "Trash")).is_some(), "not a candidate");
+        assert!(folder_roles_refusal(&open, &pick(Role::Inbox, "Sent")).is_some(), "not open");
+        assert!(mail_text_refusal(Some("Anna\nBcc: x"), None).is_some());
+        assert!(mail_text_refusal(None, Some(&"x".repeat(SIGNATURE_MAX + 1))).is_some());
+        assert_eq!(mail_text_refusal(Some("Anna Example"), Some("-- \nAnna")), None);
+    }
+
+    // Changing mail (task M3.2): a fake IMAP server with Anna's account, synced once; the clients
+    // work through the core as agents do.
+
+    use crate::mail::write::tests::{ANNA, draft, id_of, mail_server, on_server, saved as saved_draft};
+
+    /// A core with Anna's mail account on a fake server, synced, and the app key.
+    async fn changing_mail_core(dir: &std::path::Path) -> (Core, crate::mail::sync::fake::FakeImap, Key) {
+        let secrets = MemoryTokens::default();
+        let server = mail_server(dir, &secrets).await;
+        let (core, _) = mail_core(dir, &secrets, MAIL_PASSWORD);
+        core.mail.reload().await;
+        core.mail.sync_all(Reach::Suite).await.expect("synced");
+        (core, server, crate::clients::tests::app_key(dir))
+    }
+
+    fn with_mail_level(level: Level) -> Rights {
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Mail, AreaRights { level, admin: false });
+        rights
+    }
+
+    /// `confirm: on_delete` makes deleting wait; the summary names what the store holds, never
+    /// what the client says; after the person's yes it runs.
+    #[tokio::test]
+    async fn deleting_mail_waits_for_a_person_and_names_what_the_store_holds() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let (_, key) = client(&core, with_mail_level(Level::Full)).await;
+        let hello = id_of(&core.mail, "Hello").await;
+        let delete = Request::DeleteMail { ids: vec![hello.clone()], permanent: false };
+
+        let asked = waits(ask(&core, Some(&key), delete.clone()).await);
+        let facts = crate::approvals::MailFacts {
+            account: Some("anna@example.org".into()),
+            count: 1,
+            subjects: vec!["Hello".into()],
+            ..Default::default()
+        };
+        let expected = crate::approvals::summary(&delete, &Facts { mail: Some(facts), ..Facts::default() });
+        assert_eq!(asked.summary, expected);
+        assert!(asked.summary.contains("\"Hello\""), "{}", asked.summary);
+        assert!(on_server(&server, "INBOX").contains(&"Hello".to_string()), "nothing ran yet");
+
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        assert!(on_server(&server, "Trash").contains(&"Hello".to_string()));
+        assert!(!on_server(&server, "INBOX").contains(&"Hello".to_string()));
+    }
+
+    /// Into a trash folder by its id is deleting: write access is not enough. Archiving is.
+    /// Messages of an account the client does not reach are `not-found`.
+    #[tokio::test]
+    async fn moving_into_a_trash_folder_needs_delete_access() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let (_, writer) = client(&core, with_mail_level(Level::Write)).await;
+        let hello = id_of(&core.mail, "Hello").await;
+        let store = core.mail.store(ANNA).await.expect("store");
+        let trash = store
+            .run(|store| Ok(store.folder_by_role(torro_mail::Role::Trash)?.map(|f| f.id)))
+            .await
+            .expect("read")
+            .expect("a trash folder");
+        let into_trash = Request::MoveMail { ids: vec![hello.clone()], to: torro_ipc::mail::MoveTarget::Folder(trash) };
+        assert_eq!(code(&ask(&core, Some(&writer), into_trash).await), "forbidden");
+        assert!(on_server(&server, "INBOX").contains(&"Hello".to_string()));
+        let archive = torro_ipc::mail::MoveTarget::Role(torro_ipc::mail::MoveRole::Archive);
+        let archived = Request::MoveMail { ids: vec![hello.clone()], to: archive.clone() };
+        assert_eq!(ask(&core, Some(&writer), archived).await, Response::Ok);
+        assert!(on_server(&server, "Archive").contains(&"Hello".to_string()));
+
+        // With delete access it waits for the person, as deleting does, and then lands in the trash.
+        let (_, full) = client(&core, with_mail_level(Level::Full)).await;
+        let invoice = id_of(&core.mail, "Invoice").await;
+        let trash_folder = torro_ipc::mail::MoveTarget::Folder(
+            store
+                .run(|store| Ok(store.folder_by_role(torro_mail::Role::Trash)?.map(|f| f.id)))
+                .await
+                .expect("read")
+                .expect("a trash folder"),
+        );
+        let asked = waits(ask(&core, Some(&full), Request::MoveMail { ids: vec![invoice], to: trash_folder }).await);
+        assert_eq!(asked.command, "mail.move_messages");
+        approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert!(on_server(&server, "Trash").contains(&"Invoice".to_string()));
+
+        let mut elsewhere = with_mail_level(Level::Full);
+        elsewhere.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, outsider) = client(&core, elsewhere).await;
+        let flags = Request::SetMailFlags { ids: vec![hello], add: vec![torro_mail::Flag::Seen], remove: Vec::new() };
+        assert_eq!(code(&ask(&core, Some(&outsider), flags.clone()).await), "not-found");
+        assert_eq!(ask(&core, Some(&writer), flags).await, Response::Ok);
+    }
+
+    /// Security rules 1 and 2 of task M2.1 through the core: a client replaces only its own
+    /// drafts (the person's are `not-found`, before anyone is asked) and attaches files only from
+    /// the managed folder.
+    #[tokio::test]
+    async fn a_client_keeps_to_its_own_drafts_and_the_managed_folder() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key) = changing_mail_core(dir.path()).await;
+        let (_, key) = client(&core, with_mail_level(Level::Full)).await;
+        let persons =
+            saved_draft(ask(&core, Some(&app_key), Request::SaveDraft { draft: draft("The person's") }).await);
+
+        let takeover = torro_mail::Draft { id: persons.id.clone(), ..draft("Hijacked") };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveDraft { draft: takeover }).await), "not-found");
+        // A careful client asks for every change, but not for a draft in an account that is none.
+        let careful = Rights { confirm: torro_ipc::api::Confirm::OnEveryChange, ..with_mail_level(Level::Full) };
+        let (_, careful) = client(&core, careful).await;
+        let nowhere = torro_mail::Draft { account: "mail:nobody@example.org".into(), ..draft("Nowhere") };
+        assert_eq!(code(&ask(&core, Some(&careful), Request::SaveDraft { draft: nowhere }).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+        let outside = dir.path().join("contract.pdf");
+        std::fs::write(&outside, b"%PDF").expect("written");
+        let with_file = torro_mail::Draft {
+            attachments: vec![torro_mail::DraftAttachment::File { path: outside.display().to_string() }],
+            ..draft("With a file")
+        };
+        assert_eq!(code(&ask(&core, Some(&key), Request::SaveDraft { draft: with_file }).await), "forbidden");
+
+        let own = saved_draft(ask(&core, Some(&key), Request::SaveDraft { draft: draft("The agent's") }).await);
+        let replace = torro_mail::Draft { id: own.id.clone(), ..draft("The agent's, better") };
+        // Replacing overwrites: with `confirm: on_delete` it waits, then runs as the client.
+        let asked = waits(ask(&core, Some(&key), Request::SaveDraft { draft: replace }).await);
+        assert!(asked.summary.contains("The agent's"), "{}", asked.summary);
+        approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let mut drafts = on_server(&server, "Drafts");
+        drafts.sort();
+        assert_eq!(drafts, ["The agent's, better", "The person's"]);
+    }
+
+    // Sending mail (task M3.3): Anna's account on the fake IMAP server and a fake SMTP server; the
+    // clients send through the core as agents do.
+
+    use crate::mail::send::tests::FakeSmtp;
+
+    /// A [`changing_mail_core`] with an audit log and an SMTP server that accepts everything.
+    async fn sending_core(dir: &std::path::Path) -> (Core, crate::mail::sync::fake::FakeImap, Key, Arc<FakeSmtp>) {
+        let (core, server, app_key) = changing_mail_core(dir).await;
+        let core = core.with_audit(crate::audit::tests::audit_in(dir));
+        let smtp = FakeSmtp::answering(torro_mail_imap::smtp::Submitted::Accepted);
+        core.mail.outbox().await.expect("an outbox").use_fake(Arc::clone(&smtp));
+        (core, server, app_key, smtp)
+    }
+
+    /// Full mail rights with `outbound` and `confirm`.
+    fn sender(outbound: torro_ipc::api::Outbound, confirm: torro_ipc::api::Confirm) -> Rights {
+        Rights { outbound, confirm, ..with_mail_level(Level::Full) }
+    }
+
+    /// The draft `subject` to Bernd, Cc Dora, Bcc Carla, saved with `key`; its id.
+    async fn lunch_draft(core: &Core, key: &Key, subject: &str) -> String {
+        let mut lunch = draft(subject);
+        lunch.cc = vec![torro_mail::MailAddress { name: None, address: "dora@example.com".into() }];
+        lunch.bcc = vec![torro_mail::MailAddress { name: None, address: "carla@example.net".into() }];
+        saved_draft(ask(core, Some(key), Request::SaveDraft { draft: lunch }).await).id.expect("an id")
+    }
+
+    fn mail_sent() -> Response {
+        Response::MailSent { delivery: torro_ipc::mail::Delivery::Accepted }
+    }
+
+    /// `with_approval` waits, summed up from the stored draft (all recipients with Bcc); the
+    /// person's yes sends it with its copy in Sent. `never` is `forbidden`, `free` sends at once
+    /// unless `confirm` asks for every change, the app key sends straight away. Recipients and
+    /// subjects stay out of the audit log.
+    #[tokio::test]
+    async fn sending_waits_or_is_refused_as_outbound_says() {
+        use torro_ipc::api::{Confirm, Outbound};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key, smtp) = sending_core(dir.path()).await;
+        let send = |id: &str| Request::SendDraft { id: id.into() };
+
+        let (_, asking) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
+        let lunch = lunch_draft(&core, &asking, "Lunch").await;
+        let asked = waits(ask(&core, Some(&asking), send(&lunch)).await);
+        assert_eq!(asked.command, "mail.send_draft");
+        let shown = crate::approvals::DraftFacts {
+            subject: "Lunch".into(),
+            first_recipient: Some("bernd@example.com".into()),
+            recipients: 3,
+            attachments: 0,
+            text_start: "Dear Bernd, see you.".into(),
+            bcc: vec!["carla@example.net".into()],
+            to: vec![torro_mail::MailAddress { name: Some("Bernd".into()), address: "bernd@example.com".into() }],
+            cc: vec![torro_mail::MailAddress { name: None, address: "dora@example.com".into() }],
+            files: Vec::new(),
+        };
+        let facts = crate::approvals::MailFacts {
+            account: Some("anna@example.org".into()),
+            count: 1,
+            draft: Some(shown),
+            ..Default::default()
+        };
+        let facts = Facts { mail: Some(facts), ..Facts::default() };
+        assert_eq!(asked.summary, crate::approvals::summary(&send(&lunch), &facts));
+        assert!(asked.summary.contains("bernd@example.com"), "{}", asked.summary);
+        assert!(asked.summary.contains("Bcc: carla@example.net"), "the blind copy is named: {}", asked.summary);
+        // Task M3.5: the details list every recipient from the stored draft.
+        assert_eq!(asked.details, crate::approvals::details(&send(&lunch), &facts));
+        for address in ["bernd@example.com", "dora@example.com", "carla@example.net"] {
+            assert!(asked.details.iter().any(|line| line.contains(address)), "{address}: {:?}", asked.details);
+        }
+        // The client that asked and the app key see them; another client sees not even the approval.
+        let listed = |key: &Key| {
+            let key = key.clone();
+            let core = &core;
+            async move {
+                match ask(core, Some(&key), Request::ListApprovals).await {
+                    Response::Approvals { approvals } => approvals,
+                    other => panic!("approvals, got {other:?}"),
+                }
+            }
+        };
+        let own = listed(&asking).await;
+        assert!(own.iter().any(|seen| seen.id == asked.id && seen.details == asked.details));
+        assert!(listed(&app_key).await.iter().any(|seen| seen.id == asked.id && seen.details == asked.details));
+        let (_, stranger) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
+        assert!(listed(&stranger).await.is_empty(), "another client's approvals are not there");
+        let status = ask(&core, Some(&stranger), Request::ApprovalStatus { id: asked.id.clone() }).await;
+        assert_eq!(code(&status), "not-found");
+        assert!(smtp.sent().is_empty(), "nothing went out yet");
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(decided.state, torro_ipc::ApprovalState::Done { response: Box::new(mail_sent()) });
+        assert_eq!(smtp.sent().len(), 1);
+        assert_eq!(on_server(&server, "Sent"), ["Lunch"]);
+        assert!(!on_server(&server, "Drafts").contains(&"Lunch".to_string()));
+
+        let (_, never) = client(&core, sender(Outbound::Never, Confirm::Never)).await;
+        let own = lunch_draft(&core, &never, "Never").await;
+        assert_eq!(code(&ask(&core, Some(&never), send(&own)).await), "forbidden");
+        let (_, free) = client(&core, sender(Outbound::Free, Confirm::Never)).await;
+        let own = lunch_draft(&core, &free, "Free").await;
+        assert_eq!(ask(&core, Some(&free), send(&own)).await, mail_sent(), "runs at once");
+        let (_, careful) = client(&core, sender(Outbound::Free, Confirm::OnEveryChange)).await;
+        let careful_draft = draft("Careful");
+        let asked = waits(ask(&core, Some(&careful), Request::SaveDraft { draft: careful_draft.clone() }).await);
+        let saved = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = saved.state else { panic!("ran: {saved:?}") };
+        let own = saved_draft(*response).id.expect("an id");
+        let asked = waits(ask(&core, Some(&careful), send(&own)).await);
+        assert_eq!(asked.command, "mail.send_draft", "free, but this client asks for every change");
+        let persons = saved_draft(ask(&core, Some(&app_key), Request::SaveDraft { draft: draft("Mine") }).await);
+        assert_eq!(
+            ask(&core, Some(&app_key), send(&persons.id.expect("an id"))).await,
+            mail_sent(),
+            "the person sends"
+        );
+        assert_eq!(smtp.sent().len(), 3);
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["bernd", "dora", "carla", "Lunch", "Dear Bernd"] {
+            assert!(!log.contains(content), "{content} in the audit log: {log}");
+        }
+    }
+
+    /// A client sends only its own drafts (the person's are `not-found`, nobody is asked), and an
+    /// approval is pinned to what it showed: a draft saved again after the question sends nothing.
+    #[tokio::test]
+    async fn a_changed_draft_voids_its_approval_and_the_persons_drafts_stay_out_of_reach() {
+        use torro_ipc::api::{Confirm, Outbound};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, server, app_key, smtp) = sending_core(dir.path()).await;
+        let (_, key) = client(&core, sender(Outbound::WithApproval, Confirm::Never)).await;
+        let persons = lunch_draft(&core, &app_key, "The person's").await;
+        assert_eq!(code(&ask(&core, Some(&key), Request::SendDraft { id: persons }).await), "not-found");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nobody was asked");
+
+        let own = lunch_draft(&core, &key, "Lunch").await;
+        let asked = waits(ask(&core, Some(&key), Request::SendDraft { id: own.clone() }).await);
+        let changed = torro_mail::Draft { id: Some(own.clone()), ..draft("Lunch, and bring Eve") };
+        saved_draft(ask(&core, Some(&key), Request::SaveDraft { draft: changed }).await);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("ran: {decided:?}") };
+        assert_eq!(code(&response), "conflict");
+        assert!(smtp.sent().is_empty(), "nothing went out");
+        assert!(on_server(&server, "Sent").is_empty());
+        assert!(on_server(&server, "Drafts").contains(&"Lunch, and bring Eve".to_string()), "the draft stays");
     }
 }

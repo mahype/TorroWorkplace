@@ -5,14 +5,32 @@
 //! list always read "4 min", "2 h" and so on. It has every kind of entry the first steps bring:
 //! two waiting agents, a finished one, an approval, an account problem, script notices in both
 //! lanes, a snoozed and a done entry.
+//!
+//! Mail (task E4.2): two mail accounts ([`MAIL_ACCOUNTS`], private and work) with their folders
+//! and messages, and the entries the core would file for their new mail (task E4.1). The methods
+//! that stand for the `mail.*` requests (`mail_folders`, `search_mail`, `get_mail`,
+//! `mail_attachment`, `set_mail_flags`, `move_mail`, `move_mail_to`) are plain methods of
+//! [`DemoSource`]; the app wraps them, as it wraps the core's client. They behave like the core
+//! where the window can see it: reading a mail elsewhere or moving it out of the inbox closes its
+//! entry, marking the entry done marks the mail read. The messages are foreign text in the real
+//! app, so their subjects and texts stay as they are (not translated); folder names are the
+//! server's.
+//!
+//! Writing (task E4.3): [`DemoSource::mail_senders`] lists the accounts a message can be written
+//! from (with name and signature), [`DemoSource::save_draft`] keeps a draft in memory and
+//! [`DemoSource::send_draft`] takes it out again; what was saved and sent is kept for the tests
+//! ([`DemoSource::drafts`], [`DemoSource::sent`]). Like the core they refuse an unknown account,
+//! an unknown draft id and a draft without a recipient.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
+use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
 
-use crate::item::{Action, AgentInfo, AgentKind, Item, Kind, Lane, Link, SourceInfo, SourceRef, State};
+use crate::item::{Action, AgentInfo, AgentKind, Item, Kind, Lane, Link, Sender, SourceInfo, SourceRef, State};
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
 
@@ -25,6 +43,16 @@ struct Data {
     muted: BTreeSet<SourceRef>,
     /// The tasks made from entries ("Make task", task E3.5), in memory only.
     tasks: Vec<DemoTask>,
+    /// The folders of both mail accounts; their numbers are counted from `mail` when listed.
+    folders: Vec<Folder>,
+    /// Every message of both accounts, with its text.
+    mail: Vec<Message>,
+    /// The drafts saved from the compose window (task E4.3), in memory only.
+    drafts: Vec<Draft>,
+    /// The drafts that were sent.
+    sent: Vec<Draft>,
+    /// How many drafts were given an id.
+    draft_count: u32,
 }
 
 /// A task the demo made from an entry: the list's id, the title and the due day.
@@ -59,7 +87,19 @@ pub struct DemoSource {
 impl DemoSource {
     /// The sample entries around `now`, which is also where the demo's clock starts.
     pub fn new(now: DateTime<Utc>) -> DemoSource {
-        let data = Data { items: sample(now), muted: BTreeSet::new(), tasks: Vec::new() };
+        let mut items = sample(now);
+        let mail = mail_sample(now);
+        items.extend(mail_entries(&mail));
+        let data = Data {
+            items,
+            muted: BTreeSet::new(),
+            tasks: Vec::new(),
+            folders: folder_sample(),
+            mail,
+            drafts: Vec::new(),
+            sent: Vec::new(),
+            draft_count: 0,
+        };
         DemoSource { data: Mutex::new(data), offset: now - Utc::now() }
     }
 
@@ -219,6 +259,602 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
     ]
 }
 
+/// The two mail accounts of the demo: work and private, as `mail:<address>`, in the order the core lists them.
+pub const MAIL_ACCOUNTS: [&str; 2] = ["mail:anna@work.example.org", "mail:anna@example.org"];
+
+/// A mail account a message can be written from (`accounts.list_accounts` in the core): the sender
+/// name next to the address and the signature the core puts under new mail, replies and forwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemoSender {
+    /// `mail:<address>`.
+    pub account: String,
+    /// The name in `From:`.
+    pub name: String,
+    /// The account's signature; `None` for none.
+    pub signature: Option<String>,
+}
+
+/// The folders with a role of one demo account: `(id suffix, name, role)`, in the order a server
+/// lists them.
+const FOLDERS: [(&str, &str, Role); 6] = [
+    ("inbox", "Inbox", Role::Inbox),
+    ("drafts", "Drafts", Role::Drafts),
+    ("sent", "Sent", Role::Sent),
+    ("archive", "Archive", Role::Archive),
+    ("junk", "Junk", Role::Junk),
+    ("trash", "Trash", Role::Trash),
+];
+
+/// The id of the folder `suffix` of the account `account` (an index into [`MAIL_ACCOUNTS`]):
+/// `f:private-inbox`, `f:work-projects`.
+fn folder_id(account: usize, suffix: &str) -> String {
+    let who = if account == 0 { "work" } else { "private" };
+    format!("f:{who}-{suffix}")
+}
+
+/// Both accounts' folders: the six with a role, and one of each account's own ("Receipts",
+/// "Projects"). The numbers are counted when listed.
+fn folder_sample() -> Vec<Folder> {
+    let folder = |account: usize, suffix: &str, name: &str, role: Option<Role>| Folder {
+        id: folder_id(account, suffix),
+        account: MAIL_ACCOUNTS[account].into(),
+        name: name.into(),
+        path: if role == Some(Role::Inbox) { "INBOX".into() } else { format!("INBOX.{name}") },
+        role,
+        unread: 0,
+        total: 0,
+    };
+    let mut folders = Vec::new();
+    for (account, own) in [(0, "Projects"), (1, "Receipts")] {
+        folders.extend(FOLDERS.iter().map(|&(suffix, name, role)| folder(account, suffix, name, Some(role))));
+        folders.push(folder(account, &own.to_lowercase(), own, None));
+    }
+    folders
+}
+
+/// What a demo message is made of; [`letter`] turns it into a [`Message`].
+struct Letter {
+    id: &'static str,
+    /// Index into [`MAIL_ACCOUNTS`].
+    account: usize,
+    /// The folder's id suffix ([`folder_id`]).
+    folder: &'static str,
+    /// The conversation; empty: a conversation of its own.
+    thread: &'static str,
+    /// `(name, address)` of the sender; empty: Anna herself (sent mail, drafts).
+    from: (&'static str, &'static str),
+    subject: &'static str,
+    /// How long before "now" it arrived.
+    minutes: i64,
+    flags: &'static [Flag],
+    text: &'static str,
+    /// `(file name, MIME type, size)`.
+    attachments: &'static [(&'static str, &'static str, u64)],
+    from_html: bool,
+    /// Sent to a list or by a machine (`List-Id`): the inbox files it under "Info".
+    bulk: bool,
+}
+
+impl Letter {
+    const fn new(id: &'static str, account: usize, folder: &'static str, subject: &'static str) -> Letter {
+        Letter {
+            id,
+            account,
+            folder,
+            thread: "",
+            from: ("", ""),
+            subject,
+            minutes: 0,
+            flags: &[],
+            text: "",
+            attachments: &[],
+            from_html: false,
+            bulk: false,
+        }
+    }
+}
+
+/// `name <address>`, or the address alone without a name.
+fn address(name: &str, address: &str) -> MailAddress {
+    MailAddress { name: (!name.is_empty()).then(|| name.to_owned()), address: address.to_owned() }
+}
+
+/// The message `letter` describes, `letter.minutes` before `now`.
+fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
+    let me = MAIL_ACCOUNTS[letter.account].trim_start_matches("mail:");
+    let (name, from) = letter.from;
+    let (from, to) = if from.is_empty() {
+        (address("Anna Berg", me), vec![address("", "team@work.example.org")])
+    } else {
+        (address(name, from), vec![address("Anna Berg", me)])
+    };
+    let snippet = letter.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
+    let thread = if letter.thread.is_empty() { letter.id } else { letter.thread };
+    let attachments: Vec<AttachmentInfo> = letter
+        .attachments
+        .iter()
+        .enumerate()
+        .map(|(i, &(file, kind, size))| AttachmentInfo {
+            part: (i + 2).to_string(),
+            filename: Some(file.into()),
+            content_type: kind.into(),
+            size,
+            inline: false,
+        })
+        .collect();
+    Message {
+        summary: MessageSummary {
+            id: letter.id.into(),
+            account: MAIL_ACCOUNTS[letter.account].into(),
+            folder: folder_id(letter.account, letter.folder),
+            thread_id: format!("t:{thread}"),
+            from: Some(from),
+            to,
+            subject: letter.subject.into(),
+            date: now - TimeDelta::minutes(letter.minutes),
+            snippet,
+            flags: letter.flags.to_vec(),
+            has_attachments: !attachments.is_empty(),
+            untrusted: true,
+        },
+        cc: Vec::new(),
+        reply_to: Vec::new(),
+        text: Some(letter.text.into()),
+        from_html: letter.from_html,
+        attachments,
+        traits: MessageTraits {
+            list_id: letter.bulk.then(|| "<news.example>".to_owned()),
+            list_unsubscribe: letter.bulk,
+            ..MessageTraits::default()
+        },
+        invitation: false,
+    }
+}
+
+const READ: &[Flag] = &[Flag::Seen];
+const READ_FLAGGED: &[Flag] = &[Flag::Seen, Flag::Flagged];
+const REPLIED: &[Flag] = &[Flag::Seen, Flag::Answered];
+
+/// The messages of both accounts around `now`: unread mail in both inboxes (the entries of
+/// [`mail_entries`]), read and flagged mail, attachments, a newsletter made from HTML, a
+/// conversation with a sent reply, a draft, and a message in every other folder but the private
+/// drafts, junk and trash, which are empty.
+pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
+    const WORK: usize = 0;
+    const PRIVATE: usize = 1;
+    let letters = [
+        Letter {
+            thread: "budget",
+            from: ("Jonas Weber", "jonas.weber@work.example.org"),
+            minutes: 25,
+            text: "Hi Anna,\n\nthe numbers for Q4 are in. Could you look at the travel budget before Thursday? \
+                   The details are in the attached sheet and on the intranet:\n\
+                   https://intranet.work.example.org/budget/q4\n\nThanks,\nJonas",
+            attachments: &[("budget-q4.csv", "text/csv", 2_340)],
+            ..Letter::new("m:w1", WORK, "inbox", "Budget review for Q4")
+        },
+        Letter {
+            thread: "design",
+            from: ("Lena Hoffmann", "lena.hoffmann@work.example.org"),
+            minutes: 130,
+            flags: &[Flag::Flagged],
+            text: "Thursday at 14:00 works for me. I will bring the new sidebar drafts.\n\n\
+                   > Can we move the design review to Thursday?\n\nLena",
+            ..Letter::new("m:w2", WORK, "inbox", "Re: Design review on Thursday")
+        },
+        Letter {
+            from: ("GitHub", "notifications@github.example"),
+            minutes: 200,
+            bulk: true,
+            text: "New issue #212 in torro/workplace: the sidebar flickers when the window is resized.\n\n\
+                   View it on GitHub: https://github.example/torro/workplace/issues/212",
+            ..Letter::new("m:w3", WORK, "inbox", "[torro/workplace] Sidebar flickers on resize (#212)")
+        },
+        Letter {
+            from: ("Maria Schulz", "maria.schulz@work.example.org"),
+            minutes: 26 * 60,
+            flags: READ,
+            text: "Lunch next week? Tuesday or Wednesday would suit me best.",
+            ..Letter::new("m:w4", WORK, "inbox", "Lunch next week?")
+        },
+        Letter {
+            from: ("IT Service Desk", "it@work.example.org"),
+            minutes: 2 * 24 * 60,
+            flags: READ_FLAGGED,
+            text: "On Saturday from 08:00 to 12:00 the mail and file servers are down for maintenance.",
+            ..Letter::new("m:w5", WORK, "inbox", "Planned maintenance on Saturday")
+        },
+        Letter {
+            from: ("Jonas Weber", "jonas.weber@work.example.org"),
+            minutes: 3 * 24 * 60,
+            flags: READ,
+            text: "Here are the minutes from Monday. Open points are at the end.",
+            attachments: &[("minutes-monday.txt", "text/plain", 1_180)],
+            ..Letter::new("m:w6", WORK, "inbox", "Minutes from Monday")
+        },
+        Letter {
+            thread: "design",
+            minutes: 26 * 60,
+            flags: READ,
+            text: "Hi Lena,\n\ncan we move the design review to Thursday?\n\nAnna",
+            ..Letter::new("m:w7", WORK, "sent", "Design review on Thursday")
+        },
+        Letter {
+            minutes: 4 * 60,
+            flags: READ,
+            text: "Dear Mr Keller,\n\nthank you for your request. For the relaunch we suggest",
+            ..Letter::new("m:w8", WORK, "drafts", "Offer for the website relaunch")
+        },
+        Letter {
+            from: ("Petra Lange", "petra.lange@work.example.org"),
+            minutes: 30 * 24 * 60,
+            flags: REPLIED,
+            text: "Welcome to the team, Anna! Your laptop is ready at the front desk.",
+            ..Letter::new("m:w9", WORK, "archive", "Welcome to the team")
+        },
+        Letter {
+            from: ("Jonas Weber", "jonas.weber@work.example.org"),
+            minutes: 6 * 24 * 60,
+            flags: READ,
+            text: "Notes from the kick-off are in the project wiki: https://wiki.work.example.org/relaunch",
+            ..Letter::new("m:w10", WORK, "projects", "Kick-off notes")
+        },
+        Letter {
+            from: ("Prize Center", "winner@prizes.example"),
+            minutes: 20 * 60,
+            text: "You have won! Claim your prize now at http://prizes.example/claim before it expires.",
+            ..Letter::new("m:w11", WORK, "junk", "You have won a prize")
+        },
+        Letter {
+            from: ("Office news", "news@work.example.org"),
+            minutes: 5 * 24 * 60,
+            flags: READ,
+            bulk: true,
+            text: "The canteen is closed on Friday.",
+            ..Letter::new("m:w12", WORK, "trash", "Office news, week 41")
+        },
+        Letter {
+            from: ("Paul Berg", "paul@example.org"),
+            minutes: 50,
+            text: "Are we still on for the hike on Saturday? The weather looks good. I can pick you up at nine.",
+            ..Letter::new("m:p1", PRIVATE, "inbox", "Weekend plans")
+        },
+        Letter {
+            from: ("Shop", "news@shop.example"),
+            minutes: 5 * 60,
+            bulk: true,
+            from_html: true,
+            text: "Autumn sale: 20% off all jackets until Sunday.\n\nShop now: https://shop.example/sale\n\n\
+                   Unsubscribe: https://shop.example/unsubscribe",
+            ..Letter::new("m:p2", PRIVATE, "inbox", "Autumn sale: 20% off")
+        },
+        Letter {
+            from: ("Mobile", "billing@mobile.example"),
+            minutes: 4 * 24 * 60,
+            flags: READ,
+            text: "Your invoice for September is attached. The amount will be debited on 15 October.",
+            attachments: &[("invoice-september.txt", "text/plain", 860)],
+            ..Letter::new("m:p3", PRIVATE, "inbox", "Your invoice for September")
+        },
+        Letter {
+            minutes: 3 * 24 * 60,
+            flags: READ,
+            text: "Thanks, see you on Sunday!",
+            ..Letter::new("m:p4", PRIVATE, "sent", "Re: Sunday brunch")
+        },
+        Letter {
+            from: ("Book shop", "orders@books.example"),
+            minutes: 10 * 24 * 60,
+            flags: READ,
+            text: "Thank you for your order #4711. It ships today.",
+            ..Letter::new("m:p5", PRIVATE, "receipts", "Order confirmation #4711")
+        },
+        Letter {
+            from: ("Paul Berg", "paul@example.org"),
+            minutes: 40 * 24 * 60,
+            flags: READ,
+            text: "Photos from the summer trip are in the shared album.",
+            ..Letter::new("m:p6", PRIVATE, "archive", "Summer photos")
+        },
+    ];
+    letters.into_iter().map(|l| letter(now, l)).collect()
+}
+
+/// The inbox entries the core files for `mail` (task E4.1): one per unread message in an inbox,
+/// in "Info" when sent to a list or by a machine, else in "For me"; titled with the subject, with
+/// the sender and the start of the text, linking the message.
+fn mail_entries(mail: &[Message]) -> Vec<Item> {
+    mail.iter()
+        .filter(|m| m.summary.folder.ends_with("-inbox") && !m.summary.flags.contains(&Flag::Seen))
+        .enumerate()
+        .map(|(n, m)| {
+            let summary = &m.summary;
+            let lane = rules::mail_lane(m.traits.list_id.is_some(), None);
+            let from = summary.from.as_ref().map(|from| Sender {
+                name: from.name.clone().unwrap_or_else(|| from.address.clone()),
+                address: Some(from.address.clone()),
+            });
+            Item {
+                id: format!("demo-mail-{}", n + 1),
+                source: SourceRef::mail(summary.account.trim_start_matches("mail:")),
+                thread_key: summary.thread_id.clone(),
+                kind: Kind::Message,
+                lane,
+                urgent: false,
+                title: summary.subject.clone(),
+                body: Some(summary.snippet.clone()),
+                from,
+                agent: None,
+                received: summary.date,
+                updated: summary.date,
+                count: 1,
+                state: State::New,
+                link: Some(Link::Mail { message: summary.id.clone() }),
+                actions: Vec::new(),
+                untrusted: true,
+            }
+        })
+        .collect()
+}
+
+/// What a demo attachment holds when it is opened: a few lines that fit its name.
+fn attachment_text(name: &str) -> String {
+    if name.ends_with(".csv") {
+        "item;planned;spent\ntravel;12000;9400\nevents;8000;8150\ntraining;5000;2100\n".into()
+    } else {
+        format!("{name}\n\nSample attachment of the Torro Inbox demo.\n")
+    }
+}
+
+/// `message` holds every one of `words` (small letters) in its subject, sender, text or
+/// attachment names.
+fn matches_words(message: &Message, words: &[String]) -> bool {
+    let summary = &message.summary;
+    let from =
+        summary.from.as_ref().map(|from| format!("{} {}", from.name.as_deref().unwrap_or_default(), from.address));
+    let names = message.attachments.iter().filter_map(|a| a.filename.as_deref());
+    let haystack = [Some(summary.subject.as_str()), from.as_deref(), message.text.as_deref()]
+        .into_iter()
+        .flatten()
+        .chain(names)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    words.iter().all(|word| haystack.contains(word.as_str()))
+}
+
+impl DemoSource {
+    /// Marks the entries of the messages `ids` done, as the core does when a mail was read
+    /// elsewhere or left the inbox (task E4.1).
+    fn close_entries(data: &mut Data, ids: &[String], now: DateTime<Utc>) {
+        for item in &mut data.items {
+            if let Some(Link::Mail { message }) = &item.link
+                && ids.contains(message)
+            {
+                rules::set_done(item, true, now);
+            }
+        }
+    }
+
+    /// `mail.list_folders`: the folders of both accounts with their unread and total numbers.
+    pub fn mail_folders(&self) -> Result<Vec<Folder>, InboxError> {
+        let data = self.lock();
+        Ok(data
+            .folders
+            .iter()
+            .map(|folder| {
+                let inside = data.mail.iter().filter(|m| m.summary.folder == folder.id);
+                let (total, unread) = inside.fold((0, 0), |(total, unread), m| {
+                    (total + 1, unread + u32::from(!m.summary.flags.contains(&Flag::Seen)))
+                });
+                Folder { unread, total, ..folder.clone() }
+            })
+            .collect())
+    }
+
+    /// `mail.search_messages` in the folder `folder`: newest first, those holding every word of
+    /// `query` (in subject, sender, text and attachment names, ignoring case), at most `limit` from
+    /// `cursor` on; the cursor is the place of the next page. [`InboxError::NotFound`] for an
+    /// unknown folder, [`InboxError::Other`] for a cursor the demo did not give out.
+    pub fn search_mail(
+        &self,
+        folder: &str,
+        query: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
+        let data = self.lock();
+        if !data.folders.iter().any(|known| known.id == folder) {
+            return Err(InboxError::NotFound);
+        }
+        let start = match cursor {
+            None => 0,
+            Some(cursor) => cursor.parse::<usize>().map_err(|_| InboxError::Other("not a cursor".into()))?,
+        };
+        let words: Vec<String> = query.unwrap_or_default().split_whitespace().map(str::to_lowercase).collect();
+        let mut found: Vec<&Message> =
+            data.mail.iter().filter(|m| m.summary.folder == folder && matches_words(m, &words)).collect();
+        found.sort_by_key(|m| std::cmp::Reverse(m.summary.date));
+        let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+        let page: Vec<MessageSummary> = found.iter().skip(start).take(limit).map(|m| m.summary.clone()).collect();
+        let next = (start + page.len() < found.len()).then(|| (start + page.len()).to_string());
+        Ok((page, next))
+    }
+
+    /// `mail.get_message` with its text; reading does not mark it read. [`InboxError::NotFound`]
+    /// for an unknown id.
+    pub fn get_mail(&self, id: &str) -> Result<Message, InboxError> {
+        self.lock().mail.iter().find(|m| m.summary.id == id).cloned().ok_or(InboxError::NotFound)
+    }
+
+    /// `mail.get_attachment`: writes the attachment `part` of the message `id` as a small text
+    /// file into `torro-inbox-demo` in the temporary directory, the demo's stand-in for the core's
+    /// attachment folder, and answers its path. [`InboxError::NotFound`] for an unknown message or
+    /// part, [`InboxError::Other`] when the file cannot be written.
+    pub fn mail_attachment(&self, id: &str, part: &str) -> Result<PathBuf, InboxError> {
+        let message = self.get_mail(id)?;
+        let attachment = message.attachments.iter().find(|a| a.part == part).ok_or(InboxError::NotFound)?;
+        // Only the last part of the name, as the core cleans it.
+        let name = attachment
+            .filename
+            .as_deref()
+            .and_then(|name| std::path::Path::new(name).file_name())
+            .map_or_else(|| format!("attachment-{part}"), |name| name.to_string_lossy().into_owned());
+        let dir = std::env::temp_dir().join("torro-inbox-demo");
+        let path = dir.join(&name);
+        std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&path, attachment_text(&name)))
+            .map_err(|err| InboxError::Other(err.to_string()))?;
+        Ok(path)
+    }
+
+    /// `mail.set_flags`: sets `add` and clears `remove` on the messages `ids`. A mail marked read
+    /// closes its entry. [`InboxError::NotFound`] when one of them is unknown; nothing changes
+    /// then.
+    pub fn set_mail_flags(&self, ids: &[String], add: &[Flag], remove: &[Flag]) -> Result<(), InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        if !ids.iter().all(|id| data.mail.iter().any(|m| m.summary.id == *id)) {
+            return Err(InboxError::NotFound);
+        }
+        for message in data.mail.iter_mut().filter(|m| ids.contains(&m.summary.id)) {
+            let flags = &mut message.summary.flags;
+            flags.retain(|flag| !remove.contains(flag));
+            for flag in add {
+                if !flags.contains(flag) {
+                    flags.push(*flag);
+                }
+            }
+            flags.sort();
+        }
+        if add.contains(&Flag::Seen) {
+            Self::close_entries(&mut data, ids, now);
+        }
+        Ok(())
+    }
+
+    /// `mail.move_messages` to the folder `folder`: the messages keep their ids, and those moved
+    /// anywhere but an inbox close their entries. [`InboxError::NotFound`] for an unknown message
+    /// or folder, [`InboxError::Unsupported`] when they are of several accounts or the folder is of
+    /// another one, as in the core; nothing moves then.
+    pub fn move_mail(&self, ids: &[String], folder: &str) -> Result<(), InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        let target = data.folders.iter().find(|known| known.id == folder).cloned().ok_or(InboxError::NotFound)?;
+        let mut accounts = BTreeSet::new();
+        for id in ids {
+            let message = data.mail.iter().find(|m| m.summary.id == *id).ok_or(InboxError::NotFound)?;
+            accounts.insert(message.summary.account.clone());
+        }
+        if accounts.len() != 1 || !accounts.contains(&target.account) {
+            return Err(InboxError::Unsupported);
+        }
+        for message in data.mail.iter_mut().filter(|m| ids.contains(&m.summary.id)) {
+            message.summary.folder.clone_from(&target.id);
+        }
+        if target.role != Some(Role::Inbox) {
+            Self::close_entries(&mut data, ids, now);
+        }
+        Ok(())
+    }
+
+    /// `mail.move_messages` to the folder with `role` in the account of the first of `ids` (the
+    /// app moves to the inbox, archive and trash; `mail.delete_messages` is this with
+    /// [`Role::Trash`]). Errors as [`DemoSource::move_mail`].
+    pub fn move_mail_to(&self, ids: &[String], role: Role) -> Result<(), InboxError> {
+        let folder = {
+            let data = self.lock();
+            let first = ids.first().ok_or(InboxError::NotFound)?;
+            let account = data
+                .mail
+                .iter()
+                .find(|m| m.summary.id == *first)
+                .map(|m| m.summary.account.clone())
+                .ok_or(InboxError::NotFound)?;
+            data.folders
+                .iter()
+                .find(|folder| folder.account == account && folder.role == Some(role))
+                .map(|folder| folder.id.clone())
+                .ok_or(InboxError::NotFound)?
+        };
+        self.move_mail(ids, &folder)
+    }
+}
+
+impl DemoSource {
+    /// The accounts a message can be written from, in the order [`MAIL_ACCOUNTS`] lists them: both
+    /// are Anna's, the work one with a signature, the private one without.
+    pub fn mail_senders(&self) -> Vec<DemoSender> {
+        let signature = ["Anna Berg\nProduct, Torro Workplace", ""];
+        MAIL_ACCOUNTS
+            .iter()
+            .zip(signature)
+            .map(|(account, signature)| DemoSender {
+                account: (*account).to_owned(),
+                name: "Anna Berg".to_owned(),
+                signature: (!signature.is_empty()).then(|| signature.to_owned()),
+            })
+            .collect()
+    }
+
+    /// `mail.save_draft`: keeps `draft` and answers it with its id (a new one when it had none).
+    /// [`InboxError::NotFound`] for an account the demo does not have and for an id it did not give
+    /// out, as the core answers for a draft that is not there.
+    pub fn save_draft(&self, draft: Draft) -> Result<Draft, InboxError> {
+        let mut data = self.lock();
+        if !MAIL_ACCOUNTS.contains(&draft.account.as_str()) {
+            return Err(InboxError::NotFound);
+        }
+        match draft.id.clone() {
+            Some(id) => {
+                let old = data.drafts.iter_mut().find(|old| old.id.as_deref() == Some(id.as_str()));
+                *old.ok_or(InboxError::NotFound)? = draft.clone();
+                Ok(draft)
+            }
+            None => {
+                data.draft_count += 1;
+                let saved = Draft { id: Some(format!("m:draft-{}", data.draft_count)), ..draft };
+                data.drafts.push(saved.clone());
+                Ok(saved)
+            }
+        }
+    }
+
+    /// `mail.send_draft`: the draft `id` leaves the drafts and is kept as sent.
+    /// [`InboxError::NotFound`] for an unknown id, [`InboxError::Other`] for a draft without
+    /// recipient (nothing is sent then).
+    pub fn send_draft(&self, id: &str) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let at = data.drafts.iter().position(|draft| draft.id.as_deref() == Some(id)).ok_or(InboxError::NotFound)?;
+        let draft = &data.drafts[at];
+        if draft.to.is_empty() && draft.cc.is_empty() && draft.bcc.is_empty() {
+            return Err(InboxError::Other(tr("The draft has no recipient.").to_owned()));
+        }
+        let sent = data.drafts.remove(at);
+        data.sent.push(sent);
+        Ok(())
+    }
+
+    /// `mail.delete_messages` for a draft: it leaves the drafts. [`InboxError::NotFound`] for an
+    /// unknown id.
+    pub fn discard_draft(&self, id: &str) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let before = data.drafts.len();
+        data.drafts.retain(|draft| draft.id.as_deref() != Some(id));
+        if data.drafts.len() == before { Err(InboxError::NotFound) } else { Ok(()) }
+    }
+
+    /// The drafts saved and not sent, in the order they were first saved.
+    pub fn drafts(&self) -> Vec<Draft> {
+        self.lock().drafts.clone()
+    }
+
+    /// The drafts that were sent, in the order they went.
+    pub fn sent(&self) -> Vec<Draft> {
+        self.lock().sent.clone()
+    }
+}
+
 impl InboxSource for DemoSource {
     async fn list_items(&self, filter: ItemFilter) -> Result<Vec<Item>, InboxError> {
         let now = self.now();
@@ -246,9 +882,14 @@ impl InboxSource for DemoSource {
             .collect())
     }
 
+    /// A mail entry marked done also marks its mail read, as the core does (task E4.1).
     async fn set_item_done(&self, id: String, done: bool) -> Result<Item, InboxError> {
         let now = self.now();
-        self.change(&id, |item| rules::set_done(item, done, now))
+        let item = self.change(&id, |item| rules::set_done(item, done, now))?;
+        if let (true, Some(Link::Mail { message })) = (done, &item.link) {
+            self.set_mail_flags(std::slice::from_ref(message), &[Flag::Seen], &[])?;
+        }
+        Ok(item)
     }
 
     async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
@@ -405,9 +1046,11 @@ mod tests {
     async fn for_me_lists_urgent_entries_first() {
         let demo = DemoSource::new(now());
         let for_me = demo.list_items(open_in(Lane::ForMe)).await.expect("list");
-        assert_eq!(ids(&for_me), ["demo-1", "demo-3", "demo-2", "demo-4", "demo-6", "demo-5"]);
+        let urgent_first =
+            ["demo-1", "demo-3", "demo-2", "demo-mail-1", "demo-4", "demo-6", "demo-mail-4", "demo-5", "demo-mail-2"];
+        assert_eq!(ids(&for_me), urgent_first);
         let info = demo.list_items(open_in(Lane::Info)).await.expect("list");
-        assert_eq!(ids(&info), ["demo-8", "demo-9", "demo-7"]);
+        assert_eq!(ids(&info), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7"]);
     }
 
     #[tokio::test]
@@ -461,7 +1104,9 @@ mod tests {
                 "script:backup",
                 "script:ci",
                 "script:deploy",
-                "script:uptime"
+                "script:uptime",
+                "mail:anna@example.org",
+                "mail:anna@work.example.org"
             ]
         );
         let open = |sources: &[SourceInfo], key: &str| {
@@ -528,6 +1173,106 @@ mod tests {
         assert!(demo.lock().tasks.is_empty());
     }
 
+    fn folder<'a>(folders: &'a [Folder], id: &str) -> &'a Folder {
+        folders.iter().find(|folder| folder.id == id).expect("a demo folder")
+    }
+
+    fn entry_state(demo: &DemoSource, id: &str) -> State {
+        demo.lock().items.iter().find(|item| item.id == id).map(|item| item.state).expect("an entry")
+    }
+
+    #[test]
+    fn two_mail_accounts_have_their_folders_and_unread_mail() {
+        let demo = DemoSource::new(now());
+        let folders = demo.mail_folders().expect("folders");
+        for account in MAIL_ACCOUNTS {
+            let roles: Vec<Option<Role>> =
+                folders.iter().filter(|folder| folder.account == account).map(|folder| folder.role).collect();
+            assert_eq!(roles.len(), 7, "six roles and one folder of its own");
+            assert_eq!(roles.iter().filter(|role| role.is_none()).count(), 1);
+        }
+        let inbox = folder(&folders, "f:work-inbox");
+        assert_eq!((inbox.unread, inbox.total), (3, 6));
+        assert_eq!(folder(&folders, "f:private-trash").total, 0, "an empty folder");
+        let mail = mail_sample(now());
+        assert!(mail.iter().all(|m| m.summary.untrusted), "mail is foreign text");
+        assert!(mail.iter().any(|m| m.summary.flags.contains(&Flag::Flagged)));
+        assert!(mail.iter().any(|m| m.from_html), "a mail made from HTML");
+        assert!(mail.iter().any(|m| !m.attachments.is_empty()));
+        let ids: HashSet<&str> = mail.iter().map(|m| m.summary.id.as_str()).collect();
+        assert_eq!(ids.len(), mail.len(), "ids are unique");
+    }
+
+    #[test]
+    fn unread_inbox_mail_is_filed_as_the_core_files_it() {
+        let entries = mail_entries(&mail_sample(now()));
+        assert_eq!(entries.len(), 5, "every unread mail in an inbox, nothing else");
+        for item in &entries {
+            assert_eq!((item.kind, item.urgent, item.untrusted), (Kind::Message, false, true), "{}", item.id);
+            assert!(rules::may_open(item, |_| false), "a mail entry opens its mail: {}", item.id);
+            assert_eq!(item.source.kind, crate::item::SourceKind::Mail);
+        }
+        let info: Vec<&str> =
+            entries.iter().filter(|item| item.lane == Lane::Info).map(|item| item.title.as_str()).collect();
+        assert_eq!(info, ["[torro/workplace] Sidebar flickers on resize (#212)", "Autumn sale: 20% off"]);
+    }
+
+    #[test]
+    fn folders_are_searched_a_page_at_a_time() {
+        let demo = DemoSource::new(now());
+        let (first, next) = demo.search_mail("f:work-inbox", None, 4, None).expect("a page");
+        let ids: Vec<&str> = first.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["m:w1", "m:w2", "m:w3", "m:w4"], "newest first");
+        let (rest, last) = demo.search_mail("f:work-inbox", None, 4, next.as_deref()).expect("the next page");
+        assert_eq!((rest.len(), last), (2, None));
+        let (found, _) = demo.search_mail("f:work-inbox", Some("JONAS minutes"), 50, None).expect("found");
+        assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m:w6"], "every word, any case");
+        let (by_file, _) = demo.search_mail("f:work-inbox", Some("budget-q4.csv"), 50, None).expect("found");
+        assert_eq!(by_file.len(), 1, "attachment names count");
+        assert_eq!(demo.search_mail("f:nope", None, 50, None), Err(InboxError::NotFound));
+    }
+
+    #[tokio::test]
+    async fn reading_or_moving_a_mail_closes_its_entry() {
+        let demo = DemoSource::new(now());
+        // demo-mail-1 is m:w1, demo-mail-2 m:w2, demo-mail-4 m:p1.
+        demo.set_mail_flags(&["m:w1".into()], &[Flag::Seen, Flag::Flagged], &[]).expect("read");
+        assert!(matches!(entry_state(&demo, "demo-mail-1"), State::Done { .. }), "read elsewhere: done");
+        assert_eq!(demo.get_mail("m:w1").expect("there").summary.flags, [Flag::Seen, Flag::Flagged]);
+        demo.set_mail_flags(&["m:w1".into()], &[], &[Flag::Seen]).expect("unread again");
+        assert_eq!(demo.get_mail("m:w1").expect("there").summary.flags, [Flag::Flagged]);
+
+        demo.move_mail_to(&["m:w2".into()], Role::Archive).expect("archived");
+        assert_eq!(demo.get_mail("m:w2").expect("same id").summary.folder, "f:work-archive");
+        assert!(matches!(entry_state(&demo, "demo-mail-2"), State::Done { .. }), "left the inbox: done");
+        demo.move_mail(&["m:w2".into()], "f:work-inbox").expect("moved back");
+        assert_eq!(demo.get_mail("m:w2").expect("same id").summary.folder, "f:work-inbox");
+
+        demo.set_item_done("demo-mail-4".into(), true).await.expect("done");
+        assert!(demo.get_mail("m:p1").expect("there").summary.flags.contains(&Flag::Seen), "done marks it read");
+    }
+
+    #[test]
+    fn mail_moves_only_within_its_account() {
+        let demo = DemoSource::new(now());
+        assert_eq!(demo.move_mail(&["m:w1".into()], "f:private-archive"), Err(InboxError::Unsupported));
+        assert_eq!(demo.move_mail(&["m:w1".into(), "m:p1".into()], "f:work-archive"), Err(InboxError::Unsupported));
+        assert_eq!(demo.move_mail(&["m:nope".into()], "f:work-archive"), Err(InboxError::NotFound));
+        assert_eq!(demo.get_mail("m:w1").expect("there").summary.folder, "f:work-inbox", "nothing moved");
+        demo.move_mail_to(&["m:p1".into()], Role::Trash).expect("deleted");
+        assert_eq!(demo.get_mail("m:p1").expect("in the trash").summary.folder, "f:private-trash");
+    }
+
+    #[test]
+    fn an_attachment_lands_in_a_file() {
+        let demo = DemoSource::new(now());
+        let path = demo.mail_attachment("m:w1", "2").expect("written");
+        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("budget-q4.csv"));
+        assert!(std::fs::read_to_string(&path).expect("readable").starts_with("item;"));
+        assert_eq!(demo.mail_attachment("m:w1", "9"), Err(InboxError::NotFound));
+        assert_eq!(demo.mail_attachment("m:w4", "2"), Err(InboxError::NotFound), "no attachments");
+    }
+
     #[tokio::test]
     async fn deciding_closes_the_approval_once() {
         let demo = DemoSource::new(now());
@@ -537,5 +1282,73 @@ mod tests {
         assert!(matches!(entry.state, State::Done { .. }), "decided, the entry is done");
         assert_eq!(demo.decide_approval(APPROVAL_ID.into(), false).await, Err(InboxError::Settled));
         assert_eq!(demo.decide_approval("nope".into(), true).await, Err(InboxError::NotFound));
+    }
+
+    fn draft(account: &str, to: &[&str]) -> Draft {
+        Draft {
+            id: None,
+            account: account.into(),
+            to: to.iter().map(|to| address("", to)).collect(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Lunch".into(),
+            body: "Shall we?".into(),
+            in_reply_to: None,
+            attachments: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_demo_lists_both_accounts_to_write_from() {
+        let senders = DemoSource::new(now()).mail_senders();
+        let accounts: Vec<&str> = senders.iter().map(|sender| sender.account.as_str()).collect();
+        assert_eq!(accounts, MAIL_ACCOUNTS);
+        assert!(senders[0].signature.is_some() && senders[1].signature.is_none(), "one signature, one without");
+    }
+
+    #[test]
+    fn a_saved_draft_gets_an_id_and_is_replaced_by_it() {
+        let demo = DemoSource::new(now());
+        let first = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
+        assert_eq!(first.id.as_deref(), Some("m:draft-1"));
+        let changed = Draft { subject: "Lunch tomorrow".into(), ..first.clone() };
+        assert_eq!(demo.save_draft(changed).expect("replaced").id, first.id);
+        let kept = demo.drafts();
+        assert_eq!((kept.len(), kept[0].subject.as_str()), (1, "Lunch tomorrow"), "replaced, not added");
+        let second = demo.save_draft(draft(MAIL_ACCOUNTS[0], &[])).expect("a second one");
+        assert_eq!(second.id.as_deref(), Some("m:draft-2"));
+        assert_eq!(demo.drafts().len(), 2);
+    }
+
+    #[test]
+    fn the_demo_refuses_what_the_core_refuses() {
+        let demo = DemoSource::new(now());
+        assert_eq!(
+            demo.save_draft(draft("mail:nobody@example.org", &[])),
+            Err(InboxError::NotFound),
+            "no such account"
+        );
+        let unknown = Draft { id: Some("m:draft-9".into()), ..draft(MAIL_ACCOUNTS[0], &[]) };
+        assert_eq!(demo.save_draft(unknown), Err(InboxError::NotFound), "no such draft");
+        assert_eq!(demo.send_draft("m:draft-9"), Err(InboxError::NotFound));
+        let empty = demo.save_draft(draft(MAIL_ACCOUNTS[0], &[])).expect("saved");
+        let id = empty.id.expect("an id");
+        assert_eq!(demo.send_draft(&id), Err(InboxError::Other(tr("The draft has no recipient.").into())));
+        assert_eq!(demo.drafts().len(), 1, "a refused send keeps the draft");
+        assert_eq!(demo.discard_draft("m:draft-9"), Err(InboxError::NotFound));
+    }
+
+    #[test]
+    fn a_sent_draft_leaves_the_drafts() {
+        let demo = DemoSource::new(now());
+        let saved = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
+        let id = saved.id.expect("an id");
+        demo.send_draft(&id).expect("sent");
+        assert!(demo.drafts().is_empty());
+        assert_eq!(demo.sent().len(), 1);
+        assert_eq!(demo.send_draft(&id), Err(InboxError::NotFound), "never twice");
+        let other = demo.save_draft(draft(MAIL_ACCOUNTS[1], &["bob@example.org"])).expect("saved");
+        demo.discard_draft(&other.id.expect("an id")).expect("discarded");
+        assert!(demo.drafts().is_empty() && demo.sent().len() == 1);
     }
 }
