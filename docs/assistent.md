@@ -175,6 +175,26 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
 - **Stop** bricht eine laufende Antwort ab.
 - Texte über `tr()`; Design nach `torro-design`.
 
+### Eigene Chatfenster
+
+Wie beim Schreiben einer Mail lässt sich eine Unterhaltung aus dem Hauptfenster **als eigenes
+Fenster lösen**: nur Verlauf und Eingabefeld, ohne Seitenleiste. So steht der Chat als Kachel neben
+dem Kalender oder der Inbox, und mehrere Chats können gleichzeitig offen sein.
+
+- **Ein Programm, zwei Fensterarten** (wie bei `torroinbox`): `torroassistant` ist das
+  Hauptfenster (Fensterklasse `torro-assistant`), `torroassistant --chat <id>` ein einzelnes
+  Chatfenster (Fensterklasse `torro-assistant-chat`). `--chat new` öffnet eine neue Unterhaltung,
+  in Stufe 2 `--bot <id>` den Chat mit einem Bot (neueste Unterhaltung mit ihm oder eine neue).
+- **Öffnen:** „Open in new window“ im Kontextmenü einer Unterhaltung, Doppelklick, Ziehen aus der
+  Seitenleiste; aus Inbox, Kalender und Aufgaben über „Ask about this“ direkt als Chatfenster.
+- **Workspace-Vorlagen** merken die Chatfenster mit ihrem Argument; beim Laden kommt dieselbe
+  Unterhaltung bzw. derselbe Bot wieder. Ist die Unterhaltung inzwischen gelöscht, öffnet das
+  Fenster eine neue mit demselben Antrieb bzw. Bot.
+- **Ein Zustand, viele Fenster:** Verlauf und laufende Antworten liegen im Kern. Ist dieselbe
+  Unterhaltung im Hauptfenster und als eigenes Fenster offen, zeigen beide dasselbe.
+- **Fenstertitel:** Name der Unterhaltung, in Stufe 2 mit Name des Bots, damit Kachel-Regeln und
+  Fensterlisten sie unterscheiden.
+
 Später: Tastenkürzel „Ask Torro…“ (Schnellfenster), Eintrag im Tray, „Ask about this“ aus Inbox,
 Kalender und Aufgaben mit dem Eintrag als Kontext.
 
@@ -233,6 +253,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Nachricht schicken (neue oder bestehende Unterhaltung) | Eingabefeld | `assistant.send_message` · Write (startet einen Modelllauf) | `assistant_send_message` |
 | Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
+| Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |
 | Unterhaltung anheften (bleibt über die Aufbewahrung hinaus) | Kontextmenü | `assistant.pin_conversation` · Write | `assistant_pin_conversation` |
 | Unterhaltung löschen | Kontextmenü | `assistant.delete_conversation` · Delete | `assistant_delete_conversation` |
 | Standard-Antrieb, Aufbewahrung | Steuerzentrale › Assistant | `settings.set_setting` · Admin (gibt es) | `settings_set_setting` |

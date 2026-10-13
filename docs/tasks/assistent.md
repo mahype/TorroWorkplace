@@ -40,7 +40,8 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - `Area::Assistant`; Requests und Katalog nach der Tabelle „Drei Wege“ im Konzept: `assistant.list_engines` (Read),
   `assistant.list_conversations` (Read), `assistant.get_conversation { id, after }` (Read),
   `assistant.send_message { conversation?, engine, model?, text, without }` (Write), `assistant.cancel` (Write),
-  `assistant.rename_conversation` (Write), `assistant.delete_conversation` (Delete).
+  `assistant.rename_conversation` (Write), `assistant.delete_conversation` (Delete),
+  `assistant.open_window { conversation | new | bot }` (Write, startet `torroassistant --chat …` wie `apps.open_app`).
 - Client-Art `assistant`; im Bereich `assistant` fest gesperrt bis auf das Gedächtnis aus C.10 (keine Schleife). Bereich
   `assistant` in den Vorlagen anderer Clients aus, auch in *Full access*. **Ein** Client „Assistant“ für alle Antriebe;
   der Antrieb steht im Protokoll. Aufbewahrung 30 Tage (Einstellung), angeheftete Unterhaltungen bleiben
@@ -77,6 +78,10 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   `Cargo.toml` (Wurzel, Mitglied), `crates/torro-core/src/app.rs` (`AppId::ASSISTANT`)
 - Seitenleiste, Verlauf, Eingabefeld mit Konto/Modell und „without …“, Werkzeug-Zeilen aufklappbar, Freigabe-Karte
   (`approvals.decide_approval` per Klick), Stop, erster Start mit Auswahl der Rechte (öffnet C.6-Ansicht), `--demo`.
+- **Eigene Chatfenster** (Abschnitt „Eigene Chatfenster“ im Konzept): `--chat <id>|new`, Fensterklasse
+  `torro-assistant-chat`, „Open in new window“, Doppelklick; Workspace-Vorlagen merken das Argument; gelöschte
+  Unterhaltung → neue. Dazu in `crates/torro-core/src/app.rs` die zweite Fensterart, in `apps.list_apps` als eigener
+  Eintrag „Assistant chat“ nur, wenn die Vorlagen das brauchen (wie bei `torroinbox --view`).
 - **Oberfläche/API:** nur Requests aus C.1 und vorhandene; **MCP:** keine neuen Tools.
 - **Abnahme:** `torro-design-review` in allen Größenklassen; Texte über `tr()`, Übersetzungen im Bericht.
 
@@ -143,5 +148,6 @@ Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Grobe Aufteilu
   je Bot, Schnittmenge der Rechte beim Abgeben, keine Ketten.
 - **B.2 Hauptbot gibt ab, nur auf Ansage:** `bots.ask_bot` des Hauptbots nur, wenn die Person den Bot nennt oder
   einen Vorschlag bestätigt (im Kern geprüft); Schritt im Verlauf.
-- **B.3 App:** Seitenleiste „Bots“, Bot-Editor mit Rechten, direkter Chat, Ansprache per Name/Weckwort.
+- **B.3 App:** Seitenleiste „Bots“, Bot-Editor mit Rechten, direkter Chat, Ansprache per Name/Weckwort,
+  eigenes Chatfenster je Bot (`torroassistant --bot <id>`, in Workspace-Vorlagen merkbar).
 - **B.4 MCP-Tools `bots_*`.**
