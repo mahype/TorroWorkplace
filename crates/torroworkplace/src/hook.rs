@@ -73,9 +73,10 @@ use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response};
 pub const STDIN_MAX: u64 = 1024 * 1024;
 
 /// How long connecting to the core and waiting for its answer may take together: 500 ms, so an
-/// agent never waits on a hook. Tests run many cores at once on a busy machine; there a call gets
-/// three seconds, or a slow answer fails a test that has nothing to do with timing.
-pub const BUDGET: Duration = if cfg!(test) { Duration::from_secs(3) } else { Duration::from_millis(500) };
+/// agent never waits on a hook. Tests run many cores at once, and several test runs may share the
+/// machine; there a call gets ten seconds, or a slow answer fails a test that has nothing to do
+/// with timing (three seconds were seen to run out with three runs at once).
+pub const BUDGET: Duration = if cfg!(test) { Duration::from_secs(10) } else { Duration::from_millis(500) };
 
 /// How long to wait for stdin to end. Agents write the payload and close the pipe at once; this
 /// only guards against a pipe left open.
@@ -647,6 +648,12 @@ mod tests {
 
     const HEAD: &str = "ref: refs/heads/feat/inbox\n";
 
+    /// How long a test waits for what a core does on its own (starting, showing a question)
+    /// before it fails: far more than a loaded machine needs, and a passing test never waits it
+    /// out, because it stops looking as soon as it sees what it waits for.
+    #[cfg(unix)]
+    const SETTLE: Duration = Duration::from_secs(30);
+
     /// The hook payloads of E2.2a, shared with `torro-inbox`.
     fn fixture(name: &str) -> String {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../torro-inbox/tests/fixtures/hooks");
@@ -1015,7 +1022,8 @@ mod tests {
         let started = Instant::now();
         let result = run(AgentKind::ClaudeCode, Some(&payload), Some(&socket), Some(&Key::new("torro_c1_x")));
         assert!(matches!(result, Err(HookError::TimedOut)), "{result:?}");
-        assert!(started.elapsed() < BUDGET + Duration::from_millis(250), "{:?}", started.elapsed());
+        // A loaded machine wakes the timer late; twice the budget still tells it from hanging.
+        assert!(started.elapsed() < 2 * BUDGET, "{:?}", started.elapsed());
     }
 
     /// The hook writes nothing to stdout but a person's decision: no print macro and no stdout
@@ -1208,10 +1216,11 @@ mod tests {
             })
             .await
         });
-        for _ in 0..100 {
-            if torro_ipc::client::call(&socket, &Request::Ping).await.is_ok() {
-                break;
-            }
+        // Ready once it answers, however long a loaded machine takes to bind the socket; a core
+        // that never comes up fails here rather than in whatever the test asks first.
+        let started = Instant::now();
+        while !matches!(torro_ipc::client::call(&socket, &Request::Ping).await, Ok(Response::Pong { .. })) {
+            assert!(started.elapsed() < SETTLE, "the core in {} did not start", dir.display());
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         (socket, hook_key)
@@ -1244,13 +1253,11 @@ mod tests {
                     tokio::task::spawn_blocking(move || answer(agent, &question, Some(&socket), &key, ANSWER_WAIT))
                 };
                 // The person sees the question with the whole command, and decides.
-                let mut open = Vec::new();
-                for _ in 0..100 {
-                    open = open_questions(&socket).await;
-                    if !open.is_empty() {
-                        break;
-                    }
+                let started = Instant::now();
+                let mut open = open_questions(&socket).await;
+                while open.is_empty() && started.elapsed() < SETTLE {
                     tokio::time::sleep(Duration::from_millis(20)).await;
+                    open = open_questions(&socket).await;
                 }
                 let [asked] = open.as_slice() else { panic!("one question: {open:?}") };
                 assert!(crate::approvals::is_question(asked));
@@ -1282,7 +1289,10 @@ mod tests {
                 .expect("ran")
         };
         assert!(matches!(printed, Ok(None)), "{printed:?}");
-        assert!(started.elapsed() < waited + BUDGET, "{:?}", started.elapsed());
+        // It waited its own time out ...
+        assert!(started.elapsed() >= waited, "{:?}", started.elapsed());
+        // ... and not until the question expired (QUESTION_LIFETIME): the question is still open.
+        // That tells the two apart without a bound on how slow a loaded machine may be.
         assert_eq!(open_questions(&socket).await.len(), 1, "the question stays until it expires; nobody allowed it");
 
         // Gemini CLI takes no answer: nothing is asked.
