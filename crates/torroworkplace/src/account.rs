@@ -1249,10 +1249,9 @@ pub mod github {
 
         #[tokio::test]
         async fn an_unreachable_github_is_offline() {
-            // A port nothing listens on: bound, then let go.
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-            let url = format!("http://{}/graphql", listener.local_addr().expect("address"));
-            drop(listener);
+            // Port 0 takes no connection, and unlike a port bound and let go, no test running at
+            // the same time can take it in between.
+            let url = "http://127.0.0.1:0/graphql".to_string();
             assert_eq!(check(&http(), &url, &Secret::new(CLASSIC)).await, Err(GithubError::Offline));
         }
 
