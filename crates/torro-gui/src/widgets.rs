@@ -1036,6 +1036,20 @@ impl<'a, M> MenuSection<'a, M> {
     }
 }
 
+/// One entry of a [`menu`] on its own, for a menu card that holds more than entries – the bell's
+/// menu of the inbox (task E8.6b) has segments between its entries and ends in "All rules ↗". Draws
+/// exactly what [`menu`] draws for the item: 30 high, mark, label, trail, the dot of `current`.
+/// Put it in a card of `style::container::menu` with [`style::MENU_INSET`] inside.
+///
+/// ```ignore
+/// let rules = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenSettings)
+///     .trail(Trail::Icon(Icon::ArrowUpRight));
+/// list = list.push(widgets::menu_item(rules));
+/// ```
+pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
+    menu_entry(item)
+}
+
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
     let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = item.mark {

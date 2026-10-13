@@ -1009,7 +1009,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
             (tr("Nothing for you right now."), tr("Waiting agents, approvals and account problems show up here."))
         }
         View::Info => (tr("No info right now."), tr("Notices from scripts and finished jobs show up here.")),
-        View::Snoozed => (tr("Nothing snoozed."), tr("Snoozed entries wait here until their time.")),
+        View::Snoozed => (tr("Nothing for later."), tr("What you put off waits here until its time.")),
         View::Done => (tr("Nothing done yet."), tr("Done entries stay here for 30 days.")),
         View::Source(_) => (tr("Nothing open from this source."), tr("New entries from it show up here.")),
         // The views of mail have their own list and empty states (`mail::list`).

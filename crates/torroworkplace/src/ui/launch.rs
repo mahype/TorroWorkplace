@@ -14,11 +14,12 @@ use torro_core::AppId;
 use torro_core::ai::{AiError, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
+use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
+    IssuedKey, Key, MailView, OpenRoleView, Request, Response, RuleHits, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -338,8 +339,9 @@ pub fn demo_designs() -> Vec<Pack> {
 /// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
 /// one failed, one denied, one expired ([`demo_approvals`]), and four clients with the calendars,
 /// lists (one a GitHub filter list) and inbox sources their selections choose from
-/// ([`demo_clients`]), and inbox rules: two remembered lanes and the muted source of the sources
-/// list ([`demo_rules`]). Times are relative to now.
+/// ([`demo_clients`]), and inbox rules: two remembered lanes, the muted source of the sources
+/// list, a hidden sender and domain and two muted traits, with what each caught ([`demo_rules`],
+/// [`demo_hits`]). Times are relative to now.
 pub fn demo_data() -> Data {
     let now = Utc::now();
     let (mut sample, _, _) = torro_pim::demo::sample(Local::now().date_naive());
@@ -514,6 +516,7 @@ pub fn demo_data() -> Data {
         task_lists,
         sources,
         rules: demo_rules(now),
+        rule_hits: demo_hits(now),
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -601,7 +604,9 @@ fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
 }
 
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
-/// the nightly build muted, as the demo's sources list has it, and a sender and a domain hidden.
+/// the nightly build muted, as the demo's sources list has it, a sender and a domain hidden, and two
+/// traits muted from the bell's menu (task E8.6b): Claude Code's project "torro-workplace" without
+/// popups until tomorrow, newsletters to "Info" for good.
 fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
     let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
         id: id.into(),
@@ -626,6 +631,36 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
             domain: Some("deals.example".into()),
             ..rule("e93a5c08", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(2))
         },
+        // Traits muted from the bell's menu (task E8.6b).
+        Rule {
+            facet: Some(Facet { key: FacetKey::Project, value: "torro-workplace".into() }),
+            until: Some(now + Duration::hours(22)),
+            ..rule("4b8d2e61", SourceRef::agent("claude-code"), RuleEffect::NoPopup, Duration::hours(2))
+        },
+        Rule {
+            facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),
+            ..rule(
+                "9f13c7a5",
+                SourceRef::mail("anna@example.org"),
+                RuleEffect::Lane { lane: Lane::Info },
+                Duration::days(5),
+            )
+        },
+    ]
+}
+
+/// What the demo's rules caught ([`demo_rules`], task E8.8a): counted since each was made, the
+/// domain hidden two hours ago nothing yet.
+fn demo_hits(now: DateTime<Utc>) -> Vec<RuleHits> {
+    let hit = |rule: &str, hits: u32, age: Duration| RuleHits { rule: rule.into(), hits, since: now - age };
+    vec![
+        hit("5e0b7c2a", 14, Duration::days(6)),
+        hit("a81f3d94", 31, Duration::days(3)),
+        hit("2c6e9b17", 9, Duration::days(1)),
+        hit("7d41e0b3", 12, Duration::hours(20)),
+        hit("e93a5c08", 0, Duration::hours(2)),
+        hit("4b8d2e61", 3, Duration::hours(2)),
+        hit("9f13c7a5", 27, Duration::days(5)),
     ]
 }
 

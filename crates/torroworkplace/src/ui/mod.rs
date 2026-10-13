@@ -71,7 +71,7 @@ use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, 
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_inbox::{Rule, SourceInfo};
-use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, Status, client};
+use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, RuleHits, Status, client};
 use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
@@ -184,6 +184,9 @@ pub struct Data {
     pub sources: Vec<SourceInfo>,
     /// The lasting rules of the inbox (`inbox.list_rules`): remembered lanes and muted sources.
     pub rules: Vec<Rule>,
+    /// How much each rule caught and since when (`inbox.list_rules`, task E8.8a), by the rule's id;
+    /// empty from a core before E8.8a.
+    pub rule_hits: Vec<RuleHits>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -1273,8 +1276,9 @@ fn load() -> Task<Message> {
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
             }
-            if let Ok(Response::Rules { rules, .. }) = client::call(&socket, &Request::ListRules).await {
+            if let Ok(Response::Rules { rules, hits }) = client::call(&socket, &Request::ListRules).await {
                 data.rules = rules;
+                data.rule_hits = hits;
             }
             data
         },
@@ -1885,7 +1889,7 @@ mod tests {
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
         assert_eq!(demo.data.accounts.len(), accounts, "removing an account in the demo changes nothing");
-        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 5, "nor do the inbox's controls");
+        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 7, "nor do the inbox's controls");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");

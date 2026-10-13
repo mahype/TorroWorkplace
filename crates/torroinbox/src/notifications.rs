@@ -16,8 +16,9 @@
 //! - **Card** (comfortable density, `widgets::card`): the source's tile, the title, a line with
 //!   source, "Info", reports and time, the ✕ at the top right (dismiss: done, counted apart), two
 //!   lines of text, and its buttons, always shown ([`card_buttons`]): Open (or Go to window), Task,
-//!   Later and the bell, which mutes the source ([`bell`], `inbox.mute_source`; the bell's menu comes
-//!   with E8.6b). An approval has Allow · Deny and neither ✕ nor Later; a coding agent Go to window ·
+//!   Later and the bell ([`bell`], "Mute…"), which opens the bell's menu (task E8.6b, `App::mute_menu`:
+//!   the ways to mute from `inbox.list_mute_options`, "For", "What happens"). An approval has Allow ·
+//!   Deny and neither ✕ nor Later nor bell; a coding agent Go to window ·
 //!   Later · Done. Buttons carry their words while they fit, else icons with the word as tooltip.
 //! - **Row** (compact density, `list::notice_content`): the row of every view with its action bar
 //!   ([`row_actions`]): Open, Task, Later, Mute, ✕.
@@ -26,8 +27,8 @@
 //!   Reply · Mark mail done · Not now – on its card and in its row, and no ✕ beside "Not now".
 //!
 //! Everything a button does goes through the app (`Message::Act`, `Message::OpenRow`,
-//! `Message::Decide`), so it does what its key does at the entry: `x` dismisses, `m` mutes the
-//! source here. The board only lays out; heights and the order the keys walk ([`order`]) are plain
+//! `Message::Decide`), so it does what its key does at the entry: `x` dismisses, `m` opens the
+//! bell's menu here. The board only lays out; heights and the order the keys walk ([`order`]) are plain
 //! functions with tests, so the app can scroll the cursor into view ([`span`]).
 //!
 //! Not yet: Reply (no source can answer before Slack, E7) and the reminders' "In 5 min" (no
@@ -586,25 +587,21 @@ fn follow_up_actions<'a>(item: &Item) -> Vec<RowAction<'a, Message>> {
         .collect()
 }
 
-/// The bell of `item`'s card and row: "Mute <source>", or "Unmute <source>" while its source is
-/// `muted`, which `m` does as well (`inbox.mute_source`, at once with an undo). Until E8.6b brings
-/// the bell's menu it mutes the whole source. None for the suite (never muted, security rule 1), an
-/// approval and a done entry.
-pub fn bell(item: &Item, muted: bool) -> Option<CardButton> {
+/// The bell of `item`'s card, row and panel: "Mute…", which opens the bell's menu (task E8.6b) as
+/// `m` does – the ways to mute the entry, how long and what happens; a source muted as a whole is
+/// unmuted there. None for the suite (never muted, security rule 1), an approval and a done entry.
+pub fn bell(item: &Item) -> Option<CardButton> {
     if !app::rules_allowed(&item.source) || detail::is_approval(item) || matches!(item.state, State::Done { .. }) {
         return None;
     }
-    let label = item.source.label();
-    let label =
-        if muted { trf("Unmute {source}", &[("source", &label)]) } else { trf("Mute {source}", &[("source", &label)]) };
-    Some(CardButton::new(Icon::Bell, label, Some(Message::Act(item.id.clone(), Command::Hide))))
+    Some(CardButton::new(Icon::Bell, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide))))
 }
 
 /// The action bar of `item`'s row in the compact density (`widgets::row_actions`): Open or Go to
 /// window (`Enter`), Task (`t`), Later (`s`) or Reopen (`e`) for a done entry, the bell (`m`,
 /// [`bell`]) and the ✕ (`x`, [`dismissable`]) – only what works for the entry, as its card. The
 /// suite's question after a finished task has Reply (`r`), Mark mail done and Not now (`e`) instead.
-pub fn row_actions<'a>(item: &Item, muted: bool) -> Vec<RowAction<'a, Message>> {
+pub fn row_actions<'a>(item: &Item) -> Vec<RowAction<'a, Message>> {
     if asks_to_follow_up(item) {
         return follow_up_actions(item);
     }
@@ -634,7 +631,7 @@ pub fn row_actions<'a>(item: &Item, muted: bool) -> Vec<RowAction<'a, Message>> 
     } else if !approval {
         actions.push(RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
     }
-    if let Some(bell) = bell(item, muted) {
+    if let Some(bell) = bell(item) {
         actions.push(RowAction::new(bell.icon, bell.label, "M", act(Command::Hide)));
     }
     if dismissable(item) {
@@ -653,18 +650,10 @@ pub struct BoardData<'a> {
     pub rows: Rows<'a>,
     /// A decision of an approval is on its way: its Allow and Deny are disabled.
     pub deciding: bool,
-    /// The muted sources, for the bell's word.
-    pub muted: Vec<SourceRef>,
     /// The window shows one source only: no card needs to name it.
     pub single_source: bool,
     /// The icon of the view, for its empty state.
     pub icon: Icon,
-}
-
-impl BoardData<'_> {
-    fn muted(&self, item: &Item) -> bool {
-        self.muted.contains(&item.source)
-    }
 }
 
 /// What the empty state of `view` says in the notifications window: "Nothing new." for "New", as
@@ -839,7 +828,7 @@ fn card<'a>(item: &'a Item, data: &BoardData<'a>, names: Names) -> Element<'a, M
         });
         parts.push(container(lines).width(Fill).height(text_height()).clip(true).into());
     }
-    parts.push(buttons(card_buttons(item, data.deciding), bell(item, data.muted(item))));
+    parts.push(buttons(card_buttons(item, data.deciding), bell(item)));
     let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
     if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
 }
@@ -906,7 +895,7 @@ fn entry_row<'a>(item: &'a Item, data: &BoardData<'a>, width: f32) -> Element<'a
     let height = list::row_height_of(item);
     let content = list::notice_content(item, &data.rows, width);
     let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = row_actions(item, data.muted(item));
+    let actions = row_actions(item);
     let words = widgets::row_actions_words(&actions, width);
     let middle = list::first_line_middle(height, list::line_count(item));
     let line = widgets::row_actions_at(line, actions, selected, words, middle);
@@ -1140,14 +1129,18 @@ mod tests {
         let by_id = |id: &str| items.iter().find(|item| item.id == id).expect("in the demo");
         let words = |item: &Item| card_buttons(item, false).into_iter().map(|b| b.label).collect::<Vec<_>>();
         assert_eq!(words(by_id("demo-3")), [tr("Allow"), tr("Deny")], "an approval: no Task, no Later");
-        assert!(!dismissable(by_id("demo-3")) && bell(by_id("demo-3"), false).is_none(), "and no ✕, no bell");
+        assert!(!dismissable(by_id("demo-3")) && bell(by_id("demo-3")).is_none(), "and no ✕, no bell");
         assert!(card_buttons(by_id("demo-3"), true).iter().all(|b| b.on_press.is_none()), "off while deciding");
         assert_eq!(words(by_id("demo-1")), [tr("Go to window"), tr("Later"), tr("Done")], "a waiting agent");
         assert_eq!(words(by_id("demo-6")), [tr("Open"), tr("Task"), tr("Later")], "a notice with a page");
         assert_eq!(words(by_id("demo-12")), [tr("Task"), tr("Later")], "a notice without a link");
-        let deploy = trf("Mute {source}", &[("source", &"deploy")]);
-        assert_eq!(bell(by_id("demo-6"), false).map(|b| b.label), Some(deploy));
-        assert!(bell(by_id("demo-5"), false).is_none(), "the suite is never muted");
+        let bell_of = |id: &str| bell(by_id(id));
+        assert_eq!(bell_of("demo-6").map(|b| b.label), Some(tr("Mute…").to_owned()));
+        assert!(
+            matches!(bell_of("demo-6").and_then(|b| b.on_press), Some(Message::Act(id, Command::Hide)) if id == "demo-6"),
+            "the bell does what m does: its menu"
+        );
+        assert!(bell_of("demo-5").is_none(), "the suite is never muted");
         let mut done = by_id("demo-6").clone();
         done.state = State::Done { at: now() };
         assert_eq!(words(&done), [tr("Reopen")]);
@@ -1166,8 +1159,8 @@ mod tests {
         assert!(matches!(&sent[0], Some(Message::Act(id, Command::Reply)) if id == "demo-9"));
         assert!(matches!(&sent[1], Some(Message::MarkMailDone(id)) if id == "demo-9"));
         assert!(matches!(&sent[2], Some(Message::Act(_, Command::Done))), "Not now closes the question");
-        assert!(!dismissable(&question) && bell(&question, false).is_none(), "no ✕ beside Not now, no bell");
-        let bar = row_actions(&question, false);
+        assert!(!dismissable(&question) && bell(&question).is_none(), "no ✕ beside Not now, no bell");
+        let bar = row_actions(&question);
         let labels: Vec<String> = bar.iter().map(|action| action.label.to_string()).collect();
         assert_eq!(labels, words, "the row offers the same");
         assert_eq!(bar.iter().map(|action| action.key).collect::<Vec<_>>(), ["R", "", "E"]);
@@ -1180,11 +1173,10 @@ mod tests {
     fn the_row_bar_has_open_task_later_mute_and_dismiss() {
         let items = open();
         let deploy = items.iter().find(|item| item.id == "demo-6").expect("the deploy notice");
-        let labels: Vec<String> = row_actions(deploy, false).iter().map(|action| action.label.to_string()).collect();
-        let mute = trf("Mute {source}", &[("source", &"deploy")]);
-        assert_eq!(labels, [tr("Open"), tr("Task"), tr("Later"), mute.as_str(), tr("Dismiss notification")]);
+        let labels: Vec<String> = row_actions(deploy).iter().map(|action| action.label.to_string()).collect();
+        assert_eq!(labels, [tr("Open"), tr("Task"), tr("Later"), tr("Mute…"), tr("Dismiss notification")]);
         let approval = items.iter().find(|item| detail::is_approval(item)).expect("an approval");
-        assert!(row_actions(approval, false).is_empty(), "decided in the panel");
+        assert!(row_actions(approval).is_empty(), "decided in the panel");
     }
 
     #[test]

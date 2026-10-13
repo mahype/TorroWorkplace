@@ -25,6 +25,10 @@
 //! `x` dismisses a notification (task E8.4, the card's ✕): done, counted apart. The app decides
 //! where it works – never for mail and approvals.
 //!
+//! The bell's menu (task E8.6b, [`Focus::Mute`]; `m` in the notifications window) takes the digits
+//! for its ways to mute, ←/→ for "For" (shorter, longer) and ↑/↓ for "What happens" (milder,
+//! stronger), as its segments lie from left to right.
+//!
 //! The hub's "Act now" (task E8.5) is one list of sections, so it takes the keys of the list
 //! ([`Focus::List`]): `j`/`k` walk Decide, Agents and To sort, `l` moves an entry to the other lane.
 //! `s` on an approval opens no snooze menu – an approval waits for yes or no.
@@ -88,6 +92,9 @@ pub enum Focus {
     Overview,
     /// A menu of choices for an entry is open (snooze, lane, hide); its entries carry digits.
     Choices,
+    /// The bell's menu (task E8.6b): its ways to mute carry digits, the arrows change "For" and
+    /// "What happens".
+    Mute,
     /// The date and time picker of "Pick…" is open.
     Picker,
     /// The dialog of "Make task" is open (task E3.5); its title field takes what is typed.
@@ -136,6 +143,10 @@ pub enum Command {
     Search,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
+    /// The bell's menu: "For" one step longer (→, `true`) or shorter (←).
+    MuteFor { longer: bool },
+    /// The bell's menu: "What happens" one step stronger (↓, `true`: towards "Hide") or milder (↑).
+    MuteHow { stronger: bool },
     /// Picker: one day earlier.
     EarlierDay,
     /// Picker: one day later.
@@ -217,7 +228,11 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::F) => Some(Command::Forward),
         (Focus::List, Key::Hash) => Some(Command::Delete),
         (Focus::List, Key::Slash) => Some(Command::Search),
-        (Focus::Choices, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
+        (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
+        (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
+        (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),
+        (Focus::Mute, Key::Up) => Some(Command::MuteHow { stronger: false }),
+        (Focus::Mute, Key::Down) => Some(Command::MuteHow { stronger: true }),
         (Focus::Picker, Key::Left) => Some(Command::EarlierDay),
         (Focus::Picker, Key::Right) => Some(Command::LaterDay),
         (Focus::Picker, Key::Up) => Some(Command::EarlierTime),
@@ -335,6 +350,18 @@ mod tests {
         assert_eq!(command(Focus::List, Key::Digit(2)), None, "digits only pick menu entries");
         for key in [Key::Down, Key::E, Key::S, Key::M, Key::X, Key::Enter, Key::Sidebar] {
             assert_eq!(command(Focus::Choices, key), None, "{key:?} stays out of the open menu");
+        }
+    }
+
+    #[test]
+    fn the_bells_menu_takes_digits_and_arrows() {
+        assert_eq!(command(Focus::Mute, Key::Digit(3)), Some(Command::Choose(3)));
+        assert_eq!(command(Focus::Mute, Key::Left), Some(Command::MuteFor { longer: false }));
+        assert_eq!(command(Focus::Mute, Key::Right), Some(Command::MuteFor { longer: true }));
+        assert_eq!(command(Focus::Mute, Key::Up), Some(Command::MuteHow { stronger: false }));
+        assert_eq!(command(Focus::Mute, Key::Down), Some(Command::MuteHow { stronger: true }));
+        for key in [Key::E, Key::S, Key::M, Key::X, Key::Enter, Key::Sidebar] {
+            assert_eq!(command(Focus::Mute, key), None, "{key:?} stays out of the open menu");
         }
     }
 

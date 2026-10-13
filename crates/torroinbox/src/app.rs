@@ -30,7 +30,19 @@
 //! "By time" in the wide layout ([`Arrange`]), one column with "For me" and "Info" in narrow ones;
 //! cards in the comfortable density, rows with their action bar in the compact one. Every
 //! notification has the ✕ (`x`, [`Edit::Dismiss`]: done, sent as dismissing) but approvals, and the
-//! header bar "Dismiss all" with an undo ([`Undo::Dismissed`]); `m` and the bell mute the source.
+//! header bar "Dismiss all" with an undo ([`Undo::Dismissed`]); `m` and the bell open the bell's
+//! menu (below).
+//!
+//! The bell's menu (task E8.6b, [`Menu::Mute`], `docs/eingang.md` "Stummschalten nach Merkmalen"):
+//! under "Mute" the ways the core offers for the entry (`inbox.list_mute_options`: this
+//! conversation, then its traits – the sender, the project, the client …), under "For" how long
+//! ([`MuteFor`]: 1 hour, until tomorrow, always) and under "What happens" what muting does (no
+//! popup, only Info, hide), and at the end "All rules", which opens the control centre. Picking a
+//! way sends `inbox.mute_item` with the "For" and "What happens" chosen; the toast says what holds
+//! now in the words of the control centre's rules ([`muted_note`]) and its undo takes it back
+//! exactly ([`Undo::Muted`]). "For" and "What happens" stay as chosen while the window runs. The
+//! panel's bell opens the same menu; the mail window keeps "Hide from inbox" (task E3.10), whose
+//! senders and domains are rules of the same list.
 //!
 //! The hub (task E8.5, `hub.rs`) is about acting: its overview is "Act now" ([`App::is_hub`]) – one
 //! tile per origin over the sections Decide (approvals), Agents and To sort, each entry with its
@@ -130,7 +142,7 @@ use torro_gui::ui_state::{self, Density, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
-use torro_inbox::item::HideScope;
+use torro_inbox::item::{FacetKey, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
 use torro_inbox::{
     Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Rule, SourceInfo, SourceKind, SourceRef, State,
@@ -283,7 +295,7 @@ impl Edit {
             Edit::Snooze { until: Some(until), .. } => {
                 trf("Later until {time}", &[("time", &list::wake_text(*until, now))])
             }
-            Edit::Snooze { until: None, .. } => tr("No longer snoozed").to_owned(),
+            Edit::Snooze { until: None, .. } => tr("Brought back").to_owned(),
             Edit::Lane { lane, remember: false, .. } => trf("Moved to {lane}", &[("lane", &lane_name(*lane))]),
             Edit::Lane { lane, remember: true, .. } => trf(
                 "Moved to {lane}, always for {source}",
@@ -330,9 +342,21 @@ pub enum Undo {
     /// Takes "Dismiss all" back (task E8.4), and "Mark mail done" (task E8.7b): opens the entries it
     /// closed again (`inbox.set_item_done` with `false`, one by one).
     Dismissed(Vec<String>),
+    /// Takes muting back (task E8.6b), exactly as `inbox.mute_item` answered ([`Muted`]): removes
+    /// the rule `rule` – only one the call made –, opens the entries `reopen` again and moves the
+    /// entries `moved` back to "For me" (`inbox.set_item_lane` without `remember`).
+    Muted { rule: Option<String>, reopen: Vec<String>, moved: Vec<String> },
 }
 
 impl Undo {
+    /// The undo of muting that answered `muted`; `None` when it changed nothing (no new rule, no
+    /// entry closed or moved – the same rule was there already, or "No popup" for good).
+    pub fn of_muted(muted: &Muted) -> Option<Undo> {
+        let rule = muted.rule.as_ref().filter(|_| muted.new_rule).map(|rule| rule.id.clone());
+        let changed = rule.is_some() || !muted.done.is_empty() || !muted.moved.is_empty();
+        changed.then(|| Undo::Muted { rule, reopen: muted.done.clone(), moved: muted.moved.clone() })
+    }
+
     /// The undo of hiding that answered `hidden`; `None` when it changed nothing (a conversation done
     /// already, a rule there before that closed nothing more).
     pub fn of_hidden(hidden: &Hidden) -> Option<Undo> {
@@ -411,11 +435,12 @@ fn day_name(day: NaiveDate, today: NaiveDate) -> String {
     }
 }
 
-/// The icon of a lane, as in the sidebar.
+/// The icon of a lane, as in the sidebar, and of "Move to …". "Info" has the eye – for your
+/// information –, not the bell: the bell mutes (task E8.6b).
 pub fn lane_icon(lane: Lane) -> Icon {
     match lane {
         Lane::ForMe => Icon::Inbox,
-        Lane::Info => Icon::Bell,
+        Lane::Info => Icon::Eye,
     }
 }
 
@@ -424,6 +449,131 @@ pub fn other_lane(lane: Lane) -> Lane {
     match lane {
         Lane::ForMe => Lane::Info,
         Lane::Info => Lane::ForMe,
+    }
+}
+
+/// How long the bell's menu mutes (task E8.6b, "For"): window state, kept while it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MuteFor {
+    /// One hour from now.
+    OneHour,
+    /// Until tomorrow morning (9:00 local time, as "Tomorrow" of the snooze menu).
+    UntilTomorrow,
+    /// For good: no end.
+    #[default]
+    Always,
+}
+
+impl MuteFor {
+    /// In the order of the segments, shortest first.
+    pub const ALL: [MuteFor; 3] = [MuteFor::OneHour, MuteFor::UntilTomorrow, MuteFor::Always];
+
+    /// The word of the segment.
+    pub fn name(self) -> &'static str {
+        match self {
+            MuteFor::OneHour => tr("1 hour"),
+            MuteFor::UntilTomorrow => tr("Until tomorrow"),
+            MuteFor::Always => tr("Always"),
+        }
+    }
+
+    /// The end of muting seen from `now` (`inbox.mute_item`'s `until`); `None` for good.
+    pub fn until(self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        match self {
+            MuteFor::OneHour => Some(now + TimeDelta::hours(1)),
+            MuteFor::UntilTomorrow => Some(at_hour(local_today(now) + Days::new(1), MORNING)),
+            MuteFor::Always => None,
+        }
+    }
+}
+
+/// What muting does, in the order of the segments of "What happens": mildest first.
+pub const MUTE_EFFECTS: [MuteEffect; 3] = [MuteEffect::NoPopup, MuteEffect::Info, MuteEffect::Hide];
+
+/// The word of a segment of "What happens" (task E8.6b).
+pub fn effect_name(effect: MuteEffect) -> &'static str {
+    match effect {
+        MuteEffect::NoPopup => tr("No popup"),
+        MuteEffect::Info => tr("Only Info"),
+        MuteEffect::Hide => tr("Hide"),
+    }
+}
+
+/// The neighbour of `current` in `all`, one step to the end (`forward`) or the start, stopping at
+/// both ends: what the arrows do in the bell's menu.
+fn step_in<T: Copy + PartialEq>(all: &[T], current: T, forward: bool) -> T {
+    let at = all.iter().position(|item| *item == current).unwrap_or_default();
+    let next = if forward { (at + 1).min(all.len().saturating_sub(1)) } else { at.saturating_sub(1) };
+    all.get(next).copied().unwrap_or(current)
+}
+
+/// The icon of a way to mute in the bell's menu: the conversation, the person, the domain, the
+/// account, the list, newsletters, the agent, its project, what it reports, the client.
+pub fn mute_icon(scope: MuteScope) -> Icon {
+    match scope {
+        MuteScope::Conversation | MuteScope::Facet { key: FacetKey::Conversation } => Icon::ListTree,
+        MuteScope::Facet { key } => match key {
+            FacetKey::Sender => Icon::User,
+            FacetKey::Domain => Icon::Users,
+            FacetKey::Account => Icon::Inbox,
+            FacetKey::List => Icon::List,
+            FacetKey::Bulk => Icon::Mail,
+            FacetKey::Agent => Icon::Sparkles,
+            FacetKey::Project => Icon::FolderGit2,
+            FacetKey::Kind => Icon::CircleDot,
+            FacetKey::Client => Icon::AppWindow,
+            FacetKey::Conversation => Icon::ListTree,
+        },
+    }
+}
+
+/// When a muting ends, as short as it gets seen from `now`, in local time: "15:30" today,
+/// "tomorrow 09:00", else "Fri, 16 Oct 09:00". The control centre's rules say it the same way.
+pub fn until_text(until: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let (at, today) = (datetime::to_local(until), local_today(now));
+    let time = datetime::format_time(at.time());
+    if at.date() == today {
+        time
+    } else if at.date() == today + Days::new(1) {
+        trf("tomorrow {time}", &[("time", &time)])
+    } else {
+        trf("{day} {time}", &[("day", &datetime::format_short_date(at.date(), today)), ("time", &time)])
+    }
+}
+
+/// What a muting rule does, in the words of the control centre's rules (task E8.6b): its effect,
+/// its end and what it mutes – "No popups until tomorrow 09:00: The project torro", "Hidden: Mail
+/// from news@shop.example", "Only Info: Everything from backup". Values are shown as they are
+/// (foreign text, an Iced `text` interprets nothing). A rule without a trait names its source.
+pub fn mute_text(rule: &Rule, now: DateTime<Utc>) -> String {
+    let what = rule.facet.as_ref().map_or_else(|| rule.source.label(), rules::facet_label);
+    // A lane "for me" mutes nothing; `inbox.mute_item` never keeps one, so it only names the lane.
+    let Some(effect) = MuteEffect::of(rule.effect) else {
+        return trf("Notices of {source} go to “{lane}”", &[("source", &what), ("lane", &lane_name(Lane::ForMe))]);
+    };
+    let Some(until) = rule.until else {
+        return match effect {
+            MuteEffect::Hide => trf("Hidden: {what}", &[("what", &what)]),
+            MuteEffect::Info => trf("Only Info: {what}", &[("what", &what)]),
+            MuteEffect::NoPopup => trf("No popups: {what}", &[("what", &what)]),
+        };
+    };
+    let pairs: [(&str, &dyn fmt::Display); 2] = [("what", &what), ("when", &until_text(until, now))];
+    match effect {
+        MuteEffect::Hide => trf("Hidden until {when}: {what}", &pairs),
+        MuteEffect::Info => trf("Only Info until {when}: {what}", &pairs),
+        MuteEffect::NoPopup => trf("No popups until {when}: {what}", &pairs),
+    }
+}
+
+/// The text of the toast after muting with `effect` (task E8.6b): the rule in the control centre's
+/// words ([`mute_text`]), or – where no rule was kept, the conversation hidden or moved for good –
+/// what became of the entry: "Conversation hidden", "Moved to Info".
+pub fn muted_note(muted: &Muted, effect: MuteEffect, now: DateTime<Utc>) -> String {
+    match (&muted.rule, effect) {
+        (Some(rule), _) => mute_text(rule, now),
+        (None, MuteEffect::Info) => trf("Moved to {lane}", &[("lane", &lane_name(Lane::Info))]),
+        (None, MuteEffect::Hide | MuteEffect::NoPopup) => tr("Conversation hidden").to_owned(),
     }
 }
 
@@ -533,6 +683,12 @@ pub enum Sent {
     /// "Mark mail done" (task E8.7b): `inbox.set_item_done` for these entries – the mail's, then the
     /// question's.
     MailDone(Vec<String>),
+    /// `inbox.list_mute_options` for the entry with this id (the bell's menu opened, task E8.6b).
+    MuteOptions(String),
+    /// `inbox.mute_item`: entry, scope, end and effect.
+    MuteItem(String, MuteScope, Option<DateTime<Utc>>, MuteEffect),
+    /// The undo of muting: the rule removed, if any, the entries opened again and moved back.
+    Unmute(Option<String>, Vec<String>, Vec<String>),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -583,7 +739,7 @@ impl View {
             View::Overview => tr("Overview").into(),
             View::ForMe => tr("For me").into(),
             View::Info => tr("Info").into(),
-            View::Snoozed => tr("Snoozed").into(),
+            View::Snoozed => tr("Later").into(),
             View::Done => tr("Done").into(),
             View::Source(source) => source.label(),
             View::Folder(folder) => folder.name.clone(),
@@ -596,7 +752,7 @@ impl View {
         match self {
             View::Overview => Icon::Layers,
             View::ForMe => Icon::Inbox,
-            View::Info => Icon::Bell,
+            View::Info => lane_icon(Lane::Info),
             View::Snoozed => Icon::Clock,
             View::Done => Icon::CircleCheck,
             View::Source(source) => list::source_icon(source),
@@ -649,6 +805,10 @@ pub enum Menu {
     /// "Hide from inbox" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
     /// panel's "…" ([`App::hide_choices`]).
     Hide,
+    /// The bell's menu for `App::subject` (task E8.6b): the ways to mute it from
+    /// `inbox.list_mute_options`, "For" and "What happens"; the bell and `m` of the notifications
+    /// window ([`App::ask_mute_menu`]).
+    Mute,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -720,10 +880,15 @@ pub enum Open {
     ToSort,
     /// The hub's "Act now" filtered to its first tile (task E8.5).
     Tile,
+    /// The bell's menu (task E8.6b) of the first entry that has a bell, at its card or row – in the
+    /// notifications window (`--view notifications`).
+    MuteMenu,
+    /// That entry in the panel, with the menu at the panel's bell.
+    MutePanel,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 30] = [
+    const ALL: [(&'static str, Open); 32] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -754,6 +919,8 @@ impl Open {
         ("by-time", Open::ByTime),
         ("to-sort", Open::ToSort),
         ("tile", Open::Tile),
+        ("mute-menu", Open::MuteMenu),
+        ("mute-panel", Open::MutePanel),
     ];
 }
 
@@ -1229,6 +1396,13 @@ pub struct App<S> {
     lists: Option<Result<Vec<TaskList>, String>>,
     /// The id of the list the last task went into; the dialog chooses it first next time.
     last_list: Option<String>,
+    /// The ways to mute `subject` for the bell's menu (task E8.6b): `None` while they load, then
+    /// the core's answer.
+    mute_options: Option<Result<Vec<MuteOption>, String>>,
+    /// "For" of the bell's menu; kept while the window runs.
+    mute_for: MuteFor,
+    /// "What happens" of the bell's menu; kept while the window runs.
+    mute_effect: MuteEffect,
     /// The hint after the last change, with its undo.
     hint: Option<Hint>,
     /// The approval whose decision is on its way (task E3.8): its Allow and Deny are disabled
@@ -1355,6 +1529,18 @@ pub enum Message {
     AskMute(String),
     /// From the panel's "…": the menu "Hide from inbox" for the entry with this id (task E3.10).
     AskHide(String),
+    /// The ways to mute the entry with this id (`inbox.list_mute_options`, task E8.6b), or why
+    /// they could not be read; dropped when the bell's menu is no longer open for it.
+    MuteOptions(String, Result<Vec<MuteOption>, String>),
+    /// A segment of "For" in the bell's menu.
+    MuteFor(MuteFor),
+    /// A segment of "What happens" in the bell's menu.
+    MuteHow(MuteEffect),
+    /// A way to mute in the bell's menu: `inbox.mute_item` for the entry with this id, with "For"
+    /// and "What happens" as chosen.
+    MuteBy(String, MuteScope),
+    /// The core's answer to `inbox.mute_item`, with the effect asked for (for the toast).
+    MutedBy(Result<Muted, String>, MuteEffect),
     /// From the hide menu: hide the sender (or its domain) of the mail entry with this id.
     HideSender(String, HideScope),
     /// The source's answer to hiding: the rule as stored, or why not.
@@ -1646,6 +1832,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             task: TaskDraft::default(),
             lists: None,
             last_list: None,
+            mute_options: None,
+            mute_for: MuteFor::default(),
+            mute_effect: MuteEffect::Info,
             hint: None,
             deciding: None,
             folders: Vec::new(),
@@ -1840,6 +2029,22 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::AskLane(id) => return self.ask_lane(&id),
             Message::AskMute(id) => return self.ask_mute(&id),
             Message::AskHide(id) => self.ask_hide(&id),
+            Message::MuteOptions(id, options) => {
+                if self.menu == Some(Menu::Mute) && self.subject.as_ref().is_some_and(|item| item.id == id) {
+                    self.mute_options = Some(options);
+                }
+            }
+            Message::MuteFor(span) => self.mute_for = span,
+            Message::MuteHow(effect) => self.mute_effect = effect,
+            Message::MuteBy(id, scope) => return self.mute_by(id, scope),
+            Message::MutedBy(Ok(muted), effect) => {
+                let text = muted_note(&muted, effect, self.now);
+                self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now() });
+                return self.load();
+            }
+            Message::MutedBy(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't mute the entry."), err));
+            }
             Message::HideSender(id, scope) => return self.hide_sender(id, scope),
             Message::Hidden(Ok(hidden)) => {
                 self.hint =
@@ -2739,6 +2944,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     fn focus(&self) -> Focus {
         match self.menu {
             Some(Menu::Snooze | Menu::Lane | Menu::Hide) => Focus::Choices,
+            Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
@@ -2795,10 +3001,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Task::none()
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
-            // In the notifications window `m` is the bell (task E8.4): it mutes the source at once
-            // (the bell's menu comes with E8.6b); "This entry" of the hide menu is the ✕ there.
+            // In the notifications window `m` is the bell (task E8.6b): its menu; "This entry" of the
+            // hide menu is the ✕ there.
             Command::Hide if self.launch.kind == Kind::Notifications => {
-                cursor.map_or_else(Task::none, |id| self.ask_mute(&id))
+                cursor.map_or_else(Task::none, |id| self.ask_mute_menu(&id))
             }
             Command::Hide => {
                 if let Some(id) = cursor {
@@ -2815,6 +3021,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Some(choice) => self.update(choice.message),
                 None => Task::none(),
             },
+            Command::MuteFor { longer } => {
+                self.mute_for = step_in(&MuteFor::ALL, self.mute_for, longer);
+                Task::none()
+            }
+            Command::MuteHow { stronger } => {
+                self.mute_effect = step_in(&MUTE_EFFECTS, self.mute_effect, stronger);
+                Task::none()
+            }
             Command::EarlierDay => self.update(Message::PickDay(self.pick.day - Days::new(1))),
             Command::LaterDay => self.update(Message::PickDay(self.pick.day + Days::new(1))),
             Command::EarlierTime => self.update(Message::PickHour(self.pick.hour.saturating_sub(1))),
@@ -2971,6 +3185,68 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.close_menus();
         let muted = !self.is_muted(&source);
         self.mute(source, muted, true)
+    }
+
+    /// Opens the bell's menu for the entry with `id` (task E8.6b) and asks the core for its ways to
+    /// mute (`inbox.list_mute_options`); "For" and "What happens" keep what was chosen last. The
+    /// suite's entries – approvals among them – are never muted (security rule 1): a note instead.
+    fn ask_mute_menu(&mut self, id: &str) -> Task<Message> {
+        let Some(item) = self.find(id).cloned() else { return Task::none() };
+        if !rules_allowed(&item.source) || detail::is_approval(&item) {
+            self.note(tr("Entries from the suite can't be muted.").to_owned());
+            return Task::none();
+        }
+        self.drawer = false;
+        self.subject = Some(item);
+        self.mute_options = None;
+        self.menu = Some(Menu::Mute);
+        #[cfg(test)]
+        self.sent.push(Sent::MuteOptions(id.to_owned()));
+        let (inbox, id) = (self.inbox.clone(), id.to_owned());
+        Task::perform(
+            async move {
+                let options = inbox.list_mute_options(id.clone()).await.map_err(|err| err.to_string());
+                (id, options)
+            },
+            |(id, options)| Message::MuteOptions(id, options),
+        )
+    }
+
+    /// Mutes by the entry `id` with `scope` (`inbox.mute_item`), for as long as "For" says and with
+    /// what "What happens" says, and closes the menu; the answer comes as [`Message::MutedBy`].
+    fn mute_by(&mut self, id: String, scope: MuteScope) -> Task<Message> {
+        self.close_menus();
+        let (until, effect) = (self.mute_for.until(self.now), self.mute_effect);
+        #[cfg(test)]
+        self.sent.push(Sent::MuteItem(id.clone(), scope, until, effect));
+        let inbox = self.inbox.clone();
+        Task::perform(
+            async move { inbox.mute_item(id, scope, until, effect).await.map_err(|err| err.to_string()) },
+            move |result| Message::MutedBy(result, effect),
+        )
+    }
+
+    /// The ways to mute of the bell's menu as choices (picked by click or digit): those the core
+    /// offered, each with its icon, then – while the entry's whole source is muted
+    /// (`inbox.mute_source`) – "Unmute <source>", which takes that back at once.
+    fn mute_choices(&self, item: &Item) -> Vec<Choice> {
+        let options = match &self.mute_options {
+            Some(Ok(options)) => options.as_slice(),
+            Some(Err(_)) | None => &[],
+        };
+        let mut choices: Vec<Choice> = options
+            .iter()
+            .map(|option| {
+                let mute = Message::MuteBy(item.id.clone(), option.scope);
+                Choice::new(mute_icon(option.scope), option.label.clone(), mute)
+            })
+            .collect();
+        if self.is_muted(&item.source) {
+            let unmute = trf("Unmute {source}", &[("source", &item.source.label())]);
+            let line = !choices.is_empty();
+            choices.push(Choice { line, ..Choice::new(Icon::Bell, unmute, Message::AskMute(item.id.clone())) });
+        }
+        choices
     }
 
     /// Opens the menu "Hide from inbox" for the entry with `id` (task E3.10). An entry with no way
@@ -3402,6 +3678,27 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 };
                 Task::perform(undone, move |result| Message::Undone(result, back.clone()))
             }
+            Undo::Muted { rule, reopen, moved } => {
+                #[cfg(test)]
+                self.sent.push(Sent::Unmute(rule.clone(), reopen.clone(), moved.clone()));
+                // First the rule, then the entries, as for hiding: else the rule could close or move
+                // them once more.
+                let back = reopen.first().or(moved.first()).cloned();
+                let inbox = self.inbox.clone();
+                let undone = async move {
+                    if let Some(id) = rule {
+                        inbox.remove_rule(id).await.map_err(|err| err.to_string())?;
+                    }
+                    for id in reopen {
+                        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
+                    }
+                    for id in moved {
+                        inbox.set_item_lane(id, Lane::ForMe, false).await.map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                };
+                Task::perform(undone, move |result| Message::Undone(result, back.clone()))
+            }
             Undo::Dismissed(reopen) => {
                 #[cfg(test)]
                 self.sent.push(Sent::Reopen(reopen.clone()));
@@ -3470,7 +3767,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 ];
                 if matches!(item.state, State::Snoozed { .. }) {
                     let wake = Message::Edit(Edit::Snooze { id: id(), until: None });
-                    choices.push(choice(Icon::Inbox, tr("Unsnooze").to_owned(), wake));
+                    choices.push(choice(Icon::Inbox, tr("Bring back now").to_owned(), wake));
                 }
                 choices
             }
@@ -3484,6 +3781,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 ]
             }
             Some(Menu::Hide) => self.hide_choices(item),
+            Some(Menu::Mute) => self.mute_choices(item),
             _ => Vec::new(),
         }
     }
@@ -3699,6 +3997,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Menu::Hide) => {
                 Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
             }
+            Some(Menu::Mute) => Some(widgets::floating(hide_at, below, self.mute_menu(), Message::CloseMenu)),
         };
         // The wide mail window reads beside the list (task E8.3), without the panel.
         if let Some(reader) = self.wide_reader(class, &anchors) {
@@ -3716,9 +4015,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             self.reading().filter(|_| self.reading).map(|reading| mail::panel(&reading, self.view.folder()))
         } else {
             self.detail.as_ref().map(|item| {
+                // The notifications window's panel has the bell where the others have "…" (task E8.6b).
+                let bell = self.launch.kind == Kind::Notifications;
                 let footer = detail::Footer {
                     anchors: anchors.clone(),
-                    hide: !self.hide_choices(item).is_empty(),
+                    hide: if bell { notifications::bell(item).is_some() } else { !self.hide_choices(item).is_empty() },
+                    bell,
                     deciding: self.deciding.is_some(),
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
@@ -3933,7 +4235,6 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 density: self.density(),
                 rows: self.rows_data(row_anchor),
                 deciding: self.deciding.is_some(),
-                muted: self.sources.iter().filter(|info| info.muted).map(|info| info.source.clone()).collect(),
                 single_source: self.shown.single().is_some(),
                 icon: self.launch.kind.view_icon(&self.view),
             });
@@ -4269,12 +4570,57 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
     /// domains of "Hide from inbox" show whole.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
-        let head = typo::text(typo::caption(), title.into()).style(theme::text_3);
         let choices = self.choices();
         let width = choice_menu_width(&choices);
         let entries =
             choices.into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), width));
-        let list = column![container(head).padding(Padding::new(space::s()).bottom(space::xs()))].extend(entries);
+        let list = column![menu_caption(&title.into())].extend(entries);
+        container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
+    }
+
+    /// The bell's menu (task E8.6b, the design's "Stummschalten · Menü an der Karte"): the section
+    /// "Mute" with the ways to mute ([`App::mute_choices`], digits as in every menu of choices; a
+    /// quiet line while they load or when they could not be read), a line, "For" and "What happens"
+    /// as segments (`widgets::segmented`, ←/→ and ↑/↓), a line and "All rules ↗", which opens the
+    /// control centre, where every rule is listed with "Remove".
+    ///
+    /// As wide as its longest way to mute or its segments need ([`mute_menu_width`]), so a whole
+    /// address shows.
+    fn mute_menu<'a>(&self) -> Element<'a, Message> {
+        let choices = self.choices();
+        let width = mute_menu_width(&choices);
+        let mut list = column![menu_caption(tr("Mute"))];
+        let quiet = match &self.mute_options {
+            None => Some(tr("Loading…")),
+            Some(Err(_)) => Some(tr("Couldn't read the ways to mute this entry.")),
+            Some(Ok(_)) if choices.is_empty() => Some(tr("Nothing to mute this entry by.")),
+            Some(Ok(_)) => None,
+        };
+        if let Some(quiet) = quiet {
+            let line = typo::text(typo::meta(), quiet).style(theme::text_3);
+            list =
+                list.push(container(line).height(style::MENU_ITEM_HEIGHT).center_y(Fill).padding(style::ITEM_PADDING));
+        }
+        list = list
+            .extend(choices.into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), width)));
+        let span = MuteFor::ALL.iter().position(|span| *span == self.mute_for).unwrap_or_default();
+        let how = MUTE_EFFECTS.iter().position(|effect| *effect == self.mute_effect).unwrap_or_default();
+        let spans = widgets::segmented(MuteFor::ALL.map(|span| (span.name(), Message::MuteFor(span))), span);
+        let effects =
+            widgets::segmented(MUTE_EFFECTS.map(|effect| (effect_name(effect), Message::MuteHow(effect))), how);
+        let segment = |control: Element<'a, Message>| {
+            container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
+        };
+        let rules = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenSettings)
+            .trail(Trail::Icon(Icon::ArrowUpRight));
+        list = list
+            .push(menu_line())
+            .push(menu_caption(tr("For")))
+            .push(segment(spans))
+            .push(menu_caption(tr("What happens")))
+            .push(segment(effects))
+            .push(menu_line())
+            .push(widgets::menu_item(rules));
         container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
@@ -4445,6 +4791,15 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.cursor = self.rows().first().map(|item| item.id.clone());
             }
             Some(Open::Tile) => self.filter = hub::tiles(&self.items).first().map(|tile| tile.origin.clone()),
+            Some(open @ (Open::MuteMenu | Open::MutePanel)) => {
+                if let Some(item) = self.items.iter().find(|item| notifications::bell(item).is_some()).cloned() {
+                    self.cursor = Some(item.id.clone());
+                    if open == Open::MutePanel {
+                        self.detail = Some(item.clone());
+                    }
+                    return self.ask_mute_menu(&item.id);
+                }
+            }
             Some(open @ (Open::Hide | Open::HidePanel)) => {
                 if let Some(item) = self.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned() {
                     self.cursor = Some(item.id.clone());
@@ -4541,6 +4896,38 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
     Hint { text, undo: Some(Undo::Mute(source.clone(), !muted)), shown: Instant::now() }
 }
 
+/// The title of a section of a menu card built here, as `widgets::menu` draws one: `typo::caption()`
+/// in `text_3`, 8 around and 4 below.
+fn menu_caption<'a>(title: &str) -> Element<'a, Message> {
+    let head = typo::text(typo::caption(), title.to_owned()).style(theme::text_3);
+    container(head).padding(Padding::new(space::s()).bottom(space::xs())).into()
+}
+
+/// The line between the sections of a menu card built here, as `widgets::menu` draws it.
+fn menu_line<'a>() -> Element<'a, Message> {
+    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]).into()
+}
+
+/// The width a `widgets::segmented` of `labels` takes: the labels in `typo::caption()`, each with
+/// the button's padding, and the frame with its inset and line.
+fn segmented_width(labels: &[&str]) -> f32 {
+    let padding = style::button_padding();
+    let segments: f32 =
+        labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding.left + padding.right).sum();
+    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
+}
+
+/// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
+/// at least what its segments need beside the menu's and their insets – "Until tomorrow" and
+/// "Only Info" are long in some languages.
+fn mute_menu_width(choices: &[Choice]) -> f32 {
+    let spans = MuteFor::ALL.map(MuteFor::name);
+    let effects = MUTE_EFFECTS.map(effect_name);
+    let frame = 2.0 * (style::MENU_INSET + space::s());
+    let segments = segmented_width(&spans).max(segmented_width(&effects)) + frame;
+    choice_menu_width(choices).max(segments.ceil()).min(size::panel())
+}
+
 /// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
 /// tabular – when it snoozes until, and the digit that picks it; with [`Choice::line`] the line
 /// `widgets::menu` draws between its sections above it.
@@ -4550,8 +4937,7 @@ fn choice_entry<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a
     if !line {
         return entry;
     }
-    let rule = container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]);
-    column![rule, entry].into()
+    column![menu_line(), entry].into()
 }
 
 /// The button of [`choice_entry`] in a menu `width` wide.
@@ -5450,6 +5836,30 @@ mod tests {
                 }
                 let _ = app.update(Message::DismissedAll(ids, None));
             }
+            Some(Sent::MuteOptions(id)) => {
+                let result = block_on(app.inbox.list_mute_options(id.clone())).map_err(|err| err.to_string());
+                let _ = app.update(Message::MuteOptions(id, result));
+            }
+            Some(Sent::MuteItem(id, scope, until, effect)) => {
+                let result = block_on(app.inbox.mute_item(id, scope, until, effect)).map_err(|err| err.to_string());
+                let _ = app.update(Message::MutedBy(result, effect));
+            }
+            Some(Sent::Unmute(rule, reopen, moved)) => {
+                let back = reopen.first().or(moved.first()).cloned();
+                let result: Result<(), String> = (|| {
+                    if let Some(rule) = rule {
+                        block_on(app.inbox.remove_rule(rule)).map_err(|err| err.to_string())?;
+                    }
+                    for id in reopen {
+                        block_on(app.inbox.set_item_done(id, false)).map_err(|err| err.to_string())?;
+                    }
+                    for id in moved {
+                        block_on(app.inbox.set_item_lane(id, Lane::ForMe, false)).map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                })();
+                let _ = app.update(Message::Undone(result, back));
+            }
             Some(Sent::Reopen(ids)) => {
                 let back = ids.first().cloned();
                 let result = ids.into_iter().try_for_each(|id| {
@@ -5648,7 +6058,7 @@ mod tests {
         let State::Snoozed { until: old } = app.items[0].state else { panic!("demo-10 is snoozed") };
         let _ = press(&mut app, Key::Down);
         let _ = press(&mut app, Key::S);
-        assert_eq!(app.choices().last().map(|c| c.label.clone()), Some(tr("Unsnooze").to_owned()));
+        assert_eq!(app.choices().last().map(|c| c.label.clone()), Some(tr("Bring back now").to_owned()));
         let _ = press(&mut app, Key::Digit(1));
         let Some(Sent::Edit(_, Some(after))) = app.sent.last() else { panic!("an edit with a hint") };
         assert_eq!(after.undo, Some(Edit::Snooze { id: "demo-10".into(), until: Some(old) }));
@@ -7115,17 +7525,163 @@ mod tests {
         assert_eq!(app.sent.len(), sent);
     }
 
-    /// Task E8.4: `m` (and the bell) mutes the source at once in the notifications window; the
-    /// suite is never muted.
+    /// Task E8.6b: `m` and the bell open the bell's menu in the notifications window with the ways
+    /// the core offers (`inbox.list_mute_options`); the suite is never muted.
     #[test]
-    fn the_bell_mutes_the_source_at_once() {
+    fn the_bell_opens_its_menu_with_the_ways_the_core_offers() {
         let mut app = notifications_window(&[]);
         let _ = app.update(Message::Act("demo-6".into(), Command::Hide));
-        assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
-        assert_eq!(app.menu, None, "no menu until E8.6b");
+        assert_eq!((app.menu, app.focus()), (Some(Menu::Mute), Focus::Mute));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteOptions("demo-6".into())));
+        assert!(app.choices().is_empty(), "nothing to pick while they load");
+        let _ = app.view();
+        deliver(&mut app);
+        let offered: Vec<String> = rules::mute_options(&stored(&app, "demo-6")).into_iter().map(|o| o.label).collect();
+        let labels: Vec<String> = app.choices().into_iter().map(|choice| choice.label).collect();
+        assert_eq!(labels, offered, "the core's words, in its order");
+        assert_eq!(labels.first().map(String::as_str), Some(tr("This conversation")));
+        let _ = app.view();
+        // An answer for another entry is dropped.
+        let _ = app.update(Message::MuteOptions("demo-1".into(), Ok(Vec::new())));
+        assert_eq!(app.choices().len(), offered.len());
+
         let mut suite = notifications_window(&["--source", "suite"]);
         let _ = suite.update(Message::Act("demo-5".into(), Command::Hide));
-        assert!(suite.sent.is_empty());
+        assert!(suite.sent.is_empty() && suite.menu.is_none());
+        assert_eq!(suite.hint.map(|hint| hint.text), Some(tr("Entries from the suite can't be muted.").to_owned()));
+    }
+
+    /// Task E8.6b: "For" and "What happens" go with the way picked; the toast says the rule as the
+    /// control centre does, and its undo removes the rule and opens what it closed.
+    #[test]
+    fn muting_by_a_trait_keeps_a_rule_and_undo_takes_it_back() {
+        let mut app = notifications_window(&[]);
+        let _ = app.update(Message::Act("demo-6".into(), Command::Hide));
+        deliver(&mut app);
+        assert_eq!((app.mute_for, app.mute_effect), (MuteFor::Always, MuteEffect::Info), "the defaults");
+        // ← ← : one hour; ↓ : hide.
+        for key in [Key::Left, Key::Left, Key::Left, Key::Down] {
+            let _ = press(&mut app, key);
+        }
+        assert_eq!((app.mute_for, app.mute_effect), (MuteFor::OneHour, MuteEffect::Hide), "stops at the ends");
+        let client = MuteScope::Facet { key: FacetKey::Client };
+        let place =
+            app.choices().iter().position(|c| matches!(c.message, Message::MuteBy(_, scope) if scope == client));
+        let digit = place.map(|at| u8::try_from(at + 1).expect("a digit")).expect("the client is offered");
+        let _ = press(&mut app, Key::Digit(digit));
+        let until = Some(app.now + TimeDelta::hours(1));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem("demo-6".into(), client, until, MuteEffect::Hide)));
+        assert_eq!(app.menu, None, "picking closes the menu");
+        deliver(&mut app);
+        let hint = app.hint.clone().expect("a toast");
+        let Some(Undo::Muted { rule: Some(rule), reopen, moved }) = hint.undo.clone() else {
+            panic!("an undo with the rule: {hint:?}")
+        };
+        assert!(reopen.contains(&"demo-6".to_owned()) && moved.is_empty());
+        let deploy = trf("Everything from {source}", &[("source", &"deploy")]);
+        let when = until_text(app.now + TimeDelta::hours(1), app.now);
+        assert_eq!(hint.text, trf("Hidden until {when}: {what}", &[("what", &deploy), ("when", &when)]));
+        assert!(!ids(&app).contains(&"demo-6"), "hidden");
+
+        let _ = press(&mut app, Key::U);
+        assert_eq!(app.sent.last(), Some(&Sent::Unmute(Some(rule.clone()), reopen, Vec::new())));
+        deliver(&mut app);
+        assert!(stored(&app, "demo-6").state.is_open(), "open again");
+        assert_eq!(block_on(app.inbox.remove_rule(rule)), Err(InboxError::NotFound), "and the rule is gone");
+        assert_eq!((app.mute_for, app.mute_effect), (MuteFor::OneHour, MuteEffect::Hide), "kept for the next time");
+    }
+
+    /// Task E8.6b: the conversation moved to Info for good keeps no rule; the undo moves it back.
+    #[test]
+    fn the_conversation_for_good_moves_only_this_entry() {
+        let mut app = notifications_window(&[]);
+        let id = app.items.iter().find(|item| item.lane == Lane::ForMe && notifications::bell(item).is_some());
+        let id = id.map(|item| item.id.clone()).expect("an entry for me with a bell");
+        let _ = app.update(Message::Act(id.clone(), Command::Hide));
+        deliver(&mut app);
+        let _ = app.update(Message::MuteHow(MuteEffect::Info));
+        let _ = app.update(Message::MuteFor(MuteFor::Always));
+        let _ = press(&mut app, Key::Digit(1));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(id.clone(), MuteScope::Conversation, None, MuteEffect::Info)));
+        deliver(&mut app);
+        let hint = app.hint.clone().expect("a toast");
+        assert_eq!(hint.text, trf("Moved to {lane}", &[("lane", &tr("Info"))]));
+        assert_eq!(hint.undo, Some(Undo::Muted { rule: None, reopen: Vec::new(), moved: vec![id.clone()] }));
+        assert_eq!(stored(&app, &id).lane, Lane::Info);
+        let _ = app.update(Message::Undo);
+        deliver(&mut app);
+        assert_eq!(stored(&app, &id).lane, Lane::ForMe, "back in For me");
+    }
+
+    /// Task E8.6b: a source muted as a whole is unmuted from the bell's menu.
+    #[test]
+    fn the_bells_menu_unmutes_a_muted_source() {
+        let mut app = notifications_window(&[]);
+        block_on(app.inbox.mute_source(SourceRef::script("deploy"), true)).expect("mute");
+        load(&mut app);
+        let _ = app.update(Message::Act("demo-6".into(), Command::Hide));
+        deliver(&mut app);
+        let last = app.choices().pop().expect("choices");
+        assert_eq!(last.label, trf("Unmute {source}", &[("source", &"deploy")]));
+        assert!(last.line && matches!(last.message, Message::AskMute(ref id) if id == "demo-6"));
+    }
+
+    /// Task E8.6b: the rule's words – effect, end and what it mutes – and when a muting ends.
+    #[test]
+    fn muting_reads_as_the_rules_of_the_control_centre() {
+        let now = DateTime::parse_from_rfc3339("2026-10-14T08:00:00Z").expect("time").with_timezone(&Utc);
+        let sender = torro_inbox::item::Facet { key: FacetKey::Sender, value: "news@shop.example".into() };
+        let rule = |effect, until| Rule {
+            id: "r".into(),
+            source: SourceRef::mail("anna@example.org"),
+            sender: None,
+            domain: None,
+            effect,
+            created: now,
+            facet: Some(sender.clone()),
+            until,
+        };
+        let what = trf("Mail from {sender}", &[("sender", &"news@shop.example")]);
+        let tomorrow = MuteFor::UntilTomorrow.until(now).expect("an end");
+        let when = until_text(tomorrow, now);
+        assert_eq!(when, trf("tomorrow {time}", &[("time", &"09:00")]));
+        let hidden = rule(torro_inbox::RuleEffect::Muted, None);
+        assert_eq!(mute_text(&hidden, now), trf("Hidden: {what}", &[("what", &what)]));
+        let quiet = rule(torro_inbox::RuleEffect::NoPopup, Some(tomorrow));
+        assert_eq!(mute_text(&quiet, now), trf("No popups until {when}: {what}", &[("what", &what), ("when", &when)]));
+        let info = rule(torro_inbox::RuleEffect::Lane { lane: Lane::Info }, None);
+        assert_eq!(mute_text(&info, now), trf("Only Info: {what}", &[("what", &what)]));
+        let muted = Muted { rule: Some(info), new_rule: true, ..Muted::default() };
+        assert_eq!(muted_note(&muted, MuteEffect::Info, now), trf("Only Info: {what}", &[("what", &what)]));
+        assert_eq!(Undo::of_muted(&muted), Some(Undo::Muted { rule: Some("r".into()), reopen: vec![], moved: vec![] }));
+        let again = Muted { new_rule: false, ..muted };
+        assert_eq!(Undo::of_muted(&again), None, "a rule that was there stays");
+        assert_eq!(muted_note(&Muted::default(), MuteEffect::Hide, now), tr("Conversation hidden"));
+        assert_eq!(MuteFor::OneHour.until(now), Some(now + TimeDelta::hours(1)));
+        assert_eq!(MuteFor::Always.until(now), None);
+        assert_eq!(until_text(now + TimeDelta::hours(1), now).len(), 5, "today: the time alone");
+    }
+
+    /// Task E8.6b: the bell's menu opens at the card or row, and at the panel's bell; it draws in
+    /// every size and density, and "Move to Info" no longer has the bell.
+    #[test]
+    fn the_bells_menu_draws_at_card_row_and_panel() {
+        assert_ne!(lane_icon(Lane::Info), Icon::Bell, "the bell mutes");
+        for density in ["compact", "comfortable"] {
+            for open in ["mute-menu", "mute-panel"] {
+                let mut app = notifications_window(&["--density", density, "--open", open]);
+                assert_eq!(app.menu, Some(Menu::Mute), "{open}");
+                assert_eq!(app.detail.is_some(), open == "mute-panel");
+                deliver(&mut app);
+                assert!(!app.choices().is_empty());
+                for size in SIZES {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.view();
+                }
+            }
+        }
+        let menu = mute_menu_width(&[]);
+        assert!(menu >= widgets::menu_width() && menu <= size::panel());
     }
 
     /// Task E8.4: the wide window shows a column per app; `j`/`k` walk it column after column, `h`/`l`

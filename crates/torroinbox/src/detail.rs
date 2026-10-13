@@ -20,7 +20,10 @@
 //! and beside "…", which leaves no room for them in the panel's 400 either – and "…" (`m`, task
 //! E3.10), which opens the menu "Hide from inbox": the entry, its sender or
 //! domain, "Always to Info" and "Move to junk" for mail, muting the source for the others
-//! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". "Make task"
+//! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". In the
+//! notifications window the bell stands there instead ([`Footer::bell`], task E8.6b): it opens the
+//! bell's menu, as `m` and the bell of the card do. "Move to Info" has the eye, not the bell
+//! (`app::lane_icon`): the bell mutes. "Make task"
 //! (`t`, task E3.5) is an
 //! icon button next to "Later": its words would not fit beside the others in the panel's 400.
 //! Approvals have none – they close once decided, and a task would not decide them – and no "Later"
@@ -68,7 +71,8 @@ pub struct Anchors {
     /// The footer's "Make task": its dialog opens here while the panel is open (task E3.5).
     pub task: Anchor,
     /// The footer's "…": the menu "Hide from inbox" opens here while the panel is open (task
-    /// E3.10).
+    /// E3.10); in the notifications window the footer's bell, where the bell's menu opens (task
+    /// E8.6b).
     pub hide: Anchor,
 }
 
@@ -77,8 +81,11 @@ pub struct Anchors {
 pub struct Footer {
     pub anchors: Anchors,
     /// The menu "Hide from inbox" has entries for this entry (`App::hide_choices`): the footer
-    /// shows its "…".
+    /// shows its "…" – or its bell with [`Footer::bell`].
     pub hide: bool,
+    /// The notifications window (task E8.6b): the footer's last button is the bell ("Mute…", `m`),
+    /// which opens the bell's menu, instead of "…". Only shown with [`Footer::hide`].
+    pub bell: bool,
     /// A decision of an approval is on its way: Allow and Deny are disabled until it is answered.
     pub deciding: bool,
     /// Narrow windows (the panel fills the window): "Move to …" shows only its icon, with the
@@ -284,7 +291,11 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     };
     buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
     if footer.hide {
-        let hide = widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())));
+        let hide = if footer.bell {
+            widgets::icon_button(Icon::Bell, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide)))
+        } else {
+            widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())))
+        };
         buttons.push(widgets::anchored(&footer.anchors.hide, hide));
     }
     buttons
@@ -414,7 +425,7 @@ mod tests {
     }
 
     fn footer(hide: bool) -> Footer {
-        Footer { anchors: Anchors::default(), hide, deciding: false, compact: false }
+        Footer { anchors: Anchors::default(), hide, bell: false, deciding: false, compact: false }
     }
 
     #[test]

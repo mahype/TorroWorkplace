@@ -964,7 +964,16 @@ E8.9   unabhängig (torro-wm, core.rs)
   Merkmalswerte. `torro-api-review`.
 
 ### E8.6b Stummschalten: Menü und Regeln
-- [ ] erledigt
+- [x] erledigt (Glocke, `m` und die Glocke im Paneel des Benachrichtigungen-Fensters öffnen `Menu::Mute`: „Mute“ mit
+  den Möglichkeiten aus `list_mute_options`, „For“ und „What happens“ als `widgets::segmented` (←/→, ↑/↓, Ziffern),
+  „All rules ↗“ öffnet die Steuerzentrale; Voreinstellung Always · Only Info, Wahl bleibt, solange das Fenster
+  läuft; Toast im Wortlaut der Regelseite mit `Undo::Muted` (Regel weg, Einträge auf, Verschobene zurück); ist die
+  Quelle als Ganzes stumm, steht „Unmute <Quelle>“ im Menü; Hub und Mail-Fenster behalten „Hide from inbox“;
+  `--open mute-menu|mute-panel`; „Move to Info“ und die Spur Info tragen `Icon::Eye` (Lucide `info` wäre besser,
+  braucht `icon.rs`); Regelseite: Sätze mit Wirkung, Ablauf und Merkmal, darunter Geltung und Treffer („Hid 12 since
+  Tuesday“); zusätzlich, für die verlangten Treffer und die Demo: `torroworkplace/src/ui/{mod,launch}.rs`
+  (`Data::rule_hits`, zwei Merkmal-Regeln und Treffer im Demo); `widgets::menu_item` neu; `de.rs` nicht angefasst,
+  Übersetzungen im Bericht; **Sichtprüfung nicht möglich:** Bildschirm gesperrt, die App bekommt kein Fenster)
 - **Modell:** Opus · **Braucht:** E8.6a, E8.3, E8.4 · **Dateien:** `crates/torroinbox/src/{app,notifications,list,keys,detail,mail,empty}.rs`,
   `crates/torroworkplace/src/ui/inbox.rs`, `crates/torro-gui/src/widgets.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Verwerfen** (✕, „Dismiss all“) schickt ab jetzt `set_item_done` mit `dismissed: true`.
