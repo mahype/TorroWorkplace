@@ -2060,4 +2060,59 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{host} · 1 model", "{host} · 1 Modell"),
     ("{host} · {n} models", "{host} · {n} Modelle"),
     ("{name} is ready to use.", "{name} ist bereit."),
+    // Assistant (C.1)
+    ("A test step: nothing ran", "Ein Testschritt: nichts ausgeführt"),
+    ("Assistant", "Assistent"),
+    (
+        "Chats with the assistant, which acts with its own rights",
+        "Chats mit dem Assistenten, der mit eigenen Rechten handelt",
+    ),
+    ("Delete an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten löschen"),
+    ("Delete the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten löschen"),
+    (
+        "Open a new assistant conversation in a window",
+        "Eine neue Unterhaltung mit dem Assistenten in einem Fenster öffnen",
+    ),
+    (
+        "Open an unknown assistant conversation in a window",
+        "Eine unbekannte Unterhaltung des Assistenten in einem Fenster öffnen",
+    ),
+    (
+        "Open the assistant conversation \"{title}\" in a window",
+        "Die Unterhaltung „{title}“ des Assistenten in einem Fenster öffnen",
+    ),
+    ("Pin an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten anheften"),
+    ("Pin the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten anheften"),
+    (
+        "Rename an unknown assistant conversation to \"{new}\"",
+        "Eine unbekannte Unterhaltung des Assistenten in „{new}“ umbenennen",
+    ),
+    (
+        "Rename the assistant conversation \"{title}\" to \"{new}\"",
+        "Die Unterhaltung „{title}“ des Assistenten in „{new}“ umbenennen",
+    ),
+    (
+        "Send the assistant a message in \"{title}\", answered by \"{engine}\"",
+        "Dem Assistenten eine Nachricht in „{title}“ schicken, beantwortet von „{engine}“",
+    ),
+    (
+        "Send the assistant a message in an unknown conversation, answered by \"{engine}\"",
+        "Dem Assistenten eine Nachricht in einer unbekannten Unterhaltung schicken, beantwortet von „{engine}“",
+    ),
+    (
+        "Start an assistant conversation answered by \"{engine}\"",
+        "Eine Unterhaltung mit dem Assistenten beginnen, beantwortet von „{engine}“",
+    ),
+    ("Stop the assistant's answer in \"{title}\"", "Die Antwort des Assistenten in „{title}“ stoppen"),
+    (
+        "Stop the assistant's answer in an unknown conversation",
+        "Die Antwort des Assistenten in einer unbekannten Unterhaltung stoppen",
+    ),
+    ("Test engine", "Test-Antrieb"),
+    (
+        "This is the test engine. It answers every message the same way, without a model and without tools.",
+        "Das ist der Test-Antrieb. Er beantwortet jede Nachricht gleich, ohne Modell und ohne Werkzeuge.",
+    ),
+    ("Unpin an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten lösen"),
+    ("Unpin the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten lösen"),
 ];
