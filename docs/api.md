@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules`, `list_mute_options` ¹¹ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -377,6 +377,31 @@ mit der Aufgabe (`torrotasks --task=<uid>`). Der Dienst schlägt das Ziel nach u
 selbst (Argumentliste, keine Shell); ein Client braucht Leserecht auf Konto bzw. Liste (sonst
 `not-found`), `app` muss zur Art des Ziels passen (sonst `error`). Die Freigabe nennt Betreff bzw.
 Titel aus dem Cache, das Protokoll nur die App.
+
+¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
+| month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
+Tag, sonst heute). Antwort `stats`: `days` (jeder Tag mit den Summen je Quelle: `new`, `opened`,
+`dismissed`, `done`, `snoozed`, `tasks`, `muted`, `popups`, `quiet`), `hours` (Meldungen je lokaler
+Stunde, 24 Werte), `totals`, `median_done_minutes` (Median der Zeit bis erledigt, aufgerundet auf die
+Stufe 1, 5, 15, 30 Minuten, 1, 2, 4, 8 Stunden, 1, 2, 7 Tage) und `suggestions`: Merkmale mit
+mindestens zehn Meldungen im Zeitraum, von denen höchstens jede fünfte geöffnet wurde, je mit der Id
+des jüngsten Eintrags, den der Dienst noch kennt, und der passenden Möglichkeit aus
+`list_mute_options` (`option.scope` geht an `mute_item`); ohne bekannten Eintrag und für schon
+stummgeschaltete Merkmale gibt es keinen Vorschlag. Rechte wie `list_rules`: nur Quellen aus
+`inbox_sources`, Mail nur mit Leserecht auf das Konto, `suite` nie für Client-Schlüssel, Hook-Clients
+sehen nichts. Werte von Merkmalen sind Fremdtext (`option.untrusted`). Ein unbekannter Zeitraum ist
+`error`. `list_rules` gibt dazu je Regel `hits` (`rule`, `hits`, `since`): wie viele Meldungen und
+Einträge sie seit ihrem Anlegen ausgeblendet, nach „Info“ verschoben, ohne Popup gelassen oder in ihre
+Spur gelegt hat, gezählt nur in den Quellen, die der Schlüssel sieht; für Regeln von vor E8.8a ab dem
+Update.
+
+**Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
+keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
+Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
+die Statistik dieselben Rechte wie für die Einträge selbst, und nichts davon kommt ins Protokoll (dort
+steht nur der Befehl). Summen je Quelle bleiben 13 Monate, Zeilen je Merkmal 90 Tage; wird ein
+Mail-Konto oder ein Client entfernt, gehen seine Zeilen mit (die Quelle eines Agenten erst, wenn kein
+anderer Client mehr für ihn meldet).
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine

@@ -1401,7 +1401,7 @@ impl Core {
             }
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
-            Request::RemoveClient { id } => done(self.clients.remove(&id).await),
+            Request::RemoveClient { id } => self.remove_client(&id).await,
             Request::ClientActivity { id } => self.client_activity(id).await,
             // A client's own approvals are answered in `handle_from`, which knows who asks; here a
             // client sees none, and it never decides.
@@ -1436,7 +1436,8 @@ impl Core {
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::ListRules
-            | Request::RemoveRule { .. }) => match reach {
+            | Request::RemoveRule { .. }
+            | Request::GetStats { .. }) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
                 Reach::Suite => self.inbox_request(request, None, None).await,
             },
@@ -1613,8 +1614,8 @@ impl Core {
             Response::Todo { todo } => todo,
             failed => return failed,
         };
-        let done = Request::SetItemDone { id: id.to_string(), done: true, dismissed: false };
-        match self.inbox.handle(done, client, Utc::now()) {
+        // Done as `inbox.set_item_done` marks it, counted as made a task (task E8.8a).
+        match self.inbox.done_as_task(id, client, Utc::now()) {
             Response::Error { message, .. } => {
                 eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
             }
@@ -2354,6 +2355,27 @@ impl Core {
         Response::Ok
     }
 
+    /// `clients.remove_client`: the client goes ([`Clients::remove`]), and with it the inbox
+    /// statistics of its source (task E8.8a, [`Inbox::forget_source`]) – unless another client
+    /// still reports as that source (an agent with a hook and an MCP key share `agent:<id>`), or it
+    /// is `script:cli`, the app key's own.
+    async fn remove_client(&self, id: &str) -> Response {
+        let source_of = |client: &torro_ipc::ClientInfo| torro_ipc::api::post_source(Some(client), None).ok();
+        let source = self.clients.list().iter().find(|client| client.id == id).and_then(source_of);
+        if let Err(err) = self.clients.remove(id).await {
+            return clients_error(&err);
+        }
+        let shared =
+            |source: &torro_inbox::SourceRef| self.clients.list().iter().any(|c| source_of(c).as_ref() == Some(source));
+        if let Some(source) =
+            source.filter(|source| *source != torro_inbox::SourceRef::script("cli") && !shared(source))
+            && let Err(err) = self.inbox.forget_source(&source.key())
+        {
+            eprintln!("torroworkplace: the inbox statistics of a removed client stay: {err}");
+        }
+        Response::Ok
+    }
+
     /// `accounts.remove_account` (tasks M1.4, G.1, M7.1, M2.7): a GitHub account with its filter
     /// lists, a mail account ([`Core::remove_mail_account`]), else a Nextcloud or CalDAV account
     /// (`PimService::remove_account`).
@@ -2410,6 +2432,10 @@ impl Core {
         let removed = self.mail.remove(id).await;
         if self.mail.stored_accounts().await.is_ok_and(|stored| !listed(&stored)) {
             self.pim.forget_mail_account(id).await;
+            // Its inbox statistics go with it (task E8.8a); the account's id is its source's key.
+            if let Err(err) = self.inbox.forget_source(id) {
+                eprintln!("torroworkplace: the inbox statistics of a removed mail account stay: {err}");
+            }
         }
         match removed {
             Ok(()) => Response::Ok,
@@ -5793,6 +5819,61 @@ mod tests {
         let Response::Todo { todo } = ask(&core, Some(&app_key), mine).await else { panic!("answered with the task") };
         assert_eq!(todo.summary, "Call Anna");
         assert_eq!(created_on(&fake), 2);
+
+        // Counted as made a task, not as done (task E8.8a).
+        let week = Request::GetStats { range: torro_ipc::StatsRange::Week, until: None };
+        let Response::Stats(stats) = ask(&core, Some(&app_key), week).await else { panic!("statistics") };
+        assert_eq!((stats.totals.tasks, stats.totals.done), (2, 0));
+    }
+
+    /// Task E8.8a: a client asks for the statistics like for the rules, and a removed client takes
+    /// the statistics of its own source with it – unless another client still reports as it.
+    #[tokio::test]
+    async fn statistics_follow_the_clients_rights_and_go_with_a_removed_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let week = || Request::GetStats { range: torro_ipc::StatsRange::Week, until: None };
+        let new_of = |response: Response, source: &str| match response {
+            Response::Stats(stats) => stats
+                .days
+                .iter()
+                .flat_map(|day| &day.sources)
+                .filter(|s| s.source.key() == source)
+                .map(|s| s.counts.new)
+                .sum::<u32>(),
+            other => panic!("expected statistics, got {other:?}"),
+        };
+        let (backup, backup_key) =
+            core.clients.add("backup", "script", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
+        let (codex, codex_key) =
+            core.clients.add("Codex", "codex", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
+        let (_, other_codex_key) =
+            core.clients.add("Codex 2", "codex", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
+        for key in [&backup_key, &codex_key, &other_codex_key] {
+            let post = Request::PostItem {
+                kind: torro_inbox::Kind::Notice,
+                title: "Report".into(),
+                body: None,
+                link: None,
+                lane: None,
+                thread_key: None,
+                agent: None,
+            };
+            assert!(matches!(ask(&core, Some(key), post).await, Response::Posted { id: Some(_) }));
+        }
+        assert_eq!(new_of(ask(&core, Some(&codex_key), week()).await, "script:backup"), 1, "a client reads them");
+        let mut blind = RightsTemplate::ReadAndWrite.rights();
+        blind.inbox_sources = Selection::Only(vec!["agent:codex".into()]);
+        let (_, blind_key) = client(&core, blind).await;
+        assert_eq!(new_of(ask(&core, Some(&blind_key), week()).await, "script:backup"), 0, "not of other sources");
+
+        let remove = |id: &str| Request::RemoveClient { id: id.into() };
+        assert_eq!(ask(&core, Some(&app_key), remove(&backup.id)).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), remove(&codex.id)).await, Response::Ok);
+        let left = ask(&core, Some(&app_key), week()).await;
+        assert_eq!(new_of(left.clone(), "script:backup"), 0, "its own source went with it");
+        assert_eq!(new_of(left, "agent:codex"), 2, "another Codex key still reports as agent:codex");
     }
 
     #[tokio::test]
@@ -6025,7 +6106,7 @@ mod tests {
 
         let mute_codex = Request::MuteSource { source: codex(), muted: true };
         assert_eq!(ask(&core, Some(&app_key), mute_codex).await, Response::Ok);
-        let Response::Rules { rules } = ask(&core, Some(&app_key), Request::ListRules).await else {
+        let Response::Rules { rules, .. } = ask(&core, Some(&app_key), Request::ListRules).await else {
             panic!("rules answer with Rules");
         };
         let remove = waits(ask(&core, Some(&key), Request::RemoveRule { id: rules[0].id.clone() }).await);
@@ -6051,7 +6132,10 @@ mod tests {
             panic!("an allowed approval is done");
         };
         assert_eq!(code(&response), "not-found", "the source is out of reach now");
-        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::ListRules).await,
+            Response::Rules { rules: vec![], hits: vec![] }
+        );
     }
 
     /// Task E3.10: hiding a sender takes the admin switch, waits for the person with a summary from
@@ -6102,7 +6186,10 @@ mod tests {
         let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
         assert_eq!(code(&response), "conflict");
-        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::ListRules).await,
+            Response::Rules { rules: vec![], hits: vec![] }
+        );
 
         let asked = waits(ask(&core, Some(&admin), hide()).await);
         let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
@@ -6189,7 +6276,10 @@ mod tests {
         let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
         assert_eq!(code(&response), "conflict");
-        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::ListRules).await,
+            Response::Rules { rules: vec![], hits: vec![] }
+        );
 
         let asked = waits(ask(&core, Some(&admin), by_sender()).await);
         let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
@@ -6214,7 +6304,10 @@ mod tests {
         let lane = |remember| Request::SetItemLane { id: id.clone(), lane: torro_inbox::Lane::ForMe, remember };
         assert_eq!(code(&ask(&core, Some(&key), lane(true)).await), "forbidden");
         assert!(matches!(ask(&core, Some(&key), lane(false)).await, Response::Item { .. }));
-        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+        assert_eq!(
+            ask(&core, Some(&app_key), Request::ListRules).await,
+            Response::Rules { rules: vec![], hits: vec![] }
+        );
     }
 
     /// Task A.5: the core with an audit log in `dir/state/audit.jsonl`.
@@ -7766,8 +7859,27 @@ mod tests {
                 .unwrap_or_else(|_| Vec::<String>::new())
         };
         crate::mail::service::tests::eventually("the store", || async { !stores().is_empty() }).await;
+        let mail = crate::inbox::NewMail {
+            account: ANNA_MAIL.into(),
+            message: "m:stats".into(),
+            thread: "t:stats".into(),
+            subject: "Offer".into(),
+            snippet: String::new(),
+            from: None,
+            bulk: false,
+            list: None,
+            date: Utc::now(),
+        };
+        core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed");
+        let counted = || async {
+            let week = Request::GetStats { range: torro_ipc::StatsRange::Week, until: None };
+            let Response::Stats(stats) = core.handle(week).await else { panic!("statistics") };
+            stats.days.iter().flat_map(|day| &day.sources).filter(|s| s.source.key() == ANNA_MAIL).count()
+        };
+        assert!(counted().await > 0, "the account's mail is counted");
 
         assert_eq!(core.handle(Request::RemoveAccount { id: ANNA_MAIL.into() }).await, Response::Ok);
+        assert_eq!(counted().await, 0, "its statistics went with it (task E8.8a)");
         assert_eq!(secrets.get_plain(ANNA_MAIL), None);
         assert!(torro_core::account::load_from(&mail_accounts_file(dir.path())).expect("read").is_empty());
         assert!(stores().iter().all(|file| !file.contains("sqlite")), "{:?}", stores());

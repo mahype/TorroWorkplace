@@ -497,6 +497,7 @@ fn describe(request: &Request) -> String {
         Request::ListMuteOptions { id } => format!("mute options of inbox item {id}"),
         Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
+        Request::GetStats { .. } => "inbox statistics".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of
         // task M2.1); message and folder ids would let lines be matched with a mailbox.

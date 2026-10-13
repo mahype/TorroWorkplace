@@ -1267,7 +1267,7 @@ fn load() -> Task<Message> {
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
             }
-            if let Ok(Response::Rules { rules }) = client::call(&socket, &Request::ListRules).await {
+            if let Ok(Response::Rules { rules, .. }) = client::call(&socket, &Request::ListRules).await {
                 data.rules = rules;
             }
             data

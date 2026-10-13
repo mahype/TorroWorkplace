@@ -482,6 +482,19 @@ back“** mit einem fertigen Vorschlag je Zeile („Mute channel“, „Only fai
 - Agenten lesen die Zahlen über `inbox_get_stats` („Wo lohnt sich Aufräumen?“), aber nur für Quellen, die sie sehen
   dürfen.
 
+**Kern (E8.8a, umgesetzt):** Die Tabelle `stats` in `inbox.sqlite` hält Tagessummen je lokalem Tag, Quelle und Merkmal.
+Gezählt werden Meldungen (neue Einträge und zusammengeführte, z. B. die zweite Mail einer Unterhaltung), Geöffnetes
+(`open_item` auf einem neuen Eintrag), Verworfenes, Erledigtes (von Hand, durch `resolve_items`, eine entschiedene
+Freigabe, ein repariertes Konto oder eine anderswo gelesene Mail), Vertagtes, zur Aufgabe Gemachtes, Stummgeschaltetes
+(Meldungen, die eine Regel verwirft, nach „Info“ legt oder ohne Popup lässt, und Einträge, die Ausblenden oder
+Stummschalten schließt bzw. verschiebt) und Popups, davon die in Ruhe zurückgehaltenen. Dazu Meldungen je Stunde und
+die Zeit bis erledigt in Stufen, aus denen der Median kommt. Merkmale, die die Quelle selbst sind (Konto, Agent,
+Client), zählen nicht eigens. Eine Mail, die eine Regel fernhält, zählt einmal, auch wenn der Abgleich sie nach einem
+verpassten Wechsel noch einmal anbietet. Vorschläge: ab zehn Meldungen im Zeitraum, höchstens jede fünfte geöffnet,
+summiert über alle Quellen derselben Art (wie die Regel wirkt), höchstens fünf, nicht für schon stummgeschaltete
+Merkmale. Jede Regel zählt außerdem, was sie gefangen hat, je Quelle; `inbox.list_rules` nennt es als `hits`.
+Befehle: [api.md](api.md), Fußnote 14.
+
 ### Später, vorgemerkt
 
 - **An einen Agenten geben:** ein Eintrag (Review, Kundenanfrage) geht als Auftrag an einen Agenten. Die Idee ist
