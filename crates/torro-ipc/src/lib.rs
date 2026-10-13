@@ -39,7 +39,7 @@ pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
-use torro_mail::{Draft, Endpoint, Flag, Folder, Message, MessageSummary, Notify, Role, Services};
+use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
 use torro_pim::model::GitHubLabel;
 use torro_pim::source::GitHubRepo;
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
@@ -255,10 +255,16 @@ pub enum Request {
     /// five redirects, https only), then a table of known providers. Names and redirects that lead
     /// to loopback, private, link-local or ULA addresses are never contacted.
     ///
+    /// At the same time it searches the mail servers (IMAP, SMTP) of the domain (task M2.2,
+    /// `torro_mail_imap::discover`): a table of known providers, MX (Google, Microsoft: not
+    /// supported), the domain's autoconfig, Thunderbird's ISPDB at `autoconfig.thunderbird.net`
+    /// (the domain goes there), SPF, the MX's base domain, DNS SRV (RFC 6186). No mail server is
+    /// contacted. A client key may run at most two searches at a time, else `busy`.
+    ///
     /// Answered with [`Response::Discovery`]: candidate addresses, none, or "not supported" with
     /// the reason (Gmail, Outlook.com); all of them are answers, not errors. Error codes: `error`
     /// for an input that names no internet domain (an IP address, `localhost`, no dot),
-    /// `offline` when neither DNS nor a server answered and the table does not know the domain.
+    /// `offline` when neither DNS nor a server answered and no table knows the domain, `busy`.
     #[serde(rename = "accounts.discover_services")]
     DiscoverServices {
         /// An e-mail address (`anna@mailbox.org`) or a domain (`mailbox.org`).
@@ -304,28 +310,46 @@ pub enum Request {
         /// Show the account's task lists (collections with tasks) in the suite.
         tasks: bool,
     },
-    /// Signs in to a mail account with a password (task M2.1, carried out by M2.7; until then
-    /// answered `unsupported`): IMAP and SMTP, and with `calendars` or `tasks` the CalDAV address
-    /// `caldav` of the same sign-in.
+    /// Signs in to a mail account with a password (tasks M2.1, M2.7): IMAP and SMTP, and with
+    /// `calendars` or `tasks` the CalDAV address `caldav` of the same sign-in.
     ///
-    /// The core checks the IMAP and the SMTP sign-in (without sending anything) and, when asked
-    /// for, CalDAV; then it keeps the password in the system keychain only, under the account id
-    /// `mail:<address>` (`torro_mail::account_id`), and adds the account. Connecting an account that
-    /// exists already replaces only servers and password: settings, hidden collections and rights
-    /// stay. A CalDAV account (`accounts.connect_caldav`) of the same sign-in is taken over.
+    /// The core checks that every server's host is on the public internet, then the IMAP sign-in
+    /// (listing the folders), the SMTP sign-in (without sending anything) and the CalDAV sign-in
+    /// for calendars or tasks, or for a `caldav` address that is new; a refusal stops there. Then
+    /// it keeps the password in the system keychain only, under the account id `mail:<address>`
+    /// (`torro_mail::account_id`), adds the account and starts its sync; with calendars or tasks
+    /// the account syncs them too.
+    ///
+    /// Connecting an account that exists already replaces servers and password and changes
+    /// nothing else but this (task M3.5): `calendars` and `tasks` switch those services on, never
+    /// off (that is `accounts.update_mail_account`), which is how calendars and tasks are added to
+    /// an account connected for mail only; they need a CalDAV address, given or stored. Settings,
+    /// hidden collections and rights stay; without `caldav` the stored CalDAV address stays, also
+    /// while calendars and tasks are off, and with an empty `sender_name` the stored sender name
+    /// stays (so changing the password keeps it; `accounts.update_mail_account` with an empty
+    /// `sender_name` removes it). Only a CalDAV address that took the password is ever stored.
+    /// Once the account syncs calendars or tasks, a CalDAV account (`accounts.connect_caldav`) of
+    /// the same sign-in (same login name at the same CalDAV host) is taken over: it leaves the
+    /// account list, its hidden collections and the clients' selections of its calendars and task
+    /// lists name them by their new ids, and the same collections are never synced twice.
     ///
     /// Answered with [`Response::MailConnected`], never with the password. Error codes: `error`
     /// for an address `torro_mail::account_id` refuses (empty, without one `@`, with `/`, white
-    /// space or control characters) or an empty login name or password; `auth` when a server
-    /// refuses the password (the message says which: IMAP, SMTP or CalDAV); `not-found`,
-    /// `offline`, `unsupported`. Only the app key may send it: every client key gets `forbidden`,
-    /// whatever its rights, because it hands the core a secret (`docs/api.md`, "Was nie nach außen
-    /// geht", 5); it never waits for an approval either.
+    /// space or control characters), an empty login name or password, a login name with `/`, a
+    /// server without host or port, a sender name with a line break, a CalDAV address that is no
+    /// https address (plain `http` only for `localhost`), a host that is not on the public
+    /// internet (`localhost` included) or a server that answers unexpectedly; `auth` when a server refuses the password (the message says which: IMAP,
+    /// SMTP or CalDAV); `not-found` when calendars or tasks are asked for without a CalDAV address
+    /// or no CalDAV answers there; `offline`; `unsupported` for an SMTP server without a secure
+    /// sign-in. Only the app key may send it: every client key gets `forbidden`, whatever its
+    /// rights, because it hands the core a secret (`docs/api.md`, "Was nie nach außen geht", 5); it
+    /// never waits for an approval either.
     #[serde(rename = "accounts.connect_mail")]
     ConnectMail {
         /// The account's e-mail address; the account id is made from it.
         address: String,
-        /// The name put next to the address in `From:`; leave out for none.
+        /// The name put next to the address in `From:`; leave out for none. Connecting an account
+        /// again with an empty one keeps the stored name.
         #[serde(default)]
         sender_name: String,
         /// The IMAP server, as `accounts.discover_services` found it or a person typed it.
@@ -338,21 +362,27 @@ pub enum Request {
         /// system keychain only and is never part of an answer, an error message, a log or an
         /// approval.
         password: Secret,
-        /// Show the calendars of `caldav` in the suite.
+        /// Show the calendars of `caldav` in the suite. At an account that exists: switch them on
+        /// (`false` leaves them as they are).
         calendars: bool,
-        /// Show the task lists of `caldav` in the suite.
+        /// Show the task lists of `caldav` in the suite; at an account that exists as `calendars`.
         tasks: bool,
         /// The CalDAV address of the same sign-in (from `accounts.discover_services`); leave out
-        /// for a mail-only account.
+        /// for a mail-only account, or to keep the address an account has.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caldav: Option<String>,
     },
-    /// Changes the settings of the mail account `id` (task M2.1, carried out by M2.7; until then
-    /// answered `unsupported`): only the fields given, the others stay. Never servers or password:
-    /// those change only with `accounts.connect_mail`, so no agent can steer the password to
-    /// another server. Answered with [`Response::Ok`]; `not-found` for an id that is no mail
-    /// account. An admin command: a client always waits for a person's approval, whose summary
-    /// names the account from the core, the changed fields and the start of a new signature.
+    /// Changes the settings of the mail account `id` (tasks M2.1, M2.7): only the fields given, the
+    /// others stay. Never servers or password: those change only with `accounts.connect_mail`, so
+    /// no agent can steer the password to another server. Answered with [`Response::Ok`];
+    /// `not-found` for an id that is no mail account; `error` for a sender name with a line break
+    /// (or over 200 characters), a signature over 8 KiB, calendars or tasks for an account without
+    /// a CalDAV address (connect it again with one) or a folder role the server did not leave
+    /// open; `conflict` for calendars or tasks while a CalDAV account of the same sign-in syncs
+    /// them (connecting the mail account again takes it over). Checking `folder_roles` asks the
+    /// server, so it can also fail as the server does (`auth`, `offline`). An admin command: a
+    /// client always waits for a person's approval, whose summary names the account from the
+    /// core, the changed fields and the start of a new signature.
     #[serde(rename = "accounts.update_mail_account")]
     UpdateMailAccount {
         /// The account: `mail:<address>` from `accounts.list_accounts`.
@@ -372,11 +402,45 @@ pub enum Request {
         services: Option<Services>,
         /// The folder for a role the server left open (two candidates with content): role and the
         /// folder's path as `mail.list_folders` lists it. Only the roles named are set; choices for
-        /// other roles stay. The handler (task M2.7) takes only roles the server left open and only
-        /// one of their candidate folders, else `error`; the approval's summary names each role
-        /// with its path.
+        /// other roles stay. Only roles the server leaves open are taken, each only to one of its
+        /// candidate folders, else `error` and nothing changes; the approval's summary names each
+        /// role with its path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder_roles: Option<BTreeMap<Role, String>>,
+    },
+    /// Lists the accounts of the separate TorroMail app (task M7.4), read from its `state.json`
+    /// (macOS `~/Library/Application Support/TorroMail`, Windows `AppData/Local/TorroMail`, else
+    /// `$XDG_STATE_HOME/torromail` or `~/.local/state/torromail`). They are not connected to the
+    /// suite; `accounts.import_torromail_account` copies one. Nothing of TorroMail changes.
+    ///
+    /// Answered with [`Response::TorroMailAccounts`]: address, sender name, servers and user name
+    /// of each, never a password (the core does not read TorroMail's keychain for this), and
+    /// whether the suite has a mail account with the address already. An empty list when
+    /// TorroMail is not installed or has no accounts. Error code `error` when its `state.json`
+    /// cannot be read; an account in it that is not complete is left out.
+    #[serde(rename = "accounts.list_torromail_accounts")]
+    TorroMailAccounts,
+    /// Copies the account `id` of the separate TorroMail app into the suite as a mail account
+    /// (task M7.4): address, sender name, IMAP and SMTP server and user name from TorroMail's
+    /// `state.json`, the password from TorroMail's keychain entry (service `TorroMail`, account
+    /// `id`). Then it connects the account as `accounts.connect_mail` does (both servers checked,
+    /// the password into the suite's keychain only), for mail only: the password goes to no server
+    /// but the IMAP and SMTP servers TorroMail has and the list showed. Calendars and tasks of the
+    /// same sign-in are added on the account's page afterwards. TorroMail keeps its account and its
+    /// keychain entry; nothing there is changed or deleted.
+    ///
+    /// Answered with [`Response::MailConnected`], never with the password. Error codes:
+    /// `not-found` when TorroMail has no account `id` or no password for it; `unsupported` for an
+    /// account that signs in with OAuth (Google, Microsoft) or uses JMAP (the message says why);
+    /// `conflict` when the suite has a mail account with the address already; `error` when the
+    /// keychain entry cannot be read (the message says to enter the password instead), and every
+    /// code of `accounts.connect_mail`. Only the app key may send it: every client key gets
+    /// `forbidden`, whatever its rights, because it moves a secret of another app into the core
+    /// (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval either.
+    #[serde(rename = "accounts.import_torromail_account")]
+    ImportTorroMailAccount {
+        /// The account's id in TorroMail, as `accounts.list_torromail_accounts` lists it.
+        id: String,
     },
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
     /// its own: one that fails keeps its cache and its problem, the others are updated. The
@@ -1239,10 +1303,32 @@ pub enum Response {
         /// Addresses to sign in at with [`Request::ConnectCalDav`], best first. Empty when
         /// nothing was found or the provider is not supported.
         urls: Vec<String>,
-        /// Why the provider does not work with Torro Workplace, for people, in the core's
-        /// language; `None` when it may.
+        /// Why the provider's calendars and tasks do not work with Torro Workplace, for people,
+        /// in the core's language; `None` when they may.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         unsupported: Option<String>,
+        /// The IMAP server of the address (task M2.2, `torro_mail_imap::discover`); `None` when
+        /// none was found or the provider's mail is not supported. Optional, so an answer of an
+        /// older core (calendars only) still reads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        imap: Option<Endpoint>,
+        /// The SMTP server to send through; may be `None` while `imap` is set, then a person
+        /// enters it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        smtp: Option<Endpoint>,
+        /// The login name to try with these servers: the address as given or its part before
+        /// `@`, as the provider asks; `None` when it does not say or only a domain was given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login_hint: Option<String>,
+        /// The provider wants an app password created on its website instead of the account
+        /// password (iCloud, Fastmail, Yahoo, Gmail).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        app_password: bool,
+        /// Why the provider's mail does not work with its usual sign-in, for people, in the
+        /// core's language (Gmail, Outlook.com, Microsoft 365, Google Workspace). With
+        /// `app_password` the servers are still given (Gmail with an app password).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mail_unsupported: Option<String>,
     },
     /// A CalDAV account just connected ([`Request::ConnectCalDav`]), never with its password.
     Connected {
@@ -1326,16 +1412,24 @@ pub enum Response {
     },
     /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
     MailConnected {
-        /// The account as [`Request::Accounts`] lists it.
+        /// The account as [`Request::Accounts`] lists it: one entry, also when it syncs calendars
+        /// and tasks too.
         account: AccountInfo,
-        /// The CalDAV address has at least one collection with events.
+        /// The CalDAV address has at least one collection with events; `false` for an account
+        /// without calendars and tasks, whose CalDAV address was not asked.
         calendars: bool,
-        /// The CalDAV address has at least one collection with tasks.
+        /// The CalDAV address has at least one collection with tasks; `false` as for `calendars`.
         tasks: bool,
         /// Roles the server offers two candidate folders with content for; the person picks one
         /// with `accounts.update_mail_account` (`folder_roles`). Empty when every role is clear.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         open_roles: Vec<Role>,
+    },
+    /// The accounts of the separate TorroMail app ([`Request::TorroMailAccounts`]), never with a
+    /// password. On the wire `torromail-accounts`, the app's name in one word.
+    #[serde(rename = "torromail-accounts")]
+    TorroMailAccounts {
+        accounts: Vec<TorroMailAccount>,
     },
     /// The folders the caller may see ([`Request::MailFolders`]).
     MailFolders {
@@ -1440,6 +1534,116 @@ pub struct AccountInfo {
     /// are set per repository on GitHub.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
+    /// For a mail account (`kind: "mail"`, task M2.8) what its page shows and changes: servers,
+    /// settings, open folder roles and the state of each service. `None` for every other kind,
+    /// and left out of the JSON then, so older clients read the answer as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<MailView>,
+}
+
+/// One account of the separate TorroMail app as `accounts.list_torromail_accounts` lists it (task
+/// M7.4): what TorroMail stored, never a password.
+///
+/// An account the suite can take over has `unsupported: None` and both servers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TorroMailAccount {
+    /// TorroMail's id of the account; `accounts.import_torromail_account` takes it.
+    pub id: String,
+    /// The account's e-mail address.
+    pub address: String,
+    /// The name TorroMail puts next to the address; empty for none.
+    #[serde(default)]
+    pub sender_name: String,
+    /// TorroMail's label of the provider (`IMAP/SMTP`, `mailbox.org`, `Gmail`), as it stored it.
+    #[serde(default)]
+    pub provider: String,
+    /// The IMAP server; `None` when TorroMail has none for the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imap: Option<Endpoint>,
+    /// The SMTP server; `None` when TorroMail has none for the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp: Option<Endpoint>,
+    /// The user name at the servers.
+    #[serde(default)]
+    pub login_name: String,
+    /// Why the suite cannot take the account over (it signs in with OAuth, it uses JMAP, its
+    /// servers are missing), for people, in the core's language; `None` when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unsupported: Option<String>,
+    /// The suite has a mail account with this address already (`mail:<address>`).
+    #[serde(default)]
+    pub connected: bool,
+}
+
+/// A mail account as `accounts.list_accounts` lists it in [`AccountInfo::mail`] (task M2.8): what
+/// is stored for it and how its services stand. Never a password or any other secret: the
+/// password lives in the system keychain only.
+///
+/// The fields are named as `accounts.connect_mail` and `accounts.update_mail_account` take them
+/// (`sender_name`, `folder_roles`), so a page can send back what it read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailView {
+    /// The account's e-mail address as the person typed it (`anna@mailbox.org`).
+    pub address: String,
+    /// The name next to the address in `From:`; empty for none.
+    #[serde(default)]
+    pub sender_name: String,
+    /// The IMAP server mail is read from.
+    pub imap: Endpoint,
+    /// The SMTP server mail is sent through.
+    pub smtp: Endpoint,
+    /// The CalDAV address of the same sign-in; `None` while calendars and tasks are off (only an
+    /// address in use is stored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caldav: Option<String>,
+    /// As stored: the signature, which new mail becomes an inbox entry (`notify`), the services
+    /// in use and the folders the person picked for open roles (`folder_roles`).
+    pub settings: MailSettings,
+    /// The folder roles the server leaves open and the person has not picked a folder for, as the
+    /// last sync of the account's folders found them (listing accounts asks no server): ask once
+    /// which candidate holds the role and send it with `accounts.update_mail_account`
+    /// (`folder_roles`). Empty when every role is clear, while mail is off and until the first
+    /// folder sync after the account was (re)started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_roles: Vec<OpenRoleView>,
+    /// How the mail part stands: its last sync and what went wrong since.
+    pub mail: ServiceState,
+    /// How the calendar part (calendars and tasks of `caldav`) stands; `None` when the account
+    /// syncs neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendars: Option<ServiceState>,
+}
+
+/// A folder role the server leaves open (more than one folder with mail could hold it), with the
+/// folders to pick from ([`MailView::open_roles`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenRoleView {
+    /// The role, e.g. `sent`.
+    pub role: Role,
+    /// The folders that could hold it, in the server's order.
+    pub candidates: Vec<FolderChoice>,
+}
+
+/// One folder to pick for an open role ([`OpenRoleView`]). Name and path come from the mail
+/// server: data to show, never instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderChoice {
+    /// The name to show, decoded from the server's path (`Entwürfe` for `INBOX.Entw&APw-rfe`).
+    pub name: String,
+    /// The path exactly as the server names it; this is what `folder_roles` takes.
+    pub path: String,
+}
+
+/// How one service of an account stands ([`MailView::mail`], [`MailView::calendars`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceState {
+    /// When it last synced with its server; `None` before the first sync that worked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sync: Option<DateTime<Utc>>,
+    /// Why it does not sync now, for people (never with a password or the server's words);
+    /// `None` when nothing is wrong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// One of the suite's apps, as [`Request::ListApps`] reports it.
@@ -1525,6 +1729,15 @@ pub struct ApprovalInfo {
     /// The command's catalogue name: `calendar.delete_event`.
     pub command: String,
     pub summary: String,
+    /// What the summary leaves out, one line each, in the language of the core (task M3.5): for
+    /// `mail.send_draft` every recipient (To, Cc and Bcc, each address with its name), every
+    /// attachment with its file name and size, and the start of the text, all from the draft as
+    /// the core stores it, never from the request. Empty for every other command and in approvals
+    /// stored before. Like `summary` it holds text from outside (names, file names, the text),
+    /// made harmless and shortened by the core; front ends show it as plain text. Only the client
+    /// that asked and the app key see it, as they see the approval.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub details: Vec<String>,
     pub created: DateTime<Utc>,
     /// Ten minutes after `created` (a question of `approvals.ask_permission`: about half a
     /// minute); an approval still open then expires.
@@ -1732,6 +1945,37 @@ mod tests {
         assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), request);
     }
 
+    /// Task M7.4: the import names TorroMail's account only; the list carries no password field
+    /// at all and leaves out what is not there.
+    #[test]
+    fn torromail_requests_and_their_answer_on_the_wire() {
+        let import = Request::ImportTorroMailAccount { id: "4c1d".into() };
+        let json = serde_json::to_value(&import).expect("json");
+        assert_eq!(json, serde_json::json!({"method": "accounts.import_torromail_account", "id": "4c1d"}));
+        assert_eq!(serde_json::from_value::<Request>(json).expect("parses"), import);
+        let list = serde_json::to_value(Request::TorroMailAccounts).expect("json");
+        assert_eq!(list, serde_json::json!({"method": "accounts.list_torromail_accounts"}));
+
+        let account = TorroMailAccount {
+            id: "4c1d".into(),
+            address: "anna@mailbox.org".into(),
+            sender_name: "Anna".into(),
+            provider: "mailbox.org".into(),
+            imap: Some(Endpoint { host: "imap.mailbox.org".into(), port: 993, security: torro_mail::Security::Tls }),
+            smtp: None,
+            login_name: "anna@mailbox.org".into(),
+            unsupported: None,
+            connected: false,
+        };
+        let answer = Response::TorroMailAccounts { accounts: vec![account] };
+        let json = serde_json::to_value(&answer).expect("json");
+        assert_eq!(json["result"], "torromail-accounts");
+        let listed = &json["accounts"][0];
+        assert!(listed.get("smtp").is_none() && listed.get("unsupported").is_none(), "{listed}");
+        assert!(listed.get("password").is_none());
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), answer);
+    }
+
     #[test]
     fn mail_answers_are_answers_of_their_own() {
         let page = Response::MailMessages { messages: Vec::new(), cursor: None, source: MailSource::Cache };
@@ -1749,11 +1993,35 @@ mod tests {
             provider: "mailbox.org".into(),
             urls: vec!["https://dav.mailbox.org/".into()],
             unsupported: None,
+            imap: None,
+            smtp: None,
+            login_hint: None,
+            app_password: false,
+            mail_unsupported: None,
         };
         let json = serde_json::to_value(&found).expect("json");
         assert_eq!(json["result"], "discovery");
-        assert!(json.get("unsupported").is_none());
-        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), found);
+        for absent in ["unsupported", "imap", "smtp", "login_hint", "app_password", "mail_unsupported"] {
+            assert!(json.get(absent).is_none(), "{absent}");
+        }
+        assert_eq!(serde_json::from_value::<Response>(json).expect("an answer of an older core"), found);
+        let mail = Response::Discovery {
+            provider: "iCloud".into(),
+            urls: vec![],
+            unsupported: None,
+            imap: Some(Endpoint { host: "imap.mail.me.com".into(), port: 993, security: torro_mail::Security::Tls }),
+            smtp: None,
+            login_hint: Some("anna@icloud.com".into()),
+            app_password: true,
+            mail_unsupported: None,
+        };
+        let json = serde_json::to_value(&mail).expect("json");
+        assert_eq!(json["imap"], serde_json::json!({"host": "imap.mail.me.com", "port": 993, "security": "tls"}));
+        assert_eq!(
+            (json["app_password"].as_bool(), json["login_hint"].as_str()),
+            (Some(true), Some("anna@icloud.com"))
+        );
+        assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), mail);
         let account: AccountInfo = serde_json::from_str(
             r#"{"id":"caldav:anna@dav.mailbox.org","kind":"caldav","label":"anna@mailbox.org",
             "state":{"state":"not-connected"},"collections":[]}"#,
@@ -1772,6 +2040,33 @@ mod tests {
         assert!(!serde_json::to_string(&account).expect("json").contains("scopes"));
         let github = AccountInfo { scopes: Some(vec!["repo".into()]), kind: "github".into(), ..account };
         assert_eq!(serde_json::to_value(&github).expect("json")["scopes"], serde_json::json!(["repo"]));
+        assert!(!serde_json::to_string(&github).expect("json").contains("\"mail\""), "no mail field for others");
+    }
+
+    #[test]
+    fn a_mail_view_is_written_as_the_mail_commands_take_it() {
+        let server = |host: &str, port, security| Endpoint { host: host.into(), port, security };
+        let view = MailView {
+            address: "anna@mailbox.org".into(),
+            sender_name: "Anna".into(),
+            imap: server("imap.mailbox.org", 993, torro_mail::Security::Tls),
+            smtp: server("smtp.mailbox.org", 587, torro_mail::Security::StartTls),
+            caldav: None,
+            settings: MailSettings::default(),
+            open_roles: vec![OpenRoleView {
+                role: Role::Sent,
+                candidates: vec![FolderChoice { name: "Sent".into(), path: "INBOX.Sent".into() }],
+            }],
+            mail: ServiceState { last_sync: None, problem: Some("Password was refused".into()) },
+            calendars: None,
+        };
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["sender_name"], "Anna");
+        assert_eq!(json["open_roles"][0]["role"], "sent");
+        assert_eq!(json["open_roles"][0]["candidates"][0]["path"], "INBOX.Sent");
+        assert_eq!(json["mail"]["problem"], "Password was refused");
+        assert!(json.get("calendars").is_none() && json.get("caldav").is_none());
+        assert_eq!(serde_json::from_value::<MailView>(json).expect("parses"), view);
     }
 
     #[test]
@@ -1813,6 +2108,7 @@ mod tests {
             client_name: "Claude Code".into(),
             command: "workspaces.delete_template".into(),
             summary: "Delete template \"dev\"".into(),
+            details: Vec::new(),
             created: at,
             expires: at + chrono::Duration::minutes(10),
             decided: None,
@@ -1823,6 +2119,14 @@ mod tests {
         assert_eq!(pending["approval"]["state"], "pending");
         assert_eq!(pending["approval"]["clientName"], "Claude Code");
         assert!(pending["approval"].get("decided").is_none());
+        assert!(pending["approval"].get("details").is_none(), "no details, no field");
+        // An approval stored before task M3.5 has no `details`.
+        let stored = serde_json::from_value::<ApprovalInfo>(pending["approval"].clone()).expect("parses");
+        assert!(stored.details.is_empty());
+        let detailed = ApprovalInfo { details: vec!["To: bernd@example.com".into()], ..approval.clone() };
+        let json = serde_json::to_value(&detailed).expect("json");
+        assert_eq!(json["details"], serde_json::json!(["To: bernd@example.com"]));
+        assert_eq!(serde_json::from_value::<ApprovalInfo>(json).expect("parses"), detailed);
 
         let done = ApprovalInfo {
             decided: Some(at),

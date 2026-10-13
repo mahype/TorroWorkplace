@@ -815,6 +815,7 @@ mod tests {
             client_name: "Claude Code".into(),
             command: "workspaces.delete_template".into(),
             summary: "Delete template \"Dev\"".into(),
+            details: Vec::new(),
             created: at,
             expires: at,
             decided: None,

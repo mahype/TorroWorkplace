@@ -1069,13 +1069,15 @@ pub fn valid_repo(input: &str) -> Option<String> {
 
 /// The inbox sources an agent can be allowed: the sources with entries or muted
 /// (`inbox.list_sources`), the source of every connected client (where its reports would land,
-/// [`api::post_source`]) and those `selection` names; each once, agents first, then scripts. Never
-/// the suite: its entries (approvals, account problems) are only for the person, the core shows
-/// them to no client whatever the selection says (task E1.2c). A selection that still names it
-/// shows it as no longer available ([`candidates`]), so it can be unticked.
+/// [`api::post_source`]), every mail account (its new mail, task E4.1: the source's key is the
+/// account's id) and those `selection` names; each once, agents first, then scripts, then mail.
+/// Never the suite: its entries (approvals, account problems) are only for the person, the core
+/// shows them to no client whatever the selection says (task E1.2c). A selection that still names
+/// it shows it as no longer available ([`candidates`]), so it can be unticked.
 fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
     let mut sources: Vec<SourceRef> = data.sources.iter().map(|info| info.source.clone()).collect();
     sources.extend(data.clients.iter().filter_map(|client| api::post_source(Some(client), None).ok()));
+    sources.extend(mail_candidates(data).iter().filter_map(|account| account.id.parse::<SourceRef>().ok()));
     if let Selection::Only(keys) = selection {
         sources.extend(keys.iter().filter_map(|key| key.parse::<SourceRef>().ok()));
     }
@@ -1088,6 +1090,7 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
             let detail = match source.kind {
                 SourceKind::Agent => tr("Agent"),
                 SourceKind::Script | SourceKind::Suite => tr("Script"),
+                SourceKind::Mail => tr("Mail"),
             };
             Candidate::plain(source.key(), source.label(), Some(detail.to_string()))
         })
@@ -1497,6 +1500,7 @@ mod tests {
             state: AccountState::NotConnected,
             collections: Vec::new(),
             scopes: None,
+            mail: None,
         }
     }
 
@@ -1937,7 +1941,18 @@ mod tests {
         data.sources.push(SourceInfo { source: SourceRef::suite(), open: 2, muted: false });
         let selection = Selection::Only(vec!["script:gone".into()]);
         let keys: Vec<String> = candidates(Pick::InboxSources, &data, &selection).into_iter().map(|c| c.id).collect();
-        assert_eq!(keys, ["agent:claude-code", "script:backup", "script:gone", "script:nightly"]);
+        // Mail accounts are sources too (task E4.1), by their account id.
+        assert_eq!(
+            keys,
+            [
+                "agent:claude-code",
+                "script:backup",
+                "script:gone",
+                "script:nightly",
+                "mail:anna@mailbox.org",
+                "mail:anna@work.example.net"
+            ]
+        );
 
         // A selection from before still naming the suite shows it as gone, to untick it.
         let stale = Selection::Only(vec!["suite".into()]);

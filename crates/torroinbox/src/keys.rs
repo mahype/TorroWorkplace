@@ -8,7 +8,9 @@
 //!    arrows and `Enter` (which creates the task through its `on_submit`).
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
 //!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` mute, `t` make a
-//!    task; in a menu of choices the digits pick its entries; in the date picker the arrows change
+//!    task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
+//!    the folder (in a folder `e` archives: the app decides); in a menu of choices the digits pick
+//!    its entries; in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
 //!    is not here: `widgets::escape` closes whatever is in front.
@@ -43,6 +45,16 @@ pub enum Key {
     M,
     /// `t`.
     T,
+    /// `r`.
+    R,
+    /// `a`.
+    A,
+    /// `f`.
+    F,
+    /// The hash sign (Shift + 3 on many keyboards: Shift does not stop it).
+    Hash,
+    /// `/`.
+    Slash,
     /// `1` … `9`.
     Digit(u8),
     /// `[` ([`shell::is_sidebar_key`]).
@@ -86,6 +98,16 @@ pub enum Command {
     Mute,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,
+    /// Reply to the mail under the cursor (task E4.2).
+    Reply,
+    /// Reply to everyone on the mail under the cursor.
+    ReplyAll,
+    /// Forward the mail under the cursor.
+    Forward,
+    /// Move the mail under the cursor to the trash.
+    Delete,
+    /// Put the keyboard into the folder's search field.
+    Search,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
     /// Picker: one day earlier.
@@ -132,6 +154,11 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("l") => Key::L,
         Name::Character("m") => Key::M,
         Name::Character("t") => Key::T,
+        Name::Character("r") => Key::R,
+        Name::Character("a") => Key::A,
+        Name::Character("f") => Key::F,
+        Name::Character("#") => Key::Hash,
+        Name::Character("/") => Key::Slash,
         Name::Character(digit) => match digit.parse::<u8>() {
             Ok(n @ 1..=9) => Key::Digit(n),
             _ => return None,
@@ -153,6 +180,11 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::L) => Some(Command::Lane),
         (Focus::List, Key::M) => Some(Command::Mute),
         (Focus::List, Key::T) => Some(Command::MakeTask),
+        (Focus::List, Key::R) => Some(Command::Reply),
+        (Focus::List, Key::A) => Some(Command::ReplyAll),
+        (Focus::List, Key::F) => Some(Command::Forward),
+        (Focus::List, Key::Hash) => Some(Command::Delete),
+        (Focus::List, Key::Slash) => Some(Command::Search),
         (Focus::Choices, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Picker, Key::Left) => Some(Command::EarlierDay),
         (Focus::Picker, Key::Right) => Some(Command::LaterDay),
@@ -214,6 +246,11 @@ mod tests {
             (char("l"), Command::Lane),
             (char("m"), Command::Mute),
             (char("t"), Command::MakeTask),
+            (char("r"), Command::Reply),
+            (char("a"), Command::ReplyAll),
+            (char("f"), Command::Forward),
+            (char("#"), Command::Delete),
+            (char("/"), Command::Search),
             (char("["), Command::Sidebar),
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
@@ -263,7 +300,7 @@ mod tests {
 
     #[test]
     fn other_menus_block_the_list() {
-        for key in [Key::Down, Key::Up, Key::Enter, Key::E, Key::U, Key::S, Key::L, Key::M, Key::T, Key::Digit(1)] {
+        for key in [Key::Down, Key::Enter, Key::E, Key::U, Key::S, Key::T, Key::R, Key::A, Key::Hash, Key::Slash] {
             assert_eq!(command(Focus::Elsewhere, key), None, "{key:?} behind a menu or the drawer");
         }
         assert_eq!(command(Focus::Elsewhere, Key::Sidebar), Some(Command::Sidebar), "[ still closes the drawer");

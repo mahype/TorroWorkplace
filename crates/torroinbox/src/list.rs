@@ -72,7 +72,7 @@ pub const PREVIEW_ROOM: f32 = 120.0;
 
 /// The gap the row estimate counts between two cells: a little more than `list_row`'s own (10),
 /// so the estimate cuts a letter early rather than running under the next cell.
-const CELL_GAP: f32 = space::M;
+pub(crate) const CELL_GAP: f32 = space::M;
 
 /// Width of the bar at the left of the selected row, as `widgets::list_row` draws it.
 const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
@@ -252,7 +252,7 @@ fn row_view<'a>(data: &ListData<'a>, item: &'a Item, width: f32) -> Element<'a, 
 
 /// A list row on two lines: `widgets::list_row` at [`size::ROW_TWO`] – `content` with 16 at the
 /// sides, centred in the height, the bar at the left while `selected`, a line below.
-fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_press: Message) -> Element<'a, Message> {
+pub(crate) fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_press: Message) -> Element<'a, Message> {
     let left = if selected { space::L - SELECTED_BAR } else { space::L };
     let height = size::ROW_TWO - size::HAIRLINE;
     let body = button(container(content).center_y(Fill))
@@ -316,7 +316,7 @@ pub fn fit(
 
 /// The empty state of a view: its icon over what shows up here and when – the shared
 /// `widgets::empty_state` with an icon on top, as the error state has one.
-fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Element<'a, Message> {
+pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Element<'a, Message> {
     let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let words = column![
         typo::text(typo::BODY_STRONG, title).align_x(Alignment::Center),
@@ -328,12 +328,14 @@ fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Element<'a, Me
     center(content).padding(space::XL).into()
 }
 
-/// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts.
+/// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
+/// envelope for a mail account.
 pub fn source_icon(source: &SourceRef) -> Icon {
     match source.kind {
         SourceKind::Suite => Icon::LayoutGrid,
         SourceKind::Agent => Icon::Sparkles,
         SourceKind::Script => Icon::AppWindow,
+        SourceKind::Mail => Icon::Mail,
     }
 }
 
@@ -422,6 +424,8 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         View::Snoozed => (tr("Nothing snoozed."), tr("Snoozed entries wait here until their time.")),
         View::Done => (tr("Nothing done yet."), tr("Done entries stay here for 30 days.")),
         View::Source(_) => (tr("Nothing open from this source."), tr("New entries from it show up here.")),
+        // The views of mail have their own list and empty states (`mail::list`).
+        View::Folder(_) | View::Mail => (tr("No messages here."), tr("Mail in this folder shows up here.")),
     }
 }
 
@@ -579,6 +583,7 @@ mod tests {
         assert_eq!(source_icon(&SourceRef::suite()), Icon::LayoutGrid);
         assert_eq!(source_icon(&SourceRef::agent("codex")), Icon::Sparkles);
         assert_eq!(source_icon(&SourceRef::script("backup")), Icon::AppWindow);
+        assert_eq!(source_icon(&SourceRef::mail("anna@example.org")), Icon::Mail);
     }
 
     #[test]

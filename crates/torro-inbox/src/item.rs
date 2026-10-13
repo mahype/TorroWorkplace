@@ -64,18 +64,18 @@ pub struct Item {
 
 /// Where an entry comes from: what the user mutes and what an agent may be allowed to see.
 ///
-/// Written as text with [`SourceRef::key`] (`suite`, `agent:claude-code`, `script:backup`), the
-/// form used in rights and on the command line.
+/// Written as text with [`SourceRef::key`] (`suite`, `agent:claude-code`, `script:backup`,
+/// `mail:anna@example.org`), the form used in rights and on the command line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub struct SourceRef {
     pub kind: SourceKind,
-    /// Which one of the kind: the agent (`claude-code`, see [`AgentKind::id`]) or the name of the
-    /// script's client. Empty for [`SourceKind::Suite`].
+    /// Which one of the kind: the agent (`claude-code`, see [`AgentKind::id`]), the name of the
+    /// script's client or the address of the mail account. Empty for [`SourceKind::Suite`].
     #[serde(default)]
     pub name: String,
 }
 
-/// The kinds of sources for now; mail, GitHub, Nextcloud and more follow with E4 and E5.
+/// The kinds of sources for now; GitHub, Nextcloud and more follow with E5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
@@ -85,6 +85,11 @@ pub enum SourceKind {
     Agent,
     /// Anything else that reports with a client key: scripts, `torroworkplace notify`.
     Script,
+    /// A mail account of the suite (task E4.1): new mail in its inbox folder. The name is the
+    /// account's address, so the key `mail:<address>` is the account's id. Only the core files
+    /// these entries; a client sees them only with read access to mail and the account besides
+    /// the source.
+    Mail,
 }
 
 impl SourceRef {
@@ -100,22 +105,30 @@ impl SourceRef {
         SourceRef { kind: SourceKind::Script, name: name.into() }
     }
 
-    /// The source as text: `suite`, `agent:<name>` or `script:<name>`. Parsed back by
-    /// [`SourceRef::from_str`].
+    /// The mail account of `address`; its key is the account's id, `mail:<address>`, and the
+    /// account's id parses into this source ([`SourceRef::from_str`]).
+    pub fn mail(address: impl Into<String>) -> SourceRef {
+        SourceRef { kind: SourceKind::Mail, name: address.into() }
+    }
+
+    /// The source as text: `suite`, `agent:<name>`, `script:<name>` or `mail:<address>`. Parsed
+    /// back by [`SourceRef::from_str`].
     pub fn key(&self) -> String {
         match self.kind {
             SourceKind::Suite => "suite".into(),
             SourceKind::Agent => format!("agent:{}", self.name),
             SourceKind::Script => format!("script:{}", self.name),
+            SourceKind::Mail => format!("mail:{}", self.name),
         }
     }
 
-    /// The name to show: "Suite", the product name of a known agent, else the name itself.
+    /// The name to show: "Suite", the product name of a known agent, the address of a mail
+    /// account, else the name itself.
     pub fn label(&self) -> String {
         match self.kind {
             SourceKind::Suite => tr("Suite").into(),
             SourceKind::Agent => AgentKind::from_id(&self.name).map_or_else(|| self.name.clone(), |a| a.label().into()),
-            SourceKind::Script => self.name.clone(),
+            SourceKind::Script | SourceKind::Mail => self.name.clone(),
         }
     }
 }
@@ -132,7 +145,7 @@ pub struct ParseSourceError(pub String);
 
 impl fmt::Display for ParseSourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not a source: {:?} (expected suite, agent:<name> or script:<name>)", self.0)
+        write!(f, "not a source: {:?} (expected suite, agent:<name>, script:<name> or mail:<address>)", self.0)
     }
 }
 
@@ -141,7 +154,7 @@ impl std::error::Error for ParseSourceError {}
 impl FromStr for SourceRef {
     type Err = ParseSourceError;
 
-    /// `suite`, `agent:<name>` or `script:<name>` with a name that is not empty.
+    /// `suite`, `agent:<name>`, `script:<name>` or `mail:<address>` with a name that is not empty.
     fn from_str(text: &str) -> Result<SourceRef, ParseSourceError> {
         let invalid = || ParseSourceError(text.into());
         if text == "suite" {
@@ -154,6 +167,7 @@ impl FromStr for SourceRef {
         match kind {
             "agent" => Ok(SourceRef::agent(name)),
             "script" => Ok(SourceRef::script(name)),
+            "mail" => Ok(SourceRef::mail(name)),
             _ => Err(invalid()),
         }
     }
@@ -174,6 +188,10 @@ pub enum Kind {
     Approval,
     /// An account needs the user: sign-in refused, sync failing. Only the core creates it.
     AccountProblem,
+    /// A message from someone: new mail of a mail account (task E4.1), one entry per conversation.
+    /// Only the core creates it, in the lane the mail rules give ([`crate::rules::mail_lane`]);
+    /// never urgent.
+    Message,
 }
 
 /// The two lanes of the inbox. Only "for me" counts and may show pop-ups.
@@ -284,6 +302,10 @@ pub enum Link {
     /// The window of the agent behind the entry, looked up from [`AgentInfo::pids`] when it is
     /// opened (E2.4), because window ids change. Only on entries a hook reported.
     Window,
+    /// The newest message (`m:…`, as `mail.get_message` takes it) of a mail entry's conversation
+    /// (task E4.1). Only on entries of a mail source, which only the core files; opening it opens
+    /// the Inbox app, which shows the message itself (task E4.2).
+    Mail { message: String },
 }
 
 /// A button on an entry besides done and snooze.
@@ -316,14 +338,20 @@ pub struct SourceInfo {
     pub muted: bool,
 }
 
-/// A lasting rule of the inbox, as `inbox.list_rules` lists it: a lane remembered for a source
-/// (`inbox.set_item_lane` with `remember`) or a muted source (`inbox.mute_source`).
+/// A lasting rule of the inbox, as `inbox.list_rules` lists it: a lane remembered for a source or,
+/// for mail, for one sender of it (`inbox.set_item_lane` with `remember`), or a muted source
+/// (`inbox.mute_source`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Rule {
     /// Opaque id given by the core; pass it to `inbox.remove_rule`.
     pub id: String,
     /// The source the rule is about.
     pub source: SourceRef,
+    /// Only reports from this sender: the address of a mail's sender, in small letters (task
+    /// E4.1). Moving a mail with `remember` keeps the lane for its sender, not for the whole
+    /// account. `None`: every report of the source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
     pub effect: RuleEffect,
     /// When the user made the rule.
     pub created: DateTime<Utc>,
@@ -333,8 +361,8 @@ pub struct Rule {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum RuleEffect {
-    /// New notices of the source go to `lane`. Kinds with a fixed lane keep it
-    /// ([`crate::rules::placement`]).
+    /// New notices of the source go to `lane`, and new mail of the rule's sender. Kinds with a
+    /// fixed lane keep it ([`crate::rules::placement`]).
     Lane { lane: Lane },
     /// New reports of the source are dropped; entries already there stay.
     Muted,
@@ -350,22 +378,36 @@ mod tests {
         let rule = Rule {
             id: "r1".into(),
             source: SourceRef::script("ci"),
+            sender: None,
             effect: RuleEffect::Lane { lane: Lane::Info },
             created: at,
         };
         let value = json(&rule);
         assert_eq!(value["effect"], serde_json::json!({ "kind": "lane", "lane": "info" }));
+        assert!(value.get("sender").is_none(), "left out without a sender: {value}");
         assert_eq!(json(RuleEffect::Muted), serde_json::json!({ "kind": "muted" }));
         assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), rule);
+        let for_sender = Rule { sender: Some("news@shop.example".into()), ..rule };
+        let value = json(&for_sender);
+        assert_eq!(value["sender"], "news@shop.example");
+        assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), for_sender);
     }
 
     #[test]
     fn source_keys_round_trip() {
-        for source in [SourceRef::suite(), SourceRef::agent("claude-code"), SourceRef::script("backup")] {
+        for source in [
+            SourceRef::suite(),
+            SourceRef::agent("claude-code"),
+            SourceRef::script("backup"),
+            SourceRef::mail("anna@example.org"),
+        ] {
             assert_eq!(source.key().parse::<SourceRef>(), Ok(source.clone()), "{source}");
         }
         assert_eq!(SourceRef::agent("codex").key(), "agent:codex");
-        for bad in ["", "agent", "agent:", "mail:me", "suite:x", "Suite"] {
+        // The key of a mail source is the account's id, so the id names the source.
+        assert_eq!(SourceRef::mail("anna@example.org").key(), "mail:anna@example.org");
+        assert_eq!("mail:anna@example.org".parse::<SourceRef>(), Ok(SourceRef::mail("anna@example.org")));
+        for bad in ["", "agent", "agent:", "mail:", "slack:me", "suite:x", "Suite"] {
             assert!(bad.parse::<SourceRef>().is_err(), "{bad:?}");
         }
     }
@@ -376,6 +418,7 @@ mod tests {
         assert_eq!(SourceRef::agent("claude-code").label(), "Claude Code");
         assert_eq!(SourceRef::agent("claude-desktop").label(), "claude-desktop");
         assert_eq!(SourceRef::script("backup").label(), "backup");
+        assert_eq!(SourceRef::mail("anna@example.org").label(), "anna@example.org");
     }
 
     #[test]
@@ -396,6 +439,9 @@ mod tests {
         assert_eq!(json(Lane::ForMe), serde_json::json!("for_me"));
         assert_eq!(json(State::Seen), serde_json::json!("seen"));
         assert_eq!(json(Link::Window), serde_json::json!({ "kind": "window" }));
+        assert_eq!(json(Kind::Message), serde_json::json!("message"));
+        assert_eq!(json(SourceKind::Mail), serde_json::json!("mail"));
+        assert_eq!(json(Link::Mail { message: "m:1".into() }), serde_json::json!({ "kind": "mail", "message": "m:1" }));
         assert_eq!(
             json(Action::Allow { approval: "a1".into() }),
             serde_json::json!({ "kind": "allow", "approval": "a1" })

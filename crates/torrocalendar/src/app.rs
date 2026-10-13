@@ -21,7 +21,7 @@
 //! The night of the timeline and the radar is the suite's setting (`Settings::night`, task K.27):
 //! fetched at start and on every tick like the appearance, so a change elsewhere arrives. A
 //! double-click on a moon (or "Nights" in the header while there is no night) opens the floating
-//! card "Night" with "From" and "To" on the quarter hour, "Save" and "No night"; saving sends
+//! card "Night" with "From" and "Until" on the quarter hour, "Save" and "No night"; saving sends
 //! `Request::SetSetting` with the key `night` (the demo keeps it in the process).
 
 use std::collections::{HashMap, HashSet};
@@ -469,7 +469,7 @@ pub enum Message {
     },
     /// "From" in the card.
     NightFrom(Quarter),
-    /// "To" in the card.
+    /// "Until" in the card.
     NightTo(Quarter),
     /// "Save" in the card: the picked times become the night.
     SaveNight,
@@ -1633,7 +1633,7 @@ impl App {
 }
 
 /// The floating card "Night" (`widgets::popover`): the moon and "Calendar" with ✕ at the top, the
-/// title, "From" and "To" as lists of the quarter hours, "Save" and "No night" at the bottom. The
+/// title, "From" and "Until" as lists of the quarter hours, "Save" and "No night" at the bottom. The
 /// same fields as the row "Night" in the control centre.
 fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     let moon = icon::icon(Icon::Moon, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
@@ -1657,7 +1657,7 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
             .align_y(Alignment::Center);
         widgets::prop_row(None, row, None)
     };
-    let rows = vec![time(tr("From"), card.from, Message::NightFrom), time(tr("To"), card.to, Message::NightTo)];
+    let rows = vec![time(tr("From"), card.from, Message::NightFrom), time(tr("Until"), card.to, Message::NightTo)];
     let actions = vec![
         widgets::text_button(None, tr("Save"), style::button::secondary, Some(Message::SaveNight)),
         widgets::text_button(None, tr("No night"), style::button::ghost, Some(Message::NoNight)),

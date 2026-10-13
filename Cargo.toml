@@ -47,11 +47,10 @@ getrandom = "0.4.3"
 hickory-resolver = { version = "0.26.3", default-features = false, features = ["system-config", "tokio"] }
 # A local HTTP server for the discovery tests (torro-pim-caldav, M7.1); only a dev-dependency.
 httpmock = { version = "0.8.3", default-features = false }
-# Mail (task M2.1, used from M2.2 on): IMAP on tokio, MIME read and written, SMTP. TLS everywhere through rustls
+# Mail (task M2.1, used from M2.2 on): MIME read and written, SMTP; IMAP is our own layer on tokio-rustls (M2.3). TLS everywhere through rustls
 # with the aws-lc-rs provider reqwest already brings, never OpenSSL or native-tls: one crypto provider in the build,
 # and the workspace builds alike on Linux, macOS and Windows. Roots: the system's (rustls-platform-verifier, as
 # reqwest does) or Mozilla's (webpki-roots).
-async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
 lettre = { version = "0.11.23", default-features = false, features = ["aws-lc-rs", "builder", "hostname", "rustls-platform-verifier", "smtp-transport", "tokio1", "tokio1-rustls"] }
 mail-builder = { version = "1.0.0", default-features = false }
 mail-parser = { version = "0.11.9", features = ["full_encoding"] }
@@ -63,6 +62,9 @@ webpki-roots = "1.0.9"
 interprocess = { version = "2.4.5", features = ["tokio"] }
 iced ={ version = "0.14.0", features = ["canvas", "svg", "tokio"] }
 keyring = "4.2.0"
+# The file chooser of the compose window (torroinbox, E4.3): native on macOS and Windows, the XDG portal on Linux
+# (no GTK needed), asynchronous so it never blocks the window.
+rfd = "0.17.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "charset", "http2", "json", "form"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["server", "transport-io"] }
 roxmltree = "0.21.1"

@@ -3,7 +3,7 @@
 //! – one row each, the whole row is the button, a check mark at the chosen one (Deutsch is shown in
 //! its own name, like the language picker of any app); "Interface" has the zoom of the suite with
 //! −, the value, + and "Reset" (task Z.1); "Calendar" has the night with its two times "From" and
-//! "To" on the quarter hour (task K.27); "Startup" has the "Start at login" switch. There is no
+//! "Until" on the quarter hour (task K.27); "Startup" has the "Start at login" switch. There is no
 //! Save button: every change sends `Request::SetSetting` with the one key that changed, and the
 //! shell reloads `Data` afterwards. The zoom goes through the window's own zoom instead
 //! (`Action::Zoom`), which saves it and applies it at once, also in the demo. The page shows
@@ -34,7 +34,7 @@ pub enum Message {
     Zoom(Step),
     /// The night's start, picked in "From".
     NightFrom(Quarter),
-    /// The night's end, picked in "To".
+    /// The night's end, picked in "Until".
     NightTo(Quarter),
 }
 
@@ -119,13 +119,13 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     column![language, appearance, interface, calendar, startup].spacing(space::XL).into()
 }
 
-/// "From" and "To" of the night, each a list of the quarter hours of a day.
+/// "From" and "Until" of the night, each a list of the quarter hours of a day.
 fn night_control<'a>(night: Night) -> Element<'a, Message> {
     let label = |text: &'a str| typo::text(typo::META, text).style(torro_gui::theme::text_2);
     row![
         label(tr("From")),
         time_field(night.from, Message::NightFrom),
-        label(tr("To")),
+        label(tr("Until")),
         time_field(night.to, Message::NightTo),
     ]
     .spacing(space::S)

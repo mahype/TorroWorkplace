@@ -319,6 +319,7 @@ mod tests {
             state: account(),
             collections: vec![collection(), calendar(), list()],
             scopes: None,
+            mail: None,
         }
     }
 

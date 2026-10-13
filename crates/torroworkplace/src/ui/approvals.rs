@@ -10,11 +10,14 @@
 //!   rather than cut off, because it is what the person decides on; below it the client's name and
 //!   the time left. At the right "Deny" and "Allow", which send `approvals.decide_approval` through
 //!   [`Action::Send`]. The control centre talks with the app key, the only key that may decide.
+//!   An approval with details (sending mail, task M3.5: every recipient, the attachments, the
+//!   start of the text) has "Show details" under it, which lists them one per line, wrapped.
 //! - **Recently decided**: done, failed, denied and expired ones of the last day, quieter, one line
 //!   each, with their state as dot and word.
 //!
-//! Summary, client name and error messages hold text a client sent. They are shown as plain text
-//! (an Iced `text` interprets nothing: no markup, no links), never as anything else.
+//! Summary, details, client name and error messages hold text from outside (a client's, a mail's).
+//! They are shown as plain text (an Iced `text` interprets nothing: no markup, no links), never as
+//! anything else; the core made them harmless and short already.
 
 use std::collections::BTreeSet;
 
@@ -32,16 +35,20 @@ use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use super::{Action, Data, one_line, row_frame};
 
 /// Page state: the approvals whose decision is on its way, so a second click cannot send it again
-/// (the core would answer `conflict`).
+/// (the core would answer `conflict`), and those whose details are shown.
 #[derive(Debug, Default)]
 pub struct State {
     deciding: BTreeSet<String>,
+    /// The ids of the approvals whose details are open; all are closed at first.
+    expanded: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     /// "Allow" (`allow: true`) or "Deny" was pressed for the approval with this id.
     Decide { id: String, allow: bool },
+    /// "Show details" or "Hide details" of the approval with this id.
+    ToggleDetails(String),
 }
 
 pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
@@ -51,6 +58,12 @@ pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
                 return Action::None;
             }
             Action::Send(Request::DecideApproval { id, allow })
+        }
+        Message::ToggleDetails(id) => {
+            if !state.expanded.remove(&id) {
+                state.expanded.insert(id);
+            }
+            Action::None
         }
     }
 }
@@ -111,7 +124,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 
 /// An open approval: the summary (wrapped, so nothing of what would run is hidden), the client and
 /// the time left below it, "Deny" and "Allow" at the right. While its decision is on its way both
-/// buttons are disabled.
+/// buttons are disabled. With details, "Show details" below opens them ([`details_block`]).
 fn open_row<'a>(state: &State, approval: &'a ApprovalInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let detail = format!("{} · {}", approval.client_name, time_left(approval.expires, now));
     let lines = column![
@@ -127,7 +140,34 @@ fn open_row<'a>(state: &State, approval: &'a ApprovalInfo, now: DateTime<Utc>) -
     .spacing(space::S)
     .align_y(Alignment::Center);
     let content = row![lines.width(Fill), buttons].spacing(space::L).align_y(Alignment::Center);
+    let content = column![content].push(details_block(state, approval)).spacing(space::XS);
     container(content).width(Fill).padding([space::M, space::L]).into()
+}
+
+/// "Show details" with a chevron, and when open the details one per line, wrapped (an address or
+/// the start of a text can be long); `None` for an approval without details.
+fn details_block<'a>(state: &State, approval: &'a ApprovalInfo) -> Option<Element<'a, Message>> {
+    if approval.details.is_empty() {
+        return None;
+    }
+    let open = state.expanded.contains(&approval.id);
+    let (icon, label) = match open {
+        true => (Icon::ChevronDown, tr("Hide details")),
+        false => (Icon::ChevronRight, tr("Show details")),
+    };
+    let toggle = widgets::text_button(
+        Some(icon),
+        label,
+        style::button::ghost,
+        Some(Message::ToggleDetails(approval.id.clone())),
+    );
+    let mut block = column![super::accounts::on_axis(toggle)].spacing(space::XS);
+    if open {
+        let lines =
+            approval.details.iter().map(|line| typo::text(typo::META, line.as_str()).style(theme::text_2).into());
+        block = block.push(column(lines).spacing(space::XS));
+    }
+    Some(block.into())
 }
 
 /// A decided or expired approval, quieter than the open ones: the summary in `text_2` on one line,
@@ -200,6 +240,7 @@ mod tests {
             client_name: "Claude Code".into(),
             command: "calendar.delete_event".into(),
             summary: "Delete event \"Team meeting\" on Tue, 14 Oct 09:00 from \"Work\"".into(),
+            details: vec!["To: bernd@example.com".into(), "Text: \"Dear Bernd\"".into()],
             created: now - Duration::minutes(10) + expires_in,
             expires: now + expires_in,
             decided: (!state.is_pending()).then_some(now),
@@ -278,5 +319,22 @@ mod tests {
         }
         let _ = update(&mut state, Message::Decide { id: "a".into(), allow: true }, &Data::default());
         drop(view(&state, &data(vec![approval("a", ApprovalState::Pending, Duration::minutes(4))])));
+    }
+
+    /// Task M3.5: the details of an approval are closed at first; a press opens them, another
+    /// closes them, each approval on its own. Without details there is nothing to open.
+    #[test]
+    fn details_open_and_close_per_approval() {
+        let mut state = State::default();
+        let open = approval("a", ApprovalState::Pending, Duration::minutes(4));
+        let plain = ApprovalInfo { id: "b".into(), details: Vec::new(), ..open.clone() };
+        assert!(details_block(&state, &plain).is_none(), "nothing to show");
+        assert!(details_block(&state, &open).is_some() && state.expanded.is_empty(), "closed at first");
+        let toggle = |state: &mut State, id: &str| update(state, Message::ToggleDetails(id.into()), &Data::default());
+        assert!(matches!(toggle(&mut state, "a"), Action::None), "nothing is sent");
+        assert!(state.expanded.contains("a") && !state.expanded.contains("b"));
+        drop(view(&state, &data(vec![open, plain])));
+        toggle(&mut state, "a");
+        assert!(state.expanded.is_empty());
     }
 }

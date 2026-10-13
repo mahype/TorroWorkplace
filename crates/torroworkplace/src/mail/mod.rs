@@ -2,6 +2,15 @@
 //!
 //! - [`store`]: one SQLite file per account (folders, message headers, texts, full-text index,
 //!   who wrote which draft) and the opaque ids (`f:…`, `m:…`) that clients hold on to.
+//! - [`service`]: the mail accounts of the core, each with its IDLE connection, its command
+//!   connection and its store (task M2.6); the commands (M3.1 to M3.3) start there.
+//! - [`read`]: the reading commands (`mail.list_folders`, `mail.search_messages`,
+//!   `mail.get_message`, `mail.get_thread`, `mail.get_attachment`, task M3.1).
+//! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
+//! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
+//!   E4.1).
+//! - [`write`]: changing mail: flags, moving, deleting and drafts (task M3.2).
+//! - [`send`]: sending a draft under the send rule, its copy in the Sent folder (task M3.3).
 //! - [`MailDirs`], [`AttachmentCache`]: where the files live, and the managed folder for
 //!   attachments that were fetched on demand.
 //!
@@ -16,11 +25,6 @@
 //!
 //! **Files** (security rule 5 of task M2.1): `<data>/mail/` and `<cache>/mail-attachments/` are
 //! 0700, every file in them (the SQLite files with `-wal` and `-shm`, fetched attachments) 0600.
-//!
-//! Nothing here is called yet: the sync (M2.6) and the commands (M3.1, M3.2) come next.
-
-// The whole module waits for its first caller (M2.6); remove this line with that task.
-#![allow(dead_code)]
 
 use std::fmt;
 use std::fs;
@@ -31,7 +35,13 @@ use std::time::{Duration, SystemTime};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+pub mod inbox_feed;
+pub mod read;
+pub mod send;
+pub mod service;
 pub mod store;
+pub mod sync;
+pub mod write;
 
 /// Fetched attachments are deleted after this long (task M2.5).
 pub const ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -168,6 +178,7 @@ impl AttachmentCache {
     }
 
     /// The managed folder.
+    #[allow(dead_code, reason = "used from attachments of mail.get_attachment and drafts, tasks M3.1 and M3.2")]
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -196,6 +207,7 @@ impl AttachmentCache {
     /// `path` is a regular file inside the managed folder: not a symbolic link, and not outside
     /// after the system resolved `..` and links on the way. A path that is not there is not
     /// inside.
+    #[allow(dead_code, reason = "used from attachments of drafts, task M3.2")]
     pub fn contains(&self, path: &Path) -> bool {
         let is_file = fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file());
         let inside = match (path.canonicalize(), self.dir.canonicalize()) {

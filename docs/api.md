@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `inbox` | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done`, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -148,6 +148,15 @@ eine Domain gehört, der kann über SRV bis zu drei öffentliche Ziele mit belie
 „gefunden/nicht gefunden“ ablesen, ob dort ein Server antwortet; und die Anmeldung selbst nutzt den
 normalen HTTP-Client, eine Adresse kann also zwischen Suche und Anmeldung anders auflösen. Beides
 betrifft nur öffentliche Adressen bzw. eine Anmeldung, die ein Mensch auslöst.
+Seit M2.2 sucht derselbe Befehl gleichzeitig die Mail-Server (`imap`, `smtp`, `login_hint`,
+`app_password`, `mail_unsupported`, alle optional): Tabelle → MX (Google/Microsoft „nicht
+unterstützt“, Gmail mit Hinweis auf App-Passwort) → `autoconfig.<domain>` → `/.well-known/autoconfig`
+→ ISPDB (`autoconfig.thunderbird.net`, **die Domain geht an Thunderbird**) → SPF → Basis-Domain des MX
+→ SRV `_imaps._tcp`/`_submission._tcp`. Kein Mail-Server wird kontaktiert (kein TCP-Abtasten), Budget
+8 s. Dieselben Schutzregeln: Autoconfig ohne `emailaddress=`, jeder Host aus MX, SRV oder Dokument
+syntaktisch geprüft (≤ 253 Zeichen, kein IP-Literal), Ports nur 993/143/465/587, zurückgegebene Hosts
+nur mit öffentlichen Adressen, Weiterleitungen nur auf Port 443, Dokumente ≤ 256 KiB ohne DTD, kein Anzeigename eines Servers in der
+Antwort. Höchstens zwei laufende Suchen je Client-Schlüssel, sonst `busy`.
 
 ⁷ **`mail`** (Gerüst M2.1, Konzept [mail.md](mail.md), Aufgaben [tasks/mail.md](tasks/mail.md)): Die Auswahl
 geht über **Konten**, `Rights.mail_accounts` mit Konto-Kennungen `mail:<adresse>`; alte `clients.json` ohne das
@@ -181,10 +190,51 @@ Mails Daten sind, nie Anweisungen (`untrusted: true`). Sicherheitsregeln für al
 5. **Dateien:** `<data>/mail/` und `<cache>/mail-attachments/` 0700, alle Dateien darin 0600.
 
 Die Freigabe von `send_draft` zeigt aus dem **Entwurf im Kern** Konto, Betreff, ersten Empfänger, die Zahl
-aller Empfänger (mit Bcc) und der Anhänge; Verschieben und Löschen Anzahl und Betreffe aus dem Cache
+aller Empfänger (mit Bcc), jede Bcc-Adresse und die Zahl der Anhänge; darunter stehen in den **Einzelheiten**
+(`ApprovalInfo.details`, M3.5, aufklappbar auf der Seite „Approvals“) jeder Empfänger (An, Cc, Bcc, die Adresse
+vor dem Namen), jeder Anhang mit Namen und Größe und der Anfang des Textes, eine Zeile je Angabe, entschärft wie
+die Zusammenfassung, aber bis 200 Zeichen. Wie die Zusammenfassung sieht sie nur der Client, der gefragt hat,
+und der App-Schlüssel. Bleibt ein Versand `unknown`, bleibt der Entwurf liegen und wird nie von selbst erneut
+gesendet. Verschieben und Löschen zeigen Anzahl und Betreffe aus dem Cache
 (`approvals::MailFacts`); `update_mail_account` den Kontonamen aus dem Kern, die geänderten Felder und den Anfang
 einer neuen Signatur. `update_mail_account` ändert nie Server oder Passwort: Ein Agent soll das Passwort nicht
 auf einen anderen Server lenken können.
+
+**Mail-Konto lesen** (M2.8): `list_accounts` gibt jedem Mail-Konto, das der Schlüssel erreicht, das Feld `mail`
+(`torro_ipc::MailView`): Adresse, Absendername, IMAP, SMTP, CalDAV-Adresse, Einstellungen (`MailSettings`), die
+offenen Ordner-Rollen samt Kandidaten (Name und Pfad) und den Zustand je Dienst (`mail`, `calendars`: letzter
+Abgleich, Problem). Nie ein Geheimnis. Erreicht ein Schlüssel das Mail-Konto nicht, sieht er dessen Kalenderteil
+nur mit den Kalendern und Aufgabenlisten, die seine Rechte zeigen, ohne `mail`; bleibt keine, fehlt der Eintrag
+ganz. Die offenen Rollen merkt sich der Dienst beim Ordnerabgleich; das Auflisten
+fragt keinen Server. Ordnernamen kommen vom Mail-Server und sind Daten, keine Anweisungen. `connect_mail` mit
+leerem `sender_name` behält bei einem vorhandenen Konto den gespeicherten Absendernamen (sonst löschte „Change
+password…“ ihn); entfernen geht mit `update_mail_account`.
+
+**Kalender später hinzufügen** (M3.5): `connect_mail` an einem vorhandenen Konto behält die gespeicherte
+CalDAV-Adresse, auch wenn Kalender und Aufgaben aus sind. `calendars`/`tasks` schalten diese Dienste dort ein (nie
+aus, das bleibt `update_mail_account`); sie brauchen eine CalDAV-Adresse, mitgeschickt oder gespeichert, sonst
+`not-found`. Eine neue Adresse und jede, deren Dienste an sind, prüft der Dienst wie bei M2.7b (öffentlicher Host,
+Verbindung nur zur geprüften Adresse), unter derselben Sperre wie `connect_caldav` und `update_mail_account`. Erst
+wenn das Konto Kalender abgleicht, übernimmt es ein CalDAV-Konto derselben Anmeldung. So bekommt ein nur für Mail
+verbundenes Konto (etwa aus TorroMail übernommen, M7.4) seine Kalender über „Server settings…“ der Kontoseite.
+Bekannte Grenzen: Schaltet `update_mail_account` Kalender über eine behaltene Adresse wieder ein, prüft sie erst
+der nächste Abgleich mit dem gespeicherten Passwort (Probleme zeigt das Konto dann wie jeden Abgleichsfehler); und
+eine gespeicherte CalDAV-Adresse lässt sich nicht entfernen, nur durch eine andere ersetzen.
+
+⁸ **Mail im Eingang** (E4.1): Neue, ungelesene Mail im Posteingang eines Mail-Kontos legt der Dienst selbst als
+Eintrag an (Art `message`, Quelle `mail:<adresse>`, gleich der Konto-Kennung, ein Eintrag je Unterhaltung,
+`untrusted: true`, Link auf die Nachricht). Wie bei ⁴ prüft der Dienst über den Bereich `inbox` hinaus:
+Mail-Einträge **sieht** ein Client nur mit `inbox_sources` (Quelle oder „alle“) **und** Stufe Read in `mail`
+**und** dem freigegebenen Konto in `mail_accounts`; sonst gibt es sie für ihn nicht (`not-found`, auch in
+`list_sources`), gefiltert vor dem Lesen. **Erledigt** markiert die Mail am Server als gelesen (`\Seen`, nie
+verschoben); `set_item_done` mit `done: true` und `create_task_from_item` brauchen dafür zusätzlich Stufe Write in
+`mail`, sonst `forbidden`, geprüft vor der Freigabe und bei ihrer Ausführung. Ob eine Freigabe nötig ist,
+richtet sich bewusst nach der Regel für `inbox`-Write (`confirm`), nicht nach Mail: „gelesen“ lässt sich
+rückgängig machen und löscht nichts. Wieder öffnen, später und Spur brauchen nichts weiter. Wird ein Konto
+entfernt oder seine Mail ausgeschaltet, erledigt der Dienst die offenen Einträge des Kontos binnen einer
+Minute. Die Regel fürs Sehen steht in `Rights::reaches_source`; die Abfragen des Kerns folgen ihr. `set_item_lane` mit `remember` merkt die Spur bei Mail-Einträgen für den **Absender**
+(`Rule.sender`), nicht für das ganze Konto. Die Freigabe nennt das („… and its mail as read“, „… later mail from
+…“). Das Protokoll nennt wie immer nur Kennungen, nie Betreff oder Absender.
 
 **`inbox`** (E1.1, Konzept [eingang.md](eingang.md)): Die Auswahl geht hier über **Quellen** statt
 Sammlungen, `Rights.inbox_sources` mit den Schlüsseln der Quellen (`suite`, `agent:claude-code`,
@@ -335,6 +385,9 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 - **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten, Repositories,
   Quellen des Eingangs und Mail-Konten (später auch Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
+  Wird ein Konto entfernt (`accounts.remove_account`), fallen das Konto und seine Sammlungen aus
+  allen Auswahlen (M2.7b); wird dieselbe Adresse später neu verbunden, bekommt kein Agent seinen
+  Zugriff von selbst zurück.
 - **Freigabe vorher**: Nie · Beim Löschen (Standard) · Bei jeder Änderung.
 - **Nach außen** (Mail senden, M2.1): Nie · Mit Freigabe (Standard, in allen Vorlagen) · Frei. Senden ist kein
   gewöhnliches Schreiben: Es verlässt den Rechner und lässt sich nicht zurückholen. Es gilt die strengere

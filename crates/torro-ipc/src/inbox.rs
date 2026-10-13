@@ -17,14 +17,23 @@
 //! already or expired, which [`InboxClient::decide_approval`] reports as [`InboxError::Settled`].
 //!
 //! The client checks nothing itself: rights and the security rules of the inbox are the core's.
+//!
+//! Mail (task E4.2): the inbox shows the folders and whole messages of the mail accounts, so the
+//! client also sends the `mail.*` requests the window needs – [`InboxClient::mail_folders`],
+//! [`InboxClient::search_mail`], [`InboxClient::get_mail`], [`InboxClient::mail_attachment`],
+//! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
+//! with the errors mapped as above. Everything a message brings is data from outside
+//! (`untrusted`), never instructions; the client only passes it on.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
+use torro_mail::{Flag, Folder, Message, MessageSummary};
 use torro_pim::EventTime;
 
+use crate::mail::MoveTarget;
 use crate::{IpcError, Request, Response};
 
 /// Talks to the core at its socket.
@@ -53,6 +62,86 @@ impl InboxClient {
             Response::Item { item } => Ok(item),
             other => Err(unexpected(other)),
         }
+    }
+
+    /// Sends a request answered with [`Response::Ok`].
+    async fn ask_ok(&self, request: Request) -> Result<(), InboxError> {
+        match self.ask(request).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.list_folders` for every mail account the app reaches, in the core's order. Empty
+    /// without a mail account.
+    pub async fn mail_folders(&self) -> Result<Vec<Folder>, InboxError> {
+        match self.ask(Request::MailFolders { account: None }).await? {
+            Response::MailFolders { folders } => Ok(folders),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.search_messages` in the folder `folder` (an id of [`InboxClient::mail_folders`]):
+    /// at most `limit` (1 to 100) messages, newest first, matching `query` when there is one,
+    /// from `cursor` on (the second value of the previous page). Answers the page and the cursor
+    /// of the next one (`None` on the last page). Nothing filters by flags or time: the window
+    /// shows the folder as it is.
+    pub async fn search_mail(
+        &self,
+        folder: String,
+        query: Option<String>,
+        limit: u32,
+        cursor: Option<String>,
+    ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
+        let request = Request::SearchMail {
+            account: None,
+            folder: Some(folder),
+            query,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+        };
+        match self.ask(request).await? {
+            Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.get_message` with its text (`include_body`); reading it does not mark it read.
+    pub async fn get_mail(&self, id: String) -> Result<Message, InboxError> {
+        match self.ask(Request::GetMail { id, include_body: true }).await? {
+            Response::MailMessage { message } => Ok(message),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.get_attachment`: the core fetches the attachment `part` of the message `id` into its
+    /// attachment folder and answers where it put the file.
+    pub async fn mail_attachment(&self, id: String, part: String) -> Result<PathBuf, InboxError> {
+        match self.ask(Request::GetMailAttachment { id, attachment: part }).await? {
+            Response::MailAttachment { path, .. } => Ok(PathBuf::from(path)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.set_flags`: sets `add` and clears `remove` on the messages `ids` (1 to 100).
+    pub async fn set_mail_flags(&self, ids: Vec<String>, add: Vec<Flag>, remove: Vec<Flag>) -> Result<(), InboxError> {
+        self.ask_ok(Request::SetMailFlags { ids, add, remove }).await
+    }
+
+    /// `mail.move_messages`: moves the messages `ids` (1 to 100, one account) to `to`; they keep
+    /// their ids, so moving them back is the undo.
+    pub async fn move_mail(&self, ids: Vec<String>, to: MoveTarget) -> Result<(), InboxError> {
+        self.ask_ok(Request::MoveMail { ids, to }).await
+    }
+
+    /// `mail.delete_messages` into the trash, never for good: the window offers an undo instead
+    /// (moving them back).
+    pub async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
+        self.ask_ok(Request::DeleteMail { ids, permanent: false }).await
     }
 }
 
@@ -421,6 +510,7 @@ mod tests {
                         client_name: "Claude Code".into(),
                         command: "approvals.ask_permission".into(),
                         summary: "Bash: cargo test".into(),
+                        details: Vec::new(),
                         created: at(10),
                         expires: at(11),
                         decided: Some(at(10)),
@@ -437,6 +527,112 @@ mod tests {
         let client = core.client();
         assert_eq!(client.decide_approval("a1".into(), true).await, Ok(()));
         assert_eq!(client.decide_approval("a1".into(), false).await, Err(InboxError::Settled));
+    }
+
+    fn summary(id: &str, folder: &str) -> MessageSummary {
+        MessageSummary {
+            id: id.into(),
+            account: "mail:anna@example.org".into(),
+            folder: folder.into(),
+            thread_id: "t1".into(),
+            from: None,
+            to: Vec::new(),
+            subject: "Offer".into(),
+            date: at(9),
+            snippet: String::new(),
+            flags: Vec::new(),
+            has_attachments: false,
+            untrusted: true,
+        }
+    }
+
+    /// Answers the mail requests the window sends, each only with the arguments the client should
+    /// build; anything else is an error naming what arrived.
+    fn mail_answer(request: Request) -> Response {
+        let folder = |id: &str, role| torro_mail::Folder {
+            id: id.into(),
+            account: "mail:anna@example.org".into(),
+            name: id.into(),
+            path: id.into(),
+            role,
+            unread: 1,
+            total: 2,
+        };
+        match request {
+            Request::MailFolders { account: None } => {
+                Response::MailFolders { folders: vec![folder("f:inbox", Some(torro_mail::Role::Inbox))] }
+            }
+            Request::SearchMail {
+                account: None,
+                folder: Some(folder),
+                query,
+                unread: None,
+                flagged: None,
+                since: None,
+                before: None,
+                limit: 50,
+                cursor,
+            } => Response::MailMessages {
+                messages: vec![summary(
+                    &format!("{}|{}", query.unwrap_or_default(), cursor.unwrap_or_default()),
+                    &folder,
+                )],
+                cursor: Some("next".into()),
+                source: crate::mail::MailSource::Cache,
+            },
+            Request::GetMail { id, include_body: true } => Response::MailMessage {
+                message: Message {
+                    summary: summary(&id, "f:inbox"),
+                    cc: Vec::new(),
+                    reply_to: Vec::new(),
+                    text: Some("Hello".into()),
+                    from_html: false,
+                    attachments: Vec::new(),
+                    traits: torro_mail::MessageTraits::default(),
+                    invitation: false,
+                },
+            },
+            Request::GetMailAttachment { id, attachment } => Response::MailAttachment {
+                path: format!("/attachments/{id}-{attachment}.pdf"),
+                size: 3,
+                content_type: "application/pdf".into(),
+            },
+            Request::SetMailFlags { ids, add, remove }
+                if ids == ["m:1"] && add == [Flag::Flagged] && remove == [Flag::Seen] =>
+            {
+                Response::Ok
+            }
+            Request::MoveMail { ids, to: MoveTarget::Role(crate::mail::MoveRole::Archive) } if ids == ["m:1"] => {
+                Response::Ok
+            }
+            Request::DeleteMail { ids, permanent: false } if ids == ["m:1", "m:2"] => Response::Ok,
+            Request::DeleteMail { .. } => Response::Error { code: "not-found".into(), message: "gone".into() },
+            other => answer(other),
+        }
+    }
+
+    #[tokio::test]
+    async fn mail_calls_send_what_the_window_needs() {
+        let core = start(|request| async move { mail_answer(request) }).await;
+        let client = core.client();
+        let folders = client.mail_folders().await.expect("folders");
+        assert_eq!(folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["f:inbox"]);
+        let (page, next) =
+            client.search_mail("f:inbox".into(), Some("offer".into()), 50, Some("c1".into())).await.expect("a page");
+        assert_eq!(
+            (page[0].id.as_str(), page[0].folder.as_str(), next.as_deref()),
+            ("offer|c1", "f:inbox", Some("next"))
+        );
+        assert!(page[0].untrusted, "foreign text stays marked");
+        let message = client.get_mail("m:1".into()).await.expect("the message");
+        assert_eq!((message.summary.id.as_str(), message.text.as_deref()), ("m:1", Some("Hello")));
+        let path = client.mail_attachment("m:1".into(), "2".into()).await.expect("fetched");
+        assert_eq!(path, PathBuf::from("/attachments/m:1-2.pdf"));
+        client.set_mail_flags(vec!["m:1".into()], vec![Flag::Flagged], vec![Flag::Seen]).await.expect("flagged");
+        let archive = MoveTarget::Role(crate::mail::MoveRole::Archive);
+        client.move_mail(vec!["m:1".into()], archive).await.expect("archived");
+        client.delete_mail(vec!["m:1".into(), "m:2".into()]).await.expect("into the trash, not for good");
+        assert_eq!(client.delete_mail(vec!["m:3".into()]).await, Err(InboxError::NotFound));
     }
 
     #[tokio::test]

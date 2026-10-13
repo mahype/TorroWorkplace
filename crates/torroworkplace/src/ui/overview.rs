@@ -303,6 +303,7 @@ mod tests {
             },
             collections: Vec::new(),
             scopes: None,
+            mail: None,
         }
     }
 
@@ -314,6 +315,7 @@ mod tests {
             state,
             collections: Vec::new(),
             scopes: None,
+            mail: None,
         }
     }
 

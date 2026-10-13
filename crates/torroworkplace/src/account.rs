@@ -21,6 +21,13 @@
 //! like the Nextcloud ones, signed in to with a password instead of Login Flow v2 ([`store`]).
 //! Their server is the DAV address itself ([`caldav`]); revoking an app password and the remote
 //! wipe exist only for Nextcloud. Passwords travel as [`Secret`], so no `Debug` shows them.
+//!
+//! Task M2.7: a mail account with a CalDAV address and calendars or tasks switched on syncs them
+//! like a CalDAV account ([`syncs_calendars`]), with the same password. Connecting it takes over
+//! the CalDAV account of the same sign-in in one write of the list ([`store_taking_over`]).
+//!
+//! Task M7.4: the accounts of the separate TorroMail app are read in [`torromail`], only read:
+//! its `state.json` and, for the account a person takes over, its keychain entry.
 
 use std::future::Future;
 use std::path::Path;
@@ -34,6 +41,8 @@ use torro_pim_caldav::nextcloud::{self, Credentials, LoginFlow};
 use torro_pim_caldav::{CalDavAccount, CalDavClient};
 
 use self::github::TokenStore;
+
+pub mod torromail;
 
 /// How often the sign-in is polled while the user is in the browser.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -79,18 +88,42 @@ pub fn stored() -> Result<Vec<Stored>, String> {
     Ok(with_secrets(accounts, |account| account.secret().map_err(|err| err.to_string())))
 }
 
-/// The calendar accounts of `accounts` (Nextcloud, CalDAV) with what `secret` finds for each;
+/// The account syncs calendars or tasks in the calendar service: every Nextcloud and CalDAV
+/// account, and a mail account (task M2.7) with a CalDAV address and calendars or tasks switched
+/// on (`MailSettings::services`). Such a mail account is the only one that syncs its collections;
+/// a CalDAV account of the same sign-in is taken over when the mail account is connected.
+pub fn syncs_calendars(account: &Account) -> bool {
+    match account.kind {
+        AccountKind::Nextcloud | AccountKind::CalDav => true,
+        AccountKind::GitHub => false,
+        AccountKind::Mail => {
+            let services = account.mail_settings.as_ref().map(|settings| settings.services).unwrap_or_default();
+            account.mail.as_ref().is_some_and(|mail| mail.caldav.is_some()) && (services.calendars || services.tasks)
+        }
+    }
+}
+
+/// The id a CalDAV account of the same sign-in as the mail account `account` has (task M2.7):
+/// `caldav:<login>@<CalDAV host>` ([`Account::caldav`]), the same login at the same host. Such an
+/// account is taken over when the mail account is connected with calendars or tasks. `None` for a
+/// mail account without a CalDAV address and for every other kind.
+pub fn caldav_sign_in(account: &Account) -> Option<String> {
+    let url = account.mail.as_ref()?.caldav.as_deref()?;
+    (account.kind == AccountKind::Mail).then(|| Account::caldav(url, &account.login_name, "").id)
+}
+
+/// The calendar accounts of `accounts` ([`syncs_calendars`]) with what `secret` finds for each;
 /// the keychain is a parameter so the sorting can be tested without one.
 fn with_secrets(accounts: Vec<Account>, secret: impl Fn(&Account) -> Result<Option<String>, String>) -> Vec<Stored> {
     accounts
         .into_iter()
-        .filter(|account| matches!(account.kind, AccountKind::Nextcloud | AccountKind::CalDav))
+        .filter(syncs_calendars)
         .map(|account| match secret(&account) {
             Ok(Some(app_password)) => Stored::Ready(Connected { account, app_password: Secret::new(app_password) }),
             Ok(None) => {
                 eprintln!("torroworkplace: {} has no secret in the keychain; sign in again", account.id);
                 let problem = match account.kind {
-                    AccountKind::CalDav => "Sign in again: no password is stored on this device",
+                    AccountKind::CalDav | AccountKind::Mail => "Sign in again: no password is stored on this device",
                     _ => "Sign in again: no app password is stored on this device",
                 };
                 Stored::Unusable { account, problem: problem.into() }
@@ -196,6 +229,50 @@ pub fn store(
     let file = accounts_file.ok_or("no home directory, so the account cannot be stored")?;
     secrets.set(account, password)?;
     let accounts = with_account(account::load_from(file).map_err(|err| err.to_string())?, account.clone());
+    account::save_to(file, &accounts).map_err(|err| err.to_string())
+}
+
+/// Stores a mail account (task M2.7) like [`store`]: the password in `secrets` under the account
+/// id first, then the list at `accounts_file` with `account` in place of the one with the same id
+/// or at the end. With `replaces` (the CalDAV account of the same sign-in, taken over) that
+/// account leaves the list in the same write, so the list never names both and never neither;
+/// its password is deleted from `secrets` afterwards. A password that cannot be deleted then
+/// stays behind unused and is only logged: the account is stored. Blocking (keychain and file):
+/// run it through [`keychain`].
+///
+/// `accounts_file` is `None` without a home directory; then nothing is stored. Errors never hold
+/// the password.
+pub fn store_taking_over(
+    accounts_file: Option<&Path>,
+    secrets: &dyn TokenStore,
+    account: &Account,
+    password: &Secret,
+    replaces: Option<&Account>,
+) -> Result<(), String> {
+    let file = accounts_file.ok_or("no home directory, so the account cannot be stored")?;
+    secrets.set(account, password)?;
+    let mut accounts = with_account(account::load_from(file).map_err(|err| err.to_string())?, account.clone());
+    if let Some(old) = replaces {
+        accounts.retain(|stored| stored.id != old.id);
+    }
+    account::save_to(file, &accounts).map_err(|err| err.to_string())?;
+    if let Some(old) = replaces
+        && let Err(err) = secrets.delete(old)
+    {
+        eprintln!("torroworkplace: the password of the taken-over account {} stays in the keychain: {err}", old.id);
+    }
+    Ok(())
+}
+
+/// Removes the account `id` from the list at `accounts_file` and its secret from `secrets`, the
+/// secret first (as [`forget`]); the other accounts stay. An id the list does not name changes
+/// nothing. Blocking: run it through [`keychain`].
+pub fn forget_in(accounts_file: Option<&Path>, secrets: &dyn TokenStore, id: &str) -> Result<(), String> {
+    let Some(file) = accounts_file else { return Ok(()) };
+    let mut accounts = account::load_from(file).map_err(|err| err.to_string())?;
+    let Some(account) = accounts.iter().find(|account| account.id == id) else { return Ok(()) };
+    secrets.delete(account)?;
+    accounts.retain(|account| account.id != id);
     account::save_to(file, &accounts).map_err(|err| err.to_string())
 }
 
@@ -313,7 +390,7 @@ pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavCli
     let url = match account.kind {
         AccountKind::CalDav => account.server.clone(),
         // The CalDAV address of the same sign-in (task M2.1); a mail-only account has none, which
-        // no client accepts. Mail accounts join the calendar sync with task M2.7.
+        // no client accepts, and it never syncs calendars ([`syncs_calendars`], task M2.7).
         AccountKind::Mail => account.mail.as_ref().and_then(|mail| mail.caldav.clone()).unwrap_or_default(),
         AccountKind::Nextcloud | AccountKind::GitHub => nextcloud::dav_url(&account.server),
     };
@@ -659,6 +736,7 @@ pub mod github {
                 },
                 collections: Vec::new(),
                 scopes: self.scopes.clone(),
+                mail: None,
             }
         }
 

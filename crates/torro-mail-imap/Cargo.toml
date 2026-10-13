@@ -17,7 +17,6 @@ torro-core.workspace = true
 torro-mail.workspace = true
 # The resolver trait and the guards against probing private networks (M7.1), reused by M2.2.
 torro-pim-caldav.workspace = true
-async-imap.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 hickory-resolver.workspace = true
