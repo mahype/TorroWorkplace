@@ -30,6 +30,7 @@ mod glance;
 mod keys;
 mod list;
 mod mail;
+mod overview;
 
 use std::process::ExitCode;
 use std::sync::Arc;

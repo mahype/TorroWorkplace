@@ -28,6 +28,10 @@
 //! panel of "For me", which the window shows once the tile is larger again (making the tile larger
 //! is the tiling manager's job, as in torrocalendar's glance). The clicked row stays highlighted.
 //!
+//! **Sessions with a name** (task E2.6, shown here since E3.9): a coding agent's entry whose session
+//! has a name shows the name instead of "Claude Code is waiting for you", as the list and the panel
+//! do ([`title`]).
+//!
 //! The decisions – counts, what is shown, texts, how much fits – are plain functions with tests;
 //! the views only lay out their results.
 
@@ -388,11 +392,17 @@ fn figures_line(parts: &[(String, bool)], width: f32) -> Element<'static, Messag
     container(line).height(figure_height()).center_y(figure_height()).into()
 }
 
+/// The title of `item` in a glance, on one line: for a coding agent's session with a name the name
+/// (`list::session_name`, task E2.6), else the entry's title.
+pub fn title(item: &Item) -> String {
+    list::session_name(item).unwrap_or_else(|| list::one_line(&item.title))
+}
+
 /// One entry of the mini tile, `width` wide inside its padding: icon, title cut to fit, the time
 /// at the right.
 fn row_view(item: &Item, data: &GlanceData<'_>, width: f32) -> Element<'static, Message> {
     let room = (width - icon::SIZE - space::s() - space::s() - time_width(item, data.now)).max(0.0);
-    let title = list::one_line(&item.title);
+    let title = title(item);
     let title =
         typo::text(typo::body(), ellipsize(&title, typo::body(), room)).style(theme::text).wrapping(Wrapping::None);
     let line = row![source_mark(item), container(title).width(Fill).clip(true), time_view(item, data.now)]
@@ -539,7 +549,7 @@ fn numbers_width(parts: &[(String, bool)]) -> f32 {
 /// title the source and how long ago in `META` (a waiting one with the dot in front).
 fn cell(item: &Item, data: &GlanceData<'_>, width: f32) -> Element<'static, Message> {
     let room = (width - 2.0 * side() - icon::SIZE - space::s()).max(0.0);
-    let title = list::one_line(&item.title);
+    let title = title(item);
     let title =
         typo::text(typo::body(), ellipsize(&title, typo::body(), room)).style(theme::text).wrapping(Wrapping::None);
     // The separator stays whole; only the source's name is cut.
@@ -844,6 +854,20 @@ mod tests {
         assert_eq!(cell_plan(two, true), (2, true, 1));
         assert_eq!(cell_plan(cell_min(), true), (1, false, 1), "the entry comes first");
         assert_eq!(cell_plan(cell_min() - 1.0, true), (0, false, 0));
+    }
+
+    #[test]
+    fn a_named_session_shows_its_name_like_the_list() {
+        let named = for_me().into_iter().find(|item| item.id == "demo-1").expect("a named session");
+        let name = named.agent.as_ref().and_then(|agent| agent.title.clone()).expect("demo-1 has a name");
+        assert_eq!(title(&named), name, "the name, not {:?}", named.title);
+        let mut unnamed = named.clone();
+        if let Some(agent) = unnamed.agent.as_mut() {
+            agent.title = None;
+        }
+        assert_eq!(title(&unnamed), list::one_line(&named.title), "without a name: the title");
+        let notice = for_me().into_iter().find(|item| item.agent.is_none()).expect("a notice");
+        assert_eq!(title(&notice), list::one_line(&notice.title));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Building blocks of a Linear-style window: buttons (also busy), sidebar rows, list rows, group
-//! heads, menus, floating cards, chips (also to choose), property rows (also with the name in
+//! heads, the action bar of a row ([`row_actions`]), menus, floating cards, chips (also to choose), property rows (also with the name in
 //! front), label chips, state pills, progress bars, settings groups and the empty, loading and
 //! error states.
 //!
@@ -602,6 +602,164 @@ pub fn group_head<'a, M: Clone + 'a>(
         rule::horizontal(LINE).style(style::rule)
     ]
     .into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Row actions
+// ---------------------------------------------------------------------------------------------
+
+/// One button of a row's action bar ([`row_actions`]): icon and word, the key that does the same in
+/// the list (shown in the tooltip) and the message it sends.
+///
+/// ```ignore
+/// widgets::RowAction::new(Icon::Check, tr("Done"), "E", Message::Act(id.clone(), Command::Done))
+/// ```
+#[derive(Debug, Clone)]
+pub struct RowAction<'a, M> {
+    pub icon: Icon,
+    /// The word on the button ("Task", "Done"), sentence case through `tr`; the tooltip when the
+    /// bar shows icons only.
+    pub label: iced::widget::text::Fragment<'a>,
+    /// The key that does the same in the list ("E"), shown as [`kbd`] in the tooltip.
+    pub key: &'static str,
+    /// Sent when the button is pressed. The app moves its cursor to the row and acts as the key
+    /// would, so menus opened from the bar open at the row.
+    pub on_press: M,
+}
+
+impl<'a, M> RowAction<'a, M> {
+    /// A button with `icon`, `label` and the key hint `key` that sends `on_press`.
+    pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: M) -> Self {
+        Self { icon, label: label.into_fragment(), key, on_press }
+    }
+}
+
+/// The frame of the action bar around its buttons, and the gap between them: 2, as inside the
+/// segmented control (the skill allows 2 inside building blocks).
+const BAR_INSET: f32 = style::SEGMENT_INSET;
+
+/// The width of one button of the bar with its word: the button padding, the icon (14), the gap and
+/// the word in `CAPTION` (estimated like [`typo::ellipsize`]).
+fn row_action_width(label: &str) -> f32 {
+    let pad = style::button_padding();
+    pad.left + pad.right + icon::SIZE_SM + ICON_GAP + typo::text_width(label, typo::caption())
+}
+
+/// The width the action bar of `actions` takes with `words` (icon and word on every button) or
+/// without (28 per icon), frame included. Apps use [`row_actions_words`] to choose.
+pub fn row_actions_width<M>(actions: &[RowAction<'_, M>], words: bool) -> f32 {
+    let buttons: f32 = actions
+        .iter()
+        .map(|action| if words { row_action_width(action.label.as_ref()) } else { size::control_sm() })
+        .sum();
+    let gaps = BAR_INSET * actions.len().saturating_sub(1) as f32;
+    buttons + gaps + 2.0 * (BAR_INSET + LINE)
+}
+
+/// Whether the bar of `actions` shows its words over a row `width` wide: only while it takes at most
+/// half the row, so the start of the row – who and what – stays readable beside it. Narrower rows
+/// (a narrow window, a column of the overview) get the icons alone, each with its word as tooltip.
+pub fn row_actions_words<M>(actions: &[RowAction<'_, M>], width: f32) -> bool {
+    row_actions_width(actions, true) <= width / 2.0
+}
+
+/// A row with its action bar (task E3.9: "Task", "Done", "Later", "Hide" on an inbox entry): the
+/// bar floats at the row's right end, [`layout::row_padding`] in from the edge and centred in the
+/// row's height, over the end of the row (its time). Surface `menu`, frame `line_strong`, radius
+/// [`radius::sm()`], buttons [`size::control_sm()`] high with icon and word – or, without `words`,
+/// 28 × 28 with the icon alone ([`row_actions_words`] chooses). Every button's tooltip names it
+/// with its key ([`kbd`]).
+///
+/// The bar shows while the pointer is over the row, and always while `shown` – the row under the
+/// keyboard cursor, so the keys and the mouse find the same actions. Without actions the row stays
+/// as it is.
+///
+/// ```ignore
+/// let actions = vec![RowAction::new(Icon::Check, tr("Done"), "E", Message::Act(id.clone(), Command::Done))];
+/// let words = widgets::row_actions_words(&actions, width);
+/// widgets::row_actions(widgets::list_row(cells, selected, Some(on_press)), actions, selected, words)
+/// ```
+pub fn row_actions<'a, M: Clone + 'a>(
+    row: impl Into<Element<'a, M>>,
+    actions: Vec<RowAction<'a, M>>,
+    shown: bool,
+    words: bool,
+) -> Element<'a, M> {
+    with_actions(row.into(), actions, shown, words, None)
+}
+
+/// A card with the action bar of [`row_actions`], for a card whose last line is a row of buttons
+/// [`size::control_sm()`] high, `inset` in from the card's bottom and right edge (its padding and
+/// frame): the bar sits at the right end of that row, centred on it, beside the card's own buttons
+/// instead of over its text. Shown and sized as in [`row_actions`].
+pub fn card_actions<'a, M: Clone + 'a>(
+    card: impl Into<Element<'a, M>>,
+    actions: Vec<RowAction<'a, M>>,
+    shown: bool,
+    words: bool,
+    inset: f32,
+) -> Element<'a, M> {
+    with_actions(card.into(), actions, shown, words, Some(inset))
+}
+
+/// `base` with the bar of `actions` over it: centred at the right (`inset` `None`), or at the
+/// bottom right, centred on a button row `inset` in from the edges.
+fn with_actions<'a, M: Clone + 'a>(
+    base: Element<'a, M>,
+    actions: Vec<RowAction<'a, M>>,
+    shown: bool,
+    words: bool,
+    inset: Option<f32>,
+) -> Element<'a, M> {
+    if actions.is_empty() {
+        return base;
+    }
+    let buttons = actions.into_iter().map(|action| row_action_button(action, words));
+    let bar = container(iced::widget::Row::with_children(buttons).spacing(BAR_INSET).align_y(Alignment::Center))
+        .padding(BAR_INSET)
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.menu)),
+                border: border::rounded(radius::sm()).color(p.line_strong).width(LINE),
+                shadow: p.shadow,
+                ..container::Style::default()
+            }
+        });
+    let layer = container(bar).width(Fill).height(Fill).align_right(Fill);
+    let layer = match inset {
+        None => layer.center_y(Fill).padding(Padding::new(0.0).right(layout::row_padding().right)),
+        // The bar is its frame taller than a button: half of that hangs below the button row.
+        Some(inset) => {
+            layer.align_bottom(Fill).padding(Padding::new(0.0).right(inset).bottom(inset - BAR_INSET - LINE))
+        }
+    };
+    if shown { stack![base, layer].into() } else { iced::widget::hover(base, layer) }
+}
+
+/// One button of [`row_actions`]: on the `menu` surface, so hover and press are `selected` (as in
+/// menus, where `hover` would vanish); the tooltip names it with its key.
+fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
+    let style = style::button::menu_item(false);
+    let tooltip = row![typo::text(typo::caption(), action.label.clone()).style(theme::text_2), kbd(action.key)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let button = if words {
+        // `text`, the colour of a menu item's label.
+        let content = row![
+            toned(action.icon, icon::SIZE_SM, Tone::Text),
+            typo::text(typo::caption(), action.label).wrapping(Wrapping::None)
+        ]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
+        button(container(content).center_y(Fill)).height(size::control_sm()).padding(style::button_padding())
+    } else {
+        button(center(toned(action.icon, icon::SIZE, Tone::Text)))
+            .width(size::control_sm())
+            .height(size::control_sm())
+            .padding(0)
+    };
+    tip(button.style(style).on_press(action.on_press), tooltip, tooltip::Position::Bottom)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1958,5 +2116,41 @@ mod tests {
         ];
         assert!(!blocks.is_empty());
         let _: Subscription<()> = escape();
+    }
+
+    fn actions() -> Vec<RowAction<'static, Msg>> {
+        vec![
+            RowAction::new(Icon::ListTodo, "Task", "T", Msg::Go),
+            RowAction::new(Icon::Check, "Done", "E", Msg::Go),
+            RowAction::new(Icon::Clock, "Later", "S", Msg::Go),
+            RowAction::new(Icon::Ellipsis, "Hide", "M", Msg::Close),
+        ]
+    }
+
+    #[test]
+    fn the_action_bar_measures_its_buttons() {
+        let icons = row_actions_width(&actions(), false);
+        // Four 28-px buttons, three gaps of 2 and the frame of 2 + 1 on each side.
+        assert_eq!(icons, 4.0 * size::control_sm() + 3.0 * BAR_INSET + 2.0 * (BAR_INSET + LINE));
+        let words = row_actions_width(&actions(), true);
+        assert!(words > icons, "words take more room: {words} vs {icons}");
+        let one = row_actions_width(&actions()[..1], true);
+        assert_eq!(one, row_action_width("Task") + 2.0 * (BAR_INSET + LINE), "no gap for a single button");
+    }
+
+    #[test]
+    fn words_show_only_while_the_bar_takes_at_most_half_the_row() {
+        let words = row_actions_width(&actions(), true);
+        assert!(row_actions_words(&actions(), 2.0 * words));
+        assert!(!row_actions_words(&actions(), 2.0 * words - 1.0), "a narrow row gets icons");
+    }
+
+    #[test]
+    fn the_action_bar_builds_shown_on_hover_and_without_actions() {
+        for (shown, words) in [(true, true), (false, true), (true, false), (false, false)] {
+            let _: Element<'_, Msg> = row_actions(list_row(vec![], shown, Some(Msg::Go)), actions(), shown, words);
+        }
+        let _: Element<'_, Msg> = row_actions(list_row(vec![], false, None), Vec::new(), true, true);
+        let _: Element<'_, Msg> = card_actions(list_row(vec![], false, None), actions(), true, false, space::m());
     }
 }

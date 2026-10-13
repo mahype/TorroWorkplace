@@ -314,6 +314,11 @@ pub struct Size {
     pub control_lg: f32,
     pub row: f32,
     pub row_two: f32,
+    /// A mail entry's row in the inbox (task E3.9): avatar, sender, subject and preview on three
+    /// lines.
+    pub row_message: f32,
+    /// Any other entry's row in the inbox (task E3.9): source icon, title and text on two lines.
+    pub row_notice: f32,
     pub row_sidebar: f32,
     pub row_group: f32,
     pub header: f32,
@@ -331,13 +336,15 @@ pub struct Size {
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 18] {
+    pub fn entries(&self) -> [(&'static str, f32); 20] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
             ("control_lg", self.control_lg),
             ("row", self.row),
             ("row_two", self.row_two),
+            ("row_message", self.row_message),
+            ("row_notice", self.row_notice),
             ("row_sidebar", self.row_sidebar),
             ("row_group", self.row_group),
             ("header", self.header),
@@ -361,6 +368,8 @@ impl Size {
             "control_lg" => &mut self.control_lg,
             "row" => &mut self.row,
             "row_two" => &mut self.row_two,
+            "row_message" => &mut self.row_message,
+            "row_notice" => &mut self.row_notice,
             "row_sidebar" => &mut self.row_sidebar,
             "row_group" => &mut self.row_group,
             "header" => &mut self.header,
@@ -660,6 +669,8 @@ pub(crate) const STANDARD_SIZE: Size = Size {
     control_lg: 36.0,
     row: 40.0,
     row_two: 52.0,
+    row_message: 88.0,
+    row_notice: 64.0,
     row_sidebar: 28.0,
     row_group: 32.0,
     header: 44.0,
@@ -799,6 +810,7 @@ mod tests {
         assert_eq!(d.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
         assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
+        assert_eq!([d.size.row_message, d.size.row_notice], [88.0, 64.0], "the inbox's rows (task E3.9)");
         assert_eq!(d.logo, Logo::default());
     }
 

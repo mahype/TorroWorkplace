@@ -1672,7 +1672,29 @@ impl Gallery {
         ]
         .spacing(space::l())
         .align_y(Alignment::Center);
+        // The action bar of a row (task E3.9), shown as under the keyboard cursor: with words, and as
+        // icons in a narrow row. Pointing at any other row shows it too.
+        let actions = || {
+            vec![
+                widgets::RowAction::new(Icon::ListTodo, "Task", "T", Msg::Noop),
+                widgets::RowAction::new(Icon::Check, "Done", "E", Msg::Noop),
+                widgets::RowAction::new(Icon::Clock, "Later", "S", Msg::Noop),
+                widgets::RowAction::new(Icon::Ellipsis, "Hide", "M", Msg::Noop),
+            ]
+        };
+        let entry = |title: &'static str, selected: bool| {
+            let cells = vec![quiet(Icon::Mail, icon::SIZE), typo::text(typo::body(), title).width(Fill).into()];
+            widgets::list_row(cells, selected, Some(Msg::Noop))
+        };
+        let bars = column![
+            container(widgets::row_actions(entry("Budget review for Q4", true), actions(), true, true))
+                .width(size::list()),
+            container(widgets::row_actions(entry("Weekend plans", false), actions(), true, false)).width(size::props()),
+            container(widgets::row_actions(entry("Point at me", false), actions(), false, true)).width(size::list()),
+        ]
+        .spacing(space::s());
         let small = column![
+            section("Row actions", bars.into()),
             section("State pills and label chips", pills.into()),
             section("Progress bar", sub_tasks.into()),
             section("Hints in a row, key hints", hints.into()),

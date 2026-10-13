@@ -592,7 +592,12 @@ Zeilen gleich mit austauschbaren Werten entstehen.
   `torro-api-review`; Sichtprüfung des Menüs.
 
 ### E3.9 Übersicht in zwei Spalten mit mehr Luft
-- [ ] erledigt
+- [x] erledigt (zusätzlich `torroinbox/src/main.rs` (`mod overview`), Tokens auch in
+  `torro-core/src/design{.rs,/rules.rs}` und `docs/design-pakete.md`; `l` wechselt in der Übersicht die Spalte statt
+  der Spur; Demo-Zustände `overview`, `overview-info`, `overview-notices`; offen: „Info“ aufgeklappt nur im Speicher,
+  nicht in `ui.json` (braucht `torro-gui/src/ui_state.rs`), Ordner-Ansichten behalten ihre Zeilen (braucht
+  `mail.rs`); Menü „Hide from inbox“ so breit wie nötig, höchstens `size::panel()`; Sichtprüfung auf macOS
+  (AeroSpace, eigenes Fenster schwebend) in allen sechs Größen, hell, dunkel und mit `plex`)
 - **Modell:** Opus · **Braucht:** E2.6, E3.10, L.5 · **Dateien:** `crates/torroinbox/src/{app,list,keys,detail,glance}.rs`,
   `crates/torroinbox/src/overview.rs` (neu), `crates/torro-gui/src/{theme,widgets}.rs` (Tokens, Baustein
   Aktionsleiste), `crates/torro-gui/examples/gallery.rs`, `.claude/skills/torro-design/SKILL.md` (neue Tokens und

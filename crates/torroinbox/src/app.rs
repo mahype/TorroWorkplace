@@ -1,10 +1,17 @@
 //! The inbox window (tasks E3.1 and E3.2 in `docs/tasks/eingang.md`): state, loading through
-//! [`InboxSource`], and the Linear window around it – `torro_gui::shell` with the sidebar ("For
-//! me" with its count, "Info", "Snoozed", "Done", the group "Sources") in the wide layout, the
+//! [`InboxSource`], and the Linear window around it – `torro_gui::shell` with the sidebar
+//! ("Overview" and "For me" with their count, "Info", "Snoozed", "Done", the group "Sources") in the wide layout, the
 //! rail of icons in the medium one (and in the wide one when the user collapses it: panel button
 //! or `[`, remembered in `ui.json`), a navigation menu ("For me ▾") plus drawer in the medium and
-//! narrow ones. The list (`list.rs`) and the panel (`detail.rs`) only render and report clicks as
-//! [`Message`]s.
+//! narrow ones. The list (`list.rs`), the overview (`overview.rs`) and the panel (`detail.rs`) only
+//! render and report clicks as [`Message`]s.
+//!
+//! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
+//! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
+//! header bar or with `h`/`l` – in the medium and narrow ones. The app keeps which column has the
+//! cursor ([`App::column`]) and which "Info" is unfolded; the keys walk the column
+//! ([`App::rows`]). Every row has an action bar (Task, Done, Later, Hide), whose buttons do what the
+//! keys do on the row ([`Message::Act`]).
 //!
 //! The panel is `torro_gui::panel`: beside the list in the wide layout, over it in the medium and
 //! narrow ones (full width in narrow). Mini and strip show the glance instead (`glance.rs`, E3.3a):
@@ -89,6 +96,7 @@ use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
+use crate::overview::{self, Column, Sections};
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
@@ -427,7 +435,9 @@ pub enum Sent {
 /// source exactly what the API offers (`inbox.list_items`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
-    /// Open entries in the lane "For me"; the only view with a count.
+    /// Every open entry in two columns, mail and the rest (task E3.9); the start view.
+    Overview,
+    /// Open entries in the lane "For me"; with the overview the only view with a count.
     ForMe,
     /// Open entries in the lane "Info".
     Info,
@@ -449,6 +459,7 @@ impl View {
     /// views of mail, which list messages instead of entries.
     pub fn filter(&self) -> Option<ItemFilter> {
         let (lane, source, state) = match self {
+            View::Overview => (None, None, StateFilter::Open),
             View::ForMe => (Some(Lane::ForMe), None, StateFilter::Open),
             View::Info => (Some(Lane::Info), None, StateFilter::Open),
             View::Snoozed => (None, None, StateFilter::Snoozed),
@@ -462,6 +473,7 @@ impl View {
     /// The name in the sidebar, the header and the panel's path.
     pub fn name(&self) -> String {
         match self {
+            View::Overview => tr("Overview").into(),
             View::ForMe => tr("For me").into(),
             View::Info => tr("Info").into(),
             View::Snoozed => tr("Snoozed").into(),
@@ -474,6 +486,7 @@ impl View {
 
     pub fn icon(&self) -> Icon {
         match self {
+            View::Overview => Icon::Layers,
             View::ForMe => Icon::Inbox,
             View::Info => Icon::Bell,
             View::Snoozed => Icon::Clock,
@@ -571,10 +584,18 @@ pub enum Open {
     Hide,
     /// That entry in the panel, with the menu at the panel's "…".
     HidePanel,
+    /// The overview (task E3.9) with the cursor on the first row of "Mail", so its action bar
+    /// shows.
+    Overview,
+    /// The overview with "Info" unfolded in both columns.
+    OverviewInfo,
+    /// The overview with the cursor on the first card of "Notifications": the column the medium
+    /// and narrow layouts show then.
+    OverviewNotices,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 23] = [
+    const ALL: [(&'static str, Open); 26] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -598,6 +619,9 @@ impl Open {
         ("mail-entry", Open::MailEntry),
         ("hide", Open::Hide),
         ("hide-panel", Open::HidePanel),
+        ("overview", Open::Overview),
+        ("overview-info", Open::OverviewInfo),
+        ("overview-notices", Open::OverviewNotices),
     ];
 }
 
@@ -629,7 +653,7 @@ pub struct Launch {
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
     pub design: Option<String>,
-    /// The view of `--lane` or `--source`; `None` starts on "For me".
+    /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
     /// `--compose`: the window writes a message instead of showing the inbox.
     pub compose: Option<compose::Start>,
@@ -851,6 +875,13 @@ pub struct App<S> {
     cursor: Option<String>,
     /// The list's scroll offset and visible height, as last reported, to keep the cursor in view.
     scroll: Option<(f32, f32)>,
+    /// The overview's column with the cursor, and the one the medium and narrow layouts show.
+    column: Column,
+    /// "Info" unfolded at the end of the overview's columns, by [`Column::index`]. Kept while the
+    /// window runs.
+    info_open: [bool; 2],
+    /// The scroll offset and visible height of the overview's columns, by [`Column::index`].
+    column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
     subject: Option<Item>,
     /// The day and time in the picker of "Pick…".
@@ -916,6 +947,17 @@ pub enum Message {
     Show(View),
     /// From the list: open the entry with this id in the panel.
     Select(String),
+    /// From a row's action bar (task E3.9): the cursor to the entry with this id, then what the
+    /// key does there – make a task, done, snooze or hide.
+    Act(String, keys::Command),
+    /// The overview's "Info" at the end of this column: fold or unfold it.
+    ToggleInfo(Column),
+    /// "Mail | Notifications" in the header bar: show this column of the overview.
+    ShowColumn(Column),
+    /// A column of the overview scrolled (or was laid out): its offset and visible height.
+    ColumnScrolled(Column, f32, f32),
+    /// From a card of the overview: open what the entry with this id links to ("Go to window").
+    OpenRow(String),
     /// From the glance (mini, strip): the entry of "For me" with this id under the cursor and in
     /// the panel of "For me", which the window shows once it is larger again.
     OpenForMe(String),
@@ -1083,12 +1125,15 @@ pub async fn fetch<S: InboxSource + MailSource>(
         Some(filter) => inbox.list_items(filter).await.map_err(failed)?,
         None => Vec::new(),
     };
+    // The overview lists both lanes: its entries hold "For me" and "Info" already.
     let for_me = match view {
         View::ForMe => items.clone(),
+        View::Overview => items.iter().filter(|item| item.lane == Lane::ForMe).cloned().collect(),
         _ => inbox.list_items(for_me_filter()).await.map_err(failed)?,
     };
     let info = match view {
         View::Info => items.len(),
+        View::Overview => items.iter().filter(|item| item.lane == Lane::Info).count(),
         _ => inbox.list_items(View::Info.filter().unwrap_or_default()).await.map_err(failed)?.len(),
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
@@ -1123,7 +1168,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 // The first inbox, once the folders are in.
                 Some(Open::Folder | Open::Mail) => View::Mail,
                 Some(Open::MailEntry) => View::ForMe,
-                _ => launch.view.clone().unwrap_or(View::ForMe),
+                Some(Open::Overview | Open::OverviewInfo | Open::OverviewNotices) => View::Overview,
+                _ => launch.view.clone().unwrap_or(View::Overview),
             },
             items: Vec::new(),
             for_me: Vec::new(),
@@ -1134,6 +1180,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             detail: None,
             cursor: None,
             scroll: None,
+            column: Column::default(),
+            info_open: [open == Some(Open::OverviewInfo); 2],
+            column_scroll: [None; 2],
             subject: None,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
@@ -1254,8 +1303,20 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Select(id) => {
                 self.close_menus();
                 self.detail = self.items.iter().find(|item| item.id == id).cloned();
-                if self.detail.is_some() {
+                if let Some(item) = &self.detail {
+                    self.column = Column::of(item);
                     self.cursor = Some(id);
+                }
+            }
+            Message::Act(id, command) => return self.act(&id, command),
+            Message::ToggleInfo(column) => self.toggle_info(column),
+            Message::ShowColumn(column) => return self.switch_column(column),
+            Message::ColumnScrolled(column, offset, height) => {
+                self.column_scroll[column.index()] = Some((offset, height));
+            }
+            Message::OpenRow(id) => {
+                if let Some(item) = self.items.iter().find(|item| item.id == id).cloned() {
+                    return self.open_entry(&item);
                 }
             }
             Message::OpenForMe(id) => return self.open_for_me(id),
@@ -1821,9 +1882,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.cursor = row.map(|message| message.id.clone());
             }
         } else if self.cursor_item().is_none() {
-            let last = self.items.len().checked_sub(1);
-            self.cursor =
-                place.zip(last).and_then(|(place, last)| self.items.get(place.min(last))).map(|i| i.id.clone());
+            let rows = self.rows();
+            let last = rows.len().checked_sub(1);
+            let next = place.zip(last).and_then(|(place, last)| rows.get(place.min(last))).map(|i| i.id.clone());
+            self.cursor = next;
         }
         if let Some(detail) = &self.detail {
             // The panel follows the entry when it changed (a new report, woken up).
@@ -1858,13 +1920,68 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.items.iter().find(|item| item.id == id)
     }
 
-    /// Where the cursor's row is in the list.
+    /// Where the cursor's row is among the rows the keys walk ([`App::rows`]).
     fn cursor_place(&self) -> Option<usize> {
         let id = self.cursor.as_deref()?;
         if self.view.is_mail() {
             return self.messages.iter().position(|message| message.id == id);
         }
-        self.items.iter().position(|item| item.id == id)
+        self.rows().iter().position(|item| item.id == id)
+    }
+
+    /// The entries the keys walk, top to bottom: in the overview the column with the cursor
+    /// ([`Sections::order`], "Info" only while unfolded), else the view's list.
+    fn rows(&self) -> Vec<&Item> {
+        if self.view == View::Overview {
+            Sections::of(&self.items, self.column, self.now).order(self.info_open[self.column.index()])
+        } else {
+            self.items.iter().collect()
+        }
+    }
+
+    /// A button of a row's action bar (task E3.9): the cursor – and an open panel – to the entry
+    /// `id`, then `command` as its key would do it, so a menu opens at the row.
+    fn act(&mut self, id: &str, command: Command) -> Task<Message> {
+        let Some(item) = self.items.iter().find(|item| item.id == id).cloned() else { return Task::none() };
+        self.close_menus();
+        self.column = Column::of(&item);
+        self.cursor = Some(item.id.clone());
+        if self.detail.is_some() {
+            self.detail = Some(item);
+        }
+        self.run(command)
+    }
+
+    /// Folds or unfolds "Info" at the end of `column`. A cursor on a row folded away leaves it.
+    fn toggle_info(&mut self, column: Column) {
+        let open = &mut self.info_open[column.index()];
+        *open = !*open;
+        if !*open && self.cursor_item().is_some_and(|item| Column::of(item) == column && item.lane == Lane::Info) {
+            self.cursor = None;
+        }
+    }
+
+    /// The overview: the cursor to the column `to`, on the row at the same place (or the column's
+    /// last), the open panel along with it. Without a cursor only the column changes (medium and
+    /// narrow show it). Nothing in the other views.
+    fn switch_column(&mut self, to: Column) -> Task<Message> {
+        if self.view != View::Overview || to == self.column {
+            return Task::none();
+        }
+        let place = self.cursor_place();
+        self.column = to;
+        let Some(place) = place.or(self.cursor.as_ref().map(|_| 0)) else { return Task::none() };
+        let rows = self.rows();
+        let index = place.min(rows.len().saturating_sub(1));
+        let Some(item) = rows.get(index).map(|item| (*item).clone()) else {
+            self.cursor = None;
+            return Task::none();
+        };
+        self.cursor = Some(item.id.clone());
+        if self.detail.is_some() {
+            self.detail = Some(item);
+        }
+        self.reveal(index)
     }
 
     /// The entry with `id`: in the list, or the one in the panel or an open menu.
@@ -1880,6 +1997,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
+            None if self.view == View::Overview => Focus::Overview,
             None => Focus::List,
         }
     }
@@ -1890,6 +2008,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         match command {
             Command::Next => self.step(true),
             Command::Previous => self.step(false),
+            Command::ColumnLeft => self.switch_column(Column::Mail),
+            Command::ColumnRight => self.switch_column(Column::Notices),
             Command::Open => self.open_cursor(),
             // In a folder `e` archives: a message has no "done" of its own.
             Command::Done if self.view.is_mail() => self.key_mail(MailAction::Archive),
@@ -1941,7 +2061,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Moves the cursor one row down or up and stops at the first and last row; with no cursor
     /// yet, down chooses the first row and up the last. The open panel shows the new row.
     fn step(&mut self, forward: bool) -> Task<Message> {
-        let rows = if self.view.is_mail() { self.messages.len() } else { self.items.len() };
+        let rows = if self.view.is_mail() { self.messages.len() } else { self.rows().len() };
         let Some(last) = rows.checked_sub(1) else { return Task::none() };
         let next = match (self.cursor_place(), forward) {
             (None, true) => 0,
@@ -1954,7 +2074,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             self.cursor = Some(self.messages[next].id.clone());
             return self.reveal(next);
         }
-        let item = self.items[next].clone();
+        let Some(item) = self.rows().get(next).map(|item| (*item).clone()) else { return Task::none() };
         self.cursor = Some(item.id.clone());
         if self.detail.is_some() {
             self.detail = Some(item);
@@ -1965,16 +2085,23 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Scrolls the list the least that shows row `index` completely – with its group head, when
     /// it is the first of its group ([`list::row_span`]).
     fn reveal(&mut self, index: usize) -> Task<Message> {
-        let Some((offset, height)) = self.scroll else { return Task::none() };
-        let row = list::row_height(self.two_line());
-        // A folder's messages have no group heads: every row is as high as the next.
-        let span = if self.view.is_mail() {
+        let overview = self.view == View::Overview;
+        let (scroll, span, id) = if overview {
+            // The overview: the column with the cursor, which scrolls on its own.
+            let column = self.column;
+            let sections = Sections::of(&self.items, column, self.now);
+            let open = self.info_open[column.index()];
+            let span = sections.order(open).get(index).and_then(|item| overview::row_span(&sections, open, &item.id));
+            (self.column_scroll[column.index()], span, column.scroll_id())
+        } else if self.view.is_mail() {
+            // A folder's messages have no group heads: every row is as high as the next.
+            let row = list::row_height(self.two_line());
             let top = index as f32 * row;
-            (index < self.messages.len()).then_some((top, top + row))
+            (self.scroll, (index < self.messages.len()).then_some((top, top + row)), list::SCROLL)
         } else {
-            list::row_span(&self.items, index, row)
+            (self.scroll, list::row_span(&self.items, index), list::SCROLL)
         };
-        let Some((top, bottom)) = span else { return Task::none() };
+        let (Some((offset, height)), Some((top, bottom))) = (scroll, span) else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -1983,8 +2110,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             return Task::none();
         };
         // The viewport is only reported on the next frame; keys can repeat faster than that.
-        self.scroll = Some((target, height));
-        operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
+        if overview {
+            self.column_scroll[self.column.index()] = Some((target, height));
+        } else {
+            self.scroll = Some((target, height));
+        }
+        operation::scroll_to(id, AbsoluteOffset { x: None, y: Some(target) })
     }
 
     /// Enter: opens what the entry under the cursor links to – its page, its app, the agent's
@@ -2513,7 +2644,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let (name, icon) = (self.view.name(), self.view.icon());
         // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
         let note = (self.loaded && !self.lists_nothing()).then(|| self.count_note());
-        let trailing = [widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh))];
+        let mut trailing = Vec::new();
+        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it.
+        if self.view == View::Overview && class != SizeClass::Wide {
+            let columns = Column::ALL.map(|column| (column.name(), Message::ShowColumn(column)));
+            trailing.push(widgets::segmented(columns, self.column.index()));
+        }
+        trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
         // as in the medium layout, and every view stays one click away.
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
@@ -2551,6 +2688,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Some(_) => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
+            // As in the sidebar: what is for the user; "Info" lies folded.
+            None if self.view == View::Overview => self.for_me.len().to_string(),
             None => self.items.len().to_string(),
         }
     }
@@ -2619,16 +2758,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     attention,
                 })
             }
+        } else if self.view == View::Overview {
+            // Its columns cap their own width; the cap below would squeeze two into one.
+            let columns = self.overview(class, row_anchor, attention);
+            return container(content.push(columns).width(Fill).height(Fill)).width(Fill).into();
         } else {
-            list::view(list::ListData {
-                items: &self.items,
-                view: &self.view,
-                selected: self.cursor.as_deref(),
-                now: self.now,
-                anchor: row_anchor.clone(),
-                two_line: self.two_line(),
-                attention,
-            })
+            list::view(list::ListData { items: &self.items, rows: self.rows_data(row_anchor), attention })
         };
         let list = container(content.push(rows).width(Fill).height(Fill)).width(Fill);
         // Only the wide layout caps the width: in the medium one the content is at most a little
@@ -2638,6 +2773,50 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             SizeClass::Wide => list.max_width(size::content_max()).into(),
             SizeClass::Medium | SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => list.into(),
         }
+    }
+
+    /// What the rows of entries need (`list::Rows`): the cursor, the time, the mail accounts in the
+    /// sidebar's order (their colours) and which entries have a menu "Hide from inbox".
+    fn rows_data<'a>(&'a self, anchor: &Anchor) -> list::Rows<'a> {
+        list::Rows {
+            view: &self.view,
+            selected: self.cursor.as_deref(),
+            now: self.now,
+            anchor: anchor.clone(),
+            accounts: mail::by_account(&self.folders).into_iter().map(|group| mail::address(group.account)).collect(),
+            hidable: self
+                .items
+                .iter()
+                .filter(|item| !self.hide_choices(item).is_empty())
+                .map(|item| item.id.as_str())
+                .collect(),
+        }
+    }
+
+    /// The overview (task E3.9): both columns side by side in the wide layout, each under its head –
+    /// with an open panel only the column of its entry, the panel takes the other's place –; one
+    /// column, [`App::column`], in the medium and narrow ones.
+    fn overview<'a>(&'a self, class: SizeClass, anchor: &Anchor, attention: iced::Color) -> Element<'a, Message> {
+        let wide = class == SizeClass::Wide;
+        let shown = overview::shown(class, self.detail.as_ref(), self.column);
+        let cap = overview::width(shown.len());
+        let mut columns = row![].width(Fill).height(Fill);
+        for (i, column) in shown.into_iter().enumerate() {
+            if i > 0 {
+                columns = columns.push(rule::vertical(size::HAIRLINE).style(style::rule));
+            }
+            columns = columns.push(overview::column_view(overview::ColumnData {
+                column,
+                sections: Sections::of(&self.items, column, self.now),
+                info_open: self.info_open[column.index()],
+                rows: self.rows_data(anchor),
+                deciding: self.deciding.is_some(),
+                attention,
+                head: wide,
+            }));
+        }
+        // Each column at most `CONTENT_MAX`, as the list of a view.
+        container(columns).width(Fill).max_width(cap).into()
     }
 
     /// The views with their icon, then one entry per source.
@@ -2654,7 +2833,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             view,
         };
         let views = vec![
-            // Like a badge: no "0" when nothing waits.
+            // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
+            entry(View::Overview, Some(self.for_me.len()).filter(|&n| n > 0)),
             entry(View::ForMe, Some(self.for_me.len()).filter(|&n| n > 0)),
             entry(View::Info, Some(self.info).filter(|&n| n > 0)),
             entry(View::Snoozed, None),
@@ -2801,12 +2981,17 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// The open menu of choices ([`App::choices`]) under `title`, each entry with its time (when it
     /// has one) and its digit. The menu card of `widgets::menu`, built from the same pieces here:
     /// its entries end in one trail only, and these need the time quietly before the key hint.
+    ///
+    /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
+    /// domains of "Hide from inbox" show whole.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
         let head = typo::text(typo::caption(), title.into()).style(theme::text_3);
+        let choices = self.choices();
+        let width = choice_menu_width(&choices);
         let entries =
-            self.choices().into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1)));
+            choices.into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), width));
         let list = column![container(head).padding(Padding::new(space::s()).bottom(space::xs()))].extend(entries);
-        container(list).width(widgets::menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
+        container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     /// The picker of "Pick…" as a floating card: the chosen moment as title ("Wed, 14 Oct · 09:00"),
@@ -2969,6 +3154,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Open::MailEntry) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
             }
+            Some(open @ (Open::Overview | Open::OverviewNotices)) => {
+                self.column = if open == Open::Overview { Column::Mail } else { Column::Notices };
+                self.cursor = self.rows().first().map(|item| item.id.clone());
+            }
             Some(open @ (Open::Hide | Open::HidePanel)) => {
                 if let Some(item) = self.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned() {
                     self.cursor = Some(item.id.clone());
@@ -2982,6 +3171,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         }
         if let Some(detail) = &self.detail {
             self.cursor = Some(detail.id.clone());
+            self.column = Column::of(detail);
         }
         Task::none()
     }
@@ -3056,9 +3246,9 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
 /// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
 /// tabular – when it snoozes until, and the digit that picks it; with [`Choice::line`] the line
 /// `widgets::menu` draws between its sections above it.
-fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
+fn choice_entry<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a, Message> {
     let line = choice.line;
-    let entry = choice_button(choice, key);
+    let entry = choice_button(choice, key, width);
     if !line {
         return entry;
     }
@@ -3066,14 +3256,14 @@ fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
     column![rule, entry].into()
 }
 
-/// The button of [`choice_entry`].
+/// The button of [`choice_entry`] in a menu `width` wide.
 ///
-/// The menu is [`widgets::menu_width`] wide: a label longer than its room – an address or a
-/// domain in the hide menu – ends in "…" ([`choice_label`]) and shows whole as tooltip.
-fn choice_button<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
+/// A label longer than its room – only beyond [`choice_menu_width`]'s widest menu – ends in "…"
+/// ([`choice_label`]) and shows whole as tooltip.
+fn choice_button<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a, Message> {
     let mark = icon::icon(choice.icon, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
-    let shown = choice_label(&choice.label, choice.when.as_deref(), key);
+    let shown = choice_label(&choice.label, choice.when.as_deref(), key, width);
     let cut = (shown != choice.label).then(|| choice.label.clone());
     let label = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
     let mut content = row![mark, label].spacing(space::s()).align_y(Alignment::Center);
@@ -3093,15 +3283,30 @@ fn choice_button<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> 
     }
 }
 
-/// `label` as it fits in a choice of [`choice_button`] beside its time `when` and its key hint
-/// `key`: whole, or cut with "…" ([`typo::ellipsize`]).
-fn choice_label(label: &str, when: Option<&str>, key: &str) -> String {
+/// `label` as it fits in a choice of [`choice_button`] in a menu `width` wide, beside its time
+/// `when` and its key hint `key`: whole, or cut with "…" ([`typo::ellipsize`]).
+fn choice_label(label: &str, when: Option<&str>, key: &str, width: f32) -> String {
+    typo::ellipsize(label, typo::body(), width - choice_frame(when, key))
+}
+
+/// What a choice takes from its menu's width besides its label: the menu's and the entry's
+/// insets, the icon, the gaps, the time `when` and the key hint `key`.
+fn choice_frame(when: Option<&str>, key: &str) -> f32 {
     let gap = space::s();
     let kbd = typo::text_width(key, typo::caption()) + style::KBD_PADDING.left + style::KBD_PADDING.right;
     let when = when.map_or(0.0, |when| typo::text_width(when, typo::meta()) + gap);
     let frame = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
-    let room = widgets::menu_width() - frame - icon::SIZE - 2.0 * gap - kbd - when;
-    typo::ellipsize(label, typo::body(), room)
+    frame + icon::SIZE + 2.0 * gap + kbd + when
+}
+
+/// The width of a menu of `choices`: [`widgets::menu_width`], wider as far as its longest label
+/// needs to show whole – the address or domain of "Hide from inbox" (task E3.10) –, at most
+/// [`size::panel()`], beyond which a label ends in "…".
+fn choice_menu_width(choices: &[Choice]) -> f32 {
+    let needed = choices.iter().enumerate().map(|(i, choice)| {
+        choice_frame(choice.when.as_deref(), keys::digit(i + 1)) + typo::text_width(&choice.label, typo::body())
+    });
+    needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel())
 }
 
 /// A pick list in the suite's look for a property of the dialog of "Make task": `options` shown
@@ -3196,9 +3401,13 @@ mod tests {
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
-    /// A demo app at the demo's fixed time, loaded.
+    /// A demo app at the demo's fixed time, loaded – on "For me" unless `words` choose a view (the
+    /// window starts on the overview, task E3.9; [`overview_at`] tests that).
     fn loaded(words: &[&str]) -> App<DemoSource> {
         let mut all = vec!["--demo", "--now", "2026-10-13T10:30"];
+        if !words.iter().any(|word| word.starts_with("--lane") || word.starts_with("--source")) {
+            all.extend(["--lane", "for-me"]);
+        }
         all.extend_from_slice(words);
         let mut app = demo(&all);
         load(&mut app);
@@ -3501,7 +3710,7 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(!app.loaded, "loading stays");
         let mut app = demo(&["--demo", "--open", "error"]);
-        let _ = app.update(Message::Loaded(View::ForMe, Err(DEMO_ERROR.into())));
+        let _ = app.update(Message::Loaded(app.view.clone(), Err(DEMO_ERROR.into())));
         assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the inbox."), why: DEMO_ERROR.into() }));
         assert_eq!(demo(&["--demo", "--open", "menu"]).menu, Some(Menu::Nav));
         assert!(demo(&["--demo", "--open", "drawer"]).drawer);
@@ -3543,11 +3752,11 @@ mod tests {
         let mut app = loaded(&[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<&str> = views.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(labels, [tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
+        assert_eq!(labels, [tr("Overview"), tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
         assert_eq!(
-            views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
-            [Trail::Count(9), Trail::Count(5)],
-            "For me and Info count their open entries"
+            views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..3],
+            [Trail::Count(9), Trail::Count(9), Trail::Count(5)],
+            "the overview counts what is for the user, For me and Info their open entries"
         );
         let by_source: usize = sources.iter().filter_map(|e| e.count).sum();
         assert_eq!(by_source, 9 + 5, "the sources add up to For me plus Info");
@@ -3737,13 +3946,12 @@ mod tests {
     fn moving_scrolls_the_cursor_into_view() {
         let mut app = loaded(&[]);
         // The group head and two rows fit.
-        let row = list::row_height(app.two_line());
-        let (_, second) = list::row_span(&app.items, 1, row).expect("a second row");
+        let (_, second) = list::row_span(&app.items, 1).expect("a second row");
         let _ = app.update(Message::Scrolled(0.0, second));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first row is in view");
         let _ = press(&mut app, Key::Down);
         assert!(press(&mut app, Key::Down).units() > 0, "the third row needs a scroll");
-        let (_, third) = list::row_span(&app.items, 2, row).expect("a third row");
+        let (_, third) = list::row_span(&app.items, 2).expect("a third row");
         assert_eq!(app.scroll, Some((third - second, second)));
         // Back up to the first row: the list scrolls to its group head at the top.
         let _ = press(&mut app, Key::Up);
@@ -4128,11 +4336,30 @@ mod tests {
     }
 
     #[test]
-    fn long_addresses_in_a_menu_end_in_an_ellipsis() {
-        let long = trf("Everything from {sender}", &[("sender", &"jonas.weber@work.example.org")]);
-        let shown = choice_label(&long, None, "2");
-        assert!(shown.ends_with(typo::ELLIPSIS) && shown.len() < long.len(), "{shown}");
-        assert_eq!(choice_label(tr("Move to junk"), None, "5"), tr("Move to junk"), "short labels stay whole");
+    fn the_hide_menu_is_wide_enough_for_whole_addresses() {
+        let (mut app, _, _) = at_mail();
+        let _ = press(&mut app, Key::M);
+        let choices = app.choices();
+        let width = choice_menu_width(&choices);
+        assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
+        for (i, choice) in choices.iter().enumerate() {
+            let shown = choice_label(&choice.label, None, keys::digit(i + 1), width);
+            assert_eq!(shown, choice.label, "whole, not \"jonas.…\"");
+        }
+        let short = Choice::new(Icon::Sun, "Soon", Message::Refresh);
+        assert_eq!(choice_menu_width(&[short]), widgets::menu_width(), "short labels: a plain menu");
+        let snooze = loaded(&["--open", "snooze"]);
+        let width = choice_menu_width(&snooze.choices());
+        for (i, choice) in snooze.choices().iter().enumerate() {
+            let shown = choice_label(&choice.label, choice.when.as_deref(), keys::digit(i + 1), width);
+            assert_eq!(shown, choice.label, "every language's snooze times fit");
+        }
+        // Beyond the widest menu a label still ends in "…".
+        let long = Choice::new(Icon::User, "x".repeat(200), Message::Refresh);
+        let width = choice_menu_width(std::slice::from_ref(&long));
+        assert_eq!(width, size::panel());
+        let shown = choice_label(&long.label, None, "1", width);
+        assert!(shown.ends_with(typo::ELLIPSIS) && shown.len() < long.label.len(), "{shown}");
     }
 
     #[test]
@@ -4731,5 +4958,171 @@ mod tests {
         assert_eq!(entry.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w1"));
         deliver_letter(&mut entry, "m:w1");
         draw_everywhere(&mut entry);
+    }
+
+    // ----- Overview (E3.9) -------------------------------------------------------------------
+
+    /// The demo window as it starts – on the overview –, loaded; `words` add to its parameters.
+    fn overview_at(words: &[&str]) -> App<DemoSource> {
+        let mut all = vec!["--demo", "--now", "2026-10-13T10:30"];
+        all.extend_from_slice(words);
+        let mut app = demo(&all);
+        load(&mut app);
+        app
+    }
+
+    fn rows_of<S: InboxSource + MailSource + 'static>(app: &App<S>) -> Vec<&str> {
+        app.rows().iter().map(|item| item.id.as_str()).collect()
+    }
+
+    #[test]
+    fn the_window_starts_on_the_overview_with_every_open_entry() {
+        let app = overview_at(&[]);
+        assert_eq!(app.view, View::Overview);
+        assert_eq!(app.items.len(), FOR_ME.len() + 5, "both lanes in one answer");
+        assert_eq!((app.for_me.len(), app.info), (9, 5), "the sidebar's numbers from the same answer");
+        assert_eq!(app.count_note(), "9", "what is for the user");
+        assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
+        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Overview"))]));
+        assert_eq!(rows_of(&app), ["demo-mail-1", "demo-mail-4", "demo-mail-2"], "the keys start in Mail");
+    }
+
+    #[test]
+    fn j_and_k_walk_a_column_and_h_and_l_change_it() {
+        let mut app = overview_at(&[]);
+        assert_eq!(app.focus(), Focus::Overview);
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::Down);
+        assert_eq!((cursor(&app), app.column), (Some("demo-mail-4"), Column::Mail));
+        let _ = press(&mut app, Key::L);
+        assert_eq!((cursor(&app), app.column), (Some("demo-3"), Column::Notices), "the same place over there");
+        assert!(app.menu.is_none(), "l changes the column and asks no lane question");
+        for _ in 0..10 {
+            let _ = press(&mut app, Key::Down);
+        }
+        assert_eq!(cursor(&app), Some("demo-5"), "the end of For me: Info is folded");
+        let _ = press(&mut app, Key::H);
+        assert_eq!((cursor(&app), app.column), (Some("demo-mail-2"), Column::Mail), "the column's last row");
+        let _ = press(&mut app, Key::Right);
+        let _ = press(&mut app, Key::Left);
+        let _ = press(&mut app, Key::Left);
+        assert_eq!((cursor(&app), app.column), (Some("demo-mail-2"), Column::Mail), "nothing left of Mail");
+    }
+
+    #[test]
+    fn moving_in_a_column_scrolls_that_column() {
+        let mut app = overview_at(&[]);
+        let _ = press(&mut app, Key::L);
+        let sections = Sections::of(&app.items, Column::Notices, app.now);
+        let (_, first) = overview::row_span(&sections, false, "demo-1").expect("the first card");
+        let _ = app.update(Message::ColumnScrolled(Column::Notices, 0.0, first));
+        assert_eq!(press(&mut app, Key::Down).units(), 0, "the first card is in view");
+        assert!(press(&mut app, Key::Down).units() > 0, "the second needs a scroll");
+        assert!(app.column_scroll[Column::Notices.index()].is_some_and(|(offset, _)| offset > 0.0));
+        assert_eq!(app.column_scroll[Column::Mail.index()], None, "the other column stays");
+    }
+
+    #[test]
+    fn info_unfolds_with_a_click_and_the_keys_follow() {
+        let mut app = overview_at(&[]);
+        for _ in 0..5 {
+            let _ = press(&mut app, Key::Down);
+        }
+        assert_eq!(cursor(&app), Some("demo-mail-2"));
+        let _ = app.update(Message::ToggleInfo(Column::Mail));
+        assert_eq!(app.info_open, [true, false], "only that column");
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("demo-mail-3"), "on into Info");
+        let _ = app.update(Message::ToggleInfo(Column::Mail));
+        assert_eq!(cursor(&app), None, "folded away with its row");
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("demo-mail-1"));
+        assert_eq!(overview_at(&["--open", "overview-info"]).info_open, [true, true]);
+    }
+
+    #[test]
+    fn a_row_action_puts_the_cursor_there_and_does_what_its_key_does() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
+        assert_eq!((app.menu, cursor(&app), app.column), (Some(Menu::Snooze), Some("demo-6"), Column::Notices));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("demo-mail-4".into(), Command::Hide));
+        assert_eq!((app.menu, app.column), (Some(Menu::Hide), Column::Mail));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("demo-4".into(), Command::Done));
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { id, done: true }, _)) if id == "demo-4"));
+        let _ = app.update(Message::Act("demo-3".into(), Command::Done));
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("An approval closes once it is decided."))
+        );
+        let _ = app.update(Message::Act("demo-mail-1".into(), Command::MakeTask));
+        assert_eq!((app.menu, cursor(&app)), (Some(Menu::Task), Some("demo-mail-1")));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("gone".into(), Command::Snooze));
+        assert_eq!((app.menu, cursor(&app)), (None, Some("demo-mail-1")), "an unknown entry does nothing");
+        // With the panel open it follows the row.
+        let _ = app.update(Message::Select("demo-6".into()));
+        let _ = app.update(Message::Act("demo-mail-2".into(), Command::Snooze));
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-mail-2"));
+    }
+
+    #[test]
+    fn go_to_window_on_a_card_opens_the_agents_window() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::OpenRow("demo-1".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Open("demo-1".into())));
+        let _ = app.update(Message::OpenRow("gone".into()));
+        assert_eq!(app.sent.len(), 1);
+    }
+
+    #[test]
+    fn medium_and_narrow_choose_the_column_in_the_header() {
+        let mut app = overview_at(&[]);
+        for size in [MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ShowColumn(Column::Notices));
+            assert_eq!((app.column, cursor(&app)), (Column::Notices, None), "{size:?}: no cursor moves");
+            let _ = app.view();
+            let _ = app.update(Message::ShowColumn(Column::Mail));
+        }
+        let _ = press(&mut app, Key::Down);
+        let _ = app.update(Message::ShowColumn(Column::Notices));
+        assert_eq!(cursor(&app), Some("demo-1"), "a cursor comes along");
+        let _ = app.update(Message::Select("demo-mail-4".into()));
+        assert_eq!(app.column, Column::Mail, "a click puts the cursor's column there");
+    }
+
+    #[test]
+    fn open_overview_shows_the_action_bar_on_the_first_mail() {
+        let app = overview_at(&["--open", "overview"]);
+        assert_eq!((app.view.clone(), app.column, cursor(&app)), (View::Overview, Column::Mail, Some("demo-mail-1")));
+        let app = loaded(&["--open", "overview"]);
+        assert_eq!(app.view, View::Overview, "a demo state wins over the lane");
+        let app = overview_at(&["--open", "overview-notices"]);
+        assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-1")), "the first card");
+    }
+
+    #[test]
+    fn the_overview_builds_in_every_size_with_panel_menus_and_cards() {
+        for open in
+            [&["--open", "overview"][..], &["--open", "overview-info"], &["--open", "detail"], &["--open", "empty"]]
+        {
+            let mut app = overview_at(open);
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+                let _ = press(&mut app, Key::Down);
+                let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
+                let _ = app.view();
+                let _ = app.update(Message::CloseMenu);
+                let _ = app.update(Message::ShowDrawer);
+                let _ = app.view();
+                let _ = app.update(Message::CloseMenu);
+                let _ = app.update(Message::Select("demo-3".into()));
+                let _ = app.view();
+                let _ = app.update(Message::CloseDetail);
+            }
+        }
     }
 }

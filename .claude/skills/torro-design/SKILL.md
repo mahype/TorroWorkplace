@@ -136,6 +136,8 @@ aus einem Guss wirkt:
 | `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
 | `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
+| `size::row_message()` | 88 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau (E3.9) |
+| `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
 | `size::row_sidebar()` | 28 | Seitenleisten- und Menüzeile (Menü 30) |
 | `size::row_group()` | 32 | Gruppenkopf in Listen („Overdue 2“) |
 | `size::header()` | 44 | Kopfleiste |
@@ -214,6 +216,13 @@ aus einem Guss wirkt:
   `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
   vor dem Text. GitHub-Labels zum Wählen: `widgets::label_choice(hex, name, on, on_press)` (Farbe nur als
   Punkt 8). Filter und Vorlagen werden angeklickt, nicht getippt.
+- **Aktionsleiste einer Zeile** (E3.9, `widgets::row_actions`, für Karten mit Knopfzeile
+  `widgets::card_actions`): schwebt rechts in der Zeile, beim Überfahren und immer an der Zeile unter
+  dem Tastaturcursor; Fläche `MENU`, Rand `LINE_STRONG`, Radius `radius::sm()`, Innenrand 2, Knöpfe
+  `size::control_sm()` mit Icon und Wort (`widgets::RowAction`: Icon, Wort, Taste, Nachricht), Tooltip
+  mit Wort und `kbd`. Wörter nur, solange die Leiste höchstens die halbe Zeile braucht
+  (`widgets::row_actions_words`), sonst nur Icons. Nur Aktionen, die für den Eintrag gehen; ein Knopf
+  tut, was seine Taste an der Zeile tut.
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius 8, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `typo::caption()`-
   Titel; Trenner `LINE`.

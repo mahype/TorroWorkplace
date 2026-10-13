@@ -135,6 +135,9 @@ fn size_range(key: &str) -> (f32, f32) {
         "control_sm" | "control" | "control_lg" | "row_group" => (24.0, 96.0),
         "row" => (32.0, 64.0),
         "row_two" => (32.0, 96.0),
+        // The inbox's rows (task E3.9): three and two lines of text with room around them.
+        "row_message" => (72.0, 120.0),
+        "row_notice" => (48.0, 96.0),
         "row_sidebar" => (24.0, 40.0),
         "header" => (36.0, 64.0),
         "sidebar" => (180.0, 320.0),

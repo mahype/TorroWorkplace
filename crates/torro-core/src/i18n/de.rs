@@ -1905,6 +1905,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Open designs folder", "Design-Ordner öffnen"),
     ("Reload", "Neu laden"),
     ("The designs can't be listed.", "Die Designs lassen sich nicht auflisten."),
+    // Inbox overview in two columns (E3.9)
+    ("Agents, approvals and notices show up here.", "Agenten, Freigaben und Hinweise erscheinen hier."),
+    ("Earlier", "Früher"),
+    ("Hide", "Ausblenden"),
+    ("Later", "Später"),
+    ("Mail, agents, approvals and notices show up here.", "Mails, Agenten, Freigaben und Hinweise erscheinen hier."),
+    ("New mail that needs you shows up here.", "Neue Mails, die dich brauchen, erscheinen hier."),
+    ("No mail for you.", "Keine Mails für dich."),
+    ("Task", "Aufgabe"),
     // Hide from the inbox in steps (E3.10)
     ("Always to Info", "Immer nach Info"),
     ("Couldn't hide the sender.", "Der Absender ließ sich nicht ausblenden."),

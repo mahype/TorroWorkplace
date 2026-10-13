@@ -273,8 +273,9 @@ fn lane_label(lane: Lane) -> &'static str {
 }
 
 /// How the entry is closed: Allow/Deny for an approval – disabled while a decision is on its way
-/// (`deciding`) and once the entry is done –, else done or reopen.
-fn decide(item: &Item, deciding: bool) -> Vec<Element<'_, Message>> {
+/// (`deciding`) and once the entry is done –, else done or reopen. The overview's card of a
+/// waiting approval shows the same buttons (task E3.9).
+pub(crate) fn decide(item: &Item, deciding: bool) -> Vec<Element<'_, Message>> {
     if is_approval(item) {
         let open = item.state.is_open() && !deciding;
         return item

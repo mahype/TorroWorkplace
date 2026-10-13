@@ -436,6 +436,18 @@ pub mod size {
     pub fn row_two() -> f32 {
         design::with(|t| t.design.size.row_two)
     }
+    /// 88: a mail entry's row in the inbox (task E3.9) – a 32 avatar beside three lines of 20
+    /// (sender with domain and time, subject, preview), with about 12 above and below, so a list of
+    /// mail reads at a glance instead of as one dense block.
+    pub fn row_message() -> f32 {
+        design::with(|t| t.design.size.row_message)
+    }
+    /// 64: any other entry's row in the inbox (task E3.9) – the source's 28 icon beside two lines of
+    /// 20 (title and time, then the text or "project · branch"), with the same 12 above and below
+    /// as [`row_message`].
+    pub fn row_notice() -> f32 {
+        design::with(|t| t.design.size.row_notice)
+    }
     /// 28: a sidebar row (menu rows are 30, set by the menu building block).
     pub fn row_sidebar() -> f32 {
         design::with(|t| t.design.size.row_sidebar)
