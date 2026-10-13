@@ -715,9 +715,13 @@ mod tests {
 
     #[test]
     fn titles_are_looked_for_where_each_agent_keeps_them() {
-        let transcript = "/home/user/.claude/projects/-home-user-my-project/abc123.jsonl";
+        // The fixture's path is a Unix one; on Windows only a path with a drive is absolute, as
+        // Claude Code sends it there.
+        let unix = "/home/user/.claude/projects/-home-user-my-project/abc123.jsonl";
+        let transcript = if cfg!(windows) { r"C:\Users\user\.claude\projects\abc123.jsonl" } else { unix };
+        let payload = fixture("claude-code-stop").replace(unix, &transcript.replace('\\', "\\\\"));
         assert_eq!(
-            title_source(AgentKind::ClaudeCode, &fixture("claude-code-stop")),
+            title_source(AgentKind::ClaudeCode, &payload),
             Some(TitleSource::Transcript(PathBuf::from(transcript)))
         );
         assert_eq!(

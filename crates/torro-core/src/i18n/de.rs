@@ -295,6 +295,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Retry", "Erneut versuchen"),
     ("Search", "Suchen"),
     ("Show sidebar", "Seitenleiste zeigen"),
+    ("Hide sidebar", "Seitenleiste ausblenden"),
     ("Workplace", "Workplace"),
     // Calendar
     ("Add location", "Ort hinzufügen"),

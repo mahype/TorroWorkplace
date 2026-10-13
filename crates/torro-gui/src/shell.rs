@@ -60,8 +60,9 @@
 //!
 //! The sidebar has three states: **expanded** (232, as above), **rail** (only the icons, 52 wide,
 //! names in tooltips, group titles as lines) and **drawer** (the expanded sidebar over the content,
-//! [`Shell::drawer`]). In the wide layout the user picks expanded or rail with the panel button at
-//! the top of the sidebar ([`sidebar_head`]) or the key `[` ([`is_sidebar_key`]); the app stores the
+//! [`Shell::drawer`]). In the wide layout the user picks expanded or rail with the panel button –
+//! on macOS in the band right of the traffic lights ([`TitleButtons`]), elsewhere at the top of the
+//! sidebar ([`sidebar_head`]) – or the key `[` ([`is_sidebar_key`]); the app stores the
 //! choice with [`crate::ui_state`]. The medium layout always shows the rail, and its panel button
 //! opens the expanded sidebar as a drawer. Narrow windows keep the drawer alone.
 //!
@@ -287,7 +288,15 @@ impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
 
 /// The height of the band above the content on macOS, in window points: the traffic lights sit in it.
 #[cfg(target_os = "macos")]
-const TITLEBAR: f32 = 28.0;
+const TITLEBAR: f32 = 32.0;
+
+/// Where the traffic lights and the band's buttons sit, in points: their centre line, and the centre
+/// of the close button from the left edge (U.11). The line lies halfway between the window's top edge
+/// and the inset panel below the band (32 + 8), so the lights have as much room above as below, and
+/// the close button is as far from the left edge as from the top – as in Claude. macOS itself would
+/// put them at 16 / 16; [`crate::place_traffic_lights`] moves them.
+#[cfg(target_os = "macos")]
+pub(crate) const LIGHTS: f32 = 20.0;
 
 /// The surface at the top of a window, right under the band of [`titlebar`]: the band takes its
 /// colour, so the top of every window reads as one piece.
@@ -363,31 +372,137 @@ impl Cover {
     }
 }
 
+/// Whether the window has the band of [`titlebar`], and with it [`TitleButtons`] (only macOS). Where
+/// it has, the panel button and the settings live in the band, so apps leave them out of the sidebar
+/// ([`sidebar_head`] does that itself) and the narrow header ([`sidebar_toggle`]); elsewhere they stay
+/// where they were.
+pub fn has_band() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// The window-wide buttons in the band of [`titlebar`] (U.10, as Claude and Slack have them): the
+/// panel button right of the traffic lights and the settings in the top right corner. Only macOS
+/// draws them ([`has_band`]); a window without them (a compose window, a glance) passes
+/// [`TitleButtons::none`].
+///
+/// ```ignore
+/// let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+/// let buttons = TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings);
+/// shell::titlebar(content, zoom, surface, cover, buttons, Message::DragWindow)
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct TitleButtons<M> {
+    sidebar: Option<(&'static str, M)>,
+    settings: Option<M>,
+}
+
+impl<M> TitleButtons<M> {
+    /// No buttons: the band holds the traffic lights alone.
+    pub fn none() -> Self {
+        TitleButtons { sidebar: None, settings: None }
+    }
+
+    /// The panel button, which sends `on_press` – the same as `[` ([`is_sidebar_key`]): the app flips
+    /// its choice in the wide layout and opens or closes the drawer elsewhere. `label` is its tooltip,
+    /// from [`sidebar_button_label`].
+    pub fn sidebar(mut self, label: &'static str, on_press: M) -> Self {
+        self.sidebar = Some((label, on_press));
+        self
+    }
+
+    /// The settings button ("Settings"), which sends `on_press`.
+    pub fn settings(mut self, on_press: M) -> Self {
+        self.settings = Some(on_press);
+        self
+    }
+}
+
+/// The tooltip of the panel button in a window of `class`, with the user's `choice` for the wide
+/// layout and the drawer `open` or not: what a press does.
+pub fn sidebar_button_label(class: SizeClass, choice: SidebarMode, open: bool) -> &'static str {
+    match sidebar_mode(class, choice) {
+        Some(SidebarMode::Expanded) => tr("Collapse sidebar"),
+        Some(SidebarMode::Rail) if class == SizeClass::Wide => tr("Expand sidebar"),
+        _ if open => tr("Hide sidebar"),
+        _ => tr("Show sidebar"),
+    }
+}
+
 /// Puts the band of the window's own title bar above `content` on macOS, where the window has none
 /// (see [`crate::window`]): the traffic lights sit in it, so nothing of the content lies under them.
 /// The band takes the colour of `surface`, the top of `content`, with what `cover` lays over it,
 /// and is pressed to drag the window (also while the window is dimmed); `on_drag` goes to the app's
-/// `update`, which returns [`crate::drag_window`]. `zoom` is the factor of the app's `scale_factor`,
-/// so the band stays [`TITLEBAR`] points high at any zoom. Other platforms keep their own title bar
-/// and get `content` back unchanged.
+/// `update`, which returns [`crate::drag_window`]. `buttons` lie in the band: the panel button right
+/// of the traffic lights, the settings in the top right corner. Over a dialog or a side panel neither
+/// shows (the window below is dimmed), over the drawer only the panel button, which closes it.
+/// `zoom` is the factor of the app's `scale_factor`, so the band and its buttons stay the same size
+/// in points at any zoom, as the traffic lights do. Other platforms keep their own title bar and get
+/// `content` back unchanged.
 #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn titlebar<'a, M: Clone + 'a>(
     content: impl Into<Element<'a, M>>,
     zoom: f32,
     surface: Surface,
     cover: Cover,
+    buttons: TitleButtons<M>,
     on_drag: M,
 ) -> Element<'a, M> {
     #[cfg(target_os = "macos")]
     {
         // The band is in layout units, which `scale_factor` multiplies; dividing keeps it in points.
-        let band = container(band(surface, cover)).width(Fill).height(TITLEBAR / zoom);
+        let band = stack![band(surface, cover), band_buttons(buttons, cover, zoom)];
+        let band = container(band).width(Fill).height(TITLEBAR / zoom);
+        // The buttons capture their presses, so only the free band drags the window.
         column![mouse_area(band).on_press(on_drag), container(content).width(Fill).height(Fill)].into()
     }
     #[cfg(not(target_os = "macos"))]
     {
         content.into()
     }
+}
+
+/// The pitch of the traffic lights on macOS 26 (measured): their centres lie 23 apart.
+#[cfg(target_os = "macos")]
+const LIGHTS_PITCH: f32 = 23.0;
+/// Where the panel button starts, in points from the left edge: its icon's centre lies a pitch and a
+/// half after the last light's, so it reads as a group of its own beside them, as in Claude.
+#[cfg(target_os = "macos")]
+const BAND_LEADING: f32 = LIGHTS + 3.5 * LIGHTS_PITCH - BAND_BUTTON / 2.0;
+/// The gap between the settings button and the right edge, in points: its icon is centred as far from
+/// the edge as the close button is from the left one.
+#[cfg(target_os = "macos")]
+const BAND_TRAILING: f32 = LIGHTS - BAND_BUTTON / 2.0;
+/// Edge of a button in the band, in points.
+#[cfg(target_os = "macos")]
+const BAND_BUTTON: f32 = 24.0;
+
+/// The row of [`TitleButtons`] over the band, as far as `cover` leaves them; all sizes in points,
+/// divided by `zoom` into layout units.
+#[cfg(target_os = "macos")]
+fn band_buttons<'a, M: Clone + 'a>(buttons: TitleButtons<M>, cover: Cover, zoom: f32) -> Element<'a, M> {
+    let TitleButtons { sidebar, settings } = buttons;
+    let (sidebar, settings) = match cover {
+        Cover::Nothing => (sidebar, settings),
+        Cover::Drawer => (sidebar, None),
+        Cover::Dialog | Cover::Panel | Cover::Filled(_) => (None, None),
+    };
+    let button_of = |which: Icon, label: &'static str, on_press: M| -> Element<'a, M> {
+        let mark = widgets::toned(which, icon::SIZE / zoom, Tone::Text2);
+        let edge = BAND_BUTTON / zoom;
+        let pressable = button(container(mark).center(Fill)).width(edge).height(edge).padding(0);
+        widgets::with_tooltip(pressable.style(style::button::icon).on_press(on_press), label)
+    };
+    let mut buttons = row![blank().width(BAND_LEADING / zoom)];
+    if let Some((label, on_press)) = sidebar {
+        buttons = buttons.push(button_of(Icon::PanelLeft, label, on_press));
+    }
+    buttons = buttons.push(blank::horizontal());
+    if let Some(on_press) = settings {
+        buttons = buttons.push(button_of(Icon::Settings, tr("Settings"), on_press));
+    }
+    // Centred on the line of the traffic lights, not in the band: the line sits lower (see `LIGHTS`).
+    let row = buttons.push(blank().width(BAND_TRAILING / zoom)).height(BAND_BUTTON / zoom).align_y(Alignment::Center);
+    container(row).padding(Padding::new(0.0).top((LIGHTS - BAND_BUTTON / 2.0) / zoom)).into()
 }
 
 /// The band of [`titlebar`]: `surface`, and over it the parts of `cover`, with the widths the drawer
@@ -616,7 +731,8 @@ pub fn header_title<'a, M: 'a>(
     content.into()
 }
 
-/// The header button that opens the sidebar drawer in the medium and narrow layouts.
+/// The header button that opens the sidebar drawer in the medium and narrow layouts. Only where the
+/// window has no band ([`has_band`]); with one, the band's panel button does it.
 pub fn sidebar_toggle<'a, M: Clone + 'a>(on_press: M) -> Element<'a, M> {
     widgets::icon_button(Icon::PanelLeft, tr("Show sidebar"), Some(on_press))
 }
@@ -673,6 +789,9 @@ pub fn app_switcher<'a, M: Clone + 'a>(current: AppId, anchor: &Anchor, on: fn(S
 /// ([`SidebarMode::toggled`], saved with [`crate::ui_state`]); in the medium and narrow layouts it
 /// opens the drawer from the rail and closes it from the drawer. [`has_sidebar`] tells the cases
 /// apart in `view`, and `[` ([`is_sidebar_key`]) does the same.
+///
+/// Where the window has the band of [`titlebar`] ([`has_band`], macOS), the panel button lies there
+/// ([`TitleButtons::sidebar`]) and the head leaves it out.
 pub fn sidebar_head<'a, M: Clone + 'a>(
     mode: SidebarMode,
     current: AppId,
@@ -681,7 +800,7 @@ pub fn sidebar_head<'a, M: Clone + 'a>(
     on_toggle: M,
 ) -> Element<'a, M> {
     match mode {
-        SidebarMode::Expanded => switcher_row(current, anchor, on, Some(on_toggle)),
+        SidebarMode::Expanded => switcher_row(current, anchor, on, (!has_band()).then_some(on_toggle)),
         SidebarMode::Rail => {
             // The logo on a full-width row, as the other rows of the rail.
             let logo = button(center_x(logo()))
@@ -690,15 +809,15 @@ pub fn sidebar_head<'a, M: Clone + 'a>(
                 .padding(0)
                 .style(style::button::sidebar_item(false))
                 .on_press(on(Switcher::Toggle));
-            column![
+            let mut head = column![
                 widgets::anchored(anchor, widgets::tooltip_right(logo, app_name(current), Trail::None)),
                 widgets::icon_button(Icon::Search, tr("Search"), Some(on(Switcher::Search))),
                 widgets::boxed_button(Icon::SquarePen, tr("New"), Some(on(Switcher::New))),
-                widgets::icon_button(Icon::PanelLeft, tr("Expand sidebar"), Some(on_toggle)),
-            ]
-            .spacing(SIDEBAR_GAP)
-            .align_x(Alignment::Center)
-            .into()
+            ];
+            if !has_band() {
+                head = head.push(widgets::icon_button(Icon::PanelLeft, tr("Expand sidebar"), Some(on_toggle)));
+            }
+            head.spacing(SIDEBAR_GAP).align_x(Alignment::Center).into()
         }
     }
 }
@@ -980,10 +1099,42 @@ mod tests {
         for surface in [Surface::Window, Surface::Panel] {
             let filled = Cover::Filled(Surface::Panel);
             for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
-                let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, cover, Msg::Close);
-                let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, cover, Msg::Close);
+                let buttons = || TitleButtons::none().sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
+                let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, cover, TitleButtons::none(), Msg::Close);
+                let _: Element<'_, Msg> = titlebar(blank(), 1.0, surface, cover, buttons(), Msg::Close);
+                let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, cover, buttons(), Msg::Close);
             }
         }
+    }
+
+    #[test]
+    fn the_panel_button_says_what_a_press_does() {
+        use SizeClass::{Medium, Narrow, Wide};
+        assert_eq!(sidebar_button_label(Wide, SidebarMode::Expanded, false), tr("Collapse sidebar"));
+        assert_eq!(sidebar_button_label(Wide, SidebarMode::Rail, false), tr("Expand sidebar"));
+        // The drawer only opens where the sidebar is not beside the content.
+        assert_eq!(sidebar_button_label(Wide, SidebarMode::Rail, true), tr("Expand sidebar"));
+        for class in [Medium, Narrow] {
+            for choice in [SidebarMode::Expanded, SidebarMode::Rail] {
+                assert_eq!(sidebar_button_label(class, choice, false), tr("Show sidebar"), "{class:?}");
+                assert_eq!(sidebar_button_label(class, choice, true), tr("Hide sidebar"), "{class:?}");
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_lights_have_as_much_room_above_as_below() {
+        // Halfway between the top edge and the inset panel under the band, and as far from the left.
+        assert_eq!(LIGHTS, (TITLEBAR + layout::inset()) / 2.0);
+        // The band's buttons sit on that line and stay inside the band.
+        const { assert!(LIGHTS + BAND_BUTTON / 2.0 <= TITLEBAR) };
+        assert_eq!(BAND_TRAILING + BAND_BUTTON / 2.0, LIGHTS, "the settings mirror the close button");
+    }
+
+    #[test]
+    fn only_macos_has_the_band() {
+        assert_eq!(has_band(), cfg!(target_os = "macos"));
     }
 
     #[test]

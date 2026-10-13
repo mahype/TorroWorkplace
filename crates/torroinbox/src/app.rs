@@ -81,7 +81,7 @@ use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -1247,7 +1247,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             sidebar: SidebarMode::default(),
             launch,
         };
-        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The size, and the traffic lights onto the title band's line (U.11).
+        let size = Task::batch([
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ]);
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
@@ -2596,6 +2600,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.zoom.factor(),
                 surface,
                 self.cover(),
+                TitleButtons::none(),
                 Message::DragWindow,
             ));
         }
@@ -2603,7 +2608,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
         let (surface, cover) = (Surface::of(class), self.cover());
         let content = self.zoom.view(window);
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+        // The panel button and "Settings" in the band above the window (U.10).
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        let buttons = TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings);
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
     }
 
     /// What lies over the top of the window, which the title band repeats: the panel of an entry
@@ -2753,8 +2761,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 // The rail at the left has the panel button.
                 shell::header_bar([], title, trailing)
             }
+            // Where the band has the panel button (macOS), the header leaves it out.
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
-                [shell::sidebar_toggle(Message::ShowDrawer)],
+                (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
                 widgets::menu_button(nav, Some(icon), name, Message::ToggleNav),
                 trailing,
             ),
@@ -3021,14 +3030,20 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             items.push(widgets::sidebar_group_in(mode, tr("Sources"), None));
             items.extend(sources.into_iter().map(row));
         }
-        let footer = vec![widgets::sidebar_item_in(
-            mode,
-            Icon::Settings,
-            tr("Settings"),
-            Trail::None,
-            false,
-            Message::OpenSettings,
-        )];
+        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
+        let footer = (!shell::has_band())
+            .then(|| {
+                widgets::sidebar_item_in(
+                    mode,
+                    Icon::Settings,
+                    tr("Settings"),
+                    Trail::None,
+                    false,
+                    Message::OpenSettings,
+                )
+            })
+            .into_iter()
+            .collect();
         let head = shell::sidebar_head(mode, INBOX, switcher, Message::Switcher, Message::ToggleSidebar);
         shell::sidebar(head, items, footer)
     }

@@ -694,6 +694,52 @@ R.1 ─┬─ R.2 ─┐
   `--demo --open` (Kalender `editor`, `drawer`; Aufgaben `filter-new`, `drawer`; Steuerzentrale
   `remove`): Band und Fenster gleich abgedunkelt, kein heller Streifen.
 
+## Rückmeldungen 2026-10-13
+
+### U.10 Knöpfe im Titelband: Seitenleiste neben der Ampel, Einstellungen oben rechts (macOS)
+- [x] erledigt (Sichtprüfung auf macOS 26: Kalender Breit dunkel, Steuerzentrale Breit hell, alle vier Apps Mittel hell; offen: Klick auf die Knöpfe, Schmal)
+- **Modell:** Opus · **Braucht:** U.9 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/{app,compose}.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`, `crates/torro-core/src/i18n/de.rs`, `.claude/skills/torro-design/SKILL.md`
+- Wie Claude und Slack: Fensterweite Knöpfe gehören ins Band oben, auf Höhe der Ampel. Bisher lag der
+  Seitenleisten-Knopf (`panel-left`) oben in der Seitenleiste bzw. in der Kopfleiste (Schmal) und die
+  Einstellungen unten in der Seitenleiste („Settings“, in der Steuerzentrale „General“).
+- `shell::titlebar` bekommt `shell::TitleButtons`: den Seitenleisten-Knopf direkt rechts neben der Ampel
+  und den Einstellungs-Knopf in der Ecke oben rechts. Beide bleiben bei jedem Zoom gleich groß (Punkte,
+  wie das Band). Der Seitenleisten-Knopf macht dasselbe wie `[`: Breit ein-/ausklappen, sonst die
+  Schublade öffnen/schließen; sein Tooltip sagt, was passiert (`shell::sidebar_button_label`). Über einem
+  Dialog oder Paneel fehlen beide, über der Schublade nur die Einstellungen.
+- Auf macOS fallen die alten Plätze weg (`shell::has_band()`): Knopf in `shell::sidebar_head` und
+  `sidebar_toggle` in der schmalen Kopfleiste, „Settings“/„General“ unten in der Seitenleiste. Im
+  Navigationsmenü (Mittel, Schmal) bleiben die Einstellungen. Andere Systeme haben kein Band und bleiben
+  unverändert.
+- Ziele der Einstellungen: Steuerzentrale Abschnitt „General“, Kalender/Aufgaben/Inbox `OpenSettings`.
+  Das Schreibfenster der Inbox und die Kurzansichten haben keine Knöpfe.
+- Oberfläche/API/MCP: nichts Neues – reine Anordnung bestehender Bedienelemente, keine neuen Requests.
+- Neue Texte: „Hide sidebar“ (Seitenleiste ausblenden).
+- Abnahme: Tests für `sidebar_button_label` und das Band mit Knöpfen bei jeder Abdeckung; Sichtprüfung auf
+  macOS in Breit, Mittel und Schmal: Seitenleisten-Knopf rechts neben der Ampel, Einstellungen oben rechts.
+
+### U.11 Ampel mit Luft: gleicher Abstand oben und unten, Knöpfe auf ihrer Linie (macOS)
+- [x] erledigt (Messung auf macOS 26 an allen vier Apps, auch nach Größenänderung durch AeroSpace und Fokuswechsel; offen: Größe von Hand ziehen, Vollbild, älteres macOS)
+- **Modell:** Opus · **Braucht:** U.10 · **Dateien:** `Cargo.toml`, neues Crate `crates/torro-appkit/`,
+  `crates/torro-gui/{Cargo.toml,src/lib.rs,src/shell.rs}`, `crates/torrocalendar/src/app.rs`,
+  `crates/torrotasks/src/app.rs`, `crates/torroinbox/src/{app,compose}.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- Befund aus U.10: macOS 26 setzt die Ampel bei (16, 16) mit 9 Punkten Luft nach oben, darunter liegen 17 bis
+  zur eingesetzten Fläche. Das wirkt „obendran“; Claude, Slack und Safari geben ihr mehr Luft.
+- Die Ampel wird verschoben wie bei Electrons `trafficLightPosition`: Mitte des Schließen-Knopfs bei (20, 20),
+  also mittig zwischen Oberkante und Fläche (32 + 8) und so weit vom linken wie vom oberen Rand. Der
+  Seitenleisten-Knopf und die Einstellungen sitzen auf derselben Linie, die Einstellungen 20 vom rechten Rand.
+- Iced und winit können die Ampel nicht setzen. Das kleine Crate `torro-appkit` tut es über objc2 (die
+  Versionen, die winit und rfd schon mitbringen). Es ist die einzige Stelle mit `unsafe` (vier markierte
+  Aufrufe, dort `unsafe_code = "deny"` statt `forbid`; mit dem Nutzer abgesprochen). AppKit legt die Ampel
+  nach Größenänderung, Fokuswechsel und Vollbild neu an; das Crate setzt sie danach wieder.
+- Jede App startet `torro_gui::place_traffic_lights()` einmal beim Start (Hauptfenster und Schreibfenster).
+- Oberfläche/API/MCP: nichts Neues. Neue Texte: keine.
+- Abnahme: Test für die Lage der Linie; Messung auf macOS 26 (Ampel, Seitenleisten-Knopf und Zahnrad mit
+  Mitte bei y = 20, auch nach Größenänderung und Fokuswechsel). Offen: Ziehen der Fenstergröße von Hand
+  (Flackern?), Vollbild, älteres macOS.
+
 ### U.12 Seitenleiste rollt in der Mitte, Kopf und Fuß bleiben stehen
 - [x] erledigt (Sichtprüfung auf macOS mit `--design plex`: Kalender `--open week` bei 1100×760 hell – „Settings“ sichtbar; bei 1100×520 hell und dunkel Kalender, Aufgaben, Inbox, Steuerzentrale ausgeklappt sowie Kalender und Aufgaben als Leiste – Mitte rollt, Kopf und Fuß fest, Scrollleiste im Rand neben den Zählern; Schublade nicht eigens angesehen, sie nutzt denselben Baustein)
 - **Modell:** Opus · **Braucht:** U.2, L.2 · **Dateien:** `crates/torro-gui/src/shell.rs`,
