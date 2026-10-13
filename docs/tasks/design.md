@@ -693,3 +693,29 @@ R.1 ─┬─ R.2 ─┐
   es nicht tun; Test für das Band in beiden Fällen. Sichtprüfung auf macOS hell und dunkel mit
   `--demo --open` (Kalender `editor`, `drawer`; Aufgaben `filter-new`, `drawer`; Steuerzentrale
   `remove`): Band und Fenster gleich abgedunkelt, kein heller Streifen.
+
+### U.12 Seitenleiste rollt in der Mitte, Kopf und Fuß bleiben stehen
+- [x] erledigt (Sichtprüfung auf macOS mit `--design plex`: Kalender `--open week` bei 1100×760 hell – „Settings“ sichtbar; bei 1100×520 hell und dunkel Kalender, Aufgaben, Inbox, Steuerzentrale ausgeklappt sowie Kalender und Aufgaben als Leiste – Mitte rollt, Kopf und Fuß fest, Scrollleiste im Rand neben den Zählern; Schublade nicht eigens angesehen, sie nutzt denselben Baustein)
+- **Modell:** Opus · **Braucht:** U.2, L.2 · **Dateien:** `crates/torro-gui/src/shell.rs`,
+  `docs/tasks/design.md`
+- Befund: Die ausgeklappte Seitenleiste (und die Leiste, die Schublade) rollt nicht. Mit einem
+  Design-Paket mit höheren Zeilen (`designs/plex`: `row_sidebar` 30, `control` 34) oder in einem
+  niedrigen Fenster reicht die Höhe nicht, und der untere Teil wird abgeschnitten. Im Kalender
+  (`torrocalendar --demo --design plex --open week`, Fensterhöhe ~760) verschwand „Settings“ unten.
+- `shell::sidebar(switcher, items, footer)` legt die `items` (Navigation, Listen, Kalender, Konten,
+  Mini-Monat) in ein `scrollable` mit `style::scrollbar()`/`style::scrollable`; der Kopf (App-Umschalter
+  bzw. `sidebar_head`) und der Fuß („Open …“, „Settings“, Versionszeile der Steuerzentrale) bleiben
+  fest sichtbar. Die Scrollleiste schwebt im rechten Rand der Seitenleiste neben den Zeilen, nicht
+  über Zählern und Tasten-Hinweisen; dafür setzt `shell::sidebar` den waagerechten Rand selbst und
+  die Shell (`inset_window`, Schublade) nur noch den senkrechten.
+- Gilt für alle drei Formen (ausgeklappt, Leiste, Schublade) und alle Apps, die `shell::sidebar`
+  nutzen: Kalender, Aufgaben, Inbox, Steuerzentrale. Die Apps bleiben unverändert; ihre Seitenleisten
+  bauen schon Kopf, Mitte und Fuß getrennt. Keine Zahlen in Apps, nur Tokens
+  (`scripts/design-check.sh`).
+- **Oberfläche:** ja (alle Apps). **API/MCP:** nicht betroffen – reine Darstellung, kein neuer
+  Zustand und keine neue Funktion; was die Seitenleiste zeigt, kommt schon über bestehende Requests.
+- Neue Texte: keine.
+- Abnahme: Test mit Iceds Null-Renderer: viele Einträge in niedriger Höhe – Kopf oben, Fuß ganz
+  im Fenster, die Mitte nimmt den Rest; wenige Einträge – Fuß unten wie bisher. Sichtprüfung auf
+  macOS mit `--design plex`: Kalender `--open week` bei Höhe ~760, Steuerzentrale und Aufgaben in
+  einem niedrigen Fenster – „Settings“ bleibt sichtbar, die Mitte rollt.
