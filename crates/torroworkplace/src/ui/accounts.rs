@@ -12,6 +12,10 @@
 //! A GitHub account (task G.1) has no calendars or lists yet: its detail page shows what the
 //! token's scopes allow and what is missing ([`github_permissions`]) in place of them.
 //!
+//! An AI account (task KI.1a, kind `ai`) has neither: its row says only how it stands, its page
+//! shows the status without "Sync now" (nothing of it syncs), the server's address and where the
+//! key lives.
+//!
 //! A CalDAV account (a mail provider's, task M7.2) shows "CalDAV" as its kind, the server and user
 //! in the connection group, and "Change password…" there: a dialog over the window asks for the
 //! new password and sends `ConnectCalDav` for the same server and user again (the core then
@@ -755,6 +759,7 @@ pub fn provider_name(kind: &str) -> String {
         "caldav" => tr("CalDAV").to_string(),
         "mail" => tr("Mail").to_string(),
         "github" => tr("GitHub").to_string(),
+        "ai" => tr("AI").to_string(),
         other => other.to_string(),
     }
 }
@@ -907,8 +912,11 @@ fn pending_row<'a>(account: &'a AccountInfo) -> Element<'a, Message> {
 /// One account in the list: status dot, label, status and last sync, and a chevron; the whole row
 /// opens the detail page.
 fn account_row<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
-    let dot = widgets::status_dot(status_line(&account.state).tone.status());
-    let row = setting_row(Some(dot), account.label.as_str(), Some(account_detail(&account.state, now)), chevron());
+    let line = status_line(&account.state);
+    let dot = widgets::status_dot(line.tone.status());
+    // An AI account never syncs: "Last synced" would say nothing true about it.
+    let detail = if account.kind == AI_KIND { line.text } else { account_detail(&account.state, now) };
+    let row = setting_row(Some(dot), account.label.as_str(), Some(detail), chevron());
     pressable(row, Some(Message::Open(account.id.clone())))
 }
 
@@ -934,12 +942,15 @@ fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: D
     if let Some(mail) = &account.mail {
         return mail_detail(state, account, mail, now);
     }
-    // A GitHub account has no calendars or lists (yet); what its token may do matters instead.
+    // A GitHub account has no calendars or lists (yet); what its token may do matters instead. An
+    // AI account has nothing of the kind.
     let middle = match account.kind.as_str() {
-        "github" => permissions_group(account.scopes.as_deref()),
-        _ => collections_group(account, &data.settings),
+        "github" => Some(permissions_group(account.scopes.as_deref())),
+        AI_KIND => None,
+        _ => Some(collections_group(account, &data.settings)),
     };
-    column![heading(account), status_group(account, now), middle]
+    column![heading(account), status_group(account, now)]
+        .push(middle)
         .push(connection_group(account))
         .push(remove_button())
         .spacing(layout::section_gap())
@@ -1302,10 +1313,15 @@ pub(super) fn on_axis<'a, M: 'a>(button: Element<'a, M>) -> Element<'a, M> {
     row![Space::new(), button].spacing(-style::button_padding().left).into()
 }
 
+/// The kind of an AI account (task KI.1a), `torro_core::account::AccountKind::Ai` as listed.
+const AI_KIND: &str = "ai";
+
 /// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
+/// An AI account gets the dot and the word only: nothing of it syncs.
 fn status_group<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let line = status_line(&account.state);
     let (detail, sync) = match &account.state {
+        AccountState::Connected { .. } if account.kind == AI_KIND => (None, None),
         AccountState::Connected { last_sync, .. } => (
             Some(last_synced_text(*last_sync, now)),
             Some(widgets::text_button(
@@ -1355,7 +1371,8 @@ fn connection_group<'a>(account: &'a AccountInfo) -> Option<Element<'a, Message>
         AccountState::NotConnected => return None,
     };
     let mut rows = vec![value_row(tr("Server"), server)];
-    rows.extend(user.map(|user| value_row(tr("User"), user)));
+    // An AI account signs in as nobody: only a key, if any.
+    rows.extend(user.filter(|user| !user.is_empty()).map(|user| value_row(tr("User"), user)));
     if account.kind == "caldav" && user.is_some() {
         let change =
             widgets::text_button(None, tr("Change password…"), style::button::secondary, Some(Message::ChangePassword));
@@ -1365,6 +1382,7 @@ fn connection_group<'a>(account: &'a AccountInfo) -> Option<Element<'a, Message>
     let stored = match account.kind.as_str() {
         "github" => Some(tr("Token stored in the system keychain")),
         "caldav" => None,
+        AI_KIND => Some(tr("An API key, if the server needs one, stays in the system keychain.")),
         _ => Some(tr("App password stored in the system keychain")),
     };
     let footer = user.and(stored).map(str::to_string);

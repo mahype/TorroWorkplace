@@ -36,6 +36,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 pub use torro_core::account::Secret;
+use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::item::{Hidden, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
@@ -443,6 +444,65 @@ pub enum Request {
         /// The account's id in TorroMail, as `accounts.list_torromail_accounts` lists it.
         id: String,
     },
+    /// Connects an AI account (task KI.1a, `docs/ki.md`): a server the suite asks a model, with
+    /// the OpenAI-compatible protocol. `provider` says which kind of server, `server` where it is
+    /// (left out: the provider's usual address), `key` the API key it wants (OpenRouter always,
+    /// a local server only when it asks for one).
+    ///
+    /// The core writes the address as `torro_core::ai::normalize_base` does, refuses a key that
+    /// would travel without TLS to another computer, then checks the account with the server:
+    /// OpenRouter's key with `GET <server>/key`, any other server by listing its models. Only then
+    /// does it keep the key in the system keychain, under the account id
+    /// `ai:<provider>@<host>` (`torro_core::Account::ai`), and add the account; the same provider
+    /// at the same host again replaces address and key.
+    ///
+    /// Answered with [`Response::Account`]: the account as `accounts.list_accounts` lists it
+    /// (`kind: "ai"`), never with the key. Error codes: `auth` when the server refuses the key or
+    /// wants one, `offline` when it cannot be reached, `not-found` when nothing answers at the
+    /// address, `error` for an address that is none, a key over plain `http` to another computer,
+    /// OpenRouter without a key, an unexpected answer or a keychain that refuses. Only the app key
+    /// may send it: every client key gets `forbidden`, whatever its rights, because it hands the
+    /// core a secret (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval
+    /// either.
+    #[serde(rename = "accounts.connect_ai")]
+    ConnectAi {
+        /// Which kind of server: `ollama`, `lm_studio`, `openrouter` or `openai_compatible`.
+        provider: AiProvider,
+        /// The base address of the server's OpenAI-compatible API (`http://localhost:11434/v1`;
+        /// `localhost:11434` is completed). Leave out for the provider's usual address; needed for
+        /// `openai_compatible`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
+        /// The API key; empty for none. It goes into the system keychain only and is never part
+        /// of an answer, an error message, a log or an approval.
+        #[serde(default, skip_serializing_if = "Secret::is_blank")]
+        key: Secret,
+    },
+    /// The models of the AI account `account` (task KI.1a), asked from its server now, in the
+    /// server's order ([`Response::AiModels`]). Each says whether it can call tools and whether
+    /// its weights are open, where the server tells. Without `all` only models known to have open
+    /// weights and those the server says nothing about are listed (Open First: on OpenRouter only
+    /// open models, on a local server all of them).
+    ///
+    /// Error codes: `not-found` for an id that is no AI account, `not-connected` when the account
+    /// needs a key and none is stored on this device, `auth` when the server refuses the key,
+    /// `offline`, `busy` (too many requests, credit used up) and `error`.
+    #[serde(rename = "ai.list_models")]
+    AiModels {
+        /// The account: `ai:<provider>@<host>` from `accounts.list_accounts`.
+        account: String,
+        /// Also list models whose weights are closed (OpenRouter).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+    },
+    /// Looks for AI servers on this computer (task KI.1a): Ollama at `localhost:11434` and
+    /// LM Studio at `localhost:1234`, by asking each for its models (`GET <server>/models`, a
+    /// short wait each). Nothing else is contacted and nothing is stored.
+    ///
+    /// Answered with [`Response::AiServers`]: the servers that answered, in that order, with the
+    /// number of models and the account already connected there; an empty list when none runs.
+    #[serde(rename = "ai.find_local_servers")]
+    FindAiServers,
     /// Fetch calendars and tasks from the servers of all accounts now. Each account syncs on
     /// its own: one that fails keeps its cache and its problem, the others are updated. The
     /// answer is the first failure, else [`Response::Ok`].
@@ -1473,7 +1533,8 @@ pub enum Response {
         key: IssuedKey,
     },
     /// The account a sign-in just connected ([`Request::ConnectGithub`],
-    /// [`Request::SetGithubToken`]), as [`Request::Accounts`] lists it; never with its secret.
+    /// [`Request::SetGithubToken`], [`Request::ConnectAi`]), as [`Request::Accounts`] lists it;
+    /// never with its secret.
     Account {
         account: AccountInfo,
     },
@@ -1676,6 +1737,14 @@ pub enum Response {
         /// it is never sent again by itself.
         delivery: Delivery,
     },
+    /// The models of an AI account ([`Request::AiModels`]), in the server's order.
+    AiModels {
+        models: Vec<AiModel>,
+    },
+    /// The AI servers found on this computer ([`Request::FindAiServers`]).
+    AiServers {
+        servers: Vec<AiServer>,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
@@ -1693,7 +1762,7 @@ pub enum Response {
     /// - `forbidden`: the client's rights do not cover the command (also `mail.send_draft` with
     ///   `outbound: never`), it is for the app key only (`clients` commands, `system.quit`,
     ///   `accounts.set_github_token`, `accounts.connect_caldav`, `accounts.connect_mail`,
-    ///   `approvals.decide_approval`), it needs a person's approval that the core could not
+    ///   `accounts.connect_ai`, `approvals.decide_approval`), it needs a person's approval that the core could not
     ///   record (`approvals.json` cannot be written), or a security rule of the inbox or of mail
     ///   refuses it (a client changing an approval or an entry of the suite, or posting an
     ///   approval; a client attaching a file from outside the core's attachment folder),
@@ -1721,7 +1790,8 @@ pub struct AccountInfo {
     /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
     /// Provider: `nextcloud`, `github`, `caldav` (a mail provider's or any other CalDAV
-    /// server, task M7.1) or `mail` (task M2.1; later `slack`, …).
+    /// server, task M7.1), `mail` (task M2.1) or `ai` (an AI account, task KI.1a: `state` holds
+    /// its server's base address and no login name; later `slack`, …).
     pub kind: String,
     /// `anna@cloud.example.org`; for GitHub the login; for CalDAV the login when it is an e-mail
     /// address, else `<login>@<provider>`.
@@ -1895,6 +1965,20 @@ pub struct InboxStats {
     /// threshold or no entry with the trait is known any more.
     #[serde(default)]
     pub suggestions: Vec<StatsSuggestion>,
+}
+
+/// An AI server found on this computer ([`Request::FindAiServers`], task KI.1a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiServer {
+    /// Which kind of server answered there.
+    pub provider: AiProvider,
+    /// Its base address, what `accounts.connect_ai` takes as `server`.
+    pub url: String,
+    /// How many models it offers now.
+    pub models: usize,
+    /// The id of the AI account already connected at this address; `None` when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// One account of the separate TorroMail app as `accounts.list_torromail_accounts` lists it (task

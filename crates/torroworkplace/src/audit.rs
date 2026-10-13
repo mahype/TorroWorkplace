@@ -287,6 +287,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ConnectMail { .. } => Vec::new(),
         // TorroMail's accounts (task M7.4): no address, and no id of another app's keychain.
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
+        // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
+        Request::ConnectAi { .. } | Request::FindAiServers => Vec::new(),
+        Request::AiModels { account: name, .. } => vec![account(name)],
         Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }

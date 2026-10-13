@@ -505,6 +505,10 @@ fn describe(request: &Request) -> String {
         Request::UpdateMailAccount { .. } => "update mail account".into(),
         Request::TorroMailAccounts => "torromail accounts".into(),
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
+        // Never the address or the key (task KI.1a).
+        Request::ConnectAi { .. } => "connect ai".into(),
+        Request::AiModels { .. } => "ai models".into(),
+        Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::SearchMail { .. } => "search mail".into(),
         Request::GetMail { .. } => "get mail".into(),

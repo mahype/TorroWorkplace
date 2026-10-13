@@ -29,6 +29,7 @@ use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
 use torro_wm::{Backend, Events, NoWindow, WindowManager, WmError};
 
+use crate::account::ai::AiAccounts;
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
@@ -533,6 +534,9 @@ pub struct Core {
     /// The GitHub accounts (task G.1), kept apart from the calendar service: they have no
     /// calendars or task lists, and the core lists both kinds together.
     github: Arc<GithubAccounts>,
+    /// The AI accounts (task KI.1a), kept apart like the GitHub accounts: the user's
+    /// ([`AiAccounts::system`]), loaded only by [`Core::start`]; tests bring their own.
+    ai: Arc<AiAccounts>,
     /// The mail accounts (task M2.6): their sync, command connections and stores. The user's
     /// ([`MailService::system`]), loaded only by [`Core::start`]; tests use their own, and one
     /// without a home directory unless they bring it ([`MailService::without_home`]).
@@ -554,7 +558,8 @@ pub struct Core {
     /// it switches services, each from its check ("does another account sync these?") to the
     /// calendar service's answer. Otherwise a CalDAV account and the calendar part of a mail
     /// account of the same sign-in could both pass their check, and the settings would say
-    /// "calendars on" while the calendar service refused the duplicate.
+    /// "calendars on" while the calendar service refused the duplicate. `accounts.connect_ai` holds
+    /// it too while it writes `accounts.json` (task KI.1a).
     calendar_sign_ins: Mutex<()>,
     /// The separate TorroMail app, read only (task M7.4): the user's ([`TorroMail::system`]);
     /// none in tests unless they bring one ([`Core::with_torromail`]).
@@ -583,6 +588,7 @@ impl Core {
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
             github: Arc::new(GithubAccounts::system()),
+            ai: Arc::new(AiAccounts::system()),
             mail,
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
@@ -685,6 +691,7 @@ impl Core {
             }
         });
         self.github.start();
+        self.ai.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         self.mail.start();
         let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
@@ -1459,6 +1466,21 @@ impl Core {
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.connect_mail(sign_in).await
             }
+            // A client never reaches `connect_ai` either (`Rights::allows`, rule 5): it hands in a key.
+            // Under the lock the other sign-ins take, so two connections never write `accounts.json`
+            // over each other.
+            Request::ConnectAi { provider, server, key } => {
+                let _writing = self.calendar_sign_ins.lock().await;
+                match self.ai.connect(provider, server.as_deref(), key).await {
+                    Ok(account) => Response::Account { account },
+                    Err(err) => ai_error(&err),
+                }
+            }
+            Request::AiModels { account, all } => match self.ai.models(&account, all).await {
+                Ok(models) => Response::AiModels { models },
+                Err(err) => ai_error(&err),
+            },
+            Request::FindAiServers => Response::AiServers { servers: self.ai.find_local().await },
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
@@ -1905,8 +1927,8 @@ impl Core {
 
     /// Every account as `reach` may see it: the calendar service's accounts, then the mail
     /// accounts (a client's only as far as its rights reach), then the GitHub accounts with their
-    /// filter lists as collections (never with their secrets), and a sign-in that runs last, as
-    /// `accounts.list_accounts` promises.
+    /// filter lists as collections, then the AI accounts (task KI.1a; never with their secrets),
+    /// and a sign-in that runs last, as `accounts.list_accounts` promises.
     ///
     /// A mail account that syncs calendars too is listed once (task M2.7): its mail part with the
     /// collections of its calendar part, the problems of both ([`joined_info`]). A client that
@@ -1936,6 +1958,7 @@ impl Core {
             });
         }
         others.extend(github);
+        others.extend(self.ai.infos().await);
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
         accounts.splice(at..at, others);
         accounts
@@ -2408,6 +2431,12 @@ impl Core {
                     Response::Ok
                 }
                 Err(message) => Response::Error { code: "error".into(), message },
+            };
+        }
+        if self.ai.knows(id).await {
+            return match self.ai.remove(id).await {
+                Ok(()) => Response::Ok,
+                Err(message) => refusal("error", message),
             };
         }
         if id.starts_with(torro_mail::ACCOUNT_PREFIX) {
@@ -2933,6 +2962,12 @@ fn account_answer(result: Result<AccountInfo, GithubError>) -> Response {
         Ok(account) => Response::Account { account },
         Err(err) => github_error(&err),
     }
+}
+
+/// An AI account's failure as an answer with its code (task KI.1a); the message never holds a key
+/// ([`torro_core::ai::AiError`]).
+fn ai_error(err: &torro_core::ai::AiError) -> Response {
+    Response::Error { code: err.code().into(), message: err.to_string() }
 }
 
 fn github_error(err: &GithubError) -> Response {
@@ -8911,5 +8946,126 @@ mod tests {
             let as_task = serde_json::to_value(torro_pim::EventTime::Date(day)).expect("json");
             assert_eq!(serde_json::to_value(torro_inbox::item::TaskDue::Date(day)).expect("json"), as_task);
         }
+    }
+
+    // ----- AI accounts (task KI.1a) -----
+
+    use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_openrouter};
+
+    /// [`audited`] with AI accounts in `dir` on the keychain `keys`, looking for local servers at
+    /// `local`.
+    fn core_with_ai(dir: &std::path::Path, keys: &MemoryTokens, local: Vec<(AiProvider, String)>) -> Core {
+        Core { ai: Arc::new(crate::account::ai::tests::service(dir, keys, local)), ..audited(dir) }
+    }
+
+    use torro_core::ai::AiProvider;
+
+    #[tokio::test]
+    async fn the_control_centre_connects_an_ai_account_lists_its_models_and_removes_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let connect = Request::ConnectAi {
+            provider: AiProvider::OpenRouter,
+            server: Some(openrouter.url("/api/v1")),
+            key: torro_ipc::Secret::new(AI_KEY),
+        };
+        let Response::Account { account } = ask(&core, Some(&app_key), connect).await else {
+            panic!("connecting answers with the account")
+        };
+        assert_eq!(account.kind, "ai");
+        let listed = ask(&core, Some(&app_key), Request::Accounts).await;
+        assert_eq!(listed, Response::Accounts { accounts: vec![account.clone()] });
+
+        let models = Request::AiModels { account: account.id.clone(), all: false };
+        let Response::AiModels { models } = ask(&core, Some(&app_key), models).await else { panic!("models") };
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["qwen/qwen3-14b"]);
+        let unknown = Request::AiModels { account: "ai:openrouter@nowhere.example".into(), all: true };
+        assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found");
+
+        let remove = Request::RemoveAccount { id: account.id.clone() };
+        assert_eq!(ask(&core, Some(&app_key), remove.clone()).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), Request::Accounts).await, Response::Accounts { accounts: vec![] });
+        assert_eq!(keys.get_plain(&account.id), None);
+        assert_eq!(code(&ask(&core, Some(&app_key), remove).await), "not-found");
+        let stored = std::fs::read_to_string(accounts_file(dir.path())).expect("stored");
+        assert!(!stored.contains("SECRET"), "{stored}");
+    }
+
+    /// Acceptance of task KI.1a: the key appears in no answer and no log. A client never hands one
+    /// in, whatever its rights; reading models and finding servers is open to `ai` read rights.
+    #[tokio::test]
+    async fn no_client_connects_an_ai_account_and_the_key_is_in_no_answer_or_log() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama().await;
+        let local = vec![(AiProvider::Ollama, ollama.url("/v1")), (AiProvider::LmStudio, NOBODY.to_string())];
+        let core = core_with_ai(dir.path(), &keys, local);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+
+        let connect = |server: String| Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(server),
+            key: torro_ipc::Secret::new(AI_KEY),
+        };
+        let Err(refused) = core.handle_from(Some(&key), connect(ollama.url("/v1"))).await else { panic!("refused") };
+        assert_eq!(refused, Refused::Forbidden { command: "accounts.connect_ai" });
+        assert_eq!(keys.get_plain(&format!("ai:ollama@127.0.0.1:{}", ollama.port())), None);
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+
+        // The person connects it; a local Ollama wants no key.
+        let local = Request::ConnectAi {
+            provider: AiProvider::Ollama,
+            server: Some(ollama.url("/v1")),
+            key: torro_ipc::Secret::default(),
+        };
+        let Response::Account { account } = ask(&core, Some(&app_key), local).await else {
+            panic!("the app key connects")
+        };
+        let mut answers = Vec::new();
+        for request in
+            [Request::Accounts, Request::AiModels { account: account.id.clone(), all: true }, Request::FindAiServers]
+        {
+            let answer = ask(&core, Some(&key), request).await;
+            assert!(!matches!(answer, Response::Error { .. }), "{answer:?}");
+            answers.push(answer);
+        }
+        let Response::AiServers { servers } = &answers[2] else { panic!("servers") };
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].account.as_deref(), Some(account.id.as_str()));
+        // A server that is gone: the error says so, without the key.
+        let gone = Request::ConnectAi {
+            provider: AiProvider::OpenAiCompatible,
+            server: Some(NOBODY.into()),
+            key: torro_ipc::Secret::new(AI_KEY),
+        };
+        let offline = ask(&core, Some(&app_key), gone).await;
+        assert_eq!(code(&offline), "offline");
+        answers.push(offline);
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for shown in answers
+            .iter()
+            .map(|answer| format!("{answer:?} {}", serde_json::to_string(answer).expect("json")))
+            .chain([log.clone()])
+        {
+            assert!(!shown.contains("SECRET"), "the key in {shown}");
+        }
+        let commands: Vec<String> = audit_lines(dir.path()).into_iter().map(|line| line.command).collect();
+        assert_eq!(
+            commands,
+            ["accounts.connect_ai", "accounts.list_accounts", "ai.list_models", "ai.find_local_servers"],
+            "the client's requests, the refused one too"
+        );
+        // Account ids are logged as for every account; the address typed for a connection is not.
+        assert!(audit_lines(dir.path())[0].ids.is_empty(), "{log}");
     }
 }

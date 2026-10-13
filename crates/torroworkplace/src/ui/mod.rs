@@ -470,7 +470,7 @@ impl Ui {
                 }
                 messages
             }
-            Open::WizardMail(demo) => {
+            Open::WizardMail(demo) | Open::WizardAi(demo) => {
                 let mut messages =
                     vec![Message::Select(Section::Accounts), Message::Accounts(accounts::Message::AddAccount)];
                 messages.extend(
@@ -487,6 +487,12 @@ impl Ui {
                     messages.push(Message::Accounts(accounts::Message::Open(account.id.clone())));
                     messages.push(Message::Accounts(accounts::Message::ChangePassword));
                 }
+                messages
+            }
+            Open::AiDetail => {
+                let ai = accounts::listed(&self.data.accounts).find(|account| account.kind == "ai");
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                messages.extend(ai.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
             }
             Open::GithubDetail => {
@@ -1798,6 +1804,11 @@ mod tests {
             "wizard-mail-refused",
             "wizard-mail-services",
             "wizard-mail-done",
+            "wizard-ai",
+            "wizard-ai-openrouter",
+            "wizard-ai-refused",
+            "wizard-ai-server",
+            "wizard-ai-done",
         ] {
             let mail = started(&["--demo", "--open", state]);
             assert_eq!(mail.section, Section::Accounts, "{state}");
@@ -1806,6 +1817,8 @@ mod tests {
         let password = started(&["--demo", "--open", "change-password"]);
         assert_eq!(password.accounts.selected.as_deref(), Some("caldav:anna@posteo.de@posteo.de"));
         assert!(password.accounts.password.is_some() && password.page_overlay().is_some());
+        let ai = started(&["--demo", "--open", "ai-detail"]);
+        assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
 

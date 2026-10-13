@@ -1108,6 +1108,8 @@ impl PimService {
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }
             | Request::SendDraft { .. } => return None,
+            // No collection: AI accounts have none (task KI.1a).
+            Request::ConnectAi { .. } | Request::AiModels { .. } | Request::FindAiServers => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

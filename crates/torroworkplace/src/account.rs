@@ -28,6 +28,9 @@
 //!
 //! Task M7.4: the accounts of the separate TorroMail app are read in [`torromail`], only read:
 //! its `state.json` and, for the account a person takes over, its keychain entry.
+//!
+//! Task KI.1a: AI accounts (`AccountKind::Ai`) live in [`ai`], apart like the GitHub accounts: no
+//! calendars or task lists, so the calendar service never loads them ([`syncs_calendars`]).
 
 use std::future::Future;
 use std::path::Path;
@@ -42,6 +45,7 @@ use torro_pim_caldav::{CalDavAccount, CalDavClient};
 
 use self::github::TokenStore;
 
+pub mod ai;
 pub mod torromail;
 
 /// How often the sign-in is polled while the user is in the browser.
@@ -95,7 +99,7 @@ pub fn stored() -> Result<Vec<Stored>, String> {
 pub fn syncs_calendars(account: &Account) -> bool {
     match account.kind {
         AccountKind::Nextcloud | AccountKind::CalDav => true,
-        AccountKind::GitHub => false,
+        AccountKind::GitHub | AccountKind::Ai => false,
         AccountKind::Mail => {
             let services = account.mail_settings.as_ref().map(|settings| settings.services).unwrap_or_default();
             account.mail.as_ref().is_some_and(|mail| mail.caldav.is_some()) && (services.calendars || services.tasks)
@@ -392,7 +396,8 @@ pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavCli
         // The CalDAV address of the same sign-in (task M2.1); a mail-only account has none, which
         // no client accepts, and it never syncs calendars ([`syncs_calendars`], task M2.7).
         AccountKind::Mail => account.mail.as_ref().and_then(|mail| mail.caldav.clone()).unwrap_or_default(),
-        AccountKind::Nextcloud | AccountKind::GitHub => nextcloud::dav_url(&account.server),
+        // An AI account never syncs calendars ([`syncs_calendars`]), so it never gets here.
+        AccountKind::Nextcloud | AccountKind::GitHub | AccountKind::Ai => nextcloud::dav_url(&account.server),
     };
     let dav = CalDavAccount { url, username: account.login_name.clone() };
     CalDavClient::new(http.clone(), &dav, connected.app_password.clone()).map_err(|err| err.to_string())
