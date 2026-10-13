@@ -28,7 +28,7 @@
 
 use std::collections::HashSet;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -647,7 +647,7 @@ impl Journal {
         drop(file);
         fs::rename(&temporary, &path)?;
         #[cfg(unix)]
-        File::open(&self.dir)?.sync_all()?;
+        fs::File::open(&self.dir)?.sync_all()?;
         Ok(())
     }
 
