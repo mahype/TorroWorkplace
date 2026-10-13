@@ -56,8 +56,13 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Vertragstest Tool ↔ Katalog; `TORRO_BLESS=1 cargo test -p torro-ipc`.
 
 ### C.2 Antrieb A: Unterhaltung mit KI-Konto und Werkzeugen
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`
+- [x] erledigt (Datenregel fest: Mail und Mail-Einträge des Eingangs nur an Ollama, LM Studio oder einen Server auf
+  diesem Rechner, KI.1 ersetzt `assistant/data_rule.rs`; Werkzeuge über `Host::run` als Client des Assistenten;
+  Systemprompt vorläufig in `assistant/prompt.rs`, C.3 ersetzt ihn)
+- **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`; nachgetragen
+  (Koordination): `crates/torroworkplace/src/{core,audit}.rs` (`Host` für den Kern, `Core::start` mit `Arc`,
+  Protokoll mit Antrieb), `crates/torroworkplace/src/account/ai.rs` (`AiAccounts::server`),
+  `crates/torro-ipc/src/assistant.rs` (Doku: wachsende Antwort)
 - Schleife: Modell ruft Werkzeug → Kern führt den Request **mit dem Client des Assistenten** aus (Rechte, Sammlungen,
   Freigaben wie bei jedem Client) → Ergebnis gekürzt zurück → bis zur Antwort. Höchstzahl Schritte je Nachricht.
 - Werkzeuge nur aus erlaubten und nicht abgeschalteten Bereichen; bei kleinen Modellen zuerst nur lesende; ab einer

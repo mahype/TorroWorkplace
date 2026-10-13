@@ -287,8 +287,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         // or a model's name.
         Request::ListEngines | Request::ListConversations => Vec::new(),
         Request::SendMessage { conversation, engine, .. } => {
-            let engine = checked("engine", engine, |value| value == TEST_ENGINE || is_account_id(value));
-            conversation.iter().map(|id| random("conversation", id)).chain([engine]).collect()
+            conversation.iter().map(|id| random("conversation", id)).chain([engine_id(engine)]).collect()
         }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
@@ -322,6 +321,17 @@ pub fn ids(request: &Request) -> Vec<String> {
                 .chain(mail.message_ids().into_iter().map(|message| format!("message:{}", hashed(message))))
                 .collect()
         }
+    }
+}
+
+/// The assistant's engine for the log (decision 5 in `docs/assistent.md`: the log says which engine
+/// the assistant used): `engine:<id>` for the test engine and an AI account's id, any other text
+/// hashed (`engine:hash:<hash>`). Next to the ids of `assistant.send_message`, and of every tool
+/// the assistant runs while it answers (task C.2).
+pub fn engine_id(engine: &str) -> String {
+    match engine == TEST_ENGINE || is_account_id(engine) {
+        true => format!("engine:{}", cut(engine)),
+        false => format!("engine:hash:{}", hashed(engine)),
     }
 }
 

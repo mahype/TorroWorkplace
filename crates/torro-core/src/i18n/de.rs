@@ -2115,4 +2115,26 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Unpin an unknown assistant conversation", "Eine unbekannte Unterhaltung des Assistenten lösen"),
     ("Unpin the assistant conversation \"{title}\"", "Die Unterhaltung „{title}“ des Assistenten lösen"),
+    // Assistant model loop (C.2)
+    ("Nobody approved this in time", "Niemand hat rechtzeitig zugestimmt"),
+    ("Not allowed for the assistant", "Für den Assistenten nicht erlaubt"),
+    (
+        "The AI account offers no model that can use tools.",
+        "Das KI-Konto bietet kein Modell, das Werkzeuge nutzen kann.",
+    ),
+    (
+        "The assistant can answer with AI accounts once Torro Workplace has started.",
+        "Der Assistent kann mit KI-Konten antworten, sobald Torro Workplace gestartet ist.",
+    ),
+    (
+        "The assistant stopped after {steps} steps without finishing. Ask again to let it go on.",
+        "Der Assistent hat nach {steps} Schritten aufgehört, ohne fertig zu werden. Frag noch einmal, damit er weitermacht.",
+    ),
+    (
+        "The model gave no answer. Try again or choose another model.",
+        "Das Modell hat nicht geantwortet. Versuche es noch einmal oder wähle ein anderes Modell.",
+    ),
+    ("Withheld from the model by your data rule", "Durch deine Datenregel dem Modell vorenthalten"),
+    ("You denied this", "Von dir abgelehnt"),
+    ("{count} results", "{count} Ergebnisse"),
 ];
