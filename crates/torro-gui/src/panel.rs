@@ -13,14 +13,14 @@
 //! └─────────────────────┴──────────────┘     └─────────┴───────────┘     └──────────────┘
 //! ```
 //!
-//! - **Beside** ([`PanelMode::Beside`], the wide layout): a column [`size::PANEL`] wide at the
+//! - **Beside** ([`PanelMode::Beside`], the wide layout): a column [`size::panel()`] wide at the
 //!   right of the body, with a line on its left, under the window's header bar. It takes the place
 //!   of the properties column: pass `props: None` to the shell while it is open.
 //! - **Over** ([`PanelMode::Over`], medium and narrow): the same panel at the right edge over the
 //!   whole window, full height, with the menu shadow to the left; the rest of the window is dimmed
 //!   (scrim) and a click on it sends the panel's `on_close`. Narrow windows show it full width.
 //!
-//! The panel itself ([`panel`]): `panel` surface; a 44-high head ([`size::HEADER`], in line with
+//! The panel itself ([`panel`]): `panel` surface; a 44-high head ([`size::header()`], in line with
 //! the window's header bar) with the path ([`path`]), optional actions and a close button; the
 //! title ([`title`] or the app's own borderless title field); the body, which scrolls together
 //! with the title; and an optional fixed footer for actions below a line.
@@ -43,7 +43,7 @@
 //!                 widgets::prop_section(tr("Properties"), vec![/* widgets::prop_row(…) */]),
 //!                 panel::inset(notes_field),          // free text lines up with the title
 //!             ]
-//!             .spacing(space::L);
+//!             .spacing(space::l());
 //!             panel::panel(
 //!                 panel::path(Some(Mark::Ring(colour)), [list_name, filter_name]),
 //!                 title_field,                        // or panel::title(&event.summary)
@@ -119,12 +119,12 @@ pub fn mode_for(class: SizeClass) -> PanelMode {
     }
 }
 
-/// The width of the panel in `class`: [`size::PANEL`] beside the content and over it in the
+/// The width of the panel in `class`: [`size::panel()`] beside the content and over it in the
 /// medium layout, the full window in narrow (and mini, strip) windows, where 400 would leave no
 /// useful strip of content next to it.
 fn width_for(class: SizeClass) -> Length {
     match class {
-        SizeClass::Wide | SizeClass::Medium => Length::Fixed(size::PANEL),
+        SizeClass::Wide | SizeClass::Medium => Length::Fixed(size::panel()),
         SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => Fill,
     }
 }
@@ -144,13 +144,13 @@ pub struct Panel<'a, M> {
 ///
 /// - `path`: where the thing lives, left in the head row ([`path`]: "● Work › Today").
 /// - `title`: the thing's name under the head, `HEADLINE`, wrapping: [`title`] for plain text, or
-///   the app's own borderless `text_editor` in `typo::HEADLINE` when it can be edited. Give it no
+///   the app's own borderless `text_editor` in `typo::headline()` when it can be edited. Give it no
 ///   padding: the panel lines it up (16 from the edge).
 /// - `body`: everything else, scrolling together with the title, 16 below it. The body has 8 at
 ///   the sides so that [`widgets::prop_section`]s and [`widgets::prop_row`]s line their text up
 ///   with the title (their hover surface reaches out, as in the properties column); wrap free
 ///   content (notes, subtasks, a sentence) in [`inset`] to line it up as well. Stack groups with
-///   `space::L` between them.
+///   `space::l()` between them.
 /// - `on_close`: sent by the ✕ button in the head ("Close") and, over the content, by a click on
 ///   the dimmed window beside the panel. Escape is the app's job ([`widgets::escape`]).
 pub fn panel<'a, M: Clone + 'a>(
@@ -196,16 +196,16 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
             row![container(path).width(Fill).clip(true)]
                 .extend(actions)
                 .push(close)
-                .spacing(space::S)
+                .spacing(space::s())
                 .align_y(Alignment::Center),
         )
         .width(Fill)
-        .center_y(size::HEADER)
-        .padding(Padding::new(0.0).left(space::L).right(space::M));
+        .center_y(size::header())
+        .padding(Padding::new(0.0).left(space::l()).right(space::m()));
         let content =
-            column![container(title).width(Fill).padding(Padding::new(0.0).left(space::S).right(space::S)), body]
-                .spacing(space::L)
-                .padding(Padding { top: space::XS, right: space::S, bottom: space::XL, left: space::S });
+            column![container(title).width(Fill).padding(Padding::new(0.0).left(space::s()).right(space::s())), body]
+                .spacing(space::l())
+                .padding(Padding { top: space::xs(), right: space::s(), bottom: space::xl(), left: space::s() });
         let scroll = scrollable(content)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
@@ -213,10 +213,10 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
             .height(Fill);
         let mut inner = column![head, scroll];
         if !footer.is_empty() {
-            let actions = row(footer).spacing(space::S).align_y(Alignment::Center);
+            let actions = row(footer).spacing(space::s()).align_y(Alignment::Center);
             inner = inner
                 .push(rule::horizontal(LINE).style(style::rule))
-                .push(container(actions).width(Fill).padding([space::M, space::L]));
+                .push(container(actions).width(Fill).padding([space::m(), space::l()]));
         }
         let inner = container(inner).width(Fill).height(Fill);
         // The left edge is a rule on the panel's own surface, as in the drawer: Iced leaves a
@@ -241,7 +241,7 @@ pub fn path<'a, M: 'a, S: IntoFragment<'a>>(mark: Option<Mark>, parts: impl Into
         if i > 0 {
             line = line.push(widgets::toned(Icon::ChevronRight, icon::SIZE_SM, Tone::Text3));
         }
-        line = line.push(typo::text(typo::META, part).style(theme::text_3).wrapping(Wrapping::None));
+        line = line.push(typo::text(typo::meta(), part).style(theme::text_3).wrapping(Wrapping::None));
     }
     line.into()
 }
@@ -267,21 +267,21 @@ fn path_mark<'a, M: 'a>(mark: Mark) -> Element<'a, M> {
         Mark::Dot(colour) => widgets::color_dot(colour, PATH_DOT),
         Mark::Check(colour, checked) => {
             let inner = if checked { tinted(Icon::Check, colour) } else { blank().into() };
-            framed(colour, radius::XS, style::CHECK_BORDER, inner)
+            framed(colour, radius::xs(), style::CHECK_BORDER, inner)
         }
     }
 }
 
 /// A plain title for the panel: `HEADLINE` in `text`, wrapping. Editable titles are the app's own
-/// borderless `text_editor` in `typo::HEADLINE` instead.
+/// borderless `text_editor` in `typo::headline()` instead.
 pub fn title<'a, M: 'a>(text: impl IntoFragment<'a>) -> Element<'a, M> {
-    typo::text(typo::HEADLINE, text).style(theme::text).wrapping(Wrapping::WordOrGlyph).width(Fill).into()
+    typo::text(typo::headline(), text).style(theme::text).wrapping(Wrapping::WordOrGlyph).width(Fill).into()
 }
 
 /// Free content in the panel's body (notes, subtasks, a sentence) moved in by 8, so its text
 /// starts in line with the title and the text of the property rows (16 from the panel's edge).
 pub fn inset<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
-    container(content).width(Fill).padding(Padding::new(0.0).left(space::S).right(space::S)).into()
+    container(content).width(Fill).padding(Padding::new(0.0).left(space::s()).right(space::s())).into()
 }
 
 /// The pieces for the shell, from [`place`].
@@ -298,11 +298,11 @@ pub struct Placed<'a, M> {
 /// and the open menu or floating card `layer` ([`widgets::floating`], `None` when nothing is open)
 /// above everything, so a menu opened inside the panel shows on top of it.
 ///
-/// - Beside: `body` is `content` (taking the free width) and the panel ([`size::PANEL`] with its
+/// - Beside: `body` is `content` (taking the free width) and the panel ([`size::panel()`] with its
 ///   line) in a row; `overlay` is just `layer`.
 /// - Over: `body` is `content` alone; `overlay` is the scrim over the whole window (a click on it
 ///   sends the panel's `on_close` and reaches nothing below), the panel at the right edge, full
-///   height, with the menu shadow to the left ([`size::PANEL`] in medium, full width in narrow),
+///   height, with the menu shadow to the left ([`size::panel()`] in medium, full width in narrow),
 ///   and `layer` on top.
 ///
 /// Without a panel `body` is `content` and `overlay` is `layer`, so apps can always call it.
@@ -319,7 +319,7 @@ pub fn place<'a, M: Clone + 'a>(
     match mode_for(class) {
         PanelMode::Beside => {
             let side =
-                container(panel.view(class)).width(size::PANEL).height(Fill).style(style::container::panel_flush);
+                container(panel.view(class)).width(size::panel()).height(Fill).style(style::container::panel_flush);
             let body = row![container(content).width(Fill).height(Fill), side].into();
             Placed { body, overlay: layer }
         }
@@ -356,7 +356,7 @@ fn over<'a, M: Clone + 'a>(panel: Panel<'a, M>, class: SizeClass) -> Element<'a,
         let shadow = if width_for(class) == Fill {
             Shadow::default()
         } else {
-            Shadow { offset: Vector::new(-space::M, 0.0), ..p.shadow }
+            Shadow { offset: Vector::new(-space::m(), 0.0), ..p.shadow }
         };
         container::Style { background: Some(Background::Color(p.panel)), shadow, ..container::Style::default() }
     });
@@ -385,7 +385,7 @@ mod tests {
             title("Review API concept"),
             column![
                 widgets::prop_section("Properties", vec![widgets::prop_row(None, title("x"), Some(Msg::Go))]),
-                inset(typo::text(typo::BODY, "Notes")),
+                inset(typo::text(typo::body(), "Notes")),
             ],
             Msg::Close,
         )
@@ -403,9 +403,9 @@ mod tests {
 
     #[test]
     fn the_panel_is_400_wide_except_in_narrow_windows() {
-        assert_eq!(size::PANEL, 400.0);
-        assert_eq!(width_for(SizeClass::Wide), Length::Fixed(size::PANEL));
-        assert_eq!(width_for(SizeClass::Medium), Length::Fixed(size::PANEL));
+        assert_eq!(size::panel(), 400.0);
+        assert_eq!(width_for(SizeClass::Wide), Length::Fixed(size::panel()));
+        assert_eq!(width_for(SizeClass::Medium), Length::Fixed(size::panel()));
         for class in [SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
             assert_eq!(width_for(class), Fill, "{class:?}");
         }

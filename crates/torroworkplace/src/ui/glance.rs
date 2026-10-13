@@ -28,9 +28,13 @@ use super::Data;
 use super::overview::{Reason, Tile, Tone, attention, tiles};
 
 /// The levels of the mini tile's status, largest first: the first that fits is used.
-const HEAD_LEVELS: [typo::Level; 3] = [typo::HEADLINE, typo::TITLE, typo::BODY_STRONG];
+fn head_levels() -> [typo::Level; 3] {
+    [typo::headline(), typo::title(), typo::body_strong()]
+}
 /// Edge of the dot in front of a status (the same as everywhere in the suite).
-const DOT: f32 = space::S;
+fn dot_size() -> f32 {
+    space::s()
+}
 /// The tiles of the strip.
 const STRIP_TILES: usize = 4;
 
@@ -100,53 +104,53 @@ fn dot<'a, M: 'a>(tone: Tone) -> Option<Element<'a, M>> {
 /// tile, and the first message below it when something needs the user.
 pub fn mini<'a, M: 'a>(data: &Data, loaded: bool, size: Size) -> Element<'a, M> {
     if !loaded {
-        return tile(widgets::loading(), Padding::new(space::M));
+        return tile(widgets::loading(), Padding::new(space::m()));
     }
-    let width = (size.width - 2.0 * space::M).max(0.0);
+    let width = (size.width - 2.0 * space::m()).max(0.0);
     let summary = summary(data);
-    let level = fit_level(&summary.head, &HEAD_LEVELS, width - DOT - space::S);
+    let level = fit_level(&summary.head, &head_levels(), width - dot_size() - space::s());
     let head = row![]
         .push(dot(summary.tone))
-        .push(line(&summary.head, level, width - DOT - space::S))
-        .spacing(space::S)
+        .push(line(&summary.head, level, width - dot_size() - space::s()))
+        .spacing(space::s())
         .align_y(Alignment::Center);
-    let mut content = column![head].spacing(space::XS);
+    let mut content = column![head].spacing(space::xs());
     if let Some(note) = summary.note {
-        content = content.push(Space::new().height(space::XS)).push(line(&note.title, typo::BODY, width));
+        content = content.push(Space::new().height(space::xs())).push(line(&note.title, typo::body(), width));
         if let Some(detail) = note.detail {
-            content = content.push(line(&detail, typo::META, width).style(theme::text_2));
+            content = content.push(line(&detail, typo::meta(), width).style(theme::text_2));
         }
     }
-    tile(container(content).center_y(Fill), Padding::new(space::M))
+    tile(container(content).center_y(Fill), Padding::new(space::m()))
 }
 
 /// One tile of the strip in a cell `width` wide: its title in `text_3`, the status with its dot,
 /// the detail in `text_2`. A tile without a detail keeps the empty line, so the cells line up.
 fn cell<'a, M: 'a>(tile: Tile, width: f32) -> Element<'a, M> {
-    let room = (width - DOT - space::S).max(0.0);
+    let room = (width - dot_size() - space::s()).max(0.0);
     let head = row![]
         .push(dot(tile.headline.tone))
         .push(line(
             &tile.headline.text,
-            typo::BODY_STRONG,
+            typo::body_strong(),
             if tile.headline.tone.dot().is_some() { room } else { width },
         ))
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
-    let detail = line(&tile.detail.unwrap_or_default(), typo::META, width).style(theme::text_2);
-    let title = line(tile.title, typo::META, width).style(theme::text_3);
-    container(column![title, head, detail].spacing(space::XS)).width(Fill).clip(true).into()
+    let detail = line(&tile.detail.unwrap_or_default(), typo::meta(), width).style(theme::text_2);
+    let title = line(tile.title, typo::meta(), width).style(theme::text_3);
+    container(column![title, head, detail].spacing(space::xs())).width(Fill).clip(true).into()
 }
 
 /// The strip for a window of `size`: the overview's four tiles side by side in one row, in the
 /// middle of the strip's height.
 pub fn strip<'a, M: 'a>(data: &Data, loaded: bool, size: Size) -> Element<'a, M> {
-    let padding = Padding { top: space::S, bottom: space::S, left: space::M, right: space::M };
+    let padding = Padding { top: space::s(), bottom: space::s(), left: space::m(), right: space::m() };
     if !loaded {
         return tile(widgets::loading(), padding);
     }
     let inner = (size.width - padding.left - padding.right).max(0.0);
-    let gap = space::L;
+    let gap = space::l();
     let width = ((inner - (STRIP_TILES as f32 - 1.0) * gap) / STRIP_TILES as f32).max(0.0);
     let mut cells = row![].spacing(gap).align_y(Alignment::Center).height(Fill);
     for tile in tiles(data) {
@@ -224,8 +228,8 @@ mod tests {
     #[test]
     fn the_head_takes_the_largest_level_that_fits() {
         let head = tr("Running");
-        assert_eq!(fit_level(head, &HEAD_LEVELS, 1000.0).size, typo::HEADLINE.size);
-        assert_eq!(fit_level(head, &HEAD_LEVELS, 0.0).size, typo::BODY_STRONG.size, "the last one when none fits");
+        assert_eq!(fit_level(head, &head_levels(), 1000.0).size, typo::headline().size);
+        assert_eq!(fit_level(head, &head_levels(), 0.0).size, typo::body_strong().size, "the last one when none fits");
     }
 
     #[test]

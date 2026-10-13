@@ -57,6 +57,7 @@ use iced::{border, keyboard, mouse};
 use torro_core::i18n::tr;
 
 use crate::icon::{self, Icon, icon};
+use crate::layout;
 use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
 use crate::theme::{self, Palette, palette, radius, size, space};
@@ -66,18 +67,24 @@ use crate::typo;
 pub type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
 
 /// Width of a menu card ([`menu`]): the sidebar width, as in the mock-ups.
-pub const MENU_WIDTH: f32 = size::SIDEBAR;
+pub fn menu_width() -> f32 {
+    size::sidebar()
+}
 /// Width of a floating card ([`popover`]).
 pub const POPOVER_WIDTH: f32 = 320.0;
 /// Width of a small dialog over the window ([`modal`]) that asks one thing or holds a short form:
 /// "New list" with its [`choice_cards`] and the form "New task list" after it. One width for
 /// both steps, so the dialog does not jump when it goes from one to the other. Larger forms (a
-/// GitHub filter list) take [`size::FORM_MAX`].
+/// GitHub filter list) take [`size::form_max()`].
 pub const DIALOG_WIDTH: f32 = 560.0;
 /// Gap between the anchor and a floating card below it.
-const BELOW_GAP: f32 = space::XS;
+fn below_gap() -> f32 {
+    space::xs()
+}
 /// Gap between the anchor and a floating card beside it, and the least margin to the window edge.
-const BESIDE_GAP: f32 = space::S;
+fn beside_gap() -> f32 {
+    space::s()
+}
 /// Gap between icon and text inside a button or chip (skill: 6 is allowed inside building blocks).
 const ICON_GAP: f32 = 6.0;
 /// Gap between the cells of a list row (`tasks.html`: `.row{gap:10px}`).
@@ -87,7 +94,9 @@ const LINE: f32 = size::HAIRLINE;
 /// Height of a list pill ([`pill`]) and of its round ends.
 const PILL_HEIGHT: f32 = 20.0;
 /// Edge of the icon in an [`icon_pill`] (the mock-up's `.s12`).
-const PILL_ICON: f32 = space::M;
+fn pill_icon() -> f32 {
+    space::m()
+}
 /// Edge of an avatar in [`avatar_stack`] and how far the next one is moved right.
 const AVATAR: f32 = 22.0;
 const AVATAR_STEP: f32 = 20.0;
@@ -99,7 +108,7 @@ const SELECTED_BAR: f32 = 2.0;
 /// x in every row of the properties column.
 const PROP_LABEL_WIDTH: f32 = 88.0;
 /// Top and bottom padding of a [`prop_line`]: with the 20-px line of `BODY` that makes the 32-px
-/// [`size::CONTROL`]; a value of several lines (wrapping label chips) makes the row taller.
+/// [`size::control()`]; a value of several lines (wrapping label chips) makes the row taller.
 const PROP_PADDING_Y: f32 = 6.0;
 /// Height of the pill with a state word ([`state_pill`]) and of its round ends.
 const STATE_PILL_HEIGHT: f32 = 22.0;
@@ -188,7 +197,7 @@ impl Scale {
     /// Edge of a dot (`torro.css`: `.dot` 8, inside pills and trails 6).
     fn dot(self) -> f32 {
         match self {
-            Scale::Row => space::S,
+            Scale::Row => space::s(),
             Scale::Small => ICON_GAP,
         }
     }
@@ -196,7 +205,7 @@ impl Scale {
 
 /// `which` in the colour `tone` picks from the current palette.
 pub(crate) fn toned<'a, M: 'a>(which: Icon, edge: f32, tone: Tone) -> Element<'a, M> {
-    icon(which, edge).style(move |t, _| svg::Style { color: Some(tone.of(palette(t))) }).into()
+    icon(which, edge).style(move |t, _| svg::Style { color: Some(tone.of(&palette(t))) }).into()
 }
 
 /// `which` in a fixed colour (a status or list colour).
@@ -219,7 +228,7 @@ fn mark_view<'a, M: 'a>(mark: Mark, scale: Scale, tone: Tone) -> Element<'a, M> 
             container(inner)
                 .center(edge)
                 .style(move |_| container::Style {
-                    border: border::rounded(radius::XS).color(colour).width(style::CHECK_BORDER),
+                    border: border::rounded(radius::xs()).color(colour).width(style::CHECK_BORDER),
                     ..container::Style::default()
                 })
                 .into()
@@ -235,7 +244,7 @@ fn ring(colour: Color, edge: f32) -> container::Style {
 fn trail_view<'a, M: 'a>(trail: Trail) -> Option<Element<'a, M>> {
     match trail {
         Trail::None => None,
-        Trail::Count(n) => Some(typo::text(typo::META.tabular(), n.to_string()).style(theme::text_3).into()),
+        Trail::Count(n) => Some(typo::text(typo::meta().tabular(), n.to_string()).style(theme::text_3).into()),
         Trail::Kbd(key) => Some(kbd(key)),
         Trail::Icon(which) => Some(toned(which, icon::SIZE_SM, Tone::Text3)),
         Trail::Dot(colour) => Some(color_dot(colour, Scale::Small.dot())),
@@ -257,7 +266,7 @@ fn button_icon<'a, M: 'a>(which: Icon, edge: f32, style: ButtonStyle) -> Element
     icon(which, edge).style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) }).into()
 }
 
-/// A text button, 28 high ([`size::CONTROL_SM`]), label in `CAPTION`, optional icon (14) in front.
+/// A text button, 28 high ([`size::control_sm()`]), label in `CAPTION`, optional icon (14) in front.
 ///
 /// `style` is one of [`crate::style::button`]: `primary` (at most one per window), `secondary`,
 /// `ghost` (the default in header bars) or `danger`. `None` for `on_press` shows it disabled.
@@ -275,10 +284,10 @@ pub fn text_button<'a, M: Clone + 'a>(
     if let Some(which) = icon {
         content = content.push(button_icon(which, icon::SIZE_SM, style));
     }
-    content = content.push(typo::text(typo::CAPTION, label).wrapping(Wrapping::None));
+    content = content.push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
     button(container(content).center_y(Fill))
-        .height(size::CONTROL_SM)
-        .padding(style::BUTTON_PADDING)
+        .height(size::control_sm())
+        .padding(style::button_padding())
         .style(style)
         .on_press_maybe(on_press)
         .into()
@@ -304,13 +313,13 @@ pub fn text_button<'a, M: Clone + 'a>(
 pub fn busy_button<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, style: ButtonStyle) -> Element<'a, M> {
     let content = row![
         button_icon(Icon::RefreshCw, icon::SIZE_SM, style),
-        typo::text(typo::CAPTION, label).wrapping(Wrapping::None)
+        typo::text(typo::caption(), label).wrapping(Wrapping::None)
     ]
     .spacing(ICON_GAP)
     .align_y(Alignment::Center);
     button(container(content).center_y(Fill))
-        .height(size::CONTROL_SM)
-        .padding(style::BUTTON_PADDING)
+        .height(size::control_sm())
+        .padding(style::button_padding())
         .style(style::button::busy(style))
         .into()
 }
@@ -318,7 +327,7 @@ pub fn busy_button<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, style: Butto
 /// `content` with `label` as tooltip below it (a small menu-style card, after a short delay).
 /// Also for a control that is locked, to say why (the locked check of an issue, task G.5).
 pub fn with_tooltip<'a, M: 'a>(content: impl Into<Element<'a, M>>, label: impl IntoFragment<'a>) -> Element<'a, M> {
-    tip(content, typo::text(typo::CAPTION, label).style(theme::text_2), tooltip::Position::Bottom)
+    tip(content, typo::text(typo::caption(), label).style(theme::text_2), tooltip::Position::Bottom)
 }
 
 /// `content` with `label` and its `trail` (count, key hint …) as tooltip at its right: the names of
@@ -328,9 +337,9 @@ pub(crate) fn tooltip_right<'a, M: 'a>(
     label: impl IntoFragment<'a>,
     trail: Trail,
 ) -> Element<'a, M> {
-    let text = row![typo::text(typo::CAPTION, label).style(theme::text_2).wrapping(Wrapping::None)]
+    let text = row![typo::text(typo::caption(), label).style(theme::text_2).wrapping(Wrapping::None)]
         .push(trail_view(trail))
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
     tip(content, text, tooltip::Position::Right)
 }
@@ -342,9 +351,9 @@ fn tip<'a, M: 'a>(
     position: tooltip::Position,
 ) -> Element<'a, M> {
     let card = container(text)
-        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::S])
+        .padding([style::KBD_PADDING.top + style::KBD_PADDING.bottom, space::s()])
         .style(style::container::menu);
-    tooltip(content, card, position).gap(space::XS).delay(Duration::from_millis(500)).into()
+    tooltip(content, card, position).gap(space::xs()).delay(Duration::from_millis(500)).into()
 }
 
 /// An icon-only button in `style`, 28 high; `square` makes it 28 × 28, otherwise it keeps the
@@ -356,8 +365,8 @@ fn icon_only<'a, M: Clone + 'a>(
     on_press: Option<M>,
 ) -> Element<'a, M> {
     let b = button(center(button_icon(which, icon::SIZE, style)))
-        .width(size::CONTROL_SM)
-        .height(size::CONTROL_SM)
+        .width(size::control_sm())
+        .height(size::control_sm())
         .padding(0)
         .style(style)
         .on_press_maybe(on_press);
@@ -402,11 +411,11 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
     options: impl IntoIterator<Item = (L, M)>,
     active: usize,
 ) -> Element<'a, M> {
-    let inner = size::CONTROL_SM - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
+    let inner = size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
     let segments = options.into_iter().enumerate().map(|(i, (label, message))| {
-        button(container(typo::text(typo::CAPTION, label).wrapping(Wrapping::None)).center_y(Fill))
+        button(container(typo::text(typo::caption(), label).wrapping(Wrapping::None)).center_y(Fill))
             .height(inner)
-            .padding(style::BUTTON_PADDING)
+            .padding(style::button_padding())
             .style(style::button::segment(i == active))
             .on_press(message)
             .into()
@@ -457,16 +466,16 @@ pub fn sidebar_item_in<'a, M: Clone + 'a>(
     let row_button = |content: Element<'a, M>, padding: Padding| {
         button(content)
             .width(Fill)
-            .height(size::ROW_SIDEBAR)
+            .height(size::row_sidebar())
             .padding(padding)
             .style(style::button::sidebar_item(active))
             .on_press(on_press)
     };
     match mode {
         SidebarMode::Expanded => {
-            let content = row![mark, line_label(typo::BODY, label)]
+            let content = row![mark, line_label(typo::body(), label)]
                 .push(trail_view(trail))
-                .spacing(space::S)
+                .spacing(space::s())
                 .align_y(Alignment::Center);
             row_button(container(content).center_y(Fill).into(), style::ITEM_PADDING).into()
         }
@@ -493,20 +502,20 @@ pub fn sidebar_group_in<'a, M: Clone + 'a>(
     toggle: Option<(bool, M)>,
 ) -> Element<'a, M> {
     if mode == SidebarMode::Rail {
-        return container(rule::horizontal(LINE).style(style::rule)).padding([space::S, space::XS]).into();
+        return container(rule::horizontal(LINE).style(style::rule)).padding([space::s(), space::xs()]).into();
     }
     let mut title =
-        row![typo::text(typo::CAPTION, label).style(theme::text_3)].spacing(space::XS).align_y(Alignment::Center);
+        row![typo::text(typo::caption(), label).style(theme::text_3)].spacing(space::xs()).align_y(Alignment::Center);
     if let Some((expanded, _)) = &toggle {
         let chevron = if *expanded { Icon::ChevronDown } else { Icon::ChevronRight };
         title = title.push(toned(chevron, GROUP_CHEVRON, Tone::Text3));
     }
-    let bar = container(title).height(size::ROW_SIDEBAR).padding(style::ITEM_PADDING).center_y(size::ROW_SIDEBAR);
+    let bar = container(title).height(size::row_sidebar()).padding(style::ITEM_PADDING).center_y(size::row_sidebar());
     let bar: Element<'a, M> = match toggle {
         Some((_, message)) => mouse_area(bar).on_press(message).interaction(mouse::Interaction::Pointer).into(),
         None => bar.into(),
     };
-    container(bar).padding(Padding::new(0.0).top(space::M)).into()
+    container(bar).padding(Padding::new(0.0).top(space::m())).into()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -514,24 +523,25 @@ pub fn sidebar_group_in<'a, M: Clone + 'a>(
 // ---------------------------------------------------------------------------------------------
 
 /// A list row (a task, an agenda entry): 40 high, `cells` side by side with 10 between them,
-/// 16 at the sides, a line below. Give the title cell `.width(Fill)` so the cells after it sit at
+/// 16 at the sides ([`layout::row_padding`]), a line below. Give the title cell `.width(Fill)` so the cells after it sit at
 /// the right. The `selected` row (the one in the detail) is `selected` with a 2-px bar on the left.
 ///
 /// ```ignore
-/// widgets::list_row(vec![check.into(), priority, typo::text(typo::BODY, &task.title).width(Fill).into(), due], task.id == selected, Some(Message::Select(task.id)))
+/// widgets::list_row(vec![check.into(), priority, typo::text(typo::body(), &task.title).width(Fill).into(), due], task.id == selected, Some(Message::Select(task.id)))
 /// ```
 pub fn list_row<'a, M: Clone + 'a>(cells: Vec<Element<'a, M>>, selected: bool, on_press: Option<M>) -> Element<'a, M> {
     let content = row(cells).spacing(ROW_GAP).align_y(Alignment::Center);
-    let left = if selected { space::L - SELECTED_BAR } else { space::L };
+    let pad = layout::row_padding();
+    let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
     let body = button(container(content).center_y(Fill))
         .width(Fill)
         // 40 including the line below, as the CSS's `border-box`.
-        .height(size::ROW - LINE)
-        .padding(Padding::new(0.0).left(left).right(space::L))
+        .height(size::row() - LINE)
+        .padding(Padding { left, ..pad })
         .style(style::button::list_row(selected))
         .on_press_maybe(on_press);
     let line: Element<'a, M> = if selected {
-        let bar = container(blank()).width(SELECTED_BAR).height(size::ROW - LINE).style(|t| container::Style {
+        let bar = container(blank()).width(SELECTED_BAR).height(size::row() - LINE).style(|t| container::Style {
             background: Some(Background::Color(palette(t).text_3)),
             ..container::Style::default()
         });
@@ -553,11 +563,11 @@ pub fn group_head<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let mark = mark.into();
     let mut content =
-        row![mark_view(mark, Scale::Small, Tone::Text2), typo::text(typo::CAPTION, label).style(theme::text_2)]
-            .spacing(space::S)
+        row![mark_view(mark, Scale::Small, Tone::Text2), typo::text(typo::caption(), label).style(theme::text_2)]
+            .spacing(space::s())
             .align_y(Alignment::Center);
     if let Some(n) = count {
-        content = content.push(typo::text(typo::META.tabular(), n.to_string()).style(theme::text_3));
+        content = content.push(typo::text(typo::meta().tabular(), n.to_string()).style(theme::text_3));
     }
     content = content.push(blank::horizontal());
     if let Some(message) = on_add {
@@ -566,25 +576,27 @@ pub fn group_head<'a, M: Clone + 'a>(
             _ => toned(Icon::Plus, icon::SIZE_SM, Tone::Text3),
         };
         let add = button(center(plus))
-            .width(size::CONTROL_SM)
-            .height(size::CONTROL_SM)
+            .width(size::control_sm())
+            .height(size::control_sm())
             .padding(0)
             .style(style::button::icon)
             .on_press(message);
         content = content.push(add);
     }
-    // The "+" button is wider than its icon; pull it in so the icon sits 16 from the edge.
-    let right = space::L - (size::CONTROL_SM - icon::SIZE_SM) / 2.0;
+    // The "+" button is wider than its icon; pull it in so the icon sits as far from the edge as
+    // the content of a row (16).
+    let pad = layout::row_padding();
+    let right = pad.right - (size::control_sm() - icon::SIZE_SM) / 2.0;
     let head = container(content)
         .width(Fill)
-        .center_y(size::ROW_GROUP - 2.0 * LINE)
-        .padding(Padding::new(0.0).left(space::L).right(right))
+        .center_y(size::row_group() - 2.0 * LINE)
+        .padding(Padding::new(0.0).left(pad.left).right(right))
         .style(|t| container::Style {
             background: Some(Background::Color(palette(t).raised)),
             ..container::Style::default()
         });
     column![
-        blank().height(space::XS),
+        blank().height(space::xs()),
         rule::horizontal(LINE).style(style::rule),
         head,
         rule::horizontal(LINE).style(style::rule)
@@ -672,20 +684,20 @@ pub enum Placement {
 /// keeps 8 from the viewport edges when it fits.
 fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placement) -> Point {
     let (x, y) = match placement {
-        Placement::Below(Align::Start) => (target.x, target.y + target.height + BELOW_GAP),
-        Placement::Below(Align::End) => (target.x + target.width - card.width, target.y + target.height + BELOW_GAP),
+        Placement::Below(Align::Start) => (target.x, target.y + target.height + below_gap()),
+        Placement::Below(Align::End) => (target.x + target.width - card.width, target.y + target.height + below_gap()),
         Placement::Beside => {
-            let right = target.x + target.width + BESIDE_GAP;
-            let x = if right + card.width <= viewport.x + viewport.width - BESIDE_GAP {
+            let right = target.x + target.width + beside_gap();
+            let x = if right + card.width <= viewport.x + viewport.width - beside_gap() {
                 right
             } else {
-                target.x - BESIDE_GAP - card.width
+                target.x - beside_gap() - card.width
             };
             (x, target.y)
         }
     };
     let clamp = |value: f32, start: f32, length: f32, extent: f32| {
-        let (low, high) = (start + BESIDE_GAP, start + length - extent - BESIDE_GAP);
+        let (low, high) = (start + beside_gap(), start + length - extent - beside_gap());
         if high < low { low } else { value.clamp(low, high) }
     };
     Point::new(clamp(x, viewport.x, viewport.width, card.width), clamp(y, viewport.y, viewport.height, card.height))
@@ -771,11 +783,11 @@ impl<'a, M> MenuSection<'a, M> {
 }
 
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
-    let mut content = row![].spacing(space::S).align_y(Alignment::Center);
+    let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = item.mark {
         content = content.push(mark_view(mark, Scale::Row, Tone::Text));
     }
-    content = content.push(line_label(typo::BODY, item.label)).push(trail_view(item.trail));
+    content = content.push(line_label(typo::body(), item.label)).push(trail_view(item.trail));
     if item.current {
         content = content.push(container(blank()).width(ICON_GAP).height(ICON_GAP).style(|t| container::Style {
             background: Some(Background::Color(palette(t).text_2)),
@@ -792,21 +804,21 @@ fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
         .into()
 }
 
-/// A menu card: `menu` surface, `line_strong` border, radius 8, shadow, 4 inside, [`MENU_WIDTH`]
+/// A menu card: `menu` surface, `line_strong` border, radius 8, shadow, 4 inside, [`menu_width()`]
 /// wide; `sections` top to bottom with a line between them. Show it with [`floating`].
 pub fn menu<'a, M: Clone + 'a>(sections: Vec<MenuSection<'a, M>>) -> Element<'a, M> {
     let mut list = column![];
     for (i, section) in sections.into_iter().enumerate() {
         if i > 0 {
-            list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::XS, 0.0]));
+            list = list.push(container(rule::horizontal(LINE).style(style::rule)).padding([space::xs(), 0.0]));
         }
         if let Some(title) = section.title {
-            let label = typo::text(typo::CAPTION, title).style(theme::text_3);
-            list = list.push(container(label).padding(Padding::new(space::S).bottom(space::XS)));
+            let label = typo::text(typo::caption(), title).style(theme::text_3);
+            list = list.push(container(label).padding(Padding::new(space::s()).bottom(space::xs())));
         }
         list = list.extend(section.items.into_iter().map(menu_entry));
     }
-    container(list).width(MENU_WIDTH).padding(style::MENU_INSET).style(style::container::menu).into()
+    container(list).width(menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
 }
 
 /// A header button that opens a menu, with a chevron: the navigation menu of the medium and
@@ -821,14 +833,14 @@ pub fn menu_button<'a, M: Clone + 'a>(
     if let Some(which) = icon {
         content = content.push(toned(which, icon::SIZE_SM, Tone::Text));
     }
-    content = content.push(typo::text(typo::BODY, label).style(theme::text).wrapping(Wrapping::None)).push(toned(
+    content = content.push(typo::text(typo::body(), label).style(theme::text).wrapping(Wrapping::None)).push(toned(
         Icon::ChevronDown,
         icon::SIZE_SM,
         Tone::Text3,
     ));
     let b = button(container(content).center_y(Fill))
-        .height(size::CONTROL_SM)
-        .padding(style::BUTTON_PADDING)
+        .height(size::control_sm())
+        .padding(style::button_padding())
         .style(style::button::ghost)
         .on_press(on_press);
     anchored(anchor, b)
@@ -838,14 +850,14 @@ pub fn menu_button<'a, M: Clone + 'a>(
 /// `CAPTION`. Registers `anchor`; its menu usually opens with [`Align::End`].
 pub fn select_button<'a, M: Clone + 'a>(anchor: &Anchor, label: impl IntoFragment<'a>, on_press: M) -> Element<'a, M> {
     let content = row![
-        typo::text(typo::CAPTION, label).wrapping(Wrapping::None),
+        typo::text(typo::caption(), label).wrapping(Wrapping::None),
         toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3)
     ]
     .spacing(ICON_GAP)
     .align_y(Alignment::Center);
     let b = button(container(content).center_y(Fill))
-        .height(size::CONTROL_SM)
-        .padding(style::BUTTON_PADDING)
+        .height(size::control_sm())
+        .padding(style::button_padding())
         .style(style::button::secondary)
         .on_press(on_press);
     anchored(anchor, b)
@@ -936,7 +948,7 @@ pub fn ctrl_guard<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, 
 }
 
 /// A floating card (an event in the medium calendar): 320 wide, `menu` surface, radius 10,
-/// 16 inside, shadow. `head` (calendar or list with "…" and ✕), `title` in `TITLE`, `rows`
+/// 16 inside ([`layout::panel_padding`]), shadow. `head` (calendar or list with "…" and ✕), `title` in `TITLE`, `rows`
 /// ([`prop_row`]s) and, below a line, `actions` (buttons). Show it with [`floating`].
 pub fn popover<'a, M: 'a>(
     head: impl Into<Element<'a, M>>,
@@ -944,25 +956,29 @@ pub fn popover<'a, M: 'a>(
     rows: Vec<Element<'a, M>>,
     actions: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
-    // The card has 8 at the sides and everything but the rows another 8: property rows bring
-    // their own 8 so their hover surface reaches out, and their icons line up with the title.
-    let inset = Padding::new(0.0).left(space::S).right(space::S);
+    // The card has the panel padding above and below; at the sides the rows bring their own 8
+    // ([`style::ITEM_PADDING`]) so their hover surface reaches out, and everything else gets the same
+    // 8 inside the card's own, so the icons line up with the title.
+    let rows_inset = style::ITEM_PADDING.left;
+    let pad = layout::panel_padding();
+    let inset = Padding::new(0.0).left(rows_inset).right(rows_inset);
     let mut card = column![
-        container(head).padding(inset.bottom(space::XS)),
-        container(typo::text(typo::TITLE, title)).padding(inset.bottom(space::M)),
+        container(head).padding(inset.bottom(space::xs())),
+        container(typo::text(typo::title(), title)).padding(inset.bottom(space::m())),
         column(rows)
     ];
     if !actions.is_empty() {
         card = card.push(
             column![
                 rule::horizontal(LINE).style(style::rule),
-                row(actions).spacing(space::S).align_y(Alignment::Center)
+                row(actions).spacing(space::s()).align_y(Alignment::Center)
             ]
-            .spacing(space::M)
-            .padding(inset.top(space::M)),
+            .spacing(space::m())
+            .padding(inset.top(space::m())),
         );
     }
-    container(card).width(POPOVER_WIDTH).padding([space::L, space::S]).style(style::container::popover).into()
+    let outer = Padding { left: (pad.left - rows_inset).max(0.0), right: (pad.right - rows_inset).max(0.0), ..pad };
+    container(card).width(POPOVER_WIDTH).padding(outer).style(style::container::popover).into()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1007,7 +1023,7 @@ fn chip_with<'a, M: Clone + 'a>(
     }
     let label = label.into_fragment();
     if !label.is_empty() {
-        content = content.push(typo::text(typo::META, label).wrapping(Wrapping::None));
+        content = content.push(typo::text(typo::meta(), label).wrapping(Wrapping::None));
     }
     match on_press {
         // A button, not a mouse area around a container: only a button shows hover and press,
@@ -1032,7 +1048,7 @@ pub fn chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
 }
 
 /// A chip that is chosen or not: a filter template ("Bugs"), an assignee ("Me"), a milestone, one
-/// of several labels. 28 high ([`size::CONTROL_SM`]), radius 6, `mark` in front, `label` in
+/// of several labels. 28 high ([`size::control_sm()`]), radius 6, `mark` in front, `label` in
 /// `CAPTION`; look and states from `style::button::choice_chip(on)`.
 ///
 /// - Not chosen: `raised`, `line_strong` frame, `text_2`; hover `hover` + `text`, pressed
@@ -1104,9 +1120,9 @@ fn choice_chip_with<'a, M: Clone + 'a>(
     if let Some(lead) = lead {
         content = content.push(lead);
     }
-    content = content.push(typo::text(typo::CAPTION, label).wrapping(Wrapping::None));
+    content = content.push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
     button(container(content).center_y(Fill))
-        .height(size::CONTROL_SM)
+        .height(size::control_sm())
         .padding(style::CHIP_PADDING)
         .style(style::button::choice_chip(on))
         .on_press_maybe(on_press)
@@ -1117,7 +1133,7 @@ fn choice_chip_with<'a, M: Clone + 'a>(
 /// list").
 #[derive(Debug, Clone)]
 pub struct ChoiceCard<'a, M> {
-    /// The symbol (16) on a [`size::CONTROL`] square of `selected` at the top left.
+    /// The symbol (16) on a [`size::control()`] square of `selected` at the top left.
     pub icon: Icon,
     /// The name of the choice, `BODY_STRONG`.
     pub title: &'a str,
@@ -1131,10 +1147,10 @@ pub struct ChoiceCard<'a, M> {
 }
 
 /// Large choices in a dialog, side by side and all as high as the highest – or, `stacked`, one
-/// under the other where they do not fit side by side. [`space::M`] between them.
+/// under the other where they do not fit side by side. [`space::m()`] between them.
 ///
 /// Each card is a button as wide as its share, `raised` with a `line_strong` frame, radius
-/// [`radius::MD`], [`space::L`] inside: on top the icon on its square and the key hint, below the
+/// [`radius::md()`], [`space::l()`] inside: on top the icon on its square and the key hint, below the
 /// title and the text. States as a [`crate::style::button::secondary`] button: hover `hover` and
 /// pressed `selected`, both with a `line_selected` frame. A card that is off (no `on_press`) shows
 /// icon, title and frame at 40 % and no key hint – the key does nothing then –, while its `text`
@@ -1149,13 +1165,13 @@ pub struct ChoiceCard<'a, M> {
 /// ```
 pub fn choice_cards<'a, M: Clone + 'a>(cards: Vec<ChoiceCard<'a, M>>, stacked: bool) -> Element<'a, M> {
     if stacked {
-        return column(cards.into_iter().map(|card| choice_card(card, Length::Shrink))).spacing(space::M).into();
+        return column(cards.into_iter().map(|card| choice_card(card, Length::Shrink))).spacing(space::m()).into();
     }
     // Equal heights: an invisible copy of the cards at their own heights sizes the stack, and the
     // real cards fill it. (A row cannot give its children the height of the highest one when its
     // own height is open, as inside a scrolling dialog.)
-    let ghosts = row(cards.iter().map(choice_ghost)).spacing(space::M);
-    let real = row(cards.into_iter().map(|card| choice_card(card, Fill))).spacing(space::M);
+    let ghosts = row(cards.iter().map(choice_ghost)).spacing(space::m());
+    let real = row(cards.into_iter().map(|card| choice_card(card, Fill))).spacing(space::m());
     stack![ghosts, real].into()
 }
 
@@ -1167,10 +1183,10 @@ fn choice_card<'a, M: Clone + 'a>(card: ChoiceCard<'a, M>, height: Length) -> El
     let symbol: Element<'a, M> =
         icon(card.icon, icon::SIZE).style(move |t, _| svg::Style { color: Some(fade(palette(t).text)) }).into();
     let tile: Element<'a, M> = container(symbol)
-        .center(size::CONTROL)
+        .center(size::control())
         .style(move |t| container::Style {
             background: Some(Background::Color(fade(palette(t).selected))),
-            border: border::rounded(radius::MD),
+            border: border::rounded(radius::md()),
             ..container::Style::default()
         })
         .into();
@@ -1178,16 +1194,16 @@ fn choice_card<'a, M: Clone + 'a>(card: ChoiceCard<'a, M>, height: Length) -> El
     if on {
         top = top.push(kbd(card.key));
     }
-    let title = typo::text(typo::BODY_STRONG, card.title)
+    let title = typo::text(typo::body_strong(), card.title)
         .style(move |t: &Theme| iced::widget::text::Style { color: Some(fade(palette(t).text)) });
-    let content = column![top, title, typo::text(typo::META, card.text).style(theme::text_2)].spacing(space::M);
+    let content = column![top, title, typo::text(typo::meta(), card.text).style(theme::text_2)].spacing(space::m());
     button(content)
         .width(Fill)
         .height(height)
-        .padding(space::L)
+        .padding(space::l())
         .style(|t, status| {
             let base = style::button::secondary(t, status);
-            button::Style { border: base.border.rounded(radius::MD), ..base }
+            button::Style { border: base.border.rounded(radius::md()), ..base }
         })
         .on_press_maybe(card.on_press)
         .into()
@@ -1198,12 +1214,12 @@ fn choice_card<'a, M: Clone + 'a>(card: ChoiceCard<'a, M>, height: Length) -> El
 fn choice_ghost<'a, M: 'a>(card: &ChoiceCard<'a, M>) -> Element<'a, M> {
     let unseen = |_: &Theme| iced::widget::text::Style { color: Some(Color::TRANSPARENT) };
     let content = column![
-        blank().width(size::CONTROL).height(size::CONTROL),
-        typo::text(typo::BODY_STRONG, card.title).style(unseen),
-        typo::text(typo::META, card.text).style(unseen),
+        blank().width(size::control()).height(size::control()),
+        typo::text(typo::body_strong(), card.title).style(unseen),
+        typo::text(typo::meta(), card.text).style(unseen),
     ]
-    .spacing(space::M);
-    container(content).width(Fill).padding(space::L).into()
+    .spacing(space::m());
+    container(content).width(Fill).padding(space::l()).into()
 }
 
 /// A list label in a row ("● Work"): 20 high, round, `line_strong` frame, dot 6 in `colour`,
@@ -1219,7 +1235,7 @@ pub fn pill<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>) -> E
 /// widgets::icon_pill(Icon::Github, "TorroWorkplace")
 /// ```
 pub fn icon_pill<'a, M: 'a>(which: Icon, label: impl IntoFragment<'a>) -> Element<'a, M> {
-    pill_led(Some(toned(which, PILL_ICON, Tone::Text3)), label, 1.0)
+    pill_led(Some(toned(which, pill_icon(), Tone::Text3)), label, 1.0)
 }
 
 /// [`pill`] for a disabled row ("Coming soon" next to a service that is not available yet): the
@@ -1235,11 +1251,11 @@ fn pill_at<'a, M: 'a>(colour: Option<Color>, label: impl IntoFragment<'a>, alpha
 
 /// The pill with `lead` (dot or icon) before the label, its colours at `alpha` of their strength.
 fn pill_led<'a, M: 'a>(lead: Option<Element<'a, M>>, label: impl IntoFragment<'a>, alpha: f32) -> Element<'a, M> {
-    let mut content = row![].spacing(space::XS).align_y(Alignment::Center);
+    let mut content = row![].spacing(space::xs()).align_y(Alignment::Center);
     if let Some(lead) = lead {
         content = content.push(lead);
     }
-    content = content.push(typo::text(typo::META, label).wrapping(Wrapping::None));
+    content = content.push(typo::text(typo::meta(), label).wrapping(Wrapping::None));
     container(content)
         .center_y(PILL_HEIGHT)
         .padding(Padding::new(0.0).left(ICON_GAP).right(ICON_GAP))
@@ -1256,7 +1272,7 @@ fn pill_led<'a, M: 'a>(lead: Option<Element<'a, M>>, label: impl IntoFragment<'a
 
 /// A key hint ("N", "W", "Ctrl K"): `CAPTION` in `text_3` in a small `line_strong` frame.
 pub fn kbd<'a, M: 'a>(key: impl IntoFragment<'a>) -> Element<'a, M> {
-    container(typo::text(typo::CAPTION, key)).padding(style::KBD_PADDING).style(style::container::kbd).into()
+    container(typo::text(typo::caption(), key)).padding(style::KBD_PADDING).style(style::container::kbd).into()
 }
 
 /// A row in the properties column or a floating card: 32 high, `mark` 16 in `text_3`, then
@@ -1268,7 +1284,7 @@ pub fn prop_row<'a, M: Clone + 'a>(
     value: impl Into<Element<'a, M>>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let mut content = row![].spacing(space::S).align_y(Alignment::Center);
+    let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = mark {
         content = content.push(mark_view(mark, Scale::Row, Tone::Text3));
     }
@@ -1277,20 +1293,20 @@ pub fn prop_row<'a, M: Clone + 'a>(
     match on_press {
         Some(message) => button(content)
             .width(Fill)
-            .height(size::CONTROL)
+            .height(size::control())
             .padding(style::ITEM_PADDING)
             .style(style::button::sidebar_item(false))
             .on_press(message)
             .into(),
-        None => container(content).width(Fill).height(size::CONTROL).padding(style::ITEM_PADDING).into(),
+        None => container(content).width(Fill).height(size::control()).padding(style::ITEM_PADDING).into(),
     }
 }
 
 /// A group of [`prop_row`]s under a `CAPTION` title in `text_3` ("Properties", "List"). Stack the
-/// sections with `space::L` between them.
+/// sections with `space::l()` between them.
 pub fn prop_section<'a, M: 'a>(title: impl IntoFragment<'a>, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
-    let title = container(typo::text(typo::CAPTION, title).style(theme::text_3))
-        .padding(Padding { bottom: space::XS, ..style::ITEM_PADDING });
+    let title = container(typo::text(typo::caption(), title).style(theme::text_3))
+        .padding(Padding { bottom: space::xs(), ..style::ITEM_PADDING });
     column![title].extend(rows).into()
 }
 
@@ -1314,15 +1330,15 @@ pub fn prop_line<'a, M: Clone + 'a>(
     value: impl Into<Element<'a, M>>,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let name = container(typo::text(typo::META, label).style(theme::text_3).wrapping(Wrapping::None))
+    let name = container(typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None))
         .width(PROP_LABEL_WIDTH)
         .clip(true);
-    let mut content = row![].spacing(space::S).align_y(Alignment::Center);
+    let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(mark) = mark {
         content = content.push(mark_view(mark, Scale::Row, Tone::Text3));
     }
     content = content.push(container(value.into()).width(Fill));
-    let line = row![name, content].spacing(space::S).align_y(Alignment::Center);
+    let line = row![name, content].spacing(space::s()).align_y(Alignment::Center);
     let padding = Padding { top: PROP_PADDING_Y, bottom: PROP_PADDING_Y, ..style::ITEM_PADDING };
     match on_press {
         Some(message) => {
@@ -1353,9 +1369,9 @@ fn prop_text<'a, M: 'a>(
 ) -> Element<'a, M> {
     let full = text.into_fragment().into_owned();
     responsive(move |room| {
-        let shown = typo::ellipsize(&full, typo::BODY, room.width);
+        let shown = typo::ellipsize(&full, typo::body(), room.width);
         let cut = shown != full;
-        let line = container(typo::text(typo::BODY, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        let line = container(typo::text(typo::body(), shown).style(colour).wrapping(Wrapping::None)).clip(true);
         if cut { with_tooltip(line, full.clone()) } else { line.into() }
     })
     .height(Length::Shrink)
@@ -1368,7 +1384,7 @@ fn prop_text<'a, M: 'a>(
 /// unreadable one gives a neutral dot. The colour is only ever the dot: the name carries the
 /// meaning. Not a button; clicks belong to the row around it.
 ///
-/// A row shows at most two and then "+n": `typo::text(typo::CAPTION.tabular(), format!("+{n}"))`
+/// A row shows at most two and then "+n": `typo::text(typo::caption().tabular(), format!("+{n}"))`
 /// in `theme::text_3`.
 ///
 /// ```ignore
@@ -1376,7 +1392,7 @@ fn prop_text<'a, M: 'a>(
 /// ```
 pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<'a, M> {
     let dot = label_dot(hex, Scale::Small.dot());
-    let content = row![dot, typo::text(typo::CAPTION, name).wrapping(Wrapping::None)]
+    let content = row![dot, typo::text(typo::caption(), name).wrapping(Wrapping::None)]
         .spacing(ICON_GAP)
         .align_y(Alignment::Center);
     container(content)
@@ -1386,7 +1402,7 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
             let p = palette(t);
             container::Style {
                 text_color: Some(p.text_2),
-                border: border::rounded(radius::XS).color(p.line_strong).width(LINE),
+                border: border::rounded(radius::xs()).color(p.line_strong).width(LINE),
                 ..container::Style::default()
             }
         })
@@ -1396,7 +1412,7 @@ pub fn label_chip<'a, M: 'a>(hex: &str, name: impl IntoFragment<'a>) -> Element<
 /// [`label_chip`]s side by side with 4 between them, wrapping onto more lines when they do not
 /// fit (the value of a "Labels" [`prop_line`]).
 pub fn label_chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
-    row(chips).spacing(space::XS).wrap().vertical_spacing(space::XS).into()
+    row(chips).spacing(space::xs()).wrap().vertical_spacing(space::xs()).into()
 }
 
 /// A dot of `edge` in the colour of a label (`hex` with or without `#`); an unreadable colour gives
@@ -1434,13 +1450,13 @@ fn label_colour(hex: &str) -> Option<Color> {
 pub fn state_pill<'a, M: 'a>(mark: impl Into<Mark>, label: impl IntoFragment<'a>) -> Element<'a, M> {
     let content = row![
         mark_view(mark.into(), Scale::Small, Tone::Text3),
-        typo::text(typo::CAPTION, label).wrapping(Wrapping::None)
+        typo::text(typo::caption(), label).wrapping(Wrapping::None)
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_y(Alignment::Center);
     container(content)
         .center_y(STATE_PILL_HEIGHT)
-        .padding(Padding::new(0.0).left(ICON_GAP).right(space::S))
+        .padding(Padding::new(0.0).left(ICON_GAP).right(space::s()))
         .style(|t| {
             let p = palette(t);
             container::Style {
@@ -1462,7 +1478,7 @@ fn progress_fraction(done: usize, total: usize) -> f32 {
 /// (the bar alone is no information); an empty list (`total` 0) shows an empty track.
 ///
 /// ```ignore
-/// row![widgets::progress_bar(done, total), typo::text(typo::META.tabular(), format!("{done}/{total}")).style(theme::text_3)].spacing(space::S)
+/// row![widgets::progress_bar(done, total), typo::text(typo::meta().tabular(), format!("{done}/{total}")).style(theme::text_3)].spacing(space::s())
 /// ```
 pub fn progress_bar<'a, M: 'a>(done: usize, total: usize) -> Element<'a, M> {
     let fill =
@@ -1487,7 +1503,7 @@ pub fn progress_bar<'a, M: 'a>(done: usize, total: usize) -> Element<'a, M> {
 /// A small muted heading over a group of rows: `CAPTION` in `text_3`, in sentence case as written
 /// (Linear uses no capitals for titles).
 pub fn section_title<'a, M: 'a>(title: &str) -> Element<'a, M> {
-    typo::text(typo::CAPTION, title.to_owned()).style(theme::text_3).into()
+    typo::text(typo::caption(), title.to_owned()).style(theme::text_3).into()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1509,32 +1525,32 @@ pub fn group<'a, M: 'a>(
         card = card.push(r);
     }
     let mut block = column![
-        typo::text(typo::CAPTION, title).style(theme::text_3),
+        typo::text(typo::caption(), title).style(theme::text_3),
         container(card).width(Fill).style(style::container::group)
     ]
-    .spacing(space::S);
+    .spacing(layout::item_gap());
     if let Some(footer) = footer {
-        block = block.push(typo::text(typo::META, footer).style(theme::text_2));
+        block = block.push(typo::text(typo::meta(), footer).style(theme::text_2));
     }
     block.into()
 }
 
 /// A row of a settings [`group`]: `label` in `BODY`, an optional `detail` below it in `META`
 /// `text_2`, and one `control` at the right (toggler, pick list, button; the rest goes into a "…"
-/// menu). 44 high, 56 with a detail.
+/// menu). 44 high, 56 with a detail; 16 at the sides ([`layout::row_padding`]).
 pub fn group_row<'a, M: 'a>(
     label: impl IntoFragment<'a>,
     detail: Option<String>,
     control: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let height = if detail.is_some() { size::HEADER + space::M } else { size::HEADER };
-    let mut text = column![typo::text(typo::BODY, label)];
+    let height = if detail.is_some() { size::header() + space::m() } else { size::header() };
+    let mut text = column![typo::text(typo::body(), label)];
     if let Some(detail) = detail {
-        text = text.push(typo::text(typo::META, detail).style(theme::text_2));
+        text = text.push(typo::text(typo::meta(), detail).style(theme::text_2));
     }
-    container(row![text.width(Fill), control.into()].spacing(space::L).align_y(Alignment::Center))
+    container(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center))
         .center_y(height)
-        .padding(Padding::new(0.0).left(space::L).right(space::L))
+        .padding(layout::row_padding())
         .into()
 }
 
@@ -1542,8 +1558,8 @@ pub fn group_row<'a, M: 'a>(
 // Page width and view states
 // ---------------------------------------------------------------------------------------------
 
-/// `body` at most `max_width` wide ([`size::CONTENT_MAX`] for lists and pages,
-/// [`size::FORM_MAX`] for forms), centred in the free width – large windows give the extra room
+/// `body` at most `max_width` wide ([`size::content_max()`] for lists and pages,
+/// [`size::form_max()`] for forms), centred in the free width – large windows give the extra room
 /// to the margins, never to gaps between elements.
 pub fn content<'a, M: 'a>(max_width: f32, body: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(container(body).max_width(max_width).width(Fill)).center_x(Fill).into()
@@ -1551,7 +1567,7 @@ pub fn content<'a, M: 'a>(max_width: f32, body: impl Into<Element<'a, M>>) -> El
 
 /// The loading state: a calm "Loading …" in `text_3`, centred; no spinner, nothing moves.
 pub fn loading<'a, M: 'a>() -> Element<'a, M> {
-    center(typo::text(typo::META, tr("Loading …")).style(theme::text_3)).into()
+    center(typo::text(typo::meta(), tr("Loading …")).style(theme::text_3)).into()
 }
 
 /// The error state: an alert icon, `what` happened (`BODY`, centred, says what to do) and a
@@ -1560,26 +1576,26 @@ pub fn error_state<'a, M: Clone + 'a>(what: impl IntoFragment<'a>, retry: M) -> 
     let alert = icon(Icon::CircleAlert, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).error_text) });
     let content = column![
         alert,
-        typo::text(typo::BODY, what).style(theme::text_2).align_x(Alignment::Center),
+        typo::text(typo::body(), what).style(theme::text_2).align_x(Alignment::Center),
         text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::secondary, Some(retry)),
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .align_x(Alignment::Center)
-    .max_width(size::FORM_MAX / 2.0);
-    center(content).padding(space::XL).into()
+    .max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
 }
 
 /// The empty state of a list or view: what appears here (`title`, `BODY_STRONG`) and what to do
 /// (`hint`, `text_2`), centred.
 pub fn empty_state<'a, M: 'a>(title: &'a str, hint: &'a str) -> Element<'a, M> {
     let content = column![
-        typo::text(typo::BODY_STRONG, title),
-        typo::text(typo::BODY, hint).style(theme::text_2).align_x(Alignment::Center)
+        typo::text(typo::body_strong(), title),
+        typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center)
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(Alignment::Center)
-    .max_width(size::FORM_MAX / 2.0);
-    center(content).padding(space::XL).into()
+    .max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1615,7 +1631,7 @@ pub fn status_dot<'a, M: 'a>(status: Status) -> Element<'a, M> {
     let edge = Scale::Row.dot();
     container(blank().width(edge).height(edge))
         .style(move |t| container::Style {
-            background: Some(Background::Color(status.colour(palette(t)))),
+            background: Some(Background::Color(status.colour(&palette(t)))),
             border: border::rounded(edge / 2.0),
             ..container::Style::default()
         })
@@ -1626,7 +1642,7 @@ pub fn status_dot<'a, M: 'a>(status: Status) -> Element<'a, M> {
 /// when `more > 0`. Each is 22 across with a `panel` ring, initials in `MICRO`.
 pub fn avatar_stack<'a, M: 'a>(people: &[(&'a str, Color)], more: usize) -> Element<'a, M> {
     let avatar = |label: String, colour: Option<Color>| -> Element<'a, M> {
-        container(typo::text(typo::MICRO, label))
+        container(typo::text(typo::micro(), label))
             .center(AVATAR)
             .style(move |t| {
                 let p = palette(t);
@@ -1691,11 +1707,11 @@ pub fn modal<'a, M: Clone + 'a>(
     }))
     .on_press(on_dismiss);
     let card = container(dialog).max_width(max_width).style(|t| container::Style {
-        border: border::rounded(radius::LG),
+        border: border::rounded(radius::lg()),
         shadow: palette(t).shadow,
         ..container::Style::default()
     });
-    stack![base.into(), opaque(scrim), center(opaque(card)).padding(space::L)].into()
+    stack![base.into(), opaque(scrim), center(opaque(card)).padding(space::l())].into()
 }
 
 #[cfg(test)]
@@ -1713,7 +1729,9 @@ mod tests {
     }
 
     const WINDOW: Rectangle = Rectangle { x: 0.0, y: 0.0, width: 900.0, height: 700.0 };
-    const MENU: Size = Size { width: MENU_WIDTH, height: 300.0 };
+    fn menu_size() -> Size {
+        Size { width: menu_width(), height: 300.0 }
+    }
 
     fn press(key: &str, code: keyboard::key::Code, modifiers: keyboard::Modifiers, text: Option<&str>) -> iced::Event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
@@ -1815,33 +1833,33 @@ mod tests {
 
     #[test]
     fn a_menu_below_starts_under_the_left_edge_of_its_trigger() {
-        let at = place(rect(60.0, 8.0, 90.0, 28.0), MENU, WINDOW, Placement::Below(Align::Start));
-        assert_eq!(at, Point::new(60.0, 8.0 + 28.0 + BELOW_GAP));
+        let at = place(rect(60.0, 8.0, 90.0, 28.0), menu_size(), WINDOW, Placement::Below(Align::Start));
+        assert_eq!(at, Point::new(60.0, 8.0 + 28.0 + below_gap()));
     }
 
     #[test]
     fn an_end_aligned_menu_ends_under_the_right_edge_of_its_trigger() {
-        let at = place(rect(700.0, 8.0, 76.0, 28.0), MENU, WINDOW, Placement::Below(Align::End));
-        assert_eq!(at.x + MENU.width, 776.0);
+        let at = place(rect(700.0, 8.0, 76.0, 28.0), menu_size(), WINDOW, Placement::Below(Align::End));
+        assert_eq!(at.x + menu_size().width, 776.0);
     }
 
     #[test]
     fn a_card_beside_flips_left_when_there_is_no_room_on_the_right() {
         let card = Size::new(POPOVER_WIDTH, 240.0);
         let right = place(rect(100.0, 200.0, 120.0, 60.0), card, WINDOW, Placement::Beside);
-        assert_eq!(right, Point::new(100.0 + 120.0 + BESIDE_GAP, 200.0));
+        assert_eq!(right, Point::new(100.0 + 120.0 + beside_gap(), 200.0));
         let left = place(rect(600.0, 200.0, 120.0, 60.0), card, WINDOW, Placement::Beside);
-        assert_eq!(left, Point::new(600.0 - BESIDE_GAP - POPOVER_WIDTH, 200.0));
+        assert_eq!(left, Point::new(600.0 - beside_gap() - POPOVER_WIDTH, 200.0));
     }
 
     #[test]
     fn cards_stay_inside_the_window() {
         // A trigger at the right edge with a start-aligned menu, and one near the bottom.
-        let at = place(rect(850.0, 680.0, 40.0, 16.0), MENU, WINDOW, Placement::Below(Align::Start));
-        assert_eq!(at, Point::new(900.0 - MENU.width - BESIDE_GAP, 700.0 - MENU.height - BESIDE_GAP));
+        let at = place(rect(850.0, 680.0, 40.0, 16.0), menu_size(), WINDOW, Placement::Below(Align::Start));
+        assert_eq!(at, Point::new(900.0 - menu_size().width - beside_gap(), 700.0 - menu_size().height - beside_gap()));
         // A card larger than the window keeps its top-left corner on screen.
         let huge = place(rect(10.0, 10.0, 10.0, 10.0), Size::new(2000.0, 2000.0), WINDOW, Placement::Beside);
-        assert_eq!(huge, Point::new(BESIDE_GAP, BESIDE_GAP));
+        assert_eq!(huge, Point::new(beside_gap(), beside_gap()));
     }
 
     #[test]
@@ -1874,9 +1892,9 @@ mod tests {
     #[test]
     fn status_colours_come_from_the_palette() {
         let p = Palette::light();
-        assert_eq!(Status::Ok.colour(p), p.ok);
-        assert_eq!(Status::Error.colour(p), p.error);
-        assert_ne!(Status::Error.colour(p), p.accent, "errors are not Torro red");
+        assert_eq!(Status::Ok.colour(&p), p.ok);
+        assert_eq!(Status::Error.colour(&p), p.error);
+        assert_ne!(Status::Error.colour(&p), p.accent, "errors are not Torro red");
     }
 
     #[test]
@@ -1892,7 +1910,7 @@ mod tests {
             sidebar_item(Icon::Sun, "Today", Trail::Count(5), true, Msg::Go),
             sidebar_item(Mark::Ring(p.calendar[0]), "Work", Trail::Kbd("W"), false, Msg::Go),
             sidebar_group("Lists", Some((true, Msg::Go))),
-            list_row(vec![typo::text(typo::BODY, "Review").into()], true, Some(Msg::Go)),
+            list_row(vec![typo::text(typo::body(), "Review").into()], true, Some(Msg::Go)),
             group_head(Mark::Tinted(Icon::CircleAlert, p.attention), "Overdue", Some(2), Some(Msg::Go)),
             menu(vec![MenuSection::titled("View", vec![MenuItem::new(Icon::Calendar, "Week", Msg::Go)])]),
             menu_button(&anchor, Some(Icon::Sun), "Today", Msg::Go),
@@ -1914,7 +1932,7 @@ mod tests {
             ]),
             busy_button("Creating…", style::button::primary),
             pill(Some(p.calendar[1]), "Personal"),
-            prop_row(Some(Mark::Icon(Icon::Bell)), typo::text(typo::BODY, "15:45"), Some(Msg::Go)),
+            prop_row(Some(Mark::Icon(Icon::Bell)), typo::text(typo::body(), "15:45"), Some(Msg::Go)),
             prop_section("Properties", vec![]),
             prop_line("Due", Some(Mark::Icon(Icon::Calendar)), prop_value("Today, 16:00"), Some(Msg::Go)),
             prop_line("Reminder", Some(Mark::Icon(Icon::Bell)), prop_placeholder("Add reminder"), None),
@@ -1929,14 +1947,14 @@ mod tests {
             progress_bar(2, 4),
             kbd("N"),
             group("General", vec![group_row("Start at login", Some("Recommended".into()), blank())], None),
-            content(size::CONTENT_MAX, blank()),
+            content(size::content_max(), blank()),
             loading(),
             error_state("The server did not answer.", Msg::Go),
             empty_state("No tasks", "Add one with N."),
             status_dot(Status::Ok),
             avatar_stack(&[("AW", p.calendar[0])], 3),
             section_title("Calendars"),
-            modal(blank(), blank(), size::FORM_MAX, Msg::Close),
+            modal(blank(), blank(), size::form_max(), Msg::Close),
         ];
         assert!(!blocks.is_empty());
         let _: Subscription<()> = escape();

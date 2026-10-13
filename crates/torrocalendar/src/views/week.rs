@@ -39,7 +39,7 @@ use torro_gui::widgets::{self, Mark};
 use torro_gui::{icon, style, typo};
 use torro_pim::{Event as CalendarEvent, EventTime};
 
-use layout::{GRID_HEIGHT, GridHit, HOUR_HEIGHT, StripHit};
+use layout::{GridHit, StripHit, grid_height, hour_height};
 
 use super::{ViewData, short_date};
 use crate::app::Message;
@@ -50,9 +50,13 @@ pub const SCROLL_ID: Id = Id::new("torrocalendar.week.grid");
 const UNTITLED: &str = "(untitled)";
 
 /// The day number in the header: 13/500 with tabular figures (`.dayhead b`).
-pub(super) const DAY_NUMBER: typo::Level = typo::BODY_STRONG.tabular();
+pub(super) fn day_number() -> typo::Level {
+    typo::body_strong().tabular()
+}
 /// Edge of the box around a day number, and of today's red circle (`.dayhead b`, 24).
-pub(super) const DAY_CIRCLE: f32 = space::XL;
+pub(super) fn day_circle() -> f32 {
+    space::xl()
+}
 /// Width of the colour bar on the left of events and all-day chips (`inset 3px 0 0`).
 pub(super) const BAR: f32 = 3.0;
 /// Text inside events and chips starts this far from their left edge: the bar plus 6
@@ -81,10 +85,13 @@ const TODAY_WASH_LIGHT: f32 = 0.05;
 pub(super) const FREE_MINUTES: f32 = 120.0;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, white on red
 /// (`.nowlabel{font:500 11px/16px}`).
-pub(super) const NOW_LABEL: typo::Level =
-    typo::Level { font: theme::FONT_TABULAR_MEDIUM, line_height: typo::CAPTION.line_height, ..typo::MICRO };
+pub(super) fn now_label() -> typo::Level {
+    typo::Level { font: theme::font_tabular_medium(), line_height: typo::caption().line_height, ..typo::micro() }
+}
 /// Width of the now label: fits "23:59" with 3 on each side, and the narrow axis.
-pub(super) const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
+pub(super) fn now_label_width() -> f32 {
+    size::axis_narrow() - 2.0 * space::xs()
+}
 /// Radius of the dot at the start of the now line (7 across, `.now::before`).
 pub(super) const NOW_DOT: f32 = 3.5;
 /// The ring around the event open in the side panel stands this far off its edge
@@ -93,7 +100,9 @@ const RING_OFFSET: f32 = size::HAIRLINE;
 
 /// Where the grid opens: 07:00 at the top, with room above the line for its label (which is
 /// centred on the line).
-const MORNING: f32 = 7.0 * HOUR_HEIGHT - space::M;
+fn morning() -> f32 {
+    7.0 * hour_height() - space::m()
+}
 
 /// Task that scrolls the time grid so that 07:00 is at the top, with room above the line for
 /// its label (which is centred on the line). The app should return it when the day or week
@@ -103,20 +112,20 @@ const MORNING: f32 = 7.0 * HOUR_HEIGHT - space::M;
 /// In a grid too high to scroll that far the scrollable stops short of 07:00; [`morning_pad`]
 /// makes sure it stops where no hour label is cut either.
 pub fn scroll_to_morning<T>() -> Task<T> {
-    iced::widget::operation::scroll_to(SCROLL_ID, AbsoluteOffset { x: 0.0, y: MORNING })
+    iced::widget::operation::scroll_to(SCROLL_ID, AbsoluteOffset { x: 0.0, y: morning() })
 }
 
-/// Empty space below 24:00 for a grid `viewport` high, so that the scroll to [`MORNING`] never
+/// Empty space below 24:00 for a grid `viewport` high, so that the scroll to [`morning()`] never
 /// leaves an hour label cut at the top edge.
 ///
-/// A viewport higher than `GRID_HEIGHT - MORNING` cannot scroll down to 07:00: Iced stops at the
+/// A viewport higher than `grid_height() - morning()` cannot scroll down to 07:00: Iced stops at the
 /// end of the content, at an offset that falls anywhere between two hours and may halve the
 /// label "06:00". The pad (less than an hour) lengthens the content just enough that this stop
-/// lies as far above an hour line as [`MORNING`] lies above 07:00. Nothing is added when the
+/// lies as far above an hour line as [`morning()`] lies above 07:00. Nothing is added when the
 /// grid scrolls to 07:00 anyway, or when it does not scroll at all.
 fn morning_pad(viewport: f32) -> f32 {
-    let furthest = GRID_HEIGHT - viewport;
-    if furthest >= MORNING || furthest <= 0.0 { 0.0 } else { (MORNING - furthest).rem_euclid(HOUR_HEIGHT) }
+    let furthest = grid_height() - viewport;
+    if furthest >= morning() || furthest <= 0.0 { 0.0 } else { (morning() - furthest).rem_euclid(hour_height()) }
 }
 
 pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
@@ -144,7 +153,7 @@ fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message
     // strip would only be a band between the days and the hours: it is left out.
     let strip: Option<Element<'static, Message>> = match plan.empty_note() {
         Some(note) => Some(
-            container(typo::text(typo::META, note).style(theme::text_3))
+            container(typo::text(typo::meta(), note).style(theme::text_3))
                 .padding(Padding::ZERO.left(axis))
                 .center_x(Length::Fill)
                 .center_y(Length::Fixed(strip_height))
@@ -159,11 +168,11 @@ fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message
         ),
     };
     // What the grid's scrollable gets: the view less the header, the strip and their lines.
-    let header_height = if with_header { size::HEADER + size::HAIRLINE } else { 0.0 };
+    let header_height = if with_header { size::header() + size::HAIRLINE } else { 0.0 };
     let strip_height = if strip.is_some() { strip_height + size::HAIRLINE } else { 0.0 };
     let pad_above = header_height + strip_height;
     let pad = morning_pad(bounds.height - pad_above);
-    let grid = iced::widget::canvas(Grid { plan }).width(Length::Fill).height(Length::Fixed(GRID_HEIGHT));
+    let grid = iced::widget::canvas(Grid { plan }).width(Length::Fill).height(Length::Fixed(grid_height()));
     let grid = scrollable(column![grid, Space::new().height(Length::Fixed(pad))])
         .id(SCROLL_ID)
         .direction(Direction::Vertical(style::scrollbar()))
@@ -372,35 +381,35 @@ pub(super) fn left_press(event: &Event, bounds: Rectangle, cursor: mouse::Cursor
 /// With the narrow axis the columns are too slim for both side by side, so the weekday goes
 /// above its number, as in the mock-up's week strip (`.strip`).
 fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, Message> {
-    let stacked = axis < size::AXIS;
+    let stacked = axis < size::axis();
     let mut header = row![Space::new().width(Length::Fixed(axis))];
     let several = days.len() > 1;
     for &day in days {
         let is_today = day == today;
         let name =
-            typo::text(typo::META, weekday_name(day, true)).style(if is_today { theme::text } else { theme::text_3 });
-        let number = typo::text(DAY_NUMBER, day.day().to_string());
+            typo::text(typo::meta(), weekday_name(day, true)).style(if is_today { theme::text } else { theme::text_3 });
+        let number = typo::text(day_number(), day.day().to_string());
         let number = if is_today {
             container(number.style(|t: &Theme| TextStyle { color: Some(palette(t).on_accent) }))
-                .center(DAY_CIRCLE)
+                .center(day_circle())
                 .style(|t| container::Style {
                     background: Some(Background::Color(palette(t).accent)),
-                    border: border::rounded(DAY_CIRCLE / 2.0),
+                    border: border::rounded(day_circle() / 2.0),
                     ..container::Style::default()
                 })
         } else {
-            container(number.style(if is_weekend(day) { theme::text_3 } else { theme::text_2 })).center(DAY_CIRCLE)
+            container(number.style(if is_weekend(day) { theme::text_3 } else { theme::text_2 })).center(day_circle())
         };
         let label: Element<'static, Message> = if stacked {
             column![name, number].align_x(Horizontal::Center).into()
         } else {
-            row![name, number].spacing(space::XS).align_y(Vertical::Center).into()
+            row![name, number].spacing(space::xs()).align_y(Vertical::Center).into()
         };
         let marked = several && is_today;
         header = header.push(
             container(label)
                 .width(Length::FillPortion(1))
-                .height(size::HEADER)
+                .height(size::header())
                 .align_x(Horizontal::Center)
                 .align_y(Vertical::Center)
                 .style(move |t| container::Style {
@@ -414,7 +423,9 @@ fn header(days: &[NaiveDate], today: NaiveDate, axis: f32) -> Element<'static, M
 
 /// What a property row in [`day_props`] has room for: the column less its padding and the row's,
 /// the dot and the gaps around the title.
-const PROPS_ROOM: f32 = size::PROPS - 4.0 * space::S - icon::SIZE - 2.0 * space::S;
+fn props_room() -> f32 {
+    size::props() - 4.0 * space::s() - icon::SIZE - 2.0 * space::s()
+}
 
 /// One entry of "Up next": an event of the shown day as the properties column lists it.
 #[derive(Debug, Clone, PartialEq)]
@@ -465,7 +476,7 @@ pub fn day_props(data: &ViewData<'_>) -> Element<'static, Message> {
     let entries = up_next(data);
     let rows: Vec<Element<'static, Message>> = if entries.is_empty() {
         let calm = if today { tr("Nothing else today") } else { tr("No events") };
-        vec![widgets::prop_row(None, typo::text(typo::BODY, calm).style(theme::text_3), None)]
+        vec![widgets::prop_row(None, typo::text(typo::body(), calm).style(theme::text_3), None)]
     } else {
         entries.into_iter().map(next_row).collect()
     };
@@ -474,12 +485,12 @@ pub fn day_props(data: &ViewData<'_>) -> Element<'static, Message> {
 
 /// A row of [`day_props`]: dot, title cut to the room left beside the time, the time at the right.
 fn next_row(next: Next) -> Element<'static, Message> {
-    let when_width = text_width(&next.when, typo::META);
-    let title = ellipsize(&next.title, typo::BODY, PROPS_ROOM - when_width - space::S);
+    let when_width = text_width(&next.when, typo::meta());
+    let title = ellipsize(&next.title, typo::body(), props_room() - when_width - space::s());
     let value = row![
-        typo::text(typo::BODY, title).wrapping(iced::widget::text::Wrapping::None),
+        typo::text(typo::body(), title).wrapping(iced::widget::text::Wrapping::None),
         Space::new().width(Length::Fill),
-        typo::text(typo::META.tabular(), next.when).style(theme::text_3),
+        typo::text(typo::meta().tabular(), next.when).style(theme::text_3),
     ]
     .align_y(Vertical::Center);
     widgets::prop_row(Some(Mark::Dot(next.color)), value, Some(Message::OpenEvent(next.index)))
@@ -548,17 +559,17 @@ impl canvas::Program<Message> for Strip {
         let (bars, _) = layout::bar_blocks(&plan.bars, count, bounds.width);
         for bar in &bars {
             if let Some(entry) = plan.entries.get(bar.id) {
-                let tone = Tone::of(p, entry.color, p.panel, entry.past(plan.now));
+                let tone = Tone::of(&p, entry.color, p.panel, entry.past(plan.now));
                 surface(&mut frame, bar.rect, &tone);
                 frame.with_clip(text_clip(bar.rect), |frame| {
                     let at = Point::new(bar.rect.x + TEXT_LEFT, bar.rect.center_y());
-                    let title = ellipsize(&entry.title, typo::CAPTION, text_room(bar.rect));
-                    label(frame, &title, at, typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
+                    let title = ellipsize(&entry.title, typo::caption(), text_room(bar.rect));
+                    label(frame, &title, at, typo::caption(), tone.title, Alignment::Left, Vertical::Center);
                 });
             }
         }
         for bar in bars.iter().filter(|bar| plan.is_selected(bar.id)) {
-            selection_ring(&mut frame, bar.rect, p);
+            selection_ring(&mut frame, bar.rect, &p);
         }
         vec![frame.into_geometry()]
     }
@@ -617,13 +628,13 @@ impl canvas::Program<Message> for Grid {
         let under = |column: usize| plan.ground(theme, column);
         let now_y = plan.today_column().map(|_| layout::y_of(plan.now.time()));
 
-        fill(&mut frame, Rectangle::new(Point::ORIGIN, Size::new(width, GRID_HEIGHT)), p.panel);
+        fill(&mut frame, Rectangle::new(Point::ORIGIN, Size::new(width, grid_height())), p.panel);
         for column in 0..count {
             let ground = under(column);
             if ground != p.panel {
                 fill(
                     &mut frame,
-                    Rectangle::new(Point::new(column_x(column), 0.0), Size::new(col_w, GRID_HEIGHT)),
+                    Rectangle::new(Point::new(column_x(column), 0.0), Size::new(col_w, grid_height())),
                     ground,
                 );
             }
@@ -631,17 +642,17 @@ impl canvas::Program<Message> for Grid {
 
         // Inner lines only: no line at 00:00 and 24:00 (the edges), none right of the last day.
         for hour in 1..24u32 {
-            let y = hour as f32 * HOUR_HEIGHT;
+            let y = hour as f32 * hour_height();
             line(&mut frame, Point::new(x0, y), Point::new(width, y), p.line);
             // The now label sits in the axis; an hour label right under it would be unreadable.
-            let covered = now_y.is_some_and(|now| (now - y).abs() < line_height(NOW_LABEL));
+            let covered = now_y.is_some_and(|now| (now - y).abs() < line_height(now_label()));
             if !covered {
-                let at = Point::new(x0 - space::S, y);
+                let at = Point::new(x0 - space::s(), y);
                 label(
                     &mut frame,
                     &format!("{hour:02}:00"),
                     at,
-                    typo::MICRO,
+                    typo::micro(),
                     p.text_3,
                     Alignment::Right,
                     Vertical::Center,
@@ -650,7 +661,7 @@ impl canvas::Program<Message> for Grid {
         }
         for column in 0..count {
             let x = column_x(column);
-            line(&mut frame, Point::new(x, 0.0), Point::new(x, GRID_HEIGHT), p.line);
+            line(&mut frame, Point::new(x, 0.0), Point::new(x, grid_height()), p.line);
         }
 
         for column in 0..count {
@@ -659,7 +670,7 @@ impl canvas::Program<Message> for Grid {
                 let hours = ((end - start) / 60.0).floor() as u32;
                 let at = Point::new(column_x(column) + col_w / 2.0, (top + bottom) / 2.0);
                 let note = trf("{n} h free", &[("n", &hours)]);
-                label(&mut frame, &note, at, typo::META, p.text_3, Alignment::Center, Vertical::Center);
+                label(&mut frame, &note, at, typo::meta(), p.text_3, Alignment::Center, Vertical::Center);
             }
         }
 
@@ -667,18 +678,18 @@ impl canvas::Program<Message> for Grid {
         for block in &blocks {
             let Some(entry) = plan.entries.get(block.id) else { continue };
             let column = layout::column_at(block.rect.x, count, width).unwrap_or_default();
-            let tone = Tone::of(p, entry.color, under(column), entry.past(plan.now));
+            let tone = Tone::of(&p, entry.color, under(column), entry.past(plan.now));
             surface(&mut frame, block.rect, &tone);
             // The day view has the width for the place; seven columns do not.
             event_text(&mut frame, block.rect, entry, &tone, count == 1);
         }
         // Over the blocks, so a neighbour in the next lane does not cover it.
         for block in blocks.iter().filter(|block| plan.is_selected(block.id)) {
-            selection_ring(&mut frame, block.rect, p);
+            selection_ring(&mut frame, block.rect, &p);
         }
 
         if let Some(y) = now_y {
-            now_line(&mut frame, p, x0, width, y, plan.now.time());
+            now_line(&mut frame, &p, x0, width, y, plan.now.time());
         }
         vec![frame.into_geometry()]
     }
@@ -706,13 +717,13 @@ impl Tone {
     }
 }
 
-/// The surface of an event or chip: rounded `radius::XS`, no border, the bar on the left. The
+/// The surface of an event or chip: rounded `radius::xs()`, no border, the bar on the left. The
 /// bar is the whole shape in the calendar colour with the tinted body laid over all but its
 /// first 3 px, which clips the bar to the rounded corners as CSS's inset shadow does.
 pub(super) fn surface(frame: &mut Frame, rect: Rectangle, tone: &Tone) {
-    frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::XS)), tone.bar);
+    frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::xs())), tone.bar);
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
-    let body_radius = Radius::new(0.0).right(radius::XS);
+    let body_radius = Radius::new(0.0).right(radius::xs());
     frame.fill(&Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, body_radius), tone.fill);
 }
 
@@ -727,7 +738,7 @@ pub(super) fn selection_ring(frame: &mut Frame, rect: Rectangle, p: &Palette) {
         width: rect.width + 2.0 * grow,
         height: rect.height + 2.0 * grow,
     };
-    let path = Path::rounded_rectangle(ring.position(), ring.size(), Radius::from(radius::XS + grow));
+    let path = Path::rounded_rectangle(ring.position(), ring.size(), Radius::from(radius::xs() + grow));
     frame.stroke(&path, Stroke::default().with_color(p.focus_ring).with_width(style::FOCUS_RING_WIDTH));
 }
 
@@ -743,17 +754,17 @@ fn text_room(rect: Rectangle) -> f32 {
 
 /// Smallest event height that takes the title and the time on two lines.
 fn two_lines_fit(height: f32) -> bool {
-    height >= TEXT_TOP + line_height(typo::CAPTION) + line_height(typo::MICRO)
+    height >= TEXT_TOP + line_height(typo::caption()) + line_height(typo::micro())
 }
 
 /// The time line under the title in `room`: the range "10:00 – 11:30", or the start alone when
 /// the range does not fit (a narrow lane), cut with "…" as a last resort.
 fn time_line(entry: &Entry, room: f32) -> String {
     let range = entry.time_range();
-    if text_width(&range, typo::MICRO) <= room {
+    if text_width(&range, typo::micro()) <= room {
         range
     } else {
-        ellipsize(&format_time(entry.start.time()), typo::MICRO, room)
+        ellipsize(&format_time(entry.start.time()), typo::micro(), room)
     }
 }
 
@@ -761,15 +772,15 @@ fn time_line(entry: &Entry, room: f32) -> String {
 /// rest ("09:30 Daily St…"), or – when fewer than [`MIN_TITLE_LETTERS`] of the title would be
 /// left – the title alone, since a bare "14:30" does not say what happens.
 fn short_line(title: &str, time: String, room: f32) -> (Option<String>, String) {
-    if text_width(title, typo::CAPTION) <= room - SHORT_TIME_WIDTH {
+    if text_width(title, typo::caption()) <= room - SHORT_TIME_WIDTH {
         return (Some(time), title.to_string());
     }
-    let cut = ellipsize(title, typo::CAPTION, room - SHORT_TIME_WIDTH);
+    let cut = ellipsize(title, typo::caption(), room - SHORT_TIME_WIDTH);
     let letters = cut.trim_end_matches(typo::ELLIPSIS).chars().count();
     if letters >= MIN_TITLE_LETTERS.min(title.chars().count()) && !cut.is_empty() {
         (Some(time), cut)
     } else {
-        (None, ellipsize(title, typo::CAPTION, room))
+        (None, ellipsize(title, typo::caption(), room))
     }
 }
 
@@ -783,26 +794,34 @@ fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, wi
     frame.with_clip(text_clip(rect), |frame| {
         if two_lines_fit(rect.height) {
             let mut y = rect.y + TEXT_TOP;
-            let title = ellipsize(&entry.title, typo::CAPTION, room);
-            label(frame, &title, Point::new(x, y), typo::CAPTION, tone.title, Alignment::Left, Vertical::Top);
-            y += line_height(typo::CAPTION);
+            let title = ellipsize(&entry.title, typo::caption(), room);
+            label(frame, &title, Point::new(x, y), typo::caption(), tone.title, Alignment::Left, Vertical::Top);
+            y += line_height(typo::caption());
             let time = time_line(entry, room);
-            label(frame, &time, Point::new(x, y), typo::MICRO, tone.time, Alignment::Left, Vertical::Top);
-            y += line_height(typo::MICRO);
-            let fits = y + line_height(typo::META) <= rect.y + rect.height;
+            label(frame, &time, Point::new(x, y), typo::micro(), tone.time, Alignment::Left, Vertical::Top);
+            y += line_height(typo::micro());
+            let fits = y + line_height(typo::meta()) <= rect.y + rect.height;
             if let Some(place) = entry.location.as_deref().filter(|_| with_place && fits) {
-                let place = ellipsize(place, typo::META, room);
-                label(frame, &place, Point::new(x, y), typo::META, tone.place, Alignment::Left, Vertical::Top);
+                let place = ellipsize(place, typo::meta(), room);
+                label(frame, &place, Point::new(x, y), typo::meta(), tone.place, Alignment::Left, Vertical::Top);
             }
         } else {
             let y = rect.center_y();
             let (time, title) = short_line(&entry.title, format_time(entry.start.time()), room);
             let mut title_x = x;
             if let Some(time) = time {
-                label(frame, &time, Point::new(x, y), typo::MICRO, tone.time, Alignment::Left, Vertical::Center);
+                label(frame, &time, Point::new(x, y), typo::micro(), tone.time, Alignment::Left, Vertical::Center);
                 title_x += SHORT_TIME_WIDTH;
             }
-            label(frame, &title, Point::new(title_x, y), typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
+            label(
+                frame,
+                &title,
+                Point::new(title_x, y),
+                typo::caption(),
+                tone.title,
+                Alignment::Left,
+                Vertical::Center,
+            );
         }
     });
 }
@@ -812,14 +831,14 @@ fn event_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, wi
 fn now_line(frame: &mut Frame, p: &Palette, x0: f32, width: f32, y: f32, now: NaiveTime) {
     line(frame, Point::new(x0, y), Point::new(width, y), p.accent);
     frame.fill(&Path::circle(Point::new(x0, y), NOW_DOT), p.accent);
-    let pill_height = line_height(NOW_LABEL);
+    let pill_height = line_height(now_label());
     let pill = Rectangle::new(
-        Point::new(x0 - space::XS - NOW_LABEL_WIDTH, y - pill_height / 2.0),
-        Size::new(NOW_LABEL_WIDTH, pill_height),
+        Point::new(x0 - space::xs() - now_label_width(), y - pill_height / 2.0),
+        Size::new(now_label_width(), pill_height),
     );
-    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::XS)), p.accent);
+    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::xs())), p.accent);
     let at = Point::new(pill.center_x(), y);
-    label(frame, &format_time(now), at, NOW_LABEL, p.on_accent, Alignment::Center, Vertical::Center);
+    label(frame, &format_time(now), at, now_label(), p.on_accent, Alignment::Center, Vertical::Center);
 }
 
 pub(super) fn line_height(level: typo::Level) -> f32 {
@@ -898,9 +917,9 @@ mod tests {
     #[test]
     fn short_events_get_one_line() {
         // Half an hour less the gap is 22 px: too low for title and time.
-        assert!(!two_lines_fit(HOUR_HEIGHT / 2.0 - 2.0));
-        assert!(two_lines_fit(HOUR_HEIGHT * 0.75 - 2.0));
-        assert!(two_lines_fit(HOUR_HEIGHT - 2.0));
+        assert!(!two_lines_fit(hour_height() / 2.0 - 2.0));
+        assert!(two_lines_fit(hour_height() * 0.75 - 2.0));
+        assert!(two_lines_fit(hour_height() - 2.0));
     }
 
     fn calendar_event(summary: &str, start: EventTime, end: Option<EventTime>) -> CalendarEvent {
@@ -1034,16 +1053,16 @@ mod tests {
     fn the_morning_scroll_never_halves_an_hour_label() {
         // Low grids scroll to 07:00 as asked, grids higher than the day do not scroll: no pad.
         assert_eq!(morning_pad(400.0), 0.0);
-        assert_eq!(morning_pad(GRID_HEIGHT - MORNING), 0.0);
-        assert_eq!(morning_pad(GRID_HEIGHT + 100.0), 0.0);
+        assert_eq!(morning_pad(grid_height() - morning()), 0.0);
+        assert_eq!(morning_pad(grid_height() + 100.0), 0.0);
         // In between the scroll stops at the end of grid and pad, which must lie as far above an
         // hour line as the morning offset lies above 07:00 – whatever the height.
         for viewport in [830.0, 852.0, 880.0, 900.0, 1000.0, 1100.0, 1150.0] {
             let pad = morning_pad(viewport);
-            assert!((0.0..HOUR_HEIGHT).contains(&pad), "{viewport}: {pad}");
-            let stop = (GRID_HEIGHT + pad - viewport).min(MORNING);
-            let below_line = stop.rem_euclid(HOUR_HEIGHT);
-            assert!((below_line - MORNING.rem_euclid(HOUR_HEIGHT)).abs() < 1e-3, "{viewport}: stops at {stop}");
+            assert!((0.0..hour_height()).contains(&pad), "{viewport}: {pad}");
+            let stop = (grid_height() + pad - viewport).min(morning());
+            let below_line = stop.rem_euclid(hour_height());
+            assert!((below_line - morning().rem_euclid(hour_height())).abs() < 1e-3, "{viewport}: stops at {stop}");
         }
     }
 
@@ -1073,7 +1092,7 @@ mod tests {
     fn tones_follow_the_theme() {
         for p in [Palette::dark(), Palette::light()] {
             let blue = p.calendar[0];
-            let tone = Tone::of(p, blue, p.panel, false);
+            let tone = Tone::of(&p, blue, p.panel, false);
             assert_eq!((tone.bar, tone.title, tone.time), (blue, p.text, p.text_2));
             assert_eq!(tone.fill, over(p.tinted(blue), p.panel));
             assert_eq!(tone.fill.a, 1.0, "composed, so the bar does not shine through");
@@ -1083,7 +1102,7 @@ mod tests {
     #[test]
     fn past_tones_fade_towards_the_background() {
         let p = Palette::light();
-        let (now, past) = (Tone::of(p, p.calendar[0], p.panel, false), Tone::of(p, p.calendar[0], p.panel, true));
+        let (now, past) = (Tone::of(&p, p.calendar[0], p.panel, false), Tone::of(&p, p.calendar[0], p.panel, true));
         // Light mode: text is dark on a white panel, so faded text is lighter.
         assert!(past.title.r > now.title.r);
         assert!((past.title.r - mix(p.panel, p.text, PAST_OPACITY).r).abs() < 1e-6);
@@ -1150,7 +1169,7 @@ mod tests {
 
     /// What the canvas shows with the cursor at `point` inside bounds that start at (30, 40).
     fn interaction(program: &impl canvas::Program<Message, State = ()>, point: Point) -> mouse::Interaction {
-        let bounds = Rectangle::new(Point::new(30.0, 40.0), Size::new(700.0, GRID_HEIGHT + 100.0));
+        let bounds = Rectangle::new(Point::new(30.0, 40.0), Size::new(700.0, grid_height() + 100.0));
         let cursor = mouse::Cursor::Available(Point::new(bounds.x + point.x, bounds.y + point.y));
         program.mouse_interaction(&(), bounds, cursor)
     }
@@ -1162,11 +1181,11 @@ mod tests {
         let blocks = layout::timed_blocks(&plan.timed, plan.days.len(), 700.0);
         let block = blocks.first().expect("the workshop is drawn").rect;
         assert_eq!(interaction(&grid, block.center()), mouse::Interaction::Pointer, "an event");
-        let slot = Point::new(block.x + 1.0, 3.0 * HOUR_HEIGHT);
+        let slot = Point::new(block.x + 1.0, 3.0 * hour_height());
         assert_eq!(interaction(&grid, slot), mouse::Interaction::Idle, "an empty slot stays calm");
         let axis = Point::new(layout::columns(700.0, 7).0 / 2.0, block.center().y);
         assert_eq!(interaction(&grid, axis), mouse::Interaction::Idle, "the time axis does nothing");
-        let below = Point::new(block.x, GRID_HEIGHT + 1.0);
+        let below = Point::new(block.x, grid_height() + 1.0);
         assert_eq!(interaction(&grid, below), mouse::Interaction::Idle, "beyond 24:00");
     }
 

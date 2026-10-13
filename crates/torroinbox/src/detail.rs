@@ -83,7 +83,7 @@ pub fn panel<'a>(
     letter: Option<Element<'a, Message>>,
 ) -> Panel<'a, Message> {
     let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
-    let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::L);
+    let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::l());
     let link = openable(item);
     if let Some(agent) = &item.agent {
         let mut rows = vec![value_row(Icon::Sparkles, agent.agent.label().to_owned())];
@@ -106,12 +106,12 @@ pub fn panel<'a>(
     if let Some(letter) = letter {
         body = body.push(letter);
     } else if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
-        let message = typo::text(typo::BODY, unbroken(&text)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-        let mut block = column![message].spacing(space::S);
+        let message = typo::text(typo::body(), unbroken(&text)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+        let mut block = column![message].spacing(space::s());
         if let Some(note) = untrusted.take() {
             block = block.push(note);
         }
-        body = body.push(column![section(tr("Message")), panel::inset(block)].spacing(space::XS));
+        body = body.push(column![section(tr("Message")), panel::inset(block)].spacing(space::xs()));
     }
     // A mail is shown in this app itself (task E4.2), not opened from a link row.
     if let Some(link) = link.filter(|link| !matches!(link, Link::Window | Link::Mail { .. })) {
@@ -129,7 +129,7 @@ fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message
     let (status, word) = status(item, now);
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
     let mut rows = vec![
-        widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::S).align_y(Alignment::Center), None),
+        widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::s()).align_y(Alignment::Center), None),
         value_row(app::lane_icon(item.lane), lane_label(item.lane).to_owned()),
         value_row(list::source_icon(&item.source), item.source.label()),
         value_row(Icon::Clock, when(item.updated, now)),
@@ -298,7 +298,7 @@ fn value_row<'a>(which: Icon, value: String) -> Element<'a, Message> {
 }
 
 fn one_line_text<'a>(value: String) -> Element<'a, Message> {
-    typo::text(typo::BODY, value).style(theme::text).wrapping(Wrapping::None).into()
+    typo::text(typo::body(), value).style(theme::text).wrapping(Wrapping::None).into()
 }
 
 /// A title over free content in the body, lined up with the property sections' titles.
@@ -315,7 +315,7 @@ pub fn unbroken(text: &str) -> String {
 
 /// A quiet sentence under the content (`META`, `text_3`).
 fn note<'a>(text: &'a str) -> Element<'a, Message> {
-    typo::text(typo::META, text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
+    typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
 }
 
 #[cfg(test)]

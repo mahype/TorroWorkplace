@@ -18,12 +18,18 @@ use torro_gui::{style, typo, widgets};
 use crate::app::Message;
 
 /// Height of a week row and of the weekday line (`.mini td{height:24px}`).
-const CELL: f32 = space::XL;
+fn cell() -> f32 {
+    space::xl()
+}
 /// Edge of the circle behind a day number (`.mini td span{width:22px}`): the cell less a line
 /// above and below, so today's circle does not touch the highlighted row's edges.
-const CIRCLE: f32 = CELL - 2.0;
+fn circle() -> f32 {
+    cell() - 2.0
+}
 /// Today's number: the tabular figures of the axis, one weight up, white on red.
-const TODAY: typo::Level = typo::Level { font: theme::FONT_TABULAR_MEDIUM, ..typo::MICRO };
+fn today_level() -> typo::Level {
+    typo::Level { font: theme::font_tabular_medium(), ..typo::micro() }
+}
 
 /// The first of the month `months` months after (negative: before) the month of `date`.
 /// Used by the small month's arrows and by the month view's ‹ ›.
@@ -50,20 +56,20 @@ pub fn weeks(month: NaiveDate) -> Vec<[NaiveDate; 7]> {
 /// white number. Days of the neighbouring months are in `text_3`.
 pub fn view<'a>(month: NaiveDate, shown: Option<(NaiveDate, NaiveDate)>, today: NaiveDate) -> Element<'a, Message> {
     let head = row![
-        typo::text(typo::BODY_STRONG, format!("{} {}", month_name(month.month()), month.year()))
+        typo::text(typo::body_strong(), format!("{} {}", month_name(month.month()), month.year()))
             .wrapping(Wrapping::None),
         blank::horizontal(),
         widgets::icon_button(Icon::ChevronLeft, tr("Previous month"), Some(Message::MiniMonth(-1))),
         widgets::icon_button(Icon::ChevronRight, tr("Next month"), Some(Message::MiniMonth(1))),
     ]
-    .height(size::CONTROL_SM)
+    .height(size::control_sm())
     .align_y(Alignment::Center);
 
     let weeks = weeks(month);
     let letters = weeks.first().map(|week| {
         row(week.iter().map(|day| {
             let letter: String = weekday_name(*day, true).chars().take(1).collect();
-            container(typo::text(typo::MICRO, letter).style(theme::text_3)).center_x(Fill).center_y(CELL).into()
+            container(typo::text(typo::micro(), letter).style(theme::text_3)).center_x(Fill).center_y(cell()).into()
         }))
     });
     let lit = |day: NaiveDate| shown.is_some_and(|(start, end)| start <= day && day < end);
@@ -76,7 +82,9 @@ pub fn view<'a>(month: NaiveDate, shown: Option<(NaiveDate, NaiveDate)>, today: 
         .into()
     });
     let grid = column(letters.map(Element::from)).extend(rows);
-    column![head, grid].padding(Padding { top: space::S, right: space::S, bottom: space::XS, left: space::S }).into()
+    column![head, grid]
+        .padding(Padding { top: space::s(), right: space::s(), bottom: space::xs(), left: space::s() })
+        .into()
 }
 
 /// One day: its number (circled when it is today) as a button that moves the main view there,
@@ -90,26 +98,32 @@ fn day_cell<'a>(
 ) -> Element<'a, Message> {
     let number = day.day().to_string();
     let face: Element<'a, Message> = if day == today {
-        container(typo::text(TODAY, number).style(|t| iced::widget::text::Style { color: Some(palette(t).on_accent) }))
-            .center(CIRCLE)
-            .style(|t| container::Style {
-                background: Some(Background::Color(palette(t).accent)),
-                border: border::rounded(CIRCLE / 2.0),
-                ..container::Style::default()
-            })
-            .into()
+        container(
+            typo::text(today_level(), number)
+                .style(|t| iced::widget::text::Style { color: Some(palette(t).on_accent) }),
+        )
+        .center(circle())
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).accent)),
+            border: border::rounded(circle() / 2.0),
+            ..container::Style::default()
+        })
+        .into()
     } else {
         let tone = if day.month() == month.month() { theme::text_2 } else { theme::text_3 };
-        container(typo::text(typo::MICRO, number).style(tone)).center(CIRCLE).into()
+        container(typo::text(typo::micro(), number).style(tone)).center(circle()).into()
     };
-    let pick = button(container(face).center_x(Fill).center_y(CELL))
+    let pick = button(container(face).center_x(Fill).center_y(cell()))
         .width(Fill)
-        .height(CELL)
+        .height(cell())
         .padding(0)
         .style(style::button::ghost)
         .on_press(Message::GoTo(day));
-    let corners =
-        border::Radius::new(0).left(if first { radius::SM } else { 0.0 }).right(if last { radius::SM } else { 0.0 });
+    let corners = border::Radius::new(0).left(if first { radius::sm() } else { 0.0 }).right(if last {
+        radius::sm()
+    } else {
+        0.0
+    });
     container(pick)
         .width(Fill)
         .style(move |t| container::Style {

@@ -29,7 +29,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::Icon;
 use torro_gui::theme::{self, space};
 use torro_gui::widgets::{self, Status};
-use torro_gui::{style, typo};
+use torro_gui::{layout, style, typo};
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 
 use super::{Action, Data, one_line, row_frame};
@@ -95,9 +95,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let waiting: Element<'a, Message> = if open.is_empty() {
         column![
             widgets::section_title(tr("Waiting for you")),
-            typo::text(typo::META, tr("Nothing waits for you right now.")).style(theme::text_3),
+            typo::text(typo::meta(), tr("Nothing waits for you right now.")).style(theme::text_3),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .into()
     } else {
         widgets::group(
@@ -111,7 +111,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     };
     let decided: Vec<Element<'a, Message>> =
         data.approvals.iter().filter(|approval| !approval.state.is_pending()).map(decided_row).collect();
-    let mut page = column![waiting].spacing(space::XL);
+    let mut page = column![waiting].spacing(layout::section_gap());
     if !decided.is_empty() {
         page = page.push(widgets::group(
             tr("Recently decided"),
@@ -128,8 +128,8 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 fn open_row<'a>(state: &State, approval: &'a ApprovalInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let detail = format!("{} · {}", approval.client_name, time_left(approval.expires, now));
     let lines = column![
-        typo::text(typo::BODY, approval.summary.as_str()),
-        one_line(typo::text(typo::META.tabular(), detail).style(theme::text_2)),
+        typo::text(typo::body(), approval.summary.as_str()),
+        one_line(typo::text(typo::meta().tabular(), detail).style(theme::text_2)),
     ];
     let on =
         |allow| (!state.deciding.contains(&approval.id)).then(|| Message::Decide { id: approval.id.clone(), allow });
@@ -137,11 +137,11 @@ fn open_row<'a>(state: &State, approval: &'a ApprovalInfo, now: DateTime<Utc>) -
         widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, on(false)),
         widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, on(true)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
-    let content = row![lines.width(Fill), buttons].spacing(space::L).align_y(Alignment::Center);
-    let content = column![content].push(details_block(state, approval)).spacing(space::XS);
-    container(content).width(Fill).padding([space::M, space::L]).into()
+    let content = row![lines.width(Fill), buttons].spacing(space::l()).align_y(Alignment::Center);
+    let content = column![content].push(details_block(state, approval)).spacing(space::xs());
+    container(content).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 /// "Show details" with a chevron, and when open the details one per line, wrapped (an address or
@@ -161,11 +161,11 @@ fn details_block<'a>(state: &State, approval: &'a ApprovalInfo) -> Option<Elemen
         style::button::ghost,
         Some(Message::ToggleDetails(approval.id.clone())),
     );
-    let mut block = column![super::accounts::on_axis(toggle)].spacing(space::XS);
+    let mut block = column![super::accounts::on_axis(toggle)].spacing(space::xs());
     if open {
         let lines =
-            approval.details.iter().map(|line| typo::text(typo::META, line.as_str()).style(theme::text_2).into());
-        block = block.push(column(lines).spacing(space::XS));
+            approval.details.iter().map(|line| typo::text(typo::meta(), line.as_str()).style(theme::text_2).into());
+        block = block.push(column(lines).spacing(space::xs()));
     }
     Some(block.into())
 }
@@ -180,14 +180,14 @@ fn decided_row(approval: &ApprovalInfo) -> Element<'_, Message> {
         detail = format!("{detail} · {message}");
     }
     let lines = column![
-        one_line(typo::text(typo::BODY, approval.summary.as_str()).style(theme::text_2)),
-        one_line(typo::text(typo::META.tabular(), detail).style(theme::text_3)),
+        one_line(typo::text(typo::body(), approval.summary.as_str()).style(theme::text_2)),
+        one_line(typo::text(typo::meta().tabular(), detail).style(theme::text_3)),
     ];
     let state =
-        row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2).wrapping(Wrapping::None)]
-            .spacing(space::S)
+        row![widgets::status_dot(status), typo::text(typo::meta(), word).style(theme::text_2).wrapping(Wrapping::None)]
+            .spacing(space::s())
             .align_y(Alignment::Center);
-    row_frame(row![lines.width(Fill), state].spacing(space::L).align_y(Alignment::Center), true)
+    row_frame(row![lines.width(Fill), state].spacing(space::l()).align_y(Alignment::Center), true)
 }
 
 /// The state of a decided approval as status colour and word. The colour is only in the dot.

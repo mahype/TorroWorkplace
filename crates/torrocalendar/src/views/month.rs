@@ -45,7 +45,9 @@ const LINE_GAP: f32 = 2.0;
 /// Edge of the box around a day number, and of today's red circle.
 const DAY_CIRCLE: f32 = 22.0;
 /// The day number: 12/500 with tabular figures.
-const DAY_NUMBER: typo::Level = typo::CAPTION.tabular();
+fn day_number_level() -> typo::Level {
+    typo::caption().tabular()
+}
 /// Diameter of the dot in front of a timed entry.
 const DOT: f32 = 6.0;
 /// Width of the colour bar on the left of an all-day chip.
@@ -60,7 +62,9 @@ const WEEKEND_SHADE: f32 = 0.35;
 const OUTSIDE_SHADE: f32 = 0.7;
 const _: () = assert!(OUTSIDE_SHADE > WEEKEND_SHADE, "neighbouring months are dimmed more than weekends");
 /// Height of the weekday header.
-const HEADER_HEIGHT: f32 = size::CONTROL_SM;
+fn header_height() -> f32 {
+    size::control_sm()
+}
 /// The lines between the header and the grid and between the six rows of cells.
 const INNER_LINES: f32 = 6.0;
 
@@ -72,7 +76,7 @@ pub fn view(data: ViewData<'_>) -> Element<'_, Message> {
 /// The header and the six weeks for a view `width` × `height`.
 fn month<'a>(data: &ViewData<'a>, width: f32, height: f32) -> Element<'a, Message> {
     let today = data.now;
-    let cell_height = (height - HEADER_HEIGHT - INNER_LINES) / 6.0;
+    let cell_height = (height - header_height() - INNER_LINES) / 6.0;
     let cell_width = ((width - 6.0 * size::HAIRLINE) / 7.0).max(0.0);
     let lines = lines_that_fit(cell_height);
     let horizontal = || rule::horizontal(1).style(style::rule);
@@ -96,16 +100,16 @@ fn month<'a>(data: &ViewData<'a>, width: f32, height: f32) -> Element<'a, Messag
 
 /// Mon–Sun, short names, from `start` on, left-aligned with the day numbers below.
 fn header<'a>(start: NaiveDate) -> Element<'a, Message> {
-    let mut names = row![].width(Length::Fill).height(HEADER_HEIGHT);
+    let mut names = row![].width(Length::Fill).height(header_height());
     for offset in 0..7 {
         if offset > 0 {
             // As wide as the line between two cells, so the names stay above their columns.
             names = names.push(Space::new().width(size::HAIRLINE));
         }
-        let name = typo::text(typo::CAPTION, weekday_name(start + Duration::days(offset), true)).style(theme::text_3);
+        let name = typo::text(typo::caption(), weekday_name(start + Duration::days(offset), true)).style(theme::text_3);
         names = names.push(
             container(name)
-                .padding(Padding::ZERO.left(space::S))
+                .padding(Padding::ZERO.left(space::s()))
                 .width(Length::FillPortion(1))
                 .height(Length::Fill)
                 .align_y(Vertical::Center),
@@ -132,20 +136,20 @@ fn cell<'a>(
     for item in &day[..shown] {
         let faded = !in_month || ends_before(item.event, today);
         let chosen = selected == Some(item.index);
-        rows = rows.push(event_row(*item, date, faded, chosen, width - 2.0 * space::XS));
+        rows = rows.push(event_row(*item, date, faded, chosen, width - 2.0 * space::xs()));
     }
     if more > 0 {
         let summary = trf("{n} more", &[("n", &more)]);
-        let more = typo::text(typo::META, format!("+{summary}")).style(theme::text_2).wrapping(Wrapping::None);
-        rows = rows.push(container(more).padding(Padding::ZERO.left(space::XS)).height(EVENT_HEIGHT));
+        let more = typo::text(typo::meta(), format!("+{summary}")).style(theme::text_2).wrapping(Wrapping::None);
+        rows = rows.push(container(more).padding(Padding::ZERO.left(space::xs())).height(EVENT_HEIGHT));
     }
 
     let number =
-        container(day_number(date, today.date(), in_month)).padding(Padding::ZERO.top(space::S).left(space::S));
-    let rows = container(rows).padding([0.0, space::XS]);
+        container(day_number(date, today.date(), in_month)).padding(Padding::ZERO.top(space::s()).left(space::s()));
+    let rows = container(rows).padding([0.0, space::xs()]);
     let shade = cell_shade(in_month, is_weekend(date));
-    let cell = container(column![number, rows].spacing(space::XS))
-        .padding(Padding::ZERO.bottom(space::XS))
+    let cell = container(column![number, rows].spacing(space::xs()))
+        .padding(Padding::ZERO.bottom(space::xs()))
         .width(Length::FillPortion(1))
         .height(Length::Fill)
         .clip(true)
@@ -160,7 +164,7 @@ fn cell<'a>(
 /// circle. Click → `ShowDay`.
 fn day_number<'a>(date: NaiveDate, today: NaiveDate, in_month: bool) -> Element<'a, Message> {
     let is_today = date == today;
-    let number = typo::text(DAY_NUMBER, date.day().to_string()).style(move |theme: &Theme| {
+    let number = typo::text(day_number_level(), date.day().to_string()).style(move |theme: &Theme| {
         let p = palette(theme);
         let color = if is_today {
             p.on_accent
@@ -200,19 +204,19 @@ fn day_number<'a>(date: NaiveDate, today: NaiveDate, in_month: bool) -> Element<
 /// on its edge.
 fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, width: f32) -> Element<'a, Message> {
     let (prefix, title) = entry_parts(item.event, date);
-    let title = ellipsize(&title, typo::CAPTION, title_room(item.event.all_day(), prefix.as_deref(), width));
+    let title = ellipsize(&title, typo::caption(), title_room(item.event.all_day(), prefix.as_deref(), width));
     let color = item.color;
-    let title = typo::text(typo::CAPTION, title)
-        .style(move |theme: &Theme| TextStyle { color: Some(shade(palette(theme), palette(theme).text, faded)) })
+    let title = typo::text(typo::caption(), title)
+        .style(move |theme: &Theme| TextStyle { color: Some(shade(&palette(theme), palette(theme).text, faded)) })
         .wrapping(Wrapping::None);
     let body: Element<'a, Message> = if item.event.all_day() {
         let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |theme| container::Style {
-            background: Some(Background::Color(shade(palette(theme), color, faded))),
-            border: Border { radius: Radius::new(0.0).left(radius::XS), ..Border::default() },
+            background: Some(Background::Color(shade(&palette(theme), color, faded))),
+            border: Border { radius: Radius::new(0.0).left(radius::xs()), ..Border::default() },
             ..container::Style::default()
         });
         let fill = container(title)
-            .padding([0.0, space::S])
+            .padding([0.0, space::s()])
             .width(Length::Fill)
             .height(Length::Fill)
             .align_y(Vertical::Center)
@@ -220,23 +224,24 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, w
             .style(move |theme| {
                 let p = palette(theme);
                 container::Style {
-                    background: Some(Background::Color(shade(p, over(p.tinted(color), p.panel), faded))),
-                    border: Border { radius: Radius::new(0.0).right(radius::XS), ..Border::default() },
+                    background: Some(Background::Color(shade(&p, over(p.tinted(color), p.panel), faded))),
+                    border: Border { radius: Radius::new(0.0).right(radius::xs()), ..Border::default() },
                     ..container::Style::default()
                 }
             });
         row![bar, fill].height(Length::Fill).into()
     } else {
         let dot = container(Space::new()).width(DOT).height(DOT).style(move |theme| container::Style {
-            background: Some(Background::Color(shade(palette(theme), color, faded))),
+            background: Some(Background::Color(shade(&palette(theme), color, faded))),
             border: border::rounded(DOT / 2.0),
             ..container::Style::default()
         });
-        let mut line = row![dot].spacing(space::XS).align_y(Vertical::Center).padding(Padding::ZERO.left(space::XS));
+        let mut line =
+            row![dot].spacing(space::xs()).align_y(Vertical::Center).padding(Padding::ZERO.left(space::xs()));
         if let Some(prefix) = prefix {
-            let prefix = typo::text(typo::MICRO, prefix)
+            let prefix = typo::text(typo::micro(), prefix)
                 .style(move |theme: &Theme| TextStyle {
-                    color: Some(shade(palette(theme), palette(theme).text_2, faded)),
+                    color: Some(shade(&palette(theme), palette(theme).text_2, faded)),
                 })
                 .wrapping(Wrapping::None);
             line = line.push(prefix);
@@ -246,7 +251,7 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, w
     let row =
         container(body).width(Length::Fill).height(EVENT_HEIGHT).clip(true).style(move |theme| container::Style {
             border: if selected {
-                border::rounded(radius::XS).color(palette(theme).focus_ring).width(style::FOCUS_RING_WIDTH)
+                border::rounded(radius::xs()).color(palette(theme).focus_ring).width(style::FOCUS_RING_WIDTH)
             } else {
                 Border::default()
             },
@@ -259,10 +264,10 @@ fn event_row<'a>(item: Item<'a>, date: NaiveDate, faded: bool, selected: bool, w
 /// its padding; a timed row less its left padding, the dot, the time and the gaps between them.
 fn title_room(all_day: bool, prefix: Option<&str>, width: f32) -> f32 {
     let room = if all_day {
-        width - BAR - 2.0 * space::S
+        width - BAR - 2.0 * space::s()
     } else {
-        let prefix = prefix.map_or(0.0, |prefix| text_width(prefix, typo::MICRO) + space::XS);
-        width - space::XS - DOT - space::XS - prefix
+        let prefix = prefix.map_or(0.0, |prefix| text_width(prefix, typo::micro()) + space::xs());
+        width - space::xs() - DOT - space::xs() - prefix
     };
     room.max(0.0)
 }
@@ -363,7 +368,7 @@ fn entry_parts(event: &Event, date: NaiveDate) -> (Option<String>, String) {
 /// How many rows a cell of `height` holds: below the day number, above the bottom edge, at most
 /// [`MAX_LINES`].
 fn lines_that_fit(height: f32) -> usize {
-    let free = height - space::S - DAY_CIRCLE - space::XS - space::XS;
+    let free = height - space::s() - DAY_CIRCLE - space::xs() - space::xs();
     if free < EVENT_HEIGHT { 0 } else { (((free + LINE_GAP) / (EVENT_HEIGHT + LINE_GAP)) as usize).min(MAX_LINES) }
 }
 
@@ -485,9 +490,9 @@ mod tests {
 
     #[test]
     fn titles_get_what_is_left_of_the_row() {
-        assert_eq!(title_room(true, None, 100.0), 100.0 - BAR - 2.0 * space::S);
+        assert_eq!(title_room(true, None, 100.0), 100.0 - BAR - 2.0 * space::s());
         let timed = title_room(false, Some("14:00"), 100.0);
-        assert!(timed < 100.0 - DOT - 2.0 * space::XS - space::XS, "the time takes its share");
+        assert!(timed < 100.0 - DOT - 2.0 * space::xs() - space::xs(), "the time takes its share");
         assert_eq!(title_room(false, Some("14:00"), 10.0), 0.0, "never negative");
     }
 
@@ -540,8 +545,8 @@ mod tests {
     #[test]
     fn faded_colours_move_towards_the_panel_in_both_themes() {
         for p in [Palette::dark(), Palette::light()] {
-            assert_eq!(shade(p, p.text, false), p.text);
-            let faded = shade(p, p.text, true);
+            assert_eq!(shade(&p, p.text, false), p.text);
+            let faded = shade(&p, p.text, true);
             assert!((faded.r - mix(p.panel, p.text, FADE_OPACITY).r).abs() < 1e-6);
             assert!((faded.r - p.panel.r).abs() < (p.text.r - p.panel.r).abs());
             let tint = over(p.tinted(p.calendar[0]), p.panel);

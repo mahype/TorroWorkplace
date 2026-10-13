@@ -39,8 +39,8 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let title = tr("Suite apps");
     match &data.apps {
         // The core has not answered yet: one quiet line, so the page does not jump when the rows come.
-        None => column![widgets::section_title(title), typo::text(typo::META, tr("Loading …")).style(theme::text_3)]
-            .spacing(space::S)
+        None => column![widgets::section_title(title), typo::text(typo::meta(), tr("Loading …")).style(theme::text_3)]
+            .spacing(space::s())
             .into(),
         Some(apps) => widgets::group(
             title,
@@ -56,26 +56,26 @@ fn app_row<'a>(app: &'a AppInfo) -> Element<'a, Message> {
     let (status, word) =
         if app.installed { (Status::Ok, tr("Installed")) } else { (Status::Inactive, tr("Not installed")) };
     let state =
-        row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2).wrapping(Wrapping::None)]
-            .spacing(space::S)
+        row![widgets::status_dot(status), typo::text(typo::meta(), word).style(theme::text_2).wrapping(Wrapping::None)]
+            .spacing(space::s())
             .align_y(Alignment::Center);
     // A button without a message is drawn disabled, so a missing app cannot be opened.
     let open = widgets::text_button(None, tr("Open"), style::button::secondary, open_message(app));
-    let control = row![state, open].spacing(space::L).align_y(Alignment::Center);
+    let control = row![state, open].spacing(space::l()).align_y(Alignment::Center);
 
     // The class sits in the name's line, in the metadata colour, so a row stays at two lines.
     let name = row![
-        typo::text(typo::BODY, app_name(app)).wrapping(Wrapping::None),
-        typo::text(typo::META, app_class(app)).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::body(), app_name(app)).wrapping(Wrapping::None),
+        typo::text(typo::meta(), app_class(app)).style(theme::text_3).wrapping(Wrapping::None),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     let mut lines = column![container(name).width(Fill).clip(true)];
     let description = app_description(&app.binary);
     if !description.is_empty() {
-        lines = lines.push(one_line(typo::text(typo::META, description).style(theme::text_2)));
+        lines = lines.push(one_line(typo::text(typo::meta(), description).style(theme::text_2)));
     }
-    let content = row![lines.width(Fill), control].spacing(space::L).align_y(Alignment::Center);
+    let content = row![lines.width(Fill), control].spacing(space::l()).align_y(Alignment::Center);
     row_frame(content, !description.is_empty())
 }
 

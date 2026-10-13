@@ -10,7 +10,7 @@
 //! use iced::widget::{button, checkbox, container, scrollable, text_input};
 //! use torro_gui::style;
 //!
-//! button(label).padding(style::BUTTON_PADDING).style(style::button::primary);
+//! button(label).padding(style::button_padding()).style(style::button::primary);
 //! button(label).style(style::button::segment(view == View::Week));
 //! button(row).style(style::button::sidebar_item(list == active));
 //! text_input(tr("Search"), &query).style(style::text_input);
@@ -33,7 +33,7 @@
 //! surface alone would give no feedback. A *chosen* chip or segment is `selected` with the same
 //! `line_selected` border; the fill (and a chip's check mark) tells it from a hovered one.
 //!
-//! Sizes (height, padding) are not part of a style in Iced; the constants below and the size tokens
+//! Sizes (height, padding) are not part of a style in Iced; the values below and the size tokens
 //! in [`crate::theme::size`] carry them. The building blocks in `torro_gui::widgets` (F.5) put style
 //! and size together; apps should prefer those.
 
@@ -47,15 +47,22 @@ use crate::theme::{Palette, palette, radius};
 pub const DISABLED_ALPHA: f32 = 0.4;
 /// Width of the focus ring on inputs, in logical pixels (skill, section 4).
 pub const FOCUS_RING_WIDTH: f32 = 2.0;
-/// Inner padding of a button (secondary, ghost, primary, danger) and of a segment: 10 left and
-/// right, the height comes from `.height(size::CONTROL_SM)`.
-pub const BUTTON_PADDING: Padding = Padding { top: 0.0, right: 10.0, bottom: 0.0, left: 10.0 };
+/// Inner padding of a button (secondary, ghost, primary, danger) and of a segment: the design's
+/// control padding ([`crate::layout::control_padding`], 0 × 10 in the standard); the height comes
+/// from `.height(size::control_sm())`.
+pub fn button_padding() -> Padding {
+    crate::layout::control_padding()
+}
 /// Padding of a text input or editor: 6 top and bottom, 8 left and right; with the 20-px line of
-/// [`crate::typo::BODY`] that is the 32-px [`crate::theme::size::CONTROL`].
+/// [`crate::typo::body()`] that is the 32-px [`crate::theme::size::control()`].
 pub const INPUT_PADDING: Padding = Padding { top: 6.0, right: 8.0, bottom: 6.0, left: 8.0 };
-/// Padding of a pick list: 6 top and bottom, 10 left and right; with the 16-px line of
-/// [`crate::typo::CAPTION`] that is the 28-px [`crate::theme::size::CONTROL_SM`] of a button.
-pub const PICK_LIST_PADDING: Padding = Padding { top: 6.0, right: 10.0, bottom: 6.0, left: 10.0 };
+/// Padding of a pick list: 6 top and bottom, at the sides the design's control padding like a
+/// button (10 in the standard); with the 16-px line of [`crate::typo::caption()`] that is the 28-px
+/// [`crate::theme::size::control_sm()`] of a button.
+pub fn pick_list_padding() -> Padding {
+    let sides = crate::layout::control_padding();
+    Padding { top: 6.0, bottom: 6.0, ..sides }
+}
 /// Padding of the segmented control's frame ([`container::segmented`]) around its segments.
 pub const SEGMENT_INSET: f32 = 2.0;
 /// Height of a menu item (menus are 2 px roomier than sidebar rows, as in Linear).
@@ -105,8 +112,8 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
 ///
 /// All buttons share the state rules of the module: hover lays `hover` under the content, pressed
 /// `selected`, disabled fades the normal look to 40 % without a hover surface. Height
-/// [`crate::theme::size::CONTROL_SM`], padding [`BUTTON_PADDING`] (icon buttons: 28 × 28, no
-/// padding), label in [`crate::typo::CAPTION`].
+/// [`crate::theme::size::control_sm()`], padding [`button_padding`] (icon buttons: 28 × 28, no
+/// padding), label in [`crate::typo::caption()`].
 pub mod button {
     use iced::widget::button::{Status, Style};
     use iced::{Background, Color, Theme};
@@ -175,7 +182,7 @@ pub mod button {
     /// darken the red (10 % and 20 % towards black), which keeps white text above 5.4:1.
     pub fn primary(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
-        let rest = Rest { background: p.accent, text: p.on_accent, border: Color::TRANSPARENT, radius: radius::SM };
+        let rest = Rest { background: p.accent, text: p.on_accent, border: Color::TRANSPARENT, radius: radius::sm() };
         match status {
             Status::Active => rest.style(),
             Status::Hovered => Rest { background: mix(p.accent, Color::BLACK, 0.1), ..rest }.style(),
@@ -188,20 +195,20 @@ pub mod button {
     /// and `text`; hovered and pressed the border turns `line_selected` (module docs).
     pub fn secondary(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
-        let rest = Rest { background: p.raised, text: p.text, border: p.line_strong, radius: radius::SM };
-        framed(p, status, rest, p.text)
+        let rest = Rest { background: p.raised, text: p.text, border: p.line_strong, radius: radius::sm() };
+        framed(&p, status, rest, p.text)
     }
 
     /// The default button in header bars: no surface, `text_2`; on hover `hover` and `text`.
     pub fn ghost(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
         let rest =
-            Rest { background: Color::TRANSPARENT, text: p.text_2, border: Color::TRANSPARENT, radius: radius::SM };
-        neutral(p, status, rest, p.text)
+            Rest { background: Color::TRANSPARENT, text: p.text_2, border: Color::TRANSPARENT, radius: radius::sm() };
+        neutral(&p, status, rest, p.text)
     }
 
     /// An icon-only button (‹ › refresh …): a [`ghost`] button, 28 × 28
-    /// ([`crate::theme::size::CONTROL_SM`] square, no padding), icon 14–16 in the text colour.
+    /// ([`crate::theme::size::control_sm()`] square, no padding), icon 14–16 in the text colour.
     /// Always give it a tooltip.
     pub fn icon(theme: &Theme, status: Status) -> Style {
         ghost(theme, status)
@@ -217,47 +224,51 @@ pub mod button {
     /// [`Palette::error_text`] (≥ 4.5:1 on every surface, both modes), in every state.
     pub fn danger(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
-        let rest =
-            Rest { background: Color::TRANSPARENT, text: p.error_text, border: Color::TRANSPARENT, radius: radius::SM };
-        neutral(p, status, rest, p.error_text)
+        let rest = Rest {
+            background: Color::TRANSPARENT,
+            text: p.error_text,
+            border: Color::TRANSPARENT,
+            radius: radius::sm(),
+        };
+        neutral(&p, status, rest, p.error_text)
     }
 
     /// One segment of a segmented control (Day · Week · Month), inside
     /// [`super::container::segmented`]. Label `CAPTION` in `text_3`, on hover `hover` and `text`;
     /// the `active` segment is `selected` with a `line_selected` edge and `text` – the edge makes
     /// the choice readable also in light mode, where `selected` is close to the frame's `bg`.
-    /// Radius [`radius::XS`], padding [`super::BUTTON_PADDING`], height
+    /// Radius [`radius::xs()`], padding [`super::button_padding`], height
     /// `CONTROL_SM − 2 × SEGMENT_INSET − 2` (the frame's border).
     pub fn segment(active: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
         move |theme, status| {
             let p = palette(theme);
             if active {
-                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::XS };
+                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::xs() };
                 chosen(status, rest)
             } else {
                 let rest = Rest {
                     background: Color::TRANSPARENT,
                     text: p.text_3,
                     border: Color::TRANSPARENT,
-                    radius: radius::XS,
+                    radius: radius::xs(),
                 };
-                neutral(p, status, rest, p.text)
+                neutral(&p, status, rest, p.text)
             }
         }
     }
 
     /// A property chip that opens an editor ("Today, 16:00" under a title,
     /// `widgets::chip` with a message): the look of [`super::container::chip`] – `raised`,
-    /// `line_strong` border, radius [`radius::XS`], `text` – with the states of a [`secondary`]
+    /// `line_strong` border, radius [`radius::xs()`], `text` – with the states of a [`secondary`]
     /// button: hover `hover`, pressed `selected`, both with a `line_selected` border.
     pub fn chip(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
-        let rest = Rest { background: p.raised, text: p.text, border: p.line_strong, radius: radius::XS };
-        framed(p, status, rest, p.text)
+        let rest = Rest { background: p.raised, text: p.text, border: p.line_strong, radius: radius::xs() };
+        framed(&p, status, rest, p.text)
     }
 
     /// A chip that can be chosen (a filter template, a label, a person, a milestone –
-    /// `widgets::choice_chip`), [`crate::theme::size::CONTROL_SM`] high, radius [`radius::SM`],
+    /// `widgets::choice_chip`), [`crate::theme::size::control_sm()`] high, radius [`radius::sm()`],
     /// label `CAPTION`.
     ///
     /// Not chosen: `raised`, `line_strong` border, `text_2`; hover `hover` and `text`, pressed
@@ -269,11 +280,11 @@ pub mod button {
         move |theme, status| {
             let p = palette(theme);
             if on {
-                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::SM };
+                let rest = Rest { background: p.selected, text: p.text, border: p.line_selected, radius: radius::sm() };
                 chosen(status, rest)
             } else {
-                let rest = Rest { background: p.raised, text: p.text_2, border: p.line_strong, radius: radius::SM };
-                framed(p, status, rest, p.text)
+                let rest = Rest { background: p.raised, text: p.text_2, border: p.line_strong, radius: radius::sm() };
+                framed(&p, status, rest, p.text)
             }
         }
     }
@@ -290,7 +301,7 @@ pub mod button {
     }
 
     /// A row in the sidebar (navigation, lists, calendars), 28 high
-    /// ([`crate::theme::size::ROW_SIDEBAR`]), padding [`super::ITEM_PADDING`]: `text_2`, on hover
+    /// ([`crate::theme::size::row_sidebar()`]), padding [`super::ITEM_PADDING`]: `text_2`, on hover
     /// `hover` and `text`; the `active` row is `selected` with `text`.
     pub fn sidebar_item(active: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
         move |theme, status| {
@@ -298,21 +309,21 @@ pub mod button {
             if active {
                 chosen(
                     status,
-                    Rest { background: p.selected, text: p.text, border: Color::TRANSPARENT, radius: radius::SM },
+                    Rest { background: p.selected, text: p.text, border: Color::TRANSPARENT, radius: radius::sm() },
                 )
             } else {
                 let rest = Rest {
                     background: Color::TRANSPARENT,
                     text: p.text_2,
                     border: Color::TRANSPARENT,
-                    radius: radius::SM,
+                    radius: radius::sm(),
                 };
-                neutral(p, status, rest, p.text)
+                neutral(&p, status, rest, p.text)
             }
         }
     }
 
-    /// A row in a list (tasks, agenda), 40 high ([`crate::theme::size::ROW`]), full width without
+    /// A row in a list (tasks, agenda), 40 high ([`crate::theme::size::row()`]), full width without
     /// radius; the line between rows is a [`super::rule`]. Text `text`; hover `hover`; the
     /// `selected` row (the one shown in the detail) is `selected`.
     pub fn list_row(selected: bool) -> impl Fn(&Theme, Status) -> Style + Copy {
@@ -322,7 +333,7 @@ pub mod button {
             if selected {
                 chosen(status, Rest { background: p.selected, ..rest })
             } else {
-                neutral(p, status, rest, p.text)
+                neutral(&p, status, rest, p.text)
             }
         }
     }
@@ -338,7 +349,7 @@ pub mod button {
         move |theme, status| {
             let p = palette(theme);
             let rest =
-                Rest { background: Color::TRANSPARENT, text: p.text, border: Color::TRANSPARENT, radius: radius::SM };
+                Rest { background: Color::TRANSPARENT, text: p.text, border: Color::TRANSPARENT, radius: radius::sm() };
             let lit = Rest { background: p.selected, ..rest };
             match status {
                 Status::Disabled => disabled(if highlighted { lit } else { rest }),
@@ -363,11 +374,11 @@ pub mod container {
     }
 
     /// The inset content area next to the sidebar (wide layout): `panel`, 1-px `line` border,
-    /// radius [`radius::MD`], with [`crate::theme::size::INSET`] margin top, right and bottom
+    /// radius [`radius::md()`], with [`crate::layout::inset()`] margin top, right and bottom
     /// (the margin is the parent's padding).
     pub fn panel(theme: &Theme) -> Style {
         let p = palette(theme);
-        Style { border: outline(p.line, radius::MD), ..surface(p.panel) }
+        Style { border: outline(p.line, radius::md()), ..surface(p.panel) }
     }
 
     /// The content area without a sidebar (medium, narrow): `panel`, flush with the window, no
@@ -381,76 +392,76 @@ pub mod container {
         surface(palette(theme).bg)
     }
 
-    /// The header bar in the content area, [`crate::theme::size::HEADER`] high: `panel`, so it
+    /// The header bar in the content area, [`crate::theme::size::header()`] high: `panel`, so it
     /// covers content scrolled under it. The line below it is a [`super::rule`]: Iced borders
     /// cannot be drawn on one side only.
     pub fn header(theme: &Theme) -> Style {
         surface(palette(theme).panel)
     }
 
-    /// A group of rows on a settings page: `raised`, 1-px `line` border, radius [`radius::MD`].
+    /// A group of rows on a settings page: `raised`, 1-px `line` border, radius [`radius::md()`].
     /// Rows inside are separated by [`super::rule`].
     pub fn group(theme: &Theme) -> Style {
         let p = palette(theme);
-        Style { border: outline(p.line, radius::MD), ..surface(p.raised) }
+        Style { border: outline(p.line, radius::md()), ..surface(p.raised) }
     }
 
-    /// A menu (dropdown, context menu): `menu`, 1-px `line_strong` border, radius [`radius::MD`],
+    /// A menu (dropdown, context menu): `menu`, 1-px `line_strong` border, radius [`radius::md()`],
     /// the menu shadow, text `text`. Padding [`super::MENU_INSET`].
     pub fn menu(theme: &Theme) -> Style {
         let p = palette(theme);
         Style {
             text_color: Some(p.text),
-            border: outline(p.line_strong, radius::MD),
+            border: outline(p.line_strong, radius::md()),
             shadow: p.shadow,
             ..surface(p.menu)
         }
     }
 
-    /// A floating card or dialog: like [`menu`] with radius [`radius::LG`]. Padding
-    /// [`crate::theme::space::L`], width 320.
+    /// A floating card or dialog: like [`menu`] with radius [`radius::lg()`]. Padding
+    /// [`crate::theme::space::l()`], width 320.
     pub fn popover(theme: &Theme) -> Style {
-        Style { border: outline(palette(theme).line_strong, radius::LG), ..menu(theme) }
+        Style { border: outline(palette(theme).line_strong, radius::lg()), ..menu(theme) }
     }
 
     /// A property chip ("Today", "Work"): `raised`, 1-px `line_strong` border, radius
-    /// [`radius::XS`], text `text`. Height [`super::CHIP_HEIGHT`], padding [`super::CHIP_PADDING`],
+    /// [`radius::xs()`], text `text`. Height [`super::CHIP_HEIGHT`], padding [`super::CHIP_PADDING`],
     /// label `CAPTION`, icon 14 in `text_3`.
     pub fn chip(theme: &Theme) -> Style {
         let p = palette(theme);
-        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::XS), ..surface(p.raised) }
+        Style { text_color: Some(p.text), border: outline(p.line_strong, radius::xs()), ..surface(p.raised) }
     }
 
-    /// A key hint ("⌘K", "N"): no surface, 1-px `line_strong` border, radius [`radius::XS`], text
+    /// A key hint ("⌘K", "N"): no surface, 1-px `line_strong` border, radius [`radius::xs()`], text
     /// `text_3` in `CAPTION`. Padding [`super::KBD_PADDING`].
     pub fn kbd(theme: &Theme) -> Style {
         let p = palette(theme);
-        Style { text_color: Some(p.text_3), border: outline(p.line_strong, radius::XS), ..Style::default() }
+        Style { text_color: Some(p.text_3), border: outline(p.line_strong, radius::xs()), ..Style::default() }
     }
 
-    /// The frame of a segmented control: `bg`, 1-px `line` border, radius [`radius::SM`], padding
+    /// The frame of a segmented control: `bg`, 1-px `line` border, radius [`radius::sm()`], padding
     /// [`super::SEGMENT_INSET`]; the segments inside use [`super::button::segment`].
     pub fn segmented(theme: &Theme) -> Style {
         let p = palette(theme);
-        Style { border: outline(p.line, radius::SM), ..surface(p.bg) }
+        Style { border: outline(p.line, radius::sm()), ..surface(p.bg) }
     }
 }
 
 /// A text input (`text_input(…).style(style::text_input)`): no surface, 1-px `line_strong` border,
-/// radius [`radius::SM`]; value `text`, placeholder and icon `text_3`. Hover `hover`; focused a
+/// radius [`radius::sm()`]; value `text`, placeholder and icon `text_3`. Hover `hover`; focused a
 /// 2-px `focus_ring` border; disabled 40 %.
 ///
-/// Text [`crate::typo::BODY`] with padding [`INPUT_PADDING`] gives the height
-/// [`crate::theme::size::CONTROL`] (Iced text inputs have no height of their own).
+/// Text [`crate::typo::body()`] with padding [`INPUT_PADDING`] gives the height
+/// [`crate::theme::size::control()`] (Iced text inputs have no height of their own).
 pub fn text_input(theme: &Theme, status: widget::text_input::Status) -> widget::text_input::Style {
     let p = palette(theme);
     let rest = widget::text_input::Style {
         background: Background::Color(Color::TRANSPARENT),
-        border: outline(p.line_strong, radius::SM),
+        border: outline(p.line_strong, radius::sm()),
         icon: p.text_3,
         placeholder: p.text_3,
         value: p.text,
-        selection: text_selection(p),
+        selection: text_selection(&p),
     };
     match status {
         widget::text_input::Status::Active => rest,
@@ -489,12 +500,12 @@ pub fn text_editor(theme: &Theme, status: widget::text_editor::Status) -> widget
 }
 
 /// A pick list (`pick_list(…).style(style::pick_list).menu_style(style::pick_list_menu)`): looks
-/// like [`button::secondary`] – `raised`, `line_strong` border, radius [`radius::SM`], text
+/// like [`button::secondary`] – `raised`, `line_strong` border, radius [`radius::sm()`], text
 /// `text`, arrow and placeholder `text_3`. Hover `hover`, open `selected`; both with a
 /// `line_selected` border like the other framed controls (module docs).
 ///
-/// Text [`crate::typo::CAPTION`] (size, font *and* `text_line_height`) with padding
-/// [`PICK_LIST_PADDING`] gives the height [`crate::theme::size::CONTROL_SM`]. Iced 0.14 pick lists
+/// Text [`crate::typo::caption()`] (size, font *and* `text_line_height`) with padding
+/// [`pick_list_padding`] gives the height [`crate::theme::size::control_sm()`]. Iced 0.14 pick lists
 /// have no disabled state.
 pub fn pick_list(theme: &Theme, status: widget::pick_list::Status) -> widget::pick_list::Style {
     let p = palette(theme);
@@ -508,18 +519,18 @@ pub fn pick_list(theme: &Theme, status: widget::pick_list::Status) -> widget::pi
         placeholder_color: p.text_3,
         handle_color: p.text_3,
         background: Background::Color(background),
-        border: outline(border, radius::SM),
+        border: outline(border, radius::sm()),
     }
 }
 
 /// The menu a pick list opens: like [`container::menu`] (`menu`, `line_strong`, radius
-/// [`radius::MD`], shadow); the item under the pointer is `selected` with `text`, as in
+/// [`radius::md()`], shadow); the item under the pointer is `selected` with `text`, as in
 /// [`button::menu_item`].
 pub fn pick_list_menu(theme: &Theme) -> menu::Style {
     let p = palette(theme);
     menu::Style {
         background: Background::Color(p.menu),
-        border: outline(p.line_strong, radius::MD),
+        border: outline(p.line_strong, radius::md()),
         text_color: p.text,
         selected_text_color: p.text,
         selected_background: Background::Color(p.selected),
@@ -573,10 +584,10 @@ fn check(
 /// `checkbox(on).style(style::checkbox(colour)).size(CHECK_SIZE)`.
 ///
 /// Empty: a [`CHECK_BORDER`] frame in `color`, hover lays `hover` under it; checked: filled with
-/// `color`, check mark in `panel`; radius [`radius::XS`]; disabled 40 %. A filled box has no hover
+/// `color`, check mark in `panel`; radius [`radius::xs()`]; disabled 40 %. A filled box has no hover
 /// surface: the row it sits in shows the hover.
 pub fn checkbox(color: Color) -> impl Fn(&Theme, widget::checkbox::Status) -> widget::checkbox::Style + Copy {
-    move |theme, status| check(palette(theme), status, color, color, color, radius::XS.into())
+    move |theme, status| check(&palette(theme), status, color, color, color, radius::xs().into())
 }
 
 /// A round task check in a list's colour: `checkbox(done).style(style::task_check(colour))`.
@@ -586,7 +597,7 @@ pub fn checkbox(color: Color) -> impl Fn(&Theme, widget::checkbox::Status) -> wi
 pub fn task_check(color: Color) -> impl Fn(&Theme, widget::checkbox::Status) -> widget::checkbox::Style + Copy {
     move |theme, status| {
         let p = palette(theme);
-        check(p, status, color, p.text_3, color, ROUND.into())
+        check(&p, status, color, p.text_3, color, ROUND.into())
     }
 }
 
@@ -738,7 +749,7 @@ mod tests {
 
     const BUTTON_STATES: [Status; 4] = [Status::Active, Status::Hovered, Status::Pressed, Status::Disabled];
 
-    fn modes() -> [(&'static str, Theme, &'static Palette); 2] {
+    fn modes() -> [(&'static str, Theme, Palette); 2] {
         [("dark", theme::theme(), Palette::dark()), ("light", theme::light(), Palette::light())]
     }
 
@@ -887,7 +898,7 @@ mod tests {
             let off = button::choice_chip(false);
             assert_eq!(off(&theme, Status::Active).text_color, p.text_2, "{mode}");
             assert_eq!(off(&theme, Status::Hovered).text_color, p.text, "{mode}");
-            assert_eq!(button::choice_chip(true)(&theme, Status::Active).border.radius, radius::SM.into());
+            assert_eq!(button::choice_chip(true)(&theme, Status::Active).border.radius, radius::sm().into());
         }
     }
 
@@ -1001,7 +1012,7 @@ mod tests {
         let status = widget::checkbox::Status::Active { is_checked: false };
         let square = checkbox(Palette::dark().calendar[0])(&theme, status);
         let round = task_check(Palette::dark().calendar[0])(&theme, status);
-        assert_eq!(square.border.radius, radius::XS.into());
+        assert_eq!(square.border.radius, radius::xs().into());
         assert!(round.border.radius.top_left >= CHECK_SIZE / 2.0);
         assert_eq!(round.border.color, Palette::dark().text_3, "an open task is a grey ring");
         assert_eq!(square.border.color, Palette::dark().calendar[0], "a hidden calendar keeps its colour");
@@ -1011,17 +1022,17 @@ mod tests {
     fn surfaces_have_the_radii_and_shadows_of_the_skill() {
         let theme = theme::light();
         let p = Palette::light();
-        assert_eq!(container::panel(&theme).border.radius, radius::MD.into());
+        assert_eq!(container::panel(&theme).border.radius, radius::md().into());
         assert_eq!(container::panel(&theme).border.color, p.line);
         assert_eq!(container::panel_flush(&theme).border.width, 0.0);
-        assert_eq!(container::menu(&theme).border.radius, radius::MD.into());
-        assert_eq!(container::popover(&theme).border.radius, radius::LG.into());
+        assert_eq!(container::menu(&theme).border.radius, radius::md().into());
+        assert_eq!(container::popover(&theme).border.radius, radius::lg().into());
         assert_eq!(container::menu(&theme).shadow, p.shadow);
         assert_eq!(container::popover(&theme).shadow, p.shadow);
-        assert_eq!(container::chip(&theme).border.radius, radius::XS.into());
+        assert_eq!(container::chip(&theme).border.radius, radius::xs().into());
         assert_eq!(container::kbd(&theme).text_color, Some(p.text_3));
         assert_eq!(pick_list_menu(&theme).shadow, p.shadow);
-        assert_eq!(button::secondary(&theme, Status::Active).border.radius, radius::SM.into());
-        assert_eq!(button::segment(true)(&theme, Status::Active).border.radius, radius::XS.into());
+        assert_eq!(button::secondary(&theme, Status::Active).border.radius, radius::sm().into());
+        assert_eq!(button::segment(true)(&theme, Status::Active).border.radius, radius::xs().into());
     }
 }

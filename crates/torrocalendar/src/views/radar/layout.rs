@@ -17,7 +17,7 @@ use torro_gui::theme::space;
 use torro_gui::typo::{self, ellipsize, text_width};
 
 use crate::views::glance;
-use crate::views::timeline::MOON_TARGET;
+use crate::views::timeline::moon_target_size;
 
 /// The window: twelve hours, one turn of the dial (minutes).
 pub const WINDOW: f32 = 720.0;
@@ -74,7 +74,9 @@ const ARC_INSET: f32 = 0.4;
 /// The shortest arc, so an event without length stays visible and clickable (degrees).
 const ARC_MIN: f32 = 1.2;
 /// A ring's name ends this far before the start edge (pixels along its middle)…
-pub const NAME_GAP: f32 = space::S;
+pub fn name_gap() -> f32 {
+    space::s()
+}
 /// …and takes at most the last hour of the window, where the fade has left the ring nearly empty
 /// (minutes).
 pub const NAME_SPAN: f32 = 60.0;
@@ -82,11 +84,15 @@ pub const NAME_SPAN: f32 = 60.0;
 pub const NAME_MIN_BAND: f32 = 14.0;
 /// The radius of the dot before a ring's name, and the room between dot and name.
 pub const NAME_DOT: f32 = 3.0;
-const NAME_DOT_GAP: f32 = space::XS;
+fn name_dot_gap() -> f32 {
+    space::xs()
+}
 /// A name cut shorter than this many letters is left out ("Pe…" says nothing; the tooltip has it).
 const NAME_MIN_LETTERS: usize = 3;
 /// A tooltip stands this far right of and below the pointer (or left of and above it at the edges).
-pub const TIP_OFFSET: f32 = space::M;
+pub fn tip_offset() -> f32 {
+    space::m()
+}
 
 /// The turn of the dial, `minutes` from the start of the day, kept to [`LOOK_BACK`] …
 /// [`LOOK_AHEAD`].
@@ -448,7 +454,7 @@ pub fn ring_at(dial: &Dial, radius: f32) -> Option<usize> {
 
 /// Where a ring names its calendar: a dot in the calendar's colour and, where the ring is wide
 /// enough, the name along the arc. Both lie in the last hour of the window ([`NAME_SPAN`]), where
-/// the fade has left the ring nearly empty, ending [`NAME_GAP`] before the start edge, so the
+/// the fade has left the ring nearly empty, ending [`name_gap()`] before the start edge, so the
 /// name turns with the dial.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RingName {
@@ -485,21 +491,21 @@ pub fn ring_name(dial: &Dial, window: &Window, ring: usize, name: &str) -> Optio
         return None;
     }
     let degrees = |pixels: f32| (pixels / radius).to_degrees();
-    let end = window.angle(WINDOW) - degrees(NAME_GAP);
+    let end = window.angle(WINDOW) - degrees(name_gap());
     let begin = window.angle(WINDOW - NAME_SPAN);
     // The dot and the room after it, before the first letter.
-    let lead = 2.0 * NAME_DOT + NAME_DOT_GAP;
+    let lead = 2.0 * NAME_DOT + name_dot_gap();
     let room = (end - begin).to_radians() * radius - lead;
     let letters = name.chars().count();
     let text =
-        (outer - inner >= NAME_MIN_BAND && room > 0.0).then(|| ellipsize(name, typo::MICRO, room)).filter(|cut| {
+        (outer - inner >= NAME_MIN_BAND && room > 0.0).then(|| ellipsize(name, typo::micro(), room)).filter(|cut| {
             let kept = cut.trim_end_matches(typo::ELLIPSIS).chars().count();
             !cut.is_empty() && kept >= NAME_MIN_LETTERS.min(letters)
         });
     let Some(text) = text else {
         return Some(RingName { radius, dot: end - degrees(NAME_DOT), text: None });
     };
-    let block = lead + text_width(&text, typo::MICRO);
+    let block = lead + text_width(&text, typo::micro());
     let middle = (end - degrees(block / 2.0)).rem_euclid(360.0);
     let flipped = middle > 90.0 && middle < 270.0;
     let place = if flipped {
@@ -521,14 +527,14 @@ pub fn ring_name(dial: &Dial, window: &Window, ring: usize, name: &str) -> Optio
     Some(place)
 }
 
-/// The top-left corner of a tooltip of `size` for the pointer at `pointer`: [`TIP_OFFSET`] right
+/// The top-left corner of a tooltip of `size` for the pointer at `pointer`: [`tip_offset()`] right
 /// of and below it; left of it where `area` (the canvas) ends on the right, above it where it ends
 /// at the bottom; never over the edges of `area` when it fits at all.
 pub fn tip_origin(pointer: Point, size: Size, area: Rectangle) -> Point {
-    let right = pointer.x + TIP_OFFSET;
-    let x = if right + size.width <= area.x + area.width { right } else { pointer.x - TIP_OFFSET - size.width };
-    let below = pointer.y + TIP_OFFSET;
-    let y = if below + size.height <= area.y + area.height { below } else { pointer.y - TIP_OFFSET - size.height };
+    let right = pointer.x + tip_offset();
+    let x = if right + size.width <= area.x + area.width { right } else { pointer.x - tip_offset() - size.width };
+    let below = pointer.y + tip_offset();
+    let y = if below + size.height <= area.y + area.height { below } else { pointer.y - tip_offset() - size.height };
     let x = x.clamp(area.x, (area.x + area.width - size.width).max(area.x));
     let y = y.clamp(area.y, (area.y + area.height - size.height).max(area.y));
     Point::new(x, y)
@@ -626,13 +632,13 @@ pub fn moon(window: &Window, nights: &[(f32, f32)]) -> Option<f32> {
     halves.iter().copied().find(|rel| *rel <= VISIBLE).or_else(|| halves.first().copied())
 }
 
-/// The moon ([`moon`]) as a click target, [`MOON_TARGET`] square around its icon on the numerals'
+/// The moon ([`moon`]) as a click target, [`moon_target_size()`] square around its icon on the numerals'
 /// circle of `dial`; `None` without a moon.
 pub fn moon_target(dial: &Dial, window: &Window, nights: &[(f32, f32)]) -> Option<Rectangle> {
     let rel = moon(window, nights)?;
     let at = dial.point(dial.numerals, window.angle(rel));
-    let half = MOON_TARGET / 2.0;
-    Some(Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(MOON_TARGET, MOON_TARGET)))
+    let half = moon_target_size() / 2.0;
+    Some(Rectangle::new(Point::new(at.x - half, at.y - half), Size::new(moon_target_size(), moon_target_size())))
 }
 
 #[cfg(test)]
@@ -860,7 +866,7 @@ mod tests {
 
     #[test]
     fn titles_run_along_the_arc_and_turn_over_below() {
-        let level = typo::CAPTION;
+        let level = typo::caption();
         let top = glyphs("Run", level, 200.0, 10.0, false);
         assert_eq!(top.len(), 3);
         assert!(top.windows(2).all(|w| w[1].angle > w[0].angle), "clockwise");
@@ -983,9 +989,9 @@ mod tests {
         assert_eq!(text.text, "Work");
         assert!(!text.flipped, "top half: read towards the edge");
         let edge = window.angle(WINDOW);
-        let gap = (NAME_GAP / place.radius).to_degrees();
-        let end = text.start + (text_width("Work", typo::MICRO) / place.radius).to_degrees();
-        assert!(close(end, edge - gap), "the name ends {NAME_GAP} before the edge: {end} vs {}", edge - gap);
+        let gap = (name_gap() / place.radius).to_degrees();
+        let end = text.start + (text_width("Work", typo::micro()) / place.radius).to_degrees();
+        assert!(close(end, edge - gap), "the name ends {} before the edge: {end} vs {}", name_gap(), edge - gap);
         assert!(place.dot < text.start, "the dot comes first");
         assert!(place.dot > window.angle(WINDOW - NAME_SPAN), "within the last hour");
         // It turns with the dial: half an hour later it stands 15° further.
@@ -999,7 +1005,7 @@ mod tests {
         assert!(narrow.band < NAME_MIN_BAND);
         let dot = ring_name(&narrow, &window, 0, "Work").expect("a ring");
         assert_eq!(dot.text, None);
-        assert!(close(dot.dot, edge - (NAME_GAP / dot.radius).to_degrees() - (NAME_DOT / dot.radius).to_degrees()));
+        assert!(close(dot.dot, edge - (name_gap() / dot.radius).to_degrees() - (NAME_DOT / dot.radius).to_degrees()));
         // An empty name: the dot alone; no ring: nothing.
         assert_eq!(ring_name(&dial, &window, 1, "").expect("a ring").text, None);
         assert_eq!(ring_name(&dial, &window, 3, "Work"), None);
@@ -1013,10 +1019,10 @@ mod tests {
         let place = ring_name(&dial, &window, 0, "Work").expect("a ring");
         let text = place.text.expect("room for the name");
         assert!(text.flipped);
-        let edge = window.angle(WINDOW) - (NAME_GAP / place.radius).to_degrees();
+        let edge = window.angle(WINDOW) - (name_gap() / place.radius).to_degrees();
         assert!(place.dot < edge && place.dot > text.start, "dot at the edge side, the letters behind it");
         // The letters run anticlockwise from there and stay in the last hour.
-        let letters = glyphs(&text.text, typo::MICRO, place.radius, text.start, true);
+        let letters = glyphs(&text.text, typo::micro(), place.radius, text.start, true);
         assert!(letters.iter().all(|glyph| glyph.angle > window.angle(WINDOW - NAME_SPAN)));
     }
 
@@ -1037,7 +1043,7 @@ mod tests {
         let window = Window::new(at(13, 14, 20));
         let dial = Dial::fit(Size::new(600.0, 600.0), 16.0, 2);
         let target = moon_target(&dial, &window, &nights(&window, Night::DEFAULT)).expect("a moon");
-        assert_eq!(target.width, MOON_TARGET);
+        assert_eq!(target.width, moon_target_size());
         let center = dial.point(dial.numerals, window.angle(490.0));
         assert!(target.contains(center));
         let morning = Window::new(at(18, 8, 0));

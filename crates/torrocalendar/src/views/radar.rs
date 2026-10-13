@@ -95,14 +95,20 @@ pub enum ListAt {
 /// wide layout uses the properties column.
 const LIST_MEDIUM: f32 = 260.0;
 /// The dial keeps this much room to the edges of its stage (`radar.html`: 48 in all).
-const STAGE_MARGIN: f32 = space::XL;
+fn stage_margin() -> f32 {
+    space::xl()
+}
 /// The narrow dial is never wider than this (`radar.html`: 440).
 const NARROW_DIAL: f32 = 440.0;
 /// Height of the week strip above the narrow radar (`week_strip`: weekday letter, the 28 circle,
 /// dots, padding and its line), for [`strip_fits`].
-const WEEK_STRIP: f32 = 2.0 * size::CONTROL_SM + 2.0 * space::XS + space::S;
+fn week_strip() -> f32 {
+    2.0 * size::control_sm() + 2.0 * space::xs() + space::s()
+}
 /// The middle keeps this far from the inner ring on each side (`radar.html`: 16).
-const MIDDLE_INSET: f32 = space::L;
+fn middle_inset() -> f32 {
+    space::l()
+}
 /// The neutral track of the mini dials' single ring: `text` at 7 % over the panel.
 const TRACK: f32 = 0.07;
 /// The track of a ring of the large dial: its calendar's colour at 10 % over the panel or the
@@ -115,10 +121,16 @@ const TIME_SHARE: f32 = 0.9;
 /// Ticks: `text` at 35 % over the panel.
 const TICK: f32 = 0.35;
 /// Length of a full-hour tick and of a half-hour one.
-const TICK_LONG: f32 = space::S;
-const TICK_SHORT: f32 = space::XS;
+fn tick_long() -> f32 {
+    space::s()
+}
+fn tick_short() -> f32 {
+    space::xs()
+}
 /// The start edge reaches this far inside the rings and this far out over the ticks.
-const EDGE_INSIDE: f32 = space::S;
+fn edge_inside() -> f32 {
+    space::s()
+}
 const EDGE_OUTSIDE: f32 = 2.0;
 /// Width of the start edge (`radar.html`: 1.5).
 const EDGE_WIDTH: f32 = 1.5;
@@ -137,8 +149,12 @@ const TWO_LINES: f32 = 40.0;
 /// Text along an arc starts this far after its start (the bar plus 4) and keeps this far from its
 /// end. A little tighter than the week grid's 6, so a 45-minute event on the inner ring of a medium
 /// dial still carries its title (task K.29).
-const TEXT_START: f32 = BAR + space::XS;
-const TEXT_END: f32 = space::XS;
+fn text_start() -> f32 {
+    BAR + space::xs()
+}
+fn text_end() -> f32 {
+    space::xs()
+}
 /// Shorter than this a title is not worth starting: three letters and "…" in `MICRO`.
 const TEXT_MIN: f32 = 20.0;
 /// A title cut shorter than this many letters is left out: "Lun…" still hints at the lunch, "Lu…"
@@ -151,21 +167,32 @@ const DEGREES_PER_CORNER: f32 = 1.0;
 /// Pixels of a smooth (touchpad) scroll that make one wheel step.
 const PIXELS_PER_STEP: f32 = 40.0;
 /// The time chip at the start edge: the week grid's now label (500, 11 on 16).
-const CHIP: typo::Level =
-    typo::Level { font: theme::FONT_TABULAR_MEDIUM, line_height: typo::CAPTION.line_height, ..typo::MICRO };
-const CHIP_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
+fn chip_level() -> typo::Level {
+    typo::Level { font: theme::font_tabular_medium(), line_height: typo::caption().line_height, ..typo::micro() }
+}
+fn chip_width() -> f32 {
+    size::axis_narrow() - 2.0 * space::xs()
+}
 /// The large numerals at 3, 6, 9 and 12: 13/500.
-const MAJOR: typo::Level = typo::BODY_STRONG.tabular();
+fn major() -> typo::Level {
+    typo::body_strong().tabular()
+}
 /// While dragging, the pointer this close to the centre does not turn the dial: there the
 /// direction swings at the smallest move.
-const DRAG_DEAD: f32 = space::XL;
+fn drag_dead() -> f32 {
+    space::xl()
+}
 /// The round plaque under the moon (panel with a line around it), so the moon reads on any ground:
 /// 22 across, 3 around the 16 icon.
 const MOON_PLAQUE: f32 = icon::SIZE + 6.0;
 /// A tooltip is at most this wide; longer titles and places are cut with "…".
-const TIP_MAX: f32 = size::PROPS - 2.0 * space::XL;
+fn tip_max() -> f32 {
+    size::props() - 2.0 * space::xl()
+}
 /// The dot before the title in a tooltip (radius), as the dots of the calendars in the sidebar.
-const TIP_DOT: f32 = space::XS;
+fn tip_dot() -> f32 {
+    space::xs()
+}
 
 /// A visible calendar as the radar shows its ring.
 #[derive(Debug, Clone, PartialEq)]
@@ -200,13 +227,13 @@ pub fn view<'a>(
         ListAt::Props => stage(plan, anchor.clone()),
         ListAt::Beside => {
             let width = LIST_MEDIUM - size::HAIRLINE;
-            let content = width - 2.0 * space::S;
+            let content = width - 2.0 * space::s();
             let coming = mini::Coming::new(&data, night).view(content, mini::columns(at, content));
             let list = scrollable(container(coming).padding(Padding {
-                top: space::L,
-                right: space::S,
-                bottom: space::XL,
-                left: space::S,
+                top: space::l(),
+                right: space::s(),
+                bottom: space::xl(),
+                left: space::s(),
             }))
             .direction(Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
@@ -226,8 +253,8 @@ pub fn view<'a>(
 /// without making the dial smaller than the width allows: the dial is what the view is for, so in a
 /// low tile the strip gives way (‹ › and the small month still page the days).
 pub fn strip_fits(bounds: Size) -> bool {
-    let dial = (bounds.width - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
-    bounds.height - WEEK_STRIP >= dial
+    let dial = (bounds.width - 2.0 * space::s()).clamp(0.0, NARROW_DIAL) + 2.0 * space::s();
+    bounds.height - week_strip() >= dial
 }
 
 /// Where the window starts: the start of the day `data.anchor` ([`layout::day_start`] over the
@@ -244,7 +271,7 @@ pub fn start(data: &ViewData<'_>, offset: i64, night: Night) -> NaiveDateTime {
 /// `night`. Load the events through the seventh day.
 pub fn list(data: &ViewData<'_>, night: Night) -> Element<'static, Message> {
     // The column pads its content by 8 on each side and has a line on the left.
-    let width = size::PROPS - size::HAIRLINE - 2.0 * space::S;
+    let width = size::props() - size::HAIRLINE - 2.0 * space::s();
     mini::Coming::new(data, night).view(width, mini::columns(ListAt::Props, width))
 }
 
@@ -262,8 +289,8 @@ fn canvases(plan: &Plan, margin: f32, wheel: bool, height: Length) -> [Element<'
 /// The dial filling its stage, the middle laid over it, the input layer over both.
 fn stage(plan: Plan, anchor: Anchor) -> Element<'static, Message> {
     responsive(move |bounds| {
-        let dial = Dial::fit(bounds, STAGE_MARGIN, plan.rings.len());
-        let [canvas, input] = canvases(&plan, STAGE_MARGIN, true, Length::Fill);
+        let dial = Dial::fit(bounds, stage_margin(), plan.rings.len());
+        let [canvas, input] = canvases(&plan, stage_margin(), true, Length::Fill);
         let middle = container(middle(&plan, &dial)).center(Length::Fill);
         stack![widgets::anchored(&anchor, canvas), middle, input].into()
     })
@@ -276,12 +303,12 @@ fn stage(plan: Plan, anchor: Anchor) -> Element<'static, Message> {
 /// the page, not the time.
 fn narrow(plan: Plan, coming: &mini::Coming, bounds: Size, anchor: &Anchor) -> Element<'static, Message> {
     let width = bounds.width;
-    let edge = (width.min(bounds.height) - 2.0 * space::S).clamp(0.0, NARROW_DIAL) + 2.0 * space::S;
-    let dial = Dial::fit(Size::new(width, edge), space::S, plan.rings.len());
-    let [canvas, input] = canvases(&plan, space::S, false, Length::Fixed(edge));
+    let edge = (width.min(bounds.height) - 2.0 * space::s()).clamp(0.0, NARROW_DIAL) + 2.0 * space::s();
+    let dial = Dial::fit(Size::new(width, edge), space::s(), plan.rings.len());
+    let [canvas, input] = canvases(&plan, space::s(), false, Length::Fixed(edge));
     let middle = container(middle(&plan, &dial)).center_x(Length::Fill).center_y(Length::Fixed(edge));
-    let content = width - 2.0 * space::L;
-    let list = container(coming.view(content, mini::columns(ListAt::Below, content))).padding(space::L);
+    let content = width - 2.0 * space::l();
+    let list = container(coming.view(content, mini::columns(ListAt::Below, content))).padding(space::l());
     let canvas = widgets::anchored(anchor, canvas);
     scrollable(column![stack![canvas, middle, input], rule::horizontal(1).style(style::rule), list])
         .direction(Direction::Vertical(style::scrollbar()))
@@ -425,15 +452,15 @@ fn ring_order<'a>(used: impl Iterator<Item = &'a str>, calendars: &[String]) -> 
 /// The middle of the dial: the date and the time. Away from now (another day, or the dial turned)
 /// a clock button brings the dial back to now. Cut to the room inside the rings.
 fn middle(plan: &Plan, dial: &Dial) -> Element<'static, Message> {
-    let width = (2.0 * dial.inner - 2.0 * MIDDLE_INSET).max(0.0);
+    let width = (2.0 * dial.inner - 2.0 * middle_inset()).max(0.0);
     let at = plan.window.start;
     let clock = column![
-        typo::text(typo::META, short_date(at.date())).style(theme::text_3),
-        typo::text(typo::DISPLAY.tabular(), format_time(at.time())),
+        typo::text(typo::meta(), short_date(at.date())).style(theme::text_3),
+        typo::text(typo::display().tabular(), format_time(at.time())),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(iced::Alignment::Center);
-    let mut parts = column![clock].spacing(space::S).align_x(iced::Alignment::Center);
+    let mut parts = column![clock].spacing(space::s()).align_x(iced::Alignment::Center);
     if plan.looking {
         // The icon button carries its own tooltip, which is also its label for screen readers.
         parts = parts.push(widgets::icon_button(Icon::Clock, tr("Back to now"), Some(Message::Today)));
@@ -633,7 +660,7 @@ impl Radar {
         }
         press.dragging = true;
         let (radius, angle) = self.dial(bounds).polar(point);
-        if radius < DRAG_DEAD {
+        if radius < drag_dead() {
             return Some(Action::capture());
         }
         let turned = layout::minutes_of_turn(layout::turn_between(press.angle, angle)) + press.rest;
@@ -755,7 +782,7 @@ impl canvas::Program<Message> for Radar {
         let p = palette(theme);
         let mut frame = Frame::new(renderer, bounds.size());
         if self.layer == Layer::Input {
-            self.draw_tooltip(&mut frame, state, p, bounds.size());
+            self.draw_tooltip(&mut frame, state, &p, bounds.size());
             return vec![frame.into_geometry()];
         }
         let dial = self.dial(bounds.size());
@@ -803,20 +830,20 @@ impl canvas::Program<Message> for Radar {
         let tick = faded(p.text, TICK);
         for (rel, full) in window.ticks() {
             let angle = window.angle(rel);
-            let length = if full { TICK_LONG } else { TICK_SHORT };
+            let length = if full { tick_long() } else { tick_short() };
             let from = dial.point(dial.ticks, angle);
             let to = dial.point(dial.ticks - length, angle);
             line(&mut frame, from, to, faded(tick, opacity(rel)), 1.0);
         }
         for numeral in window.numerals() {
-            let (level, colour) = if numeral.major { (MAJOR, p.text) } else { (typo::MICRO, p.text_2) };
+            let (level, colour) = if numeral.major { (major(), p.text) } else { (typo::micro(), p.text_2) };
             let at = dial.point(dial.numerals, window.angle(numeral.rel));
             label(&mut frame, &format!("{:02}", numeral.hour), at, level, faded(colour, opacity(numeral.rel)));
         }
 
         // The events, then their titles, then the ring of the open one on top.
         let arcs = layout::arcs(&dial, window, &plan.spans);
-        let tones = |entry: &Entry| [tone(p, entry, plan.now, p.panel), tone(p, entry, plan.now, p.night)];
+        let tones = |entry: &Entry| [tone(&p, entry, plan.now, p.panel), tone(&p, entry, plan.now, p.night)];
         for arc in &arcs {
             let Some(entry) = plan.entries.get(arc.id) else { continue };
             event_arc(&mut frame, &dial, window, &plan.nights, arc, &tones(entry), &faded);
@@ -839,10 +866,10 @@ impl canvas::Program<Message> for Radar {
         }
 
         for (ring, named) in plan.rings.iter().enumerate() {
-            ring_name(&mut frame, &dial, window, ring, named, p);
+            ring_name(&mut frame, &dial, window, ring, named, &p);
         }
-        moon(&mut frame, &dial, plan, p, &faded);
-        start_edge(&mut frame, &dial, plan, p);
+        moon(&mut frame, &dial, plan, &p, &faded);
+        start_edge(&mut frame, &dial, plan, &p);
         vec![frame.into_geometry()]
     }
 }
@@ -952,9 +979,9 @@ fn event_arc(
 /// from [`ONE_LINE`] on, none in narrower lanes.
 fn title_level(width: f32) -> Option<typo::Level> {
     if width >= ONE_LINE {
-        Some(typo::CAPTION)
+        Some(typo::caption())
     } else if width >= MICRO_LANE {
-        Some(typo::MICRO)
+        Some(typo::micro())
     } else {
         None
     }
@@ -973,7 +1000,7 @@ fn arc_text(
 ) {
     let width = arc.width();
     let Some(level) = title_level(width) else { return };
-    let room = arc.length() - TEXT_START - TEXT_END;
+    let room = arc.length() - text_start() - text_end();
     if room < TEXT_MIN {
         return;
     }
@@ -985,10 +1012,10 @@ fn arc_text(
     let mut lines = vec![(title, level, tone.title, 0.0)];
     if let Some(time) = arc_time(entry, room).filter(|_| width >= TWO_LINES) {
         // Title over time, the pair centred on the middle of the lane.
-        let (title_h, time_h) = (line_height(level), line_height(typo::MICRO));
+        let (title_h, time_h) = (line_height(level), line_height(typo::micro()));
         let half = (title_h + time_h) / 2.0;
         lines[0].3 = half - title_h / 2.0;
-        lines.push((time, typo::MICRO, tone.time, time_h / 2.0 - half));
+        lines.push((time, typo::micro(), tone.time, time_h / 2.0 - half));
     }
     for (text, level, colour, lift) in lines {
         if text.is_empty() {
@@ -996,9 +1023,9 @@ fn arc_text(
         }
         let radius = middle + up * lift;
         let start = if flipped {
-            arc.to - (TEXT_END / radius).to_degrees()
+            arc.to - (text_end() / radius).to_degrees()
         } else {
-            arc.from + (TEXT_START / radius).to_degrees()
+            arc.from + (text_start() / radius).to_degrees()
         };
         for glyph in layout::glyphs(&text, level, radius, start, flipped) {
             let alpha = opacity(window.rel_of(glyph.angle));
@@ -1028,7 +1055,7 @@ fn arc_title(title: &str, room: f32, level: typo::Level) -> Option<String> {
 fn arc_time(entry: &Entry, room: f32) -> Option<String> {
     let start = format_time(entry.event.start.time());
     let range = format!("{start}–{}", format_time(entry.event.end.time()));
-    [range, start].into_iter().find(|time| text_width(time, typo::MICRO) <= room)
+    [range, start].into_iter().find(|time| text_width(time, typo::micro()) <= room)
 }
 
 /// The colours of the moon: the icon (`text_2`), its plaque (`panel`) and the plaque's rim
@@ -1060,12 +1087,12 @@ fn ring_name(frame: &mut Frame, dial: &Dial, window: &Window, ring: usize, named
     let Some(place) = layout::ring_name(dial, window, ring, &named.name) else { return };
     frame.fill(&Path::circle(dial.point(place.radius, place.dot), layout::NAME_DOT), named.colour);
     let Some(text) = place.text else { return };
-    for glyph in layout::glyphs(&text.text, typo::MICRO, place.radius, text.start, text.flipped) {
+    for glyph in layout::glyphs(&text.text, typo::micro(), place.radius, text.start, text.flipped) {
         let at = dial.point(place.radius, glyph.angle);
         frame.with_save(|frame| {
             frame.translate(iced::Vector::new(at.x, at.y));
             frame.rotate(glyph.turn);
-            label(frame, &glyph.letter, Point::ORIGIN, typo::MICRO, p.text_2);
+            label(frame, &glyph.letter, Point::ORIGIN, typo::micro(), p.text_2);
         });
     }
 }
@@ -1093,7 +1120,7 @@ fn event_tip(entry: &Entry) -> Card {
 /// One line of a tooltip card as drawn.
 #[derive(Debug, Clone, PartialEq)]
 struct CardLine {
-    /// The text, cut with "…" to [`TIP_MAX`].
+    /// The text, cut with "…" to [`tip_max()`].
     text: String,
     level: typo::Level,
     /// From the card's inner left edge to the text.
@@ -1113,23 +1140,23 @@ enum CardMark {
 /// `BODY_STRONG` behind the dot; under it, lined up with the title, the time in tabular `META` and
 /// the place in `META` behind its pin.
 fn card_layout(card: &Card) -> (Vec<CardLine>, Size) {
-    let indent = 2.0 * TIP_DOT + space::S;
+    let indent = 2.0 * tip_dot() + space::s();
     let line = |text: &str, level: typo::Level, indent: f32, mark: CardMark| CardLine {
-        text: ellipsize(text, level, TIP_MAX - indent),
+        text: ellipsize(text, level, tip_max() - indent),
         level,
         indent,
         mark,
     };
-    let mut lines = vec![line(&card.title, typo::BODY_STRONG, indent, CardMark::Dot)];
+    let mut lines = vec![line(&card.title, typo::body_strong(), indent, CardMark::Dot)];
     if let Some(time) = &card.time {
-        lines.push(line(time, typo::META.tabular(), indent, CardMark::None));
+        lines.push(line(time, typo::meta().tabular(), indent, CardMark::None));
     }
     if let Some(place) = &card.place {
-        lines.push(line(place, typo::META, indent + icon::SIZE_SM + space::XS, CardMark::Pin));
+        lines.push(line(place, typo::meta(), indent + icon::SIZE_SM + space::xs(), CardMark::Pin));
     }
     let width = lines.iter().map(|line| line.indent + text_width(&line.text, line.level)).fold(0.0, f32::max);
     let height = lines.iter().map(|line| line_height(line.level)).sum::<f32>();
-    (lines, Size::new(width + 2.0 * space::S, height + 2.0 * space::S))
+    (lines, Size::new(width + 2.0 * space::s(), height + 2.0 * space::s()))
 }
 
 /// The tooltip `card` beside the pointer at `pointer`, never over the edges of `area` (the
@@ -1138,21 +1165,21 @@ fn card_layout(card: &Card) -> (Vec<CardLine>, Size) {
 fn tooltip(frame: &mut Frame, p: &Palette, card: &Card, pointer: Point, area: Rectangle) {
     let (lines, extent) = card_layout(card);
     let origin = layout::tip_origin(pointer, extent, area);
-    let surface = Path::rounded_rectangle(origin, extent, Radius::from(radius::SM));
+    let surface = Path::rounded_rectangle(origin, extent, Radius::from(radius::sm()));
     frame.fill(&surface, p.menu);
     frame.stroke(&surface, Stroke::default().with_color(p.line_strong).with_width(size::HAIRLINE));
-    let left = origin.x + space::S;
-    let mut top = origin.y + space::S;
+    let left = origin.x + space::s();
+    let mut top = origin.y + space::s();
     for line in &lines {
         let middle = top + line_height(line.level) / 2.0;
         let colour = match line.mark {
             CardMark::Dot => {
-                frame.fill(&Path::circle(Point::new(left + TIP_DOT, middle), TIP_DOT), card.colour);
+                frame.fill(&Path::circle(Point::new(left + tip_dot(), middle), tip_dot()), card.colour);
                 p.text
             }
             CardMark::Pin => {
                 let pin = icon::SIZE_SM;
-                let at = Point::new(left + 2.0 * TIP_DOT + space::S, middle - pin / 2.0);
+                let at = Point::new(left + 2.0 * tip_dot() + space::s(), middle - pin / 2.0);
                 frame.draw_svg(Rectangle::new(at, Size::new(pin, pin)), &Icon::MapPin.tinted(p.text_2));
                 p.text_2
             }
@@ -1175,14 +1202,15 @@ fn edge_colours(p: &Palette, looking: bool) -> (Color, Color, Color) {
 fn start_edge(frame: &mut Frame, dial: &Dial, plan: &Plan, p: &Palette) {
     let angle = plan.window.angle0;
     let (edge, chip, figures) = edge_colours(p, plan.looking);
-    let from = dial.point((dial.inner - EDGE_INSIDE).max(0.0), angle);
+    let from = dial.point((dial.inner - edge_inside()).max(0.0), angle);
     let to = dial.point(dial.ticks + EDGE_OUTSIDE, angle);
     line(frame, from, to, edge, EDGE_WIDTH);
     let at = dial.point(dial.numerals, angle);
-    let height = line_height(CHIP);
-    let pill = Rectangle::new(Point::new(at.x - CHIP_WIDTH / 2.0, at.y - height / 2.0), Size::new(CHIP_WIDTH, height));
-    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::XS)), chip);
-    label(frame, &format_time(plan.window.start.time()), at, CHIP, figures);
+    let height = line_height(chip_level());
+    let pill =
+        Rectangle::new(Point::new(at.x - chip_width() / 2.0, at.y - height / 2.0), Size::new(chip_width(), height));
+    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::xs())), chip);
+    label(frame, &format_time(plan.window.start.time()), at, chip_level(), figures);
 }
 
 /// The piece of a ring between two radii and two angles, as a polygon (corners at most a degree
@@ -1402,7 +1430,7 @@ mod tests {
     #[test]
     fn the_middle_offers_back_to_now_only_away_from_now() {
         let events = events();
-        let dial = |plan: &Plan| Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings.len());
+        let dial = |plan: &Plan| Dial::fit(Size::new(800.0, 600.0), stage_margin(), plan.rings.len());
         // Today at 14:20: date and time only, no button.
         let today = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
         assert!(!today.looking);
@@ -1421,7 +1449,7 @@ mod tests {
     fn radar() -> Radar {
         let events = events();
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        Radar { plan, margin: STAGE_MARGIN, wheel: true, layer: Layer::Input }
+        Radar { plan, margin: stage_margin(), wheel: true, layer: Layer::Input }
     }
 
     #[test]
@@ -1452,8 +1480,8 @@ mod tests {
     fn the_edge_is_red_at_now_and_grey_elsewhere() {
         for theme in [theme::theme(), theme::light()] {
             let p = palette(&theme);
-            assert_eq!(edge_colours(p, false), (p.accent, p.accent, p.on_accent));
-            assert_eq!(edge_colours(p, true), (p.text_2, p.selected, p.text));
+            assert_eq!(edge_colours(&p, false), (p.accent, p.accent, p.on_accent));
+            assert_eq!(edge_colours(&p, true), (p.text_2, p.selected, p.text));
         }
     }
 
@@ -1625,11 +1653,11 @@ mod tests {
 
     #[test]
     fn arc_text_is_cut_but_never_to_nothing_worth_reading() {
-        assert_eq!(arc_title("Run", 100.0, typo::CAPTION).as_deref(), Some("Run"));
-        let cut = arc_title("API design workshop", 90.0, typo::CAPTION).expect("room for a part");
+        assert_eq!(arc_title("Run", 100.0, typo::caption()).as_deref(), Some("Run"));
+        let cut = arc_title("API design workshop", 90.0, typo::caption()).expect("room for a part");
         assert!(cut.starts_with("API") && cut.ends_with(typo::ELLIPSIS), "{cut}");
-        assert_eq!(arc_title("Daily Standup", 20.0, typo::CAPTION), None, "\"Da…\" says nothing");
-        let micro = arc_title("Daily Standup", 30.0, typo::MICRO).expect("smaller letters, more of them");
+        assert_eq!(arc_title("Daily Standup", 20.0, typo::caption()), None, "\"Da…\" says nothing");
+        let micro = arc_title("Daily Standup", 30.0, typo::micro()).expect("smaller letters, more of them");
         assert!(micro.starts_with("Dai") && micro.ends_with(typo::ELLIPSIS), "{micro}");
         let events = events();
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
@@ -1653,7 +1681,7 @@ mod tests {
             &Anchor::new(),
         );
         let plan = Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT);
-        let _ = middle(&plan, &Dial::fit(Size::new(800.0, 600.0), STAGE_MARGIN, plan.rings.len()));
+        let _ = middle(&plan, &Dial::fit(Size::new(800.0, 600.0), stage_margin(), plan.rings.len()));
     }
 
     /// The demo's calendar colours, the suite's standard ones and the default for calendars
@@ -1668,8 +1696,8 @@ mod tests {
     fn titles_read_on_the_strong_fill_of_every_calendar_colour_in_both_modes() {
         for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
             for ground in [p.panel, p.night] {
-                for colour in colours(p) {
-                    let fill = event_fill(p, colour, ground);
+                for colour in colours(&p) {
+                    let fill = event_fill(&p, colour, ground);
                     let title = on_fill(fill);
                     let ratio = title.relative_contrast(fill);
                     assert!(ratio >= 4.5, "{mode}: title {ratio:.2} on {colour:?}");
@@ -1677,7 +1705,7 @@ mod tests {
                 // On the demo's own colours the time reads too, and busy time stands clearly apart
                 // from the track around it.
                 for colour in [BLUE, TEAL, RED] {
-                    let fill = event_fill(p, colour, ground);
+                    let fill = event_fill(&p, colour, ground);
                     let time = mix(fill, on_fill(fill), TIME_SHARE);
                     assert!(time.relative_contrast(fill) >= 4.5, "{mode}: time on {colour:?}");
                     let track = ring_track(colour, ground);
@@ -1687,7 +1715,7 @@ mod tests {
         }
         // Much stronger than the week grid's tint, and the mini dials take the same share.
         assert!(mini::FILL_DARK > Palette::dark().tint * 2.0 && mini::FILL_LIGHT > Palette::light().tint * 2.0);
-        assert_eq!((mini::fill(Palette::dark()), mini::fill(Palette::light())), (mini::FILL_DARK, mini::FILL_LIGHT));
+        assert_eq!((mini::fill(&Palette::dark()), mini::fill(&Palette::light())), (mini::FILL_DARK, mini::FILL_LIGHT));
     }
 
     #[test]
@@ -1696,8 +1724,8 @@ mod tests {
         let events = events();
         let plan = Plan::new(&data(&events), &calendars(), -7 * 60, Night::DEFAULT);
         let breakfast = plan.entries.iter().find(|e| e.event.title == "Breakfast").expect("breakfast");
-        let past = tone(p, breakfast, plan.now, p.panel);
-        let fill = event_fill(p, breakfast.event.color, p.panel);
+        let past = tone(&p, breakfast, plan.now, p.panel);
+        let fill = event_fill(&p, breakfast.event.color, p.panel);
         assert_eq!(past.fill, mix(p.panel, fill, PAST_OPACITY));
         // The track is the calendar's colour at a tenth: much closer to the panel than to the fill.
         let track = ring_track(BLUE, p.panel);
@@ -1707,24 +1735,24 @@ mod tests {
     #[test]
     fn the_title_takes_micro_in_narrow_lanes_caption_in_wider_ones_and_none_below() {
         assert_eq!(title_level(15.9), None);
-        assert_eq!(title_level(16.0), Some(typo::MICRO));
-        assert_eq!(title_level(21.9), Some(typo::MICRO));
-        assert_eq!(title_level(22.0), Some(typo::CAPTION));
-        assert_eq!(title_level(64.0), Some(typo::CAPTION));
+        assert_eq!(title_level(16.0), Some(typo::micro()));
+        assert_eq!(title_level(21.9), Some(typo::micro()));
+        assert_eq!(title_level(22.0), Some(typo::caption()));
+        assert_eq!(title_level(64.0), Some(typo::caption()));
     }
 
     #[test]
     fn every_event_of_45_minutes_carries_its_title_in_the_wide_and_the_medium_dial() {
         // The dial's stage in a wide window (1600 × 1000) and in a medium one (800 × 600).
         for stage in [Size::new(1050.0, 900.0), Size::new(470.0, 510.0)] {
-            let dial = Dial::fit(stage, STAGE_MARGIN, calendars().len());
+            let dial = Dial::fit(stage, stage_margin(), calendars().len());
             let window = Window::new(at(13, 14, 20));
             for ring in 0..dial.rings {
                 for start in [30.0, 200.0, 330.0, 480.0] {
                     let span = Span { id: 0, ring, from: start, to: start + 45.0, starts: true };
                     let arc = layout::arcs(&dial, &window, &[span])[0];
                     let level = title_level(arc.width()).expect("a level for the lane");
-                    let room = arc.length() - TEXT_START - TEXT_END;
+                    let room = arc.length() - text_start() - text_end();
                     assert!(room >= TEXT_MIN, "{stage:?} ring {ring} at {start}: {room}");
                     for title in ["Lunch with Jana", "Dentist", "Run", "Client presentation"] {
                         assert!(arc_title(title, room, level).is_some(), "{stage:?} ring {ring} at {start}: {title}");
@@ -1831,8 +1859,8 @@ mod tests {
         let marks: Vec<CardMark> = lines.iter().map(|line| line.mark).collect();
         assert_eq!(marks, [CardMark::Dot, CardMark::None, CardMark::Pin]);
         assert!(lines[0].text.ends_with(typo::ELLIPSIS) && lines[2].text.ends_with(typo::ELLIPSIS));
-        assert!(extent.width <= TIP_MAX + 2.0 * space::S + 0.5, "{extent:?}");
-        let height = line_height(typo::BODY_STRONG) + 2.0 * line_height(typo::META) + 2.0 * space::S;
+        assert!(extent.width <= tip_max() + 2.0 * space::s() + 0.5, "{extent:?}");
+        let height = line_height(typo::body_strong()) + 2.0 * line_height(typo::meta()) + 2.0 * space::s();
         assert!((extent.height - height).abs() < 0.01);
         // Without a place, two lines; the time lines up with the title.
         let short = Card { place: None, ..card };
@@ -1844,11 +1872,11 @@ mod tests {
     #[test]
     fn the_moon_reads_on_its_plaque_in_both_modes() {
         for p in [Palette::dark(), Palette::light()] {
-            let (icon, plaque, _) = moon_colours(p);
+            let (icon, plaque, _) = moon_colours(&p);
             assert!(icon.relative_contrast(plaque) >= 3.0);
             // The plaque stands on the panel or the night; either way the moon is the same.
             assert_eq!(plaque, p.panel);
         }
-        const { assert!(MOON_PLAQUE <= timeline::MOON_TARGET, "the target covers the plaque") };
+        assert!(MOON_PLAQUE <= timeline::moon_target_size(), "the target covers the plaque");
     }
 }

@@ -12,17 +12,25 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{size, space};
 
 /// Height of one hour in the time grid.
-pub const HOUR_HEIGHT: f32 = size::HOUR;
+pub fn hour_height() -> f32 {
+    size::hour()
+}
 /// Height of the whole time grid, 24 hours.
-pub const GRID_HEIGHT: f32 = 24.0 * HOUR_HEIGHT;
+pub fn grid_height() -> f32 {
+    24.0 * hour_height()
+}
 /// Shortest timed block, so that a zero-length entry stays visible and clickable: one line of
 /// `MICRO` text with a little air.
 pub const MIN_EVENT_HEIGHT: f32 = 18.0;
 /// Pitch of the rows in the all-day strip; a chip is this less [`GAP`] high (22, as
 /// `calendar.html`'s `.chip`).
-pub const ALL_DAY_ROW_HEIGHT: f32 = space::XL;
+pub fn all_day_row_height() -> f32 {
+    space::xl()
+}
 /// Padding above and below the chips in the all-day strip (`.allday > div{padding:4px 2px}`).
-const STRIP_PADDING: f32 = space::XS;
+fn strip_padding() -> f32 {
+    space::xs()
+}
 /// Clicks in the grid round the time down to a multiple of this many minutes.
 pub const SLOT_MINUTES: u32 = 30;
 
@@ -91,7 +99,7 @@ pub fn minutes_of(time: NaiveTime) -> f32 {
 }
 
 fn minutes_to_y(minutes: f32) -> f32 {
-    minutes / 60.0 * HOUR_HEIGHT
+    minutes / 60.0 * hour_height()
 }
 
 /// The y coordinate of a time of day in the grid.
@@ -102,7 +110,7 @@ pub fn y_of(time: NaiveTime) -> f32 {
 /// The time of day at a y coordinate, rounded down to [`SLOT_MINUTES`] and kept inside the
 /// day (`23:30` at most).
 pub fn slot_at(y: f32) -> NaiveTime {
-    let minutes = (y / HOUR_HEIGHT * 60.0).clamp(0.0, MINUTES_PER_DAY);
+    let minutes = (y / hour_height() * 60.0).clamp(0.0, MINUTES_PER_DAY);
     let step = SLOT_MINUTES as f32;
     let slot = ((minutes / step).floor() * step).min(MINUTES_PER_DAY - step) as u32;
     NaiveTime::from_hms_opt(slot / 60, slot % 60, 0).unwrap_or(NaiveTime::MIN)
@@ -195,8 +203,8 @@ pub fn day_span(
     (end_column > first_column).then_some(DaySpan { id, first: first_column, end: end_column })
 }
 
-/// Width of the time axis for a grid `total_width` wide: [`size::AXIS_NARROW`] in the narrow
-/// (and mini) layout, otherwise [`size::AXIS`].
+/// Width of the time axis for a grid `total_width` wide: [`size::axis_narrow()`] in the narrow
+/// (and mini) layout, otherwise [`size::axis()`].
 ///
 /// The grid only knows its own width, not the window's. In the narrow and mini layout the content
 /// is flush with the window, so its width decides the class just as the window's would; in the
@@ -204,8 +212,8 @@ pub fn day_span(
 /// The height plays no part here, hence the unbounded one.
 pub fn axis_width(total_width: f32) -> f32 {
     match layout::of(Size::new(total_width, f32::INFINITY)) {
-        SizeClass::Mini | SizeClass::Narrow => size::AXIS_NARROW,
-        SizeClass::Strip | SizeClass::Medium | SizeClass::Wide => size::AXIS,
+        SizeClass::Mini | SizeClass::Narrow => size::axis_narrow(),
+        SizeClass::Strip | SizeClass::Medium | SizeClass::Wide => size::axis(),
     }
 }
 
@@ -273,8 +281,8 @@ pub fn bar_blocks(spans: &[DaySpan], count: usize, total_width: f32) -> (Vec<Bar
         .map(|(span, lane)| {
             let x = x0 + span.first as f32 * col_w + GAP;
             let width = (span.end - span.first) as f32 * col_w - 2.0 * GAP;
-            let y = STRIP_PADDING + lane.lane as f32 * ALL_DAY_ROW_HEIGHT;
-            let height = ALL_DAY_ROW_HEIGHT - GAP;
+            let y = strip_padding() + lane.lane as f32 * all_day_row_height();
+            let height = all_day_row_height() - GAP;
             BarBlock { id: span.id, rect: Rectangle::new(Point::new(x, y), Size::new(width, height)) }
         })
         .collect();
@@ -284,7 +292,7 @@ pub fn bar_blocks(spans: &[DaySpan], count: usize, total_width: f32) -> (Vec<Bar
 /// Height of the all-day strip with `rows` rows. At least one row, so empty days stay
 /// clickable.
 pub fn strip_height(rows: usize) -> f32 {
-    rows.max(1) as f32 * ALL_DAY_ROW_HEIGHT - GAP + 2.0 * STRIP_PADDING
+    rows.max(1) as f32 * all_day_row_height() - GAP + 2.0 * strip_padding()
 }
 
 /// Free time in a day column: the gaps between the timed segments of `column` that last at
@@ -343,7 +351,7 @@ pub fn grid_hit(blocks: &[TimedBlock], count: usize, total_width: f32, point: Po
         return Some(GridHit::Event(block.id));
     }
     let column = column_at(point.x, count, total_width)?;
-    if !(0.0..GRID_HEIGHT).contains(&point.y) {
+    if !(0.0..grid_height()).contains(&point.y) {
         return None;
     }
     Some(GridHit::Slot { column, time: slot_at(point.y) })
@@ -423,7 +431,7 @@ mod tests {
         assert_eq!(slot_at(24.0), t(0, 30));
         assert_eq!(slot_at(336.0), t(7, 0));
         assert_eq!(slot_at(-10.0), t(0, 0));
-        assert_eq!(slot_at(GRID_HEIGHT * 2.0), t(23, 30));
+        assert_eq!(slot_at(grid_height() * 2.0), t(23, 30));
     }
 
     #[test]
@@ -512,7 +520,7 @@ mod tests {
         let empty = Point::new(44.0 + 65.0 + 10.0, 50.0);
         assert_eq!(grid_hit(&blocks, 7, 500.0, empty), Some(GridHit::Slot { column: 1, time: t(1, 0) }));
         assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(10.0, 50.0)), None);
-        assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(100.0, GRID_HEIGHT + 5.0)), None);
+        assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(100.0, grid_height() + 5.0)), None);
     }
 
     #[test]
@@ -527,11 +535,11 @@ mod tests {
 
     #[test]
     fn the_axis_is_narrower_in_the_narrow_layout() {
-        assert_eq!(axis_width(420.0), size::AXIS_NARROW);
-        assert_eq!(axis_width(300.0), size::AXIS_NARROW, "mini");
-        assert_eq!(axis_width(600.0), size::AXIS);
-        assert_eq!(axis_width(1200.0), size::AXIS);
-        assert_eq!(columns(1000.0, 7), (size::AXIS, (1000.0 - size::AXIS) / 7.0));
+        assert_eq!(axis_width(420.0), size::axis_narrow());
+        assert_eq!(axis_width(300.0), size::axis_narrow(), "mini");
+        assert_eq!(axis_width(600.0), size::axis());
+        assert_eq!(axis_width(1200.0), size::axis());
+        assert_eq!(columns(1000.0, 7), (size::axis(), (1000.0 - size::axis()) / 7.0));
     }
 
     #[test]

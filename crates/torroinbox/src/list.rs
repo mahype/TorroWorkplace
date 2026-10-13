@@ -17,7 +17,7 @@
 //! instead: the title, and the preview in `META` below it. The cells still clip, in case the
 //! estimate runs over.
 //!
-//! Two-line rows (E3.2c) are [`size::ROW_TWO`] high, with the count and the time on the title's
+//! Two-line rows (E3.2c) are [`size::row_two()`] high, with the count and the time on the title's
 //! line and the preview below across the row's width. `widgets::list_row` is 40 high, always, so
 //! the two-line row is built here from the same pieces ([`tall_row`]).
 //!
@@ -72,17 +72,23 @@ pub const PREVIEW_ROOM: f32 = 120.0;
 
 /// The gap the row estimate counts between two cells: a little more than `list_row`'s own (10),
 /// so the estimate cuts a letter early rather than running under the next cell.
-pub(crate) const CELL_GAP: f32 = space::M;
+pub(crate) fn cell_gap() -> f32 {
+    space::m()
+}
 
 /// Width of the bar at the left of the selected row, as `widgets::list_row` draws it.
 const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
 
 /// Height of a group head: the 4 above it plus the head itself (`widgets::group_head`).
-const GROUP_HEAD: f32 = space::XS + size::ROW_GROUP;
+fn group_head() -> f32 {
+    space::xs() + size::row_group()
+}
 /// What every head leaves out: the gap above it and its line above. Above the first head the
 /// header bar already ends with a line, above the others the last row of the group before; a
 /// second line 4 below either would read as a double.
-const HEAD_TRIM: f32 = space::XS + size::HAIRLINE;
+fn head_trim() -> f32 {
+    space::xs() + size::HAIRLINE
+}
 
 /// A group of the list while something is waiting ([`groups`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,10 +138,10 @@ pub fn groups(items: &[Item]) -> Vec<(Group, Range<usize>)> {
     groups
 }
 
-/// The height of every row of the list: [`size::ROW`] on one line, [`size::ROW_TWO`] with the
+/// The height of every row of the list: [`size::row()`] on one line, [`size::row_two()`] with the
 /// preview on a line of its own (`two_line`, see [`ListData::two_line`]).
 pub fn row_height(two_line: bool) -> f32 {
-    if two_line { size::ROW_TWO } else { size::ROW }
+    if two_line { size::row_two() } else { size::row() }
 }
 
 /// Where row `index` of `items` lies in the list's content as `(top, bottom)`, with every row
@@ -147,12 +153,12 @@ pub fn row_span(items: &[Item], index: usize, row: f32) -> Option<(f32, f32)> {
         let top = index as f32 * row;
         return (index < items.len()).then_some((top, top + row));
     }
-    // Every head is shorter by `HEAD_TRIM` ([`without_top`]).
+    // Every head is shorter by `head_trim()` ([`without_top`]).
     let mut y = 0.0;
     let height = row;
     for (_, range) in groups {
         let head = y;
-        y += GROUP_HEAD - HEAD_TRIM;
+        y += group_head() - head_trim();
         for row in range.clone() {
             if row == index {
                 return Some((if row == range.start { head } else { y }, y + height));
@@ -195,10 +201,10 @@ fn list<'a>(data: &ListData<'a>, width: f32) -> Element<'a, Message> {
         .into()
 }
 
-/// The group head without its gap and line above: moved up by [`HEAD_TRIM`] inside a clipping
+/// The group head without its gap and line above: moved up by [`head_trim()`] inside a clipping
 /// container, so only the part above the head's top line is cut off (as in torrotasks).
 fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message> {
-    container(container(head).padding(Padding { top: -HEAD_TRIM, ..Padding::ZERO })).clip(true).into()
+    container(container(head).padding(Padding { top: -head_trim(), ..Padding::ZERO })).clip(true).into()
 }
 
 /// One entry in a row `width` wide: icon, title and preview (one line, or two in narrow windows),
@@ -209,7 +215,7 @@ fn row_view<'a>(data: &ListData<'a>, item: &'a Item, width: f32) -> Element<'a, 
         let p = palette(t);
         svg::Style { color: Some(if urgent { p.attention_text } else { p.text_3 }) }
     });
-    let level = if item.state == State::New { typo::BODY_STRONG } else { typo::BODY };
+    let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
     let count = (item.count > 1).then(|| item.count.to_string());
     let time = time_text(item, data.view, data.now);
     let room = text_room(width, count.as_deref(), &time);
@@ -222,25 +228,27 @@ fn row_view<'a>(data: &ListData<'a>, item: &'a Item, width: f32) -> Element<'a, 
     if let Some(count) = count {
         ends.push(widgets::pill(None, count));
     }
-    ends.push(typo::text(typo::META.tabular(), time).style(theme::text_3).wrapping(Wrapping::None).into());
+    ends.push(typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None).into());
     let selected = data.selected == Some(item.id.as_str());
     let on_press = Message::Select(item.id.clone());
     let row = if data.two_line {
         // Title, count and time on the first line; the icon lines up with that line, not with
         // the middle of the row.
-        let first = row![container(title).width(Fill).clip(true)].extend(ends).spacing(CELL_GAP);
+        let first = row![container(title).width(Fill).clip(true)].extend(ends).spacing(cell_gap());
         let mut words = column![first.align_y(Alignment::Center)].width(Fill);
         if let Some(preview) = preview {
-            let preview = typo::text(typo::META, preview).style(theme::text_3).wrapping(Wrapping::None);
+            let preview = typo::text(typo::meta(), preview).style(theme::text_3).wrapping(Wrapping::None);
             words = words.push(container(preview).width(Fill).clip(true));
         }
         let mark = container(mark).center_y(typo::line_height(level));
-        tall_row(row![mark, words].spacing(CELL_GAP).into(), selected, on_press)
+        tall_row(row![mark, words].spacing(cell_gap()).into(), selected, on_press)
     } else {
         let words: Element<'a, Message> = match preview {
-            Some(preview) => row![title, typo::text(typo::BODY, preview).style(theme::text_3).wrapping(Wrapping::None)]
-                .spacing(space::S)
-                .into(),
+            Some(preview) => {
+                row![title, typo::text(typo::body(), preview).style(theme::text_3).wrapping(Wrapping::None)]
+                    .spacing(space::s())
+                    .into()
+            }
             None => title.into(),
         };
         let mut cells: Vec<Element<'a, Message>> = vec![mark.into(), container(words).width(Fill).clip(true).into()];
@@ -250,15 +258,15 @@ fn row_view<'a>(data: &ListData<'a>, item: &'a Item, width: f32) -> Element<'a, 
     if selected { widgets::anchored(&data.anchor, row) } else { row }
 }
 
-/// A list row on two lines: `widgets::list_row` at [`size::ROW_TWO`] – `content` with 16 at the
+/// A list row on two lines: `widgets::list_row` at [`size::row_two()`] – `content` with 16 at the
 /// sides, centred in the height, the bar at the left while `selected`, a line below.
 pub(crate) fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_press: Message) -> Element<'a, Message> {
-    let left = if selected { space::L - SELECTED_BAR } else { space::L };
-    let height = size::ROW_TWO - size::HAIRLINE;
+    let left = if selected { space::l() - SELECTED_BAR } else { space::l() };
+    let height = size::row_two() - size::HAIRLINE;
     let body = button(container(content).center_y(Fill))
         .width(Fill)
         .height(height)
-        .padding(Padding::new(0.0).left(left).right(space::L))
+        .padding(Padding::new(0.0).left(left).right(space::l()))
         .style(style::button::list_row(selected))
         .on_press(on_press);
     let line: Element<'a, Message> = if selected {
@@ -276,15 +284,15 @@ pub(crate) fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_pre
 /// The width left for the title in a row `width` wide: minus the row's sides, the icon, the count
 /// pill (when there is one) and the time, each with the gap before it. Never negative.
 pub fn text_room(width: f32, count: Option<&str>, time: &str) -> f32 {
-    let pill = count.map_or(0.0, |count| typo::text_width(count, typo::META) + 2.0 * space::S + CELL_GAP);
-    let time = typo::text_width(time, typo::META) + CELL_GAP;
+    let pill = count.map_or(0.0, |count| typo::text_width(count, typo::meta()) + 2.0 * space::s() + cell_gap());
+    let time = typo::text_width(time, typo::meta()) + cell_gap();
     (line_room(width) - pill - time).max(0.0)
 }
 
 /// The width of the preview's own line in a two-line row `width` wide: the row minus its sides
 /// and the icon with its gap. Never negative.
 pub fn line_room(width: f32) -> f32 {
-    (width - 2.0 * space::L - icon::SIZE - CELL_GAP).max(0.0)
+    (width - 2.0 * space::l() - icon::SIZE - cell_gap()).max(0.0)
 }
 
 /// Title and preview cut to fit, with "…" where they were cut. The title in `level` gets `room`
@@ -304,8 +312,8 @@ pub fn fit(
 ) -> (String, Option<String>) {
     let title = typo::ellipsize(title, level, room);
     let (preview_level, preview_room) = match below {
-        Some(width) => (typo::META, width),
-        None => (typo::BODY, room - typo::text_width(&title, level) - space::S),
+        Some(width) => (typo::meta(), width),
+        None => (typo::body(), room - typo::text_width(&title, level) - space::s()),
     };
     let preview = preview
         .filter(|_| below.is_some() || preview_room >= PREVIEW_ROOM)
@@ -319,13 +327,13 @@ pub fn fit(
 pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Element<'a, Message> {
     let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let words = column![
-        typo::text(typo::BODY_STRONG, title).align_x(Alignment::Center),
-        typo::text(typo::BODY, hint).style(theme::text_2).align_x(Alignment::Center)
+        typo::text(typo::body_strong(), title).align_x(Alignment::Center),
+        typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center)
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(Alignment::Center);
-    let content = column![mark, words].spacing(space::M).align_x(Alignment::Center).max_width(size::FORM_MAX / 2.0);
-    center(content).padding(space::XL).into()
+    let content = column![mark, words].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
 }
 
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
@@ -501,44 +509,44 @@ mod tests {
 
     #[test]
     fn a_preview_beside_the_title_needs_room_or_goes() {
-        let title = typo::text_width(TITLE, typo::BODY_STRONG);
+        let title = typo::text_width(TITLE, typo::body_strong());
         // Plenty of room: both whole.
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, 2000.0, None);
+        let (t, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), 2000.0, None);
         assert_eq!((t.as_str(), p.as_deref()), (TITLE, Some(PREVIEW)));
         // Less than the preview's room left beside the title: no preview, never a stub.
-        let tight = title + space::S + PREVIEW_ROOM - 1.0;
-        assert_eq!(fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, tight, None), (TITLE.to_owned(), None));
+        let tight = title + space::s() + PREVIEW_ROOM - 1.0;
+        assert_eq!(fit(TITLE, Some(PREVIEW), typo::body_strong(), tight, None), (TITLE.to_owned(), None));
         // Enough for a part: the preview ends in "…" within its room.
-        let (_, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, title + space::S + 200.0, None);
+        let (_, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), title + space::s() + 200.0, None);
         let p = p.expect("a preview");
         assert!(p.ends_with(typo::ELLIPSIS), "{p}");
-        assert!(typo::text_width(&p, typo::BODY) <= 200.0, "{p}");
+        assert!(typo::text_width(&p, typo::body()) <= 200.0, "{p}");
     }
 
     #[test]
     fn a_long_title_ends_in_an_ellipsis_and_leaves_no_preview() {
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, 150.0, None);
+        let (t, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), 150.0, None);
         assert!(t.ends_with(typo::ELLIPSIS), "{t}");
-        assert!(typo::text_width(&t, typo::BODY_STRONG) <= 150.0, "{t}");
+        assert!(typo::text_width(&t, typo::body_strong()) <= 150.0, "{t}");
         assert_eq!(p, None);
     }
 
     #[test]
     fn a_preview_below_gets_the_whole_line() {
         let line = line_room(480.0);
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, 200.0, Some(line));
-        assert!(typo::text_width(&t, typo::BODY_STRONG) <= 200.0, "{t}");
+        let (t, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), 200.0, Some(line));
+        assert!(typo::text_width(&t, typo::body_strong()) <= 200.0, "{t}");
         let p = p.expect("a preview below the title, however narrow the title's room");
-        assert!(typo::text_width(&p, typo::META) <= line, "{p}");
-        assert!(typo::text_width(&p, typo::META) > 200.0, "wider than the title's room: {p}");
-        assert_eq!(fit(TITLE, None, typo::BODY_STRONG, 200.0, Some(line)).1, None);
+        assert!(typo::text_width(&p, typo::meta()) <= line, "{p}");
+        assert!(typo::text_width(&p, typo::meta()) > 200.0, "wider than the title's room: {p}");
+        assert_eq!(fit(TITLE, None, typo::body_strong(), 200.0, Some(line)).1, None);
     }
 
     #[test]
     fn the_room_leaves_out_icon_count_and_time() {
         let plain = text_room(480.0, None, "4 min");
         let counted = text_room(480.0, Some("2"), "4 min");
-        assert!(plain < 480.0 - 2.0 * space::L - icon::SIZE, "minus the sides and the icon");
+        assert!(plain < 480.0 - 2.0 * space::l() - icon::SIZE, "minus the sides and the icon");
         assert!(counted < plain, "the count pill takes room too");
         assert!(line_room(480.0) > plain, "the preview's own line has no time on it");
         assert_eq!(text_room(10.0, Some("12"), "50 min"), 0.0, "never negative");
@@ -564,9 +572,9 @@ mod tests {
         let mut items: Vec<Item> = demo::sample(now()).into_iter().filter(|i| i.state.is_open()).collect();
         items.sort_by_key(|item| !is_waiting(item));
         let waiting = items.iter().filter(|item| is_waiting(item)).count();
-        let head = GROUP_HEAD - HEAD_TRIM;
-        assert_eq!(row_height(false), size::ROW);
-        assert_eq!(row_height(true), size::ROW_TWO, "two lines get their own height");
+        let head = group_head() - head_trim();
+        assert_eq!(row_height(false), size::row());
+        assert_eq!(row_height(true), size::row_two(), "two lines get their own height");
         for row in [row_height(false), row_height(true)] {
             assert_eq!(row_span(&items, 0, row), Some((0.0, head + row)), "the first row shows its head");
             assert_eq!(row_span(&items, 1, row), Some((head + row, head + 2.0 * row)));

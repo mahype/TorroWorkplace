@@ -32,7 +32,7 @@ use iced::{Alignment, Element, Fill};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::theme::{self, space};
-use torro_gui::{style, typo, widgets};
+use torro_gui::{layout, style, typo, widgets};
 use torro_inbox::{Lane, Rule, RuleEffect};
 use torro_ipc::{Request, SettingKey};
 
@@ -78,7 +78,7 @@ pub fn answered(state: &mut State) {
 }
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    column![notifications(data), rules(state, &data.rules), app(data)].spacing(space::XL).into()
+    column![notifications(data), rules(state, &data.rules), app(data)].spacing(layout::section_gap()).into()
 }
 
 /// The group "Notifications" with the one switch and what it means.
@@ -88,8 +88,8 @@ fn notifications<'a>(data: &Data) -> Element<'a, Message> {
         .style(style::toggler)
         .on_toggle(Message::QuietWhenBusy);
     let lines = column![
-        typo::text(typo::BODY, tr("Quiet during busy events")),
-        typo::text(typo::META, tr("Only urgent entries pop up while a busy event runs; a summary follows."))
+        typo::text(typo::body(), tr("Quiet during busy events")),
+        typo::text(typo::meta(), tr("Only urgent entries pop up while a busy event runs; a summary follows."))
             .style(theme::text_2),
     ];
     widgets::group(
@@ -107,11 +107,11 @@ fn notifications<'a>(data: &Data) -> Element<'a, Message> {
 fn rules<'a>(state: &State, rules: &'a [Rule]) -> Element<'a, Message> {
     let rows: Vec<Element<'a, Message>> = if rules.is_empty() {
         let hint = typo::text(
-            typo::BODY,
+            typo::body(),
             tr("Rules appear here when you move notices to a lane for good or mute a source in the Inbox."),
         )
         .style(theme::text_2);
-        vec![container(hint).width(Fill).padding([space::M, space::L]).into()]
+        vec![container(hint).width(Fill).padding([space::m(), space::l()]).into()]
     } else {
         ordered(rules).into_iter().map(|rule| rule_row(state, rule)).collect()
     };
@@ -153,7 +153,7 @@ fn lane_name(lane: Lane) -> &'static str {
 fn rule_row<'a>(state: &State, rule: &'a Rule) -> Element<'a, Message> {
     let remove = (!state.removing.contains(&rule.id)).then(|| Message::Remove(rule.id.clone()));
     let button = widgets::text_button(None, tr("Remove"), style::button::secondary, remove);
-    wrapping_row(column![typo::text(typo::BODY, sentence(rule))], button)
+    wrapping_row(column![typo::text(typo::body(), sentence(rule))], button)
 }
 
 /// The group "App": Torro Inbox with "Open"; off while the core has not reported the app as
@@ -181,8 +181,8 @@ fn inbox_installed(data: &Data) -> bool {
 /// 12 above and below and 16 at the sides. One line of `BODY` makes it 44 high like
 /// `setting_row`; a longer text makes it taller instead of cutting it off.
 fn wrapping_row<'a>(lines: Column<'a, Message>, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let content = row![lines.width(Fill), control.into()].spacing(space::L).align_y(Alignment::Center);
-    container(content).width(Fill).padding([space::M, space::L]).into()
+    let content = row![lines.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center);
+    container(content).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 #[cfg(test)]

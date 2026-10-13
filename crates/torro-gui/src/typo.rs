@@ -1,80 +1,105 @@
 //! The type scale: every piece of text in the apps uses one of these levels.
 //!
-//! Values from the design skill (`.claude/skills/torro-design`, section 3). A level fixes size,
-//! absolute line height and Inter cut together, so text lines up on the same grid everywhere and
-//! apps never write `.size(…)` by hand. The base size is 13, as in Linear; a larger interface
-//! comes later from Iced's `scale_factor`, never from other sizes. Hierarchy comes from the
+//! The levels come from the active design ([`crate::design`]); the standard design gives the values
+//! of the design skill (`.claude/skills/torro-design`, section 3). A level fixes size, absolute line
+//! height and font cut together, so text lines up on the same grid everywhere and apps never write
+//! `.size(…)` by hand. The base size is 13 in the standard, as in Linear; a larger interface comes
+//! from Iced's `scale_factor` (the zoom), never from other sizes. Hierarchy comes from the
 //! level *and* the colour (`text` → `text_2` → `text_3`); colour stays the caller's choice and
 //! always comes from the theme.
 //!
 //! ```ignore
 //! use torro_gui::{theme, typo};
-//! typo::text(typo::HEADLINE, tr("Review API concept"));
-//! typo::text(typo::META, tr("Sunday")).style(theme::text_3);
-//! typo::text(typo::META.tabular(), "09:30"); // digits that change: clocks, axes, counters
-//! typo::text(typo::MICRO, "14:00").style(theme::text_2); // time axis, times in events
+//! typo::text(typo::headline(), tr("Review API concept"));
+//! typo::text(typo::meta(), tr("Sunday")).style(theme::text_3);
+//! typo::text(typo::meta().tabular(), "09:30"); // digits that change: clocks, axes, counters
+//! typo::text(typo::micro(), "14:00").style(theme::text_2); // time axis, times in events
 //! ```
 //!
 //! Widgets that take text settings themselves (`text_input`, `pick_list`) get them from the
-//! level's fields: `.size(typo::BODY.size).line_height(typo::BODY.line_height).font(typo::BODY.font)`.
+//! level's fields: `let body = typo::body(); input.size(body.size).line_height(body.line_height).font(body.font)`.
+//!
+//! The levels are functions of the active design, not constants: never keep one in a `const` or
+//! `static`; derive a level in a function (`fn day_number() -> Level { typo::body_strong().tabular() }`).
 
-use iced::font::Weight;
 use iced::widget::text::{IntoFragment, LineHeight, Text};
 use iced::{Font, Pixels};
+use torro_core::design;
 
-use crate::theme;
-
-/// One level of the type scale. Use the constants ([`BODY`], [`TITLE`] …), never build one.
+/// One level of the type scale. Use the functions ([`body`], [`title`] …), never build one.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Level {
     /// Font size in logical pixels.
     pub size: Pixels,
     /// Line height, always absolute (Iced's default is 1.3 × size, which falls off the 4-px grid).
     pub line_height: LineHeight,
-    /// The Inter cut: family and weight (400, 500 or 600 only).
+    /// The font cut: family and weight (400, 500 or 600 in the standard).
     pub font: Font,
 }
 
 impl Level {
-    /// The same level with tabular figures ("Inter Tabular"), for digits that change: clocks,
-    /// time axes, counters, dates in columns. Keeps size and line height.
+    /// The same level with tabular figures (the design's `numbers` font, "Inter Tabular" in the
+    /// standard), for digits that change: clocks, time axes, counters, dates in columns. Keeps size
+    /// and line height.
     ///
-    /// Only Regular and Medium are shipped as tabular cuts, so a SemiBold level ([`TITLE`],
-    /// [`HEADLINE`], [`DISPLAY`]) becomes tabular Medium (500).
-    pub const fn tabular(self) -> Self {
-        let font = match self.font.weight {
-            Weight::Normal => theme::FONT_TABULAR,
-            _ => theme::FONT_TABULAR_MEDIUM,
-        };
-        Self { font, ..self }
+    /// The standard ships only Regular and Medium as tabular cuts, so a SemiBold level ([`title`],
+    /// [`headline`], [`display`]) becomes tabular Medium (500): the nearest lighter weight the
+    /// figures font has.
+    pub fn tabular(self) -> Self {
+        Self { font: crate::design::tabular_font(self.font.weight), ..self }
     }
 }
 
-const fn level(size: f32, line_height: f32, font: Font) -> Level {
-    Level { size: Pixels(size), line_height: LineHeight::Absolute(Pixels(line_height)), font }
+/// The level `pick` chooses from the active design's type scale.
+fn level(pick: fn(&design::TypeScale) -> design::Level) -> Level {
+    let level = crate::design::with(|t| pick(&t.design.typo));
+    Level {
+        size: Pixels(level.size),
+        line_height: LineHeight::Absolute(Pixels(level.line)),
+        font: crate::design::font(level.font, level.weight),
+    }
 }
 
 /// 11/14, Regular, always tabular: the calendar's time axis, times inside events, weekday
 /// letters in the week strip. The only level below 12; never for running text.
-pub const MICRO: Level = level(11.0, 14.0, theme::FONT_TABULAR);
+pub fn micro() -> Level {
+    level(|t| t.micro)
+}
 /// 12/16, Medium: group titles (sentence case, colour `text_3`), buttons, chips, badges.
-pub const CAPTION: Level = level(12.0, 16.0, theme::FONT_MEDIUM);
+pub fn caption() -> Level {
+    level(|t| t.caption)
+}
 /// 12/16, Regular: metadata, counters, due dates.
-pub const META: Level = level(12.0, 16.0, theme::FONT);
+pub fn meta() -> Level {
+    level(|t| t.meta)
+}
 /// 13/20, Regular: the default – lists, sidebar, inputs, running text. Also the apps' default
 /// text size.
-pub const BODY: Level = level(13.0, 20.0, theme::FONT);
+pub fn body() -> Level {
+    level(|t| t.body)
+}
 /// 13/20, Medium: header titles, row titles, event titles.
-pub const BODY_STRONG: Level = level(13.0, 20.0, theme::FONT_MEDIUM);
-/// 16/22, SemiBold: card and dialog titles.
-pub const TITLE: Level = level(16.0, 22.0, theme::FONT_SEMIBOLD);
-/// 22/28, SemiBold: detail titles ("Review API concept"), view titles without a header bar.
-pub const HEADLINE: Level = level(22.0, 28.0, theme::FONT_SEMIBOLD);
+pub fn body_strong() -> Level {
+    level(|t| t.body_strong)
+}
+/// 16/22, SemiBold: card and dialog titles (the design's heading font).
+pub fn title() -> Level {
+    level(|t| t.title)
+}
+/// 22/28, SemiBold: detail titles ("Review API concept"), view titles without a header bar (the
+/// design's heading font).
+pub fn headline() -> Level {
+    level(|t| t.headline)
+}
 /// 28/32, SemiBold: the big number in a mini tile (the time, the count of open tasks).
-pub const DISPLAY: Level = level(28.0, 32.0, theme::FONT_SEMIBOLD);
+pub fn display() -> Level {
+    level(|t| t.display)
+}
 
 /// All levels, smallest first.
-pub const ALL: [Level; 8] = [MICRO, CAPTION, META, BODY, BODY_STRONG, TITLE, HEADLINE, DISPLAY];
+pub fn all() -> [Level; 8] {
+    [micro(), caption(), meta(), body(), body_strong(), title(), headline(), display()]
+}
 
 /// A `text` widget in `level`: size, line height and font are set; colour, wrapping and
 /// alignment stay with the caller (`.style(theme::text_2)` …).
@@ -142,6 +167,8 @@ pub fn line_height(level: Level) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme;
+    use iced::font::Weight;
 
     fn line(level: Level) -> f32 {
         match level.line_height {
@@ -153,16 +180,16 @@ mod tests {
     #[test]
     fn levels_match_the_design_skill() {
         let expected = [
-            (MICRO, 11.0, 14.0, theme::FONT_TABULAR),
-            (CAPTION, 12.0, 16.0, theme::FONT_MEDIUM),
-            (META, 12.0, 16.0, theme::FONT),
-            (BODY, 13.0, 20.0, theme::FONT),
-            (BODY_STRONG, 13.0, 20.0, theme::FONT_MEDIUM),
-            (TITLE, 16.0, 22.0, theme::FONT_SEMIBOLD),
-            (HEADLINE, 22.0, 28.0, theme::FONT_SEMIBOLD),
-            (DISPLAY, 28.0, 32.0, theme::FONT_SEMIBOLD),
+            (micro(), 11.0, 14.0, theme::font_tabular()),
+            (caption(), 12.0, 16.0, theme::font_medium()),
+            (meta(), 12.0, 16.0, theme::font()),
+            (body(), 13.0, 20.0, theme::font()),
+            (body_strong(), 13.0, 20.0, theme::font_medium()),
+            (title(), 16.0, 22.0, theme::font_semibold()),
+            (headline(), 22.0, 28.0, theme::font_semibold()),
+            (display(), 28.0, 32.0, theme::font_semibold()),
         ];
-        assert_eq!(expected.len(), ALL.len());
+        assert_eq!(expected.len(), all().len());
         for (level, size, height, font) in expected {
             assert_eq!(level.size.0, size);
             assert_eq!(line(level), height, "line height of {size}px level");
@@ -172,7 +199,7 @@ mod tests {
 
     #[test]
     fn line_heights_are_absolute_and_on_the_grid() {
-        for level in ALL {
+        for level in all() {
             assert!(matches!(level.line_height, LineHeight::Absolute(_)));
             assert_eq!(line(level) % 2.0, 0.0, "line height {} is odd", line(level));
             assert!(line(level) > level.size.0);
@@ -181,43 +208,43 @@ mod tests {
 
     #[test]
     fn only_micro_is_smaller_than_12_and_nothing_is_bold() {
-        for level in ALL {
-            assert!(level.size.0 >= 12.0 || level == MICRO);
+        for level in all() {
+            assert!(level.size.0 >= 12.0 || level == micro());
             assert!(matches!(level.font.weight, Weight::Normal | Weight::Medium | Weight::Semibold));
         }
-        assert_eq!(MICRO.font, theme::FONT_TABULAR, "micro is for figures, so it is always tabular");
-        assert_eq!(MICRO.tabular(), MICRO);
+        assert_eq!(micro().font, theme::font_tabular(), "micro is for figures, so it is always tabular");
+        assert_eq!(micro().tabular(), micro());
     }
 
     #[test]
     fn tabular_switches_family_and_keeps_size() {
-        assert_eq!(META.tabular().font, theme::FONT_TABULAR);
-        assert_eq!(BODY_STRONG.tabular().font, theme::FONT_TABULAR_MEDIUM);
-        assert_eq!(DISPLAY.tabular().font, theme::FONT_TABULAR_MEDIUM);
-        assert_eq!(DISPLAY.tabular().size, DISPLAY.size);
-        assert_eq!(DISPLAY.tabular().line_height, DISPLAY.line_height);
+        assert_eq!(meta().tabular().font, theme::font_tabular());
+        assert_eq!(body_strong().tabular().font, theme::font_tabular_medium());
+        assert_eq!(display().tabular().font, theme::font_tabular_medium());
+        assert_eq!(display().tabular().size, display().size);
+        assert_eq!(display().tabular().line_height, display().line_height);
     }
 
     #[test]
     fn text_builds_in_every_level() {
-        for level in ALL {
+        for level in all() {
             let _: Text<'_> = text(level, "Today");
         }
     }
 
     #[test]
     fn ellipsize_cuts_long_text_only() {
-        assert_eq!(ellipsize("Standup", CAPTION, 200.0), "Standup");
-        let cut = ellipsize("Quarterly planning with the whole team", CAPTION, 100.0);
+        assert_eq!(ellipsize("Standup", caption(), 200.0), "Standup");
+        let cut = ellipsize("Quarterly planning with the whole team", caption(), 100.0);
         assert!(cut.ends_with(ELLIPSIS), "{cut}");
-        assert!(text_width(&cut, CAPTION) <= 100.0);
+        assert!(text_width(&cut, caption()) <= 100.0);
         assert!(!cut.contains(" …"), "no space before the ellipsis");
-        assert_eq!(ellipsize("Standup", CAPTION, 5.0), "");
+        assert_eq!(ellipsize("Standup", caption(), 5.0), "");
     }
 
     #[test]
     fn line_height_is_the_absolute_one() {
-        assert_eq!(line_height(BODY), 20.0);
-        assert_eq!(line_height(DISPLAY), 32.0);
+        assert_eq!(line_height(body()), 20.0);
+        assert_eq!(line_height(display()), 32.0);
     }
 }

@@ -47,7 +47,7 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   gültige und ungültige Pakete mit Gründen. Kein echtes Home-Verzeichnis (`TORRO_DATA_HOME` auf ein Temp-Verzeichnis).
 
 ### L.2 torro-gui liest das aktive Design, alle Apps umgestellt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** L.1 · **Dateien:** `crates/torro-gui/src/**` (vor allem `theme.rs`, `typo.rs`,
   `lib.rs`, `shell.rs`, `style.rs`, `widgets.rs`, neu `design.rs`), `crates/torro-gui/examples/**`, alle Stellen in
   `crates/{torrocalendar,torrotasks,torroinbox}/src/**` und `crates/torroworkplace/src/ui/**`, die Tokens nutzen,

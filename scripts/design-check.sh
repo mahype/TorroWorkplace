@@ -3,11 +3,13 @@
 # design-check.sh – finds raw design values in the app crates (F.6 in docs/tasks/design.md).
 #
 # Why: all apps must look like one suite. Sizes, spacing, radii, colours, fonts and button styles
-# come from the tokens in torro_gui::{theme, typo, style}; a hand-typed number in a layout call
+# come from the tokens in torro_gui::{theme, typo, layout, style} – functions of the active design
+# pack (space::s(), typo::body(), layout::page_padding() …, docs/design-pakete.md); a hand-typed
+# number in a layout call
 # or an Iced standard style breaks that quietly, and nobody sees it in review. This is a text
 # scan, not a compiler check. It flags:
 #   - a non-zero number literal in .size()/.spacing()/.padding()/.width()/.height()/.rounded()
-#     (Length::… arguments and named constants are fine; a bare 0 means "no space" and is fine)
+#     (Length::… arguments, token calls and named constants are fine; a bare 0 means "no space")
 #   - Color::from_rgb…
 #   - Iced standard button styles (button::primary …), i.e. not style::button::…
 #   - Font::DEFAULT
@@ -78,7 +80,7 @@ function braces(s,   o, c) {
 
 function check_line(s, lineno, allowed,   t, pre, end, name, rest) {
     if (s ~ /Color::from_rgb/) report(lineno, "Color::from_rgb: use a colour from torro_gui::theme", allowed)
-    if (s ~ /Font::DEFAULT/) report(lineno, "Font::DEFAULT: use typo::… (Inter)", allowed)
+    if (s ~ /Font::DEFAULT/) report(lineno, "Font::DEFAULT: use typo::… (the design font)", allowed)
 
     t = s
     while (match(t, /button::(primary|secondary|text|success|danger)/)) {
@@ -185,11 +187,11 @@ self_test_fixture() {
 //! Fixture: lines ending in `// want` must be flagged, all others must pass.
 /// Doc example: text("x").size(14) is not code.
 fn view() -> Element<'_, Message> {
-    let ok_tokens = row![x].spacing(space::XS).padding(Padding::new(0.0).top(space::S)); // ok
+    let ok_tokens = row![x].spacing(space::xs()).padding(Padding::new(0.0).top(space::s())); // ok
     let ok_zero = container(x).padding(0).width(0); // ok
     let ok_length = Space::new().width(Length::Fixed(40.0)).height(Length::FillPortion(2)); // ok
     let ok_const = Space::new().width(TIME_WIDTH).height(line); // ok
-    let ok_size = text("x").size(typo::BODY.size).size(style::CHECK_SIZE); // ok
+    let ok_size = text("x").size(typo::body().size).size(style::CHECK_SIZE); // ok
     let ok_style = button("x").style(style::button::primary); // ok
     let ok_text = "text(\"x\").size(14) and Font::DEFAULT in a string"; // ok
     let ok_base = Color::BLACK; // ok
@@ -199,7 +201,7 @@ fn view() -> Element<'_, Message> {
     let bad_size = text("x").size(14); // want
     let bad_padding = container(x).padding(12.0); // want
     let bad_array = container(x).padding([8, 12]); // want
-    let bad_expr = Space::new().width(space::XS * 2.0); // want
+    let bad_expr = Space::new().width(space::xs() * 2.0); // want
     let bad_rounded = container(x).rounded(6); // want
     let bad_no_allow = Space::new().height(18); // want
     let bad_color = Color::from_rgb(1.0, 0.0, 0.0); // want
@@ -210,10 +212,10 @@ fn view() -> Element<'_, Message> {
         .padding( // want
             12.0,
         );
-    row![a, b].spacing(space::S).padding(Padding::new(0.0).left(space::L)); // ok
-    row![a, b].spacing(9).padding(Padding::new(0.0).left(space::L)); // want
+    row![a, b].spacing(space::s()).padding(Padding::new(0.0).left(space::l())); // ok
+    row![a, b].spacing(9).padding(Padding::new(0.0).left(space::l())); // want
     column![].spacing(12.0); // want
-    column![].spacing(space::S);
+    column![].spacing(space::s());
     let ok_cfg = 1;
 }
 

@@ -61,7 +61,7 @@ use iced::{Alignment, Color, Element, Fill, Length, Subscription, Theme};
 use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::layout::SizeClass;
+use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
@@ -563,7 +563,7 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if let Some(wizard) = &state.wizard {
         let content = agent_wizard::view(wizard, data).map(Message::Wizard);
-        return Some(dialog(content, size::FORM_MAX, Message::Wizard(agent_wizard::Message::Dismiss)));
+        return Some(dialog(content, size::form_max(), Message::Wizard(agent_wizard::Message::Dismiss)));
     }
     if let Some(issued) = &state.issued {
         return Some(key_dialog(issued));
@@ -665,8 +665,8 @@ pub fn sends_freely(rights: &Rights) -> bool {
 /// `CAPTION` with the button padding, plus the frame's inset and border. `typo::text_width`
 /// estimates generously, so the control fits.
 fn segmented_width(labels: &[&str]) -> f32 {
-    let padding = style::BUTTON_PADDING.left + style::BUTTON_PADDING.right;
-    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::CAPTION) + padding).sum();
+    let padding = style::button_padding().left + style::button_padding().right;
+    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
     segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
 }
 
@@ -700,18 +700,18 @@ fn in_slot<'a>(control: Element<'a, Message>, slot: f32) -> Element<'a, Message>
 pub fn control_column(width: f32) -> Option<f32> {
     let slot = segment_slot();
     let sending =
-        [typo::text_width(tr("Send on my behalf"), typo::BODY), typo::text_width(outbound_detail(), typo::META)];
+        [typo::text_width(tr("Send on my behalf"), typo::body()), typo::text_width(outbound_detail(), typo::meta())];
     let texts = Area::ALL.into_iter().filter(|area| area.grantable()).flat_map(|area| {
         let admin = has_admin(area).then(|| {
-            [typo::text_width(admin_label(area), typo::BODY), typo::text_width(&admin_detail(area), typo::META)]
+            [typo::text_width(admin_label(area), typo::body()), typo::text_width(&admin_detail(area), typo::meta())]
         });
-        [typo::text_width(area_label(area), typo::BODY), typo::text_width(area_detail(area), typo::META)]
+        [typo::text_width(area_label(area), typo::body()), typo::text_width(area_detail(area), typo::meta())]
             .into_iter()
             .chain(admin.into_iter().flatten())
     });
     let text = texts.chain(sending).fold(0.0, f32::max);
     // A setting row: 16 at both sides and 16 between the text and the control.
-    let row = 3.0 * space::L + text + slot;
+    let row = 3.0 * space::l() + text + slot;
     (width >= row).then_some(slot)
 }
 
@@ -742,12 +742,12 @@ fn segment_row<'a>(
 /// page too narrow to put them side by side. The texts wrap rather than being cut off; 16 at the
 /// sides as in every row of a group, 12 above and below.
 fn stacked_row<'a>(label: &'a str, detail: Option<String>, control: Element<'a, Message>) -> Element<'a, Message> {
-    let mut lines = column![typo::text(typo::BODY, label)];
+    let mut lines = column![typo::text(typo::body(), label)];
     if let Some(detail) = detail {
-        lines = lines.push(typo::text(typo::META, detail).style(theme::text_2));
+        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2));
     }
-    let content = column![lines, control].spacing(space::S);
-    container(content).width(Fill).padding([space::M, space::L]).into()
+    let content = column![lines, control].spacing(space::s());
+    container(content).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 fn level_label(level: Level) -> &'static str {
@@ -1151,7 +1151,7 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
                 "Choose Connect agent to set up Claude Code, Codex, Gemini CLI, Claude Desktop or Cursor, or to create a key for a script.",
             ),
         );
-        return column![].push(problem).push(empty).spacing(space::L).into();
+        return column![].push(problem).push(empty).spacing(space::l()).into();
     }
     let groups = Category::ALL.into_iter().filter_map(|category| {
         let rows: Vec<Element<'a, Message>> = data
@@ -1162,7 +1162,7 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
             .collect();
         (!rows.is_empty()).then(|| widgets::group(category.title(), rows, Some(category.footer().to_string())))
     });
-    column![].push(problem).extend(groups).spacing(space::XL).into()
+    column![].push(problem).extend(groups).spacing(layout::section_gap()).into()
 }
 
 /// The empty list: the section's icon over what shows up here and how – `widgets::empty_state`
@@ -1171,13 +1171,13 @@ fn empty_state<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
     let mark =
         icon::icon(Icon::Sparkles, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let words = column![
-        typo::text(typo::BODY_STRONG, title).align_x(Alignment::Center),
-        typo::text(typo::BODY, hint).style(theme::text_2).align_x(Alignment::Center)
+        typo::text(typo::body_strong(), title).align_x(Alignment::Center),
+        typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center)
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(Alignment::Center);
-    let content = column![mark, words].spacing(space::M).align_x(Alignment::Center).max_width(size::FORM_MAX / 2.0);
-    center(content).padding(space::XL).into()
+    let content = column![mark, words].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
 }
 
 /// Why an agent's configuration still holds its entry: an alert icon in the error colour and the
@@ -1187,7 +1187,7 @@ fn problem_line(problem: &str) -> Element<'_, Message> {
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
     let text =
         trf("Torro Workplace could not be taken out of the agent's configuration: {problem}", &[("problem", &problem)]);
-    row![alert, typo::text(typo::BODY, text)].spacing(space::S).align_y(Alignment::Center).into()
+    row![alert, typo::text(typo::body(), text)].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// A client in the list: name, then what it is, its rights in words and when it was last used;
@@ -1216,10 +1216,10 @@ fn detail_page<'a>(
     now: DateTime<Utc>,
     column: Option<f32>,
 ) -> Element<'a, Message> {
-    let name = typo::text(typo::HEADLINE, client.name.as_str()).wrapping(Wrapping::None);
-    let about = typo::text(typo::META, about(client, now)).style(theme::text_2);
-    let heading = column![container(name).width(Fill).clip(true), about].spacing(space::XS);
-    let mut page = column![heading].spacing(space::XL);
+    let name = typo::text(typo::headline(), client.name.as_str()).wrapping(Wrapping::None);
+    let about = typo::text(typo::meta(), about(client, now)).style(theme::text_2);
+    let heading = column![container(name).width(Fill).clip(true), about].spacing(space::xs());
+    let mut page = column![heading].spacing(layout::section_gap());
     if client.kind == HOOK_CLIENT {
         page = page.push(hook_group(client, column));
     } else {
@@ -1235,7 +1235,7 @@ fn detail_page<'a>(
 
 /// A text button moved left by its own padding, so its label stands on the page's content axis.
 fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
-    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
+    row![Space::new(), button].spacing(-style::button_padding().left).into()
 }
 
 /// The level of every grantable area, each followed by its admin switch where it has one. The
@@ -1282,10 +1282,10 @@ fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Me
     if sends_freely(rights) {
         let mark = icon::icon(Icon::CircleAlert, icon::SIZE)
             .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
-        let words = typo::text(typo::META, tr("Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first."))
+        let words = typo::text(typo::meta(), tr("Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first."))
             .style(theme::text_2);
-        let content = row![mark, words.width(Fill)].spacing(space::M);
-        rows.push(container(content).width(Fill).padding([space::M, space::L]).into());
+        let content = row![mark, words.width(Fill)].spacing(space::m());
+        rows.push(container(content).width(Fill).padding([space::m(), space::l()]).into());
     }
     rows
 }
@@ -1319,7 +1319,10 @@ fn selection_group<'a>(
     if !all {
         let offered = candidates(pick, data, selection);
         if offered.is_empty() && pick != Pick::GithubRepos {
-            rows.push(row_frame(typo::text(typo::BODY, tr("Nothing to choose from yet.")).style(theme::text_3), false));
+            rows.push(row_frame(
+                typo::text(typo::body(), tr("Nothing to choose from yet.")).style(theme::text_3),
+                false,
+            ));
         }
         rows.extend(offered.into_iter().map(|candidate| {
             let ticked = selection.contains(&candidate.id);
@@ -1343,8 +1346,8 @@ fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Opt
         .style(style::toggler)
         .on_toggle(move |on| Message::Tick(pick, switch_id.clone(), on));
     let dot = match (pick, color) {
-        (_, Some(color)) => Some(color_dot(color, space::S)),
-        (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::S).into()),
+        (_, Some(color)) => Some(color_dot(color, space::s())),
+        (Pick::Calendars | Pick::TaskLists, None) => Some(Space::new().width(space::s()).into()),
         (Pick::GithubRepos | Pick::InboxSources | Pick::MailAccounts, None) => None,
     };
     let row = setting_row(dot, label, detail, in_column(switch, column));
@@ -1355,23 +1358,23 @@ fn candidate_row<'a>(pick: Pick, candidate: Candidate, ticked: bool, column: Opt
 fn add_repo_row(input: &str) -> Element<'_, Message> {
     let add = valid_repo(input).map(|_| Message::AddRepo);
     let field = text_input(tr("owner/name or owner"), input)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
         .on_input(Message::RepoInput)
         .on_submit_maybe(add.clone());
     let button = widgets::text_button(Some(Icon::Plus), tr("Add"), style::button::secondary, add);
-    row_frame(row![field, button].spacing(space::S).align_y(Alignment::Center), false)
+    row_frame(row![field, button].spacing(space::s()).align_y(Alignment::Center), false)
 }
 
 /// A hook client: the agent it reports for and its fixed rights, read-only, with the reason.
 fn hook_group<'a>(client: &'a ClientInfo, column: Option<f32>) -> Element<'a, Message> {
     let agent = client.agent.map_or(tr("No agent"), |agent| agent.label());
     let value =
-        |text: &'a str| in_column(typo::text(typo::BODY, text).style(theme::text_2).wrapping(Wrapping::None), column);
+        |text: &'a str| in_column(typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::None), column);
     let rows = vec![
         setting_row(None, tr("Reports for"), None, value(agent)),
         setting_row(
@@ -1405,8 +1408,8 @@ fn activity_group<'a>(state: &'a State, client: &ClientInfo, now: DateTime<Utc>)
 
 /// A group title with a quiet sentence instead of rows (an empty group would be a bare frame).
 fn quiet_group<'a>(title: &'a str, sentence: &'a str) -> Element<'a, Message> {
-    column![widgets::section_title(title), typo::text(typo::META, sentence).style(theme::text_3)]
-        .spacing(space::S)
+    column![widgets::section_title(title), typo::text(typo::meta(), sentence).style(theme::text_3)]
+        .spacing(space::s())
         .into()
 }
 
@@ -1415,15 +1418,15 @@ fn quiet_group<'a>(title: &'a str, sentence: &'a str) -> Element<'a, Message> {
 /// cannot be tabular.
 fn activity_row(entry: &ActivityEntry, now: DateTime<Utc>) -> Element<'_, Message> {
     let (status, word) = outcome(&entry.result);
-    let result = row![widgets::status_dot(status), typo::text(typo::META, word).style(theme::text_2)]
-        .spacing(space::S)
+    let result = row![widgets::status_dot(status), typo::text(typo::meta(), word).style(theme::text_2)]
+        .spacing(space::s())
         .align_y(Alignment::Center);
     let lines = column![
-        typo::text(typo::BODY, entry.command.as_str()).wrapping(Wrapping::None),
-        typo::text(typo::META.tabular(), when(entry.time, now)).style(theme::text_2).wrapping(Wrapping::None),
+        typo::text(typo::body(), entry.command.as_str()).wrapping(Wrapping::None),
+        typo::text(typo::meta().tabular(), when(entry.time, now)).style(theme::text_2).wrapping(Wrapping::None),
     ];
     let text = container(lines).width(Fill).clip(true);
-    row_frame(row![text, result].spacing(space::L).align_y(Alignment::Center), true)
+    row_frame(row![text, result].spacing(space::l()).align_y(Alignment::Center), true)
 }
 
 /// The key: where it lives, and "Create new key".
@@ -1440,9 +1443,9 @@ fn key_group<'a>(column: Option<f32>) -> Element<'a, Message> {
 fn key_dialog(issued: &Issued) -> Element<'_, Message> {
     // Tabular figures: a key is read and compared character by character.
     let field = text_input("", issued.key.expose())
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.tabular().font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().tabular().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
@@ -1455,17 +1458,17 @@ fn key_dialog(issued: &Issued) -> Element<'_, Message> {
     };
     let done = widgets::text_button(None, tr("Done"), style::button::primary, Some(Message::CloseKey));
     let content = column![
-        typo::text(typo::TITLE, trf("New key for {name}", &[("name", &issued.name)])),
+        typo::text(typo::title(), trf("New key for {name}", &[("name", &issued.name)])),
         typo::text(
-            typo::BODY,
+            typo::body(),
             tr("Copy it into the agent's configuration now. It is shown only this once; Torro Workplace keeps only a fingerprint of it.")
         )
         .style(theme::text_2),
-        row![field, copy].spacing(space::S).align_y(Alignment::Center),
+        row![field, copy].spacing(space::s()).align_y(Alignment::Center),
         row![blank::horizontal(), done],
     ]
-    .spacing(space::L);
-    dialog(content, size::FORM_MAX, Message::KeepKey)
+    .spacing(space::l());
+    dialog(content, size::form_max(), Message::KeepKey)
 }
 
 #[cfg(test)]
@@ -1965,11 +1968,11 @@ mod tests {
     fn segmented_controls_get_a_line_of_their_own_where_the_row_would_cut_them_off() {
         // The page widths of a narrow window (480, 16 margin) and of a medium one (800: rail,
         // inset and 24 margin).
-        let narrow = 480.0 - 2.0 * space::L;
-        let medium = 800.0 - torro_gui::shell::RAIL - size::INSET - 2.0 * space::XL;
+        let narrow = 480.0 - 2.0 * space::l();
+        let medium = 800.0 - torro_gui::shell::rail() - layout::inset() - 2.0 * space::xl();
         assert_eq!(control_column(narrow), None);
         assert_eq!(control_column(medium), Some(segment_slot()));
-        assert_eq!(control_column(size::CONTENT_MAX), Some(segment_slot()));
+        assert_eq!(control_column(size::content_max()), Some(segment_slot()));
     }
 
     #[test]
@@ -2011,7 +2014,7 @@ mod tests {
         assert!(segmented_width(&confirm_options().map(|(label, _)| label)) <= slot);
         assert!(segmented_width(&outbound_options().map(|(label, _)| label)) <= slot);
         assert!(segmented_width(&[tr("All"), tr("Selected")]) <= slot);
-        assert!(slot < size::CONTENT_MAX / 2.0, "leaves room for the area's name");
+        assert!(slot < size::content_max() / 2.0, "leaves room for the area's name");
     }
 
     #[test]

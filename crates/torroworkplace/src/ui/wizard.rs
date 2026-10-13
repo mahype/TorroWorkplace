@@ -69,7 +69,7 @@ use torro_core::account::Secret;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
-use torro_gui::{dialog, style, typo, widgets};
+use torro_gui::{dialog, layout, style, typo, widgets};
 use torro_ipc::{AccountInfo, Request, Response, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_pim::AccountState;
@@ -1042,26 +1042,26 @@ fn login_url(data: &Data) -> Option<&str> {
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let header = column![
-        typo::text(typo::TITLE, tr("Add account")),
-        typo::text(typo::BODY, subtitle(state)).style(theme::text_2)
+        typo::text(typo::title(), tr("Add account")),
+        typo::text(typo::body(), subtitle(state)).style(theme::text_2)
     ]
-    .spacing(space::XS);
+    .spacing(space::xs());
     let body = match state.step {
         Step::Provider => provider_step(state),
         Step::Server => server_step(state),
         Step::SigningIn => signing_in_step(data),
         Step::Github => github_step(),
         Step::Token => token_step(state),
-        Step::Checking => typo::text(typo::BODY, tr("Checking the connection…")).style(theme::text_2).into(),
+        Step::Checking => typo::text(typo::body(), tr("Checking the connection…")).style(theme::text_2).into(),
         Step::MailAddress | Step::MailSearching => mail_address_step(state),
         Step::MailPassword => mail_password_step(state),
         Step::MailServices => mail_services_step(state),
-        Step::MailConnecting => typo::text(typo::BODY, tr("Signing in…")).style(theme::text_2).into(),
+        Step::MailConnecting => typo::text(typo::body(), tr("Signing in…")).style(theme::text_2).into(),
         Step::Done if state.provider == Provider::Mail => mail_done_step(state),
-        Step::Done => typo::text(typo::BODY, done_text(state)).into(),
+        Step::Done => typo::text(typo::body(), done_text(state)).into(),
     };
     // Head and foot stay in the window; the steps scroll between them when it is low (D.12).
-    dialog::frame(header, body, footer(state), space::XL)
+    dialog::frame(header, body, footer(state), space::xl())
 }
 
 /// The line under the title; it names what the current step asks for.
@@ -1105,7 +1105,7 @@ fn provider_step(state: &State) -> Element<'_, Message> {
     ];
     let services = widgets::group(tr("Services"), rows, None);
     match offer_group(&state.torromail) {
-        Some(offer) => column![offer, services].spacing(space::XL).into(),
+        Some(offer) => column![offer, services].spacing(layout::section_gap()).into(),
         None => services,
     }
 }
@@ -1148,8 +1148,8 @@ fn offer_row<'a>(offer: &'a Offer, account: &'a TorroMailAccount) -> Element<'a,
     if let Some((_, message)) = offer.failed.as_ref().filter(|(id, _)| *id == account.id) {
         let error = |t: &Theme| text::Style { color: Some(palette(t).error_text) };
         let lines = column![
-            one_line(typo::text(typo::BODY, account.address.as_str())),
-            typo::text(typo::META, message.as_str()).style(error),
+            one_line(typo::text(typo::body(), account.address.as_str())),
+            typo::text(typo::meta(), message.as_str()).style(error),
         ];
         let way_on = widgets::text_button(
             None,
@@ -1162,7 +1162,7 @@ fn offer_row<'a>(offer: &'a Offer, account: &'a TorroMailAccount) -> Element<'a,
     let control: Element<'a, Message> = if account.connected {
         widgets::pill(None, tr("Connected"))
     } else if offer.importing.as_deref() == Some(account.id.as_str()) {
-        typo::text(typo::META, tr("Connecting…")).style(theme::text_2).into()
+        typo::text(typo::meta(), tr("Connecting…")).style(theme::text_2).into()
     } else {
         let press = offer.can_use(&account.id).then(|| Message::UseTorroMail(account.id.clone()));
         widgets::text_button(None, tr("Use"), style::button::secondary, press)
@@ -1182,9 +1182,9 @@ fn servers_of(account: &TorroMailAccount) -> String {
 
 /// A row whose second line wraps (a reason or an error, in any language), with `control` at its end.
 fn wrapping_row<'a>(lines: iced::widget::Column<'a, Message>, control: Element<'a, Message>) -> Element<'a, Message> {
-    container(row![lines.width(Fill), control].spacing(space::L).align_y(Alignment::Center))
+    container(row![lines.width(Fill), control].spacing(space::l()).align_y(Alignment::Center))
         .width(Fill)
-        .padding([space::M, space::L])
+        .padding([space::m(), space::l()])
         .into()
 }
 
@@ -1192,11 +1192,11 @@ fn wrapping_row<'a>(lines: iced::widget::Column<'a, Message>, control: Element<'
 /// all at the disabled opacity like [`coming_soon_row`].
 fn unavailable_row<'a>(name: &'a str, reason: &'a str, tag: &'static str) -> Element<'a, Message> {
     let faded = |colour: fn(&Palette) -> Color| {
-        move |t: &Theme| text::Style { color: Some(colour(palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
+        move |t: &Theme| text::Style { color: Some(colour(&palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
     };
     let lines = column![
-        one_line(typo::text(typo::BODY, name).style(faded(|p| p.text))),
-        typo::text(typo::META, reason).style(faded(|p| p.text_2)),
+        one_line(typo::text(typo::body(), name).style(faded(|p| p.text))),
+        typo::text(typo::meta(), reason).style(faded(|p| p.text_2)),
     ];
     wrapping_row(lines, widgets::pill_disabled(None, tag))
 }
@@ -1211,15 +1211,15 @@ fn coming_soon_row<'a>(
     tag: &'static str,
 ) -> Element<'a, Message> {
     let faded = |colour: fn(&Palette) -> Color| {
-        move |t: &Theme| text::Style { color: Some(colour(palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
+        move |t: &Theme| text::Style { color: Some(colour(&palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
     };
     let lines = column![
-        one_line(typo::text(typo::BODY, name).style(faded(|p| p.text))),
-        one_line(typo::text(typo::META, summary).style(faded(|p| p.text_2))),
+        one_line(typo::text(typo::body(), name).style(faded(|p| p.text))),
+        one_line(typo::text(typo::meta(), summary).style(faded(|p| p.text_2))),
     ];
-    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::M).align_y(Alignment::Center);
+    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
     row_frame(
-        row![text.width(Fill), widgets::pill_disabled(None, tag)].spacing(space::L).align_y(Alignment::Center),
+        row![text.width(Fill), widgets::pill_disabled(None, tag)].spacing(space::l()).align_y(Alignment::Center),
         true,
     )
 }
@@ -1240,9 +1240,9 @@ fn github_step() -> Element<'static, Message> {
 /// A text field in the look of the suite: `BODY`, 32 high.
 pub(super) fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, M> {
     text_input(placeholder, value)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
@@ -1270,14 +1270,14 @@ fn token_step(state: &State) -> Element<'_, Message> {
         .on_submit_maybe((!state.token.is_blank()).then_some(Message::Continue));
     column![
         typo::text(
-            typo::BODY,
+            typo::body(),
             tr("Reading private repositories and closing issues needs the repo scope; GitHub's page has it selected.")
         )
         .style(theme::text_2),
         row![create],
         input,
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .into()
 }
 
@@ -1286,17 +1286,17 @@ fn signing_in_step(data: &Data) -> Element<'_, Message> {
     let login = login_url(data);
     let mut body = column![
         typo::text(
-            typo::BODY,
+            typo::body(),
             tr("Nextcloud handles the sign-in. You sign in on its own page; Torro Workplace never sees your password.")
         ),
-        typo::text(typo::BODY, tr("Waiting for the browser …")).style(theme::text_2),
+        typo::text(typo::body(), tr("Waiting for the browser …")).style(theme::text_2),
     ]
-    .spacing(space::M);
+    .spacing(space::m());
     if let Some(url) = login {
         // `text_input` without an edit handler cannot take focus, so no copying. Editing is
         // allowed but ignored: the field always shows `url`, so the text stays unchanged.
         body = body
-            .push(typo::text(typo::BODY, tr("If the browser does not open, copy this link:")).style(theme::text_2))
+            .push(typo::text(typo::body(), tr("If the browser does not open, copy this link:")).style(theme::text_2))
             .push(field("", url).on_input(|_| Message::LoginLinkEdited));
     }
     let again = widgets::text_button(
@@ -1321,16 +1321,16 @@ fn field_group<'a>(
 
 /// An icon in one of the palette's colours.
 fn status_icon<'a>(which: Icon, colour: fn(&Palette) -> Color) -> Element<'a, Message> {
-    icon::icon(which, icon::SIZE).style(move |t: &Theme, _| svg::Style { color: Some(colour(palette(t))) }).into()
+    icon::icon(which, icon::SIZE).style(move |t: &Theme, _| svg::Style { color: Some(colour(&palette(t))) }).into()
 }
 
 /// A row of a group whose text wraps: a provider's reason or a translation can be long, and the
 /// dialog is only as wide as the window. `title` in `BODY`, `text` below it in `META`/`text_2`.
 fn note_row<'a>(mark: Element<'a, Message>, title: String, text: String) -> Element<'a, Message> {
-    let lines = column![typo::text(typo::BODY, title), typo::text(typo::META, text).style(theme::text_2)];
-    container(row![mark, lines.width(Fill)].spacing(space::M).align_y(Alignment::Center))
+    let lines = column![typo::text(typo::body(), title), typo::text(typo::meta(), text).style(theme::text_2)];
+    container(row![mark, lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center))
         .width(Fill)
-        .padding([space::M, space::L])
+        .padding([space::m(), space::l()])
         .into()
 }
 
@@ -1340,8 +1340,8 @@ fn advanced<'a>(open: bool, content: Element<'a, Message>) -> Element<'a, Messag
     let toggle =
         widgets::text_button(Some(chevron), tr("Advanced"), style::button::ghost, Some(Message::ToggleAdvanced));
     // Moved left by its own padding, so the chevron stands on the content axis of the fields.
-    let on_axis = row![Space::new(), toggle].spacing(-style::BUTTON_PADDING.left);
-    let mut block = column![on_axis].spacing(space::S);
+    let on_axis = row![Space::new(), toggle].spacing(-style::button_padding().left);
+    let mut block = column![on_axis].spacing(space::s());
     if open {
         block = block.push(content);
     }
@@ -1374,7 +1374,7 @@ fn servers_block(state: &State) -> Element<'_, Message> {
             Some(tr("Leave empty to use this account for mail only.")),
         ),
     ]
-    .spacing(space::XL)
+    .spacing(layout::section_gap())
     .into()
 }
 
@@ -1389,9 +1389,9 @@ fn mail_address_step(state: &State) -> Element<'_, Message> {
         .on_input_maybe((!searching).then_some(Message::AddressChanged))
         .on_submit_maybe(mail_can_continue(state, state.step).then_some(Message::Continue));
     let hint = tr("Only the part after @ is used to look for your provider.");
-    let mut page = column![field_group(tr("Email address"), input, Some(hint))].spacing(space::XL);
+    let mut page = column![field_group(tr("Email address"), input, Some(hint))].spacing(layout::section_gap());
     if searching {
-        page = page.push(typo::text(typo::BODY, tr("Looking for your provider…")).style(theme::text_2));
+        page = page.push(typo::text(typo::body(), tr("Looking for your provider…")).style(theme::text_2));
     }
     let Some(found) = &mail.found else { return page.into() };
     if found.is_unsupported() {
@@ -1404,7 +1404,7 @@ fn mail_address_step(state: &State) -> Element<'_, Message> {
             "Nothing found for {domain}. If you know the servers of your provider, enter them under Advanced.",
             &[("domain", &domain_of(&mail.address))],
         );
-        page = page.push(typo::text(typo::BODY, text).style(theme::text_2));
+        page = page.push(typo::text(typo::body(), text).style(theme::text_2));
     } else {
         let name = setting_row(
             Some(widgets::status_dot(widgets::Status::Ok)),
@@ -1420,7 +1420,7 @@ fn mail_address_step(state: &State) -> Element<'_, Message> {
         page = page.push(widgets::group(tr("Provider"), rows, None));
         if mail.servers() == Servers::Incomplete {
             let text = tr("Mail needs an incoming and an outgoing server. Enter the missing one under Advanced.");
-            page = page.push(typo::text(typo::BODY, text).style(theme::text_2));
+            page = page.push(typo::text(typo::body(), text).style(theme::text_2));
         }
     }
     page.push(advanced(mail.advanced, servers_block(state))).into()
@@ -1434,17 +1434,17 @@ fn mail_password_step(state: &State) -> Element<'_, Message> {
     let provider = mail.provider_name();
     // Who this is for, in one line of its own: the step is already tall with the hint and the field.
     let lines = column![
-        typo::text(typo::BODY, provider.clone()),
-        typo::text(typo::META, mail.address.trim().to_string()).style(theme::text_2)
+        typo::text(typo::body(), provider.clone()),
+        typo::text(typo::meta(), mail.address.trim().to_string()).style(theme::text_2)
     ];
-    let context = row![status_icon(Icon::CircleCheck, |p| p.ok), lines].spacing(space::M).align_y(Alignment::Center);
-    let mut page = column![context].spacing(space::XL);
+    let context = row![status_icon(Icon::CircleCheck, |p| p.ok), lines].spacing(space::m()).align_y(Alignment::Center);
+    let mut page = column![context].spacing(layout::section_gap());
     let help = app_password_help(&provider);
-    let mut hint = column![].spacing(space::S);
+    let mut hint = column![].spacing(space::s());
     if help.is_some() || mail.found.as_ref().is_some_and(|found| found.app_password) {
-        hint = hint.push(typo::text(typo::BODY_STRONG, tr("Use an app password"))).push(
+        hint = hint.push(typo::text(typo::body_strong(), tr("Use an app password"))).push(
             typo::text(
-                typo::BODY,
+                typo::body(),
                 trf(
                     "{provider} does not accept your usual password here. Create an app password in your account settings.",
                     &[("provider", &provider)],
@@ -1462,7 +1462,7 @@ fn mail_password_step(state: &State) -> Element<'_, Message> {
         }
     } else {
         hint = hint.push(
-            typo::text(typo::BODY, tr("Use your mailbox password, or an app password if your provider offers them."))
+            typo::text(typo::body(), tr("Use your mailbox password, or an app password if your provider offers them."))
                 .style(theme::text_2),
         );
     }
@@ -1471,14 +1471,14 @@ fn mail_password_step(state: &State) -> Element<'_, Message> {
         .secure(true)
         .on_input(|password| Message::PasswordChanged(Secret::new(password)))
         .on_submit_maybe(mail_can_continue(state, state.step).then_some(Message::Continue));
-    let mut password = column![field_group(tr("Password"), input, None)].spacing(space::S);
+    let mut password = column![field_group(tr("Password"), input, None)].spacing(space::s());
     password = match &mail.refused {
         Some(refused) => password.push(
-            typo::text(typo::META, refused.as_str())
+            typo::text(typo::meta(), refused.as_str())
                 .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
         ),
         None => password.push(
-            typo::text(typo::META, tr("The password stays in the system keychain. Agents never see it."))
+            typo::text(typo::meta(), tr("The password stays in the system keychain. Agents never see it."))
                 .style(theme::text_2),
         ),
     };
@@ -1516,7 +1516,8 @@ fn mail_services_step(state: &State) -> Element<'_, Message> {
         })
         .collect();
     let footer = tr("You can show or hide single calendars and lists on the account's page later.");
-    let mut page = column![widgets::group(tr("Services"), rows, Some(footer.to_string()))].spacing(space::XL);
+    let mut page =
+        column![widgets::group(tr("Services"), rows, Some(footer.to_string()))].spacing(layout::section_gap());
     if ticked.contains(&Service::Mail) {
         let name = field("Anna Example", &mail.sender_name)
             .on_input(Message::SenderNameChanged)
@@ -1538,17 +1539,18 @@ fn check_style(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
 /// Who is signed in and, per chosen service, whether the server has it ([`done_lines`]).
 fn mail_done_step(state: &State) -> Element<'_, Message> {
     let Some(connected) = &state.mail.connected else {
-        return typo::text(typo::BODY, tr("Your calendars and task lists are ready.")).into();
+        return typo::text(typo::body(), tr("Your calendars and task lists are ready.")).into();
     };
-    let mut body = column![typo::text(typo::BODY, trf("Signed in as {account}.", &[("account", &connected.account)]))]
-        .spacing(space::M);
+    let mut body =
+        column![typo::text(typo::body(), trf("Signed in as {account}.", &[("account", &connected.account)]))]
+            .spacing(space::m());
     for (found, text) in done_lines(connected, &state.mail.services()) {
         let which = if found {
             status_icon(Icon::CircleCheck, |p| p.ok)
         } else {
             status_icon(Icon::CircleAlert, |p| p.attention)
         };
-        body = body.push(row![which, typo::text(typo::BODY, text)].spacing(space::S).align_y(Alignment::Center));
+        body = body.push(row![which, typo::text(typo::body(), text)].spacing(space::s()).align_y(Alignment::Center));
     }
     body.into()
 }
@@ -1573,7 +1575,7 @@ fn done_lines(connected: &Connected, chosen: &[Service]) -> Vec<(bool, &'static 
 /// button right.
 fn footer(state: &State) -> Element<'_, Message> {
     let error: Element<'_, Message> = match &state.error {
-        Some(error) => typo::text(typo::BODY, error.as_str())
+        Some(error) => typo::text(typo::body(), error.as_str())
             .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
             .width(Fill)
             .into(),
@@ -1608,7 +1610,7 @@ fn footer(state: &State) -> Element<'_, Message> {
         Step::Token => primary(tr("Continue"), (!state.token.is_blank()).then_some(Message::Continue)),
         Step::Done => primary(tr("Done"), Some(Message::Close)),
     };
-    row![error].push(back).push(cancel).push(next).spacing(space::S).align_y(Alignment::Center).into()
+    row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 // ----- Demo states (`--demo --open wizard-mail-…`) --------------------------------------------

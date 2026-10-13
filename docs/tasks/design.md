@@ -5,6 +5,13 @@ Steuerzentrale) durch den Agenten `torro-design-review`. Regeln und Werte: Skill
 `.claude/skills/torro-design` (überarbeitet mit diesem Plan). Regeln für die Arbeit:
 [CLAUDE.md](../../CLAUDE.md).
 
+> **Neue Schreibweise seit L.2 (2026-10-13):** Die Tokens sind keine Konstanten mehr, sondern
+> Funktionen des aktiven Design-Pakets ([design-pakete.md](../design-pakete.md)): `space::M` heißt
+> jetzt `space::m()`, `size::ROW` → `size::row()`, `typo::BODY` → `typo::body()`, `theme::FONT` →
+> `theme::font()`, `shell::RAIL` → `shell::rail()`, `size::INSET` → `layout::inset()`,
+> `style::BUTTON_PADDING` → `style::button_padding()`; `palette(theme)` liefert die Palette als Wert.
+> Die Aufgaben unten nennen noch die alte Schreibweise; gemeint ist dasselbe Token.
+
 ## Befund in einem Absatz
 
 Es gibt kein gemeinsames Fundament. Inter ist nicht eingebunden (es rendert Liberation Sans ohne

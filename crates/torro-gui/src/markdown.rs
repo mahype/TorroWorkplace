@@ -41,7 +41,9 @@ use crate::widgets;
 pub const MONO: Font = Font::MONOSPACE;
 
 /// The width of the column for a list's dot, square or number.
-const MARK: f32 = space::XL;
+fn mark_width() -> f32 {
+    space::xl()
+}
 
 /// The blocks of `source`, to keep while the text stays the same: parsing on every frame would
 /// be wasted work.
@@ -51,34 +53,34 @@ pub fn parse(source: &str) -> Vec<Item> {
 
 /// `items` (from [`parse`]) as a column of blocks in the colours of `palette`. A click on a link
 /// produces its address.
-pub fn view<'a>(items: &'a [Item], palette: &'static Palette) -> Element<'a, Uri> {
-    markdown::view_with(items, settings(palette), &Look { palette })
+pub fn view<'a>(items: &'a [Item], palette: Palette) -> Element<'a, Uri> {
+    markdown::view_with(items, settings(&palette), &Look { palette })
 }
 
 /// Sizes and the inline style: the base text `BODY`, headings by [`heading_level`], code `META`,
 /// `M` between blocks.
 fn settings(palette: &Palette) -> Settings {
-    let mut settings = Settings::with_text_size(typo::BODY.size, inline_style(palette));
+    let mut settings = Settings::with_text_size(typo::body().size, inline_style(palette));
     settings.h1_size = heading_level(HeadingLevel::H1).size;
     for size in [&mut settings.h2_size, &mut settings.h3_size, &mut settings.h4_size] {
         *size = heading_level(HeadingLevel::H2).size;
     }
     settings.h5_size = settings.h4_size;
     settings.h6_size = settings.h4_size;
-    settings.code_size = typo::META.size;
-    settings.spacing = space::M.into();
+    settings.code_size = typo::meta().size;
+    settings.spacing = space::m().into();
     settings
 }
 
 /// How spans inside a block look: Inter, links in `text`, inline code on `raised` with a hairline.
 fn inline_style(palette: &Palette) -> markdown::Style {
     markdown::Style {
-        font: typo::BODY.font,
+        font: typo::body().font,
         inline_code_highlight: markdown::Highlight {
             background: palette.raised.into(),
-            border: border::rounded(radius::XS).color(palette.line_strong).width(1),
+            border: border::rounded(radius::xs()).color(palette.line_strong).width(1),
         },
-        inline_code_padding: Padding::ZERO.left(space::XS / 2.0).right(space::XS / 2.0),
+        inline_code_padding: Padding::ZERO.left(space::xs() / 2.0).right(space::xs() / 2.0),
         inline_code_color: palette.text,
         inline_code_font: MONO,
         code_block_font: MONO,
@@ -90,8 +92,8 @@ fn inline_style(palette: &Palette) -> markdown::Style {
 /// scale has no steps in between, and a description is not a document with many levels.
 fn heading_level(level: HeadingLevel) -> Level {
     match level {
-        HeadingLevel::H1 => typo::TITLE,
-        _ => typo::BODY_STRONG,
+        HeadingLevel::H1 => typo::title(),
+        _ => typo::body_strong(),
     }
 }
 
@@ -116,12 +118,12 @@ fn spans(text: &Text, style: markdown::Style) -> Vec<Span<'static, Uri>> {
 
 /// The height of one line of body text, to centre a list's mark on the first line.
 fn body_line() -> f32 {
-    typo::BODY.line_height.to_absolute(typo::BODY.size).0
+    typo::body().line_height.to_absolute(typo::body().size).0
 }
 
 /// Draws each kind of block in the Torro look; see the module documentation.
 struct Look {
-    palette: &'static Palette,
+    palette: Palette,
 }
 
 impl<'a> Viewer<'a, Uri> for Look {
@@ -138,11 +140,11 @@ impl<'a> Viewer<'a, Uri> for Look {
         let link = icon::icon(Icon::Link, icon::SIZE)
             .style(move |_: &Theme, _| iced::widget::svg::Style { color: Some(palette.text_3) });
         let label = rich_text(label)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .color(palette.text)
             .on_link_click(Self::on_link_click);
-        button(row![link, label].spacing(space::S).align_y(Alignment::Center))
+        button(row![link, label].spacing(space::s()).align_y(Alignment::Center))
             .padding(Padding::ZERO)
             .style(style::button::ghost)
             .on_press(url.clone())
@@ -158,14 +160,14 @@ impl<'a> Viewer<'a, Uri> for Look {
             .color(self.palette.text)
             .on_link_click(Self::on_link_click);
         // A heading belongs to what follows: a little more room above it than between paragraphs.
-        let above = if index > 0 { space::XS } else { 0.0 };
+        let above = if index > 0 { space::xs() } else { 0.0 };
         container(heading).padding(padding::top(above)).into()
     }
 
     fn paragraph(&self, settings: Settings, text: &Text) -> Element<'a, Uri> {
         rich_text(spans(text, settings.style))
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .color(self.palette.text_2)
             .on_link_click(Self::on_link_click)
             .into()
@@ -183,20 +185,20 @@ impl<'a> Viewer<'a, Uri> for Look {
         let style = markdown::Style { font: MONO, ..settings.style };
         let lines = column(lines.iter().map(|line| {
             rich_text(spans(line, style))
-                .size(typo::META.size)
-                .line_height(typo::META.line_height)
+                .size(typo::meta().size)
+                .line_height(typo::meta().line_height)
                 .color(palette.text)
                 .on_link_click(Self::on_link_click)
                 .into()
         }));
-        let scroll = scrollable(container(lines).padding(space::M))
+        let scroll = scrollable(container(lines).padding(space::m()))
             .direction(scrollable::Direction::Horizontal(style::scrollbar()))
             .style(style::scrollable);
         container(scroll)
             .width(Fill)
             .style(move |_: &Theme| container::Style {
                 background: Some(palette.raised.into()),
-                border: border::rounded(radius::SM).color(palette.line).width(1),
+                border: border::rounded(radius::sm()).color(palette.line).width(1),
                 ..container::Style::default()
             })
             .into()
@@ -206,7 +208,7 @@ impl<'a> Viewer<'a, Uri> for Look {
         let palette = self.palette;
         let rows = bullets.iter().map(|bullet| {
             let (mark, items) = match bullet {
-                Bullet::Point { items } => (widgets::color_dot(palette.text_3, space::XS + space::XS / 2.0), items),
+                Bullet::Point { items } => (widgets::color_dot(palette.text_3, space::xs() + space::xs() / 2.0), items),
                 Bullet::Task { items, done } => {
                     let square = if *done { Icon::SquareCheck } else { Icon::Square };
                     let colour = if *done { palette.text_2 } else { palette.text_3 };
@@ -217,16 +219,16 @@ impl<'a> Viewer<'a, Uri> for Look {
             };
             self.list_row(settings, mark, items)
         });
-        column(rows).spacing(space::XS).into()
+        column(rows).spacing(space::xs()).into()
     }
 
     fn ordered_list(&self, settings: Settings, start: u64, bullets: &'a [Bullet]) -> Element<'a, Uri> {
         let rows = bullets.iter().zip(start..).map(|(bullet, number)| {
             let (Bullet::Point { items } | Bullet::Task { items, .. }) = bullet;
-            let number = typo::text(typo::BODY.tabular(), format!("{number}.")).style(crate::theme::text_3);
+            let number = typo::text(typo::body().tabular(), format!("{number}.")).style(crate::theme::text_3);
             self.list_row(settings, number.into(), items)
         });
-        column(rows).spacing(space::XS).into()
+        column(rows).spacing(space::xs()).into()
     }
 
     fn quote(&self, settings: Settings, contents: &'a [Item]) -> Element<'a, Uri> {
@@ -240,7 +242,7 @@ impl<'a> Viewer<'a, Uri> for Look {
         let blocks =
             column(contents.iter().enumerate().map(|(index, item)| markdown::item(self, settings, item, index)))
                 .spacing(settings.spacing.0);
-        row![line, blocks].spacing(space::M).height(iced::Shrink).into()
+        row![line, blocks].spacing(space::m()).height(iced::Shrink).into()
     }
 
     fn rule(&self, _settings: Settings) -> Element<'a, Uri> {
@@ -252,8 +254,8 @@ impl Look {
     /// One entry of a list: `mark` in its column, centred on the first line, then the entry's
     /// blocks with less room between them than between the blocks of the text.
     fn list_row<'a>(&self, settings: Settings, mark: Element<'a, Uri>, items: &'a [Item]) -> Element<'a, Uri> {
-        let mark = container(mark).width(MARK).height(body_line()).align_y(Alignment::Center);
-        let inner = Settings { spacing: space::XS.into(), ..settings };
+        let mark = container(mark).width(mark_width()).height(body_line()).align_y(Alignment::Center);
+        let inner = Settings { spacing: space::xs().into(), ..settings };
         row![mark, markdown::view_with(items, inner, self)].into()
     }
 }
@@ -312,7 +314,7 @@ mod tests {
     fn bold_becomes_semibold_and_links_are_underlined() {
         let items = parse("**strong** and [a link](https://example.org)");
         let [Item::Paragraph(text)] = items.as_slice() else { panic!("one paragraph: {items:?}") };
-        let spans = spans(text, inline_style(Palette::dark()));
+        let spans = spans(text, inline_style(&Palette::dark()));
         let strong = spans.iter().find(|span| span.text == "strong").expect("strong span");
         assert_eq!(strong.font.map(|font| font.weight), Some(font::Weight::Semibold));
         let link = spans.iter().find(|span| span.link.is_some()).expect("link span");

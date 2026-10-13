@@ -81,7 +81,9 @@ const CLOCK: Duration = Duration::from_secs(1);
 const WINDOW: Size = Size::new(760.0, 700.0);
 
 /// The width of the label column of the fields: "Subject" fits at the text size.
-const LABEL: f32 = size::ROW + space::L;
+fn label_width() -> f32 {
+    size::row() + space::l()
+}
 
 /// The id of the To field, which takes the focus when a new message opens.
 const TO: &str = "compose-to";
@@ -1532,8 +1534,8 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// field, no key.
     fn glance(&self, class: SizeClass) -> Element<'_, Message> {
         let padding = match class {
-            SizeClass::Strip => Padding::new(space::S).left(space::M).right(space::M),
-            _ => Padding::new(space::M),
+            SizeClass::Strip => Padding::new(space::s()).left(space::m()).right(space::m()),
+            _ => Padding::new(space::m()),
         };
         let body: Element<'_, Message> = match &self.phase {
             Phase::Loading => widgets::loading(),
@@ -1550,17 +1552,17 @@ impl<S: ComposeSource + 'static> Window<S> {
                 let room = shell::below_titlebar(self.size, self.zoom.factor()).width
                     - 2.0 * padding.left
                     - icon::SIZE
-                    - space::S;
+                    - space::s();
                 let mut lines = column![
-                    typo::text(typo::BODY_STRONG, typo::ellipsize(&subject, typo::BODY_STRONG, room))
+                    typo::text(typo::body_strong(), typo::ellipsize(&subject, typo::body_strong(), room))
                         .wrapping(Wrapping::None),
-                    typo::text(typo::META, typo::ellipsize(&recipients, typo::META, room))
+                    typo::text(typo::meta(), typo::ellipsize(&recipients, typo::meta(), room))
                         .style(theme::text_2)
                         .wrapping(Wrapping::None),
                 ]
-                .spacing(space::XS);
+                .spacing(space::xs());
                 if let Some(status) = self.status() {
-                    lines = lines.push(typo::text(typo::META, status).style(theme::text_3).wrapping(Wrapping::None));
+                    lines = lines.push(typo::text(typo::meta(), status).style(theme::text_3).wrapping(Wrapping::None));
                 }
                 let mark = widgets::with_tooltip(
                     container(
@@ -1569,7 +1571,10 @@ impl<S: ComposeSource + 'static> Window<S> {
                     ),
                     self.start.kind.title(),
                 );
-                row![mark, container(lines).width(Fill).clip(true)].spacing(space::S).align_y(Alignment::Center).into()
+                row![mark, container(lines).width(Fill).clip(true)]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center)
+                    .into()
             }
         };
         container(body)
@@ -1597,7 +1602,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         let overlay = (self.menu && self.ready()).then(|| self.sender_menu(&anchor));
         let window: Element<'_, Message> =
             shell::shell(frame, Space::new(), self.header(narrow), body, None).overlay(overlay).into();
-        if self.asking { widgets::modal(window, self.question(), size::PANEL, Message::KeepWriting) } else { window }
+        if self.asking { widgets::modal(window, self.question(), size::panel(), Message::KeepWriting) } else { window }
     }
 
     /// The header bar: what is written and how the draft stands, then attach, close and the one
@@ -1623,12 +1628,12 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// The form: a notice if there is one, the fields, the text, the signature.
     fn form(&self, narrow: bool, anchor: &Anchor) -> Element<'_, Message> {
         let editable = self.editable();
-        let mut fields = column![].spacing(space::S);
+        let mut fields = column![].spacing(space::s());
         if let Some(notice) = &self.notice {
             fields = fields.push(notice_line(notice, Some(Message::DismissNotice)));
         }
         fields = fields.push(field(tr("From"), self.sender_control(anchor)));
-        let mut folds = row![].spacing(space::XS);
+        let mut folds = row![].spacing(space::xs());
         if !self.show_cc {
             let press = editable.then_some(Message::ShowCc);
             folds = folds.push(widgets::text_button(None, tr("Cc"), style::button::ghost, press));
@@ -1637,7 +1642,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             let press = editable.then_some(Message::ShowBcc);
             folds = folds.push(widgets::text_button(None, tr("Bcc"), style::button::ghost, press));
         }
-        let to = row![self.input(TO, &self.to, Message::To), folds].spacing(space::S).align_y(Alignment::Center);
+        let to = row![self.input(TO, &self.to, Message::To), folds].spacing(space::s()).align_y(Alignment::Center);
         fields = fields.push(field(tr("To"), to));
         if self.show_cc {
             fields = fields.push(field(tr("Cc"), self.input(CC, &self.cc, Message::Cc)));
@@ -1653,9 +1658,9 @@ impl<S: ComposeSource + 'static> Window<S> {
         let mut editor = iced::widget::text_editor(&self.body)
             .id(BODY)
             .placeholder(tr("Write your message…"))
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .padding(style::INPUT_PADDING)
             .height(Fill)
             .wrapping(Wrapping::WordOrGlyph)
@@ -1664,12 +1669,12 @@ impl<S: ComposeSource + 'static> Window<S> {
         if editable {
             editor = editor.on_action(Message::Body);
         }
-        let mut form = column![fields, editor].spacing(space::S).height(Fill);
+        let mut form = column![fields, editor].spacing(space::s()).height(Fill);
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
             form = form.push(signature_block(signature));
         }
-        let padding = if narrow { Padding::new(space::M) } else { Padding::new(space::L) };
-        container(container(form).width(Fill).max_width(size::CONTENT_MAX).height(Fill))
+        let padding = if narrow { Padding::new(space::m()) } else { Padding::new(space::l()) };
+        container(container(form).width(Fill).max_width(size::content_max()).height(Fill))
             .center_x(Fill)
             .height(Fill)
             .padding(padding)
@@ -1680,9 +1685,9 @@ impl<S: ComposeSource + 'static> Window<S> {
     fn input<'a>(&self, id: &'static str, value: &'a str, on_input: fn(String) -> Message) -> Element<'a, Message> {
         text_input("", value)
             .id(id)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .padding(style::INPUT_PADDING)
             .width(Fill)
             .style(style::text_input)
@@ -1694,13 +1699,13 @@ impl<S: ComposeSource + 'static> Window<S> {
     /// menu of them.
     fn sender_control(&self, anchor: &Anchor) -> Element<'_, Message> {
         match self.senders.as_slice() {
-            [only] => container(typo::text(typo::BODY, only.label()).style(theme::text_2).wrapping(Wrapping::None))
-                .center_y(size::CONTROL)
+            [only] => container(typo::text(typo::body(), only.label()).style(theme::text_2).wrapping(Wrapping::None))
+                .center_y(size::control())
                 .into(),
             _ => {
                 let label = self.sender().map(Sender::label).unwrap_or_default();
                 row![widgets::select_button(anchor, label, Message::FromMenu)]
-                    .height(size::CONTROL)
+                    .height(size::control())
                     .align_y(Alignment::Center)
                     .into()
             }
@@ -1727,7 +1732,7 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     /// An attachment as a chip: its name and size, and a button that takes it out again.
     fn attachment_chip<'a>(&self, index: usize, attached: &'a Attached) -> Element<'a, Message> {
-        let name = typo::ellipsize(&list::one_line(attached.name()), typo::META, size::PROPS);
+        let name = typo::ellipsize(&list::one_line(attached.name()), typo::meta(), size::props());
         let label = format!("{name} · {}", mail::size_text(attached.size()));
         let press = self.editable().then_some(Message::RemoveAttachment(index));
         let remove = widgets::icon_button(Icon::X, tr("Remove"), press);
@@ -1746,15 +1751,18 @@ impl<S: ComposeSource + 'static> Window<S> {
                 Some(Message::SaveAndClose)
             ),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .wrap()
-        .vertical_spacing(space::S);
+        .vertical_spacing(space::s());
         let text = column![
-            typo::text(typo::TITLE, tr("Save this draft?")),
-            typo::text(typo::BODY, tr("Your latest changes aren't saved yet.")).style(theme::text_2),
+            typo::text(typo::title(), tr("Save this draft?")),
+            typo::text(typo::body(), tr("Your latest changes aren't saved yet.")).style(theme::text_2),
         ]
-        .spacing(space::XS);
-        container(column![text, actions].spacing(space::L)).padding(space::L).style(style::container::popover).into()
+        .spacing(space::xs());
+        container(column![text, actions].spacing(space::l()))
+            .padding(space::l())
+            .style(style::container::popover)
+            .into()
     }
 }
 
@@ -1774,20 +1782,21 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
 
 /// A labelled row of the form: the label in `META` on the left, the control beside it.
 fn field<'a>(label: &'static str, control: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let label = container(typo::text(typo::META, label).style(theme::text_3).wrapping(Wrapping::None))
-        .width(LABEL)
-        .center_y(size::CONTROL);
-    row![label, control.into()].spacing(space::S).align_y(Alignment::Center).into()
+    let label = container(typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None))
+        .width(label_width())
+        .center_y(size::control());
+    row![label, control.into()].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// The account's signature under the text: read-only, because the core adds it to the message.
 fn signature_block(signature: &str) -> Element<'_, Message> {
-    let label = container(typo::text(typo::META, tr("Signature")).style(theme::text_3).wrapping(Wrapping::None));
+    let label = container(typo::text(typo::meta(), tr("Signature")).style(theme::text_3).wrapping(Wrapping::None));
     column![
         iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule),
-        row![label.width(LABEL), typo::text(typo::META, list::plain(signature)).style(theme::text_2)].spacing(space::S),
+        row![label.width(label_width()), typo::text(typo::meta(), list::plain(signature)).style(theme::text_2)]
+            .spacing(space::s()),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .into()
 }
 
@@ -1796,11 +1805,11 @@ fn signature_block(signature: &str) -> Element<'_, Message> {
 fn notice_line(notice: &Notice, dismiss: Option<Message>) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
-    let mut words = column![typo::text(typo::BODY, notice.what.as_str())].spacing(space::XS);
+    let mut words = column![typo::text(typo::body(), notice.what.as_str())].spacing(space::xs());
     if let Some(why) = &notice.why {
-        words = words.push(typo::text(typo::META, why.as_str()).style(theme::text_3));
+        words = words.push(typo::text(typo::meta(), why.as_str()).style(theme::text_3));
     }
-    let mut line = row![alert, words.width(Fill)].spacing(space::S);
+    let mut line = row![alert, words.width(Fill)].spacing(space::s());
     if let Some(dismiss) = dismiss {
         line = line.push(widgets::icon_button(Icon::X, tr("Dismiss"), Some(dismiss)));
     }
@@ -1811,21 +1820,21 @@ fn notice_line(notice: &Notice, dismiss: Option<Message>) -> Element<'_, Message
 fn failure(notice: &Notice) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
-    let mut words = column![typo::text(typo::BODY_STRONG, notice.what.as_str()).align_x(Alignment::Center)]
-        .spacing(space::XS)
+    let mut words = column![typo::text(typo::body_strong(), notice.what.as_str()).align_x(Alignment::Center)]
+        .spacing(space::xs())
         .align_x(Alignment::Center);
     if let Some(why) = &notice.why {
-        words = words.push(typo::text(typo::META, why.as_str()).style(theme::text_3).align_x(Alignment::Center));
+        words = words.push(typo::text(typo::meta(), why.as_str()).style(theme::text_3).align_x(Alignment::Center));
     }
     let content = column![
         alert,
         words,
         widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::secondary, Some(Message::Retry)),
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .align_x(Alignment::Center)
-    .max_width(size::FORM_MAX / 2.0);
-    iced::widget::center(content).padding(space::XL).into()
+    .max_width(size::form_max() / 2.0);
+    iced::widget::center(content).padding(space::xl()).into()
 }
 
 #[cfg(test)]

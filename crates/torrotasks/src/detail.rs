@@ -77,11 +77,17 @@ const LINE: f32 = size::HAIRLINE;
 const PARENT_MENU_ROWS: f32 = 10.0;
 /// Edge of the mark in front of the title (check or GitHub state), and the width of the cell the
 /// marks of the sub-task, check and review rows stand in, so all share one axis (mock-up: 20).
-const TITLE_MARK: f32 = icon::SIZE + space::XS;
+fn title_mark() -> f32 {
+    icon::SIZE + space::xs()
+}
 /// Where the text under the title starts: past the title mark and its gap (mock-up `.ind`: 32).
-const INDENT: f32 = TITLE_MARK + space::M;
+fn indent() -> f32 {
+    title_mark() + space::m()
+}
 /// Space above each section of the main column (Sub-tasks, Checks, Reviews; mock-up: 28).
-const SECTION_GAP: f32 = space::XL + space::XS;
+fn section_gap() -> f32 {
+    space::xl() + space::xs()
+}
 
 /// How the detail is laid out; the app picks it from the window (`layout::of` and the room left).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -914,7 +920,7 @@ impl Detail {
         if !narrow {
             bar = bar.push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Close)));
         }
-        bar.spacing(space::S).align_y(Alignment::Center).into()
+        bar.spacing(space::s()).align_y(Alignment::Center).into()
     }
 
     /// The main column of the detail, filling its room and scrolling: 32 around (16 in
@@ -925,9 +931,9 @@ impl Detail {
     /// `fit` is [`Fit::Columns`]; the notes; "Sub-tasks" with progress, "Hide completed" and
     /// "Add sub-task"; for pull requests "Checks" and "Reviews". `palette` is the current
     /// theme's (`palette(&self.theme())`), for the coloured state icons in chips and pill.
-    pub fn main_column<'a>(&'a self, fit: Fit, palette: &'static Palette, anchor: &Anchor) -> Element<'a, Message> {
-        let content = column![self.title_block(), self.body(fit, Some(palette), anchor)].max_width(size::FORM_MAX);
-        let around = if fit == Fit::Narrow { space::L } else { space::XXL };
+    pub fn main_column<'a>(&'a self, fit: Fit, palette: Palette, anchor: &Anchor) -> Element<'a, Message> {
+        let content = column![self.title_block(), self.body(fit, Some(palette), anchor)].max_width(size::form_max());
+        let around = if fit == Fit::Narrow { space::l() } else { space::xxl() };
         scrollable(container(content).width(Fill).padding(around))
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
@@ -954,20 +960,20 @@ impl Detail {
             let mut block = column![];
             if let Some(title) = title {
                 block = block.push(
-                    container(typo::text(typo::CAPTION, title).style(theme::text_3))
-                        .center_y(size::CONTROL_SM)
+                    container(typo::text(typo::caption(), title).style(theme::text_3))
+                        .center_y(size::control_sm())
                         .padding(style::ITEM_PADDING),
                 );
             }
             block = block.extend(props.into_iter().map(|prop| self.prop_row(prop, account.as_deref(), anchor)));
             // 8 around the rows, whose own 8 bring their text to 16 from the column's edge.
-            blocks = blocks.push(container(block).width(Fill).padding(space::S));
+            blocks = blocks.push(container(block).width(Fill).padding(space::s()));
         }
-        let content = container(blocks).width(Fill).padding(Padding::new(0.0).bottom(space::XL));
+        let content = container(blocks).width(Fill).padding(Padding::new(0.0).bottom(space::xl()));
         container(
             scrollable(content).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
         )
-        .width(size::PROPS)
+        .width(size::props())
         .height(Fill)
         .into()
     }
@@ -977,7 +983,7 @@ impl Detail {
     /// editor as the properties column. [`Detail::main_column`] already shows them under the
     /// title when `fit` is not [`Fit::Columns`]; call this only to place them elsewhere.
     #[cfg_attr(not(test), expect(dead_code, reason = "main_column shows the chips; for placing them elsewhere"))]
-    pub fn property_chips<'a>(&'a self, palette: &'static Palette, anchor: &Anchor) -> Element<'a, Message> {
+    pub fn property_chips<'a>(&'a self, palette: Palette, anchor: &Anchor) -> Element<'a, Message> {
         self.chips_view(Some(palette), anchor)
     }
 
@@ -1018,62 +1024,63 @@ impl Detail {
     fn title_block<'a>(&'a self) -> Element<'a, Message> {
         let mark: Element<'a, Message> = match (self.github(), self.issue_check) {
             (Some(_), Some(may_close)) => {
-                list::issue_check(self.original.completed, TITLE_MARK, may_close.then_some(Message::ToggleDone))
+                list::issue_check(self.original.completed, title_mark(), may_close.then_some(Message::ToggleDone))
             }
             (Some(details), None) => {
                 let look = state_look(details);
-                tinted_icon(look.icon, TITLE_MARK, look.colour)
+                tinted_icon(look.icon, title_mark(), look.colour)
             }
-            (None, _) => self.check(TITLE_MARK),
+            (None, _) => self.check(title_mark()),
         };
-        let mark = container(mark).center_x(TITLE_MARK).center_y(typo_line(typo::HEADLINE));
+        let mark = container(mark).center_x(title_mark()).center_y(typo_line(typo::headline()));
         let title: Element<'a, Message> = if self.editable() {
             self.title_field()
         } else {
-            typo::text(typo::HEADLINE, self.draft.summary.clone()).wrapping(Wrapping::WordOrGlyph).into()
+            typo::text(typo::headline(), self.draft.summary.clone()).wrapping(Wrapping::WordOrGlyph).into()
         };
-        let mut block = column![row![mark, container(title).width(Fill)].spacing(space::M)];
+        let mut block = column![row![mark, container(title).width(Fill)].spacing(space::m())];
         if let Some(problem) = self.shown(self.title_problem()) {
             block = block.push(indented(error_text(problem)));
         }
-        block.spacing(space::XS).into()
+        block.spacing(space::xs()).into()
     }
 
     /// Everything under the title, at the title's left edge. `colours` is the current theme's
     /// palette for coloured marks; `None` (the panel) shows them neutral.
-    fn body<'a>(&'a self, fit: Fit, colours: Option<&'static Palette>, anchor: &Anchor) -> Element<'a, Message> {
+    fn body<'a>(&'a self, fit: Fit, colours: Option<Palette>, anchor: &Anchor) -> Element<'a, Message> {
         let mut body = column![];
         if let Some(meta) = self.github_meta(colours) {
-            body = body.push(gap(space::S, indented(meta)));
+            body = body.push(gap(space::s(), indented(meta)));
         }
         if fit != Fit::Columns {
-            body = body.push(gap(space::L, indented(self.chips_view(colours, anchor))));
+            body = body.push(gap(space::l(), indented(self.chips_view(colours, anchor))));
         }
         if let Some(notes) = self.notes_view(colours) {
-            body = body.push(gap(space::M, notes));
+            body = body.push(gap(space::m(), notes));
         }
         let sections = [self.subtasks_section(), self.checks_section(), self.reviews_section()];
-        body.extend(sections.into_iter().flatten().map(|section| gap(SECTION_GAP, section))).into()
+        body.extend(sections.into_iter().flatten().map(|section| gap(section_gap(), section))).into()
     }
 
     /// "◉ Open · owner/repo#123" under a GitHub item's title; `None` for a plain task.
-    fn github_meta<'a>(&'a self, colours: Option<&'static Palette>) -> Option<Element<'a, Message>> {
+    fn github_meta<'a>(&'a self, colours: Option<Palette>) -> Option<Element<'a, Message>> {
         let look = state_look(self.github()?);
-        let mut line =
-            row![widgets::state_pill(look_mark(colours, look), look.word)].spacing(space::S).align_y(Alignment::Center);
+        let mut line = row![widgets::state_pill(look_mark(colours.as_ref(), look), look.word)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
         if let Some((repo, number)) = self.github_ref() {
-            line = line.push(typo::text(typo::META.tabular(), format!("{repo}#{number}")).style(theme::text_3));
+            line = line.push(typo::text(typo::meta().tabular(), format!("{repo}#{number}")).style(theme::text_3));
         }
-        Some(line.wrap().vertical_spacing(space::XS).into())
+        Some(line.wrap().vertical_spacing(space::xs()).into())
     }
 
-    fn chips_view<'a>(&'a self, colours: Option<&'static Palette>, anchor: &Anchor) -> Element<'a, Message> {
+    fn chips_view<'a>(&'a self, colours: Option<Palette>, anchor: &Anchor) -> Element<'a, Message> {
         let chips = self.chip_props().into_iter().map(|prop| self.chip(prop, colours, anchor)).collect();
         widgets::chip_row(chips)
     }
 
     /// One property as a chip.
-    fn chip<'a>(&'a self, prop: Prop, colours: Option<&'static Palette>, anchor: &Anchor) -> Element<'a, Message> {
+    fn chip<'a>(&'a self, prop: Prop, colours: Option<Palette>, anchor: &Anchor) -> Element<'a, Message> {
         let editable = self.editable();
         let (mark, label, editor) = match prop {
             Prop::Status => {
@@ -1134,7 +1141,7 @@ impl Detail {
                     }
                     None => (self.check(style::CHECK_SIZE), editable.then_some(Message::ToggleDone)),
                 };
-                let value = row![mark, widgets::prop_value(self.status_word())].spacing(space::S);
+                let value = row![mark, widgets::prop_value(self.status_word())].spacing(space::s());
                 widgets::prop_line(tr("Status"), None, value.align_y(Alignment::Center), on_press)
             }
             Prop::Priority => {
@@ -1147,7 +1154,7 @@ impl Detail {
                     ),
                     set => {
                         let value = row![prio_cell(set), widgets::prop_value(set.label())]
-                            .spacing(space::S)
+                            .spacing(space::s())
                             .align_y(Alignment::Center);
                         widgets::prop_line(tr("Priority"), None, value, open(Editor::Priority))
                     }
@@ -1220,11 +1227,12 @@ impl Detail {
                 (Icon::Link, tr("Open link"), Some(place))
             }
         };
-        let mut value =
-            row![typo::text(typo::BODY, label).wrapping(Wrapping::None)].spacing(space::S).align_y(Alignment::Center);
+        let mut value = row![typo::text(typo::body(), label).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
         value = match place {
             Some(place) => value.push(
-                container(typo::text(typo::META, place).style(theme::text_3).wrapping(Wrapping::None))
+                container(typo::text(typo::meta(), place).style(theme::text_3).wrapping(Wrapping::None))
                     .width(Fill)
                     .clip(true),
             ),
@@ -1249,9 +1257,9 @@ impl Detail {
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
                 _ => text_editor::Binding::from_key_press(press),
             })
-            .font(typo::HEADLINE.font)
-            .size(typo::HEADLINE.size)
-            .line_height(typo::HEADLINE.line_height)
+            .font(typo::headline().font)
+            .size(typo::headline().size)
+            .line_height(typo::headline().line_height)
             .padding(Padding::ZERO)
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text, false))
@@ -1262,7 +1270,7 @@ impl Detail {
     /// up with the title ("Add notes …" while empty). Read-only tasks show their notes as text,
     /// and nothing when there are none; GitHub items show theirs as Markdown (task G.12) when
     /// `colours` are known.
-    fn notes_view(&self, colours: Option<&'static Palette>) -> Option<Element<'_, Message>> {
+    fn notes_view(&self, colours: Option<Palette>) -> Option<Element<'_, Message>> {
         if !self.editable() {
             if let Some(colours) = colours
                 && !self.text.is_empty()
@@ -1271,7 +1279,9 @@ impl Detail {
             }
             let notes = self.draft.notes.trim();
             return (!notes.is_empty()).then(|| {
-                indented(typo::text(typo::BODY, notes.to_string()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph))
+                indented(
+                    typo::text(typo::body(), notes.to_string()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+                )
             });
         }
         let field = text_editor(&self.notes)
@@ -1282,14 +1292,14 @@ impl Detail {
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
                 _ => text_editor::Binding::from_key_press(press),
             })
-            .font(typo::BODY.font)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
+            .font(typo::body().font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .padding(style::INPUT_PADDING)
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text_2, true));
         // The field's own 8 at the left bring its text onto the indent of the title.
-        Some(container(field).padding(Padding::new(0.0).left(INDENT - style::INPUT_PADDING.left)).into())
+        Some(container(field).padding(Padding::new(0.0).left(indent() - style::INPUT_PADDING.left)).into())
     }
 
     /// `content` anchored when `editor` is the open one, so its layer floats next to it.
@@ -1314,20 +1324,20 @@ impl Detail {
     ) -> Element<'a, Message> {
         let chevron = if self.folded.contains(&section) { Icon::ChevronRight } else { Icon::ChevronDown };
         let label = row![
-            container(tinted_icon(chevron, icon::SIZE_SM, |p| p.text_3)).center_x(TITLE_MARK),
-            typo::text(typo::CAPTION, title).wrapping(Wrapping::None),
+            container(tinted_icon(chevron, icon::SIZE_SM, |p| p.text_3)).center_x(title_mark()),
+            typo::text(typo::caption(), title).wrapping(Wrapping::None),
         ]
-        .spacing(space::M)
+        .spacing(space::m())
         .align_y(Alignment::Center);
         // Centred in the button, so the title stands on one line with progress and "Hide completed".
         let fold = button(container(label).center_y(Fill))
-            .padding(Padding::new(0.0).right(space::XS))
-            .height(size::CONTROL_SM)
+            .padding(Padding::new(0.0).right(space::xs()))
+            .height(size::control_sm())
             .style(style::button::ghost)
             .on_press(Message::Fold(section));
-        container(row![container(fold).center_y(Fill)].extend(extra).spacing(space::M).align_y(Alignment::Center))
+        container(row![container(fold).center_y(Fill)].extend(extra).spacing(space::m()).align_y(Alignment::Center))
             .width(Fill)
-            .height(size::CONTROL)
+            .height(size::control())
             .into()
     }
 
@@ -1344,7 +1354,7 @@ impl Detail {
         if !subtasks.is_empty() {
             extra.push(widgets::progress_bar(done, subtasks.len()));
             extra.push(
-                typo::text(typo::META.tabular(), format!("{done}/{}", subtasks.len())).style(theme::text_3).into(),
+                typo::text(typo::meta().tabular(), format!("{done}/{}", subtasks.len())).style(theme::text_3).into(),
             );
         }
         extra.push(blank::horizontal().into());
@@ -1371,14 +1381,15 @@ impl Detail {
             .id(SUBTASK_INPUT)
             .on_input(Message::SubtaskEdited)
             .on_submit(Message::SubtaskSubmit)
-            .padding(Padding::new(0.0).left(INDENT).right(space::S))
-            .font(typo::BODY.font)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
+            .padding(Padding::new(0.0).left(indent()).right(space::s()))
+            .font(typo::body().font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .style(bare_input);
-        let plus = container(tinted_icon(Icon::Plus, icon::SIZE_SM, |p| p.text_3)).center_x(TITLE_MARK).center_y(Fill);
+        let plus =
+            container(tinted_icon(Icon::Plus, icon::SIZE_SM, |p| p.text_3)).center_x(title_mark()).center_y(Fill);
         // The "+" lies over the field, so the whole row is the field (hover, click to type).
-        container(stack![container(field).center_y(Fill), plus]).height(size::CONTROL).into()
+        container(stack![container(field).center_y(Fill), plus]).height(size::control()).into()
     }
 
     /// "Checks" of a pull request: the combined state (and merge conflicts); `None` when GitHub
@@ -1544,20 +1555,20 @@ impl Detail {
             .on_input(Message::DueChanged)
             .on_submit(Message::DueSubmit)
             .padding(style::INPUT_PADDING)
-            .font(typo::BODY.font)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
+            .font(typo::body().font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .style(style::text_input);
-        let mut card = column![widgets::section_title(tr("Due date")), quick, field].spacing(space::S);
+        let mut card = column![widgets::section_title(tr("Due date")), quick, field].spacing(space::s());
         if let Some(problem) = self.shown(self.due_problem()) {
             card = card.push(error_text(problem));
         } else if let Some(EventTime::DateTime(at)) = self.draft.due {
             let time = datetime::format_time(datetime::to_local(at).time());
-            card =
-                card.push(typo::text(typo::META, trf("Time {time} is kept", &[("time", &time)])).style(theme::text_3));
+            card = card
+                .push(typo::text(typo::meta(), trf("Time {time} is kept", &[("time", &time)])).style(theme::text_3));
         }
         // As wide as a floating card, so the four quick choices fit on one line.
-        container(card).width(widgets::POPOVER_WIDTH).padding(space::M).style(style::container::menu).into()
+        container(card).width(widgets::POPOVER_WIDTH).padding(space::m()).style(style::container::menu).into()
     }
 
     /// "No parent task", then the other tasks of the draft's list by title, without this task
@@ -1611,11 +1622,11 @@ fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
         .on_toggle(move |_| Message::ToggleSubtask(uid.clone()));
     let title = button(container(list::title_view(task)).width(Fill).clip(true).center_y(Fill))
         .width(Fill)
-        .height(size::CONTROL - LINE)
-        .padding(Padding::new(0.0).right(space::S))
+        .height(size::control() - LINE)
+        .padding(Padding::new(0.0).right(space::s()))
         .style(style::button::list_row(false))
         .on_press(Message::OpenSubtask(task.uid.clone()));
-    let line = row![container(check).center_x(TITLE_MARK), title].spacing(space::M).align_y(Alignment::Center);
+    let line = row![container(check).center_x(title_mark()), title].spacing(space::m()).align_y(Alignment::Center);
     column![line, rule::horizontal(LINE).style(style::rule)].into()
 }
 
@@ -1623,12 +1634,12 @@ fn subtask_row(task: &Todo, colour: Color) -> Element<'_, Message> {
 /// title's mark, then its word; 32 high with a line below.
 fn look_row<'a>(look: Look) -> Element<'a, Message> {
     let line = row![
-        container(tinted_icon(look.icon, icon::SIZE, look.colour)).center_x(TITLE_MARK),
-        typo::text(typo::BODY, look.word).wrapping(Wrapping::None),
+        container(tinted_icon(look.icon, icon::SIZE, look.colour)).center_x(title_mark()),
+        typo::text(typo::body(), look.word).wrapping(Wrapping::None),
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .align_y(Alignment::Center);
-    column![container(line).center_y(size::CONTROL - LINE), rule::horizontal(LINE).style(style::rule)].into()
+    column![container(line).center_y(size::control() - LINE), rule::horizontal(LINE).style(style::rule)].into()
 }
 
 /// The mark of a GitHub state for a pill or chip: tinted with `colours` (the current palette),
@@ -1639,12 +1650,12 @@ fn look_mark(colours: Option<&Palette>, look: Look) -> Mark {
 
 /// `which`, `edge` wide, in the colour `pick` takes from the current theme.
 fn tinted_icon<'a>(which: Icon, edge: f32, pick: fn(&Palette) -> Color) -> Element<'a, Message> {
-    icon::icon(which, edge).style(move |t, _| svg::Style { color: Some(pick(palette(t))) }).into()
+    icon::icon(which, edge).style(move |t, _| svg::Style { color: Some(pick(&palette(t))) }).into()
 }
 
 /// A due date in a property row: `BODY` tabular, in the attention colour when overdue.
 fn due_value<'a>(label: String, overdue: bool) -> Element<'a, Message> {
-    let text = typo::text(typo::BODY.tabular(), label).wrapping(Wrapping::None).style(move |t: &Theme| {
+    let text = typo::text(typo::body().tabular(), label).wrapping(Wrapping::None).style(move |t: &Theme| {
         let p = palette(t);
         iced::widget::text::Style { color: Some(if overdue { p.attention_text } else { p.text }) }
     });
@@ -1661,7 +1672,7 @@ fn typo_line(level: typo::Level) -> f32 {
 
 /// `content` moved in to the text of the title (past its mark).
 fn indented<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    container(content).padding(Padding::new(0.0).left(INDENT)).into()
+    container(content).padding(Padding::new(0.0).left(indent())).into()
 }
 
 /// `content` with `top` free above it.
@@ -1689,7 +1700,7 @@ fn bare_editor(theme: &Theme, status: text_editor::Status, value: Color, surface
     let lit = surface && matches!(status, text_editor::Status::Hovered | text_editor::Status::Focused { .. });
     text_editor::Style {
         background: Background::Color(if lit { p.hover } else { Color::TRANSPARENT }),
-        border: border::rounded(theme::radius::SM).width(0).color(Color::TRANSPARENT),
+        border: border::rounded(theme::radius::sm()).width(0).color(Color::TRANSPARENT),
         placeholder: p.text_3,
         value: if faded { value.scale_alpha(style::DISABLED_ALPHA) } else { value },
         ..base
@@ -1704,7 +1715,7 @@ fn bare_input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let lit = matches!(status, text_input::Status::Hovered | text_input::Status::Focused { .. });
     text_input::Style {
         background: Background::Color(if lit { p.hover } else { Color::TRANSPARENT }),
-        border: border::rounded(theme::radius::SM).width(0).color(Color::TRANSPARENT),
+        border: border::rounded(theme::radius::sm()).width(0).color(Color::TRANSPARENT),
         placeholder: p.text_3,
         value: p.text,
         ..base
@@ -1718,7 +1729,7 @@ fn prio_cell<'a>(prio: Prio) -> Element<'a, Message> {
 }
 
 fn error_text<'a>(problem: &'a str) -> Element<'a, Message> {
-    typo::text(typo::META, problem)
+    typo::text(typo::meta(), problem)
         .style(|t: &Theme| iced::widget::text::Style { color: Some(palette(t).error_text) })
         .into()
 }

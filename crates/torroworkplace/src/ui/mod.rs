@@ -27,7 +27,7 @@
 //! same way the calendar and the tasks app do. In wide windows the sidebar collapses to a rail of
 //! icons (U.2: panel button at its top or `[`, remembered in `ui.json`); medium windows always show
 //! that rail, whose panel button opens the drawer. The page sits under a 44-high header bar with
-//! its title and actions, at most [`size::CONTENT_MAX`] wide.
+//! its title and actions, at most [`size::content_max()`] wide.
 //!
 //! Mini and strip tiles have no window frame: [`glance`] shows the status instead (design skill,
 //! section 6).
@@ -848,8 +848,8 @@ impl Ui {
             )
         };
         let version = format!("Torro Workplace · {} {}", tr("Version"), env!("CARGO_PKG_VERSION"));
-        let version = container(typo::text(typo::META, version).style(theme::text_3).wrapping(Wrapping::None))
-            .center_y(size::ROW_SIDEBAR)
+        let version = container(typo::text(typo::meta(), version).style(theme::text_3).wrapping(Wrapping::None))
+            .center_y(size::row_sidebar())
             .padding(style::ITEM_PADDING)
             .clip(true);
         let mut footer = vec![item(Section::General)];
@@ -949,14 +949,14 @@ impl Ui {
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
-        let page = column(notices).push(page).spacing(space::L);
+        let page = column(notices).push(page).spacing(space::l());
         let page = if class == SizeClass::Medium {
             // Flush with the window: the page starts at the margin (24), where the ink of the header's
             // first symbol starts (16 padding, 6 around the symbol, 2 inside the icon), instead of
             // floating in the middle between header and window edge.
-            container(container(page).width(Fill).max_width(size::CONTENT_MAX)).padding(page_margin(class))
+            container(container(page).width(Fill).max_width(size::content_max())).padding(page_margin(class))
         } else {
-            container(widgets::content(size::CONTENT_MAX, page)).padding(page_margin(class))
+            container(widgets::content(size::content_max(), page)).padding(page_margin(class))
         };
         scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
@@ -966,12 +966,13 @@ impl Ui {
     }
 }
 
-/// The margin around a page: 24, in a narrow window 16, in a tile 12 (design skill, section 6).
-fn page_margin(class: SizeClass) -> f32 {
+/// The margin around a page: the design's page padding (24 in the standard), in a narrow window 16,
+/// in a tile 12 (design skill, section 6).
+fn page_margin(class: SizeClass) -> Padding {
     match class {
-        SizeClass::Wide | SizeClass::Medium => space::XL,
-        SizeClass::Narrow => space::L,
-        SizeClass::Mini | SizeClass::Strip => space::M,
+        SizeClass::Wide | SizeClass::Medium => layout::page_padding(),
+        SizeClass::Narrow => Padding::new(space::l()),
+        SizeClass::Mini | SizeClass::Strip => Padding::new(space::m()),
     }
 }
 
@@ -980,11 +981,11 @@ fn crumb<'a>(section: Section, name: String) -> Element<'a, Message> {
     let chevron = icon::icon(Icon::ChevronRight, icon::SIZE_SM)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     row![
-        typo::text(typo::BODY, section.label()).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::body(), section.label()).style(theme::text_3).wrapping(Wrapping::None),
         chevron,
-        typo::text(typo::BODY_STRONG, name).wrapping(Wrapping::None),
+        typo::text(typo::body_strong(), name).wrapping(Wrapping::None),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_y(Alignment::Center)
     .into()
 }
@@ -994,7 +995,7 @@ fn crumb<'a>(section: Section, name: String) -> Element<'a, Message> {
 fn notice<'a>(problem: String) -> Element<'a, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
-    row![alert, typo::text(typo::BODY, problem)].spacing(space::S).align_y(Alignment::Center).into()
+    row![alert, typo::text(typo::body(), problem)].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 // ----- Building blocks of the pages -----------------------------------------------------------
@@ -1015,18 +1016,18 @@ fn setting_row<'a, M: 'a>(
     control: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
     let tall = detail.is_some();
-    let mut lines = column![one_line(typo::text(typo::BODY, label))];
+    let mut lines = column![one_line(typo::text(typo::body(), label))];
     if let Some(detail) = detail {
-        lines = lines.push(one_line(typo::text(typo::META, detail).style(theme::text_2)));
+        lines = lines.push(one_line(typo::text(typo::meta(), detail).style(theme::text_2)));
     }
-    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::M).align_y(Alignment::Center);
-    row_frame(row![text.width(Fill), control.into()].spacing(space::L).align_y(Alignment::Center), tall)
+    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
+    row_frame(row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center), tall)
 }
 
 /// `content` as one line of a settings group: 44 high (56 with two lines of text), 16 at the sides.
 fn row_frame<'a, M: 'a>(content: impl Into<Element<'a, M>>, tall: bool) -> Element<'a, M> {
-    let height = if tall { size::HEADER + space::M } else { size::HEADER };
-    container(content).width(Fill).center_y(height).padding([0.0, space::L]).into()
+    let height = if tall { size::header() + space::m() } else { size::header() };
+    container(content).width(Fill).center_y(height).padding([0.0, space::l()]).into()
 }
 
 /// `text` on one line, as wide as there is room, cut off at the end instead of wrapping (Iced 0.14
@@ -1052,7 +1053,7 @@ fn chevron<'a, M: 'a>() -> Element<'a, M> {
 /// radius 10, shadow, 24 inside), centred and at most `max_width` wide; the window behind it is
 /// dimmed, and a click next to it sends `on_dismiss`. Escape is the page's `escape`.
 fn dialog<'a, M: Clone + 'a>(content: impl Into<Element<'a, M>>, max_width: f32, on_dismiss: M) -> Element<'a, M> {
-    let card = container(content).padding(space::XL).width(Fill).style(style::container::popover);
+    let card = container(content).padding(space::xl()).width(Fill).style(style::container::popover);
     // `modal` takes its size from its base; an empty base that fills the window.
     widgets::modal(blank().width(Fill).height(Fill), card, max_width, on_dismiss)
 }
@@ -1072,11 +1073,11 @@ fn confirm<'a, M: Clone + 'a>(
         widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(on_cancel.clone())),
         widgets::text_button(None, confirm, style::button::danger, Some(on_confirm)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     let content =
-        column![typo::text(typo::TITLE, title), typo::text(typo::BODY, consequence).style(theme::text_2), buttons]
-            .spacing(space::L);
+        column![typo::text(typo::title(), title), typo::text(typo::body(), consequence).style(theme::text_2), buttons]
+            .spacing(space::l());
     dialog(content, widgets::POPOVER_WIDTH, on_cancel)
 }
 
@@ -1325,10 +1326,10 @@ mod tests {
 
     #[test]
     fn page_margin_follows_the_size_class() {
-        assert_eq!(page_margin(SizeClass::Wide), space::XL);
-        assert_eq!(page_margin(SizeClass::Medium), space::XL);
-        assert_eq!(page_margin(SizeClass::Narrow), space::L);
-        assert_eq!(page_margin(SizeClass::Mini), space::M);
+        assert_eq!(page_margin(SizeClass::Wide), layout::page_padding());
+        assert_eq!(page_margin(SizeClass::Medium), Padding::new(space::xl()), "24 in the standard design");
+        assert_eq!(page_margin(SizeClass::Narrow), Padding::new(space::l()));
+        assert_eq!(page_margin(SizeClass::Mini), Padding::new(space::m()));
     }
 
     #[test]

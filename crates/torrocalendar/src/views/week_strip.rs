@@ -21,9 +21,13 @@ use crate::app::Message;
 /// At most this many dots under a day; more calendars on one day add nothing at a glance.
 const MAX_DOTS: usize = 3;
 /// The day number: 13/500 with tabular figures, as in the week view's header.
-const DAY_NUMBER: typo::Level = typo::BODY_STRONG.tabular();
+fn day_number() -> typo::Level {
+    typo::body_strong().tabular()
+}
 /// Edge of the circle around a day number (`.strip b`, 28).
-const CIRCLE: f32 = size::CONTROL_SM;
+fn circle() -> f32 {
+    size::control_sm()
+}
 
 /// The strip for the week of `data.anchor`, with dots from `data.items` (load the whole week for
 /// them) and a line below.
@@ -35,7 +39,7 @@ pub fn view(data: &ViewData<'_>) -> Element<'static, Message> {
         let day = first + Duration::days(offset);
         cell(day, today, data.anchor, dots(&entries, day))
     });
-    let strip = container(row(days)).padding(space::XS).width(Length::Fill);
+    let strip = container(row(days)).padding(space::xs()).width(Length::Fill);
     column![strip, rule::horizontal(1).style(style::rule)].into()
 }
 
@@ -60,8 +64,8 @@ fn letter(day: NaiveDate) -> String {
 fn cell(day: NaiveDate, today: NaiveDate, shown: NaiveDate, dots: Vec<Color>) -> Element<'static, Message> {
     let is_today = day == today;
     let weekend = matches!(day.weekday(), Weekday::Sat | Weekday::Sun);
-    let letter = typo::text(typo::MICRO, letter(day)).style(if is_today { theme::text } else { theme::text_3 });
-    let number = typo::text(DAY_NUMBER, day.day().to_string());
+    let letter = typo::text(typo::micro(), letter(day)).style(if is_today { theme::text } else { theme::text_3 });
+    let number = typo::text(day_number(), day.day().to_string());
     let number = if is_today {
         number.style(|t: &Theme| TextStyle { color: Some(palette(t).on_accent) })
     } else if day == shown {
@@ -69,7 +73,7 @@ fn cell(day: NaiveDate, today: NaiveDate, shown: NaiveDate, dots: Vec<Color>) ->
     } else {
         number.style(if weekend { theme::text_3 } else { theme::text_2 })
     };
-    let circle = container(number).center(CIRCLE).style(move |t: &Theme| {
+    let circle = container(number).center(circle()).style(move |t: &Theme| {
         let p = palette(t);
         let fill = if is_today {
             Some(p.accent)
@@ -80,16 +84,16 @@ fn cell(day: NaiveDate, today: NaiveDate, shown: NaiveDate, dots: Vec<Color>) ->
         };
         container::Style {
             background: fill.map(Background::Color),
-            border: border::rounded(CIRCLE / 2.0),
+            border: border::rounded(circle() / 2.0),
             ..container::Style::default()
         }
     });
-    let dots = row(dots.into_iter().map(|color| widgets::color_dot(color, space::XS))).spacing(space::XS);
+    let dots = row(dots.into_iter().map(|color| widgets::color_dot(color, space::xs()))).spacing(space::xs());
     let content =
-        column![letter, circle, container(dots).height(space::XS)].spacing(space::XS).align_x(Horizontal::Center);
+        column![letter, circle, container(dots).height(space::xs())].spacing(space::xs()).align_x(Horizontal::Center);
     button(container(content).center_x(Length::Fill))
         .width(Length::FillPortion(1))
-        .padding(space::XS)
+        .padding(space::xs())
         .style(style::button::ghost)
         .on_press(Message::GoTo(day))
         .into()

@@ -17,7 +17,7 @@ use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{palette, space};
 use torro_gui::zoom::{self, Step};
-use torro_gui::{style, typo, widgets};
+use torro_gui::{layout, style, typo, widgets};
 use torro_ipc::{Request, SettingKey};
 
 use super::{Action, Data, pressable, setting_row};
@@ -116,19 +116,19 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
     );
 
-    column![language, appearance, interface, calendar, startup].spacing(space::XL).into()
+    column![language, appearance, interface, calendar, startup].spacing(layout::section_gap()).into()
 }
 
 /// "From" and "Until" of the night, each a list of the quarter hours of a day.
 fn night_control<'a>(night: Night) -> Element<'a, Message> {
-    let label = |text: &'a str| typo::text(typo::META, text).style(torro_gui::theme::text_2);
+    let label = |text: &'a str| typo::text(typo::meta(), text).style(torro_gui::theme::text_2);
     row![
         label(tr("From")),
         time_field(night.from, Message::NightFrom),
         label(tr("Until")),
         time_field(night.to, Message::NightTo),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center)
     .into()
 }
@@ -136,10 +136,10 @@ fn night_control<'a>(night: Night) -> Element<'a, Message> {
 /// A time on the quarter hour as a pick list in the look of a secondary button.
 fn time_field<'a>(time: Quarter, on_pick: fn(Quarter) -> Message) -> Element<'a, Message> {
     pick_list(Quarter::all().collect::<Vec<_>>(), Some(time), on_pick)
-        .padding(style::PICK_LIST_PADDING)
-        .text_size(typo::CAPTION.size)
-        .text_line_height(typo::CAPTION.line_height)
-        .font(typo::CAPTION.font)
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
         .into()
@@ -149,15 +149,15 @@ fn time_field<'a>(time: Quarter, on_pick: fn(Quarter) -> Message) -> Element<'a,
 /// buttons stay where they are; a button that would change nothing is off.
 fn zoom_control<'a>(level: Zoom) -> Element<'a, Message> {
     let press = |step: Step| (step.apply(level) != level).then_some(Message::Zoom(step));
-    let width = typo::text_width(&zoom::label(Zoom::MAX), typo::BODY.tabular());
-    let value = container(typo::text(typo::BODY.tabular(), zoom::label(level))).center_x(width);
+    let width = typo::text_width(&zoom::label(Zoom::MAX), typo::body().tabular());
+    let value = container(typo::text(typo::body().tabular(), zoom::label(level))).center_x(width);
     row![
         widgets::icon_button(Icon::Minus, tr("Zoom out"), press(Step::Out)),
         value,
         widgets::icon_button(Icon::Plus, tr("Zoom in"), press(Step::In)),
         widgets::text_button(None, tr("Reset"), style::button::secondary, press(Step::Reset)),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_y(Alignment::Center)
     .into()
 }

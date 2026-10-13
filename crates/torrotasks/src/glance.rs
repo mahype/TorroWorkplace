@@ -46,19 +46,29 @@ use crate::app::Message;
 use crate::list::{self, due_text};
 
 /// A chip is never wider than this, so one long title does not push the others out.
-const CHIP_MAX: f32 = size::SIDEBAR;
+fn chip_max() -> f32 {
+    size::sidebar()
+}
 /// The one-pixel frame of a chip (it lies inside the chip's bounds).
 const FRAME: f32 = 1.0;
 /// The numbers of the strip take at most this share of its width.
 const STRIP_INFO_SHARE: f32 = 4.0;
 /// The level of the numbers and the calm line, largest first: the first that fits is used.
-const HEAD_LEVELS: [typo::Level; 2] = [typo::TITLE.tabular(), typo::BODY_STRONG.tabular()];
+fn head_levels() -> [typo::Level; 2] {
+    [typo::title().tabular(), typo::body_strong().tabular()]
+}
 /// The levels of the mini's figures, largest first: the first that fits is used.
-const FIGURE_LEVELS: [typo::Level; 2] = [typo::DISPLAY.tabular(), typo::TITLE.tabular()];
+fn figure_levels() -> [typo::Level; 2] {
+    [typo::display().tabular(), typo::title().tabular()]
+}
 /// The status dot in front of "overdue" and of an overdue date: `widgets::status_dot` is this wide.
-const DOT: f32 = space::S;
+fn dot() -> f32 {
+    space::s()
+}
 /// The height of a row of the mini tile: a control, so the check is a 28-high click target.
-const ROW: f32 = size::CONTROL_SM;
+fn row_height() -> f32 {
+    size::control_sm()
+}
 /// A mini tile with room for this many rows is tall: it sets its rows apart with quiet heads.
 pub const HEADS_FROM: usize = 6;
 
@@ -248,30 +258,30 @@ pub fn due_label(due: EventTime, today: NaiveDate, compact: bool) -> String {
 
 /// The height of the line with the numbers (or the calm line) in the strip, at the largest level.
 fn head_height() -> f32 {
-    line_height(HEAD_LEVELS[0])
+    line_height(head_levels()[0])
 }
 
 /// The height of the head of the mini tile: the figures at the largest level.
 fn figure_height() -> f32 {
-    line_height(FIGURE_LEVELS[0])
+    line_height(figure_levels()[0])
 }
 
 /// The height of the quiet error line with its gap above.
 fn error_height() -> f32 {
-    space::XS + line_height(typo::META)
+    space::xs() + line_height(typo::meta())
 }
 
 /// How many rows fit in a mini tile `height` high under the numbers, with room for the error line
 /// if there is one.
 pub fn rows_that_fit(height: f32, error: bool) -> usize {
-    let above = 2.0 * space::M + figure_height() + space::S + if error { error_height() } else { 0.0 };
-    ((height - above) / ROW).floor().max(0.0) as usize
+    let above = 2.0 * space::m() + figure_height() + space::s() + if error { error_height() } else { 0.0 };
+    ((height - above) / row_height()).floor().max(0.0) as usize
 }
 
 /// How many chip lines fit in a strip `height` high.
 pub fn lines_that_fit(height: f32) -> usize {
-    let room = height - 2.0 * space::S;
-    ((room + space::XS) / (style::CHIP_HEIGHT + space::XS)).floor().max(0.0) as usize
+    let room = height - 2.0 * space::s();
+    ((room + space::xs()) / (style::CHIP_HEIGHT + space::xs())).floor().max(0.0) as usize
 }
 
 /// The first level of `levels` in which `text` fits `width`, else the last one.
@@ -340,20 +350,20 @@ fn lead(index: usize, todo: &Todo, color: Color, above: f32, left: f32, right: f
 
 /// A quiet head of a tall mini tile: the band's name in `CAPTION` and `text_3`, as high as a row.
 fn band_head(band: Band) -> Element<'static, Message> {
-    container(typo::text(typo::CAPTION, band.label()).style(theme::text_3).wrapping(Wrapping::None))
-        .height(ROW)
-        .align_bottom(ROW)
+    container(typo::text(typo::caption(), band.label()).style(theme::text_3).wrapping(Wrapping::None))
+        .height(row_height())
+        .align_bottom(row_height())
         .into()
 }
 
 /// A line in `META` and `text_3`, never wrapped.
 fn quiet(line: impl text::IntoFragment<'static>) -> iced::widget::Text<'static> {
-    typo::text(typo::META, line).style(theme::text_3).wrapping(Wrapping::None)
+    typo::text(typo::meta(), line).style(theme::text_3).wrapping(Wrapping::None)
 }
 
 /// The error line: `META` in the error colour, cut to `width`.
 fn error_line(error: &str, width: f32) -> Element<'static, Message> {
-    typo::text(typo::META, ellipsize(error, typo::META, width))
+    typo::text(typo::meta(), ellipsize(error, typo::meta(), width))
         .wrapping(Wrapping::None)
         .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
         .into()
@@ -373,7 +383,7 @@ fn split_count(text: &str) -> (&str, &str) {
     text.split_once(' ').unwrap_or(("", text))
 }
 
-/// The level for the figures of the mini: the largest of [`FIGURE_LEVELS`] under which all parts
+/// The level for the figures of the mini: the largest of [`figure_levels()`] under which all parts
 /// together (figure, word, the dot of an overdue part and the gaps) fit `width`.
 fn figure_level(parts: &[(String, bool)], width: f32) -> typo::Level {
     let total = |level: typo::Level| {
@@ -381,13 +391,17 @@ fn figure_level(parts: &[(String, bool)], width: f32) -> typo::Level {
             .iter()
             .map(|(text, overdue)| {
                 let (figure, word) = split_count(text);
-                let dot = if *overdue { DOT + space::XS } else { 0.0 };
-                text_width(figure, level) + space::XS + dot + text_width(word, typo::META)
+                let dot = if *overdue { dot() + space::xs() } else { 0.0 };
+                text_width(figure, level) + space::xs() + dot + text_width(word, typo::meta())
             })
             .sum();
-        parts_width + space::L * parts.len().saturating_sub(1) as f32
+        parts_width + space::l() * parts.len().saturating_sub(1) as f32
     };
-    FIGURE_LEVELS.iter().copied().find(|level| total(*level) <= width).unwrap_or(FIGURE_LEVELS[FIGURE_LEVELS.len() - 1])
+    figure_levels()
+        .iter()
+        .copied()
+        .find(|level| total(*level) <= width)
+        .unwrap_or(figure_levels()[figure_levels().len() - 1])
 }
 
 /// The mini's numbers: per part the figure in the fitting level (`text`), then the word in `META`
@@ -395,16 +409,16 @@ fn figure_level(parts: &[(String, bool)], width: f32) -> typo::Level {
 /// carries the text and the word says it too.
 fn figures_line(parts: &[(String, bool)], width: f32) -> Element<'static, Message> {
     let level = figure_level(parts, width);
-    let mut line = row![].spacing(space::L).align_y(Alignment::Center);
+    let mut line = row![].spacing(space::l()).align_y(Alignment::Center);
     for (text, overdue) in parts {
         let (figure, word) = split_count(text);
         let mut part = row![typo::text(level, figure.to_string()).wrapping(Wrapping::None)]
-            .spacing(space::XS)
+            .spacing(space::xs())
             .align_y(Alignment::Center);
         if *overdue {
             part = part.push(widgets::status_dot(widgets::Status::Attention));
         }
-        part = part.push(typo::text(typo::META, word.to_string()).style(theme::text_2).wrapping(Wrapping::None));
+        part = part.push(typo::text(typo::meta(), word.to_string()).style(theme::text_2).wrapping(Wrapping::None));
         line = line.push(part);
     }
     container(line).height(figure_height()).center_y(figure_height()).into()
@@ -412,7 +426,7 @@ fn figures_line(parts: &[(String, bool)], width: f32) -> Element<'static, Messag
 
 /// The calm line, in the largest level that fits `width`, cut when even the smallest does not.
 fn calm_line(width: f32) -> Element<'static, Message> {
-    let level = fit_level(calm(), &HEAD_LEVELS, width);
+    let level = fit_level(calm(), &head_levels(), width);
     let content = ellipsize(calm(), level, width);
     container(typo::text(level, content).style(theme::text_2).wrapping(Wrapping::None))
         .height(head_height())
@@ -424,7 +438,7 @@ fn calm_line(width: f32) -> Element<'static, Message> {
 /// is nothing to do here.
 fn all_done(width: f32) -> Element<'static, Message> {
     let mark = icon::icon(Icon::CircleCheck, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
-    let content = column![mark, calm_line(width)].spacing(space::S).align_x(Alignment::Center);
+    let content = column![mark, calm_line(width)].spacing(space::s()).align_x(Alignment::Center);
     container(content).center(Fill).into()
 }
 
@@ -441,8 +455,8 @@ fn color_of(data: &GlanceData<'_>, todo: &Todo) -> Color {
 /// The width a row's title has left of `width` when `due` stands at the right (an `overdue` one
 /// with its dot in front).
 fn title_room(width: f32, due: &str, overdue: bool) -> f32 {
-    let dot = if overdue { DOT + space::XS } else { 0.0 };
-    width - style::CHECK_SIZE - space::S - dot - text_width(due, typo::META) - space::S
+    let dot = if overdue { dot() + space::xs() } else { 0.0 };
+    width - style::CHECK_SIZE - space::s() - dot - text_width(due, typo::meta()) - space::s()
 }
 
 /// Whether the dates of the `shown` rows lose their weekday: when one title would otherwise be
@@ -452,7 +466,7 @@ fn compact_dates(shown: &[Pick], data: &GlanceData<'_>, width: f32) -> bool {
         let todo = &data.todos[pick.index];
         todo.due.is_some_and(|due| {
             let full = due_label(due, data.today, false);
-            text_width(&todo.summary, typo::BODY) > title_room(width, &full, pick.overdue)
+            text_width(&todo.summary, typo::body()) > title_room(width, &full, pick.overdue)
         })
     })
 }
@@ -462,19 +476,19 @@ fn compact_dates(shown: &[Pick], data: &GlanceData<'_>, width: f32) -> bool {
 /// just a colour).
 fn row_view(pick: Pick, data: &GlanceData<'_>, width: f32, compact: bool) -> Element<'static, Message> {
     let todo = &data.todos[pick.index];
-    let above = (ROW - style::CHECK_SIZE) / 2.0;
-    let check = lead(pick.index, todo, color_of(data, todo), above, 0.0, space::S);
+    let above = (row_height() - style::CHECK_SIZE) / 2.0;
+    let check = lead(pick.index, todo, color_of(data, todo), above, 0.0, space::s());
     let due = todo.due.map(|due| due_label(due, data.today, compact));
     let title_width =
-        due.as_deref().map_or(width - style::CHECK_SIZE - space::S, |due| title_room(width, due, pick.overdue));
-    let title = typo::text(typo::BODY, ellipsize(&todo.summary, typo::BODY, title_width)).wrapping(Wrapping::None);
-    let mut line = row![check, title].align_y(Alignment::Center).height(ROW);
+        due.as_deref().map_or(width - style::CHECK_SIZE - space::s(), |due| title_room(width, due, pick.overdue));
+    let title = typo::text(typo::body(), ellipsize(&todo.summary, typo::body(), title_width)).wrapping(Wrapping::None);
+    let mut line = row![check, title].align_y(Alignment::Center).height(row_height());
     if let Some(due) = due {
         line = line.push(Space::new().width(Fill));
         if pick.overdue {
-            line = line.push(widgets::status_dot(widgets::Status::Attention)).push(Space::new().width(space::XS));
+            line = line.push(widgets::status_dot(widgets::Status::Attention)).push(Space::new().width(space::xs()));
         }
-        line = line.push(typo::text(typo::META.tabular(), due).wrapping(Wrapping::None).style(theme::text_3));
+        line = line.push(typo::text(typo::meta().tabular(), due).wrapping(Wrapping::None).style(theme::text_3));
     }
     line.into()
 }
@@ -482,11 +496,11 @@ fn row_view(pick: Pick, data: &GlanceData<'_>, width: f32, compact: bool) -> Ele
 /// The mini tile for a window of `size`: the numbers (or the calm line) at the top, then the next
 /// open tasks that fit the height, then "+4 more". All done: a calm check mark and the line.
 pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
-    let width = (size.width - 2.0 * space::M).max(0.0);
+    let width = (size.width - 2.0 * space::m()).max(0.0);
     let counts = counts(data.todos, data.today);
     let picks = queue(data.todos, data.today);
     if counts.is_empty() && picks.is_empty() && data.error.is_none() {
-        return tile(all_done(width), Padding::new(space::M));
+        return tile(all_done(width), Padding::new(space::m()));
     }
 
     let parts = count_parts(counts);
@@ -497,9 +511,9 @@ pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     };
     let mut content = column![head];
     if let Some(error) = data.error {
-        content = content.push(Space::new().height(space::XS)).push(error_line(error, width));
+        content = content.push(Space::new().height(space::xs())).push(error_line(error, width));
     }
-    content = content.push(Space::new().height(space::S));
+    content = content.push(Space::new().height(space::s()));
 
     let fit = rows_that_fit(size.height, data.error.is_some());
     let bands: Vec<Band> = picks.iter().map(|pick| Band::of(&data.todos[pick.index], data.today)).collect();
@@ -515,20 +529,20 @@ pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     }
     if let Some(more) = more {
         let label = trf("+{n} more", &[("n", &more)]);
-        content = content.push(container(quiet(label)).height(ROW).center_y(ROW));
+        content = content.push(container(quiet(label)).height(row_height()).center_y(row_height()));
     }
-    tile(content, Padding::new(space::M))
+    tile(content, Padding::new(space::m()))
 }
 
 /// Width of a chip in front of its title: the left padding, the circle and the gap after it.
 fn chip_lead() -> f32 {
-    style::CHIP_PADDING.left + style::CHECK_SIZE + space::XS
+    style::CHIP_PADDING.left + style::CHECK_SIZE + space::xs()
 }
 
 /// The estimated width of the chip of `title`: its text, what stands before and after it, and the
 /// frame; never wider than `max`.
 pub fn chip_width(title: &str, max: f32) -> f32 {
-    (chip_lead() + text_width(title, typo::CAPTION) + style::CHIP_PADDING.right + 2.0 * FRAME).min(max)
+    (chip_lead() + text_width(title, typo::caption()) + style::CHIP_PADDING.right + 2.0 * FRAME).min(max)
 }
 
 /// One task of the strip as a chip `width` wide: the check, then the title in `CAPTION` cut with
@@ -536,10 +550,10 @@ pub fn chip_width(title: &str, max: f32) -> f32 {
 fn chip(pick: Pick, data: &GlanceData<'_>, width: f32) -> Element<'static, Message> {
     let todo = &data.todos[pick.index];
     let above = (style::CHIP_HEIGHT - style::CHECK_SIZE) / 2.0;
-    let check = lead(pick.index, todo, color_of(data, todo), above, style::CHIP_PADDING.left, space::XS);
+    let check = lead(pick.index, todo, color_of(data, todo), above, style::CHIP_PADDING.left, space::xs());
     let title_width = width - chip_lead() - style::CHIP_PADDING.right - 2.0 * FRAME;
     let title =
-        typo::text(typo::CAPTION, ellipsize(&todo.summary, typo::CAPTION, title_width)).wrapping(Wrapping::None);
+        typo::text(typo::caption(), ellipsize(&todo.summary, typo::caption(), title_width)).wrapping(Wrapping::None);
     container(row![check, title].align_y(Alignment::Center))
         .width(width)
         .height(style::CHIP_HEIGHT)
@@ -564,9 +578,9 @@ fn numbers_column(parts: &[(String, bool)], width: f32) -> Element<'static, Mess
     }
     let level = parts
         .iter()
-        .map(|(text, _)| fit_level(text, &HEAD_LEVELS, width))
+        .map(|(text, _)| fit_level(text, &head_levels(), width))
         .min_by(|a, b| a.size.0.total_cmp(&b.size.0))
-        .unwrap_or(HEAD_LEVELS[0]);
+        .unwrap_or(head_levels()[0]);
     let mut lines = column![];
     for (content, overdue) in parts {
         lines = lines.push(part(ellipsize(content, level, width), *overdue, level));
@@ -577,38 +591,38 @@ fn numbers_column(parts: &[(String, bool)], width: f32) -> Element<'static, Mess
 /// The strip for a window of `size`: at the left the numbers (or the calm line), beside them the
 /// next open tasks as chips on one line, and "+4" for those that do not fit.
 pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
-    let inner = (size.width - 2.0 * space::M).max(0.0);
+    let inner = (size.width - 2.0 * space::m()).max(0.0);
     let counts = counts(data.todos, data.today);
     let picks = queue(data.todos, data.today);
     if counts.is_empty() && picks.is_empty() && data.error.is_none() {
-        return tile(all_done(inner), Padding::new(space::S));
+        return tile(all_done(inner), Padding::new(space::s()));
     }
 
     let parts = count_parts(counts);
     let wanted = if parts.is_empty() {
-        text_width(calm(), HEAD_LEVELS[1])
+        text_width(calm(), head_levels()[1])
     } else {
-        parts.iter().map(|(text, _)| text_width(text, HEAD_LEVELS[0])).fold(0.0, f32::max)
+        parts.iter().map(|(text, _)| text_width(text, head_levels()[0])).fold(0.0, f32::max)
     };
-    let left = wanted.min(size::SIDEBAR).min(inner / STRIP_INFO_SHARE).ceil();
+    let left = wanted.min(size::sidebar()).min(inner / STRIP_INFO_SHARE).ceil();
     let mut info = column![numbers_column(&parts, left)];
     if let Some(error) = data.error {
-        info = info.push(Space::new().height(space::XS)).push(error_line(error, left));
+        info = info.push(Space::new().height(space::xs())).push(error_line(error, left));
     }
 
-    let avail = (inner - left - space::L).max(0.0);
+    let avail = (inner - left - space::l()).max(0.0);
     let more_label = |n: usize| format!("+{n}");
     // Room for the widest count that can occur, so the cut does not depend on the count itself.
-    let more_room = text_width(&more_label(picks.len()), typo::META) + space::S;
+    let more_room = text_width(&more_label(picks.len()), typo::meta()) + space::s();
     let widths: Vec<f32> =
-        picks.iter().map(|pick| chip_width(&data.todos[pick.index].summary, CHIP_MAX).min(avail)).collect();
+        picks.iter().map(|pick| chip_width(&data.todos[pick.index].summary, chip_max()).min(avail)).collect();
     // One line of chips: the strip is a ticker, not a wall (R.2).
-    let (lines, left_out) = flow(&widths, avail, lines_that_fit(size.height).min(1), space::XS, more_room);
+    let (lines, left_out) = flow(&widths, avail, lines_that_fit(size.height).min(1), space::xs(), more_room);
 
-    let mut chips = column![].spacing(space::XS);
+    let mut chips = column![].spacing(space::xs());
     let last = lines.len().saturating_sub(1);
     for (n, line) in lines.iter().enumerate() {
-        let mut chips_line = row![].spacing(space::XS).align_y(Alignment::Center);
+        let mut chips_line = row![].spacing(space::xs()).align_y(Alignment::Center);
         for &index in line {
             chips_line = chips_line.push(chip(picks[index], data, widths[index]));
         }
@@ -622,10 +636,10 @@ pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     }
     // Numbers and chips stand in the middle of the strip's height, not stuck to its top.
     let content = row![container(info).width(left).clip(true), container(chips).width(Fill).clip(true)]
-        .spacing(space::L)
+        .spacing(space::l())
         .align_y(Alignment::Center)
         .height(Fill);
-    tile(content, Padding { top: space::S, bottom: space::S, left: space::M, right: space::M })
+    tile(content, Padding { top: space::s(), bottom: space::s(), left: space::m(), right: space::m() })
 }
 
 #[cfg(test)]
@@ -809,18 +823,18 @@ mod tests {
 
     #[test]
     fn chips_are_as_wide_as_their_title_but_never_too_wide() {
-        let short = chip_width("Oats", CHIP_MAX);
-        let long = chip_width("Write the quarterly report for the whole department", CHIP_MAX);
+        let short = chip_width("Oats", chip_max());
+        let long = chip_width("Write the quarterly report for the whole department", chip_max());
         assert!(short < long);
-        assert_eq!(long, CHIP_MAX);
+        assert_eq!(long, chip_max());
         assert!(short >= chip_lead() + style::CHIP_PADDING.right);
     }
 
     #[test]
     fn the_numbers_take_the_smaller_level_when_the_big_one_does_not_fit() {
-        assert_eq!(fit_level("3 overdue", &HEAD_LEVELS, 200.0), HEAD_LEVELS[0]);
-        assert_eq!(fit_level("12 overdue · 12 today", &HEAD_LEVELS, 176.0), HEAD_LEVELS[1]);
-        assert_eq!(fit_level("a very long line indeed that fits nowhere", &HEAD_LEVELS, 50.0), HEAD_LEVELS[1]);
+        assert_eq!(fit_level("3 overdue", &head_levels(), 200.0), head_levels()[0]);
+        assert_eq!(fit_level("12 overdue · 12 today", &head_levels(), 176.0), head_levels()[1]);
+        assert_eq!(fit_level("a very long line indeed that fits nowhere", &head_levels(), 50.0), head_levels()[1]);
     }
 
     #[test]
@@ -832,8 +846,8 @@ mod tests {
     #[test]
     fn the_figures_take_the_smaller_level_when_the_big_one_does_not_fit() {
         let parts = count_parts(Counts { overdue: 3, today: 5 });
-        assert_eq!(figure_level(&parts, 216.0), FIGURE_LEVELS[0], "a 240-wide tile has room for both");
-        assert_eq!(figure_level(&parts, 100.0), FIGURE_LEVELS[1]);
+        assert_eq!(figure_level(&parts, 216.0), figure_levels()[0], "a 240-wide tile has room for both");
+        assert_eq!(figure_level(&parts, 100.0), figure_levels()[1]);
     }
 
     #[test]

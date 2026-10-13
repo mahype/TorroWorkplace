@@ -201,7 +201,7 @@ fn template_row<'a>(state: &'a State, template: &'a TemplateSummary, now: DateTi
     let more = if state.menu.as_deref() == Some(id.as_str()) { widgets::anchored(&state.anchor, more) } else { more };
     let actions =
         row![widgets::text_button(None, tr("Load"), style::button::secondary, Some(Message::Load(id.clone()))), more]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center);
     setting_row(None, template.name.as_str(), Some(meta), actions)
 }
@@ -210,9 +210,9 @@ fn template_row<'a>(state: &'a State, template: &'a TemplateSummary, now: DateTi
 fn rename_row(rename: &Rename) -> Element<'_, Message> {
     let can_save = !rename.name.trim().is_empty();
     let input = text_input(tr("Name"), &rename.name)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
@@ -223,7 +223,7 @@ fn rename_row(rename: &Rename) -> Element<'_, Message> {
         widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelRename)),
         widgets::text_button(None, tr("Save"), style::button::primary, can_save.then_some(Message::SaveRename)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     row_frame(content, true)
 }

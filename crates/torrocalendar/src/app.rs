@@ -1078,9 +1078,9 @@ impl App {
             let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
             let title = row![
                 shell::header_title(None, title, note),
-                row![today, prev, next].spacing(space::XS).align_y(Alignment::Center)
+                row![today, prev, next].spacing(space::xs()).align_y(Alignment::Center)
             ]
-            .spacing(space::L)
+            .spacing(space::l())
             .align_y(Alignment::Center);
             let primary =
                 widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
@@ -1115,8 +1115,8 @@ impl App {
                 CalView::Radar => short_date(self.radar_start().date()),
                 _ => title,
             };
-            let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::XS)]
-                .spacing(space::S)
+            let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::xs())]
+                .spacing(space::s())
                 .align_y(Alignment::Center);
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
             shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
@@ -1351,7 +1351,7 @@ impl App {
             // One day is not stretched over a wide window: it keeps a list's reading width at the
             // sidebar (design skill, section 6), and the properties column says what comes next.
             CalView::Day if shell::has_props(self.class()) => {
-                container(views::week::view(data)).max_width(size::CONTENT_MAX).into()
+                container(views::week::view(data)).max_width(size::content_max()).into()
             }
             CalView::Day | CalView::Week => views::week::view(data),
             CalView::Month => views::month::view(data),
@@ -1639,21 +1639,21 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     let moon = icon::icon(Icon::Moon, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let head = row![
         moon,
-        typo::text(typo::META, tr("Calendar")).style(theme::text_3),
+        typo::text(typo::meta(), tr("Calendar")).style(theme::text_3),
         blank::horizontal(),
         widgets::icon_button(Icon::X, tr("Close"), Some(Message::CloseNight)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     let time = |label: &'a str, value: Quarter, on_pick: fn(Quarter) -> Message| {
         let field = pick_list(Quarter::all().collect::<Vec<_>>(), Some(value), on_pick)
-            .padding(style::PICK_LIST_PADDING)
-            .text_size(typo::CAPTION.size)
-            .text_line_height(typo::CAPTION.line_height)
-            .font(typo::CAPTION.font)
+            .padding(style::pick_list_padding())
+            .text_size(typo::caption().size)
+            .text_line_height(typo::caption().line_height)
+            .font(typo::caption().font)
             .style(style::pick_list)
             .menu_style(style::pick_list_menu);
-        let row = row![typo::text(typo::BODY, label).style(theme::text_2), blank::horizontal(), field]
+        let row = row![typo::text(typo::body(), label).style(theme::text_2), blank::horizontal(), field]
             .align_y(Alignment::Center);
         widgets::prop_row(None, row, None)
     };

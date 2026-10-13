@@ -103,8 +103,9 @@ use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_pim::{PimAccount, account::account_of};
 
+use crate::design;
 use crate::icon::{self, Icon};
-use crate::layout::SizeClass;
+use crate::layout::{self, SizeClass};
 use crate::style;
 use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
@@ -113,14 +114,18 @@ use crate::widgets::{self, Anchor, MenuItem, MenuSection, Tone, Trail};
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
 /// Height of the app switcher row (`torro.css`: `.switcher{height:32px}`).
-const SWITCHER_HEIGHT: f32 = size::CONTROL;
-/// Edge of the red app logo in the switcher.
+fn switcher_height() -> f32 {
+    size::control()
+}
+/// Edge of the app logo in the switcher.
 const LOGO: f32 = 20.0;
 /// Gap between the rows of the sidebar (`torro.css`: `.sidebar{gap:2px}`).
 const SIDEBAR_GAP: f32 = 2.0;
 /// Width of the collapsed sidebar (rail): rows as wide as a large control (36), 8 at both sides –
 /// room for a 16 icon on its hover surface, and the icons sit on the same axis as the logo.
-pub const RAIL: f32 = size::CONTROL_LG + 2.0 * space::S;
+pub fn rail() -> f32 {
+    size::control_lg() + 2.0 * space::s()
+}
 
 /// How a sidebar is drawn. The user's choice for the wide layout, stored per app in
 /// [`crate::ui_state::UiState::sidebar`] (`"expanded"` / `"rail"` in `ui.json`).
@@ -130,7 +135,7 @@ pub enum SidebarMode {
     /// 232 wide: icons, names, counters, group titles (design skill, section 0).
     #[default]
     Expanded,
-    /// [`RAIL`] wide: only the icons, names and counters in tooltips, group titles as lines, the app
+    /// [`rail()`] wide: only the icons, names and counters in tooltips, group titles as lines, the app
     /// switcher as its logo. Apps leave out what has no icon (the small month, the version line).
     Rail,
 }
@@ -201,7 +206,7 @@ pub struct Shell<'a, M> {
 ///
 /// The header bar adds the padding (16 left, 12 right; 8 and 8 in narrow), so `header` is just the
 /// row from [`header_bar`]. `body` gets the free space and scrolls itself. Build `props` from
-/// [`widgets::prop_section`]s stacked with `space::L`.
+/// [`widgets::prop_section`]s stacked with `space::l()`.
 pub fn shell<'a, M: 'a>(
     class: SizeClass,
     sidebar: impl Into<Element<'a, M>>,
@@ -257,11 +262,11 @@ impl<'a, M: Clone + 'a> From<Shell<'a, M>> for Element<'a, M> {
         let rail = rail.filter(|_| matches!(class, SizeClass::Wide | SizeClass::Medium));
         if class == SizeClass::Wide {
             match rail {
-                Some(rail) => layers.push(inset_window(rail, RAIL, header, body, props)),
-                None => layers.push(inset_window(sidebar, size::SIDEBAR, header, body, props)),
+                Some(rail) => layers.push(inset_window(rail, self::rail(), header, body, props)),
+                None => layers.push(inset_window(sidebar, size::sidebar(), header, body, props)),
             }
         } else if let Some(rail) = rail {
-            layers.push(inset_window(rail, RAIL, header, body, props));
+            layers.push(inset_window(rail, self::rail(), header, body, props));
             if let Some(on_dismiss) = on_dismiss {
                 layers.push(drawer(sidebar, on_dismiss));
             }
@@ -404,14 +409,14 @@ fn band<'a, M: 'a>(surface: Surface, cover: Cover) -> Element<'a, M> {
         Cover::Dialog => dimmed().into(),
         Cover::Drawer => {
             // As the drawer draws it: its line on its own surface (see `drawer`).
-            let side = container(blank()).width(size::SIDEBAR - LINE).height(Fill);
+            let side = container(blank()).width(size::sidebar() - LINE).height(Fill);
             let drawer = container(row![side, rule::vertical(LINE).style(style::rule)])
                 .height(Fill)
                 .style(style::container::sidebar);
             row![drawer, dimmed()].into()
         }
         Cover::Panel => {
-            let panel = container(blank()).width(size::PANEL).height(Fill).style(style::container::panel_flush);
+            let panel = container(blank()).width(size::panel()).height(Fill).style(style::container::panel_flush);
             row![dimmed(), panel].into()
         }
     }
@@ -442,14 +447,14 @@ pub fn below_titlebar(size: Size, zoom: f32) -> Size {
 /// The header bar: 44 high, the padding of the size class, a line below.
 fn header_box<'a, M: 'a>(class: SizeClass, header: Element<'a, M>) -> Element<'a, M> {
     let (left, right) = match class {
-        SizeClass::Wide | SizeClass::Medium => (space::L, space::M),
-        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => (space::S, space::S),
+        SizeClass::Wide | SizeClass::Medium => (space::l(), space::m()),
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => (space::s(), space::s()),
     };
-    let bar = container(header).width(Fill).center_y(size::HEADER).padding(Padding::new(0.0).left(left).right(right));
+    let bar = container(header).width(Fill).center_y(size::header()).padding(Padding::new(0.0).left(left).right(right));
     column![bar, rule::horizontal(LINE).style(style::rule)].into()
 }
 
-/// The sidebar (`width` 232) or the rail ([`RAIL`]) on the window background, and the content as
+/// The sidebar (`width` 232) or the rail ([`rail()`]) on the window background, and the content as
 /// an inset panel beside it.
 fn inset_window<'a, M: 'a>(
     sidebar: Element<'a, M>,
@@ -461,14 +466,14 @@ fn inset_window<'a, M: 'a>(
     let mut main = row![container(body).width(Fill).height(Fill)];
     if let Some(props) = props {
         let column = scrollable(container(props).width(Fill).padding(Padding {
-            top: space::L,
-            right: space::S,
-            bottom: space::XL,
-            left: space::S,
+            top: space::l(),
+            right: space::s(),
+            bottom: space::xl(),
+            left: space::s(),
         }))
         .direction(scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
-        .width(size::PROPS - LINE)
+        .width(size::props() - LINE)
         .height(Fill);
         main = main.push(rule::vertical(LINE).style(style::rule)).push(column);
     }
@@ -478,8 +483,8 @@ fn inset_window<'a, M: 'a>(
         .height(Fill)
         .padding(LINE)
         .style(style::container::panel);
-    let side = container(sidebar).width(width).height(Fill).padding(space::S);
-    container(row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(size::INSET) })])
+    let side = container(sidebar).width(width).height(Fill).padding(space::s());
+    container(row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(layout::inset()) })])
         .width(Fill)
         .height(Fill)
         .style(style::container::sidebar)
@@ -493,11 +498,11 @@ fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<
     let catcher = opaque(mouse_area(container(blank().width(Fill).height(Fill)).style(scrim)).on_press(on_dismiss));
     // The edge is a rule on the drawer's own surface: Iced leaves a translucent border see-through,
     // and the content below would shine through it.
-    let side = container(sidebar).width(size::SIDEBAR - LINE).height(Fill).padding(space::S);
+    let side = container(sidebar).width(size::sidebar() - LINE).height(Fill).padding(space::s());
     let panel = container(row![side, rule::vertical(LINE).style(style::rule)]).height(Fill).style(|t| {
         let p = palette(t);
         // The menu shadow falls sideways here: the drawer's edge is vertical.
-        let shadow = Shadow { offset: Vector::new(space::M, 0.0), ..p.shadow };
+        let shadow = Shadow { offset: Vector::new(space::m(), 0.0), ..p.shadow };
         container::Style { background: Some(Background::Color(p.bg)), shadow, ..container::Style::default() }
     });
     stack![catcher, opaque(panel)].into()
@@ -512,7 +517,7 @@ pub fn sidebar<'a, M: 'a>(
     items: Vec<Element<'a, M>>,
     footer: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let top = column![switcher.into(), blank().height(space::S)].extend(items).spacing(SIDEBAR_GAP);
+    let top = column![switcher.into(), blank().height(space::s())].extend(items).spacing(SIDEBAR_GAP);
     let bottom = column(footer).spacing(SIDEBAR_GAP);
     column![top, blank::vertical(), bottom].height(Fill).into()
 }
@@ -538,7 +543,7 @@ pub fn drop_target<'a, M: Clone + 'a>(row: Element<'a, M>, over: bool, on_enter:
         border: Border {
             color: if over { palette(t).focus_ring } else { Color::TRANSPARENT },
             width: style::FOCUS_RING_WIDTH,
-            radius: radius::SM.into(),
+            radius: radius::sm().into(),
         },
         ..container::Style::default()
     });
@@ -557,7 +562,7 @@ pub fn header_bar<'a, M: 'a>(
         .push(title)
         .push(blank::horizontal())
         .extend(trailing)
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center)
         .into()
 }
@@ -573,9 +578,9 @@ pub fn header_title<'a, M: 'a>(
     if let Some(which) = icon_ {
         content = content.push(widgets::toned(which, icon::SIZE, Tone::Text3));
     }
-    content = content.push(typo::text(typo::BODY_STRONG, title).wrapping(Wrapping::None));
+    content = content.push(typo::text(typo::body_strong(), title).wrapping(Wrapping::None));
     if let Some(note) = note {
-        content = content.push(typo::text(typo::BODY, note).style(theme::text_3).wrapping(Wrapping::None));
+        content = content.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
     }
     content.into()
 }
@@ -619,7 +624,7 @@ fn app_icon(app: AppId) -> Icon {
     }
 }
 
-/// The top row of the sidebar, like Linear's workspace menu: the red logo, the name of `current`
+/// The top row of the sidebar, like Linear's workspace menu: the logo, the name of `current`
 /// with a chevron (registers `anchor` and sends [`Switcher::Toggle`]), then search and a framed
 /// "New" button. `on` wraps the switcher's messages in the app's (`Message::Switcher`).
 pub fn app_switcher<'a, M: Clone + 'a>(current: AppId, anchor: &Anchor, on: fn(Switcher) -> M) -> Element<'a, M> {
@@ -650,7 +655,7 @@ pub fn sidebar_head<'a, M: Clone + 'a>(
             // The logo on a full-width row, as the other rows of the rail.
             let logo = button(center_x(logo()))
                 .width(Fill)
-                .height(SWITCHER_HEIGHT)
+                .height(switcher_height())
                 .padding(0)
                 .style(style::button::sidebar_item(false))
                 .on_press(on(Switcher::Toggle));
@@ -672,16 +677,22 @@ fn center_x<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     container(content).center_x(Fill).center_y(Fill).into()
 }
 
-/// The red app logo (20 × 20, radius 4, a white "T").
+/// The app logo, 20 × 20: the design's own mark (`logo.mark`, an SVG from the pack) if it has one,
+/// otherwise the suite's: a white "T" on the accent colour, radius 4.
 fn logo<'a, M: 'a>() -> Element<'a, M> {
-    container(typo::text(typo::CAPTION, "T").style(|t| iced::widget::text::Style { color: Some(palette(t).on_accent) }))
-        .center(LOGO)
-        .style(|t| container::Style {
-            background: Some(Background::Color(palette(t).accent)),
-            border: iced::border::rounded(radius::XS),
-            ..container::Style::default()
-        })
-        .into()
+    if let Some(mark) = design::active().logo.mark.clone() {
+        return iced::widget::svg(iced::widget::svg::Handle::from_path(mark)).width(LOGO).height(LOGO).into();
+    }
+    container(
+        typo::text(typo::caption(), "T").style(|t| iced::widget::text::Style { color: Some(palette(t).on_accent) }),
+    )
+    .center(LOGO)
+    .style(|t| container::Style {
+        background: Some(Background::Color(palette(t).accent)),
+        border: iced::border::rounded(radius::xs()),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// The switcher row of [`app_switcher`], with the panel button at its end when `on_toggle` is given.
@@ -693,15 +704,15 @@ fn switcher_row<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let name = row![
         logo(),
-        typo::text(typo::BODY_STRONG, app_name(current)).style(theme::text).wrapping(Wrapping::None),
+        typo::text(typo::body_strong(), app_name(current)).style(theme::text).wrapping(Wrapping::None),
         widgets::toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     // 6 inside, as `.switcher{padding:0 6px}`, so the logo lines up with the row icons below.
     let trigger = button(container(name).center_y(Fill).clip(true))
         .width(Fill)
-        .height(SWITCHER_HEIGHT)
+        .height(switcher_height())
         .padding(Padding::new(0.0).left(6.0).right(6.0))
         .style(style::button::sidebar_item(false))
         .on_press(on(Switcher::Toggle));

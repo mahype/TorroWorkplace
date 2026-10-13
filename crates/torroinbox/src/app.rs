@@ -2195,19 +2195,20 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.
     fn hint_layer(&self) -> Element<'_, Message> {
         let Some(hint) = &self.hint else { return Space::new().into() };
-        let mut content = row![typo::text(typo::BODY, hint.text.as_str()).style(theme::text).wrapping(Wrapping::None)]
-            .spacing(space::S)
-            .align_y(Alignment::Center);
+        let mut content =
+            row![typo::text(typo::body(), hint.text.as_str()).style(theme::text).wrapping(Wrapping::None)]
+                .spacing(space::s())
+                .align_y(Alignment::Center);
         if hint.undo.is_some() {
             content = content
                 .push(widgets::text_button(None, tr("Undo"), style::button::ghost, Some(Message::Undo)))
                 .push(widgets::kbd("U"));
         }
         let card = container(content)
-            .center_y(size::CONTROL_LG)
-            .padding(Padding::new(0.0).left(space::M).right(space::S))
+            .center_y(size::control_lg())
+            .padding(Padding::new(0.0).left(space::m()).right(space::s()))
             .style(style::container::menu);
-        container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL).into()
+        container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::xl()).into()
     }
 
     /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
@@ -2326,7 +2327,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 let mut title =
                     row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
                 if let Some(note) = note {
-                    title = title.push(typo::text(typo::BODY, note).style(theme::text_3).wrapping(Wrapping::None));
+                    title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
                 // The rail at the left has the panel button.
                 shell::header_bar([], title, trailing)
@@ -2400,7 +2401,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             content = content.push(mail::search_bar(&self.search, folder));
         }
         if let Some(failure) = &self.error {
-            content = content.push(container(failure_line(failure)).padding(Padding::new(space::S).left(space::L)));
+            content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
         }
         let rows = if self.view.is_mail() {
             let folder = self.view.folder();
@@ -2436,7 +2437,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         // over `CONTENT_MAX` anyway, and a cap there would leave a thin empty strip at the right
         // (at 800 wide about 20) that reads as a mistake rather than as a margin.
         match class {
-            SizeClass::Wide => list.max_width(size::CONTENT_MAX).into(),
+            SizeClass::Wide => list.max_width(size::content_max()).into(),
             SizeClass::Medium | SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => list.into(),
         }
     }
@@ -2603,11 +2604,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// has one) and its digit. The menu card of `widgets::menu`, built from the same pieces here:
     /// its entries end in one trail only, and these need the time quietly before the key hint.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
-        let head = typo::text(typo::CAPTION, title.into()).style(theme::text_3);
+        let head = typo::text(typo::caption(), title.into()).style(theme::text_3);
         let entries =
             self.choices().into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1)));
-        let list = column![container(head).padding(Padding::new(space::S).bottom(space::XS))].extend(entries);
-        container(list).width(widgets::MENU_WIDTH).padding(style::MENU_INSET).style(style::container::menu).into()
+        let list = column![container(head).padding(Padding::new(space::s()).bottom(space::xs()))].extend(entries);
+        container(list).width(widgets::menu_width()).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     /// The picker of "Pick…" as a floating card: the chosen moment as title ("Wed, 14 Oct · 09:00"),
@@ -2627,10 +2628,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let next = (day < today + Days::new(PICK_DAYS)).then(|| Message::PickDay(day + Days::new(1)));
         let day_row = row![
             widgets::icon_button(Icon::ChevronLeft, tr("Previous day"), previous),
-            typo::text(typo::BODY, day_name(day, today)).style(theme::text).wrapping(Wrapping::None),
+            typo::text(typo::body(), day_name(day, today)).style(theme::text).wrapping(Wrapping::None),
             widgets::icon_button(Icon::ChevronRight, tr("Next day"), next),
         ]
-        .spacing(space::XS)
+        .spacing(space::xs())
         .align_y(Alignment::Center);
         let hours = PICK_HOURS.iter().enumerate().map(|(i, &hour)| {
             let time = NaiveTime::MIN + TimeDelta::hours(i64::from(hour));
@@ -2655,12 +2656,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// until a list is chosen). The list row says so while the lists load, when there are none and
     /// when they could not be read.
     fn task_dialog(&self) -> Element<'_, Message> {
-        let inset = Padding::new(0.0).left(space::S).right(space::S);
+        let inset = Padding::new(0.0).left(space::s()).right(space::s());
         let title = text_input(tr("Task title"), &self.task.title)
             .id(TASK_TITLE)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .padding(style::INPUT_PADDING)
             .width(Fill)
             .style(style::text_input)
@@ -2683,19 +2684,19 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
             widgets::text_button(Some(Icon::Check), tr("Create task"), style::button::primary, create),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
         let card = column![
-            container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::XS)),
-            container(title).padding(Padding::new(0.0).bottom(space::S)),
+            container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::xs())),
+            container(title).padding(Padding::new(0.0).bottom(space::s())),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
-                .spacing(space::M)
-                .padding(inset.top(space::M)),
+                .spacing(space::m())
+                .padding(inset.top(space::m())),
         ];
         container(card)
             .width(widgets::POPOVER_WIDTH)
-            .padding([space::L, space::S])
+            .padding([space::l(), space::s()])
             .style(style::container::popover)
             .into()
     }
@@ -2850,10 +2851,10 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
 fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
     let mark = icon::icon(choice.icon, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
-    let label = container(typo::text(typo::BODY, choice.label).wrapping(Wrapping::None)).width(Fill).clip(true);
-    let mut content = row![mark, label].spacing(space::S).align_y(Alignment::Center);
+    let label = container(typo::text(typo::body(), choice.label).wrapping(Wrapping::None)).width(Fill).clip(true);
+    let mut content = row![mark, label].spacing(space::s()).align_y(Alignment::Center);
     if let Some(when) = choice.when {
-        content = content.push(typo::text(typo::META.tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
+        content = content.push(typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
     }
     content = content.push(widgets::kbd(key));
     iced::widget::button(container(content).center_y(Fill))
@@ -2874,10 +2875,10 @@ where
 {
     pick_list(options, selected, on_pick)
         .width(Fill)
-        .padding(style::PICK_LIST_PADDING)
-        .text_size(typo::CAPTION.size)
-        .text_line_height(typo::CAPTION.line_height)
-        .font(typo::CAPTION.font)
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
         .into()
@@ -2896,23 +2897,23 @@ fn failure_state(failure: &Failure) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
     let words = column![
-        typo::text(typo::BODY_STRONG, failure.what).align_x(Alignment::Center),
-        typo::text(typo::META, failure.why.as_str())
+        typo::text(typo::body_strong(), failure.what).align_x(Alignment::Center),
+        typo::text(typo::meta(), failure.why.as_str())
             .style(theme::text_3)
             .align_x(Alignment::Center)
             .wrapping(Wrapping::WordOrGlyph),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(Alignment::Center);
     let content = column![
         alert,
         words,
         widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::secondary, Some(Message::Refresh)),
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .align_x(Alignment::Center)
-    .max_width(size::FORM_MAX / 2.0);
-    iced::widget::center(content).padding(space::XL).into()
+    .max_width(size::form_max() / 2.0);
+    iced::widget::center(content).padding(space::xl()).into()
 }
 
 /// The line above the list when a later call failed: the alert icon in the error colour, the
@@ -2920,9 +2921,9 @@ fn failure_state(failure: &Failure) -> Element<'_, Message> {
 fn failure_line(failure: &Failure) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
-    let what = typo::text(typo::META, failure.what).style(theme::text_2).wrapping(Wrapping::None);
-    let why = typo::text(typo::META, failure.why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
-    row![alert, row![what, why].spacing(space::XS)].spacing(space::S).align_y(Alignment::Center).into()
+    let what = typo::text(typo::meta(), failure.what).style(theme::text_2).wrapping(Wrapping::None);
+    let why = typo::text(typo::meta(), failure.why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+    row![alert, row![what, why].spacing(space::xs())].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 #[cfg(test)]

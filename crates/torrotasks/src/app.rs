@@ -7,10 +7,10 @@
 //!
 //! The columns (redesign R.2 in `docs/tasks/design.md`, mock-up
 //! `docs/prototypes/tasks/redesign.html`) – see [`Columns`]: without an open task the list stands
-//! alone at the left, at most [`size::CONTENT_MAX`] wide. With one open, wide windows whose content
-//! is at least [`THREE_COLUMNS_FROM`] wide show three columns – the list ([`size::LIST`]), the
-//! detail and the properties ([`size::PROPS`]) –, narrower wide and medium windows the list
-//! ([`size::LIST_MEDIUM`]) and the detail, narrow windows the detail instead of the list. A
+//! alone at the left, at most [`size::content_max()`] wide. With one open, wide windows whose content
+//! is at least [`THREE_COLUMNS_FROM`] wide show three columns – the list ([`size::list()`]), the
+//! detail and the properties ([`size::props()`]) –, narrower wide and medium windows the list
+//! ([`size::list_medium()`]) and the detail, narrow windows the detail instead of the list. A
 //! line separates the columns. Each column has its own head in the window's header bar: the list's
 //! (filter, "{n} open", Display, "New task") over the list, the detail's (path, ↑ ↓, close) over
 //! detail and properties; the header line runs under both.
@@ -352,18 +352,24 @@ const DEMO_ERROR: &str = "The server did not answer (demo)";
 const QUICK_ADD: &str = "quick-add";
 /// Where the quick add text starts: on the axis of the rows' titles – past the leading symbol
 /// (16 in, 16 wide, 12 after it) and the priority column (14, 8 after it).
-const QUICK_ADD_START: f32 = space::L + icon::SIZE + space::M + icon::SIZE_SM + space::S;
+fn quick_add_start() -> f32 {
+    space::l() + icon::SIZE + space::m() + icon::SIZE_SM + space::s()
+}
 /// Where the quick add text ends: before the key hint "N" at the right.
-const QUICK_ADD_END: f32 = space::L + space::XL + space::S;
+fn quick_add_end() -> f32 {
+    space::l() + space::xl() + space::s()
+}
 /// Wide windows show the properties column beside the detail from this content width on (the
 /// panel next to the sidebar or rail): list 460 + detail + properties 300 (mock-up).
 pub const THREE_COLUMNS_FROM: f32 = 1320.0;
-/// List ([`size::LIST_MEDIUM`]) and detail side by side from this content width on: the detail
-/// then gets at least the width of the properties column ([`size::PROPS`]), the narrowest column
+/// List ([`size::list_medium()`]) and detail side by side from this content width on: the detail
+/// then gets at least the width of the properties column ([`size::props()`]), the narrowest column
 /// the design gives a task's facts. Below it (medium windows under about 740) the detail beside
 /// the list would be a sliver of wrapped words – there it replaces the list as in narrow windows.
 /// The content's two border lines and the line between the columns count as well.
-pub const LIST_DETAIL_FROM: f32 = size::LIST_MEDIUM + size::PROPS + 3.0 * LINE;
+pub fn list_detail_from() -> f32 {
+    size::list_medium() + size::props() + 3.0 * LINE
+}
 /// The list head keeps the label of "Display" from this list width on; narrower it is an icon
 /// with a tooltip (mock-up: `@container list (max-width:439px)`).
 const HEAD_LABELS_FROM: f32 = 440.0;
@@ -445,27 +451,27 @@ struct Drag {
 /// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Columns {
-    /// No task open: the list alone at the left, at most [`size::CONTENT_MAX`] wide (narrow
+    /// No task open: the list alone at the left, at most [`size::content_max()`] wide (narrow
     /// windows: the full width).
     List,
     /// Narrow windows with a task open: the detail instead of the list.
     Detail,
-    /// The list ([`size::LIST_MEDIUM`]) and the detail; the properties are chips in the detail.
+    /// The list ([`size::list_medium()`]) and the detail; the properties are chips in the detail.
     ListDetail,
-    /// The list ([`size::LIST`]), the detail and the properties column ([`size::PROPS`]).
+    /// The list ([`size::list()`]), the detail and the properties column ([`size::props()`]).
     ListDetailProps,
 }
 
 /// The columns for a window of `class` whose content (the panel beside sidebar or rail; the whole
 /// window in narrow ones) is `content` wide, with a task open in the detail or not. Mini and strip
 /// show a glance and no columns; they count as narrow here. A medium window too small for list
-/// and detail side by side ([`LIST_DETAIL_FROM`]) shows the detail instead of the list, as a
+/// and detail side by side ([`list_detail_from()`]) shows the detail instead of the list, as a
 /// narrow one does.
 pub fn columns(class: SizeClass, content: f32, detail_open: bool) -> Columns {
     match (class, detail_open) {
         (_, false) => Columns::List,
         (SizeClass::Wide, true) if content >= THREE_COLUMNS_FROM => Columns::ListDetailProps,
-        (SizeClass::Wide | SizeClass::Medium, true) if content >= LIST_DETAIL_FROM => Columns::ListDetail,
+        (SizeClass::Wide | SizeClass::Medium, true) if content >= list_detail_from() => Columns::ListDetail,
         (_, true) => Columns::Detail,
     }
 }
@@ -475,28 +481,28 @@ pub fn columns(class: SizeClass, content: f32, detail_open: bool) -> Columns {
 /// window otherwise.
 pub fn content_width(class: SizeClass, sidebar: SidebarMode, width: f32) -> f32 {
     let side = match (class, sidebar) {
-        (SizeClass::Wide, SidebarMode::Expanded) => size::SIDEBAR,
-        (SizeClass::Wide, SidebarMode::Rail) | (SizeClass::Medium, _) => shell::RAIL,
+        (SizeClass::Wide, SidebarMode::Expanded) => size::sidebar(),
+        (SizeClass::Wide, SidebarMode::Rail) | (SizeClass::Medium, _) => shell::rail(),
         (SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip, _) => return width,
     };
-    (width - side - size::INSET).max(0.0)
+    (width - side - layout::inset()).max(0.0)
 }
 
 /// The width of the list column in `columns`, inside a content `content` wide: alone at most
-/// [`size::CONTENT_MAX`] (inside the panel's border; the whole panel when less than
-/// [`space::XXL`] would be left beside it) – the whole width in narrow windows –, beside
-/// the detail [`size::LIST`] or [`size::LIST_MEDIUM`]. Rows shorten after it ([`list::RowParts`]).
+/// [`size::content_max()`] (inside the panel's border; the whole panel when less than
+/// [`space::xxl()`] would be left beside it) – the whole width in narrow windows –, beside
+/// the detail [`size::list()`] or [`size::list_medium()`]. Rows shorten after it ([`list::RowParts`]).
 pub fn list_width(class: SizeClass, columns: Columns, content: f32) -> f32 {
     match columns {
         Columns::List if matches!(class, SizeClass::Wide | SizeClass::Medium) => {
             let inner = content - 2.0 * LINE;
             // A sliver of empty panel beside the list would only look like a mistake: then the
             // list takes the whole panel.
-            if inner - size::CONTENT_MAX < space::XXL { inner } else { size::CONTENT_MAX }
+            if inner - size::content_max() < space::xxl() { inner } else { size::content_max() }
         }
         Columns::List | Columns::Detail => content,
-        Columns::ListDetail => size::LIST_MEDIUM,
-        Columns::ListDetailProps => size::LIST,
+        Columns::ListDetail => size::list_medium(),
+        Columns::ListDetailProps => size::list(),
     }
 }
 
@@ -1623,13 +1629,13 @@ impl App {
         }
         // The header bar pads 16 at the left; the list head keeps 12 at its right before the line.
         let mut split = row![
-            container(list_head).width(list_width - space::L - space::M),
-            Space::new().width(space::M),
+            container(list_head).width(list_width - space::l() - space::m()),
+            Space::new().width(space::m()),
             rule::vertical(LINE).style(style::rule),
         ]
         .align_y(Alignment::Center);
         if self.detail.is_some() {
-            split = split.push(Space::new().width(space::L)).push(self.detail_head(columns, property));
+            split = split.push(Space::new().width(space::l())).push(self.detail_head(columns, property));
         }
         split.into()
     }
@@ -1674,9 +1680,9 @@ impl App {
         }
         let title = row![
             widgets::menu_button(nav, icon, name, Message::ToggleNav),
-            typo::text(typo::BODY, open).style(theme::text_3).wrapping(text::Wrapping::None),
+            typo::text(typo::body(), open).style(theme::text_3).wrapping(text::Wrapping::None),
         ]
-        .spacing(space::XS)
+        .spacing(space::xs())
         .align_y(Alignment::Center);
         shell::header_bar([shell::sidebar_toggle(Message::ShowDrawer)], title, trailing)
     }
@@ -1708,7 +1714,7 @@ impl App {
     }
 
     /// The properties column of wide windows with [`Columns::ListDetailProps`] (`detail.rs`,
-    /// [`Detail::properties_column`], [`size::PROPS`] wide), with the name of the account the
+    /// [`Detail::properties_column`], [`size::props()`] wide), with the name of the account the
     /// task's list belongs to.
     fn properties_column<'a>(&'a self, anchor: &Anchor) -> Element<'a, Message> {
         let Some(detail) = self.detail.as_ref() else { return Space::new().into() };
@@ -1834,9 +1840,9 @@ impl App {
             content = content.extend(self.filter_hints(source));
         }
         if let Some(err) = &self.error {
-            let line = typo::text(typo::META, err.clone())
+            let line = typo::text(typo::meta(), err.clone())
                 .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) });
-            content = content.push(container(line).padding([space::S, space::L]));
+            content = content.push(container(line).padding([space::s(), space::l()]));
         }
         content.push(list::view(self.list_data())).width(Fill).height(Fill).into()
     }
@@ -1851,17 +1857,17 @@ impl App {
         if let Some(problem) = &source.problem {
             let title = tr("Couldn't refresh from GitHub");
             // What is left beside the icon and the title, for the reason on the same line.
-            let used = 2.0 * space::L + icon::SIZE + space::M + typo::text_width(title, typo::META) + space::S;
-            let reason = typo::ellipsize(problem, typo::META, (width - used).max(0.0));
+            let used = 2.0 * space::l() + icon::SIZE + space::m() + typo::text_width(title, typo::meta()) + space::s();
+            let reason = typo::ellipsize(problem, typo::meta(), (width - used).max(0.0));
             let line = row![
-                typo::text(typo::META, title).style(theme::text_2).wrapping(text::Wrapping::None),
-                typo::text(typo::META, reason).style(theme::text_3).wrapping(text::Wrapping::None),
+                typo::text(typo::meta(), title).style(theme::text_2).wrapping(text::Wrapping::None),
+                typo::text(typo::meta(), reason).style(theme::text_3).wrapping(text::Wrapping::None),
             ]
-            .spacing(space::S);
+            .spacing(space::s());
             hints.push(hint_row(list::toned(Icon::CircleAlert, icon::SIZE_SM, list::Tone::Attention), line));
         }
         if source.truncated {
-            let line = typo::text(typo::META, tr("Showing the first 1,000 matches"))
+            let line = typo::text(typo::meta(), tr("Showing the first 1,000 matches"))
                 .style(theme::text_2)
                 .wrapping(text::Wrapping::None);
             hints.push(hint_row(list::toned(Icon::ListFilter, icon::SIZE_SM, list::Tone::Text3), line));
@@ -1875,8 +1881,8 @@ impl App {
     /// focus states (focused: `selected` with the focus ring); the hint goes away as soon as
     /// something is typed.
     fn quick_add_row(&self) -> Element<'_, Message> {
-        let height = size::ROW - LINE;
-        let above = (height - typo::line_height(typo::BODY)) / 2.0;
+        let height = size::row() - LINE;
+        let above = (height - typo::line_height(typo::body())) / 2.0;
         let placeholder = match self.shown_filter_list() {
             Some(_) => tr("Paste a GitHub link to pin…"),
             None => tr("Add a task or paste a GitHub link…"),
@@ -1885,11 +1891,11 @@ impl App {
             .id(QUICK_ADD)
             .on_input(Message::QuickAddChanged)
             .on_submit(Message::QuickAddSubmit)
-            .padding(Padding { top: above, bottom: above, left: QUICK_ADD_START, right: QUICK_ADD_END })
+            .padding(Padding { top: above, bottom: above, left: quick_add_start(), right: quick_add_end() })
             .style(quick_add_style);
         let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).text_3) });
         let mut over =
-            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::L]);
+            row![plus, Space::new().width(Fill)].align_y(Alignment::Center).height(Fill).padding([0.0, space::l()]);
         if self.quick_add.is_empty() {
             over = over.push(widgets::kbd("N"));
         }
@@ -2547,7 +2553,7 @@ impl App {
             (None, Some(created)) => created_card(&created.name),
             (None, None) => Space::new().into(),
         };
-        let layer = container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL);
+        let layer = container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::xl());
         stack![window, layer].width(Fill).height(Fill).into()
     }
 }
@@ -2878,13 +2884,13 @@ fn move_failed(err: &ProviderError) -> String {
 fn notice_card<'a>() -> Element<'a, Message> {
     let line = row![
         list::toned(Icon::CircleCheck, icon::SIZE, list::Tone::Merged),
-        typo::text(typo::BODY, tr("Issue closed")).wrapping(text::Wrapping::None),
+        typo::text(typo::body(), tr("Issue closed")).wrapping(text::Wrapping::None),
         widgets::text_button(None, tr("Undo"), style::button::ghost, Some(Message::Undo)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     container(line)
-        .padding(Padding { top: space::XS, right: space::XS, bottom: space::XS, left: space::M })
+        .padding(Padding { top: space::xs(), right: space::xs(), bottom: space::xs(), left: space::m() })
         .style(style::container::menu)
         .into()
 }
@@ -2893,28 +2899,28 @@ fn notice_card<'a>() -> Element<'a, Message> {
 /// after a task was dragged onto another list (`moved`, task G.6c): the card of [`notice_card`]
 /// with a check, no action. A long list name is cut with "…".
 fn added_card<'a>(name: &str, moved: bool) -> Element<'a, Message> {
-    let name = typo::ellipsize(name, typo::BODY, size::PROPS);
+    let name = typo::ellipsize(name, typo::body(), size::props());
     let args: [(&str, &dyn std::fmt::Display); 1] = [("list", &name)];
     let text = if moved { trf("Moved to {list}", &args) } else { trf("Added to {list}", &args) };
     let line = row![
         list::toned(Icon::Check, icon::SIZE, list::Tone::Ok),
-        typo::text(typo::BODY, text).wrapping(text::Wrapping::None),
+        typo::text(typo::body(), text).wrapping(text::Wrapping::None),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
-    container(line).padding(Padding::from([space::S, space::M])).style(style::container::menu).into()
+    container(line).padding(Padding::from([space::s(), space::m()])).style(style::container::menu).into()
 }
 
 /// "List “{name}” created" after a task list was made (task G.8): the card of [`added_card`].
 fn created_card<'a>(name: &str) -> Element<'a, Message> {
-    let name = typo::ellipsize(name, typo::BODY, size::PROPS);
+    let name = typo::ellipsize(name, typo::body(), size::props());
     let line = row![
         list::toned(Icon::CircleCheck, icon::SIZE, list::Tone::Ok),
-        typo::text(typo::BODY, new_list::created_text(&name)).wrapping(text::Wrapping::None),
+        typo::text(typo::body(), new_list::created_text(&name)).wrapping(text::Wrapping::None),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
-    container(line).padding(Padding::from([space::S, space::M])).style(style::container::menu).into()
+    container(line).padding(Padding::from([space::s(), space::m()])).style(style::container::menu).into()
 }
 
 /// A row of the sidebar and the navigation menu.
@@ -2981,9 +2987,10 @@ fn account_title(account: &PimAccount, shown: &[&PimAccount]) -> String {
 /// A hint over the list ([`App::filter_hints`]): `mark` (14) centred on the axis of the rows'
 /// leading symbols, `line` 12 after it, 32 high with the list's line below.
 fn hint_row<'a>(mark: Element<'a, Message>, line: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    let content = row![container(mark).center_x(icon::SIZE), line.into()].spacing(space::M).align_y(Alignment::Center);
+    let content =
+        row![container(mark).center_x(icon::SIZE), line.into()].spacing(space::m()).align_y(Alignment::Center);
     column![
-        container(content).width(Fill).center_y(size::ROW_GROUP - LINE).padding([0.0, space::L]).clip(true),
+        container(content).width(Fill).center_y(size::row_group() - LINE).padding([0.0, space::l()]).clip(true),
         rule::horizontal(LINE).style(style::rule),
     ]
     .into()
@@ -3879,15 +3886,15 @@ mod tests {
         let mut app = app_with_rows();
         connected(&mut app);
         let _ = app.update(Message::Resized(WIDE));
-        assert_eq!((app.columns(), app.list_width()), (Columns::List, size::CONTENT_MAX), "nothing open");
+        assert_eq!((app.columns(), app.list_width()), (Columns::List, size::content_max()), "nothing open");
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Open);
         let _ = app.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
         for (size, sidebar, expected, list) in [
-            (WIDE, SidebarMode::Expanded, Columns::ListDetailProps, size::LIST),
-            (Size::new(1280.0, 840.0), SidebarMode::Expanded, Columns::ListDetail, size::LIST_MEDIUM),
-            (Size::new(1400.0, 840.0), SidebarMode::Rail, Columns::ListDetailProps, size::LIST),
-            (MEDIUM, SidebarMode::Rail, Columns::ListDetail, size::LIST_MEDIUM),
+            (WIDE, SidebarMode::Expanded, Columns::ListDetailProps, size::list()),
+            (Size::new(1280.0, 840.0), SidebarMode::Expanded, Columns::ListDetail, size::list_medium()),
+            (Size::new(1400.0, 840.0), SidebarMode::Rail, Columns::ListDetailProps, size::list()),
+            (MEDIUM, SidebarMode::Rail, Columns::ListDetail, size::list_medium()),
             (NARROW, SidebarMode::Expanded, Columns::Detail, NARROW.width),
         ] {
             let _ = app.update(Message::UiState(UiState { sidebar }));
@@ -3909,9 +3916,9 @@ mod tests {
         assert_eq!(columns(SizeClass::Wide, 1319.0, true), Columns::ListDetail);
         assert_eq!(columns(SizeClass::Medium, 1320.0, true), Columns::ListDetail, "medium never has three");
         // Medium windows of 600-740: the detail beside the list would be a sliver, so it replaces it.
-        assert_eq!(LIST_DETAIL_FROM, 683.0);
-        assert_eq!(columns(SizeClass::Medium, LIST_DETAIL_FROM, true), Columns::ListDetail);
-        assert_eq!(columns(SizeClass::Medium, LIST_DETAIL_FROM - 1.0, true), Columns::Detail);
+        assert_eq!(list_detail_from(), 683.0);
+        assert_eq!(columns(SizeClass::Medium, list_detail_from(), true), Columns::ListDetail);
+        assert_eq!(columns(SizeClass::Medium, list_detail_from() - 1.0, true), Columns::Detail);
         let medium_700 = content_width(SizeClass::Medium, SidebarMode::Rail, 700.0);
         assert_eq!(columns(SizeClass::Medium, medium_700, true), Columns::Detail, "700 wide");
         let medium_800 = content_width(SizeClass::Medium, SidebarMode::Rail, 800.0);
@@ -3923,7 +3930,7 @@ mod tests {
         assert_eq!(list_width(SizeClass::Medium, Columns::List, 540.0), 538.0, "inside the border of a small panel");
         assert_eq!(list_width(SizeClass::Narrow, Columns::List, 480.0), 480.0, "narrow: the whole width");
         assert_eq!(list_width(SizeClass::Medium, Columns::List, 740.0), 738.0, "no sliver of 18 beside the list");
-        assert_eq!(list_width(SizeClass::Medium, Columns::List, 940.0), size::CONTENT_MAX);
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 940.0), size::content_max());
     }
 
     #[test]
@@ -4598,7 +4605,7 @@ mod tests {
         let _ = app.update(Message::DragStart(first));
         let places = list::drop_places(&app.list_data(), first);
         let (place, _) = places[2];
-        let _ = app.update(Message::DragMove(place as f32 * size::ROW + 3.0));
+        let _ = app.update(Message::DragMove(place as f32 * size::row() + 3.0));
         assert_eq!(app.drag.as_ref().and_then(|drag| drag.place), Some(place), "the marker snaps to the place");
         for size in [WIDE, MEDIUM, NARROW] {
             let _ = app.update(Message::Resized(size));
