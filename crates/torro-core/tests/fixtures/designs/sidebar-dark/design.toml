@@ -1,0 +1,18 @@
+# A dark sidebar beside light content (task L.6): every sidebar key set in light mode, focus ring
+# and accent chosen to carry on both the white panel and the dark sidebar.
+format = 1
+
+[about]
+name = "Dark sidebar"
+version = "1.0.0"
+
+[colors.light]
+sidebar = "#24292F"
+sidebar_hover = "#2F353C"
+sidebar_selected = "#3A4149"
+sidebar_text = "#F6F8FA"
+sidebar_text_2 = "#D0D7DE"
+sidebar_text_3 = "#AEB7C1"
+sidebar_line = "#FFFFFF1F"
+focus_ring = "#1F6FEB"
+accent = "#D8392B"

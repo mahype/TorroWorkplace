@@ -1,0 +1,102 @@
+# Commitr – inspired by GitHub's Primer design (task L.7, issue #80): neutral greys, the green
+# primary button, a blue focus ring and, in light mode, a dark sidebar like GitHub's former header.
+# Not GitHub's name or logo. Everything left out here comes from the standard design "Torro".
+format = 1
+
+[about]
+name = "Commitr"
+version = "1.0.0"
+author = "Torro"
+description = "Inspired by GitHub: neutral greys, green primary button, blue focus, dark sidebar"
+font_license = "OFL-1.1"
+
+# Mona Sans 2.0.27 (github/mona-sans, SIL OFL 1.1). Its default figures are proportional, so numbers
+# take "Commitr Figures": Mona Sans with its tabular figures frozen in and made exactly one width
+# (task L.11; renamed, because "Mona" is a Reserved Font Name). Clocks and counters keep their place.
+[fonts.text]
+family = "Mona Sans"
+regular = "fonts/MonaSans-Regular.ttf"
+medium = "fonts/MonaSans-Medium.ttf"
+semibold = "fonts/MonaSans-SemiBold.ttf"
+bold = "fonts/MonaSans-Bold.ttf"
+
+[fonts.numbers]
+family = "Commitr Figures"
+regular = "fonts/CommitrFigures-Regular.ttf"
+medium = "fonts/CommitrFigures-Medium.ttf"
+
+# GitHub's base size is 14.
+[type.body]
+size = 14
+line = 20
+[type.body_strong]
+size = 14
+line = 20
+
+[size]
+row_sidebar = 30
+
+# Buttons and rows at 6, as Primer.
+[radius]
+scale = [4, 6, 8, 12]
+
+# Primer's colours where they pass the rules. Moved for contrast: calendar colours and merged are a
+# shade lighter in light mode (they must carry on white and on the dark sidebar), the dark error
+# red is #FF7B72 instead of #F85149.
+[colors.light]
+bg = "#F6F8FA"
+panel = "#FFFFFF"
+raised = "#F6F8FA"
+hover = "#EFF2F5"
+selected = "#E6EAEF"
+menu = "#FFFFFF"
+text = "#1F2328"
+text_2 = "#3D444D"
+text_3 = "#59636E"
+line = "#1F232817"
+line_strong = "#1F232826"
+line_selected = "#1F23286B"
+focus_ring = "#1F6FEB"
+accent = "#1F883D"
+on_accent = "#FFFFFF"
+ok = "#1A7F37"
+attention = "#9A6700"
+error = "#D1242F"
+merged = "#8A63D2"
+calendar = ["#1F6FEB", "#1F883D", "#D4691A", "#D2499B", "#8A63D2"]
+night = "#EEF1F5"
+sidebar = "#24292F"
+sidebar_hover = "#32383F"
+sidebar_selected = "#3D444D"
+sidebar_text = "#FFFFFF"
+sidebar_text_2 = "#D1D9E0"
+sidebar_text_3 = "#B0B8C1"
+sidebar_line = "#FFFFFF26"
+
+[colors.dark]
+bg = "#010409"
+panel = "#0D1117"
+raised = "#151B23"
+hover = "#1A2029"
+selected = "#212830"
+menu = "#151B23"
+text = "#F0F6FC"
+text_2 = "#D1D7E0"
+text_3 = "#9198A1"
+line = "#FFFFFF14"
+line_strong = "#FFFFFF21"
+line_selected = "#FFFFFF4D"
+focus_ring = "#1F6FEB"
+accent = "#238636"
+on_accent = "#FFFFFF"
+ok = "#3FB950"
+attention = "#D29922"
+error = "#FF7B72"
+merged = "#A371F7"
+calendar = ["#4493F8", "#3FB950", "#DB6D28", "#DB61A2", "#A371F7"]
+night = "#10161D"
+
+# A commit: a line through a ring, on green.
+[logo]
+mark = "logo.svg"
+tray = "tray.svg"
