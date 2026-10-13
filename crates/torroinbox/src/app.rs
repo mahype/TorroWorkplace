@@ -1144,6 +1144,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Zoom keys work everywhere, the glance included.
             self.zoom.subscription().map(Message::Zoom),
+            // The design pack polls the core every 2 s itself and wakes the window only for a change.
+            self.design.subscription().map(Message::Design),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like `e` must not mark an entry done that nobody sees.)
@@ -1296,12 +1298,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
-                return Task::batch([
-                    self.fetch_appearance(),
-                    self.zoom.fetch().map(Message::Zoom),
-                    self.design.fetch().map(Message::Design),
-                    self.load(),
-                ]);
+                return Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom), self.load()]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,

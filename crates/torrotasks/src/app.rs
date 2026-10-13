@@ -921,6 +921,8 @@ impl App {
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Zoom keys work everywhere, glance views and the open detail included.
             self.zoom.subscription().map(Message::Zoom),
+            // The design pack polls the core every 2 s itself and wakes the window only for a change.
+            self.design.subscription().map(Message::Design),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
@@ -1185,7 +1187,6 @@ impl App {
                     self.fetch_appearance(),
                     self.fetch_list_orders(),
                     self.zoom.fetch().map(Message::Zoom),
-                    self.design.fetch().map(Message::Design),
                 ]);
                 // The accounts come with every tick: one may have been added or removed.
                 let accounts = self.fetch_account();
@@ -1919,6 +1920,11 @@ impl App {
             .id(QUICK_ADD)
             .on_input(Message::QuickAddChanged)
             .on_submit(Message::QuickAddSubmit)
+            // Named, not Iced's default: the default font is fixed at start, a design switch would
+            // not reach the field otherwise.
+            .font(typo::body().font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .padding(Padding { top: above, bottom: above, left: quick_add_start(), right: quick_add_end() })
             .style(quick_add_style);
         let plus = icon::icon(Icon::Plus, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).text_3) });

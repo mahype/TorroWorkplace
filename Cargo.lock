@@ -5171,6 +5171,7 @@ dependencies = [
  "iced",
  "serde",
  "serde_json",
+ "tokio",
  "torro-core",
  "torro-ipc",
  "torro-pim",

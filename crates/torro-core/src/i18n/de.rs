@@ -1892,4 +1892,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{key}” uses {weight} of the {font} font, but there is no file for it.",
         "„{key}“ nutzt {weight} der Schrift {font}, dafür gibt es aber keine Datei.",
     ),
+    // Choosing a design in the control centre (L.4)
+    ("Can't be used:", "Nicht nutzbar:"),
+    (
+        "Colors, fonts and spacing of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
+        "Farben, Schriften und Abstände aller Torro-Apps. Weitere Designs kommen in den Design-Ordner; eins, das gegen eine Regel verstößt, ist nicht nutzbar.",
+    ),
+    ("Design", "Design"),
+    ("Designs folder", "Design-Ordner"),
+    ("Open designs folder", "Design-Ordner öffnen"),
+    ("Reload", "Neu laden"),
+    ("The designs can't be listed.", "Die Designs lassen sich nicht auflisten."),
 ];

@@ -18,3 +18,5 @@ chrono.workspace = true
 iced = { workspace = true, features = ["advanced", "markdown"] }
 serde.workspace = true
 serde_json.workspace = true
+# The 2-s poll of the chosen design (`design::Follow::subscription`) sleeps on Iced's tokio runtime.
+tokio.workspace = true

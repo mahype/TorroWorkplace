@@ -208,6 +208,16 @@ pub enum Action {
     /// Find, connect or disconnect a coding agent's MCP entry (task A.7) on a blocking thread;
     /// the outcome goes to the agents page. The demo answers it itself and touches nothing.
     Setup(crate::client_setup::Job),
+    /// List the design packs (`settings.list_designs`) for General › Design, with the look of each
+    /// read from its folder ([`general::Pack::new`]). The demo lists its sample packs.
+    ListDesigns,
+    /// Draw with the design pack of this id (General › Design): this window at once, then saved
+    /// (`settings.set_setting design`), which the other windows follow within two seconds. The
+    /// demo only draws, with its sample pack.
+    Design(String),
+    /// Open the designs folder in the system's file manager, created first if it is missing. The
+    /// demo opens nothing.
+    OpenDesignsFolder,
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -278,6 +288,9 @@ pub struct Ui {
     /// Follows the design pack of `data.settings` (task L.3): the page reloads the settings, so
     /// the design comes with them instead of a request of its own.
     design: Follow,
+    /// The design pack chosen on the General page while its saving is on its way (task L.4). A
+    /// reload that left before the save still carries the old one; it must not switch back.
+    pending_design: Option<String>,
     data: Data,
     /// The last failed request, kept across reloads until the next success or section change.
     notice: Option<String>,
@@ -325,6 +338,9 @@ pub enum Message {
     Zoom(zoom::Message),
     /// The fonts of a new design pack are loaded.
     Design(design::Message),
+    /// The design packs for General › Design ([`Action::ListDesigns`]); `Err` when the core did
+    /// not list them.
+    Designs(Result<Vec<general::Pack>, String>),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
     Escape,
     Overview(overview::Message),
@@ -373,6 +389,7 @@ impl Ui {
             zoom: Zoom::new(torro_ipc::socket_path().filter(|_| !demo)),
             // Fed by the reloads, so it asks the core nothing itself.
             design: Follow::new(None),
+            pending_design: None,
             data: Data::default(),
             notice: None,
             overview: overview::State::default(),
@@ -388,11 +405,20 @@ impl Ui {
             // No service to ask: the sample data is there from the first frame.
             ui.data = launch::demo_data();
             ui.appearance = ui.data.settings.appearance;
+            // The check mark of General › Design at the pack `--design` draws with.
+            if let Some(id) = ui.launch.design.clone() {
+                ui.data.settings.design = id;
+            }
             ui.loaded = true;
         }
         if let Some(open) = open {
             ui.open(open);
         }
+        // A start on the General page lists the design packs, as opening it does.
+        let designs = match ui.section == Section::General && general::unlisted(&ui.general) {
+            true => ui.perform(Action::ListDesigns),
+            false => Task::none(),
+        };
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
             ui.reload(),
@@ -400,6 +426,7 @@ impl Ui {
             iced::system::theme().map(Message::SystemMode),
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
             size,
+            designs,
         ]);
         (ui, task)
     }
@@ -519,6 +546,8 @@ impl Ui {
                 messages
             }
             Open::Inbox => vec![Message::Select(Section::Inbox)],
+            // The design packs: the demo's sample packs, one of them broken.
+            Open::Design => vec![Message::Select(Section::General)],
             // No rules, so the rules group says where they come from.
             Open::InboxEmpty => {
                 self.data.rules.clear();
@@ -592,7 +621,8 @@ impl Ui {
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
-                Action::None
+                // The packs may have changed in the folder since the page was last open.
+                if section == Section::General { Action::ListDesigns } else { Action::None }
             }
             Message::ToggleMenu(menu) => {
                 self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
@@ -635,6 +665,14 @@ impl Ui {
                     self.appearance = self.data.settings.appearance;
                 }
                 self.data.settings.zoom = self.zoom.level();
+                // A choice being saved stays drawn until a reload carries it.
+                if let Some(pending) = &self.pending_design {
+                    if self.data.error.is_none() && self.data.settings.design == *pending {
+                        self.pending_design = None;
+                    } else {
+                        self.data.settings.design = pending.clone();
+                    }
+                }
                 // `--design` of the demo wins over the stored one, like `--appearance`.
                 let design = match self.data.error.is_none() && self.launch.design.is_none() {
                     true => self.design.apply(&self.data.settings.design),
@@ -661,6 +699,11 @@ impl Ui {
                 inbox::answered(&mut self.inbox);
                 // The "Connect agent" dialog shows its errors itself, and may go on with a job.
                 let next = agents::answered(&mut self.agents, &result);
+                // A refused design (the core checks it too) goes back to the stored one with the
+                // next reload; the notice says why.
+                if result.is_err() {
+                    self.pending_design = None;
+                }
                 self.notice = if in_dialog || next.is_some() { None } else { result.err() };
                 let next = next.map_or_else(Task::none, |action| self.perform(action));
                 return Task::batch([next, self.reload()]);
@@ -675,6 +718,17 @@ impl Ui {
             Message::Zoom(message) => return self.zoom(message),
             Message::Design(message) => {
                 return self.design.update(message).unwrap_or_else(Task::none).map(Message::Design);
+            }
+            Message::Designs(designs) => {
+                // The samples write "Aa" in each pack's text font, so those fonts are loaded once.
+                let fonts = designs
+                    .iter()
+                    .flatten()
+                    .filter_map(|pack| pack.design.as_deref())
+                    .map(|design| design::load_fonts(design).map(Message::Design))
+                    .collect::<Vec<_>>();
+                general::listed(&mut self.general, designs);
+                return Task::batch(fonts);
             }
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
@@ -763,6 +817,19 @@ impl Ui {
             }
             Action::Select(section) => {
                 self.select(section);
+                if section == Section::General {
+                    return self.perform(Action::ListDesigns);
+                }
+                Task::none()
+            }
+            Action::ListDesigns if self.launch.demo => self.update(Message::Designs(Ok(launch::demo_designs()))),
+            Action::ListDesigns => Task::perform(list_designs(), Message::Designs),
+            Action::Design(id) => self.choose_design(id),
+            Action::OpenDesignsFolder if self.launch.demo => Task::none(),
+            Action::OpenDesignsFolder => {
+                if let Err(problem) = open_designs_folder() {
+                    self.notice = Some(problem);
+                }
                 Task::none()
             }
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
@@ -771,6 +838,23 @@ impl Ui {
                 Message::Agents(agents::Message::Setup(outcome))
             }),
         }
+    }
+
+    /// Draws this window with the design pack `id` at once and saves the choice; the other windows
+    /// follow the setting (`design::Follow`). The demo saves nothing and draws its sample pack
+    /// from memory, since it has no folder.
+    fn choose_design(&mut self, id: String) -> Task<Message> {
+        self.data.settings.design = id.clone();
+        if self.launch.demo {
+            let Some(chosen) = general::design_of(&self.general, &id) else { return Task::none() };
+            let fonts = design::load_fonts(&chosen).map(Message::Design);
+            design::set((*chosen).clone());
+            return fonts;
+        }
+        self.pending_design = Some(id.clone());
+        let fonts = self.design.apply(&id).unwrap_or_else(Task::none).map(Message::Design);
+        let save = send(Request::SetSetting { key: torro_ipc::SettingKey::Design, value: serde_json::json!(id) });
+        Task::batch([fonts, save])
     }
 
     /// Hands `message` to the window's zoom. The window keeps its pixels, so the size kept for
@@ -1172,6 +1256,50 @@ fn load() -> Task<Message> {
     )
 }
 
+/// Lists the design packs (`settings.list_designs`) and reads the look of each one that can be
+/// used from its folder, the way the windows read the design they draw with.
+async fn list_designs() -> Result<Vec<general::Pack>, String> {
+    let socket = torro_ipc::socket_path().ok_or_else(|| tr("No home directory").to_string())?;
+    let designs = match client::call(&socket, &Request::ListDesigns).await {
+        Ok(Response::Designs { designs }) => designs,
+        Ok(Response::Error { message, .. }) => return Err(message),
+        Ok(other) => return Err(format!("unexpected answer: {other:?}")),
+        Err(err) => return Err(err.to_string()),
+    };
+    // Fonts are opened to check them: off the window's thread.
+    let read = move || {
+        let dir = torro_core::design::dir();
+        designs
+            .into_iter()
+            .map(|info| {
+                // Without a home directory only the standard exists; it needs no folder.
+                let folder = dir.as_deref().unwrap_or(std::path::Path::new(""));
+                let design = info.valid.then(|| torro_core::design::load(folder, &info.id).ok()).flatten();
+                general::Pack::new(info, design)
+            })
+            .collect()
+    };
+    tokio::task::spawn_blocking(read).await.map_err(|err| err.to_string())
+}
+
+/// Creates the designs folder if it is missing and opens it with the system's file manager:
+/// `open` on macOS, the Explorer on Windows, `xdg-open` elsewhere (as the inbox opens a mail's
+/// folder). Returns what went wrong, for the notice above the page.
+fn open_designs_folder() -> Result<(), String> {
+    let dir = torro_core::design::dir().ok_or_else(|| tr("No home directory").to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let program = "xdg-open";
+    let mut child = std::process::Command::new(program).arg(&dir).spawn().map_err(|err| err.to_string())?;
+    // Waited for on a thread of its own, so it leaves no zombie behind.
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
 /// Sends one request and reports the answer; errors come back as text.
 fn send(request: Request) -> Task<Message> {
     Task::perform(
@@ -1287,8 +1415,12 @@ mod tests {
     /// The design pack comes with the settings (task L.3): the window draws with it from the next
     /// frame, a broken one gives the standard, an unreachable core changes nothing, and `--design`
     /// of the demo wins.
+    /// Held by the tests that switch the process's design, so they do not see each other's.
+    static SWITCHING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn the_stored_design_is_drawn_and_the_demo_parameter_wins() {
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = tempfile::tempdir().expect("temp dir");
         // The standard's values under another id, so the tests beside this one see the same tokens.
         for (id, toml) in [
@@ -1315,6 +1447,81 @@ mod tests {
         demo.design = Follow::new(None).in_dir(dir.path().to_path_buf());
         let _ = demo.update(with_design("twin", None));
         assert!(design::active().is_standard(), "the parameter beats the stored design");
+    }
+
+    /// General › Design (task L.4): opening the page lists the packs; the demo has its samples,
+    /// one of them broken.
+    #[test]
+    fn the_design_state_lists_the_demo_packs() {
+        let demo = started(&["--demo", "--open", "design"]);
+        assert_eq!(demo.section, Section::General);
+        let ids: Vec<&str> = ["torro", "harbor", "paper", "neon"]
+            .into_iter()
+            .filter(|id| general::design_of(&demo.general, id).is_some())
+            .collect();
+        assert_eq!(ids, ["torro", "harbor", "paper"], "the broken one has no look to draw with");
+
+        let mut real = ui(Section::Overview);
+        assert!(general::unlisted(&real.general));
+        assert!(real.update(Message::Select(Section::General)).units() > 0, "opening the page asks the core");
+        assert!(real.update(Message::Select(Section::Accounts)).units() == 0, "other pages do not");
+    }
+
+    /// A design chosen on the General page is drawn in this window at once and saved; a reload that
+    /// left before the save does not switch back, a refusal does.
+    #[test]
+    fn a_chosen_design_is_drawn_at_once_and_saved() {
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The standard's values under an id of its own, so the tests beside this one see the same
+        // tokens and no other test has loaded its fonts.
+        std::fs::create_dir_all(dir.path().join("chosen")).expect("pack folder");
+        std::fs::write(
+            dir.path().join("chosen/design.toml"),
+            "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n",
+        )
+        .expect("design.toml");
+        let with_design = |id: &str| {
+            let settings = Settings { design: id.into(), ..Settings::default() };
+            Message::Loaded(Box::new(Data { settings, ..Data::default() }))
+        };
+        let mut ui = ui(Section::General);
+        ui.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+
+        let task = ui.update(Message::General(general::Message::Design("chosen".into())));
+        assert_eq!(design::active().id, "chosen", "drawn at once, before the core answers");
+        assert!(task.units() >= 2, "its fonts and the request that saves it");
+        assert_eq!(ui.data.settings.design, "chosen", "the check mark moves at once");
+
+        let _ = ui.update(with_design("torro"));
+        assert_eq!(design::active().id, "chosen", "a reload from before the save does not switch back");
+        assert_eq!(ui.data.settings.design, "chosen");
+        let _ = ui.update(with_design("chosen"));
+        assert_eq!(ui.pending_design, None, "saved");
+
+        let _ = ui.update(Message::General(general::Message::Design("torro".into())));
+        assert!(design::active().is_standard());
+        let _ = ui.update(Message::Sent(Err("the core refused it".into())));
+        let _ = ui.update(with_design("chosen"));
+        assert_eq!(design::active().id, "chosen", "a refused choice gives way to the stored one");
+        assert_eq!(ui.notice.as_deref(), Some("the core refused it"));
+
+        design::set(torro_core::design::Design::standard());
+    }
+
+    /// The demo has no folder and no core: a choice draws its sample pack from memory and sends
+    /// nothing.
+    #[test]
+    fn the_demo_draws_a_chosen_sample_and_saves_nothing() {
+        let _switching = SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut demo = started(&["--demo", "--open", "design"]);
+        demo.data.settings.design = "paper".into();
+        let _ = demo.update(Message::General(general::Message::Design("torro".into())));
+        assert_eq!(demo.data.settings.design, "torro");
+        assert!(design::active().is_standard());
+        assert_eq!(demo.pending_design, None, "nothing is saved, so nothing waits");
+        let _ = demo.update(Message::General(general::Message::OpenDesignsFolder));
+        assert_eq!(demo.notice, None, "the demo opens nothing");
     }
 
     #[test]

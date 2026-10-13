@@ -16,8 +16,8 @@ use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
-    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, FolderChoice, IssuedKey, Key,
-    MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
+    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice, IssuedKey,
+    Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -25,6 +25,7 @@ use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
+use super::general::Pack;
 use super::wizard;
 use super::{Appearance, Data, Section};
 
@@ -94,10 +95,12 @@ pub enum Open {
     Inbox,
     /// The inbox page without any rules: the group says where they come from.
     InboxEmpty,
+    /// General › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
+    Design,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 44] = [
+    pub const ALL: [(&'static str, Open); 45] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -142,6 +145,7 @@ impl Open {
         ("agent-wizard-key", Open::AgentWizardKey),
         ("inbox", Open::Inbox),
         ("inbox-empty", Open::InboxEmpty),
+        ("design", Open::Design),
     ];
 }
 
@@ -251,6 +255,70 @@ impl Launch {
         };
         Ok(Launch { section, demo, open, appearance, design })
     }
+}
+
+/// The design packs of `--demo` (General › Design, task L.4), in memory like all its data: the
+/// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
+/// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
+/// samples use Inter, the only font the demo has without a folder.
+pub fn demo_designs() -> Vec<Pack> {
+    use torro_core::design::{Design, DesignError, Mode, Rgba};
+    let info = |design: &Design| DesignInfo {
+        id: design.id.clone(),
+        name: design.about.name.clone(),
+        version: design.about.version.clone(),
+        author: design.about.author.clone(),
+        description: design.about.description.clone(),
+        standard: design.is_standard(),
+        valid: true,
+        problems: Vec::new(),
+        active: false,
+    };
+    let pack = |id: &str, name: &str, version: &str, description: &str| {
+        let mut design = Design::standard();
+        design.id = id.into();
+        design.about.name = name.into();
+        design.about.version = version.into();
+        design.about.author = Some("Torro samples".into());
+        design.about.description = Some(description.into());
+        design
+    };
+    let mut harbor = pack("harbor", "Harbor", "1.2.0", "Teal accent, cool surfaces");
+    let dark = &mut harbor.colors.dark;
+    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x0A0E10), Rgba::hex(0x101518), Rgba::hex(0x151B1F));
+    (dark.accent, dark.on_accent) = (Rgba::hex(0x14B8A6), Rgba::hex(0x042F2C));
+    let light = &mut harbor.colors.light;
+    (light.bg, light.panel) = (Rgba::hex(0xEEF3F4), Rgba::hex(0xFFFFFF));
+    (light.accent, light.on_accent) = (Rgba::hex(0x0B7A72), Rgba::hex(0xFFFFFF));
+    let mut paper = pack("paper", "Paper", "0.9.1", "Warm paper, ink blue");
+    let dark = &mut paper.colors.dark;
+    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x12100D), Rgba::hex(0x1A1714), Rgba::hex(0x201C18));
+    (dark.accent, dark.on_accent) = (Rgba::hex(0x7C9CF5), Rgba::hex(0x0B1530));
+    let light = &mut paper.colors.light;
+    (light.bg, light.panel, light.raised) = (Rgba::hex(0xF3EEE4), Rgba::hex(0xFFFCF6), Rgba::hex(0xF8F4EC));
+    (light.accent, light.on_accent) = (Rgba::hex(0x2A4FC4), Rgba::hex(0xFFFFFF));
+    let neon = DesignInfo {
+        id: "neon".into(),
+        name: "Neon".into(),
+        version: "0.3.0".into(),
+        author: Some("Torro samples".into()),
+        description: None,
+        standard: false,
+        valid: false,
+        problems: [
+            DesignError::TextContrast { fg: "colors.dark.text_3".into(), on: "panel".into(), ratio: 3.12 },
+            DesignError::UnknownKey { key: "colors.dark.acent".into() },
+            DesignError::AccentContrast { mode: Mode::Light, ratio: 2.4 },
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect(),
+        active: false,
+    };
+    let mut packs: Vec<Pack> =
+        [Design::standard(), harbor, paper].into_iter().map(|design| Pack::new(info(&design), Some(design))).collect();
+    packs.push(Pack::new(neon, None));
+    packs
 }
 
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,

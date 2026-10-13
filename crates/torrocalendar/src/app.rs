@@ -623,7 +623,9 @@ impl App {
         let system = iced::system::theme_changes().map(Message::SystemMode);
         let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
         // Zoom keys work everywhere, glance views and open panels included.
-        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom)];
+        // The design pack polls the core every 2 s itself and wakes the window only for a change.
+        let design = self.design.subscription().map(Message::Design);
+        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom), design];
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
             // Over the view the panel is all there is to work with; beside it the view still is.
@@ -891,12 +893,8 @@ impl App {
             },
             Message::Tick => {
                 self.now = self.launch.now.unwrap_or_else(|| Local::now().naive_local());
-                let appearance = Task::batch([
-                    self.fetch_appearance(),
-                    self.fetch_night(),
-                    self.zoom.fetch().map(Message::Zoom),
-                    self.design.fetch().map(Message::Design),
-                ]);
+                let appearance =
+                    Task::batch([self.fetch_appearance(), self.fetch_night(), self.zoom.fetch().map(Message::Zoom)]);
                 // The accounts come with every tick: one may have been added or removed.
                 let accounts = self.fetch_account();
                 if !self.connected() {

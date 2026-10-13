@@ -23,7 +23,9 @@
 //! // new: no socket with `--demo`, so the design stays as it started.
 //! let design = Follow::for_source(&source);
 //! let task = Task::batch([design.fetch().map(Message::Design), …]);
-//! // Tick: `self.design.fetch().map(Message::Design)`, so a change in the control centre arrives.
+//! // subscription: always, also in glance views. Asks the core every 2 s and reports only a change,
+//! // so a choice in the control centre arrives at once and an idle window is not woken up.
+//! all.push(self.design.subscription().map(Message::Design));
 //! // update: a switch loads the new fonts; canvas caches (`canvas::Cache`) would be cleared here.
 //! Message::Design(message) => {
 //!     if let Some(task) = self.design.update(message) {
@@ -31,13 +33,22 @@
 //!     }
 //! }
 //! ```
+//!
+//! # Fonts after a switch
+//!
+//! Iced fixes its default font (`Settings::default_font`) when the window opens. A text that does
+//! not name its font would keep the old design's text font after a switch, so every text of the
+//! suite names its font from the active design: `typo::text`, and `.font(typo::body().font)` (or the
+//! level it uses) on text inputs, text editors, pick lists (their menus take the same font) and
+//! rich text. Only Iced's own fallback for missing glyphs stays the system's.
 
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
-use iced::{Font, Task, Theme};
+use iced::futures::Stream;
+use iced::{Font, Subscription, Task, Theme};
 use torro_core::design::{Face, FontRole, Mode, STANDARD_ID, Weight};
 use torro_ipc::{Request, Response};
 
@@ -251,20 +262,25 @@ impl Follow {
         Follow { dir: Some(dir), ..self }
     }
 
-    /// Asks the core for the design the settings name (`Request::Settings`). Call at start and on
-    /// every tick, like the appearance. Without a socket (`--demo`) it does nothing.
+    /// Asks the core for the design the settings name (`Request::Settings`). Call at start, so the
+    /// window has it before the first poll of [`Follow::subscription`]. Without a socket (`--demo`)
+    /// it does nothing.
     pub fn fetch(&self) -> Task<Message> {
         let Some(socket) = self.socket.clone() else { return Task::none() };
-        Task::perform(
-            async move {
-                match torro_ipc::client::call(&socket, &Request::Settings).await {
-                    Ok(Response::Settings { settings }) => Ok(settings.design),
-                    Ok(other) => Err(format!("unexpected answer: {other:?}")),
-                    Err(err) => Err(err.to_string()),
-                }
-            },
-            Message::Stored,
-        )
+        Task::perform(async move { stored(&socket).await }, Message::Stored)
+    }
+
+    /// Asks the core every [`POLL`] for the design the settings name and reports it as
+    /// [`Message::Stored`] **only when it differs** from the one asked for last: a local
+    /// `Request::Settings` is cheap, but every message makes Iced build and draw the window again,
+    /// so an unchanged setting must not produce one (design skill: continuous operation). A core
+    /// that does not answer produces nothing either. Without a socket (`--demo`) there is nothing
+    /// to follow. Subscribe always, also in glance views; the poll starts anew after each switch.
+    pub fn subscription(&self) -> Subscription<Message> {
+        match &self.socket {
+            Some(socket) => Subscription::run_with((socket.clone(), self.chosen.clone()), watch),
+            None => Subscription::none(),
+        }
     }
 
     /// Handles `message`. `Some` when the active design changed: the window draws with it from the
@@ -291,16 +307,53 @@ impl Follow {
         if design == *active() {
             return None;
         }
-        let fonts = fonts_once(&design);
+        let fonts = load_fonts(&design);
         set(design);
-        Some(Task::batch(fonts.into_iter().map(|font| iced::font::load(font).map(|_| Message::FontLoaded))))
+        Some(fonts)
     }
 }
 
-/// The font files of `design` the first time it is drawn in this process, nothing afterwards: Iced
-/// keeps every font it loaded, so switching back and forth loads each design's fonts once.
-fn fonts_once(design: &Design) -> Vec<Cow<'static, [u8]>> {
-    if mark_fonts_loaded(&design.id) { font_files(design) } else { Vec::new() }
+/// How often [`Follow::subscription`] asks the core for the chosen design: a choice in the control
+/// centre reaches every open window within this time.
+pub const POLL: Duration = Duration::from_secs(2);
+
+/// The design the settings name, asked from the core on `socket`.
+async fn stored(socket: &Path) -> Result<String, String> {
+    match torro_ipc::client::call(socket, &Request::Settings).await {
+        Ok(Response::Settings { settings }) => Ok(settings.design),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// The stream behind [`Follow::subscription`] for the core's socket and the id asked for last:
+/// every [`POLL`] one question, an item only for a different answer.
+fn watch((socket, chosen): &(PathBuf, String)) -> impl Stream<Item = Message> + use<> {
+    let socket = socket.clone();
+    iced::futures::stream::unfold(chosen.clone(), move |last| {
+        let socket = socket.clone();
+        async move {
+            loop {
+                tokio::time::sleep(POLL).await;
+                if let Ok(id) = stored(&socket).await
+                    && id != last
+                {
+                    return Some((Message::Stored(Ok(id.clone())), id));
+                }
+            }
+        }
+    })
+}
+
+/// Loads the font files of `design` into Iced, the first time only: Iced keeps every font it
+/// loaded, so switching back and forth, or showing a pack's sample in the control centre, loads
+/// each design's fonts once. The task ends in [`Message::FontLoaded`] per file, which makes Iced lay
+/// out text again; nothing when they are loaded already.
+pub fn load_fonts(design: &Design) -> Task<Message> {
+    if !mark_fonts_loaded(&design.id) {
+        return Task::none();
+    }
+    Task::batch(font_files(design).into_iter().map(|font| iced::font::load(font).map(|_| Message::FontLoaded)))
 }
 
 /// Notes that the fonts of the design `id` are loaded; `false` when they already were.
@@ -359,6 +412,13 @@ fn builtin(family: &str, weight: Weight) -> Option<&'static [u8]> {
 pub fn font(role: FontRole, weight: Weight) -> Font {
     let family = with(|t| family(&t.design.fonts.get(role).family));
     Font { weight: iced_weight(weight), ..Font::with_name(family) }
+}
+
+/// The Iced font of `role` at `weight` in `design`, which need not be the active one: for a
+/// sample of a pack ("Aa" in the control centre). Draws in that font once [`load_fonts`] loaded it;
+/// until then Iced falls back to another.
+pub fn font_of(design: &Design, role: FontRole, weight: Weight) -> Font {
+    Font { weight: iced_weight(weight), ..Font::with_name(family(&design.fonts.get(role).family)) }
 }
 
 /// The figures font (`numbers`) of the active design at `weight`, or at the nearest lighter weight
@@ -544,15 +604,20 @@ mod tests {
     fn follow_switches_to_the_chosen_design_and_falls_back_to_the_standard() {
         let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = designs();
+        // An id of its own: `crate::settings()` in a test running beside marks the fonts of
+        // whatever design is active as loaded, `twin` included.
+        let fresh = format!("fresh-{}", std::process::id());
+        std::fs::create_dir_all(dir.join(&fresh)).expect("pack folder");
+        std::fs::copy(dir.join("twin/design.toml"), dir.join(&fresh).join("design.toml")).expect("design.toml");
         let mut follow = Follow::new(None).in_dir(dir.clone());
         assert!(follow.fetch().units() == 0, "without a socket nothing is asked");
 
-        let switched = follow.update(Message::Stored(Ok("twin".into()))).expect("the design changed");
-        assert_eq!(active().id, "twin");
+        let switched = follow.update(Message::Stored(Ok(fresh.clone()))).expect("the design changed");
+        assert_eq!(active().id, fresh);
         assert!(switched.units() > 0, "the first switch loads the design's fonts");
-        assert!(follow.update(Message::Stored(Ok("twin".into()))).is_none(), "the same setting again");
+        assert!(follow.update(Message::Stored(Ok(fresh.clone()))).is_none(), "the same setting again");
         assert!(follow.update(Message::Stored(Err("core is not running".into()))).is_none());
-        assert_eq!(active().id, "twin", "a core that does not answer changes nothing");
+        assert_eq!(active().id, fresh, "a core that does not answer changes nothing");
 
         assert!(follow.update(Message::Stored(Ok("pale".into()))).is_some(), "back to the standard");
         assert!(active().is_standard(), "a broken pack is never drawn");
@@ -563,6 +628,47 @@ mod tests {
         assert!(follow.apply("torro").is_some());
         assert!(active().is_standard());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Nacharbeit L.3 (task L.4): a window follows the setting through a poll of its own, which
+    /// exists only where there is a core to ask.
+    #[test]
+    fn the_poll_runs_only_with_a_core() {
+        assert_eq!(Follow::new(None).subscription().units(), 0, "--demo: nothing to follow");
+        let socket = std::env::temp_dir().join(format!("torro-gui-poll-{}", std::process::id()));
+        assert_eq!(Follow::new(Some(socket)).subscription().units(), 1);
+        assert_eq!(POLL, Duration::from_secs(2), "a choice reaches every window within two seconds");
+    }
+
+    /// The poll asks a core that does not answer and reports nothing: no message, so the window is
+    /// neither updated nor drawn again.
+    #[test]
+    fn the_poll_is_silent_while_nothing_answers() {
+        use iced::futures::StreamExt;
+        let nowhere = std::env::temp_dir().join(format!("torro-gui-silent-{}", std::process::id()));
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().expect("runtime");
+        let first = runtime.block_on(async {
+            let mut stream = std::pin::pin!(watch(&(nowhere, "torro".to_string())));
+            tokio::time::timeout(POLL + Duration::from_millis(500), stream.next()).await
+        });
+        assert!(first.is_err(), "no item after a poll");
+    }
+
+    #[test]
+    fn fonts_of_a_design_are_loaded_once() {
+        let mut once = Design::standard();
+        once.id = format!("fonts-once-{}", std::process::id());
+        assert!(load_fonts(&once).units() > 0, "the first time: the files");
+        assert_eq!(load_fonts(&once).units(), 0, "afterwards nothing");
+    }
+
+    #[test]
+    fn a_sample_font_names_the_pack_family() {
+        let mut pack = Design::standard();
+        pack.fonts.text.family = "Sample Sans".to_string();
+        let font = font_of(&pack, FontRole::Text, Weight::Medium);
+        assert_eq!(font.family, iced::font::Family::Name("Sample Sans"));
+        assert_eq!(font.weight, iced::font::Weight::Medium);
     }
 
     #[test]

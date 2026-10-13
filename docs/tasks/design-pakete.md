@@ -102,7 +102,7 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   „Design gewechselt“ setzt das Design. `torro-api-review`.
 
 ### L.4 Steuerzentrale: Design wählen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** L.3 · **Dateien:** `crates/torroworkplace/src/ui/**` (Seite General),
   `crates/torroworkplace/src/ui/launch.rs` (Demo-Zustand), `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** General › Appearance: unter „Light / Dark / System“ die Gruppe „Design“ mit einer Zeile je Paket:
@@ -112,6 +112,14 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Wählen wirkt sofort (L.3), keine Rückfrage.
 - **API/MCP:** nutzt `settings.list_designs`, `settings.set_setting` (L.3).
 - **Abnahme:** Demo-Zustand `--open design`, Tests der Nachrichten, Sichtprüfung Breit und Schmal, hell und dunkel.
+- **Nacharbeit aus L.3** (gehört dazu; Dateien: `crates/torro-gui/src/design.rs`, `crates/torro-gui/Cargo.toml`
+  (`tokio` aus dem Workspace), je eine Zeile in `crates/{torrocalendar,torrotasks,torroinbox}/src/app.rs`):
+  (1) **Wechsel ohne Wartezeit:** `design::Follow::subscription()` fragt die Einstellungen alle 2 s ab und meldet nur
+  eine Änderung (sonst keine Nachricht, also kein Neuzeichnen); die Apps abonnieren es statt der Abfrage im Takt.
+  Appearance und Zoom kommen auf eigenem Weg und bleiben im Takt der App. Die Steuerzentrale zeichnet ein gewähltes
+  Design in ihrem Fenster sofort. (2) **Schrift überall:** Jede Schrift der Bausteine kommt aus dem aktiven Design
+  (`typo`, `.font(…)` an Eingaben, Editoren, Pick-Lists); was noch auf Iceds Standardschrift fiel (Schnelleingabe der
+  Aufgaben-App), setzt sie jetzt ausdrücklich.
 
 ### L.5 Zweites Paket als Beispiel und Prüfstein
 - [ ] erledigt
