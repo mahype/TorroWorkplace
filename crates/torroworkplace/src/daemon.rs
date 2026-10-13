@@ -439,11 +439,14 @@ fn describe(request: &Request) -> String {
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::MoveTodo { .. } => "move todo".into(),
-        // Ids only, never a search or a name (task G.2).
+        // Ids only, never a search or a name (tasks G.2, G.7).
+        Request::CreateTaskList { account, .. } => format!("create task list in {account}"),
         Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
         Request::UpdateFilterList { collection, .. } => format!("update filter list {collection}"),
         Request::DeleteFilterList { collection } => format!("delete filter list {collection}"),
         Request::PreviewFilter { account, .. } => format!("preview filter of {account}"),
+        Request::ListGithubRepos { account } => format!("list github repos of {account}"),
+        Request::DescribeGithubRepo { account, .. } => format!("describe a github repo of {account}"),
         Request::UnpinIssue { collection, .. } => format!("unpin from {collection}"),
         Request::AddLink { collection, .. } => format!("add link to {collection}"),
         Request::Settings => "settings".into(),

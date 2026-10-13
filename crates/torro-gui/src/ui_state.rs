@@ -1,11 +1,13 @@
-//! What a window remembers about its own look between starts: today whether the sidebar is
-//! collapsed (task U.2). `ui.json` in the app's state directory ([`torro_core::paths`]), because it
-//! is view state that may be lost – like the scroll position it is no suite setting and goes
-//! through no API.
+//! What a window remembers about its own look between starts: whether the sidebar is collapsed
+//! (task U.2, [`UiState`]) and, in the tasks app, the repository last chosen for a GitHub filter
+//! list (task G.11, [`last_repo_from`]). `ui.json` in the app's state directory
+//! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
+//! is no suite setting and goes through no API.
 //!
 //! A missing or broken file gives the defaults, so it never keeps an app from starting. Writes are
-//! atomic (temporary file, then rename). Apps load it in the background at start and save after a
-//! change:
+//! atomic (temporary file, then rename) and keep the keys they do not write, so saving the sidebar
+//! never forgets the repository and the other way round. Apps load it in the background at start
+//! and save after a change:
 //!
 //! ```ignore
 //! // new(): Task::batch([…, ui_state::load_task(AppId::TASKS).map(Message::UiState)])
@@ -29,6 +31,10 @@ use crate::shell::SidebarMode;
 
 /// The name of the file in the app's state directory.
 pub const FILE: &str = "ui.json";
+
+/// The key of the repository last chosen for a GitHub filter list (`owner/name`), beside the
+/// fields of [`UiState`]. One value for all GitHub accounts of the app.
+const LAST_REPO: &str = "lastRepo";
 
 /// The remembered view state of one app. Add fields with `#[serde(default)]` so older files keep
 /// loading.
@@ -114,12 +120,63 @@ pub fn load_from(path: &Path) -> UiState {
     })
 }
 
-/// Writes `state` to `path` atomically, creating its directory if needed.
+/// Writes `state` to `path` atomically, creating its directory if needed. Keys of the file that
+/// are no field of [`UiState`] (the last repository, fields of a later version) stay.
 pub fn save_to(path: &Path, state: &UiState) -> Result<(), Error> {
+    match serde_json::to_value(state).map_err(Error::Json)? {
+        serde_json::Value::Object(fields) => merge_into(path, fields),
+        _ => Ok(()),
+    }
+}
+
+/// The repository (`owner/name`) last chosen for a GitHub filter list, as [`save_last_repo_to`]
+/// stored it in `path`; `None` when there is none or the file cannot be read.
+pub fn last_repo_from(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let repo = value.get(LAST_REPO)?.as_str()?.trim();
+    (!repo.is_empty()).then(|| repo.to_string())
+}
+
+/// Stores `repo` (`owner/name`) as the repository last chosen for a GitHub filter list in `path`,
+/// keeping everything else in the file.
+pub fn save_last_repo_to(path: &Path, repo: &str) -> Result<(), Error> {
+    let mut fields = serde_json::Map::new();
+    fields.insert(LAST_REPO.into(), serde_json::Value::String(repo.to_string()));
+    merge_into(path, fields)
+}
+
+/// [`last_repo_from`] for `app` in the background, for the start of an app:
+/// `ui_state::load_last_repo_task(app).map(Message::LastRepo)`. Like [`load_task`], tests that only
+/// build the app never run it.
+pub fn load_last_repo_task(app: AppId) -> Task<Option<String>> {
+    Task::perform(async move { file(app).and_then(|path| last_repo_from(&path)) }, |repo| repo)
+}
+
+/// [`save_last_repo_to`] for `app` in the background, when a filter list was created or saved. A
+/// failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_last_repo_task<T: Send + 'static>(app: AppId, repo: String) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_last_repo_to(&path, &repo));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
+/// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
+/// others – atomically, creating the directory if needed. A missing or broken file starts empty.
+fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|err| Error::Io(dir.to_path_buf(), err))?;
     }
-    let mut json = serde_json::to_string_pretty(state).map_err(Error::Json)?;
+    let mut object = match fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()) {
+        Some(serde_json::Value::Object(object)) => object,
+        _ => serde_json::Map::new(),
+    };
+    object.extend(fields);
+    let mut json = serde_json::to_string_pretty(&serde_json::Value::Object(object)).map_err(Error::Json)?;
     json.push('\n');
     write_atomically(path, &json).map_err(|err| Error::Io(path.to_path_buf(), err))
 }
@@ -202,6 +259,25 @@ mod tests {
         assert_eq!(load_from(&path), UiState::default());
         let leftovers = fs::read_dir(path.parent().expect("dir")).expect("list").count();
         assert_eq!(leftovers, 1, "no temporary file stays behind");
+    }
+
+    #[test]
+    fn the_last_repository_is_kept_beside_the_sidebar() {
+        let dir = TempDir::new("last-repo");
+        let path = dir.0.join(FILE);
+        assert_eq!(last_repo_from(&path), None, "nothing chosen yet");
+        save_to(&path, &UiState { sidebar: SidebarMode::Rail }).expect("save the sidebar");
+        save_last_repo_to(&path, "mahype/TorroWorkplace").expect("save the repository");
+        assert_eq!(last_repo_from(&path).as_deref(), Some("mahype/TorroWorkplace"));
+        assert_eq!(load_from(&path).sidebar, SidebarMode::Rail, "the sidebar stays");
+        save_to(&path, &UiState::default()).expect("save the sidebar again");
+        assert_eq!(last_repo_from(&path).as_deref(), Some("mahype/TorroWorkplace"), "the repository stays");
+        save_last_repo_to(&path, "mahype/notes").expect("another repository");
+        assert_eq!(last_repo_from(&path).as_deref(), Some("mahype/notes"));
+        for content in ["{ not json", r#"{"lastRepo":7}"#, r#"{"lastRepo":"  "}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(last_repo_from(&path), None, "{content}");
+        }
     }
 
     /// The env var `TORRO_STATE_HOME` cannot be set inside a test without `unsafe`, so this test

@@ -40,6 +40,8 @@ use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
+use torro_pim::model::GitHubLabel;
+use torro_pim::source::GitHubRepo;
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
 use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
@@ -519,6 +521,30 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<String>,
     },
+    /// Creates a new task list on the server of the Nextcloud account `account` (task G.7): a
+    /// CalDAV collection for tasks only (`MKCALENDAR` in the account's calendar home), named
+    /// `name`, in `color`. Its address is a new one made of the name and a random part; one that
+    /// exists already is never overwritten (another address is tried). Answered with
+    /// [`Response::Collection`]: the list as `tasks.list_lists` lists it from now on (id
+    /// `<account-id>/<list URL>`, kind `todos`, writable), in the core's cache at once.
+    ///
+    /// A new list is never added to a client's selection of task lists: a client limited to some
+    /// lists does not see it afterwards. Codes: `not-found` for an account the core does not know,
+    /// `unsupported` for an account without task lists of its own (GitHub: use
+    /// [`Request::CreateFilterList`]), `error` for an empty name (or one over 200 characters) and
+    /// a colour that is not `#RRGGBB`, `not-connected` when the account has no app password on this
+    /// device, `auth` and `offline` when its server refuses or cannot be reached, `error` when the
+    /// server refuses the list.
+    #[serde(rename = "tasks.create_list")]
+    CreateTaskList {
+        /// The Nextcloud account, `nextcloud:<login>@<server>` as `accounts.list_accounts` lists it.
+        account: String,
+        /// The name of the list.
+        name: String,
+        /// The colour of the list as `#RRGGBB`; leave out for the server's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+    },
 
     // GitHub filter lists (task G.2, `docs/github.md`). Granted in the area `github`: for a client
     // key the core also filters every issue and pull request by its repository
@@ -593,6 +619,37 @@ pub enum Request {
         account: String,
         /// The searches or addresses, as for `tasks.create_filter_list`.
         queries: Vec<String>,
+    },
+    /// The repositories the GitHub account `account` reaches (task G.9): its own, those it
+    /// collaborates on and those of its organisations (GraphQL `viewer.repositories`), archived
+    /// ones left out, the most recently changed first, at most 1,000. Nothing is searched beyond
+    /// them. Answered with [`Response::GithubRepos`]. The core keeps the answer until the next
+    /// refresh of the filter lists (every five minutes, `accounts.sync`).
+    ///
+    /// For a client only the repositories in its selection (`api::Rights::github_repos`). Codes:
+    /// `not-found` for an account that is no connected GitHub account, `not-connected` when it has
+    /// no token on this device, `auth` and `offline` when GitHub refuses the token or cannot be
+    /// reached, `error` when GitHub cannot answer (for a client with a fixed message).
+    #[serde(rename = "tasks.list_github_repos")]
+    ListGithubRepos {
+        /// The GitHub account, `github:<login>`.
+        account: String,
+    },
+    /// What can be picked in the repository `repo` of the GitHub account `account` (task G.9): its
+    /// labels with their colours, its open milestones and the people issues can be assigned to,
+    /// read in one call to GitHub (at most 100 of each) and kept like
+    /// [`Request::ListGithubRepos`]. Answered with [`Response::GithubRepo`].
+    ///
+    /// Codes: `not-found` for a repository GitHub does not have or the token does not reach, for
+    /// a client one outside its selection (GitHub is not asked then), and for an account as in
+    /// [`Request::ListGithubRepos`]; `error` for a `repo` that is not `owner/name`; the others as
+    /// there.
+    #[serde(rename = "tasks.describe_github_repo")]
+    DescribeGithubRepo {
+        /// The GitHub account, `github:<login>`.
+        account: String,
+        /// The repository as `owner/name`, as `tasks.list_github_repos` lists it.
+        repo: String,
     },
     /// Takes the pinned issue or pull request `url` out of the filter list `collection`; it stays
     /// in the list while a search finds it. Nothing changes on GitHub, and the list's revision
@@ -1282,7 +1339,8 @@ pub enum Response {
         /// The server has at least one collection with tasks.
         tasks: bool,
     },
-    /// One collection as `tasks.list_lists` lists it: a filter list just created or changed
+    /// One collection as `tasks.list_lists` lists it: a task list just created
+    /// ([`Request::CreateTaskList`]), a filter list just created or changed
     /// ([`Request::CreateFilterList`], [`Request::UpdateFilterList`]).
     Collection {
         collection: Collection,
@@ -1298,6 +1356,22 @@ pub enum Response {
         truncated: bool,
         /// The first matches (at most 20) as tasks of no list (`collection` empty).
         todos: Vec<Todo>,
+    },
+    /// The repositories a GitHub account reaches ([`Request::ListGithubRepos`]), the most
+    /// recently changed first.
+    GithubRepos {
+        repos: Vec<GitHubRepo>,
+    },
+    /// What can be picked in one repository ([`Request::DescribeGithubRepo`]).
+    GithubRepo {
+        /// `owner/name` as GitHub writes it (its case may differ from the request's).
+        repo: String,
+        /// Its labels by name, each with its colour as `#rrggbb`.
+        labels: Vec<GitHubLabel>,
+        /// Titles of its open milestones, by due date.
+        milestones: Vec<String>,
+        /// Logins of the people issues can be assigned to.
+        assignees: Vec<String>,
     },
     /// The command waits for a person's approval and has not run yet (`result: "pending"`). Ask
     /// later with `approvals.approval_status` and the approval's `id`; it expires at `expires`.
@@ -1623,11 +1697,11 @@ pub struct ActivityEntry {
     pub command: String,
     /// What the command named, each as `kind:value`: `collection:<id>`, `account:<id>`,
     /// `inbox:<id>`, `approval:<id>`, `client:<id>`, `rule:<id>`, `source:<source>`,
-    /// `setting:<key>`, `app:<binary>`, and `item:<hash>`, `template:<hash>`, `message:<hash>` or
-    /// `folder:<hash>` (16 hex digits of a SHA-256) for ids that can carry a readable name or that
-    /// would let lines be matched with a mailbox (CalDAV hrefs, issue URLs, template ids made from
-    /// the template's name, mail messages, drafts and folders). Never recipients, subjects, search
-    /// terms, file or folder names.
+    /// `setting:<key>`, `app:<binary>`, and `item:<hash>`, `template:<hash>`, `repo:<hash>`,
+    /// `message:<hash>` or `folder:<hash>` (16 hex digits of a SHA-256) for ids that can carry a
+    /// readable name or that would let lines be matched with a mailbox (CalDAV hrefs, issue URLs,
+    /// template ids made from the template's name, GitHub repositories in lower case, mail
+    /// messages, drafts and folders). Never recipients, subjects, search terms, file or folder names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<String>,
     /// `ok`, `pending` (waits for a person), `denied` (a person said no), or the error code

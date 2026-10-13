@@ -678,8 +678,8 @@ impl Core {
             return Ok(refused);
         }
         let reach = Reach::Client(&rights);
-        if let Some(collection) = self.out_of_reach(reach, &request).await {
-            return Ok(no_collection(&collection));
+        if let Some(outside) = self.out_of_reach(reach, &request).await {
+            return Ok(not_reached(&request, &outside));
         }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
         // to `github` as well, refused before a person is asked to approve it. The handler checks
@@ -877,7 +877,8 @@ impl Core {
     }
 
     /// What the core holds about the things `request` names, for its approval's summary
-    /// ([`Facts`]): the template's name from the store, the account's label, and for calendars,
+    /// ([`Facts`]): the template's name from the store, the account's label (to remove it or to
+    /// create a task list in it), and for calendars,
     /// tasks and filter lists what the calendar service caches ([`PimService::facts`]). Looked up
     /// by the ids the command runs with, after the client's reach was checked.
     async fn facts(&self, request: &Request) -> Facts {
@@ -888,9 +889,12 @@ impl Core {
             | Request::RenameTemplate { id, .. } => {
                 Facts { name: self.store.load(id).ok().map(|template| template.name), ..Facts::default() }
             }
-            Request::RemoveAccount { id } | Request::UpdateMailAccount { id, .. } => {
+            // The account's label as the core knows it, never a name the client sends along.
+            Request::RemoveAccount { id: account }
+            | Request::UpdateMailAccount { id: account, .. }
+            | Request::CreateTaskList { account, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
-                Facts { name: accounts.into_iter().find(|a| a.id == *id).map(|a| a.label), ..Facts::default() }
+                Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
             }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
@@ -983,8 +987,8 @@ impl Core {
             return self.inbox_request(request, Some(&info), pin).await;
         }
         let reach = Reach::Client(rights);
-        if let Some(collection) = self.out_of_reach(reach, &request).await {
-            return no_collection(&collection);
+        if let Some(outside) = self.out_of_reach(reach, &request).await {
+            return not_reached(&request, &outside);
         }
         if let Some(refused) = mail_out_of_reach(rights, &request) {
             return refused;
@@ -1069,6 +1073,14 @@ impl Core {
                 let answer = account_answer(self.github.connect_token(token).await);
                 self.refresh_connected(answer)
             }
+            // A GitHub account has no task lists of its own, only filter lists (task G.7).
+            Request::CreateTaskList { account, .. } if self.github.knows(&account).await => Response::Error {
+                code: "unsupported".into(),
+                message: format!("{account} has no task lists of its own: create a filter list there"),
+            },
+            Request::CreateTaskList { account, name, color } => {
+                self.pim.create_task_list(&account, &name, color.as_deref()).await
+            }
             Request::CreateFilterList { account, name, color, queries } => {
                 if !self.github.knows(&account).await {
                     return no_github_account(&account);
@@ -1095,6 +1107,15 @@ impl Core {
                     },
                 }
             }
+            // What the filter list dialog offers to pick (task G.9), read with the account's token.
+            Request::ListGithubRepos { account } => match self.account_api(&account).await {
+                Ok(api) => self.pim.list_github_repos(&account, &api, reach).await,
+                Err(refused) => *refused,
+            },
+            Request::DescribeGithubRepo { account, repo } => match self.account_api(&account).await {
+                Ok(api) => self.pim.describe_github_repo(&account, &repo, &api, reach).await,
+                Err(refused) => *refused,
+            },
             Request::UnpinIssue { collection, url } => {
                 let api = self.filter_list_api(&collection).await;
                 self.pim.unpin_issue(&collection, &url, api.as_ref()).await
@@ -1482,6 +1503,21 @@ impl Core {
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
         accounts.splice(at..at, others);
         accounts
+    }
+
+    /// The GitHub access of the GitHub account `account`; the answer when there is none:
+    /// `not-found` for an account the core does not know, `not-connected` for one without a token
+    /// on this device.
+    async fn account_api(&self, account: &str) -> Result<torro_pim_github::Api, Box<Response>> {
+        if !self.github.knows(account).await {
+            return Err(Box::new(no_github_account(account)));
+        }
+        self.github.api(account).await.ok_or_else(|| {
+            Box::new(Response::Error {
+                code: "not-connected".into(),
+                message: format!("{account} has no token on this device: sign in to GitHub again"),
+            })
+        })
     }
 
     /// The changing mail commands (task M3.2, [`crate::mail::write`]): `mail.set_flags`,
@@ -2218,6 +2254,16 @@ fn version() -> String {
 /// does not exist.
 fn no_collection(collection: &str) -> Response {
     Response::Error { code: "not-found".into(), message: format!("no collection {collection:?}") }
+}
+
+/// The answer for `request`, which would reach `outside` ([`Core::out_of_reach`]) beyond what the
+/// client may: the very answer of something that does not exist – for a repository the handler's
+/// `no repository …` (task G.9b), for anything else [`no_collection`].
+fn not_reached(request: &Request, outside: &str) -> Response {
+    match request {
+        Request::DescribeGithubRepo { .. } => crate::pim::no_repo(outside),
+        _ => no_collection(outside),
+    }
 }
 
 /// The `not-found` for a mail request of a client that names an account outside its
@@ -4309,6 +4355,167 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), preview).await), "forbidden");
     }
 
+    // --- What the filter list dialog reads (task G.9) -----------------------------------------
+
+    /// A core with `github:mahype` on a fake GitHub that reaches `mahype/TorroWorkplace`,
+    /// `mahype/secret` (private) and an archived repository, and describes any repository:
+    /// `mahype/nope` does not exist, `mahype/renamed` answers as `mahype/secret` (GitHub follows a
+    /// renamed repository). With `failing`, both questions fail with GitHub's own words.
+    async fn core_with_repos(dir: &std::path::Path, failing: bool) -> (Core, Asked) {
+        let (url, asked) = fake_github(move |seen| {
+            let sent: serde_json::Value = serde_json::from_str(&seen.body).unwrap_or_default();
+            let variables = &sent["variables"];
+            let part = |name: &str| variables[name].as_str().unwrap_or_default().to_string();
+            let repo = format!("{}/{}", part("o"), part("r"));
+            let asks = |field: &str| seen.body.contains(field);
+            let body = if failing && (asks("repositories(") || asks("assignableUsers")) {
+                let error = serde_json::json!({"type": "FORBIDDEN", "message": "mahype/secret is locked"});
+                serde_json::json!({"data": null, "errors": [error]})
+            } else if asks("repositories(") {
+                let repo = |name: &str, private: bool, archived: bool| {
+                    serde_json::json!({"nameWithOwner": name, "isPrivate": private, "isArchived": archived})
+                };
+                let nodes = [
+                    repo("mahype/TorroWorkplace", false, false),
+                    repo("mahype/secret", true, false),
+                    repo("mahype/old", false, true),
+                ];
+                serde_json::json!({"data": {"viewer": {"repositories": {
+                    "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}}})
+            } else if asks("assignableUsers") && repo == "mahype/nope" {
+                serde_json::json!({"data": {"repository": null},
+                    "errors": [{"type": "NOT_FOUND", "message": "Could not resolve to a Repository."}]})
+            } else if asks("assignableUsers") {
+                let name = if repo == "mahype/renamed" { "mahype/secret".to_string() } else { repo };
+                serde_json::json!({"data": {"repository": {"nameWithOwner": name,
+                    "labels": {"nodes": [{"name": "bug", "color": "d73a4a"}]},
+                    "milestones": {"nodes": [{"title": "v0.4"}]},
+                    "assignableUsers": {"nodes": [{"login": "mahype"}]}}}})
+            } else {
+                return (200, Some("repo"), viewer("mahype"));
+            };
+            (200, Some("repo"), body.to_string())
+        })
+        .await;
+        let core = core_with_github(dir, &MemoryTokens::default(), &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        // Connecting refreshes the account's filter lists in the background; a refresh while GitHub
+        // is asked would drop the answer (task G.9b), so the tests start after it.
+        for _ in 0..1000 {
+            if core.pim.has_filter_slot("github:mahype").await {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(core.pim.has_filter_slot("github:mahype").await, "the first refresh ran");
+        (core, asked)
+    }
+
+    /// How often the fake GitHub was asked a question containing `field`.
+    fn asked_for(asked: &Asked, field: &str) -> usize {
+        asked.lock().expect("asked").iter().filter(|seen| seen.body.contains(field)).count()
+    }
+
+    fn repos(answer: Response) -> Vec<(String, bool)> {
+        match answer {
+            Response::GithubRepos { repos } => repos.into_iter().map(|repo| (repo.repo, repo.private)).collect(),
+            other => panic!("repositories, got {other:?}"),
+        }
+    }
+
+    fn describe(repo: &str) -> Request {
+        Request::DescribeGithubRepo { account: "github:mahype".into(), repo: repo.into() }
+    }
+
+    const LIST_REPOS: fn() -> Request = || Request::ListGithubRepos { account: "github:mahype".into() };
+
+    #[tokio::test]
+    async fn repositories_and_what_they_offer_are_read_once_until_the_next_refresh() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, asked) = core_with_repos(dir.path(), false).await;
+
+        let mine = vec![("mahype/TorroWorkplace".to_string(), false), ("mahype/secret".to_string(), true)];
+        assert_eq!(repos(core.handle(LIST_REPOS()).await), mine, "archived ones left out");
+        assert_eq!(repos(core.handle(LIST_REPOS()).await), mine);
+        assert_eq!(asked_for(&asked, "repositories("), 1, "the second answer comes from the cache");
+
+        let described = core.handle(describe("mahype/TorroWorkplace")).await;
+        let expected = Response::GithubRepo {
+            repo: "mahype/TorroWorkplace".into(),
+            labels: vec![torro_pim::model::GitHubLabel { name: "bug".into(), color: Some("#d73a4a".into()) }],
+            milestones: vec!["v0.4".into()],
+            assignees: vec!["mahype".into()],
+        };
+        assert_eq!(described, expected);
+        assert_eq!(core.handle(describe(" MAHYPE/torroworkplace ")).await, expected, "any case, from the cache");
+        assert_eq!(asked_for(&asked, "assignableUsers"), 1);
+
+        // The next refresh of the filter lists drops what was read.
+        refresh_filter_lists(&core.pim, &core.github).await;
+        assert_eq!(repos(core.handle(LIST_REPOS()).await), mine);
+        assert_eq!(core.handle(describe("mahype/TorroWorkplace")).await, expected);
+        assert_eq!((asked_for(&asked, "repositories("), asked_for(&asked, "assignableUsers")), (2, 2));
+
+        // A repository GitHub does not have, a name that is not `owner/name`, an unknown account.
+        assert_eq!(code(&core.handle(describe("mahype/nope")).await), "not-found");
+        assert_eq!(code(&core.handle(describe("TorroWorkplace")).await), "error");
+        assert_eq!(asked_for(&asked, "assignableUsers"), 3, "a name that does not fit asks nothing");
+        let stranger = Request::ListGithubRepos { account: "github:someone".into() };
+        assert_eq!(code(&core.handle(stranger).await), "not-found");
+        let stranger = Request::DescribeGithubRepo { account: "github:someone".into(), repo: "a/b".into() };
+        assert_eq!(code(&core.handle(stranger).await), "not-found");
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_only_the_repositories_it_was_granted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, asked) = core_with_repos(dir.path(), false).await;
+        let mut rights = repo_limited();
+        rights.github_repos = Selection::Only(vec!["mahype/TorroWorkplace".into(), "mahype/renamed".into()]);
+        let (_, key) = client(&core, rights).await;
+
+        let seen = repos(ask(&core, Some(&key), LIST_REPOS()).await);
+        assert_eq!(seen, [("mahype/TorroWorkplace".to_string(), false)]);
+        // The cache holds every repository, but each client sees its own.
+        assert_eq!(repos(core.handle(LIST_REPOS()).await).len(), 2);
+
+        // Outside its repositories: `not-found` with the words of one that does not exist (task
+        // G.9b), and GitHub is not asked.
+        let asked_before = asked_for(&asked, "assignableUsers");
+        let answer = ask(&core, Some(&key), describe(" mahype/secret ")).await;
+        let none =
+            |repo: &str| Response::Error { code: "not-found".into(), message: format!("no repository {repo:?}") };
+        assert_eq!(answer, none("mahype/secret"));
+        assert_eq!(asked_for(&asked, "assignableUsers"), asked_before);
+        assert_eq!(core.handle(describe("mahype/nope")).await, none("mahype/nope"), "the same as GitHub's none");
+        // GitHub answers under a name outside them: as if there were none.
+        assert_eq!(ask(&core, Some(&key), describe("mahype/renamed")).await, none("mahype/renamed"));
+        assert!(matches!(ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await, Response::GithubRepo { .. }));
+
+        // Without read access to `github` neither question goes through.
+        let mut tasks_only = RightsTemplate::FullAccess.rights();
+        tasks_only.areas.remove(&Area::Github);
+        let (_, key) = client(&core, tasks_only).await;
+        assert_eq!(code(&ask(&core, Some(&key), LIST_REPOS()).await), "forbidden");
+        assert_eq!(code(&ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn a_client_reads_a_fixed_message_when_github_fails() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _) = core_with_repos(dir.path(), true).await;
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let fixed = Response::Error { code: "error".into(), message: torro_pim_github::GITHUB_READ_FAILED.into() };
+        assert_eq!(ask(&core, Some(&key), LIST_REPOS()).await, fixed);
+        assert_eq!(ask(&core, Some(&key), describe("mahype/TorroWorkplace")).await, fixed);
+        for request in [LIST_REPOS(), describe("mahype/TorroWorkplace")] {
+            let Response::Error { code, message } = core.handle(request).await else { panic!("an error") };
+            assert_eq!(code, "error");
+            assert!(message.contains("mahype/secret"), "the control centre reads what GitHub said: {message}");
+        }
+    }
+
     // --- Ticking an issue of a filter list closes it (task G.5) ---------------------------------
 
     /// The tasks `key` (none: the suite) reads in the list `list`.
@@ -4780,21 +4987,98 @@ mod tests {
         assert!(!opened.iter().any(|url| url == shown || url == swapped), "{opened:?}");
     }
 
+    // ----- New task lists (task G.7) -------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_new_task_list_is_listed_at_once_but_never_added_to_a_clients_selection() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let fake = crate::pim::tests::fake_caldav_making_lists(SettingsStore::at(settings_file(dir.path()))).await;
+        let core = core_on(dir.path(), &fake);
+        let create = |name: &str| Request::CreateTaskList {
+            account: fake.account.clone(),
+            name: name.into(),
+            color: Some("#3FB984".into()),
+        };
+        let made = || fake.lines().iter().filter(|line| line.starts_with("MKCALENDAR ")).count();
+        let lists = |answer: Response| match answer {
+            Response::Collections { collections } => collections.into_iter().map(|c| c.id).collect::<Vec<_>>(),
+            other => panic!("lists answer with Collections, got {other:?}"),
+        };
+
+        // The suite: the new list is there before the next sync.
+        let Response::Collection { collection } = core.handle(create("Groceries")).await else {
+            panic!("the suite makes a list");
+        };
+        assert!(lists(core.handle(Request::TaskCollections).await).contains(&collection.id));
+
+        // Without write access to tasks: refused before the server is asked.
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&reader), create("Errands")).await), "forbidden");
+        assert_eq!(made(), 1);
+
+        // A client limited to `work` makes a list but does not see it, and its rights stay.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.task_lists = Selection::Only(vec![fake.work.clone()]);
+        let (id, limited) = client(&core, rights.clone()).await;
+        let Response::Collection { collection: its } = ask(&core, Some(&limited), create("Errands")).await else {
+            panic!("a client with write access makes a list");
+        };
+        assert_eq!(made(), 2);
+        assert!(lists(core.handle(Request::TaskCollections).await).contains(&its.id), "the suite sees it");
+        assert_eq!(lists(ask(&core, Some(&limited), Request::TaskCollections).await), vec![fake.work.clone()]);
+        let stored = core.clients.list().into_iter().find(|info| info.id == id).expect("the client");
+        assert_eq!(stored.rights, rights, "not added to the selection");
+
+        // A client that asks before every change: the approval names the account by its label.
+        let mut asking = RightsTemplate::ReadAndWrite.rights();
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, careful) = client(&core, asking).await;
+        let Response::Pending { approval } = ask(&core, Some(&careful), create("Later")).await else {
+            panic!("waits for a person");
+        };
+        let Response::Accounts { accounts } = core.handle(Request::Accounts).await else { panic!("accounts") };
+        let label = accounts.into_iter().find(|a| a.id == fake.account).expect("the account").label;
+        let expected = trf("Create task list \"{name}\" in {account}", &[("name", &"Later"), ("account", &label)]);
+        assert_eq!(approval.summary, expected);
+        assert_eq!(made(), 2, "nothing made before a person allows it");
+
+        // An account the core does not know.
+        let unknown =
+            Request::CreateTaskList { account: "nextcloud:bob@x.example".into(), name: "x".into(), color: None };
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+    }
+
+    #[tokio::test]
+    async fn a_github_account_has_no_task_lists_of_its_own() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let tokens = MemoryTokens::default();
+        let (url, _) = fake_github(|_| (200, Some("repo"), viewer("mahype"))).await;
+        let core = core_with_github(dir.path(), &tokens, &url);
+        let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
+        assert!(matches!(core.handle(set).await, Response::Account { .. }));
+        let create = Request::CreateTaskList { account: "github:mahype".into(), name: "Bugs".into(), color: None };
+        assert_eq!(code(&core.handle(create).await), "unsupported");
+    }
+
     // ----- Making a task of an inbox entry (task E3.5) ---------------------------------------
 
     /// The core of [`core`], but with a calendar service on a fake CalDAV server that takes every
     /// write, and its settings in `dir` (so a list can be hidden).
     async fn core_with_tasks(dir: &std::path::Path) -> (Core, crate::pim::tests::FakeCalDav) {
         let fake = crate::pim::tests::fake_caldav(SettingsStore::at(settings_file(dir))).await;
-        let core = Core::new(
+        (core_on(dir, &fake), fake)
+    }
+
+    /// The core of [`core`], with the calendar service of `fake`.
+    fn core_on(dir: &std::path::Path, fake: &crate::pim::tests::FakeCalDav) -> Core {
+        Core::new(
             Backend::Unsupported { name: "test".into() },
             Store::at(dir.to_path_buf()),
             Arc::clone(&fake.service),
             crate::clients::tests::open_in(dir),
         )
         .with_approvals(crate::approvals::tests::quiet_in(dir))
-        .with_inbox(crate::inbox::tests::inbox_in(dir));
-        (core, fake)
+        .with_inbox(crate::inbox::tests::inbox_in(dir))
     }
 
     /// A notice the app key posts, with a web page and a text; its id.

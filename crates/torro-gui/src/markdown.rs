@@ -1,4 +1,4 @@
-//! Markdown to read, in the Torro look (task G.7 in `docs/tasks/github.md`): the text of GitHub
+//! Markdown to read, in the Torro look (task G.12 in `docs/tasks/github.md`): the text of GitHub
 //! issues and pull requests in the tasks app's panel.
 //!
 //! Built on Iced's `markdown` widget (pulldown-cmark), with every block drawn by [`Look`] instead

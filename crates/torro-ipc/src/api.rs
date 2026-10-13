@@ -785,10 +785,13 @@ impl Request {
             Request::SaveTodo { .. } => &SAVE_TODO,
             Request::DeleteTodo { .. } => &DELETE_TODO,
             Request::MoveTodo { .. } => &MOVE_TODO,
+            Request::CreateTaskList { .. } => &CREATE_LIST,
             Request::CreateFilterList { .. } => &CREATE_FILTER_LIST,
             Request::UpdateFilterList { .. } => &UPDATE_FILTER_LIST,
             Request::DeleteFilterList { .. } => &DELETE_FILTER_LIST,
             Request::PreviewFilter { .. } => &PREVIEW_FILTER,
+            Request::ListGithubRepos { .. } => &LIST_GITHUB_REPOS,
+            Request::DescribeGithubRepo { .. } => &DESCRIBE_GITHUB_REPO,
             Request::UnpinIssue { .. } => &UNPIN_ISSUE,
             Request::AddLink { .. } => &ADD_LINK,
             Request::Settings => &GET_SETTINGS,
@@ -885,10 +888,13 @@ pub static CATALOGUE: &[&Command] = &[
     &SAVE_TODO,
     &DELETE_TODO,
     &MOVE_TODO,
+    &CREATE_LIST,
     &CREATE_FILTER_LIST,
     &UPDATE_FILTER_LIST,
     &DELETE_FILTER_LIST,
     &PREVIEW_FILTER,
+    &LIST_GITHUB_REPOS,
+    &DESCRIBE_GITHUB_REPO,
     &UNPIN_ISSUE,
     &ADD_LINK,
     &LIST_ACCOUNTS,
@@ -1135,6 +1141,19 @@ static MOVE_TODO: Command = Command {
                   If a write fails, the task has not moved yet: reload with list_todos and try again.",
 };
 
+static CREATE_LIST: Command = Command {
+    name: "tasks.create_list",
+    area: Area::Tasks,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Creates a new task list on the server of a Nextcloud account (`account` from \
+                  accounts.list_accounts) with a `name` and an optional `color` (`#RRGGBB`), and returns it as \
+                  list_lists lists it from now on (its `id` is what save_todo takes as `collection`). The list holds \
+                  tasks only and other apps of the account (Nextcloud Tasks) show it too. A key limited to some \
+                  task lists does not get the new list added, so it does not see it afterwards. A GitHub account \
+                  has no task lists of its own (`unsupported`): use create_filter_list there.",
+};
+
 // The GitHub filter lists (task G.2): task commands, granted in the area `github` together with
 // the repositories a client may see (`Rights::github_repos`).
 
@@ -1183,6 +1202,34 @@ static PREVIEW_FILTER: Command = Command {
                   saving anything and returns how many issues and pull requests match and the first 20 of them as \
                   tasks. A key limited to some repositories must name granted ones in every search, as for \
                   create_filter_list, else `forbidden` before GitHub is asked; it sees only matches in them.",
+};
+
+// What the dialog of a filter list offers to pick (task G.9): read with the account's token, so a
+// client sees only the repositories of `Rights::github_repos`.
+
+static LIST_GITHUB_REPOS: Command = Command {
+    name: "tasks.list_github_repos",
+    area: Area::Github,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the repositories a GitHub account (`github:<login>`) reaches: its own, those it \
+                  collaborates on and those of its organisations, without archived ones, the most recently \
+                  changed first and at most 1,000 repositories, each as `owner/name` with whether it is private. \
+                  Use a `repo` from here in describe_github_repo and in the `repo:` of a filter list's search. A \
+                  key limited to some repositories sees only those. Kept until the next refresh (five minutes or \
+                  accounts.sync).",
+};
+
+static DESCRIBE_GITHUB_REPO: Command = Command {
+    name: "tasks.describe_github_repo",
+    area: Area::Github,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Returns what can be picked in one repository (`owner/name`) of a GitHub account: its labels \
+                  with their colours, its open milestones and the logins issues can be assigned to, at most 100 \
+                  of each, for the `label:`, `milestone:` and `assignee:` of a filter list's search. Works for \
+                  any repository the account's token can read, not only those list_github_repos returns. A \
+                  repository GitHub does not have, or one outside a key's repositories, is `not-found`.",
 };
 
 static UNPIN_ISSUE: Command = Command {
@@ -1918,6 +1965,11 @@ mod tests {
             Request::SaveTodo { todo: todo() },
             Request::DeleteTodo { todo: todo() },
             Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None },
+            Request::CreateTaskList {
+                account: "nextcloud:anna@cloud.example.test".into(),
+                name: "Groceries".into(),
+                color: Some("#3FB984".into()),
+            },
             Request::CreateFilterList {
                 account: "github:mahype".into(),
                 name: "Bugs".into(),
@@ -1933,6 +1985,8 @@ mod tests {
             },
             Request::DeleteFilterList { collection: "github:mahype/00ff".into() },
             Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] },
+            Request::ListGithubRepos { account: "github:mahype".into() },
+            Request::DescribeGithubRepo { account: "github:mahype".into(), repo: "mahype/TorroWorkplace".into() },
             Request::UnpinIssue { collection: "github:mahype/00ff".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::AddLink { collection: "/tasks/home/".into(), url: "mahype/TorroWorkplace#7".into() },
             Request::Settings,
@@ -2394,6 +2448,8 @@ mod tests {
                 "tasks.update_filter_list",
                 "tasks.delete_filter_list",
                 "tasks.preview_filter",
+                "tasks.list_github_repos",
+                "tasks.describe_github_repo",
                 "tasks.unpin_issue"
             ]
         );
@@ -2405,6 +2461,45 @@ mod tests {
         rights.areas.remove(&Area::Github);
         let preview = Request::PreviewFilter { account: "github:mahype".into(), queries: vec!["is:open".into()] };
         assert!(!rights.allows(preview.operation()));
+    }
+
+    #[test]
+    fn reading_repositories_needs_read_access_to_github_only() {
+        let account = || "github:mahype".to_string();
+        let requests = [
+            Request::ListGithubRepos { account: account() },
+            Request::DescribeGithubRepo { account: account(), repo: "mahype/TorroWorkplace".into() },
+        ];
+        for (request, name) in requests.iter().zip(["tasks.list_github_repos", "tasks.describe_github_repo"]) {
+            let operation = request.operation();
+            assert_eq!((operation.name(), operation.area(), operation.access), (name, Area::Github, Access::Read));
+            assert!(RightsTemplate::ReadOnly.rights().allows(operation), "{name}");
+            let mut tasks_only = RightsTemplate::FullAccess.rights();
+            tasks_only.areas.remove(&Area::Github);
+            assert!(!tasks_only.allows(operation), "{name}: rights in `tasks` alone do not open it");
+        }
+        assert_eq!((LIST_GITHUB_REPOS.mcp, DESCRIBE_GITHUB_REPO.mcp), (Mcp::Tool, Mcp::Tool));
+    }
+
+    #[test]
+    fn a_new_task_list_needs_write_access_to_tasks() {
+        let create = Request::CreateTaskList {
+            account: "nextcloud:anna@cloud.example.test".into(),
+            name: "Groceries".into(),
+            color: None,
+        };
+        let operation = create.operation();
+        assert_eq!(
+            (operation.name(), operation.area(), operation.access),
+            ("tasks.create_list", Area::Tasks, Access::Write)
+        );
+        assert_eq!(CREATE_LIST.mcp, Mcp::Tool);
+        assert!(!RightsTemplate::ReadOnly.rights().allows(operation));
+        assert!(RightsTemplate::ReadAndWrite.rights().allows(operation));
+        // A task list lives on the Nextcloud: rights in `github` alone do not open it.
+        let mut github_only = RightsTemplate::FullAccess.rights();
+        github_only.areas.remove(&Area::Tasks);
+        assert!(!github_only.allows(operation));
     }
 
     #[test]

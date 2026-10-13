@@ -19,6 +19,7 @@ mod detail;
 mod filter;
 mod glance;
 mod list;
+mod new_list;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

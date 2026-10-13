@@ -994,6 +994,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         }
         Request::UpdateSettings { .. } => tr("Replace all settings").to_string(),
         Request::OpenApp { app } => trf("Open {app}", &[("app", &quote(app))]),
+        // The account by the label the core knows; the name is what the list will be called.
+        Request::CreateTaskList { account, name, .. } => {
+            trf("Create task list \"{name}\" in {account}", &[("name", &quote(name)), ("account", &named(account))])
+        }
         Request::CreateFilterList { name, .. } => trf("Create filter list \"{name}\"", &[("name", &quote(name))]),
         Request::UpdateFilterList { collection, name, .. } => {
             let (old, new) = (named(collection), quote(name));
@@ -2345,6 +2349,17 @@ pub(crate) mod tests {
             summary(&remove, &named("anna@cloud.example.org")),
             trf("Remove the account {account}", &[("account", &"anna@cloud.example.org")])
         );
+        // The account by the label the core knows, else by its id; never by text of the client.
+        let create = Request::CreateTaskList {
+            account: "nextcloud:anna@cloud.example.org".into(),
+            name: "Groceries\u{202E}".into(),
+            color: Some("#3FB984".into()),
+        };
+        let in_account = |account: &str| {
+            trf("Create task list \"{name}\" in {account}", &[("name", &"Groceries"), ("account", &account)])
+        };
+        assert_eq!(summary(&create, &named("anna@cloud.example.org")), in_account("anna@cloud.example.org"));
+        assert_eq!(summary(&create, &Facts::default()), in_account("nextcloud:anna@cloud.example.org"));
         let update = Request::UpdateFilterList {
             collection: "github:anna/1".into(),
             revision: 1,

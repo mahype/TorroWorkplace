@@ -124,7 +124,7 @@ pub struct Detail {
     title: text_editor::Content,
     /// The notes editor; `draft.notes` mirrors its text.
     notes: text_editor::Content,
-    /// The notes of a GitHub item as Markdown blocks, parsed once per text (task G.7); empty for
+    /// The notes of a GitHub item as Markdown blocks, parsed once per text (task G.12); empty for
     /// every other task. Shown instead of plain text while the task cannot be edited.
     text: Vec<markdown::Item>,
     /// The date typed into the due card. It can be unfinished or invalid; then the draft keeps
@@ -209,7 +209,7 @@ pub enum Message {
     Fold(Section),
     /// Open the task's link in the browser ([`Detail::link_target`]).
     OpenLink,
-    /// A link in the Markdown text of a GitHub item was clicked (task G.7). Foreign text: only an
+    /// A link in the Markdown text of a GitHub item was clicked (task G.12). Foreign text: only an
     /// `http`/`https` address opens ([`web_url`]).
     OpenTextLink(String),
     /// "Copy link" in the "…" menu.
@@ -1260,7 +1260,7 @@ impl Detail {
 
     /// The notes without a box: a quiet field in `text_2` with a hover surface whose text lines
     /// up with the title ("Add notes …" while empty). Read-only tasks show their notes as text,
-    /// and nothing when there are none; GitHub items show theirs as Markdown (task G.7) when
+    /// and nothing when there are none; GitHub items show theirs as Markdown (task G.12) when
     /// `colours` are known.
     fn notes_view(&self, colours: Option<&'static Palette>) -> Option<Element<'_, Message>> {
         if !self.editable() {

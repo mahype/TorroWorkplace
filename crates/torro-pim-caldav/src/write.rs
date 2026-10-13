@@ -25,11 +25,17 @@
 //! (`VTIMEZONE`, `VALARM`) and the parameters of unchanged properties (`TZID`) included, stays
 //! as it was. Lines are folded anew, so the result is valid even when the server sent long
 //! unfolded lines.
+//!
+//! New task lists (task G.7, [`CalDavClient::create_task_list`]) are made with `MKCALENDAR`
+//! (RFC 4791, section 5.3.1) in the user's calendar home, for `VTODO` only, with name and colour
+//! the way Nextcloud keeps them ([`mkcalendar_body`]). Each gets a new address of its own
+//! ([`list_segment`]): `MKCALENDAR` never replaces a collection, and an address that is taken
+//! (`405`, `409`) only means trying the next one.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use reqwest::{StatusCode, Url};
+use reqwest::{Method, StatusCode, Url};
 use roxmltree::Node;
-use torro_pim::{Event, EventTime, ProviderError, Todo, Transparency};
+use torro_pim::{Collection, CollectionKind, Event, EventTime, ProviderError, Todo, Transparency};
 
 use crate::CalDavClient;
 use crate::ical::{self, Property};
@@ -165,6 +171,55 @@ impl CalDavClient {
     /// refused before anything is sent.
     pub async fn delete_todo(&self, todo: &Todo) -> Result<(), ProviderError> {
         self.delete_item(&todo.collection, &todo.uid, todo.href.as_deref(), todo.etag.as_deref()).await
+    }
+
+    /// Creates a new task list named `name` (trimmed by the caller, not empty) in the user's
+    /// calendar home ([`CalDavClient::calendar_home`]) and returns it as
+    /// [`CalDavClient::collections`] will list it: its URL as `id`, [`CollectionKind::Todos`],
+    /// writable, `color` as `#RRGGBB`.
+    ///
+    /// `color` is `#RRGGBB` (stored as `#RRGGBBFF`, as Nextcloud writes it) or `None` for the
+    /// server's default. One `MKCALENDAR` per entry of `suffixes`, in order, at the address
+    /// [`list_segment`] makes of `name` and that suffix, until one is created; the caller passes
+    /// random ones, so no two lists ever share an address. An address that is taken (`405`, `409`)
+    /// is left alone and the next suffix tried; when all are taken, [`ProviderError::Other`].
+    ///
+    /// [`ProviderError::Auth`] only when the server refuses the password (`401`; [`made`]),
+    /// [`ProviderError::Offline`] when it cannot be reached, [`ProviderError::Other`] for every
+    /// other refusal (`403`, `507` and the like) and an answer without principal or calendar home.
+    pub async fn create_task_list(
+        &self,
+        name: &str,
+        color: Option<&str>,
+        suffixes: &[String],
+    ) -> Result<Collection, ProviderError> {
+        let (_, home) = self.calendar_home().await?;
+        let body = mkcalendar_body(name, color);
+        for suffix in suffixes {
+            let url = list_url(&home, &list_segment(name, suffix))?;
+            if self.mkcalendar(&url, &body).await? == Made::Created {
+                let color = color.map(|c| c.chars().take(7).collect());
+                let (kind, writable, source) = (CollectionKind::Todos, true, None);
+                return Ok(Collection { id: url.to_string(), name: name.to_string(), kind, color, writable, source });
+            }
+        }
+        Err(ProviderError::Other("the server has no free address for the new list; try again".into()))
+    }
+
+    /// Sends one `MKCALENDAR` with `body` to `url`, on this client's server only.
+    async fn mkcalendar(&self, url: &Url, body: &str) -> Result<Made, ProviderError> {
+        let url = self.on_server(url.clone())?;
+        let method = Method::from_bytes(b"MKCALENDAR").map_err(|err| ProviderError::Other(err.to_string()))?;
+        let response = self
+            .http
+            .request(method, url.clone())
+            .basic_auth(&self.username, Some(&self.password))
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(transport_error)?;
+        made(response.status(), &url)
     }
 
     /// PUTs one iCalendar object and returns the `(href, etag)` the item now has. `href`
@@ -324,6 +379,111 @@ fn etag_header(response: &reqwest::Response) -> Option<String> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// What one `MKCALENDAR` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Made {
+    Created,
+    /// Something is at the address already (`405`: a collection or item; `409`: the server cannot
+    /// create it there): nothing was changed, another address may work.
+    Taken,
+}
+
+/// What an `MKCALENDAR` refused with `403` tells (task G.9b).
+pub const NO_NEW_LISTS_HERE: &str = "the server does not allow new task lists here (HTTP 403)";
+
+/// The outcome of an `MKCALENDAR` to `url` from its answer's `status`.
+///
+/// Only `401` is [`ProviderError::Auth`]: a `403` here means the user may not create a collection
+/// at this place (a quota, an admin's policy), while the app password itself still works. As
+/// `Auth` it would start the remote wipe check and tell the user to sign in again (task G.9b).
+fn made(status: StatusCode, url: &Url) -> Result<Made, ProviderError> {
+    match status {
+        status if status.is_success() => Ok(Made::Created),
+        StatusCode::METHOD_NOT_ALLOWED | StatusCode::CONFLICT => Ok(Made::Taken),
+        StatusCode::UNAUTHORIZED => Err(ProviderError::Auth),
+        StatusCode::FORBIDDEN => Err(ProviderError::Other(NO_NEW_LISTS_HERE.into())),
+        status => Err(status_error(status, "", url)),
+    }
+}
+
+/// How long the part of a list's address made from its name may be; the rest of a long name is
+/// left out of the address (the list keeps its whole name).
+const SEGMENT_NAME_CHARS: usize = 40;
+
+/// The last path segment of a new list's address: the letters and digits of `name` in small
+/// ASCII letters, anything else as one `-`, cut to [`SEGMENT_NAME_CHARS`], then `-` and `suffix`
+/// (`"Groceries & more"`, `"3fa9c1d2"` → `groceries-more-3fa9c1d2`). A name without such
+/// characters (`"Einkäufe"` keeps `eink-ufe`, `"日本"` none) becomes `list`.
+fn list_segment(name: &str, suffix: &str) -> String {
+    let mut slug = String::new();
+    for c in name.chars().map(|c| c.to_ascii_lowercase()) {
+        match c {
+            'a'..='z' | '0'..='9' => slug.push(c),
+            _ if !slug.is_empty() && !slug.ends_with('-') => slug.push('-'),
+            _ => {}
+        }
+    }
+    let slug: String = slug.chars().take(SEGMENT_NAME_CHARS).collect();
+    let slug = match slug.trim_end_matches('-') {
+        "" => "list",
+        slug => slug,
+    };
+    format!("{slug}-{suffix}")
+}
+
+/// The address of a new collection named `segment` in the calendar home `home`, with the slash at
+/// the end that collections have. The segment is escaped as one path segment.
+fn list_url(home: &Url, segment: &str) -> Result<Url, ProviderError> {
+    let mut url = home.clone();
+    url.path_segments_mut()
+        .map_err(|()| ProviderError::Other(format!("{home} cannot hold collections")))?
+        .pop_if_empty()
+        .push(segment)
+        .push("");
+    Ok(url)
+}
+
+/// The body of the `MKCALENDAR` for a task list: the name as `displayname`, the colour in
+/// Apple's namespace as `#RRGGBBFF` (Nextcloud's form; left out without one) and `VTODO` as the
+/// only component, so calendar apps do not offer it for events.
+fn mkcalendar_body(name: &str, color: Option<&str>) -> String {
+    let color = match color {
+        Some(c) if c.len() == 7 => format!("\n      <a:calendar-color>{}FF</a:calendar-color>", xml_text(c)),
+        Some(c) => format!("\n      <a:calendar-color>{}</a:calendar-color>", xml_text(c)),
+        None => String::new(),
+    };
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">
+  <d:set>
+    <d:prop>
+      <d:displayname>{name}</d:displayname>{color}
+      <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>
+    </d:prop>
+  </d:set>
+</c:mkcalendar>"#,
+        name = xml_text(name),
+    )
+}
+
+/// `text` safe as XML character data and attribute value.
+fn xml_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            // Control characters other than tab and line breaks are not allowed in XML 1.0.
+            c if c.is_control() && !matches!(c, '\t' | '\n' | '\r') => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn event_ics(event: &Event, now: DateTime<Utc>) -> String {
@@ -1519,5 +1679,71 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         assert_eq!(status_error(StatusCode::UNAUTHORIZED, "x", &url), ProviderError::Auth);
         assert_eq!(status_error(StatusCode::FORBIDDEN, "x", &url), ProviderError::Auth);
         assert!(matches!(status_error(StatusCode::INTERNAL_SERVER_ERROR, "x", &url), ProviderError::Other(_)));
+    }
+
+    // ----- New task lists (task G.7) -----------------------------------------------------------
+
+    /// The request body for a green list "Groceries", as it goes to the server: the properties
+    /// Nextcloud's own Tasks app sets for a new list (name, colour with alpha, `VTODO` only).
+    const MKCALENDAR_GROCERIES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<c:mkcalendar xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns:a="http://apple.com/ns/ical/">
+  <d:set>
+    <d:prop>
+      <d:displayname>Groceries</d:displayname>
+      <a:calendar-color>#3FB984FF</a:calendar-color>
+      <c:supported-calendar-component-set><c:comp name="VTODO"/></c:supported-calendar-component-set>
+    </d:prop>
+  </d:set>
+</c:mkcalendar>"#;
+
+    #[test]
+    fn a_new_list_is_made_for_tasks_only_with_name_and_colour() {
+        assert_eq!(mkcalendar_body("Groceries", Some("#3FB984")), MKCALENDAR_GROCERIES);
+        let without = mkcalendar_body("Groceries", None);
+        assert!(!without.contains("calendar-color"), "the server picks its default");
+
+        // Whatever the name holds, the body stays one well-formed request with the name as text.
+        let tricky = "Q&A <draft> \"Tom's\"\u{7}";
+        let body = mkcalendar_body(tricky, Some("#3FB984"));
+        let doc = roxmltree::Document::parse(&body).expect("well-formed XML");
+        let prop = doc.descendants().find(|n| is_dav(*n, "prop")).expect("a prop");
+        let name = dav_child(prop, "displayname").and_then(|n| n.text());
+        assert_eq!(name, Some("Q&A <draft> \"Tom's\""), "escaped, the control character left out");
+        let components: Vec<&str> =
+            doc.descendants().filter(|n| n.tag_name().name() == "comp").filter_map(|n| n.attribute("name")).collect();
+        assert_eq!(components, ["VTODO"]);
+        let color = doc.descendants().find(|n| n.tag_name().name() == "calendar-color").expect("a colour");
+        assert_eq!(color.tag_name().namespace(), Some("http://apple.com/ns/ical/"));
+    }
+
+    #[test]
+    fn a_new_list_gets_an_address_of_its_name_and_the_random_part() {
+        assert_eq!(list_segment("Groceries", "3fa9c1d2"), "groceries-3fa9c1d2");
+        assert_eq!(list_segment("  Groceries & more!  ", "3fa9c1d2"), "groceries-more-3fa9c1d2");
+        assert_eq!(list_segment("Einkäufe 2027", "00ff"), "eink-ufe-2027-00ff");
+        assert_eq!(list_segment("日本", "00ff"), "list-00ff");
+        assert_eq!(list_segment("../..", "00ff"), "list-00ff", "never a way out of the home");
+        let long = list_segment(&"a".repeat(300), "00ff");
+        assert_eq!(long, format!("{}-00ff", "a".repeat(SEGMENT_NAME_CHARS)));
+
+        let home = Url::parse("https://cloud.example.org/remote.php/dav/calendars/anna/").expect("url");
+        let url = list_url(&home, "groceries-3fa9c1d2").expect("an address");
+        assert_eq!(url.as_str(), "https://cloud.example.org/remote.php/dav/calendars/anna/groceries-3fa9c1d2/");
+        let odd = list_url(&home, "a/b c").expect("an address");
+        assert_eq!(odd.as_str(), "https://cloud.example.org/remote.php/dav/calendars/anna/a%2Fb%20c/");
+    }
+
+    #[test]
+    fn a_taken_address_is_tried_again_and_refusals_are_errors() {
+        let url = Url::parse(COLLECTION).expect("url");
+        assert_eq!(made(StatusCode::CREATED, &url), Ok(Made::Created));
+        // Sabre (Nextcloud): "The resource you tried to create already exists".
+        assert_eq!(made(StatusCode::METHOD_NOT_ALLOWED, &url), Ok(Made::Taken));
+        assert_eq!(made(StatusCode::CONFLICT, &url), Ok(Made::Taken));
+        assert_eq!(made(StatusCode::UNAUTHORIZED, &url), Err(ProviderError::Auth));
+        // The app password works, the place does not take a new list: no sign-in problem.
+        assert_eq!(made(StatusCode::FORBIDDEN, &url), Err(ProviderError::Other(NO_NEW_LISTS_HERE.into())));
+        let full = made(StatusCode::INSUFFICIENT_STORAGE, &url);
+        assert!(matches!(&full, Err(ProviderError::Other(message)) if message.contains("507")), "{full:?}");
     }
 }

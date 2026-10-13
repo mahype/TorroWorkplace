@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use torro_ipc::pim::PimClient;
 use torro_pim::demo::DemoSource;
-use torro_pim::source::{FilterDefinition, FilterPreview};
+use torro_pim::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
 
 /// The core over the socket, or demo data in memory (`--demo`). Cheap to clone, so every
@@ -168,6 +168,15 @@ impl PimSource for Source {
         delegate!(self, s => s.add_link(collection, url))
     }
 
+    async fn create_task_list(
+        &self,
+        account: String,
+        name: String,
+        color: Option<String>,
+    ) -> Result<Collection, ProviderError> {
+        delegate!(self, s => s.create_task_list(account, name, color))
+    }
+
     async fn create_filter_list(
         &self,
         account: String,
@@ -191,6 +200,14 @@ impl PimSource for Source {
 
     async fn preview_filter(&self, account: String, queries: Vec<String>) -> Result<FilterPreview, ProviderError> {
         delegate!(self, s => s.preview_filter(account, queries))
+    }
+
+    async fn list_github_repos(&self, account: String) -> Result<Vec<GitHubRepo>, ProviderError> {
+        delegate!(self, s => s.list_github_repos(account))
+    }
+
+    async fn describe_github_repo(&self, account: String, repo: String) -> Result<GitHubRepoDetails, ProviderError> {
+        delegate!(self, s => s.describe_github_repo(account, repo))
     }
 }
 

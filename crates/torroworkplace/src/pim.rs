@@ -68,6 +68,14 @@
 //!   write to a list could otherwise place a link to the user's private issue there and read its
 //!   title once the core wrote it in – or have the user's tick close an issue they never meant
 //!   (task G.6c).
+//! - **What the filter list dialog offers** (task G.9): the repositories a GitHub account reaches
+//!   ([`PimService::list_github_repos`]) and a repository's labels, open milestones and assignable
+//!   people ([`PimService::describe_github_repo`]), read with the account's token and kept in its
+//!   [`FilterSlot`] until the next refresh of its filter lists. A client sees only the
+//!   repositories it reaches; one outside them is `not-found` before GitHub is asked, and
+//!   GitHub's own words never reach it ([`torro_pim_github::GITHUB_READ_FAILED`]). An answer is
+//!   kept only when no refresh and no removal of the account came in between, and at most
+//!   [`MAX_DESCRIBED`] repositories' details per account (task G.9b).
 //! - **CalDAV accounts of mail providers** (task M7.1): `accounts.discover_services` searches the
 //!   service of an address without signing in (`torro_pim_caldav::discover`, guarded against
 //!   probing private networks), `accounts.connect_caldav` signs in with a password
@@ -84,7 +92,7 @@
 //!   sync it connects to public addresses only, checked on every connection ([`public_http`],
 //!   task M2.7b).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
@@ -99,7 +107,7 @@ use torro_ipc::api::{Access, Area, Rights, Selection};
 use torro_ipc::{AccountInfo, Request, Response};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::model::{GitHubKind, GitHubState, Link};
-use torro_pim::source::move_plan;
+use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
 use torro_pim::{
     AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo, combined_state,
 };
@@ -302,6 +310,9 @@ struct State {
     signing_in: Option<(String, String)>,
     /// The filter lists of the GitHub accounts the core knows (task G.2).
     filters: Vec<FilterSlot>,
+    /// The last [`FilterSlot::generation`] handed out; it only grows, so a slot made again after
+    /// its account was removed never has the number of the old one (task G.9b).
+    read_generations: u64,
     /// What GitHub last reported about the items the tasks of the accounts link to (task G.6),
     /// by [`link_key`]. For everyone; a client reads it only through [`Reach::with_details`].
     links: HashMap<String, item::Item>,
@@ -347,24 +358,83 @@ impl State {
         self.filters.iter_mut().flat_map(|slot| &mut slot.lists).find(|list| list.collection.id == collection)
     }
 
+    /// The [`FilterSlot`] of `account`, made (in a new generation) when there is none yet. Only
+    /// for what the core does on its own account – refreshing, creating a list – never to keep a
+    /// GitHub answer that may have outlived the account ([`PimService::read_through`]).
     fn filter_slot_mut(&mut self, account: &str) -> &mut FilterSlot {
         match self.filters.iter().position(|slot| slot.account == account) {
             Some(at) => &mut self.filters[at],
             None => {
-                self.filters.push(FilterSlot { account: account.to_string(), lists: Vec::new() });
+                let generation = self.next_read_generation();
+                self.filters.push(FilterSlot {
+                    account: account.to_string(),
+                    lists: Vec::new(),
+                    repos: None,
+                    described: VecDeque::new(),
+                    generation,
+                });
                 let last = self.filters.len() - 1;
                 &mut self.filters[last]
             }
         }
     }
+
+    fn next_read_generation(&mut self) -> u64 {
+        self.read_generations += 1;
+        self.read_generations
+    }
+
+    /// Drops what the filter list dialog read for `account` and starts a new generation of it, so
+    /// an answer GitHub gives to a question asked before is not kept (task G.9b).
+    fn renew_reads(&mut self, account: &str) {
+        let generation = self.next_read_generation();
+        let slot = self.filter_slot_mut(account);
+        slot.repos = None;
+        slot.described.clear();
+        slot.generation = generation;
+    }
 }
 
-/// The filter lists of one GitHub account (task G.2).
+/// How many repositories' details ([`FilterSlot::described`]) the core keeps per GitHub account:
+/// a dialog needs a few, and a client reaching every repository must not grow the cache without
+/// end (task G.9b).
+const MAX_DESCRIBED: usize = 64;
+
+/// The filter lists of one GitHub account (task G.2), and what its filter list dialog last read
+/// from GitHub (task G.9).
 #[derive(Debug)]
 struct FilterSlot {
     /// `github:<login>`.
     account: String,
     lists: Vec<FilterCache>,
+    /// The repositories the account reaches, as `tasks.list_github_repos` last read them; `None`
+    /// until then. For everyone: a client's view is filtered on the way out. Dropped when the
+    /// filter lists are refreshed ([`PimService::refresh_filter_lists`]), so it is never older
+    /// than one refresh period.
+    repos: Option<Vec<GitHubRepo>>,
+    /// What `tasks.describe_github_repo` last read, by repository as asked for in lower case
+    /// (GitHub ignores case), the oldest first and at most [`MAX_DESCRIBED`]; dropped like `repos`.
+    described: VecDeque<(String, GitHubRepoDetails)>,
+    /// Which refresh `repos` and `described` belong to ([`State::renew_reads`]): an answer is kept
+    /// only in the generation it was asked in (task G.9b).
+    generation: u64,
+}
+
+impl FilterSlot {
+    /// What [`FilterSlot::described`] holds for `key` (lower case).
+    fn described(&self, key: &str) -> Option<GitHubRepoDetails> {
+        self.described.iter().find(|(held, _)| held == key).map(|(_, details)| details.clone())
+    }
+
+    /// Keeps `details` for `key` (lower case) as the newest entry; the oldest goes when there are
+    /// more than [`MAX_DESCRIBED`].
+    fn describe(&mut self, key: String, details: GitHubRepoDetails) {
+        self.described.retain(|(held, _)| *held != key);
+        self.described.push_back((key, details));
+        while self.described.len() > MAX_DESCRIBED {
+            self.described.pop_front();
+        }
+    }
 }
 
 /// One filter list: its definition, how `tasks.list_lists` shows it and what GitHub last found.
@@ -710,6 +780,13 @@ impl PimService {
         PimService { filters_file: Some(filters_file), ..PimService::with_settings(settings) }
     }
 
+    /// Whether the GitHub account `account` has its [`FilterSlot`] (its first refresh ran), for
+    /// tests that must not race that refresh.
+    #[cfg(test)]
+    pub async fn has_filter_slot(&self, account: &str) -> bool {
+        self.state.read().await.filters.iter().any(|slot| slot.account == account)
+    }
+
     /// This service with CalDAV sign-ins storing into `accounts_file` and `secrets` and searching
     /// with `discoverer`, for tests.
     #[cfg(test)]
@@ -909,10 +986,21 @@ impl PimService {
                 let outside = address::issue_ref(url).is_some_and(|issue| !reach.reaches_repo(&issue.repo));
                 return outside.then(|| url.clone());
             }
+            // The handler leaves out the repositories outside the client's; one it names is
+            // `not-found` before GitHub is asked (task G.9).
+            Request::ListGithubRepos { .. } => return None,
+            // Named as the handler names it, so both answers read the same (task G.9b).
+            Request::DescribeGithubRepo { repo, .. } => {
+                let repo = repo.trim();
+                return (!reach.reaches_repo(repo)).then(|| repo.to_string());
+            }
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
-            // is asked ([`Reach::confines`]).
-            Request::CreateFilterList { .. } | Request::PreviewFilter { .. } => return None,
+            // is asked ([`Reach::confines`]). A new task list goes to an account, which every
+            // client sees (`accounts.list_accounts`), and never into a client's selection.
+            Request::CreateTaskList { .. } | Request::CreateFilterList { .. } | Request::PreviewFilter { .. } => {
+                return None;
+            }
             // Both tasks name their list only through the cache; one it does not hold, or one in a
             // list the client may not see, is `not-found`. The tasks renumbered with them are in
             // the same list (`move_todo` refuses `before` in another one).
@@ -1861,6 +1949,62 @@ impl PimService {
         Ok(written)
     }
 
+    /// `tasks.create_list` (task G.7): a new task list named `name` in `color` on the server of
+    /// the Nextcloud account `account` ([`CalDavClient::create_task_list`]), answered with the list
+    /// as `tasks.list_lists` lists it from now on.
+    ///
+    /// Checked before the server is asked: `error` for an empty name, one over [`MAX_LIST_NAME`]
+    /// characters and a colour that is not `#RRGGBB`; `not-found` for an account the core does not
+    /// have (the core answers a GitHub account itself); `not-connected` without its app password.
+    /// The address is new, of the name and a random part ([`random_suffixes`]); a taken one is
+    /// never overwritten. The list goes into the account's cache at once, as one of the user's
+    /// private lists ([`Slot::private`]: theirs, shared with nobody), so it is listed before the
+    /// next sync. Nothing is added to any client's selection.
+    ///
+    /// Runs while no sync of the account does: a sync that started before the list existed would
+    /// otherwise put back the collections without it when it ends.
+    pub async fn create_task_list(&self, account: &str, name: &str, color: Option<&str>) -> Response {
+        let name = name.trim();
+        if name.is_empty() {
+            return error("error", "A task list needs a name.".into());
+        }
+        if name.chars().count() > MAX_LIST_NAME {
+            return error("error", format!("The name is too long; use at most {MAX_LIST_NAME} characters."));
+        }
+        let color = match lists::check_color(color) {
+            Ok(color) => color,
+            Err(err) => return error(err.code(), err.to_string()),
+        };
+        let suffixes = match random_suffixes() {
+            Ok(suffixes) => suffixes,
+            Err(message) => return error("error", message),
+        };
+        let syncing = self.syncing.lock().await;
+        let client = match self.state.read().await.slot(account) {
+            None => return error("not-found", format!("no account {account:?}")),
+            Some(slot) => slot.client.clone(),
+        };
+        let Some(client) = client else {
+            return provider_error(&not_connected());
+        };
+        let made = client.create_task_list(name, color.as_deref(), &suffixes).await;
+        let mut state = self.state.write().await;
+        match (made, state.slot_mut(account)) {
+            (Ok(mut collection), Some(slot)) => {
+                collection.id = collection_id(account, &collection.id);
+                slot.collections.push(collection.clone());
+                slot.private.push(collection.id.clone());
+                Response::Collection { collection }
+            }
+            // Removed while the server made the list: nothing of the account is kept.
+            (Ok(_), None) => error("not-found", format!("no account {account:?}")),
+            (Err(err), _) => {
+                drop((state, syncing));
+                self.failed(Failed::at(account, err)).await
+            }
+        }
+    }
+
     /// Where a write to `collection` (an id) goes. Refused before anything is sent when no
     /// account is connected (`not-connected`), when no account has listed exactly this id
     /// ([`State::owner`], `not-found`) and when the server marks the collection read-only
@@ -2163,6 +2307,9 @@ impl PimService {
     /// cache and fetches each from GitHub with `api`. Without `api` (no token) the lists keep
     /// what they had and show a problem. A file that cannot be read changes nothing.
     pub async fn refresh_filter_lists(&self, account: &str, api: Option<&Api>) {
+        // What the filter list dialog read is kept until here (task G.9), and an answer to a
+        // question asked before is not kept either (G.9b).
+        self.state.write().await.renew_reads(account);
         let file = match self.read_filters() {
             Ok(file) => file,
             Err(err) => {
@@ -2458,6 +2605,94 @@ impl PimService {
         all.truncate(PREVIEW_ITEMS);
         let todos = item::todos(&all, "").iter().filter_map(|todo| reach.todo_for(todo)).collect();
         Response::FilterPreview { matches, truncated, todos }
+    }
+
+    /// `tasks.list_github_repos` for the GitHub account `account`, which the core knows: what
+    /// [`FilterSlot::repos`] holds since the last refresh, else asked of GitHub with `api` and
+    /// kept. Answered as `reach` may see it: a client only the repositories it reaches
+    /// ([`Reach::reaches_repo`]), and its failures with fixed messages ([`read_message`]).
+    pub async fn list_github_repos(&self, account: &str, api: &Api, reach: Reach<'_>) -> Response {
+        let read = self.read_through(
+            account,
+            |slot| slot.repos.clone(),
+            || api.repos(),
+            |slot, repos| slot.repos = Some(repos),
+        );
+        match read.await {
+            Ok(repos) => Response::GithubRepos {
+                repos: repos.into_iter().filter(|repo| reach.reaches_repo(&repo.repo)).collect(),
+            },
+            Err(err) => error(err.code(), read_message(reach, &err)),
+        }
+    }
+
+    /// What the filter list dialog reads of GitHub for `account` (task G.9): `held` from its
+    /// [`FilterSlot`] when that has it, else `fetch`ed and given to `keep` – but only when the slot
+    /// is still there in the generation it had before GitHub was asked (task G.9b,
+    /// [`FilterSlot::generation`]). A refresh meanwhile would otherwise get an answer older than
+    /// itself back, and an account removed meanwhile its slot. Without a slot (the account's first
+    /// refresh has not run yet) nothing is kept.
+    async fn read_through<T, Fut>(
+        &self,
+        account: &str,
+        held: impl FnOnce(&FilterSlot) -> Option<T>,
+        fetch: impl FnOnce() -> Fut,
+        keep: impl FnOnce(&mut FilterSlot, T),
+    ) -> Result<T, torro_pim_github::Error>
+    where
+        T: Clone,
+        Fut: Future<Output = Result<T, torro_pim_github::Error>>,
+    {
+        let generation = {
+            let state = self.state.read().await;
+            let slot = state.filters.iter().find(|slot| slot.account == account);
+            if let Some(held) = slot.and_then(held) {
+                return Ok(held);
+            }
+            slot.map(|slot| slot.generation)
+        };
+        let fetched = fetch().await?;
+        let mut state = self.state.write().await;
+        let same = state.filters.iter_mut().find(|slot| slot.account == account && Some(slot.generation) == generation);
+        if let Some(slot) = same {
+            keep(slot, fetched.clone());
+        }
+        Ok(fetched)
+    }
+
+    /// `tasks.describe_github_repo` for the repository `repo` (`owner/name`) of the GitHub
+    /// account `account`, which the core knows: what [`FilterSlot::described`] holds since the
+    /// last refresh, else asked of GitHub with `api` (one call) and kept ([`PimService::read_through`],
+    /// at most [`MAX_DESCRIBED`] repositories). Any repository the token reads, not only those of
+    /// [`PimService::list_github_repos`].
+    ///
+    /// A repository outside the reach of a client is `not-found` before GitHub is asked (the core
+    /// checked that already, [`PimService::out_of_reach`]; again here for an approved run), and so
+    /// is one GitHub answers under a name outside it (it follows a renamed repository). GitHub's
+    /// `NOT_FOUND` is `not-found` with the core's message; a `repo` that is not `owner/name` is
+    /// `error`.
+    pub async fn describe_github_repo(&self, account: &str, repo: &str, api: &Api, reach: Reach<'_>) -> Response {
+        let repo = repo.trim();
+        if !reach.reaches_repo(repo) {
+            return no_repo(repo);
+        }
+        let key = repo.to_ascii_lowercase();
+        let read = self.read_through(
+            account,
+            |slot| slot.described(&key),
+            || api.describe_repo(repo),
+            |slot, details| slot.describe(key.clone(), details),
+        );
+        let details = match read.await {
+            Ok(details) => details,
+            Err(torro_pim_github::Error::NotFound) => return no_repo(repo),
+            Err(err) => return error(err.code(), read_message(reach, &err)),
+        };
+        if !reach.reaches_repo(&details.repo) {
+            return no_repo(repo);
+        }
+        let GitHubRepoDetails { repo, labels, milestones, assignees } = details;
+        Response::GithubRepo { repo, labels, milestones, assignees }
     }
 
     /// Fetches the list `list` of `account` and keeps what came, unless its definition changed
@@ -2984,6 +3219,23 @@ fn change_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
     }
 }
 
+/// The message of a failure to read repositories from GitHub for `reach`: GitHub's own words for
+/// the suite; for a client the fixed text of its code, [`torro_pim_github::GITHUB_READ_FAILED`] in
+/// place of GitHub's words, which may name repositories it may not see.
+fn read_message(reach: Reach<'_>, err: &torro_pim_github::Error) -> String {
+    match (reach, err) {
+        (Reach::Suite, err) => err.to_string(),
+        (Reach::Client(_), torro_pim_github::Error::Github(_)) => torro_pim_github::GITHUB_READ_FAILED.into(),
+        (Reach::Client(_), err) => err.public_message(),
+    }
+}
+
+/// The answer for a repository GitHub does not have, the token does not reach or a client may not
+/// see: the same `not-found` for all three (the core answers the last one with it too, task G.9b).
+pub(crate) fn no_repo(repo: &str) -> Response {
+    error("not-found", format!("no repository {repo:?}"))
+}
+
 /// The answer for a collection that is no filter list: `not-found`.
 fn no_filter_list(collection: &str) -> Response {
     error("not-found", format!("no filter list {collection:?}"))
@@ -3174,6 +3426,24 @@ fn torro_local_midnight(date: chrono::NaiveDate) -> DateTime<Utc> {
 
 fn not_connected() -> ProviderError {
     ProviderError::Other("not connected to a Nextcloud".into())
+}
+
+/// The longest name a new task list may have, as for filter lists.
+pub const MAX_LIST_NAME: usize = 200;
+
+/// How many addresses a new task list tries before giving up ([`random_suffixes`]).
+const LIST_ATTEMPTS: usize = 5;
+
+/// The random parts for the addresses of a new task list, one per attempt: 8 hex digits each, so
+/// two lists of the same name never share an address and a taken one is unlikely to come twice.
+fn random_suffixes() -> Result<Vec<String>, String> {
+    (0..LIST_ATTEMPTS)
+        .map(|_| {
+            let mut bytes = [0u8; 4];
+            getrandom::fill(&mut bytes).map_err(|err| format!("cannot make an address for the list: {err}"))?;
+            Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+        })
+        .collect()
 }
 
 /// Where a write goes: the account that holds the collection, and its connection.
@@ -4063,6 +4333,8 @@ pub(crate) mod tests {
         path: String,
         if_match: Option<String>,
         if_none_match: Option<String>,
+        /// The request body, as text.
+        body: String,
     }
 
     impl Seen {
@@ -4151,11 +4423,13 @@ pub(crate) mod tests {
                         }
                     }
                     let mut first = head.lines().next().unwrap_or_default().split(' ');
+                    let body = buf.get(head_end..).unwrap_or_default();
                     let seen = Seen {
                         method: first.next().unwrap_or_default().to_string(),
                         path: first.next().unwrap_or_default().to_string(),
                         if_match: header("if-match"),
                         if_none_match: header("if-none-match"),
+                        body: String::from_utf8_lossy(body).to_string(),
                     };
                     let (status, etag, body) = reply(&seen);
                     log.lock().expect("record").push(seen);
@@ -4211,6 +4485,8 @@ pub(crate) mod tests {
     /// and what the server saw ([`FakeCalDav::lines`]).
     pub(crate) struct FakeCalDav {
         pub service: Arc<PimService>,
+        /// The id of anna's account on the server.
+        pub account: String,
         pub work: String,
         pub home: String,
         record: Arc<std::sync::Mutex<Vec<Seen>>>,
@@ -4225,12 +4501,30 @@ pub(crate) mod tests {
 
     /// See [`FakeCalDav`]; the service reads and writes `settings`.
     pub(crate) async fn fake_caldav(settings: SettingsStore) -> FakeCalDav {
-        let (base, record) = fake_server(server_holding("")).await;
+        fake_caldav_on(settings, server_holding("")).await
+    }
+
+    /// [`fake_caldav`] on a server that answers discovery and makes every new task list
+    /// (`MKCALENDAR`, task G.7) at the first address asked for.
+    pub(crate) async fn fake_caldav_making_lists(settings: SettingsStore) -> FakeCalDav {
+        fake_caldav_on(settings, making_lists(0, 201)).await
+    }
+
+    async fn fake_caldav_on(
+        settings: SettingsStore,
+        reply: impl Fn(&Seen) -> Reply + Send + Sync + 'static,
+    ) -> FakeCalDav {
+        let (base, record) = fake_server(reply).await;
         let service = service_with(settings);
         service.state.write().await.accounts.push(slot_on(&base));
         let (work, _) = on_server(&base, WORK, "");
         let (home, _) = on_server(&base, HOME, "");
-        FakeCalDav { service, work, home, record }
+        FakeCalDav { service, account: account_on(&base), work, home, record }
+    }
+
+    /// The id of anna's account on the fake server at `base`.
+    fn account_on(base: &str) -> String {
+        torro_core::Account::nextcloud(base.trim_end_matches("/remote.php/dav/"), "anna").id
     }
 
     /// The collection id of the collection at `path` of the account at `base` and the href of
@@ -5144,5 +5438,301 @@ pub(crate) mod tests {
             health(service.account_checks(late).await),
             [Health::Problem { trouble: Trouble::SignInRefused, since: late }]
         );
+    }
+
+    // New task lists (task G.7).
+
+    /// What Nextcloud (Sabre) answers an `MKCALENDAR` at an address that is taken, with `405`.
+    const TAKEN: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:sabredav-version>4.7.0</s:sabredav-version>
+  <s:exception>Sabre\DAV\Exception\MethodNotAllowed</s:exception>
+  <s:message>The resource you tried to create already exists</s:message>
+</d:error>"#;
+
+    /// A Nextcloud with anna's calendar home ([`healthy_server`]) whose first `taken` `MKCALENDAR`s
+    /// find their address taken; the others are answered with `then`.
+    fn making_lists(taken: usize, then: u16) -> impl Fn(&Seen) -> Reply + Send + Sync + 'static {
+        let tried = std::sync::atomic::AtomicUsize::new(0);
+        move |seen| match seen.method.as_str() {
+            "MKCALENDAR" if tried.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < taken => (405, None, TAKEN),
+            "MKCALENDAR" => (then, None, ""),
+            _ => healthy_server(seen),
+        }
+    }
+
+    /// The `MKCALENDAR`s the fake server saw: path and body.
+    fn mkcalendars(record: &std::sync::Mutex<Vec<Seen>>) -> Vec<(String, String)> {
+        let seen = record.lock().expect("record");
+        seen.iter()
+            .filter(|seen| seen.method == "MKCALENDAR")
+            .map(|seen| (seen.path.clone(), seen.body.clone()))
+            .collect()
+    }
+
+    /// `path` is a new list's address in anna's calendar home: `<slug>-<8 hex digits>/`.
+    fn new_list_address(path: &str, slug: &str) -> bool {
+        let Some(rest) = path.strip_prefix(&format!("/remote.php/dav/calendars/anna/{slug}-")) else { return false };
+        let Some(random) = rest.strip_suffix('/') else { return false };
+        random.len() == 8 && random.chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    #[tokio::test]
+    async fn a_new_task_list_is_made_on_the_server_and_listed_at_once() {
+        let (base, record) = fake_server(making_lists(0, 201)).await;
+        let service = service_on(&base).await;
+        let account = account_on(&base);
+
+        let response = service.create_task_list(&account, "  Groceries & more ", Some("#3FB984")).await;
+        let Response::Collection { collection } = response else { panic!("a new list, got {response:?}") };
+        assert_eq!(
+            lines(&record)[..2],
+            ["PROPFIND /remote.php/dav/".to_string(), "PROPFIND /remote.php/dav/principals/users/anna/".to_string()],
+            "the calendar home as the server names it"
+        );
+        let made = mkcalendars(&record);
+        assert_eq!(made.len(), 1);
+        let (path, body) = &made[0];
+        assert!(new_list_address(path, "groceries-more"), "{path}");
+        for part in ["<d:displayname>Groceries &amp; more</d:displayname>", "#3FB984FF", r#"<c:comp name="VTODO"/>"#] {
+            assert!(body.contains(part), "{part} in {body}");
+        }
+
+        let origin = base.trim_end_matches("/remote.php/dav/");
+        let expected = Collection {
+            id: collection_id(&account, &format!("{origin}{path}")),
+            name: "Groceries & more".into(),
+            kind: torro_pim::CollectionKind::Todos,
+            color: Some("#3FB984".into()),
+            writable: true,
+            source: None,
+        };
+        assert_eq!(collection, expected);
+        let Response::Collections { collections: listed } =
+            service.handle_within(Request::TaskCollections, Reach::Suite).await
+        else {
+            panic!("task lists answer with Collections");
+        };
+        assert!(listed.contains(&expected), "listed before the next sync: {listed:?}");
+        assert!(
+            service.state.read().await.accounts[0].private.contains(&expected.id),
+            "anna's own, shared with nobody"
+        );
+
+        let Response::Collection { collection: again } =
+            service.create_task_list(&account, "Groceries & more", None).await
+        else {
+            panic!("a second list of the same name");
+        };
+        assert_ne!(again.id, expected.id, "a new address every time");
+        assert_eq!(again.color, None);
+        assert!(!mkcalendars(&record)[1].1.contains("calendar-color"), "the server's default colour");
+    }
+
+    #[tokio::test]
+    async fn a_taken_address_is_never_overwritten_but_another_one_tried() {
+        let (base, record) = fake_server(making_lists(2, 201)).await;
+        let service = service_on(&base).await;
+        let response = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        let Response::Collection { collection } = response else { panic!("made at the third address: {response:?}") };
+        let paths: Vec<String> = mkcalendars(&record).into_iter().map(|(path, _)| path).collect();
+        assert_eq!(paths.len(), 3, "{paths:?}");
+        assert!(paths.iter().all(|path| new_list_address(path, "groceries")), "{paths:?}");
+        assert!(paths[0] != paths[1] && paths[1] != paths[2] && paths[0] != paths[2], "{paths:?}");
+        assert!(collection.id.ends_with(&paths[2]), "{} at {}", collection.id, paths[2]);
+        assert!(lines(&record).iter().all(|line| !line.starts_with("PUT") && !line.starts_with("DELETE")));
+
+        // Every address taken: an error after a few tries, and nothing cached.
+        let (base, record) = fake_server(making_lists(usize::MAX, 201)).await;
+        let service = service_on(&base).await;
+        let before = cached(&service).await;
+        let response = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&response), "error", "{response:?}");
+        assert_eq!(mkcalendars(&record).len(), LIST_ATTEMPTS);
+        assert_eq!(cached(&service).await, before);
+    }
+
+    #[tokio::test]
+    async fn a_new_task_list_is_checked_before_the_server_is_asked() {
+        let (base, record) = fake_server(making_lists(0, 201)).await;
+        let service = service_on(&base).await;
+        let account = account_on(&base);
+        let long = "x".repeat(MAX_LIST_NAME + 1);
+        for (name, color, code) in [
+            ("", None, "error"),
+            ("   ", None, "error"),
+            (long.as_str(), None, "error"),
+            ("Groceries", Some("green"), "error"),
+            ("Groceries", Some("#3FB98"), "error"),
+        ] {
+            let response = service.create_task_list(&account, name, color).await;
+            assert_eq!(code_of(&response), code, "{name:?} {color:?}: {response:?}");
+        }
+        let unknown = service.create_task_list("nextcloud:bob@cloud.example.org", "Groceries", None).await;
+        assert_eq!(code_of(&unknown), "not-found");
+        assert!(lines(&record).is_empty(), "nothing reached the server: {:?}", lines(&record));
+
+        // An account without its app password on this device.
+        let without = self::service();
+        without.pretend_signed_in().await;
+        assert_eq!(code_of(&without.create_task_list(ANNA, "Groceries", None).await), "not-connected");
+    }
+
+    #[tokio::test]
+    async fn a_refused_new_task_list_is_an_error_with_the_servers_reason() {
+        let (base, _) = fake_server(making_lists(0, 507)).await;
+        let service = service_on(&base).await;
+        let full = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&full), "error", "{full:?}");
+
+        let (base, _) = fake_server(making_lists(0, 401)).await;
+        let service = service_on(&base).await;
+        // The remote wipe check ran already for this refusal, so no further request goes out.
+        service.state.write().await.accounts[0].wipe_checked = true;
+        let refused = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&refused), "auth", "{refused:?}");
+
+        // A server that is not there.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let gone = format!("http://{}/remote.php/dav/", listener.local_addr().expect("address"));
+        drop(listener);
+        let service = service_on(&gone).await;
+        let offline = service.create_task_list(&account_on(&gone), "Groceries", None).await;
+        assert_eq!(code_of(&offline), "offline", "{offline:?}");
+        let collections = cached(&service).await;
+        assert_eq!(collections.len(), 2, "work and home only: {collections:?}");
+    }
+
+    /// Whether the fake server was asked for the remote wipe check.
+    fn wipe_checked_on(record: &std::sync::Mutex<Vec<Seen>>) -> bool {
+        lines(record).iter().any(|line| line.contains("/core/wipe/check"))
+    }
+
+    #[tokio::test]
+    async fn a_forbidden_new_task_list_is_no_sign_in_problem() {
+        // With a network client, so a refused app password would ask the server about a wipe.
+        let with_network = |base: &str| {
+            let http = reqwest::Client::builder().no_proxy().build().expect("http client");
+            let service =
+                Arc::new(PimService { http: Some(http), ..PimService::with_settings(SettingsStore::without_file()) });
+            let slot = slot_on(base);
+            (service, slot)
+        };
+
+        // 403: the app password works, the place takes no new list (task G.9b).
+        let (base, record) = fake_server(making_lists(0, 403)).await;
+        let (service, slot) = with_network(&base);
+        service.state.write().await.accounts.push(slot);
+        let refused = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(
+            refused,
+            error("error", torro_pim_caldav::write::NO_NEW_LISTS_HERE.into()),
+            "no `auth`, so no \"sign in again\""
+        );
+        assert!(!wipe_checked_on(&record), "no remote wipe check: {:?}", lines(&record));
+        assert!(!service.state.read().await.accounts[0].wipe_checked);
+        assert_eq!(service.accounts_within(Reach::Suite).await.len(), 1, "the account stays");
+
+        // 401 refuses the app password: that one asks.
+        let (base, record) = fake_server(making_lists(0, 401)).await;
+        let (service, slot) = with_network(&base);
+        service.state.write().await.accounts.push(slot);
+        let refused = service.create_task_list(&account_on(&base), "Groceries", None).await;
+        assert_eq!(code_of(&refused), "auth", "{refused:?}");
+        assert!(wipe_checked_on(&record), "the remote wipe check ran: {:?}", lines(&record));
+    }
+
+    // What the filter list dialog reads of GitHub (task G.9b).
+
+    const GITHUB_ACCOUNT: &str = "github:mahype";
+
+    fn repo_list(name: &str) -> Vec<GitHubRepo> {
+        vec![GitHubRepo { repo: name.into(), private: false }]
+    }
+
+    /// Reads the repositories of [`GITHUB_ACCOUNT`] through the cache, with `fetch` as GitHub.
+    async fn read_repos<Fut>(service: &PimService, fetch: impl FnOnce() -> Fut) -> Vec<GitHubRepo>
+    where
+        Fut: Future<Output = Result<Vec<GitHubRepo>, torro_pim_github::Error>>,
+    {
+        service
+            .read_through(GITHUB_ACCOUNT, |slot| slot.repos.clone(), fetch, |slot, repos| slot.repos = Some(repos))
+            .await
+            .expect("repositories")
+    }
+
+    /// The repositories the cache holds for [`GITHUB_ACCOUNT`]; `None` without a slot too.
+    async fn held_repos(service: &PimService) -> Option<Vec<GitHubRepo>> {
+        let state = service.state.read().await;
+        state.filters.iter().find(|slot| slot.account == GITHUB_ACCOUNT).and_then(|slot| slot.repos.clone())
+    }
+
+    #[tokio::test]
+    async fn a_github_answer_from_before_a_refresh_is_not_kept() {
+        let service = service();
+        service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+
+        let old = read_repos(&service, || async {
+            // The filter lists are refreshed while GitHub answers.
+            service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+            Ok(repo_list("mahype/old"))
+        })
+        .await;
+        assert_eq!(old, repo_list("mahype/old"), "the asker still gets its answer");
+        assert_eq!(held_repos(&service).await, None, "older than the refresh, so not kept");
+
+        let new = read_repos(&service, || async { Ok(repo_list("mahype/new")) }).await;
+        assert_eq!(new, repo_list("mahype/new"));
+        assert_eq!(held_repos(&service).await, Some(repo_list("mahype/new")), "kept when nothing came between");
+        let held = read_repos(&service, || async { panic!("GitHub is not asked again") }).await;
+        assert_eq!(held, repo_list("mahype/new"));
+    }
+
+    #[tokio::test]
+    async fn a_github_answer_for_a_removed_account_leaves_no_slot_behind() {
+        let service = service();
+        service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+        read_repos(&service, || async {
+            service.forget_filter_lists(GITHUB_ACCOUNT).await;
+            Ok(repo_list("mahype/old"))
+        })
+        .await;
+        assert!(!service.has_filter_slot(GITHUB_ACCOUNT).await, "no slot made again for a removed account");
+
+        // Removed and connected again meanwhile: a new slot, which the old answer does not reach.
+        service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+        read_repos(&service, || async {
+            service.forget_filter_lists(GITHUB_ACCOUNT).await;
+            service.refresh_filter_lists(GITHUB_ACCOUNT, None).await;
+            Ok(repo_list("mahype/old"))
+        })
+        .await;
+        assert_eq!(held_repos(&service).await, None);
+
+        // Before the account's first refresh there is no slot: answered, nothing kept.
+        let service = self::service();
+        assert_eq!(read_repos(&service, || async { Ok(repo_list("mahype/x")) }).await, repo_list("mahype/x"));
+        assert!(!service.has_filter_slot(GITHUB_ACCOUNT).await);
+    }
+
+    #[test]
+    fn at_most_so_many_repositories_are_described_the_oldest_go_first() {
+        let mut state = State::default();
+        let slot = state.filter_slot_mut(GITHUB_ACCOUNT);
+        let details = |n: usize| GitHubRepoDetails { repo: format!("o/r{n}"), ..GitHubRepoDetails::default() };
+        for n in 0..=MAX_DESCRIBED {
+            slot.describe(format!("o/r{n}"), details(n));
+        }
+        assert_eq!(slot.described.len(), MAX_DESCRIBED);
+        assert_eq!(slot.described("o/r0"), None, "the oldest went");
+        assert_eq!(slot.described("o/r1"), Some(details(1)));
+        assert_eq!(slot.described(&format!("o/r{MAX_DESCRIBED}")), Some(details(MAX_DESCRIBED)));
+
+        // Described again: newest, and still once.
+        slot.describe("o/r1".into(), details(1));
+        slot.describe("o/new".into(), details(0));
+        assert_eq!(slot.described.len(), MAX_DESCRIBED);
+        assert_eq!(slot.described("o/r1"), Some(details(1)), "kept as the newest");
+        assert_eq!(slot.described("o/r2"), None);
     }
 }

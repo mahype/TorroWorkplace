@@ -169,11 +169,20 @@ impl CalDavClient {
     /// someone else could place a link and read what GitHub answers. `false` whenever the server
     /// does not say (fail closed).
     pub async fn collections_with_privacy(&self) -> Result<Vec<(Collection, bool)>, ProviderError> {
+        let (principal, home) = self.calendar_home().await?;
+        let xml = self.request("PROPFIND", &home, "1", COLLECTIONS_PROPFIND).await?;
+        self.collections_in_answer(&xml, &home, &principal)
+    }
+
+    /// The signed-in user's principal and calendar home, as the server names them
+    /// (`current-user-principal`, then its `calendar-home-set`): where the user's calendars and
+    /// task lists are, and where new ones go. Never guessed from the login name, which may be an
+    /// e-mail address rather than the user id the paths use.
+    pub(crate) async fn calendar_home(&self) -> Result<(Url, Url), ProviderError> {
         let principal =
             self.find_href(&self.base, "<d:current-user-principal/>", NS_DAV, "current-user-principal").await?;
         let home = self.find_href(&principal, "<c:calendar-home-set/>", NS_CALDAV, "calendar-home-set").await?;
-        let xml = self.request("PROPFIND", &home, "1", COLLECTIONS_PROPFIND).await?;
-        self.collections_in_answer(&xml, &home, &principal)
+        Ok((principal, home))
     }
 
     /// The collections in the answer `xml` to [`COLLECTIONS_PROPFIND`] on the calendar home

@@ -2,7 +2,9 @@
 //! an example window built with `torro_gui::shell`.
 //!
 //! `cargo run -p torro-gui --example gallery` shows the styles (dark), `-- --light` in light mode,
-//! `-- --blocks` the building blocks, `-- --parts` the small parts of the tasks redesign (property
+//! `-- --blocks` the building blocks, `-- --parts` the states and feedback of everything that answers
+//! a click (choice chips, label choices, segments, the busy primary button; task G.10), the small
+//! parts of the tasks redesign (property
 //! lines, label chips, state pills, progress bars) and every bundled icon, `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
@@ -129,6 +131,13 @@ struct Gallery {
     panel: bool,
     selected: usize,
     done: Vec<bool>,
+    /// "States and feedback" on the parts page: the chosen template (one of), the chosen labels
+    /// (several), the segments and whether "Create list" is busy.
+    template: Option<usize>,
+    labels: [bool; 4],
+    show: usize,
+    state: usize,
+    busy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +161,11 @@ enum Msg {
     ClosePanel,
     Select(usize),
     Done(usize, bool),
+    Template(usize),
+    Label(usize),
+    Show(usize),
+    State(usize),
+    Busy(bool),
 }
 
 const SECTIONS: [&str; 5] = ["Buttons", "Rows", "Inputs", "Checks", "Surfaces"];
@@ -179,6 +193,11 @@ impl Gallery {
             panel: start.panel,
             selected: 2,
             done: TASKS.iter().map(|t| t.done).collect(),
+            template: Some(1),
+            labels: [true, false, true, false],
+            show: 0,
+            state: 0,
+            busy: false,
         }
     }
 
@@ -231,6 +250,16 @@ impl Gallery {
                     *d = done;
                 }
             }
+            // One of: a second click on the chosen template clears it.
+            Msg::Template(i) => self.template = if self.template == Some(i) { None } else { Some(i) },
+            Msg::Label(i) => {
+                if let Some(on) = self.labels.get_mut(i) {
+                    *on = !*on;
+                }
+            }
+            Msg::Show(i) => self.show = i,
+            Msg::State(i) => self.state = i,
+            Msg::Busy(busy) => self.busy = busy,
         }
     }
 
@@ -1655,6 +1684,7 @@ impl Gallery {
         let icons = container(every_icon).width(1000);
 
         row![
+            section("States and feedback", self.feedback()),
             section("Properties column", props.into()),
             small,
             section("Every bundled icon (Lucide 0.469.0, stroke 1.75)", icons.into())
@@ -1663,4 +1693,145 @@ impl Gallery {
         .padding(space::XL)
         .into()
     }
+
+    /// Everything that answers a click in the filter list dialog (task G.10): first every state
+    /// forced, so one screenshot per mode shows them all, then live blocks to try by hand.
+    fn feedback(&self) -> Element<'_, Msg> {
+        let p = self.palette();
+        // A choice chip drawn in a forced state; the content is what `widgets::choice_chip` builds.
+        let choice = |on: bool| -> Element<'static, Msg> {
+            let cells = BUTTON_STATES
+                .iter()
+                .map(|&(state, status)| {
+                    let lead = if on { Icon::Check } else { Icon::Bug };
+                    let tone: fn(&Palette) -> Color = if on { |p| p.text } else { |p| p.text_2 };
+                    let content = row![icon(lead, icon::SIZE_SM).style(coloured_svg(tone)), label("Bugs")]
+                        .spacing(space::XS + space::XS / 2.0)
+                        .align_y(Alignment::Center);
+                    let chip = forced(content, style::button::choice_chip(on), status)
+                        .height(size::CONTROL_SM)
+                        .padding(style::CHIP_PADDING);
+                    cell(state, chip)
+                })
+                .collect();
+            line(if on { "choice_chip (chosen)" } else { "choice_chip" }, cells)
+        };
+        let property = BUTTON_STATES
+            .iter()
+            .map(|&(state, status)| {
+                let date = typo::text(typo::META, "Today, 16:00").wrapping(iced::widget::text::Wrapping::None);
+                let content = row![quiet(Icon::Calendar, icon::SIZE_SM), date]
+                    .spacing(space::XS + space::XS / 2.0)
+                    .align_y(Alignment::Center);
+                cell(
+                    state,
+                    forced(content, style::button::chip, status)
+                        .height(style::CHIP_HEIGHT)
+                        .padding(style::CHIP_PADDING),
+                )
+            })
+            .collect();
+        let secondary = BUTTON_STATES
+            .iter()
+            .map(|&(state, status)| {
+                cell(
+                    state,
+                    forced(label("Cancel"), style::button::secondary, status)
+                        .height(size::CONTROL_SM)
+                        .padding(style::BUTTON_PADDING),
+                )
+            })
+            .collect();
+        let segments = |active: bool| -> Element<'static, Msg> {
+            let cells = BUTTON_STATES
+                .iter()
+                .map(|&(state, status)| {
+                    let seg = forced(label("Open"), style::button::segment(active), status)
+                        .height(size::CONTROL_SM - 2.0 * style::SEGMENT_INSET - 2.0)
+                        .padding(style::BUTTON_PADDING);
+                    cell(state, container(seg).padding(style::SEGMENT_INSET).style(style::container::segmented))
+                })
+                .collect();
+            line(if active { "segment (active)" } else { "segment" }, cells)
+        };
+        let primary = line(
+            "primary",
+            vec![
+                cell("Normal", widgets::text_button(None, "Create list", style::button::primary, Some(Msg::Noop))),
+                cell("Busy", widgets::busy_button("Creating…", style::button::primary)),
+                cell("Disabled", widgets::text_button(None, "Create list", style::button::primary, None)),
+            ],
+        );
+        let forced_states = column![
+            choice(false),
+            choice(true),
+            line("chip (property)", property),
+            line("secondary", secondary),
+            segments(false),
+            segments(true),
+            primary,
+        ]
+        .spacing(space::L);
+
+        // Live: one template (a second click clears it), several labels, segments, busy.
+        let templates = ["Assigned to me", "Bugs", "Review requested", "My pull requests"];
+        let icons = [Icon::UserCheck, Icon::Bug, Icon::Eye, Icon::GitPullRequest];
+        let template_chips = templates
+            .iter()
+            .zip(icons)
+            .enumerate()
+            .map(|(i, (name, which))| {
+                widgets::choice_chip(*name, Some(Mark::Icon(which)), self.template == Some(i), Some(Msg::Template(i)))
+            })
+            .collect();
+        let labels = [("d73a4a", "bug"), ("#3B82F6", "ui"), ("#D4A72C", "linux"), ("not a colour", "no colour")];
+        let mut label_chips: Vec<Element<'_, Msg>> = labels
+            .iter()
+            .enumerate()
+            .map(|(i, (hex, name))| {
+                widgets::label_choice(hex, *name, self.labels.get(i).copied().unwrap_or(false), Some(Msg::Label(i)))
+            })
+            .collect();
+        label_chips.push(widgets::choice_chip("Work", Some(Mark::Dot(p.calendar[0])), true, None));
+        label_chips.push(widgets::choice_chip("Archive", Some(Mark::Icon(Icon::Inbox)), false, None));
+        let people = ["Anyone", "Me", "Unassigned"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| widgets::choice_chip(*name, None, self.show == i, Some(Msg::Show(i))))
+            .collect();
+        let show = widgets::segmented(
+            [("Issues", Msg::State(0)), ("Pull requests", Msg::State(1)), ("Both", Msg::State(2))],
+            self.state,
+        );
+        let create: Element<'_, Msg> = if self.busy {
+            widgets::busy_button("Creating…", style::button::primary)
+        } else {
+            widgets::text_button(None, "Create list", style::button::primary, Some(Msg::Busy(true)))
+        };
+        let footer = row![
+            widgets::text_button(None, "Cancel", style::button::secondary, Some(Msg::Busy(false))),
+            create,
+            typo::text(typo::META, "Cancel ends the busy state").style(theme::text_3),
+        ]
+        .spacing(space::S)
+        .align_y(Alignment::Center);
+        let live = column![
+            labelled("Start from (one of, click again to clear)", widgets::chip_row(template_chips)),
+            labelled("Labels (several; the last two are disabled)", widgets::chip_row(label_chips)),
+            labelled("Assignee (one of)", widgets::chip_row(people)),
+            labelled("Show", show),
+            labelled("Footer", footer.into()),
+        ]
+        .spacing(space::L);
+
+        column![forced_states, rule::horizontal(1).style(style::rule), live]
+            .spacing(space::XL)
+            .width(size::CONTENT_MAX)
+            .into()
+    }
+}
+
+/// `body` under a small `CAPTION` title in `text_3`, as the fields of a dialog.
+fn labelled<'a>(title: &'a str, body: Element<'a, Msg>) -> Element<'a, Msg> {
+    column![typo::text(typo::CAPTION, title).style(theme::text_3), body].spacing(space::XS).into()
 }

@@ -1,0 +1,12 @@
+{
+  "data": {
+    "viewer": {
+      "repositories": {
+        "pageInfo": { "hasNextPage": false, "endCursor": "Y3Vyc29yOnYyOpK5MjAyNi0wOS0wMVQxMjowMDowMCswMjowMM4AAAAC" },
+        "nodes": [
+          { "nameWithOwner": "mahype/torro-design", "isPrivate": true, "isArchived": false }
+        ]
+      }
+    }
+  }
+}

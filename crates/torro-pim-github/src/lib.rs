@@ -76,6 +76,11 @@ pub const GITHUB_FAILED: &str = "GitHub could not run the search. Check the sear
 /// ([`Error::Github`] from [`Api::set_issue_done`]; task G.5).
 pub const CHANGE_FAILED: &str = "GitHub could not change the issue. Try again later.";
 
+/// What a client reads instead of GitHub's own message when reading repositories, their labels,
+/// milestones or people failed ([`Error::Github`] from [`Api::repos`] or [`Api::describe_repo`];
+/// task G.9): that message may name repositories the client may not see.
+pub const GITHUB_READ_FAILED: &str = "GitHub could not be read. Try again later.";
+
 impl Error {
     /// The message for a client key: fixed per code. [`Error::Input`] is the core's own text and
     /// never quotes the input; [`Error::Github`] becomes [`GITHUB_FAILED`].

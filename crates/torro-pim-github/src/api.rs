@@ -3,11 +3,15 @@
 //! A filter list is fetched whole every time ([`Api::fetch`]): each search page by page up to
 //! the 1,000 matches GitHub hands out, then the pinned items. Fetching only what changed would
 //! miss an item that stopped matching (`docs/github.md`, "Technik").
+//!
+//! For the dialog of a filter list (task G.9) it also reads the repositories the account reaches
+//! ([`Api::repos`]) and what can be picked in one of them ([`Api::describe_repo`]).
 
 use std::future::Future;
 
 use serde_json::Value;
 use torro_core::account::Secret;
+use torro_pim::source::{GitHubRepo, GitHubRepoDetails};
 
 use crate::Error;
 use crate::address::IssueRef;
@@ -22,6 +26,10 @@ const PAGE_SIZE: usize = 100;
 
 /// How many pinned items one call asks for, so a document stays well inside GitHub's limits.
 const PINNED_PER_CALL: usize = 50;
+
+/// How many pages of 100 repositories [`Api::repos`] reads at most: enough for a person's own and
+/// their organisations' repositories, without asking GitHub dozens of times for a picker.
+pub const REPO_PAGES: usize = 10;
 
 /// What it takes to ask GitHub as one account: an HTTP client, the GraphQL endpoint
 /// (`https://api.github.com/graphql`, a fake server in tests) and the account's token.
@@ -98,6 +106,20 @@ impl Api {
     /// does not reach it. See [`set_done`].
     pub async fn set_issue_done(&self, issue: &IssueRef, done: bool) -> Result<Item, Error> {
         set_done(|body| self.post(body), issue, done).await
+    }
+
+    /// The repositories the account reaches, archived ones left out, the most recently changed
+    /// first: at most [`REPO_PAGES`] pages of 100 (task G.9). See [`list_repos`].
+    pub async fn repos(&self) -> Result<Vec<GitHubRepo>, Error> {
+        list_repos(|body| self.post(body)).await
+    }
+
+    /// Labels, open milestones and assignable people of the repository `repo` (`owner/name`) in
+    /// one call (task G.9). [`Error::Input`] for a `repo` that is not `owner/name`, before GitHub
+    /// is asked; [`Error::NotFound`] when GitHub has no such repository or the token does not
+    /// reach it. See [`describe`].
+    pub async fn describe_repo(&self, repo: &str) -> Result<GitHubRepoDetails, Error> {
+        describe(|body| self.post(body), repo).await
     }
 
     /// Sends one GraphQL document and returns GitHub's answer as JSON.
@@ -177,6 +199,53 @@ where
 {
     let id = graphql::read_issue_id(&post(graphql::issue_id_body(issue)).await?)?;
     graphql::read_set_done(&post(graphql::set_done_body(&id, done)).await?, done)
+}
+
+/// The repositories of the account, asking `post` for one page of 100 after the other until
+/// GitHub has no more or [`REPO_PAGES`] pages were read. Archived ones are left out
+/// ([`graphql::read_repos`]); the first failure fails it all. Apart from [`Api::repos`] so it can
+/// be tested with recorded pages.
+pub async fn list_repos<Post, Fut>(mut post: Post) -> Result<Vec<GitHubRepo>, Error>
+where
+    Post: FnMut(Value) -> Fut,
+    Fut: Future<Output = Result<Value, Error>>,
+{
+    let mut repos = Vec::new();
+    let mut after: Option<String> = None;
+    for _ in 0..REPO_PAGES {
+        let page = graphql::read_repos(&post(graphql::repos_body(PAGE_SIZE, after.as_deref())).await?)?;
+        repos.extend(page.repos);
+        match page.next {
+            Some(cursor) => after = Some(cursor),
+            None => break,
+        }
+    }
+    Ok(repos)
+}
+
+/// Labels, open milestones and assignable people of `repo` through `post`, in one call
+/// ([`graphql::repo_body`]). A `repo` that is not `owner/name` ([`repo_parts`]) asks nothing.
+/// Apart from [`Api::describe_repo`] so it can be tested with recorded answers.
+pub async fn describe<Post, Fut>(mut post: Post, repo: &str) -> Result<GitHubRepoDetails, Error>
+where
+    Post: FnMut(Value) -> Fut,
+    Fut: Future<Output = Result<Value, Error>>,
+{
+    let (owner, name) = repo_parts(repo)?;
+    graphql::read_repo(&post(graphql::repo_body(owner, name)).await?)
+}
+
+/// Owner and name of `repo` written as `owner/name` (spaces around it ignored): both parts made
+/// of letters, digits, `-`, `_` and `.`, as GitHub names them. [`Error::Input`] otherwise; the
+/// message does not quote what was sent.
+pub fn repo_parts(repo: &str) -> Result<(&str, &str), Error> {
+    let fits = |part: &str| {
+        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    match repo.trim().split_once('/') {
+        Some((owner, name)) if fits(owner) && fits(name) => Ok((owner, name)),
+        _ => Err(Error::Input("Write the repository as owner/name, for example mahype/TorroWorkplace.".into())),
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +355,68 @@ mod tests {
         )
         .await;
         assert_eq!((offline, *calls.lock().expect("count")), (Err(Error::Offline), 1), "no mutation after it");
+    }
+
+    #[tokio::test]
+    async fn the_repositories_follow_the_cursor_and_leave_archived_ones_out() {
+        let asked = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let record = Arc::clone(&asked);
+        let repos = list_repos(move |body: Value| {
+            let page = if body["variables"]["after"].is_null() { "repos_page1" } else { "repos_page2" };
+            record.lock().expect("record").push(body);
+            async move { Ok(fixture(page)) }
+        })
+        .await
+        .expect("both pages");
+        let names: Vec<(&str, bool)> = repos.iter().map(|repo| (repo.repo.as_str(), repo.private)).collect();
+        assert_eq!(
+            names,
+            [("mahype/TorroWorkplace", false), ("awesome-org/website", true), ("mahype/torro-design", true)]
+        );
+        let asked = asked.lock().expect("record");
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0]["variables"]["first"], 100);
+        assert_eq!(asked[1]["variables"]["after"], "Y3Vyc29yOnYyOpK5MjAyNi0xMC0xMlQwOTowMDowMCswMjowMM4AAAAB");
+    }
+
+    #[tokio::test]
+    async fn the_repositories_stop_after_the_last_page_they_read() {
+        let calls = Arc::new(Mutex::new(0));
+        let count = Arc::clone(&calls);
+        let repos = list_repos(move |_| {
+            *count.lock().expect("count") += 1;
+            async { Ok(fixture("repos_page1")) }
+        })
+        .await
+        .expect("pages");
+        assert_eq!(*calls.lock().expect("count"), REPO_PAGES, "a page that always has a next one stops");
+        assert_eq!(repos.len(), 2 * REPO_PAGES);
+        let failed = list_repos(|_| async { Err(Error::Offline) }).await;
+        assert_eq!(failed, Err(Error::Offline));
+    }
+
+    #[tokio::test]
+    async fn a_repository_is_described_by_owner_and_name_and_a_wrong_name_asks_nothing() {
+        let asked = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let record = Arc::clone(&asked);
+        let post = move |body: Value| {
+            record.lock().expect("record").push(body);
+            async { Ok(fixture("repo")) }
+        };
+        let described = describe(post.clone(), " mahype/TorroWorkplace ").await.expect("described");
+        assert_eq!((described.labels.len(), described.milestones.len()), (3, 2));
+        assert_eq!(
+            asked.lock().expect("record")[0]["variables"],
+            serde_json::json!({"o": "mahype", "r": "TorroWorkplace"})
+        );
+        for wrong in ["TorroWorkplace", "mahype/", "/x", "a/b/c", "a b/c", "mahype/Torro?x=1"] {
+            let refused = describe(post.clone(), wrong).await;
+            assert!(matches!(refused, Err(Error::Input(_))), "{wrong}: {refused:?}");
+        }
+        assert_eq!(asked.lock().expect("record").len(), 1, "GitHub is asked only for a name that fits");
+        assert_eq!(repo_parts("my.org/my_repo-2"), Ok(("my.org", "my_repo-2")));
+        let gone = describe(|_| async { Ok(fixture("repo_not_found")) }, "mahype/nope").await;
+        assert_eq!(gone, Err(Error::NotFound));
     }
 
     #[test]
