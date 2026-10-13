@@ -1,4 +1,4 @@
-//! The example design packs the suite ships (tasks L.5, L.7): `designs/` in the repository, built into
+//! The example design packs the suite ships (tasks L.5, L.7, L.9): `designs/` in the repository, built into
 //! this binary and written to the designs folder the first time the suite starts.
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
@@ -58,6 +58,19 @@ const EXAMPLES: &[Example] = &[
             pack_file!("commitr", "fonts/MonaSans-Bold.ttf"),
             pack_file!("commitr", "fonts/InterTabular-Regular.ttf"),
             pack_file!("commitr", "fonts/InterTabular-Medium.ttf"),
+        ],
+    },
+    Example {
+        id: "ribbon",
+        files: &[
+            pack_file!("ribbon", "design.toml"),
+            pack_file!("ribbon", "logo.svg"),
+            pack_file!("ribbon", "tray.svg"),
+            pack_file!("ribbon", "preview.png"),
+            pack_file!("ribbon", "fonts/LICENSE.txt"),
+            pack_file!("ribbon", "fonts/Selawik-Regular.ttf"),
+            pack_file!("ribbon", "fonts/Selawik-SemiBold.ttf"),
+            pack_file!("ribbon", "fonts/Selawik-Bold.ttf"),
         ],
     },
 ];
@@ -161,6 +174,22 @@ mod tests {
     }
 
     #[test]
+    fn the_ribbon_pack_in_the_repository_passes_every_rule() {
+        use torro_core::design::Weight;
+        let design = torro_core::design::load(&repo_designs(), "ribbon").unwrap_or_else(|problems| {
+            let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            panic!("designs/ribbon must be valid: {reasons:#?}")
+        });
+        assert_eq!(design.about.name, "Ribbon");
+        assert_eq!(design.fonts.text.family, "Selawik");
+        assert_eq!(design.fonts.numbers, design.fonts.text, "Selawik's figures are tabular already");
+        assert!(design.fonts.text.medium.is_none(), "Selawik has no Medium");
+        assert_eq!((design.typo.caption.weight, design.typo.body_strong.weight), (Weight::Semibold, Weight::Semibold));
+        assert!(!design.colors.light.own_sidebar() && !design.colors.dark.own_sidebar());
+        assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some());
+    }
+
+    #[test]
     fn the_embedded_files_are_the_whole_pack() {
         let designs = repo_designs();
         let mut folders: Vec<String> = fs::read_dir(&designs)
@@ -188,7 +217,7 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in ["plex", "commitr"] {
+        for id in ["plex", "commitr", "ribbon"] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();

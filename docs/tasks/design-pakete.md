@@ -186,7 +186,9 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
 - **Abnahme:** wie L.5.
 
 ### L.9 Paket Ribbon (erinnert an Microsoft Office)
-- [ ] erledigt
+- [x] erledigt (2026-10-13: Selawik 1.01 ohne Medium, Hervorhebungen in SemiBold; keine blaue Seitenleiste, weil der
+  blaue Akzent darauf nicht trägt – Seitenleiste in Fluent-Grau wie die Navigation der Office-Apps; Fehlerrot dunkel
+  heller als Fluent)
 - **Modell:** Opus · **Braucht:** L.6 · **Dateien:** `designs/ribbon/`, `crates/torroworkplace/src/designs.rs`
 - Erst durchdesignen, dann bauen. Richtung: Selawik (OFL; Segoe UI darf nicht mit), Office-Blau `#0F6CBD`, helle graue
   Flächen, Radius 4, ruhig; Seitenleiste ggf. in Blau. Kein Office-Name und kein Office-Logo; „inspired by Microsoft
