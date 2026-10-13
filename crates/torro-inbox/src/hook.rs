@@ -715,15 +715,19 @@ mod tests {
 
     #[test]
     fn titles_are_looked_for_where_each_agent_keeps_them() {
-        // The fixture's path is a Unix one; on Windows only a path with a drive is absolute, as
-        // Claude Code sends it there.
-        let unix = "/home/user/.claude/projects/-home-user-my-project/abc123.jsonl";
-        let transcript = if cfg!(windows) { r"C:\Users\user\.claude\projects\abc123.jsonl" } else { unix };
-        let payload = fixture("claude-code-stop").replace(unix, &transcript.replace('\\', "\\\\"));
-        assert_eq!(
-            title_source(AgentKind::ClaudeCode, &payload),
-            Some(TitleSource::Transcript(PathBuf::from(transcript)))
-        );
+        // The fixture's path is absolute on Unix only; Windows wants a drive, so there it is no
+        // transcript to read.
+        let transcript = PathBuf::from("/home/user/.claude/projects/-home-user-my-project/abc123.jsonl");
+        let found = title_source(AgentKind::ClaudeCode, &fixture("claude-code-stop"));
+        if transcript.is_absolute() {
+            assert_eq!(found, Some(TitleSource::Transcript(transcript)));
+        } else {
+            assert_eq!(found, None, "not absolute on this system");
+        }
+        // An absolute path of this system is taken as it is.
+        let here = std::env::temp_dir().join("abc123.jsonl");
+        let payload = serde_json::json!({ "session_id": "abc", "transcript_path": here.to_string_lossy() }).to_string();
+        assert_eq!(title_source(AgentKind::ClaudeCode, &payload), Some(TitleSource::Transcript(here)));
         assert_eq!(
             title_source(AgentKind::Codex, &fixture("codex-stop")),
             Some(TitleSource::CodexIndex { session: "thr_123".into() })
