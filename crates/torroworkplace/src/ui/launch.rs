@@ -11,13 +11,14 @@ use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Local, Utc};
 use torro_core::AppId;
+use torro_core::ai::{AiError, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
-    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice, IssuedKey,
-    Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
+    AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
+    IssuedKey, Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -42,12 +43,17 @@ pub enum Open {
     /// of [`wizard::demo_messages`] leads to; the demo's search answers for a few domains
     /// ([`demo_answer`]).
     WizardMail(wizard::Demo),
+    /// The add-account dialog on the AI provider path (task KI.1a), at the state the script of
+    /// [`wizard::demo_messages`] leads to; the demo finds Ollama on this computer, not LM Studio.
+    WizardAi(wizard::Demo),
     /// "Change password" of the demo's CalDAV account.
     ChangePassword,
     /// The detail page of the first demo account.
     AccountDetail,
     /// The detail page of the demo's GitHub account.
     GithubDetail,
+    /// The detail page of the demo's AI account (OpenRouter, task KI.1a).
+    AiDetail,
     /// The detail page of the first demo mail account (task M5.2): synced mail and calendars, a
     /// signature, and the question for the folder of sent mail.
     MailDetail,
@@ -100,7 +106,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 45] = [
+    pub const ALL: [(&'static str, Open); 51] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -119,9 +125,15 @@ impl Open {
         ("wizard-torromail-failed", Open::WizardMail(wizard::Demo::TorroMailFailed)),
         ("wizard-torromail-password", Open::WizardMail(wizard::Demo::TorroMailPassword)),
         ("wizard-torromail-done", Open::WizardMail(wizard::Demo::TorroMailDone)),
+        ("wizard-ai", Open::WizardAi(wizard::Demo::AiProviders)),
+        ("wizard-ai-openrouter", Open::WizardAi(wizard::Demo::AiOpenRouter)),
+        ("wizard-ai-refused", Open::WizardAi(wizard::Demo::AiRefused)),
+        ("wizard-ai-server", Open::WizardAi(wizard::Demo::AiServer)),
+        ("wizard-ai-done", Open::WizardAi(wizard::Demo::AiDone)),
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
+        ("ai-detail", Open::AiDetail),
         ("mail-detail", Open::MailDetail),
         ("mail-detail-problem", Open::MailDetailProblem),
         ("mail-password", Open::MailPassword),
@@ -422,6 +434,22 @@ pub fn demo_data() -> Data {
         // reach its server. Their ids are `mail:<address>`, as the core makes them.
         mailbox_account(now),
         work_mail_account(now),
+        // An AI account in the cloud (task KI.1a); the demo finds Ollama on this computer
+        // unconnected, so the add-account dialog shows both kinds of local rows.
+        AccountInfo {
+            id: "ai:openrouter@openrouter.ai".into(),
+            kind: "ai".into(),
+            label: "OpenRouter".into(),
+            state: AccountState::Connected {
+                server: "https://openrouter.ai/api/v1".into(),
+                login_name: String::new(),
+                last_sync: Some(now - Duration::minutes(2)),
+                problem: None,
+            },
+            collections: Vec::new(),
+            scopes: None,
+            mail: None,
+        },
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
         id: id.into(),
@@ -660,6 +688,43 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
     let client_of = |id: &str| data.clients.iter().find(|client| client.id == id);
     match request {
         Request::DiscoverServices { address } => Some(demo_discovery(address)),
+        // AI providers (task KI.1a): Ollama runs on this computer, LM Studio does not; the key
+        // "wrong" is refused, every other connection works and stores nothing.
+        Request::FindAiServers => Some(Response::AiServers {
+            servers: vec![AiServer {
+                provider: AiProvider::Ollama,
+                url: "http://localhost:11434/v1".into(),
+                models: 4,
+                account: None,
+            }],
+        }),
+        Request::ConnectAi { key, .. } if key.expose() == "wrong" => {
+            let refused = AiError::Auth;
+            Some(Response::Error { code: refused.code().into(), message: refused.to_string() })
+        }
+        Request::ConnectAi { provider, server, .. } => {
+            let base = match server {
+                Some(server) => torro_core::ai::normalize_base(server).ok()?,
+                None => provider.default_url()?.to_string(),
+            };
+            let account = torro_core::Account::ai(*provider, &base);
+            Some(Response::Account {
+                account: AccountInfo {
+                    label: crate::account::ai::label(&account),
+                    id: account.id,
+                    kind: "ai".into(),
+                    state: AccountState::Connected {
+                        server: base,
+                        login_name: String::new(),
+                        last_sync: Some(Utc::now()),
+                        problem: None,
+                    },
+                    collections: Vec::new(),
+                    scopes: None,
+                    mail: None,
+                },
+            })
+        }
         // "wrong" is the password the demo's provider refuses (for mail its IMAP server), "wrong-smtp"
         // the one only its SMTP server refuses; nothing is stored either way.
         Request::ConnectCalDav { password, .. } if password.expose() == "wrong" => {

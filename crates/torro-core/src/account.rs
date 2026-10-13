@@ -8,6 +8,10 @@
 //! A mail account keeps its servers and settings next to it in `accounts.json` (types from
 //! `torro-mail`, task M2.1).
 //!
+//! An AI account (task KI.1a, [`AccountKind::Ai`]) keeps the base address of its server in
+//! `server` and which kind of server it is in [`Account::ai`]; its API key, if it has one, lives in
+//! the keychain like every secret.
+//!
 //! A secret on its way there travels as a [`Secret`], which never shows its value in `Debug`.
 
 use std::borrow::Cow;
@@ -21,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use torro_mail::{InvalidAddress, MailAccountConfig, MailSettings, Security};
 
 use crate::AppId;
+use crate::ai::AiProvider;
 use crate::paths::AppPaths;
 
 /// Keychain service name all suite secrets are filed under.
@@ -57,17 +62,22 @@ pub enum AccountKind {
     /// same sign-in over CalDAV. Its servers are in [`Account::mail`], what the person set for it
     /// in [`Account::mail_settings`]. Written `mail`.
     Mail,
+    /// An AI account (task KI.1a, `docs/ki.md`): a server the suite asks a model, local (Ollama,
+    /// LM Studio) or in the cloud (OpenRouter). Its base address is `server`, its kind of server
+    /// [`Account::ai`]. It has no calendars, task lists or mail. Written `ai`.
+    Ai,
 }
 
 impl AccountKind {
     /// How the kind is written in `accounts.json` and in the API (`AccountInfo::kind`):
-    /// `nextcloud`, `github`, `caldav`, `mail`.
+    /// `nextcloud`, `github`, `caldav`, `mail`, `ai`.
     pub fn name(self) -> &'static str {
         match self {
             AccountKind::Nextcloud => "nextcloud",
             AccountKind::GitHub => "github",
             AccountKind::CalDav => "caldav",
             AccountKind::Mail => "mail",
+            AccountKind::Ai => "ai",
         }
     }
 }
@@ -159,6 +169,10 @@ pub struct Account {
     /// other kinds and in lists written before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_settings: Option<MailSettings>,
+    /// Which kind of server an AI account talks to ([`AccountKind::Ai`], task KI.1a); `None` for
+    /// the other kinds and in lists written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<AiProvider>,
 }
 
 impl Account {
@@ -172,6 +186,7 @@ impl Account {
             display_name: None,
             mail: None,
             mail_settings: None,
+            ai: None,
         }
     }
 
@@ -205,6 +220,7 @@ impl Account {
             display_name: Some(display_name.to_string()),
             mail: Some(config),
             mail_settings: Some(settings),
+            ai: None,
         })
     }
 
@@ -225,6 +241,7 @@ impl Account {
             display_name: Some(display_name.to_string()),
             mail: None,
             mail_settings: None,
+            ai: None,
         }
     }
 
@@ -239,6 +256,28 @@ impl Account {
             display_name: None,
             mail: None,
             mail_settings: None,
+            ai: None,
+        }
+    }
+
+    /// The AI account of `provider` at the base address `server` (task KI.1a), as
+    /// `torro_core::ai::normalize_base` writes it: id `ai:<provider id>@<host>`, where `<host>` is
+    /// the host of `server` with its port when that is not the scheme's own
+    /// (`ai:ollama@localhost:11434`, `ai:openrouter@openrouter.ai`); `server` as given; no login
+    /// name. Connecting the same provider at the same host again replaces the account and its key.
+    ///
+    /// The id starts with `ai:`, so it never names a client key's keychain entry
+    /// ([`RESERVED_ID_PREFIX`]) and never holds a `/` ([`authority`] drops the path).
+    pub fn ai(provider: AiProvider, server: &str) -> Account {
+        Account {
+            id: format!("ai:{}@{}", provider.id(), authority(server)),
+            kind: AccountKind::Ai,
+            server: server.to_string(),
+            login_name: String::new(),
+            display_name: None,
+            mail: None,
+            mail_settings: None,
+            ai: Some(provider),
         }
     }
 
@@ -440,6 +479,24 @@ mod tests {
             let config = MailAccountConfig { address: address.into(), ..mailbox_org() };
             assert!(Account::mail(config, "anna", "x", MailSettings::default()).is_err(), "{address:?}");
         }
+    }
+
+    #[test]
+    fn ai_accounts_are_named_after_provider_and_host_and_keep_the_provider() {
+        let account = Account::ai(AiProvider::Ollama, "http://localhost:11434/v1");
+        assert_eq!(account.id, "ai:ollama@localhost:11434");
+        assert_eq!((account.kind, account.ai), (AccountKind::Ai, Some(AiProvider::Ollama)));
+        assert_eq!(account.server, "http://localhost:11434/v1");
+        let openrouter = Account::ai(AiProvider::OpenRouter, "https://openrouter.ai/api/v1");
+        assert_eq!(openrouter.id, "ai:openrouter@openrouter.ai");
+        assert!(!openrouter.id.contains('/') && !is_reserved_id(&openrouter.id));
+        let json = serde_json::to_value(&openrouter).expect("json");
+        assert_eq!((json["kind"].as_str(), json["ai"].as_str()), (Some("ai"), Some("openrouter")));
+        assert_eq!(serde_json::from_value::<Account>(json).expect("read back"), openrouter);
+        assert_eq!(AccountKind::Ai.name(), "ai");
+        // Lists of other kinds do not grow an `ai` field.
+        let written = serde_json::to_string(&Account::github("anna")).expect("json");
+        assert!(!written.contains("\"ai\""), "{written}");
     }
 
     #[test]

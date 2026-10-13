@@ -68,6 +68,8 @@ winit.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+# Fake AI servers (Ollama, OpenRouter) for the tests of the AI accounts (task KI.1a).
+httpmock.workspace = true
 # The fake IMAP server of the mail sync tests (task M2.6) speaks TLS like a real one; the client
 # side trusts only the test CA of `torro-mail-imap`'s fixtures.
 rustls.workspace = true

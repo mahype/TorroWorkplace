@@ -3,8 +3,8 @@
 //! Steps, with the subtitle changing per step, errors bottom left, "Cancel" and the primary
 //! button bottom right (like TorroMail's setup wizard):
 //!
-//! 1. **Provider:** a catalog – Nextcloud (calendars, tasks) and GitHub (issues, projects)
-//!    enabled; Slack and AI providers listed as "Coming soon", disabled. With a single available
+//! 1. **Provider:** a catalog – Nextcloud (calendars, tasks), mail, GitHub (issues, projects) and
+//!    AI providers enabled; Slack listed as "Coming soon", disabled. With a single available
 //!    provider the step would be skipped. The dialog is the same with accounts already present:
 //!    it adds one more.
 //! 2. Nextcloud: **Server** – the address; Enter or "Continue" sends
@@ -29,8 +29,15 @@
 //!    only calendars and tasks are ticked, and waits in **Connecting**. A refused password
 //!    (`auth`) comes back to the Password step, under the field, with the server that refused it.
 //!    The steps and the check boxes are data, so a step or a service is added without a new screen.
-//! 5. **Done:** "Your calendars and task lists are ready." (Nextcloud), "Signed in to GitHub as
-//!    …" (GitHub) or what the mail account's servers have, and "Done".
+//! 5. AI providers (task KI.1a, Open First): **AI** – opening it sends `Request::FindAiServers`;
+//!    "On this computer" lists Ollama and LM Studio, each found one with its models and
+//!    "Connect" (one press sends `Request::ConnectAi` for its address, no key), the others as "Not
+//!    running on this computer". Below, OpenRouter opens **API key** (a masked field and a link to
+//!    OpenRouter's key page) and "Other OpenAI-compatible server" opens **Server** (address and an
+//!    optional key). "Connect" sends `Request::ConnectAi` and waits in **Checking**; an error comes
+//!    back to the step it was sent from, in the footer.
+//! 6. **Done:** "Your calendars and task lists are ready." (Nextcloud), "Signed in to GitHub as
+//!    …" (GitHub), "… is ready to use." (AI) or what the mail account's servers have, and "Done".
 //!
 //! **TorroMail** (task M7.4): the dialog opens with `Request::TorroMailAccounts` ([`State::open`]).
 //! When the separate TorroMail app has accounts, the catalog starts with "Use accounts from
@@ -66,11 +73,12 @@ use iced::widget::space as blank;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::account::Secret;
+use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{dialog, layout, style, typo, widgets};
-use torro_ipc::{AccountInfo, Request, Response, TorroMailAccount};
+use torro_ipc::{AccountInfo, AiServer, Request, Response, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_pim::AccountState;
 
@@ -80,6 +88,12 @@ use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
 /// GitHub's page for a new classic token, with the scope the suite needs (`repo`: private
 /// repositories, closing issues) and a name already filled in.
 pub const NEW_TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=Torro%20Workplace";
+
+/// OpenRouter's page for API keys (task KI.1a).
+pub const OPENROUTER_KEYS_URL: &str = "https://openrouter.ai/settings/keys";
+
+/// The AI servers "On this computer" lists, in this order (Open First).
+const LOCAL_AI: [AiProvider; 2] = [AiProvider::Ollama, AiProvider::LmStudio];
 
 /// The step the dialog is on. Each step has its own subtitle and footer button.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,6 +120,14 @@ enum Step {
     MailServices,
     /// Mail provider: waiting for the core to sign in (`ConnectCalDav`).
     MailConnecting,
+    /// AI providers: the servers on this computer, OpenRouter and any other server.
+    AiChoose,
+    /// AI providers: OpenRouter's API key.
+    AiKey,
+    /// AI providers: the address (and maybe a key) of another OpenAI-compatible server.
+    AiServer,
+    /// AI providers: waiting for the core to check the server (`ConnectAi`).
+    AiConnecting,
     Done,
 }
 
@@ -191,10 +213,10 @@ pub enum Provider {
 }
 
 impl Provider {
-    /// Nextcloud, a mail provider and GitHub can be set up; the others are listed so the catalog
-    /// shows where the suite is heading.
+    /// Nextcloud, a mail provider, GitHub and AI providers can be set up; Slack is listed so the
+    /// catalog shows where the suite is heading.
     fn is_enabled(self) -> bool {
-        matches!(self, Provider::Nextcloud | Provider::Mail | Provider::GitHub)
+        matches!(self, Provider::Nextcloud | Provider::Mail | Provider::GitHub | Provider::Ai)
     }
 
     /// The step after picking the provider.
@@ -202,6 +224,7 @@ impl Provider {
         match self {
             Provider::GitHub => Step::Github,
             Provider::Mail => MAIL_STEPS[0],
+            Provider::Ai => Step::AiChoose,
             _ => Step::Server,
         }
     }
@@ -239,6 +262,25 @@ pub struct State {
     mail: Mail,
     /// TorroMail's accounts on the catalog (task M7.4).
     torromail: Offer,
+    /// What the AI provider path has asked for and learned so far (task KI.1a).
+    ai: AiSetup,
+}
+
+/// The AI provider path (task KI.1a): the servers found on this computer, what was typed, and the
+/// account once connected. The key is a [`Secret`], so even a `Debug` of the dialog shows none.
+#[derive(Debug, Default)]
+struct AiSetup {
+    /// `FindAiServers` was sent and has not answered.
+    searching: bool,
+    /// The servers that answered on this computer; `None` before the answer.
+    found: Option<Vec<AiServer>>,
+    /// The address typed for another server.
+    server: String,
+    key: Secret,
+    /// The address of the local server being connected, for its row.
+    connecting: Option<String>,
+    /// The connected account's name, for Done.
+    connected: Option<String>,
 }
 
 /// TorroMail's accounts on the catalog (task M7.4): asked for when the dialog opens
@@ -575,6 +617,16 @@ pub enum Message {
     UseTorroMail(String),
     /// "Enter password" on a TorroMail account whose take-over failed: the mail path, filled in.
     EnterTorroMailPassword(String),
+    /// "Connect" on a server found on this computer: its provider and address (task KI.1a).
+    ConnectLocalAi(AiProvider, String),
+    /// OpenRouter or "Other OpenAI-compatible server" was pressed: its form.
+    ChooseAi(AiProvider),
+    /// The address of another server changed.
+    AiServerChanged(String),
+    /// The API key field changed. A [`Secret`] like the token.
+    AiKeyChanged(Secret),
+    /// "Create a key on OpenRouter".
+    OpenAiKeyPage,
 }
 
 /// Follows a Nextcloud sign-in through a reload of `data` and ends it as the module doc says.
@@ -735,6 +787,67 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             true
         }
         (Step::SigningIn, Ok(_)) => true,
+        // A server on this computer was connected from its row; the catalog waits on that row.
+        (Step::AiChoose, Ok(Response::Account { account })) if state.ai.connecting.is_some() => {
+            state.ai.connected = Some(account.label.clone());
+            state.ai.connecting = None;
+            state.step = Step::Done;
+            state.error = None;
+            true
+        }
+        (Step::AiChoose, result) if state.ai.connecting.is_some() => {
+            state.ai.connecting = None;
+            state.error = Some(match result {
+                Err(message) => message.clone(),
+                Ok(_) => tr("Torro Workplace did not answer as expected. Try again.").to_string(),
+            });
+            true
+        }
+        (Step::AiChoose, Ok(Response::AiServers { servers })) if state.ai.searching => {
+            state.ai.searching = false;
+            state.ai.found = Some(servers.clone());
+            true
+        }
+        // The search is a convenience: without an answer every local server shows as not running.
+        (Step::AiChoose, result) if state.ai.searching => {
+            state.ai.searching = false;
+            state.ai.found = Some(Vec::new());
+            state.error = result.as_ref().err().cloned();
+            true
+        }
+        (Step::AiConnecting, Ok(Response::Account { account })) => {
+            state.ai.connected = Some(account.label.clone());
+            state.step = Step::Done;
+            state.error = None;
+            true
+        }
+        (Step::AiConnecting, result) => {
+            state.step = state.back;
+            state.error = Some(match result {
+                Err(message) => message.clone(),
+                Ok(_) => tr("Torro Workplace did not answer as expected. Try again.").to_string(),
+            });
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Sends `ConnectAi` for `provider` at `server` with the key typed and waits; an error comes back
+/// to the form it was sent from. The dialog keeps no copy of the key.
+fn connect_ai(state: &mut State, provider: AiProvider, server: Option<String>) -> Action {
+    state.back = state.step;
+    state.step = Step::AiConnecting;
+    state.error = None;
+    let key = std::mem::take(&mut state.ai.key);
+    Action::Send(Request::ConnectAi { provider, server, key })
+}
+
+/// Whether Connect does something on an AI form: OpenRouter needs a key, another server an address.
+fn ai_can_connect(state: &State) -> bool {
+    match state.step {
+        Step::AiKey => !state.ai.key.is_blank(),
+        Step::AiServer => !state.ai.server.trim().is_empty(),
         _ => false,
     }
 }
@@ -814,6 +927,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 Step::Token => state.step = Step::Github,
                 Step::Github | Step::Server => state.step = Step::Provider,
                 step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => go(state, step.mail_previous()),
+                Step::AiChoose => state.step = Step::Provider,
+                Step::AiKey | Step::AiServer => {
+                    state.step = Step::AiChoose;
+                    state.ai.key = Secret::default();
+                }
                 _ => {}
             }
             Action::None
@@ -823,9 +941,40 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             if state.step == Step::Provider && provider.is_enabled() && state.torromail.importing.is_none() {
                 state.provider = provider;
                 state.step = provider.first_step();
+                // The servers on this computer are looked for each time the AI providers open.
+                if provider == Provider::Ai {
+                    state.ai.searching = true;
+                    state.ai.found = None;
+                    return Action::Send(Request::FindAiServers);
+                }
             }
             Action::None
         }
+        // Connected from the row itself, which says "Connecting…" meanwhile; no key for a local server.
+        Message::ConnectLocalAi(provider, server) if state.step == Step::AiChoose && state.ai.connecting.is_none() => {
+            state.ai.connecting = Some(server.clone());
+            state.error = None;
+            Action::Send(Request::ConnectAi { provider, server: Some(server), key: Secret::default() })
+        }
+        Message::ConnectLocalAi(..) => Action::None,
+        Message::ChooseAi(provider) if state.step == Step::AiChoose => {
+            state.step = match provider {
+                AiProvider::OpenRouter => Step::AiKey,
+                _ => Step::AiServer,
+            };
+            state.error = None;
+            Action::None
+        }
+        Message::ChooseAi(_) => Action::None,
+        Message::AiServerChanged(server) => {
+            state.ai.server = server;
+            Action::None
+        }
+        Message::AiKeyChanged(key) => {
+            state.ai.key = key;
+            Action::None
+        }
+        Message::OpenAiKeyPage => Action::OpenUrl(OPENROUTER_KEYS_URL.to_string()),
         Message::AddressChanged(address) if state.step == Step::MailAddress => {
             // What was found belonged to the old address.
             state.mail = Mail { address, ..Mail::default() };
@@ -893,6 +1042,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 Action::Send(Request::SetGithubToken { token: std::mem::take(&mut state.token) })
             }
             step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => continue_mail(state, step),
+            Step::AiKey if ai_can_connect(state) => connect_ai(state, AiProvider::OpenRouter, None),
+            Step::AiServer if ai_can_connect(state) => {
+                let server = state.ai.server.trim().to_string();
+                connect_ai(state, AiProvider::OpenAiCompatible, Some(server))
+            }
             _ => Action::None,
         },
         Message::OpenLoginPage => match (state.step, login_url(data)) {
@@ -1057,6 +1211,10 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::MailPassword => mail_password_step(state),
         Step::MailServices => mail_services_step(state),
         Step::MailConnecting => typo::text(typo::body(), tr("Signing in…")).style(theme::text_2).into(),
+        Step::AiChoose => ai_step(state),
+        Step::AiKey => ai_key_step(state),
+        Step::AiServer => ai_server_step(state),
+        Step::AiConnecting => typo::text(typo::body(), tr("Checking the connection…")).style(theme::text_2).into(),
         Step::Done if state.provider == Provider::Mail => mail_done_step(state),
         Step::Done => typo::text(typo::body(), done_text(state)).into(),
     };
@@ -1078,6 +1236,11 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailPassword, _) => tr("Enter the password of your mailbox."),
         (Step::MailServices, _) => tr("Choose what to use from this account."),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
+        (Step::AiChoose, _) => tr("Choose where your AI models run."),
+        (Step::AiKey, _) => tr("Paste an API key from OpenRouter."),
+        (Step::AiServer, _) => tr("Enter the address of your AI server."),
+        (Step::AiConnecting, _) => tr("Checking the connection with the AI server."),
+        (Step::Done, Provider::Ai) => tr("Your AI account is connected."),
         (Step::Done, Provider::GitHub) => tr("GitHub is connected."),
         (Step::Done, Provider::Mail) => tr("Your account is connected."),
         (Step::Done, _) => tr("Nextcloud is connected."),
@@ -1087,6 +1250,10 @@ fn subtitle(state: &State) -> &'static str {
 fn done_text(state: &State) -> String {
     match (state.provider, &state.login) {
         (Provider::GitHub, Some(login)) => trf("Signed in to GitHub as {login}.", &[("login", login)]),
+        (Provider::Ai, _) => match &state.ai.connected {
+            Some(name) => trf("{name} is ready to use.", &[("name", name)]),
+            None => tr("Your AI account is ready to use.").to_string(),
+        },
         _ => tr("Your calendars and task lists are ready.").to_string(),
     }
 }
@@ -1306,6 +1473,117 @@ fn signing_in_step(data: &Data) -> Element<'_, Message> {
         login.map(|_| Message::OpenLoginPage),
     );
     body.push(row![again]).into()
+}
+
+// ----- AI providers (task KI.1a) --------------------------------------------------------------------
+
+/// The AI providers, Open First: the servers on this computer, each found one with "Connect", then
+/// OpenRouter and any other server, each a row that opens its form.
+fn ai_step(state: &State) -> Element<'_, Message> {
+    let local = LOCAL_AI.into_iter().map(|provider| local_ai_row(&state.ai, provider)).collect();
+    let footer = tr("Models on this computer run here. Nothing you ask them leaves it.");
+    let way = |provider, name: &'static str, summary: &'static str| {
+        pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(Message::ChooseAi(provider)))
+    };
+    let others = vec![
+        way(AiProvider::OpenRouter, "OpenRouter", tr("Open models from many makers, with one API key")),
+        way(
+            AiProvider::OpenAiCompatible,
+            tr("Other OpenAI-compatible server"),
+            tr("vLLM, llama.cpp or a server of your own"),
+        ),
+    ];
+    column![
+        widgets::group(tr("On this computer"), local, Some(footer.to_string())),
+        widgets::group(tr("More providers"), others, None),
+    ]
+    .spacing(layout::section_gap())
+    .into()
+}
+
+/// A server on this computer: while looking, "Looking on this computer…"; found, its address and
+/// models with "Connect" (or "Connected" when an account is there already); else "Not running on
+/// this computer". Never colour alone: the dot goes with the words.
+fn local_ai_row(ai: &AiSetup, provider: AiProvider) -> Element<'_, Message> {
+    let Some(found) = &ai.found else {
+        return setting_row(None, provider.name(), Some(tr("Looking on this computer…").to_string()), Space::new());
+    };
+    let Some(server) = found.iter().find(|server| server.provider == provider) else {
+        let dot = widgets::status_dot(widgets::Status::Inactive);
+        return setting_row(
+            Some(dot),
+            provider.name(),
+            Some(tr("Not running on this computer").to_string()),
+            Space::new(),
+        );
+    };
+    let control: Element<'_, Message> = if server.account.is_some() {
+        widgets::pill(None, tr("Connected"))
+    } else if ai.connecting.as_deref() == Some(server.url.as_str()) {
+        typo::text(typo::meta(), tr("Connecting…")).style(theme::text_2).into()
+    } else {
+        let press = ai.connecting.is_none().then(|| Message::ConnectLocalAi(provider, server.url.clone()));
+        widgets::text_button(None, tr("Connect"), style::button::secondary, press)
+    };
+    let dot = widgets::status_dot(widgets::Status::Ok);
+    setting_row(Some(dot), provider.name(), Some(local_ai_detail(server)), control)
+}
+
+/// "localhost:11434 · 3 models": where it runs and what it has.
+fn local_ai_detail(server: &AiServer) -> String {
+    let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
+    let host = rest.split('/').next().unwrap_or(rest);
+    match server.models {
+        1 => trf("{host} · 1 model", &[("host", &host)]),
+        n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
+    }
+}
+
+/// OpenRouter: what it is, the way to its key page and the masked key field.
+fn ai_key_step(state: &State) -> Element<'_, Message> {
+    let create = widgets::text_button(
+        Some(Icon::ArrowUpRight),
+        tr("Create a key on OpenRouter"),
+        style::button::secondary,
+        Some(Message::OpenAiKeyPage),
+    );
+    let input = field("sk-or-v1-…", state.ai.key.expose())
+        .secure(true)
+        .on_input(|key| Message::AiKeyChanged(Secret::new(key)))
+        .on_submit_maybe(ai_can_connect(state).then_some(Message::Continue));
+    column![
+        typo::text(
+            typo::body(),
+            tr("OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.")
+        )
+        .style(theme::text_2),
+        row![create],
+        field_group(tr("API key"), input, Some(tr("The key stays in the system keychain. Agents never see it."))),
+    ]
+    .spacing(space::m())
+    .into()
+}
+
+/// Another OpenAI-compatible server: its address and, when it asks for one, a key.
+fn ai_server_step(state: &State) -> Element<'_, Message> {
+    let submit = ai_can_connect(state).then_some(Message::Continue);
+    let address = field("http://localhost:8000/v1", &state.ai.server)
+        .on_input(Message::AiServerChanged)
+        .on_submit_maybe(submit.clone());
+    let key = field("", state.ai.key.expose())
+        .secure(true)
+        .on_input(|key| Message::AiKeyChanged(Secret::new(key)))
+        .on_submit_maybe(submit);
+    column![
+        field_group(tr("Address"), address, Some(tr("The address of its OpenAI-compatible API."))),
+        field_group(
+            tr("API key"),
+            key,
+            Some(tr("Only if the server asks for one. It stays in the system keychain; agents never see it.")),
+        ),
+    ]
+    .spacing(layout::section_gap())
+    .into()
 }
 
 // ----- The mail account path (tasks M7.2, M5.1) ------------------------------------------------------
@@ -1581,9 +1859,18 @@ fn footer(state: &State) -> Element<'_, Message> {
             .into(),
         None => blank::horizontal().into(),
     };
-    let back =
-        matches!(state.step, Step::Github | Step::Token | Step::MailAddress | Step::MailPassword | Step::MailServices)
-            .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
+    let back = matches!(
+        state.step,
+        Step::Github
+            | Step::Token
+            | Step::MailAddress
+            | Step::MailPassword
+            | Step::MailServices
+            | Step::AiChoose
+            | Step::AiKey
+            | Step::AiServer
+    )
+    .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
     // A TorroMail account taken over on the catalog is done, not cancelled.
     let taken_over = state.step == Step::Provider && state.torromail.imported;
     let cancel =
@@ -1596,7 +1883,10 @@ fn footer(state: &State) -> Element<'_, Message> {
         | Step::Github
         | Step::Checking
         | Step::MailSearching
-        | Step::MailConnecting => None,
+        | Step::MailConnecting
+        | Step::AiChoose
+        | Step::AiConnecting => None,
+        Step::AiKey | Step::AiServer => primary(tr("Connect"), ai_can_connect(state).then_some(Message::Continue)),
         Step::Server => primary(tr("Continue"), can_continue(state).then_some(Message::Continue)),
         Step::MailAddress => {
             // The first press searches, the second goes on with what was found.
@@ -1649,6 +1939,16 @@ pub enum Demo {
     TorroMailPassword,
     /// The catalog after TorroMail's Posteo account was taken over: "Connected" and "Done".
     TorroMailDone,
+    /// The AI providers (task KI.1a): Ollama found on this computer, LM Studio not running.
+    AiProviders,
+    /// OpenRouter's key field.
+    AiOpenRouter,
+    /// OpenRouter refused the key: the key field again, the reason in the footer.
+    AiRefused,
+    /// Another server's address and key, an address typed.
+    AiServer,
+    /// The Ollama found on this computer connected.
+    AiDone,
 }
 
 /// The messages that lead to `demo` the way a person would get there. The demo's answers to the
@@ -1665,8 +1965,27 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         Demo::TorroMailDone => return vec![Message::UseTorroMail("tm-posteo".into())],
         _ => {}
     }
+    // The AI providers search this computer when they open (`launch::demo_answer` finds Ollama).
+    let ai = |more: Vec<Message>| [vec![Message::ChooseProvider(Provider::Ai)], more].concat();
+    let openrouter = Message::ChooseAi(AiProvider::OpenRouter);
+    match demo {
+        Demo::AiProviders => return ai(Vec::new()),
+        Demo::AiOpenRouter => return ai(vec![openrouter]),
+        // "wrong" is the key the demo refuses.
+        Demo::AiRefused => return ai(vec![openrouter, Message::AiKeyChanged(Secret::new("wrong")), Message::Continue]),
+        Demo::AiServer => {
+            let address = Message::AiServerChanged("http://gpu.local:8000/v1".into());
+            return ai(vec![Message::ChooseAi(AiProvider::OpenAiCompatible), address]);
+        }
+        Demo::AiDone => {
+            let ollama = AiProvider::Ollama.default_url().unwrap_or_default().to_string();
+            return ai(vec![Message::ConnectLocalAi(AiProvider::Ollama, ollama)]);
+        }
+        _ => {}
+    }
     let address = match demo {
         Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
+        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => None,
         Demo::Address => None,
         Demo::Unsupported => Some("anna@outlook.com"),
         Demo::Gmail => Some("anna@gmail.com"),
@@ -1699,6 +2018,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         Demo::Address | Demo::Found | Demo::Unsupported | Demo::Gmail | Demo::NotFound => {}
         // Returned above.
         Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
+        Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {}
     }
     steps
 }
@@ -1771,8 +2091,8 @@ mod tests {
     }
 
     #[test]
-    fn three_providers_open_the_catalog() {
-        assert_eq!(Provider::ALL.iter().filter(|provider| provider.is_enabled()).count(), 3);
+    fn four_providers_open_the_catalog() {
+        assert_eq!(Provider::ALL.iter().filter(|provider| provider.is_enabled()).count(), 4);
         assert_eq!(State::new().step, Step::Provider);
     }
 
@@ -1966,11 +2286,9 @@ mod tests {
 
     #[test]
     fn disabled_providers_do_nothing() {
-        for provider in [Provider::Slack, Provider::Ai] {
-            let mut state = at_catalog();
-            update(&mut state, Message::ChooseProvider(provider), &Data::default());
-            assert_eq!(state.step, Step::Provider, "{provider:?} is disabled");
-        }
+        let mut state = at_catalog();
+        update(&mut state, Message::ChooseProvider(Provider::Slack), &Data::default());
+        assert_eq!(state.step, Step::Provider, "Slack is disabled");
     }
 
     #[test]
@@ -2751,5 +3069,133 @@ mod tests {
         assert_eq!(servers_of(&posteo), "imap.example.org · smtp.example.org");
         posteo.smtp = posteo.imap.clone();
         assert_eq!(servers_of(&posteo), "imap.example.org");
+    }
+
+    // ----- AI providers (task KI.1a) -----
+
+    fn ai_server(provider: AiProvider, url: &str, account: Option<&str>) -> AiServer {
+        AiServer { provider, url: url.into(), models: 3, account: account.map(str::to_string) }
+    }
+
+    /// The AI providers, opened from the catalog: the search went out.
+    fn at_ai() -> State {
+        let mut state = at_catalog();
+        let action = update(&mut state, Message::ChooseProvider(Provider::Ai), &Data::default());
+        assert!(matches!(action, Action::Send(Request::FindAiServers)), "{action:?}");
+        assert_eq!(state.step, Step::AiChoose);
+        state
+    }
+
+    #[test]
+    fn local_servers_are_connected_from_their_row_without_a_key() {
+        let mut state = at_ai();
+        drop(view(&state, &Data::default()));
+        let found = vec![ai_server(AiProvider::Ollama, "http://localhost:11434/v1", None)];
+        assert!(answered(&mut state, &Ok(Response::AiServers { servers: found })));
+        assert!(state.ai.found.as_ref().is_some_and(|found| found.len() == 1));
+        assert_eq!(
+            local_ai_detail(&ai_server(AiProvider::Ollama, "http://localhost:11434/v1", None)),
+            trf("{host} · {n} models", &[("host", &"localhost:11434"), ("n", &3)])
+        );
+
+        let press = Message::ConnectLocalAi(AiProvider::Ollama, "http://localhost:11434/v1".into());
+        let sent = update(&mut state, press.clone(), &Data::default());
+        let Action::Send(Request::ConnectAi { provider, server, key }) = sent else { panic!("connect") };
+        assert_eq!(
+            (provider, server.as_deref(), key.is_blank()),
+            (AiProvider::Ollama, Some("http://localhost:11434/v1"), true)
+        );
+        assert_eq!(state.step, Step::AiChoose, "the row says Connecting…");
+        assert!(matches!(update(&mut state, press, &Data::default()), Action::None), "one at a time");
+        drop(view(&state, &Data::default()));
+
+        let refused = Err("The AI server could not be reached.".to_string());
+        assert!(answered(&mut state, &refused));
+        assert_eq!((state.step, state.error.as_deref()), (Step::AiChoose, Some("The AI server could not be reached.")));
+        let press = Message::ConnectLocalAi(AiProvider::Ollama, "http://localhost:11434/v1".into());
+        update(&mut state, press, &Data::default());
+        let mut ollama = account("ai:ollama@localhost:11434", connected());
+        ollama.label = "Ollama".into();
+        assert!(answered(&mut state, &Ok(Response::Account { account: ollama })));
+        assert_eq!(state.step, Step::Done);
+        assert_eq!(done_text(&state), trf("{name} is ready to use.", &[("name", &"Ollama")]));
+        drop(view(&state, &Data::default()));
+    }
+
+    #[test]
+    fn a_search_that_fails_shows_every_local_server_as_not_running() {
+        let mut state = at_ai();
+        assert!(answered(&mut state, &Err("daemon not running".into())));
+        assert_eq!(state.ai.found, Some(Vec::new()));
+        assert_eq!(state.error.as_deref(), Some("daemon not running"));
+        assert!(!answered(&mut state, &Ok(Response::Ok)), "nothing waits any more");
+        drop(view(&state, &Data::default()));
+    }
+
+    #[test]
+    fn openrouter_needs_a_key_which_the_dialog_does_not_keep() {
+        let mut state = at_ai();
+        update(&mut state, Message::ChooseAi(AiProvider::OpenRouter), &Data::default());
+        assert_eq!(state.step, Step::AiKey);
+        assert!(matches!(send(&mut state, Message::Continue), Action::None), "no key, no request");
+        update(&mut state, Message::AiKeyChanged(Secret::new("sk-or-v1-SECRET")), &Data::default());
+        assert!(!format!("{state:?}").contains("SECRET"));
+        let Action::Send(Request::ConnectAi { provider, server, key }) = send(&mut state, Message::Continue) else {
+            panic!("connect")
+        };
+        assert_eq!((provider, server, key.expose()), (AiProvider::OpenRouter, None, "sk-or-v1-SECRET"));
+        assert!(state.ai.key.is_blank(), "taken, not copied");
+        assert_eq!(state.step, Step::AiConnecting);
+        assert!(answered(&mut state, &Err("The AI server did not accept the API key.".into())));
+        assert_eq!(state.step, Step::AiKey, "back to the key, to paste it again");
+        update(&mut state, Message::Back, &Data::default());
+        assert_eq!(state.step, Step::AiChoose);
+        update(&mut state, Message::Back, &Data::default());
+        assert_eq!(state.step, Step::Provider);
+        assert!(matches!(send(&mut state, Message::OpenAiKeyPage), Action::OpenUrl(url) if url == OPENROUTER_KEYS_URL));
+    }
+
+    #[test]
+    fn another_server_needs_an_address_and_takes_a_key() {
+        let mut state = at_ai();
+        update(&mut state, Message::ChooseAi(AiProvider::OpenAiCompatible), &Data::default());
+        assert_eq!(state.step, Step::AiServer);
+        update(&mut state, Message::AiServerChanged("   ".into()), &Data::default());
+        assert!(matches!(send(&mut state, Message::Continue), Action::None));
+        update(&mut state, Message::AiServerChanged(" https://ai.example.org ".into()), &Data::default());
+        let Action::Send(Request::ConnectAi { provider, server, key }) = send(&mut state, Message::Continue) else {
+            panic!("connect")
+        };
+        assert_eq!(
+            (provider, server.as_deref(), key.is_blank()),
+            (AiProvider::OpenAiCompatible, Some("https://ai.example.org"), true)
+        );
+        let mut custom = account("ai:openai_compatible@ai.example.org", connected());
+        custom.label = "ai.example.org".into();
+        assert!(answered(&mut state, &Ok(Response::Account { account: custom })));
+        assert_eq!((state.step, subtitle(&state)), (Step::Done, tr("Your AI account is connected.")));
+    }
+
+    #[test]
+    fn the_ai_demos_lead_where_they_say() {
+        let data = super::super::launch::demo_data();
+        for (demo, step) in [
+            (Demo::AiProviders, Step::AiChoose),
+            (Demo::AiOpenRouter, Step::AiKey),
+            (Demo::AiRefused, Step::AiKey),
+            (Demo::AiServer, Step::AiServer),
+            (Demo::AiDone, Step::Done),
+        ] {
+            let mut state = at_catalog();
+            for message in demo_messages(demo) {
+                if let Action::Send(request) = update(&mut state, message, &data) {
+                    let answer = super::super::launch::demo_answer(&request, &data).expect("the demo answers");
+                    answered(&mut state, &Ok(answer));
+                }
+            }
+            assert_eq!(state.step, step, "{demo:?}");
+            assert_eq!(state.error.is_some(), demo == Demo::AiRefused, "{demo:?}");
+            drop(view(&state, &data));
+        }
     }
 }
