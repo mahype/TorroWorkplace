@@ -265,7 +265,9 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
 
 ### L.15 Farbschemata Nord, Solarized, Catppuccin, Gruvbox
-- [ ] erledigt
+- [x] erledigt (2026-10-13: vier Pakete ohne eigene Schriften; wo die Originalfarben die
+  Kontrastregeln nicht schaffen, sind sie in der Helligkeit verschoben – vor allem dritte Textfarbe, Fehler- und
+  Achtungsfarbe; die Abweichungen stehen je Paket als Kommentar in `design.toml`)
 - **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/{nord,solarized,catppuccin,gruvbox}/`,
   `crates/torroworkplace/src/designs.rs`
 - Je ein Paket nach dem offenen Schema (MIT), hell und dunkel, Inter wie Torro; Autor und Lizenz in `[about]`.
