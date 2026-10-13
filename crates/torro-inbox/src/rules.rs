@@ -330,6 +330,7 @@ mod tests {
                 project: None,
                 branch: None,
                 pids: Vec::new(),
+                title: Some("Parser fixtures and docs".into()),
             }),
             ..item("2", Kind::AgentDone)
         };
@@ -343,6 +344,8 @@ mod tests {
         assert_eq!((merged.kind, merged.lane, merged.urgent), (Kind::AgentDone, Lane::ForMe, false));
         assert_eq!(merged.title, incoming.title);
         assert_eq!(merged.body, incoming.body);
+        // A session renamed meanwhile shows its new name (task E2.6).
+        assert_eq!(merged.agent, incoming.agent);
         assert_eq!(merged.agent, incoming.agent);
     }
 
@@ -445,6 +448,7 @@ mod tests {
                 project: Some("TorroWorkplace".into()),
                 branch: Some("feat/inbox".into()),
                 pids: vec![42, 7],
+                title: Some("Login bug".into()),
             }),
             state: State::Snoozed { until: at(20) },
             link: Some(Link::Window),

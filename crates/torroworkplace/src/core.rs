@@ -792,12 +792,16 @@ impl Core {
         let name = info.as_ref().map(|info| info.name.clone());
         let mut fingerprint = None;
         let (request, pin, summary) = match (&request, request.operation().area()) {
-            (Request::AskPermission { tool, details, project }, _) => {
+            (Request::AskPermission { tool, details, project, title }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
                     return Ok(refused);
                 }
                 let agent = info.as_ref().map_or_else(|| client.to_string(), asker);
-                let summary = crate::approvals::question_summary(&agent, tool, project.as_deref(), details);
+                // Only a hook reads the session's name from the agent's own files (task E2.6); any
+                // other client could pass itself off as a harmless job, so its name is ignored.
+                let from_hook = info.as_ref().is_some_and(|info| info.kind == torro_ipc::api::HOOK_CLIENT);
+                let session = title.as_deref().filter(|_| from_hook);
+                let summary = crate::approvals::question_summary(&agent, session, tool, project.as_deref(), details);
                 (request, None, summary)
             }
             // Sending (task M3.3): the summary from the message built from the stored draft, and
@@ -4960,6 +4964,7 @@ mod tests {
                 project: None,
                 branch: None,
                 pids: AGENT_PIDS.to_vec(),
+                title: None,
             }),
         };
         let Response::Posted { id: Some(id) } = ask(&core, Some(&hook_key), waiting).await else {
@@ -5701,7 +5706,22 @@ mod tests {
     }
 
     fn question(tool: &str, details: &str) -> Request {
-        Request::AskPermission { tool: tool.into(), details: details.into(), project: Some("my-project".into()) }
+        Request::AskPermission {
+            tool: tool.into(),
+            details: details.into(),
+            project: Some("my-project".into()),
+            title: None,
+        }
+    }
+
+    /// [`question`] with the session's name `title` (task E2.6).
+    fn named_question(title: &str) -> Request {
+        Request::AskPermission {
+            tool: "Bash".into(),
+            details: "cargo test".into(),
+            project: Some("my-project".into()),
+            title: Some(title.into()),
+        }
     }
 
     #[tokio::test]
@@ -5749,6 +5769,30 @@ mod tests {
         let (_, script) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let asked = waits(ask(&core, Some(&script), question("Bash", "ls")).await);
         assert!(asked.summary.starts_with("Claude Code"), "the client's name: {}", asked.summary);
+    }
+
+    #[tokio::test]
+    async fn a_question_names_the_session_only_when_a_hook_asks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, key) = hook_client(&core, AgentKind::ClaudeCode).await;
+        let asked = waits(ask(&core, Some(&key), named_question("Login \"bug\"\u{202E} {details}")).await);
+        let expected = crate::approvals::question_summary(
+            "Claude Code",
+            Some("Login 'bug' (details)"),
+            "Bash",
+            Some("my-project"),
+            "cargo test",
+        );
+        assert_eq!(asked.summary, expected);
+        let who =
+            trf("{agent} (session \"{session}\")", &[("agent", &"Claude Code"), ("session", &"Login 'bug' (details)")]);
+        assert!(asked.summary.starts_with(&who), "{}", asked.summary);
+
+        // Any other client's name for itself is ignored: the question reads as without one.
+        let (_, script) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let asked = waits(ask(&core, Some(&script), named_question("Docs only, harmless")).await);
+        assert!(!asked.summary.contains("Docs only"), "{}", asked.summary);
     }
 
     #[tokio::test]

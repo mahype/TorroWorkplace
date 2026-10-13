@@ -4,7 +4,8 @@
 //! built around "now" (which `--now` may fix, for repeatable screenshots), so the times in the
 //! list always read "4 min", "2 h" and so on. It has every kind of entry the first steps bring:
 //! two waiting agents, a finished one, an approval, an account problem, script notices in both
-//! lanes, a snoozed and a done entry.
+//! lanes, a snoozed and a done entry. The agents' sessions have names (task E2.6), except the done
+//! one of Codex, which shows how an entry without a name looks.
 //!
 //! Mail (task E4.2): two mail accounts ([`MAIL_ACCOUNTS`], private and work) with their folders
 //! and messages, and the entries the core would file for their new mail (task E4.1). The methods
@@ -151,14 +152,16 @@ fn notice(now: DateTime<Utc>, n: u32, name: &str, lane: Lane, title: &str, minut
     Item { lane, ..entry(now, n, SourceRef::script(name), Kind::Notice, title.into(), minutes) }
 }
 
-/// What a hook reports about a session of `agent` in `project` on `branch`.
-fn agent(agent: AgentKind, session: &str, project: &str, branch: &str) -> Option<AgentInfo> {
+/// What a hook reports about a session of `agent` in `project` on `branch`, named `title` by the
+/// agent (task E2.6). Names are foreign text, so they stay as they are, like mail subjects.
+fn agent(agent: AgentKind, session: &str, project: &str, branch: &str, title: Option<&str>) -> Option<AgentInfo> {
     Some(AgentInfo {
         agent,
         session: session.into(),
         project: Some(project.into()),
         branch: Some(branch.into()),
         pids: Vec::new(),
+        title: title.map(String::from),
     })
 }
 
@@ -172,14 +175,20 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
         Item {
             thread_key: "claude-code:demo-claude-1".into(),
             body: Some(tr("Claude needs your permission to use Bash: cargo test --workspace").into()),
-            agent: agent(AgentKind::ClaudeCode, "demo-claude-1", "TorroWorkplace", "feat/inbox"),
+            agent: agent(
+                AgentKind::ClaudeCode,
+                "demo-claude-1",
+                "TorroWorkplace",
+                "feat/inbox",
+                Some("Inbox: show session names"),
+            ),
             link: Some(Link::Window),
             ..entry(now, 1, claude(), Kind::AgentWaiting, waiting(AgentKind::ClaudeCode), 4)
         },
         Item {
             thread_key: "codex:demo-codex-1".into(),
             body: Some(tr("Codex wants to run: npm install").into()),
-            agent: agent(AgentKind::Codex, "demo-codex-1", "torro-design", "main"),
+            agent: agent(AgentKind::Codex, "demo-codex-1", "torro-design", "main", Some("Update design tokens")),
             link: Some(Link::Window),
             count: 2,
             received: now - TimeDelta::minutes(40),
@@ -205,7 +214,7 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
         Item {
             thread_key: "claude-code:demo-claude-2".into(),
             body: Some(tr("Fixed the footer links on the website. 3 files changed.").into()),
-            agent: agent(AgentKind::ClaudeCode, "demo-claude-2", "website", "fix/footer"),
+            agent: agent(AgentKind::ClaudeCode, "demo-claude-2", "website", "fix/footer", Some("Fix footer links")),
             link: Some(Link::Window),
             state: State::Seen,
             ..entry(now, 4, claude(), Kind::AgentDone, finished(AgentKind::ClaudeCode), 35)
@@ -251,7 +260,7 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
         Item {
             thread_key: "codex:demo-codex-0".into(),
             body: Some(tr("Refactored the settings module.").into()),
-            agent: agent(AgentKind::Codex, "demo-codex-0", "torro-api", "refactor/settings"),
+            agent: agent(AgentKind::Codex, "demo-codex-0", "torro-api", "refactor/settings", None),
             link: Some(Link::Window),
             state: State::Done { at: now - TimeDelta::hours(22) },
             ..entry(now, 11, codex(), Kind::AgentDone, finished(AgentKind::Codex), 26 * 60)

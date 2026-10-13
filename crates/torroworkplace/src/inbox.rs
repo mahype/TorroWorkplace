@@ -1236,12 +1236,15 @@ fn checked_thread_key(thread_key: Option<String>) -> Result<Option<String>, Fail
     }
 }
 
-/// `agent` with its texts cut to [`AGENT_FIELD_MAX`] bytes and at most [`PIDS_MAX`] pids.
+/// `agent` with its texts cut to [`AGENT_FIELD_MAX`] bytes and at most [`PIDS_MAX`] pids. The
+/// session's name (task E2.6) is made one harmless line of at most 80 characters again
+/// ([`torro_inbox::hook::session_title`]): the core does not count on the hook having done it.
 fn capped_agent(mut agent: AgentInfo) -> AgentInfo {
     agent.session = cap_bytes(&agent.session, AGENT_FIELD_MAX);
     agent.project = agent.project.map(|project| cap_bytes(&project, AGENT_FIELD_MAX));
     agent.branch = agent.branch.map(|branch| cap_bytes(&branch, AGENT_FIELD_MAX));
     agent.pids.truncate(PIDS_MAX);
+    agent.title = agent.title.as_deref().and_then(torro_inbox::hook::session_title);
     agent
 }
 
@@ -2066,6 +2069,7 @@ pub(crate) mod tests {
             project: Some("TorroWorkplace".into()),
             branch: Some("feat/inbox".into()),
             pids: vec![42],
+            title: None,
         }
     }
 
@@ -2805,6 +2809,38 @@ pub(crate) mod tests {
         assert!(project.len() <= AGENT_FIELD_MAX && project.chars().all(|c| c == 'ä'), "cut at a character");
         assert_eq!(stored.branch.map(|b| b.len()), Some(AGENT_FIELD_MAX));
         assert_eq!(stored.pids, (1..=16).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn the_session_name_is_cleaned_and_follows_a_rename() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let named = |title: &str| Request::PostItem {
+            kind: Kind::AgentWaiting,
+            title: "ignored".into(),
+            body: None,
+            link: None,
+            lane: None,
+            thread_key: Some("claude-code:s1".into()),
+            agent: Some(AgentInfo { title: Some(title.into()), ..session(AgentKind::ClaudeCode, "s1") }),
+        };
+        let raw = format!("Fix\u{202E} the\n\u{0e}login {}", "x".repeat(100));
+        let id = posted(inbox.handle(named(&raw), Some(&hook()), at(8, 0)));
+        let stored = item(inbox.handle(Request::GetItem { id: id.clone() }, None, at(8, 1)));
+        let title = stored.agent.and_then(|agent| agent.title).expect("a name");
+        assert!(title.starts_with("Fix the login xxx") && title.ends_with('…'), "{title}");
+        assert_eq!(title.chars().count(), torro_inbox::hook::SESSION_TITLE_MAX);
+        // The name is the agent's text, never the entry's title, which stays the core's own.
+        assert_eq!(stored.title, trf("{agent} is waiting for you", &[("agent", &"Claude Code")]));
+        assert!(stored.untrusted);
+
+        // The next report of the session brings the new name; a blank one is no name.
+        posted(inbox.handle(named("Login bug"), Some(&hook()), at(8, 2)));
+        let renamed = item(inbox.handle(Request::GetItem { id: id.clone() }, None, at(8, 3)));
+        assert_eq!(renamed.agent.and_then(|agent| agent.title).as_deref(), Some("Login bug"));
+        posted(inbox.handle(named(" \u{0e} "), Some(&hook()), at(8, 4)));
+        let blank = item(inbox.handle(Request::GetItem { id }, None, at(8, 5)));
+        assert_eq!(blank.agent.and_then(|agent| agent.title), None);
     }
 
     #[test]

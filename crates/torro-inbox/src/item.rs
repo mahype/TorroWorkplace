@@ -252,6 +252,13 @@ pub struct AgentInfo {
     /// macOS and Windows.
     #[serde(default)]
     pub pids: Vec<u32>,
+    /// The session's name as the agent shows it (task E2.6): Claude Code's title of the
+    /// conversation, Codex's thread name; Gemini CLI has none. One line, without control or
+    /// direction characters, at most 80 characters ([`crate::hook::session_title`]). Foreign
+    /// text like the entry's title: the entry stays `untrusted`. `None` when the agent has no
+    /// name for the session or it could not be read.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 /// The coding agents whose hooks report to the inbox.
@@ -391,6 +398,15 @@ mod tests {
         let value = json(&for_sender);
         assert_eq!(value["sender"], "news@shop.example");
         assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), for_sender);
+    }
+
+    #[test]
+    fn agents_stored_before_session_names_still_read() {
+        let older = serde_json::json!({ "agent": "codex", "session": "thr_1" });
+        let info: AgentInfo = serde_json::from_value(older).expect("deserialize");
+        assert_eq!((info.title, info.project, info.pids), (None, None, Vec::new()));
+        let schema = serde_json::to_string(&schemars::schema_for!(AgentInfo)).expect("serialize schema");
+        assert!(schema.contains("session's name"), "the field is described for MCP: {schema}");
     }
 
     #[test]

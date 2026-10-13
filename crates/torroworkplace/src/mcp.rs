@@ -442,7 +442,7 @@ pub enum ToolError {
 /// Only commands with [`Mcp::Tool`] have a tool; any other name is [`ToolError::UnknownTool`].
 /// The arguments are the request's fields, and only those the tool's input schema lists
 /// ([`tools`]): anything else, `method` included, is [`ToolError::Input`], so a typo never goes
-/// unnoticed and the tool alone decides the command. The five tools with easier inputs
+/// unnoticed and the tool alone decides the command. The six tools with easier inputs
 /// ([`easy_input_schema`]) also take those; local times in them are read in `zone` (the
 /// computer's zone, [`Local`]; tests pass a fixed one). The short forms of the saves only create:
 /// `uid`, `href` or `etag` next to them is [`ToolError::Input`] with the way to change an item.
@@ -459,6 +459,7 @@ pub fn request_for<Tz: TimeZone>(tool: &str, arguments: JsonObject, zone: &Tz) -
         "tasks.save_todo" => save_todo(parse(arguments)?, zone),
         "inbox.list_items" => list_items(parse(arguments)?, zone),
         "inbox.post_item" => Ok(post_item(parse(arguments)?)),
+        "approvals.ask_permission" => Ok(ask_permission(parse(arguments)?)),
         name => {
             let mut arguments = arguments;
             arguments.insert("method".into(), Value::String(name.into()));
@@ -558,6 +559,7 @@ pub fn easy_input_schema(command: &str) -> Option<Schema> {
         "tasks.save_todo" => schema_of::<TodoInput>(),
         "inbox.list_items" => schema_of::<ItemsInput>(),
         "inbox.post_item" => schema_of::<PostInput>(),
+        "approvals.ask_permission" => schema_of::<AskInput>(),
         _ => return None,
     };
     Some(schema)
@@ -700,6 +702,26 @@ struct PostInput {
     /// Groups reports of one matter, e.g. `build:main`: a new report merges into the entry and
     /// brings a done one back. Leave out for an entry of its own.
     thread_key: Option<String>,
+}
+
+/// Input of `approvals_ask_permission`: the request's fields without the session's name (task
+/// E2.6), which the core takes only from hooks; offering it here would only invite an agent to
+/// name itself a harmless job.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AskInput {
+    /// The tool you want to use, as you name it: `Bash`, `apply_patch`, `mcp__fs__write`.
+    tool: String,
+    /// What exactly the tool would do, in full: the shell command, or the tool's input as JSON.
+    #[serde(default)]
+    details: String,
+    /// The project you work in: the last part of your working directory.
+    project: Option<String>,
+}
+
+fn ask_permission(input: AskInput) -> Request {
+    let AskInput { tool, details, project } = input;
+    Request::AskPermission { tool, details, project, title: None }
 }
 
 fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, ToolError> {
@@ -1495,6 +1517,29 @@ mod tests {
             let refused = request_for("inbox_post_item", args(wrong.clone()), &Utc);
             assert!(matches!(refused, Err(ToolError::Input(_))), "{wrong}: {refused:?}");
         }
+    }
+
+    #[test]
+    fn asking_permission_over_mcp_names_no_session() {
+        let request = request_for(
+            "approvals_ask_permission",
+            args(json!({"tool": "Bash", "details": "cargo test", "project": "my-project"})),
+            &Utc,
+        );
+        assert_eq!(
+            request,
+            Ok(Request::AskPermission {
+                tool: "Bash".into(),
+                details: "cargo test".into(),
+                project: Some("my-project".into()),
+                title: None,
+            })
+        );
+        let named = request_for("approvals_ask_permission", args(json!({"tool": "Bash", "title": "Docs only"})), &Utc);
+        assert!(matches!(named, Err(ToolError::Input(_))), "{named:?}");
+        let tool = tools().iter().find(|t| t.name == "approvals_ask_permission").expect("tool").clone();
+        assert!(tool.input_schema["properties"].get("title").is_none(), "{:?}", tool.input_schema);
+        assert_eq!(tool.input_schema["required"], json!(["tool"]));
     }
 
     #[test]

@@ -132,13 +132,32 @@ pub fn question_refusal(tool: &str, details: &str) -> Option<Response> {
 /// the client's name), `tool` a name [`question_refusal`] let pass, `project` the agent's project
 /// if it sent one.
 ///
+/// `session` is the name the agent gave its session (task E2.6), only from a hook client: it
+/// stands after who asks, marked as a session and in quotes (`Claude Code (session "Login bug")
+/// wants to use …`), made one line of at most 80 characters ([`torro_inbox::hook::session_title`])
+/// and quoted like the project, so it can pass neither as the core's words nor as the command.
+///
 /// `details` is what would run and is shown **in full**: invisible format characters go, control
 /// characters (line breaks too) and blanks become spaces, long runs of them `␣×n` ([`harmless`]);
 /// nothing else changes, so the person reads the command as it is. It comes last, after the core's words and after every
 /// other placeholder was filled, so nothing in it can fill a placeholder or pass as the core's
 /// words. Who asks and the project go through [`quote`] like every other client text.
-pub fn question_summary(agent: &str, tool: &str, project: Option<&str>, details: &str) -> String {
+pub fn question_summary(
+    agent: &str,
+    session: Option<&str>,
+    tool: &str,
+    project: Option<&str>,
+    details: &str,
+) -> String {
     let (agent, project, details) = (quote(agent), project.map(quote), harmless(details));
+    // Filled before the sentence, so the name (quoted: no braces left) fills no placeholder.
+    let agent = match session.and_then(torro_inbox::hook::session_title) {
+        Some(session) => trf(
+            "{agent} (session \"{session}\")",
+            &[("agent", &agent), ("session", &quote_up_to(&session, torro_inbox::hook::SESSION_TITLE_MAX))],
+        ),
+        None => agent,
+    };
     let details = details.trim();
     // `details` is the last argument on purpose: `trf` fills in order.
     match (project.filter(|project| !project.is_empty()), details.is_empty()) {
@@ -2646,7 +2665,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_question_command_is_the_catalogue_name() {
-        let request = Request::AskPermission { tool: "Bash".into(), details: String::new(), project: None };
+        let request =
+            Request::AskPermission { tool: "Bash".into(), details: String::new(), project: None, title: None };
         assert_eq!(request.operation().name(), QUESTION_COMMAND);
         assert_eq!(lifetime(&request), QUESTION_LIFETIME);
         assert_eq!(lifetime(&delete("dev")), LIFETIME);
@@ -2657,7 +2677,7 @@ pub(crate) mod tests {
     async fn a_question_expires_after_half_a_minute() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let request = Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None };
+        let request = Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None, title: None };
         let asked = approvals.open("h1", "Claude Code hooks", request, None, "q".into(), at(0)).await.expect("opened");
         assert!(is_question(&asked));
         let just_before = at(0) + QUESTION_LIFETIME - chrono::Duration::seconds(1);
@@ -2674,7 +2694,7 @@ pub(crate) mod tests {
     async fn a_client_asks_at_most_three_questions_at_a_time() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let ask = || Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None };
+        let ask = || Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None, title: None };
         for _ in 0..QUESTIONS_OPEN_MAX {
             approvals.open("h1", "Hooks", ask(), None, "q".into(), at(0)).await.expect("opened");
         }
@@ -2693,13 +2713,13 @@ pub(crate) mod tests {
     #[test]
     fn a_question_shows_the_whole_command_without_hidden_characters() {
         let long = format!("echo {}", "a".repeat(500));
-        let summary = question_summary("Claude Code", "Bash", Some("my-project"), &long);
+        let summary = question_summary("Claude Code", None, "Bash", Some("my-project"), &long);
         assert!(summary.ends_with(&long), "never shortened: {summary}");
 
         // Bidi controls and zero-width characters go, line breaks and tabs become spaces;
         // quotes, braces and runs of spaces stay as the command has them.
         let tricky = "rm -rf \u{202E}gnihton\u{202C} \u{200B}x\necho \"{agent}\"  {details}\tdone";
-        let summary = question_summary("Claude Code", "Bash", None, tricky);
+        let summary = question_summary("Claude Code", None, "Bash", None, tricky);
         assert_eq!(
             summary,
             trf(
@@ -2720,7 +2740,7 @@ pub(crate) mod tests {
 
         // Who asks and the project are quoted like every other client text; without details or
         // project the sentence is shorter.
-        let summary = question_summary("Evil {details}", "Bash", Some("p\u{202E}x"), "");
+        let summary = question_summary("Evil {details}", None, "Bash", Some("p\u{202E}x"), "");
         assert_eq!(
             summary,
             trf(
@@ -2729,8 +2749,30 @@ pub(crate) mod tests {
             )
         );
         assert_eq!(
-            question_summary("Codex", "apply_patch", None, "  "),
+            question_summary("Codex", None, "apply_patch", None, "  "),
             trf("{agent} wants to use {tool}", &[("agent", &"Codex"), ("tool", &"apply_patch")])
+        );
+    }
+
+    #[test]
+    fn a_question_names_the_session_quoted_and_cleaned() {
+        let summary = question_summary("Claude Code", Some("Login\n\"bug\" {tool}"), "Bash", Some("p"), "ls");
+        let who =
+            trf("{agent} (session \"{session}\")", &[("agent", &"Claude Code"), ("session", &"Login 'bug' (tool)")]);
+        assert_eq!(
+            summary,
+            trf(
+                "{agent} wants to use {tool} in \"{project}\": {details}",
+                &[("agent", &who), ("tool", &"Bash"), ("project", &"p"), ("details", &"ls")]
+            )
+        );
+        let long = question_summary("Codex", Some(&"x".repeat(200)), "Bash", None, "ls");
+        assert!(long.contains(&format!("{}…", "x".repeat(torro_inbox::hook::SESSION_TITLE_MAX - 1))), "{long}");
+        assert!(!long.contains(&"x".repeat(torro_inbox::hook::SESSION_TITLE_MAX)), "cut to 80: {long}");
+        // A blank name is no name.
+        assert_eq!(
+            question_summary("Codex", Some(" \u{0e} "), "Bash", None, "ls"),
+            question_summary("Codex", None, "Bash", None, "ls")
         );
     }
 

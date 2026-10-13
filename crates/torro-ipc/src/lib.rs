@@ -846,6 +846,12 @@ pub enum Request {
         /// The project the agent works in: the last part of its working directory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        /// The name the coding agent gave its session (task E2.6), so the person knows which job
+        /// asks. Taken only from a hook client (`api::HOOK_CLIENT`), which reads it from the
+        /// agent's own files; ignored for every other key, so no client can pass itself off as a
+        /// harmless job. Made one line of at most 80 characters and quoted in the question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
 
     // The inbox (`docs/eingang.md`, tasks E1.1 and E1.2): one place for everything that wants the

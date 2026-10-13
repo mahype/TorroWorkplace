@@ -1,7 +1,9 @@
 //! The panel with one entry (pattern U.3/U.5: `torro_gui::panel`, beside the list in the wide
 //! layout, over it otherwise).
 //!
-//! Head: the source and the view as path. Title: the entry's title, wrapping. Body: "Properties"
+//! Head: the source and the view as path. Title: the entry's title, wrapping; for a coding agent's
+//! session with a name (task E2.6) the name, with the entry's title below it in `text_2`
+//! ([`heading`]). Body: "Properties"
 //! (status as dot and word, lane, source, time with how long ago, merged reports), for coding
 //! agents "Agent" (agent, project, branch and – for a hook's entry – "Go to window", E2.4), the
 //! message with – right under it – a quiet note that the text comes from outside the suite, and a
@@ -120,8 +122,19 @@ pub fn panel<'a>(
     if let Some(note) = untrusted {
         body = body.push(panel::inset(note));
     }
-    panel::panel(path, panel::title(list::plain(&item.title)), body, Message::CloseDetail)
-        .footer(buttons(item, &footer))
+    panel::panel(path, heading(item), body, Message::CloseDetail).footer(buttons(item, &footer))
+}
+
+/// The panel's title: the entry's title; for an agent's session with a name
+/// ([`list::session_name`]) the name, and below it what the agent does ("Claude Code is waiting
+/// for you"), so the state is not lost under the name.
+fn heading<'a>(item: &Item) -> Element<'a, Message> {
+    let Some(name) = list::session_name(item) else {
+        return panel::title(list::plain(&item.title));
+    };
+    let state =
+        typo::text(typo::body(), list::one_line(&item.title)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+    column![panel::title(name), state].spacing(space::xs()).into()
 }
 
 /// Status, lane, source, time and – from two on – the number of merged reports.

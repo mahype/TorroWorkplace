@@ -1146,6 +1146,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{agent} wants to use {tool} in \"{project}\"", "{agent} möchte {tool} in „{project}“ benutzen"),
     ("{agent} wants to use {tool}: {details}", "{agent} möchte {tool} benutzen: {details}"),
     ("{agent} wants to use {tool}", "{agent} möchte {tool} benutzen"),
+    // The session's name in a question (E2.6)
+    ("{agent} (session \"{session}\")", "{agent} (Sitzung „{session}“)"),
     ("{client} asks for permission", "{client} bittet um Erlaubnis"),
     (
         "Torro Workplace gave an unexpected answer to the question.",

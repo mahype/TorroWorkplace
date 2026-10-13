@@ -106,7 +106,7 @@ Operation nur einen Bereich kennt, prüft der Dienst vorher eigens Schreibrecht 
 `forbidden`, genannt als `tasks.save_todo`) und die Aufgabenliste wie bei `tasks.save_todo` (sonst
 `not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal.
 
-⁵ `ask_permission { tool, details, project? }` (E2.5) stellt dem Menschen eine Rückfrage „darf der
+⁵ `ask_permission { tool, details, project?, title? }` (E2.5) stellt dem Menschen eine Rückfrage „darf der
 Agent dieses Werkzeug benutzen?“, wie sie der Hook `PermissionRequest` von Claude Code und Codex
 stellt. Sie ist eine **Freigabe eigener Art** (siehe „Freigaben“): Sie wartet immer auf den Menschen,
 gleich was die Rechte sagen, läuft aber schon nach **32 Sekunden** ab (30 s Wartezeit des Hooks und
@@ -115,7 +115,11 @@ die Rückfrage (Zustand `done` mit `ok`, sonst `denied` bzw. `expired`). Jeder S
 auch ein Hook-Client; er liest mit `approval_status` nur seine **eigenen** Rückfragen, sonst weiterhin
 nichts (Regel 4). Die Zusammenfassung baut der Dienst: „Claude Code wants to use Bash in
 "my-project": cargo test“, Fragender bei Hook-Clients der Agent, sonst der Name des Clients, das
-Projekt in Anführungszeichen. `details` (der genaue Befehl) erscheint **ungekürzt**, nur ohne Steuer-
+Projekt in Anführungszeichen. `title` ist der Name der Sitzung (E2.6): Der Dienst nimmt ihn **nur von
+Hook-Clients** an (die ihn aus den Dateien des Agenten lesen), säubert ihn (eine Zeile, höchstens 80
+Zeichen) und setzt ihn gekennzeichnet hinter den Fragenden („Claude Code (session "Login bug") wants to
+use …“); bei allen anderen Clients wird er ignoriert, und das MCP-Tool `approvals_ask_permission` bietet
+ihn gar nicht an, damit sich kein Agent als harmloser Job ausgibt. `details` (der genaue Befehl) erscheint **ungekürzt**, nur ohne Steuer-
 und unsichtbare Format-Zeichen (Bidi, Zero-Width); Leerraum und leer aussehende Zeichen werden zu
 Leerzeichen, ab drei in Folge als `␣×n`, damit sich nichts hinter einer Lücke versteckt. Der Hook
 schickt nur bei reinem `command` (und `description`) den Befehl allein, sonst das ganze `tool_input`
@@ -264,7 +268,9 @@ Anweisungen. Die Sicherheitsregeln aus
   Kleinschreibung); `cli` ist für den App-Schlüssel reserviert. Sonst `conflict` beim Anlegen.
 - **Grenzen von `post_item`:** `title` 200 und `body` 4000 Zeichen (gekürzt), `thread_key` höchstens
   200 Bytes und URL höchstens 2000 Bytes (sonst `error`), `session`/`project`/`branch` auf 200 Bytes
-  gekürzt, höchstens 16 `pids`. Nur `http`/`https`-Links und `app`-Links auf Apps der Suite werden
+  gekürzt, höchstens 16 `pids`; `agent.title` (Name der Sitzung, E2.6) wird gesäubert (Steuer- und
+  Richtungszeichen entfernt, eine Zeile) und auf 80 Zeichen gekürzt. `agent` behalten nur Meldungen
+  von Hook-Clients. Nur `http`/`https`-Links und `app`-Links auf Apps der Suite werden
   gespeichert, andere verworfen.
 - Den `thread_key` eines Eintrags sieht nur, wer ihn gemeldet hat (und der App-Schlüssel); bei
   fremden Einträgen ist er leer.

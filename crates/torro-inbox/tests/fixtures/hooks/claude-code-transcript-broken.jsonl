@@ -1,0 +1,9 @@
+tle","customTitle":"Cut in half","sessionId":"ghi789"}
+{"type":"user","sessionId":"ghi789","message":{"role":"user","content":"Hi"}}
+{"type":"custom-title","customTitle":"Release notes","sessionId":"ghi789"}
+{"type":"custom-title","customTitle":
+not json at all, custom-title
+{"type":"custom-title","customTitle":42,"sessionId":"ghi789"}
+{"type":"custom-title","customTitle":"   ","sessionId":"ghi789"}
+{"type":"ai-title","sessionId":"ghi789"}
+[1,2,3]

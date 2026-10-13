@@ -192,6 +192,20 @@ Benachrichtigungs-Apps.
   „Öffnen“ heißt: **in dieses Fenster springen**, nicht „irgendein Terminal öffnen“.
 - Einträge erledigen sich selbst: Wartet Claude auf Freigabe und es geht weiter (nächster
   `UserPromptSubmit`/`PostToolUse`-Hook), verschwindet der Eintrag.
+- **Sitzungsname (E2.6):** Der Eintrag trägt den Namen, den der Agent der Sitzung gegeben hat
+  (`AgentInfo.title`), damit man beim Freigeben weiß, um welchen Job es geht. Claude Code: die letzte
+  Zeile `custom-title` im Transkript (vom Menschen vergeben, Umbenennen hängt eine Zeile an), sonst
+  die letzte `ai-title`. Codex: die letzte Zeile der Sitzung in `$CODEX_HOME/session_index.jsonl`
+  (Standard `~/.codex`), Feld `thread_name`. Gemini CLI: kein Name. Gelesen werden nur die letzten
+  256 KB einer Datei und nur bei Meldungen und Rückfragen, nie bei `PostToolUse`; aus dem Transkript
+  nur der Titel. Die Formate sind intern und undokumentiert: Fehlt etwas oder passt es nicht, gibt
+  es keinen Namen, der Hook meldet wie bisher. Der Name ist fremder Text (Steuer- und
+  Richtungszeichen entfernt, eine Zeile, höchstens 80 Zeichen, der Kern säubert noch einmal), nie
+  Teil eines übersetzten Satzes. Die Zeile zeigt ihn als Titel, darunter „Claude Code is waiting for
+  you · Projekt · Branch“; das Paneel als Überschrift, die Benachrichtigung als Überschrift. Eine
+  Rückfrage nennt ihn hinter dem Agenten („Claude Code (session "Login bug") wants to use Bash …“), aber
+  nur, wenn ein Hook fragt; über MCP lässt er sich nicht setzen. Ein neuer Bericht derselben Sitzung
+  bringt einen geänderten Namen mit.
 - **Rückfragen beantworten (E2.5, E3.8):** Claude Code und Codex haben einen `PermissionRequest`-Hook,
   der Erlauben/Ablehnen zurückgeben kann. Ihre Rückfragen lassen sich so direkt im Eingang
   beantworten, ohne ins Terminal zu wechseln. Entscheiden darf nur der Mensch über den App-Schlüssel,

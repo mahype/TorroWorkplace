@@ -530,7 +530,9 @@ Reihenfolge **E2.6 → E3.10 → E3.9**, nie parallel (gleiche Dateien in `torro
 Zeilen gleich mit austauschbaren Werten entstehen.
 
 ### E2.6 Sitzungsname in Meldungen von Agenten
-- [ ] erledigt
+- [x] erledigt (Freigabe-Frage: `AskPermission.title`, nur von Hook-Clients, MCP-Tool ohne das Feld – mit Issue #71
+  freigegeben, dafür auch `torro-ipc/src/{lib,api}.rs`, `torroworkplace/src/{core,mcp}.rs`, `docs/api.md`;
+  Mini/Leiste in E3.9; Sichtprüfung `--demo --open detail` hell und dunkel auf macOS, nur breit)
 - **Modell:** Opus · **Braucht:** E2.2, E2.5, E3.8, L.2 · **Dateien:** `crates/torro-inbox/src/{item,hook,demo}.rs`,
   `crates/torro-inbox/tests/fixtures/hooks/` (neue Transkript- und Index-Beispiele),
   `crates/torroworkplace/src/{hook,inbox,inbox_notify,approvals}.rs`, `crates/torroinbox/src/{list,detail}.rs`,
@@ -616,6 +618,8 @@ Zeilen gleich mit austauschbaren Werten entstehen.
   in der Kopfleiste, eine Spalte. Mini und Leiste unverändert. Leer je Spalte eigener ruhiger Leerzustand.
 - **Oberfläche/API/MCP:** nur Oberfläche; nutzt vorhandene Requests (`inbox.list_items`, `set_item_done`,
   `snooze_item`, `create_task_from_item`, `hide_sender`, `mute_source`, `approvals.decide_approval`). Kein neuer Request.
+- **Sitzungsname auch in Mini und Leiste** (aus E2.6): `glance.rs` zeigt bei Agenten mit Namen den Namen
+  (`list::session_name`) statt „{agent} is waiting for you“, wie Zeile und Paneel.
 - **Abnahme:** Tests: Aufteilung in Spalten und Gruppen, Info eingeklappt, Cursor zwischen Spalten, Aktionen je Art,
   Größenklassen. `scripts/design-check.sh` sauber. Sichtprüfung `torro-design-review` in allen Größen, hell und dunkel
   (`--demo --open overview`).

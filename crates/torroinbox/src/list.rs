@@ -25,6 +25,10 @@
 //! the snooze menu and the lane question open beside it. The list reports its scroll position
 //! (`Message::Scrolled`), so the app can keep the cursor in view ([`row_span`]).
 //!
+//! **Sessions with a name** (task E2.6): a coding agent's entry whose session has a name shows the
+//! name as title and, where the preview stands, what the agent does and where: "Claude Code is
+//! waiting for you · TorroWorkplace · feat/inbox" ([`words`]). Without a name the row is as before.
+//!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
 //! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
 //! direction characters, so a title can neither break the row into lines nor turn its text around.
@@ -220,7 +224,8 @@ fn row_view<'a>(data: &ListData<'a>, item: &'a Item, width: f32) -> Element<'a, 
     let time = time_text(item, data.view, data.now);
     let room = text_room(width, count.as_deref(), &time);
     let below = data.two_line.then(|| line_room(width));
-    let (title, preview) = fit(&one_line(&item.title), preview(item).as_deref(), level, room, below);
+    let (title, preview) = words(item);
+    let (title, preview) = fit(&title, preview.as_deref(), level, room, below);
     let title = typo::text(level, title).style(theme::text).wrapping(Wrapping::None);
     // The texts are already cut to fit; the clips only catch an estimate that runs over, so they
     // never run under the count and the time, which keep their own width.
@@ -345,6 +350,37 @@ pub fn source_icon(source: &SourceRef) -> Icon {
         SourceKind::Script => Icon::AppWindow,
         SourceKind::Mail => Icon::Mail,
     }
+}
+
+/// The title and the preview of `item`'s row, on one line each ([`one_line`]): for a coding agent's
+/// session with a name ([`session_name`]) the name, and below or beside it [`agent_line`]; for
+/// every other entry its title and the first line of its body ([`preview`]).
+pub fn words(item: &Item) -> (String, Option<String>) {
+    match session_name(item) {
+        Some(name) => (name, Some(agent_line(item))),
+        None => (one_line(&item.title), preview(item)),
+    }
+}
+
+/// The name of the coding agent's session behind `item` (task E2.6), on one line; `None` for
+/// entries without an agent, sessions without a name and names that are nothing but blanks.
+pub fn session_name(item: &Item) -> Option<String> {
+    let name = one_line(item.agent.as_ref()?.title.as_deref()?);
+    (!name.is_empty()).then_some(name)
+}
+
+/// What a coding agent does and where, for the line under its session's name: the entry's title
+/// (the core's words, "Claude Code is waiting for you"), then project and branch when known,
+/// apart by " · ".
+pub fn agent_line(item: &Item) -> String {
+    let agent = item.agent.as_ref();
+    let place = agent.into_iter().flat_map(|agent| [agent.project.as_deref(), agent.branch.as_deref()]).flatten();
+    std::iter::once(item.title.as_str())
+        .chain(place)
+        .map(one_line)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// The first line of the body that has text, on one line ([`one_line`]); `None` without a body.
@@ -502,6 +538,34 @@ mod tests {
         assert_eq!(preview(&item), None);
         item.body = None;
         assert_eq!(preview(&item), None);
+    }
+
+    #[test]
+    fn a_named_session_shows_its_name_over_what_the_agent_does() {
+        let named = demo::sample(now()).remove(0);
+        let name = named.agent.as_ref().and_then(|agent| agent.title.clone()).expect("demo-1 has a name");
+        let (title, below) = words(&named);
+        assert_eq!(title, name);
+        let waiting = trf("{agent} is waiting for you", &[("agent", &"Claude Code")]);
+        assert_eq!(below, Some(format!("{waiting} · TorroWorkplace · feat/inbox")));
+
+        // Without a name, or with a blank one: the title and the message, as before.
+        for title in [None, Some(" \u{202E} ".to_string())] {
+            let mut unnamed = named.clone();
+            if let Some(agent) = unnamed.agent.as_mut() {
+                agent.title = title.clone();
+            }
+            assert_eq!(words(&unnamed), (waiting.clone(), preview(&named)), "{title:?}");
+        }
+        // No project or branch: only the agent's state.
+        let mut bare = named.clone();
+        if let Some(agent) = bare.agent.as_mut() {
+            (agent.project, agent.branch) = (None, None);
+        }
+        assert_eq!(agent_line(&bare), waiting);
+        // Entries of other sources are untouched.
+        let notice = demo::sample(now()).into_iter().find(|i| i.id == "demo-6").expect("a notice");
+        assert_eq!(words(&notice), (one_line(&notice.title), preview(&notice)));
     }
 
     const TITLE: &str = "Claude Code is waiting for you";
