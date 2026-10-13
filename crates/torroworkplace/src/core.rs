@@ -3699,12 +3699,18 @@ mod tests {
         assert_eq!(woke.ok(), Some(true), "a decision wakes the tray");
 
         // One that expires in a moment wakes it without any change, and is no longer counted then.
-        // Two seconds left, so the count before the expiry holds even under a loaded parallel test run.
-        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::seconds(2);
-        core.approvals.open("c1", "One", delete("b"), None, "b".into(), soon).await.expect("opened");
+        // The core counts by the wall clock, so a loaded parallel test run may stall past the
+        // expiry anywhere here: the count before it is only checked when the clock afterwards shows
+        // it was taken in time, and the wait gets a timeout far beyond the second it has left. A
+        // stall past the expiry before the wait still wakes it, by the mark of the expired one.
+        let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::seconds(1);
+        let expiring = core.approvals.open("c1", "One", delete("b"), None, "b".into(), soon).await.expect("opened");
         changes.mark_unchanged();
-        assert_eq!(core.snapshot().await.approvals_waiting, 1);
-        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        let waiting = core.snapshot().await.approvals_waiting;
+        if Utc::now() < expiring.expires {
+            assert_eq!(waiting, 1, "counted before its expiry");
+        }
+        let woke = tokio::time::timeout(Duration::from_secs(60), core.approvals_changed(&mut changes)).await;
         assert_eq!(woke.ok(), Some(true), "the expiry wakes the tray");
         assert_eq!(core.snapshot().await.approvals_waiting, 0);
     }
