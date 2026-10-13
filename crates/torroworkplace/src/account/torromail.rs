@@ -376,14 +376,14 @@ pub(crate) mod tests {
         );
         assert_eq!(at(Os::Windows, None), Some(PathBuf::from("/home/anna/AppData/Local/TorroMail/state.json")));
         assert_eq!(at(Os::Linux, None), Some(PathBuf::from("/home/anna/.local/state/torromail/state.json")));
-        assert_eq!(at(Os::Linux, Some("/state")), Some(PathBuf::from("/state/torromail/state.json")));
+        // An absolute path on the platform running the test: "/state" is not absolute on Windows.
+        let state = std::env::temp_dir().join("state");
+        let state_text = state.to_str().expect("a temp dir in Unicode");
+        assert_eq!(at(Os::Linux, Some(state_text)), Some(state.join("torromail/state.json")));
         // A relative XDG_STATE_HOME is invalid and ignored, as TorroMail does.
         assert_eq!(at(Os::Linux, Some("rel")), Some(PathBuf::from("/home/anna/.local/state/torromail/state.json")));
         assert_eq!(state_file(Os::Mac, None, None), None, "no home, no guess");
-        assert_eq!(
-            state_file(Os::Linux, None, Some(Path::new("/state"))),
-            Some(PathBuf::from("/state/torromail/state.json"))
-        );
+        assert_eq!(state_file(Os::Linux, None, Some(&state)), Some(state.join("torromail/state.json")));
     }
 
     #[test]
