@@ -688,6 +688,31 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   und „1:1 with Lena“ stehen mit Uhrzeit neben ihrem Block; „Run“ um 18:30 am Ende der Spur bleibt
   bei 640 Breite ein leerer Block (kein Platz bis zum Spurende).
 
+### K.35 Radar: Mini-Radare bleiben stehen, Wochen blättern
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.30 · **Dateien:** `crates/torrocalendar/src/views/radar/mini.rs`,
+  `crates/torrocalendar/src/views/radar.rs` (nur `view`, `list`, Kopfkommentar, Tests dazu),
+  `crates/torrocalendar/src/app.rs` (nur Seite der Mini-Radare: Feld, `ComingPage`, `range`, `go_to`),
+  `crates/torro-core/src/i18n/de.rs`
+- Wunsch des Nutzers (2026-10-13): Klickt man unter „Coming days“ einen Tag an, baute sich die
+  Liste ab diesem Tag komplett neu auf – das verwirrt. Die Liste muss stehen bleiben; zu einer
+  anderen Woche blättert man selbst.
+- **Oberfläche:**
+  - Die 7 Mini-Radare sind eine eigene **Seite**: zu Beginn die 7 Tage nach dem gezeigten Tag (wie
+    bisher). Ein Klick auf eine Kachel zeigt den Tag im Radar, die Seite bleibt; die Kachel des
+    gezeigten Tags trägt die Fläche `selected`.
+  - Die Seite rückt nur weiter, wenn der gezeigte Tag sie verlässt (‹ › im Kopf, kleiner Monat,
+    „Today“): dann beginnt sie wieder am Tag danach. Der Tag direkt vor der Seite gilt als drauf.
+  - Im Kopf der Liste rechts ‹ › („Previous week“ / „Next week“): blättert die Seite um 7 Tage,
+    das Radar bleibt auf seinem Tag. Überschrift „Coming days“, solange die Seite morgen beginnt,
+    sonst erster und letzter Tag („20. Okt. – 26. Okt.“).
+  - Laden: `range` des Radars deckt den gezeigten Tag (Vorabend bis übermorgen) und die Seite.
+  - Neuer Text: „Previous week“ (deutsch „Vorherige Woche“); „Next week“ gab es schon.
+- **API / MCP:** keiner – Fensterzustand wie das Blättern im kleinen Monat.
+- **Abnahme:** Tests: Seite bleibt beim Klick, Markierung, Überschrift, Blättern ohne das Radar zu
+  bewegen, `range` über Tag und Seite, „Today“ mit und ohne heute auf der Seite; fmt, clippy, test
+  (auch `TORRO_LANG=de`) grün; Sichtprüfung Breit dunkel.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag

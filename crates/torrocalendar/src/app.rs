@@ -356,6 +356,9 @@ pub struct App {
     /// (negative: back; `views::radar::start`). Window state like a scroll position: kept while
     /// other views are shown, back to 0 whenever the day changes.
     turn: i64,
+    /// The first day of the radar's mini radars (`views::radar::coming_page`): the day after the
+    /// anchor at first, it stays while the anchor moves within it, and its ‹ › browse it.
+    coming: NaiveDate,
     account: Option<AccountState>,
     /// Every account behind the data, for grouping the calendars in the sidebar (task M1.3).
     accounts: Vec<PimAccount>,
@@ -446,6 +449,9 @@ pub enum Message {
     GoTo(NaiveDate),
     /// The small month's arrows: browse it by this many months.
     MiniMonth(i32),
+    /// The ‹ › of the radar's "Coming days": browse its mini radars by this many weeks, the radar
+    /// staying on its day.
+    ComingPage(i64),
     /// "Settings" in the sidebar: open the control centre.
     OpenSettings,
     /// The core answered `Request::OpenApp`.
@@ -564,6 +570,7 @@ impl App {
             view: open.and_then(Open::view).unwrap_or(CalView::Week),
             anchor: now.date(),
             turn: 0,
+            coming: now.date() + Days::days(1),
             account: None,
             accounts: Vec::new(),
             folded: HashSet::new(),
@@ -759,6 +766,10 @@ impl App {
                 return self.go_to(date);
             }
             Message::MiniMonth(months) => self.mini_month = mini_month::shift(self.mini_month, months),
+            Message::ComingPage(weeks) => {
+                self.coming += Days::days(views::radar::COMING_DAYS * weeks);
+                return self.load();
+            }
             Message::Retry => {
                 self.error = None;
                 if !self.connected() {
@@ -1309,7 +1320,7 @@ impl App {
         }
         match self.shown() {
             CalView::Day => Some(views::week::day_props(&self.view_data())),
-            CalView::Radar => Some(views::radar::list(&self.view_data(), self.night)),
+            CalView::Radar => Some(views::radar::list(&self.view_data(), self.coming, self.night)),
             _ => None,
         }
     }
@@ -1389,10 +1400,10 @@ impl App {
             // Narrow: under the week strip, whose days page the radar like the small month does –
             // unless the tile is so low that the strip would cut into the dial.
             CalView::Radar if self.class() == SizeClass::Narrow => {
-                let (order, turn, anchor) = (self.calendar_order(), self.turn, night.clone());
+                let (order, turn, coming, anchor) = (self.calendar_order(), self.turn, self.coming, night.clone());
                 responsive(move |bounds| {
                     let below = views::radar::ListAt::Below;
-                    let radar = views::radar::view(data.clone(), &order, turn, below, self.night, &anchor);
+                    let radar = views::radar::view(data.clone(), &order, turn, coming, below, self.night, &anchor);
                     if views::radar::strip_fits(bounds) {
                         column![week_strip::view(&data), radar].into()
                     } else {
@@ -1406,7 +1417,7 @@ impl App {
                     SizeClass::Wide => views::radar::ListAt::Props,
                     _ => views::radar::ListAt::Beside,
                 };
-                views::radar::view(data, &self.calendar_order(), self.turn, list, self.night, night)
+                views::radar::view(data, &self.calendar_order(), self.turn, self.coming, list, self.night, night)
             }
         }
     }
@@ -1506,9 +1517,13 @@ impl App {
             CalView::Timeline => (self.anchor - Days::days(1), self.anchor + Days::days(TIMELINE_DAYS)),
             // The day and every window its dial can turn to – from the evening before (twelve hours
             // back from 06:00) to the noon two days on (a day ahead from late tonight, twelve
-            // hours long) – and the seven days of its mini radars, so they are full without loading
-            // on their own. The anchor's own events are always in, so its start does not jump.
-            CalView::Radar => (self.anchor - Days::days(1), self.anchor + Days::days(views::radar::COMING_DAYS + 1)),
+            // hours long) – and the page of its mini radars, so they are full without loading on
+            // their own (a browsed page may lie apart from the anchor: the range spans both). The
+            // anchor's own events are always in, so its start does not jump.
+            CalView::Radar => {
+                let after = self.coming + Days::days(views::radar::COMING_DAYS);
+                ((self.anchor - Days::days(1)).min(self.coming), (self.anchor + Days::days(3)).max(after))
+            }
         }
     }
 
@@ -1572,10 +1587,11 @@ impl App {
     }
 
     /// Moves the view to `date` (the small month follows) and loads it. The radar opens the new
-    /// day at its start, its dial unturned.
+    /// day at its start, its dial unturned; its mini radars keep their page while `date` is on it.
     fn go_to(&mut self, date: NaiveDate) -> Task<Message> {
         self.anchor = date;
         self.turn = 0;
+        self.coming = views::radar::coming_page(self.coming, date);
         self.mini_month = mini_month::shift(date, 0);
         self.load().chain(self.scroll_to_morning())
     }
@@ -2389,7 +2405,8 @@ mod tests {
         let _ = app.update(Message::Resized(NARROW));
         let _ = app.update(Message::GoTo(date(2026, 11, 5)));
         assert_eq!((app.shown(), app.anchor), (CalView::Radar, date(2026, 11, 5)));
-        assert_eq!(app.load_range(), (date(2026, 11, 2), date(2026, 11, 13)), "the strip's week and the radar's days");
+        // The 5th is on the page the 3rd opened (4th to 10th), so it stays.
+        assert_eq!(app.load_range(), (date(2026, 11, 2), date(2026, 11, 11)), "the strip's week and the radar's days");
         let _ = app.view();
     }
 
@@ -2412,6 +2429,34 @@ mod tests {
             let _ = app.update(Message::Resized(class));
             let _ = app.view();
         }
+    }
+
+    #[test]
+    fn a_mini_radar_clicked_leaves_the_tiles_where_they_are_and_arrows_browse_them() {
+        let mut app = radar_app();
+        let today = app.anchor;
+        assert_eq!(app.coming, today + Days::days(1), "the page starts after the shown day");
+        // A tile three days on: the radar shows it, the page stays.
+        let _ = app.update(Message::GoTo(today + Days::days(3)));
+        assert_eq!((app.anchor, app.coming), (today + Days::days(3), today + Days::days(1)));
+        // ‹ › browse a week at a time; the radar stays on its day and the range loads both.
+        let _ = app.update(Message::ComingPage(1));
+        assert_eq!((app.anchor, app.coming), (today + Days::days(3), today + Days::days(8)));
+        assert_eq!(app.range(), (today + Days::days(2), today + Days::days(15)));
+        let _ = app.view();
+        // A tile of the browsed page keeps it too.
+        let _ = app.update(Message::GoTo(today + Days::days(10)));
+        assert_eq!(app.coming, today + Days::days(8));
+        let _ = app.update(Message::ComingPage(-2));
+        assert_eq!(app.coming, today - Days::days(6));
+        assert_eq!(app.range(), (today - Days::days(6), today + Days::days(13)));
+        // "Today" on that page keeps it, today's tile marked…
+        let _ = app.update(Message::Today);
+        assert_eq!((app.anchor, app.coming), (today, today - Days::days(6)));
+        // …and leaves a page without today behind: it starts after today again.
+        let _ = app.update(Message::ComingPage(3));
+        let _ = app.update(Message::Today);
+        assert_eq!((app.anchor, app.coming), (today, today + Days::days(1)));
     }
 
     #[test]

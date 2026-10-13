@@ -419,6 +419,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Medium priority", "Mittlere Priorität"),
     ("Move to list", "In Liste verschieben"),
     ("Next week", "Nächste Woche"),
+    ("Previous week", "Vorherige Woche"),
     ("No due date", "Kein Fälligkeitsdatum"),
     ("No priority", "Keine Priorität"),
     ("Pick a date, e.g. 11.10.2026", "Datum wählen, z. B. 11.10.2026"),

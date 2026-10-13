@@ -36,8 +36,9 @@
 //! necessarily free time.
 //!
 //! Beside the dial (in the properties column when wide, at the right when medium, below when
-//! narrow) "Coming days" shows a mini radar for each of the seven days after the shown one, how
-//! full it is at a glance (task K.30, `radar/mini.rs`).
+//! narrow) "Coming days" shows a mini radar for each of seven days, how full it is at a glance
+//! (task K.30, `radar/mini.rs`): a page that starts the day after the shown one and stays put when
+//! a tile is clicked; its ‹ › browse it a week at a time (task K.35).
 //!
 //! Clicks: an arc → `OpenEvent`, free room in the rings → `NewEvent` (rounded down to the quarter
 //! hour), a mini radar → `GoTo` its day. The dial turns (`Turn`): the mouse wheel over it in quarter
@@ -51,10 +52,12 @@ mod layout;
 mod mini;
 
 pub use layout::{HOUR_STEP, WHEEL_STEP, clamp_offset};
-/// How many days after the shown one get a mini radar: load the events through the last of them.
+/// How many days a page of mini radars holds: load the events through the last of them.
 pub use mini::DAYS as COMING_DAYS;
+/// The first day of the mini radars' page once the radar shows a day.
+pub use mini::page as coming_page;
 
-use chrono::{Duration, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use iced::alignment::Vertical;
 use iced::border::Radius;
 use iced::time::Instant;
@@ -210,14 +213,15 @@ pub struct Ring {
 
 /// The radar for the day `data.anchor`, its dial turned `offset` minutes from the start of that
 /// day ([`start`]), a ring for each of `calendars` (the visible ones, in the order of the sidebar)
-/// whether or not it has events, each named in its last hour, the mini radars of the coming days
-/// `at` (over the events of `data`: load them through the seventh day after `data.anchor`),
-/// `night` behind the rings. The dial's canvas is anchored at `anchor`, so the night's card can
-/// float beside the moon.
+/// whether or not it has events, each named in its last hour, the mini radars of the page starting
+/// on `coming` `at` their place (over the events of `data`: load them through the page's last
+/// day), `night` behind the rings. The dial's canvas is anchored at `anchor`, so the night's card
+/// can float beside the moon.
 pub fn view<'a>(
     data: ViewData<'a>,
     calendars: &[Ring],
     offset: i64,
+    coming: NaiveDate,
     at: ListAt,
     night: Night,
     anchor: &Anchor,
@@ -228,7 +232,7 @@ pub fn view<'a>(
         ListAt::Beside => {
             let width = LIST_MEDIUM - size::HAIRLINE;
             let content = width - 2.0 * space::s();
-            let coming = mini::Coming::new(&data, night).view(content, mini::columns(at, content));
+            let coming = mini::Coming::new(&data, coming, night).view(content, mini::columns(at, content));
             let list = scrollable(container(coming).padding(Padding {
                 top: space::l(),
                 right: space::s(),
@@ -243,7 +247,7 @@ pub fn view<'a>(
         }
         ListAt::Below => {
             let anchor = anchor.clone();
-            let coming = mini::Coming::new(&data, night);
+            let coming = mini::Coming::new(&data, coming, night);
             responsive(move |bounds| narrow(plan.clone(), &coming, bounds, &anchor)).into()
         }
     }
@@ -266,13 +270,13 @@ pub fn start(data: &ViewData<'_>, offset: i64, night: Night) -> NaiveDateTime {
     layout::day_start(data.anchor, data.now, starts, night) + Duration::minutes(clamp_offset(offset))
 }
 
-/// The mini radars of the seven days after `data.anchor` for the properties column of the wide
-/// layout, in two columns as beside the dial; each opens its day where the radar would with
-/// `night`. Load the events through the seventh day.
-pub fn list(data: &ViewData<'_>, night: Night) -> Element<'static, Message> {
+/// The mini radars of the page starting on `coming` for the properties column of the wide layout,
+/// in two columns as beside the dial; each opens its day where the radar would with `night`. Load
+/// the events through the page's last day.
+pub fn list(data: &ViewData<'_>, coming: NaiveDate, night: Night) -> Element<'static, Message> {
     // The column pads its content by 8 on each side and has a line on the left.
     let width = size::props() - size::HAIRLINE - 2.0 * space::s();
-    mini::Coming::new(data, night).view(width, mini::columns(ListAt::Props, width))
+    mini::Coming::new(data, coming, night).view(width, mini::columns(ListAt::Props, width))
 }
 
 /// The two canvases of the dial ([`Layer`]) for `plan`, `margin` from the canvas edges, each
@@ -1671,12 +1675,12 @@ mod tests {
     fn the_view_builds_in_every_place_of_the_list() {
         let events = events();
         for place in [ListAt::Props, ListAt::Beside, ListAt::Below] {
-            let _ = view(data(&events), &calendars(), 90, place, Night::DEFAULT, &Anchor::new());
+            let _ = view(data(&events), &calendars(), 90, at(14, 0, 0).date(), place, Night::DEFAULT, &Anchor::new());
         }
-        let _ = list(&data(&events), Night::DEFAULT);
+        let _ = list(&data(&events), at(14, 0, 0).date(), Night::DEFAULT);
         let _ = narrow(
             Plan::new(&data(&events), &calendars(), 0, Night::DEFAULT),
-            &mini::Coming::new(&data(&events), Night::DEFAULT),
+            &mini::Coming::new(&data(&events), at(14, 0, 0).date(), Night::DEFAULT),
             Size::new(480.0, 800.0),
             &Anchor::new(),
         );

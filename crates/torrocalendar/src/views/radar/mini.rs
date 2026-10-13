@@ -1,7 +1,11 @@
 //! Mini radars of the coming days (task K.30 in `docs/tasks/kalender-aufgaben.md`): beside the
 //! radar (in the properties column when wide, at the right when medium, under the dial when
-//! narrow) a small dial for each of the [`DAYS`] days after the shown one shows at a glance how
-//! full that day is.
+//! narrow) a small dial for each of [`DAYS`] days shows at a glance how full that day is.
+//!
+//! The tiles are a page of their own (task K.35): it starts the day after the shown one, but a
+//! click on a tile leaves it where it is and only marks the tile – a list that rebuilt itself
+//! around every click lost the user. It moves on when the shown day leaves it ([`page`]), and its
+//! own ‹ › browse it a week at a time (`Message::ComingPage`) without moving the radar.
 //!
 //! Each tile is a button: "Wed 14" above (or "Tomorrow"), under it a simplified dial of the same
 //! twelve hours the large radar opens that day with (`radar::start`, unturned), so a click –
@@ -12,13 +16,14 @@
 
 use chrono::{Datelike, Duration, NaiveDate};
 use iced::widget::canvas::{self, Frame};
-use iced::widget::{Space, button, column, container, row, stack};
+use iced::widget::{Space, button, column, container, row, space as blank, stack};
 use iced::{Color, Element, Length, Point, Rectangle, Theme, mouse};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Night;
-use torro_gui::datetime::{month_name, weekday_name};
+use torro_gui::datetime::{format_day_month, month_name, weekday_name};
+use torro_gui::icon::Icon;
 use torro_gui::style;
-use torro_gui::theme::{self, Palette, mix, palette, space};
+use torro_gui::theme::{self, Palette, mix, palette, size, space};
 use torro_gui::typo;
 use torro_gui::widgets;
 
@@ -28,7 +33,7 @@ use crate::app::Message;
 use crate::views::ViewData;
 use crate::views::glance::{self, Entry};
 
-/// How many days after the shown one get a mini radar.
+/// How many days a page of mini radars holds; ‹ › browse by as many.
 pub const DAYS: i64 = 7;
 /// Columns of tiles beside the dial (wide: properties column; medium: beside the dial).
 pub const BESIDE_COLUMNS: usize = 2;
@@ -76,10 +81,21 @@ pub fn arc_colour(p: &Palette, colour: Color, ground: Color) -> Color {
     mix(mix(ground, p.text, TRACK), colour, fill(p))
 }
 
-/// The days after `anchor` that get a mini radar, in order (over the end of a month or year
-/// like any other day).
-pub fn days(anchor: NaiveDate) -> Vec<NaiveDate> {
-    (1..=DAYS).map(|n| anchor + Duration::days(n)).collect()
+/// The days of the page starting on `first`, in order (over the end of a month or year like any
+/// other day).
+pub fn days(first: NaiveDate) -> Vec<NaiveDate> {
+    (0..DAYS).map(|n| first + Duration::days(n)).collect()
+}
+
+/// The first day of the page once the radar shows `shown`, the page starting on `first` before:
+/// it stays while `shown` is one of its days or the day before them (where it starts on its own),
+/// so a click on a tile does not move the tiles; else it starts the day after `shown` again.
+pub fn page(first: NaiveDate, shown: NaiveDate) -> NaiveDate {
+    if first - Duration::days(1) <= shown && shown < first + Duration::days(DAYS) {
+        first
+    } else {
+        shown + Duration::days(1)
+    }
 }
 
 /// How many columns of tiles `width` takes `at` its place: [`BESIDE_COLUMNS`] beside the dial,
@@ -91,26 +107,39 @@ pub fn columns(at: ListAt, width: f32) -> usize {
     }
 }
 
-/// The section "Coming days": a mini radar for each of the [`DAYS`] days after the shown one,
-/// built once per view and drawn with [`Coming::view`].
+/// The section "Coming days": a mini radar for each of the [`DAYS`] days of a page, built once per
+/// view and drawn with [`Coming::view`].
 #[derive(Debug, Clone)]
 pub struct Coming {
     days: Vec<Day>,
+    /// The page starts the day after today: the title says "Coming days", else the dates.
+    from_tomorrow: bool,
 }
 
 impl Coming {
-    /// The mini radars of the days after `data.anchor` over the events of `data` (load them
-    /// through the end of the last day), each window where the large radar opens that day
-    /// with `night`.
-    pub fn new(data: &ViewData<'_>, night: Night) -> Coming {
+    /// The mini radars of the page starting on `first` over the events of `data` (load them
+    /// through the end of its last day), each window where the large radar opens that day with
+    /// `night`; the tile of `data.anchor`, if on the page, is marked as shown.
+    pub fn new(data: &ViewData<'_>, first: NaiveDate, night: Night) -> Coming {
         let entries = glance::entries(&data.items);
         let today = data.now.date();
-        let days = days(data.anchor).into_iter().map(|date| Day::new(data, &entries, date, today, night)).collect();
-        Coming { days }
+        let days = days(first).into_iter().map(|date| Day::new(data, &entries, date, today, night)).collect();
+        Coming { days, from_tomorrow: first == today + Duration::days(1) }
     }
 
-    /// The section `width` wide: its title, then the tiles in `columns` columns, [`space::s()`]
-    /// apart; the last row keeps the width of the others.
+    /// The title: "Coming days" for the page after today, else its first and last day
+    /// ("20 Oct – 26 Oct"), so a browsed page says where it is.
+    fn title(&self) -> String {
+        match (self.from_tomorrow, self.days.first(), self.days.last()) {
+            (false, Some(first), Some(last)) => {
+                format!("{} – {}", format_day_month(first.date), format_day_month(last.date))
+            }
+            _ => tr("Coming days").to_string(),
+        }
+    }
+
+    /// The section `width` wide: its title with ‹ › to browse the pages, then the tiles in
+    /// `columns` columns, [`space::s()`] apart; the last row keeps the width of the others.
     pub fn view(&self, width: f32, columns: usize) -> Element<'static, Message> {
         let columns = columns.max(1);
         let tile_width = ((width - space::s() * (columns as f32 - 1.0)) / columns as f32).floor().max(0.0);
@@ -124,7 +153,17 @@ impl Coming {
                 row(tiles).spacing(space::s()).into()
             })
             .collect();
-        widgets::prop_section(tr("Coming days"), vec![column(rows).spacing(space::s()).into()])
+        let head = row![
+            typo::text(typo::caption(), self.title()).style(theme::text_3),
+            blank::horizontal(),
+            widgets::icon_button(Icon::ChevronLeft, tr("Previous week"), Some(Message::ComingPage(-1))),
+            widgets::icon_button(Icon::ChevronRight, tr("Next week"), Some(Message::ComingPage(1))),
+        ]
+        .height(size::control_sm())
+        .align_y(iced::Alignment::Center);
+        // The title keeps the text edge of `prop_section`'s, the arrows end at the tiles' edge.
+        let head = container(head).padding(iced::Padding { left: style::ITEM_PADDING.left, ..iced::Padding::ZERO });
+        column![head, column(rows).spacing(space::s())].spacing(space::xs()).into()
     }
 }
 
@@ -135,6 +174,8 @@ struct Day {
     /// The day is today or tomorrow: the tile says so instead of the weekday.
     today: bool,
     tomorrow: bool,
+    /// The radar shows this day: its tile is marked.
+    shown: bool,
     /// The twelve hours the large radar opens this day with.
     window: Window,
     /// The timed events in the window, in their lanes.
@@ -185,6 +226,7 @@ impl Day {
             date,
             today: date == today,
             tomorrow: date == today + Duration::days(1),
+            shown: date == data.anchor,
             window,
             arcs,
             nights: layout::nights(&window, night),
@@ -242,7 +284,8 @@ fn lanes(spans: &[(f32, f32)]) -> Vec<(usize, usize)> {
 }
 
 /// One tile, `width` wide: the label, the dial with the count and the all-day dots over its
-/// middle; hover lays `hover` under it and shows the hand, a click goes to the day.
+/// middle; hover lays `hover` under it and shows the hand, a click goes to the day. The tile of
+/// the shown day has the `selected` surface.
 fn tile(day: Day, width: f32) -> Element<'static, Message> {
     let edge = (width - 2.0 * space::s()).max(0.0);
     let label = typo::text(typo::caption(), day.label()).style(theme::text_2);
@@ -254,15 +297,14 @@ fn tile(day: Day, width: f32) -> Element<'static, Message> {
     let dots = row(day.all_day.iter().map(|(colour, _)| widgets::color_dot(*colour, space::xs()))).spacing(space::xs());
     let middle =
         column![count, container(dots).height(space::xs())].spacing(space::xs()).align_x(iced::Alignment::Center);
-    let tooltip = day.tooltip();
-    let message = day.message();
+    let (tooltip, message, shown) = (day.tooltip(), day.message(), day.shown);
     let dial = stack![
         iced::widget::canvas(MiniDial { day }).width(edge).height(edge),
         container(middle).center(Length::Fixed(edge)),
     ];
     let content = column![label, dial].spacing(space::xs()).align_x(iced::Alignment::Center);
     let tile =
-        button(content).width(width).padding(space::s()).style(style::button::sidebar_item(false)).on_press(message);
+        button(content).width(width).padding(space::s()).style(style::button::sidebar_item(shown)).on_press(message);
     widgets::with_tooltip(tile, tooltip)
 }
 
@@ -415,25 +457,69 @@ mod tests {
         }
     }
 
+    /// The tiles of the page that starts the day after `anchor`, as the radar opens it.
+    fn after(events: &[CalendarEvent], anchor: NaiveDate) -> Coming {
+        Coming::new(&data(events, anchor), anchor + Duration::days(1), Night::DEFAULT)
+    }
+
     #[test]
-    fn the_seven_days_after_the_shown_one_also_over_month_and_year_end() {
-        let days = days(date(2026, 10, 13));
+    fn a_page_holds_seven_days_also_over_month_and_year_end() {
+        let days = days(date(2026, 10, 14));
         assert_eq!(days.len(), 7);
         assert_eq!((days[0], days[6]), (date(2026, 10, 14), date(2026, 10, 20)));
-        assert_eq!(super::days(date(2026, 10, 28))[3..5], [date(2026, 11, 1), date(2026, 11, 2)]);
-        let new_year = super::days(date(2026, 12, 29));
+        assert_eq!(super::days(date(2026, 10, 29))[3..5], [date(2026, 11, 1), date(2026, 11, 2)]);
+        let new_year = super::days(date(2026, 12, 30));
         assert_eq!((new_year[2], new_year[3], new_year[6]), (date(2027, 1, 1), date(2027, 1, 2), date(2027, 1, 5)));
         // The view builds them all, over the year end too.
         let events = events();
-        let coming = Coming::new(&data(&events, date(2026, 12, 29)), Night::DEFAULT);
+        let coming = after(&events, date(2026, 12, 29));
         assert_eq!(coming.days.iter().map(|day| day.date).collect::<Vec<_>>(), new_year);
+    }
+
+    #[test]
+    fn the_page_stays_while_the_shown_day_is_on_it() {
+        let first = date(2026, 10, 14);
+        // The day before the page (where it starts on its own) and each of its days keep it.
+        for shown in (-1..DAYS).map(|n| first + Duration::days(n)) {
+            assert_eq!(page(first, shown), first, "{shown}");
+        }
+        // Leaving it, it starts the day after the shown one again.
+        assert_eq!(page(first, date(2026, 10, 21)), date(2026, 10, 22));
+        assert_eq!(page(first, date(2026, 10, 12)), date(2026, 10, 13));
+        // A browsed page far ahead comes back to the shown day when it moves on.
+        assert_eq!(page(date(2026, 11, 4), date(2026, 10, 14)), date(2026, 10, 15));
+    }
+
+    #[test]
+    fn the_shown_day_is_marked_and_the_title_says_where_the_page_is() {
+        let events = events();
+        // On today the page after it is "Coming days", none of its tiles shown.
+        let today = after(&events, date(2026, 10, 13));
+        assert!(today.days.iter().all(|day| !day.shown));
+        assert_eq!(today.title(), tr("Coming days"));
+        // Thursday clicked on that page: the same tiles, Thursday marked.
+        let thursday = Coming::new(&data(&events, date(2026, 10, 15)), date(2026, 10, 14), Night::DEFAULT);
+        assert_eq!(
+            thursday.days.iter().map(|day| day.date).collect::<Vec<_>>(),
+            today.days.iter().map(|day| day.date).collect::<Vec<_>>()
+        );
+        let marked: Vec<NaiveDate> = thursday.days.iter().filter(|day| day.shown).map(|day| day.date).collect();
+        assert_eq!(marked, [date(2026, 10, 15)]);
+        assert_eq!(thursday.title(), tr("Coming days"));
+        // A page browsed a week on names its first and last day.
+        let browsed = Coming::new(&data(&events, date(2026, 10, 13)), date(2026, 10, 21), Night::DEFAULT);
+        assert_eq!(
+            browsed.title(),
+            format!("{} – {}", format_day_month(date(2026, 10, 21)), format_day_month(date(2026, 10, 27)))
+        );
+        let _ = browsed.view(283.0, 2);
     }
 
     #[test]
     fn each_tile_opens_its_day_where_the_large_radar_does() {
         let events = events();
-        let coming = Coming::new(&data(&events, date(2026, 10, 13)), Night::DEFAULT);
-        for day in days(date(2026, 10, 13)) {
+        let coming = after(&events, date(2026, 10, 13));
+        for day in days(date(2026, 10, 14)) {
             let large = super::super::start(&data(&events, day), 0, Night::DEFAULT);
             assert_eq!(window_start(&coming, day), Some(large), "{day}");
         }
@@ -441,7 +527,7 @@ mod tests {
         assert_eq!(window_start(&coming, date(2026, 10, 14)), Some(at(14, 8, 0)));
         assert_eq!(window_start(&coming, date(2026, 10, 16)), Some(at(16, 6, 0)));
         // A shown day in the past brings today among the tiles: it opens at now, like the radar.
-        let yesterday = Coming::new(&data(&events, date(2026, 10, 12)), Night::DEFAULT);
+        let yesterday = after(&events, date(2026, 10, 12));
         assert_eq!(window_start(&yesterday, date(2026, 10, 13)), Some(at(13, 14, 20)));
         let today = yesterday.days.first().expect("a tile");
         assert_eq!((today.today, today.label()), (true, tr("Today").to_string()));
@@ -450,7 +536,7 @@ mod tests {
     #[test]
     fn a_click_on_a_tile_goes_to_its_day() {
         let events = events();
-        let coming = Coming::new(&data(&events, date(2026, 10, 13)), Night::DEFAULT);
+        let coming = after(&events, date(2026, 10, 13));
         let wednesday = &coming.days[0];
         assert!(matches!(wednesday.message(), Message::GoTo(day) if day == date(2026, 10, 14)));
         assert_eq!(wednesday.label(), tr("Tomorrow"));
@@ -468,7 +554,7 @@ mod tests {
         assert_eq!(lanes(&[(0.0, 60.0), (10.0, 60.0), (20.0, 60.0)]), [(0, 2), (1, 2), (1, 2)]);
         assert_eq!(lanes(&[(0.0, 30.0), (30.0, 60.0)]), [(0, 1), (0, 1)], "touching is no overlap");
         let events = events();
-        let coming = Coming::new(&data(&events, date(2026, 10, 13)), Night::DEFAULT);
+        let coming = after(&events, date(2026, 10, 13));
         let wednesday = &coming.days[0];
         assert!(wednesday.arcs.iter().all(|arc| arc.lane < LANES && arc.lanes <= LANES));
         // Review, dentist and call overlap: two lanes, the call over the second.
@@ -485,7 +571,7 @@ mod tests {
     #[test]
     fn the_count_takes_the_timed_events_of_the_day_but_not_all_day_ones() {
         let events = events();
-        let coming = Coming::new(&data(&events, date(2026, 10, 13)), Night::DEFAULT);
+        let coming = after(&events, date(2026, 10, 13));
         let wednesday = &coming.days[0];
         // Standup, review, dentist, call and the late call; the holiday is a dot.
         assert_eq!(wednesday.count, 5);
@@ -520,7 +606,7 @@ mod tests {
         assert_eq!(columns(ListAt::Below, 104.0 * 3.0 + 15.0), 2);
         assert_eq!(columns(ListAt::Below, 80.0), 1, "never none");
         let events = events();
-        let coming = Coming::new(&data(&events, date(2026, 10, 13)), Night::DEFAULT);
+        let coming = after(&events, date(2026, 10, 13));
         for width in [80.0, 283.0, 448.0] {
             let _ = coming.view(width, columns(ListAt::Below, width));
         }
