@@ -1,4 +1,4 @@
-# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.5)
+# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.15)
 
 Konzept und Regeln für Pakete: [design-pakete.md](../design-pakete.md). Issue #72. Regeln für die Arbeit:
 [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen
@@ -9,10 +9,13 @@ Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review
 > wenn Stufe 1 steht.
 
 ```
-L.1 ── L.2 ── L.3 ── L.4 ── L.5
+L.1 ── L.2 ── L.3 ── L.4 ── L.5 ── L.6 ─┬─ L.7 Commitr
+                                        ├─ L.8 Dracula
+                                        └─ L.9 Ribbon ── L.10 neue Beispiele nachlegen ── L.11 … L.15
 ```
 
-Alle nacheinander: L.2 ändert jede App, L.3 den Katalog.
+L.1–L.6 nacheinander: L.2 ändert jede App, L.3 den Katalog, L.6 das Format. L.7–L.9 (Issue #80) sind unabhängig
+voneinander, jedes Paket wird erst durchdesignt, dann gebaut.
 
 **Neue Abhängigkeiten** (über `[workspace.dependencies]`): `toml` (L.1), `ttf-parser` (L.1, Familie und Format
 prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol aus SVG).
@@ -133,3 +136,145 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   mehr Luft (`body` 14, Zeilen 44), andere Akzentfarbe (kein Rot), eigenes Logo und Tray-Symbol. Besteht alle Regeln.
 - **Abnahme:** Paket lädt ohne Gründe; alle Apps mit `--demo --design plex` in allen Größen angesehen (oder ehrlich
   „nicht möglich“); `torro-design-review` mit beiden Paketen.
+
+### L.6 Seitenleiste mit eigenen Farben
+- [x] erledigt (2026-10-13: `Surface` hat dazu die Variante `Sidebar` bekommen, weil Seitenleiste und Fensterzustände
+  verschiedene Flächen brauchen; Grafikregeln nur bei eigener Fläche, sonst wäre Plex ungültig geworden; Achtungs- und
+  Fehlertext in der Leiste nicht geprüft, aber nach ihrer Helligkeit abgeleitet; Sichtprüfung nur breit, die
+  Fenstergröße ließ sich auf macOS nicht setzen)
+- **Modell:** Opus · **Braucht:** L.5 · **Dateien:** `crates/torro-core/src/design.rs`,
+  `crates/torro-core/src/design/**` (Format, Zusammenführen, Prüfen, Fehler), `crates/torro-core/tests/fixtures/designs/`,
+  `crates/torro-core/src/i18n/de.rs` (neue Fehlertexte), `crates/torro-gui/src/**` (vor allem `theme.rs`, `style.rs`,
+  `shell.rs`, `widgets.rs`, `design.rs`), die Stellen in `crates/{torrocalendar,torrotasks,torroinbox}/src/**` und
+  `crates/torroworkplace/src/ui/**`, die in der Seitenleiste selbst Farben wählen (z. B. Mini-Monat, Kalenderliste),
+  `.claude/skills/torro-design/SKILL.md`; Doku: `docs/design-pakete.md` (Abschnitt steht schon)
+- **Format** nach [Seitenleiste mit eigenen Farben](../design-pakete.md#seitenleiste-mit-eigenen-farben): je Modus
+  optional `sidebar`, `sidebar_hover`, `sidebar_selected`, `sidebar_text`, `sidebar_text_2`, `sidebar_text_3`,
+  `sidebar_line`. Fehlt ein Wert, gilt der entsprechende Wert **desselben Pakets** (`bg`, `hover`, `selected`, `text`,
+  `text_2`, `text_3`, `line`), nicht der des Standards. Das Standardpaket setzt keinen davon.
+- **Schnittstelle (zur Freigabe):** `Palette` bekommt die sieben Felder (in `torro-core` und `torro-gui`).
+  Vorschlag für die Umsetzung, ohne die Apps anzufassen: Die Shell legt die Seitenleiste (auch Rail, Schublade, Rand
+  und Titelband) in einen Iced-`themer` mit einem Theme, das `palette()` als „Seitenleiste“ erkennt und dann eine
+  Palette liefert, in der `bg`/`text`/… durch die `sidebar*`-Werte ersetzt sind. So zeichnet sich alles in der Leiste
+  von selbst richtig. Andere Lösung → vorher fragen.
+- **Prüfen:** Regel „Seitenleiste“ aus der Tabelle im Konzept, mit Werten nach dem Zurückfallen; eine Fehlervariante
+  mit Schlüssel und Verhältnis wie die übrigen Kontrastfehler.
+- **Titelband:** `Surface::Window` nimmt `sidebar`, damit die Ampel auf der Leistenfarbe sitzt; Zustände auf dem Fenster
+  selbst (Anmelden, Laden, Fehler) bleiben auf `bg`.
+- **Oberfläche/API/MCP:** keine neuen Funktionen; `settings_list_designs` meldet die neuen Gründe wie alle anderen.
+- **Abnahme:** Standardpaket und Plex sehen aus wie vorher (Test: ohne `sidebar*` ist die Seitenleisten-Palette gleich
+  der normalen). Testpaket mit dunkler Leiste neben hellem Inhalt lädt; kaputte Beispiele (Text auf `sidebar` zu
+  schwach, Kalenderfarbe auf `sidebar` zu schwach) werden mit Grund abgelehnt. Sichtprüfung mit einem Testpaket in
+  Kalender, Aufgaben, Inbox und Steuerzentrale, breit und mittel (Rail), hell und dunkel, auch Schublade im Schmalen.
+
+### L.7 Paket Commitr (erinnert an GitHub)
+- [x] erledigt (2026-10-13: Mona Sans 2.0.27 für Text, Ziffern in Inter Tabular, weil die Ziffern von Mona Sans
+  verschieden breit sind und `fonttools` zum Einfrieren fehlte; Akzent ist das Grün des Primärknopfs, Fokus blau;
+  dunkle Seitenleiste nur im hellen Modus; Kalenderfarben und „Merged“ etwas heller als Primer, Fehlerrot dunkel
+  `#FF7B72`)
+- **Modell:** Opus · **Braucht:** L.6 · **Dateien:** `designs/commitr/`, `crates/torroworkplace/src/designs.rs`
+- Erst durchdesignen, dann bauen (wie L.5). Richtung: Mona Sans (OFL), neutrales Grau, Blau `#0969DA` als Akzent,
+  feine Linien, Radius 6, eher dicht, dunkle Seitenleiste. Kein GitHub-Name und kein Octocat; „inspired by GitHub“
+  in der Beschreibung, eigenes Logo.
+- **Abnahme:** wie L.5.
+
+### L.8 Paket Dracula
+- [x] erledigt (2026-10-13: ohne JetBrains Mono, Inter wie Torro; zwei Farben weichen vom Original ab, weil sie
+  die Kontrastregeln nicht schaffen: `text_3` statt „Comment“ `#6272A4`, Fehler `#FF8080` statt `#FF5555`; kommt
+  wie Plex nur in einen neuen Design-Ordner, wer schon einen hat, bekommt Dracula nicht von selbst)
+- **Modell:** Opus · **Braucht:** L.5 · **Dateien:** `designs/dracula/`, `crates/torroworkplace/src/designs.rs`
+- Erst durchdesignen, dann bauen. Offizielles Schema (MIT): dunkel „Dracula“, hell „Alucard“; Violett und Pink als
+  Akzent; Inter, optional JetBrains Mono (OFL) für Ziffern. Autor und Lizenz im Paket.
+- **Abnahme:** wie L.5.
+
+### L.9 Paket Ribbon (erinnert an Microsoft Office)
+- [x] erledigt (2026-10-13: Selawik 1.01 ohne Medium, Hervorhebungen in SemiBold; keine blaue Seitenleiste, weil der
+  blaue Akzent darauf nicht trägt – Seitenleiste in Fluent-Grau wie die Navigation der Office-Apps; Fehlerrot dunkel
+  heller als Fluent)
+- **Modell:** Opus · **Braucht:** L.6 · **Dateien:** `designs/ribbon/`, `crates/torroworkplace/src/designs.rs`
+- Erst durchdesignen, dann bauen. Richtung: Selawik (OFL; Segoe UI darf nicht mit), Office-Blau `#0F6CBD`, helle graue
+  Flächen, Radius 4, ruhig; Seitenleiste ggf. in Blau. Kein Office-Name und kein Office-Logo; „inspired by Microsoft
+  Office“ in der Beschreibung, eigenes Logo.
+- **Abnahme:** wie L.5.
+
+### L.10 Neue Beispielpakete auch in bestehende Design-Ordner
+- [x] erledigt (2026-10-13: `install_new` neben `install_if_missing`, das unverändert bleibt und die Liste jetzt
+  mitschreibt; Dracula kommt nach dem Merge von L.8 in die Liste der Beispiele)
+- **Modell:** Opus · **Braucht:** L.9 · **Dateien:** `crates/torroworkplace/src/designs.rs`,
+  `docs/design-pakete.md` (Abschnitt „Ein Paket bauen“)
+- Bisher kommen Beispielpakete nur in einen **neu angelegten** Design-Ordner. Wer Plex schon hat, bekommt Dracula,
+  Commitr und Ribbon nie zu sehen.
+- **Neu:** Der Ordner merkt sich in einer versteckten Datei `.torro-examples` (eine id je Zeile), welche Beispiele die
+  Suite schon angeboten hat. Beim Start (Dienst) und bei „Open designs folder“ (Steuerzentrale) legt sie jedes
+  Beispiel, das dort noch nicht steht, in den Ordner – nur wenn es dort keinen Ordner dieses Namens gibt – und trägt es
+  ein. Ein gelöschtes Beispiel steht in der Liste und bleibt gelöscht; ein eigener Ordner gleichen Namens bleibt
+  unberührt; vorhandene Beispiele werden nie überschrieben (auch nicht bei einer neuen Fassung).
+- **Ordner ohne Liste** (von vor L.10): Als angeboten gelten Plex (das einzige Beispiel bis dahin, damit ein
+  gelöschtes Plex gelöscht bleibt) und jedes Beispiel, dessen Ordner schon da ist.
+- Jedes Paket wird erst in einem versteckten Ordner daneben geschrieben und dann in einem Schritt umbenannt, die
+  Liste ebenso; ein abgebrochener Start hinterlässt nichts Halbes.
+- **Oberfläche/API/MCP:** keine neue Funktion – das Nachlegen passiert beim Start und hinter „Open designs folder“;
+  Pakete auflisten und wählen gibt es schon (`settings.list_designs`, `settings.set_setting`).
+- **Abnahme:** Tests: neuer Ordner bekommt alle Beispiele und die Liste; alter Ordner mit Plex bekommt die übrigen,
+  Plex bleibt unverändert; alter Ordner ohne Plex bekommt Plex nicht zurück; ein nach dem Eintragen gelöschtes
+  Beispiel kommt nicht wieder; ein eigener Ordner gleichen Namens bleibt unberührt; kein versteckter Arbeitsordner
+  bleibt zurück.
+
+### L.11 Commitr mit eigenen festen Ziffern
+- [x] erledigt (2026-10-13: erzeugt mit fontTools 4.66.1 und opentype-feature-freezer 1.32.2 – `pyftfeatfreeze -f
+  tnum`, dann Breiten angleichen und umbenennen; was verändert ist, steht in `fonts/LICENSE.txt` des Pakets)
+- **Modell:** Opus · **Braucht:** L.7 · **Dateien:** `designs/commitr/`, `crates/torroworkplace/src/designs.rs`
+- Statt Inter Tabular eine Ziffernschrift aus Mona Sans: `pyftfeatfreeze -f tnum`, dann alle zehn Ziffern auf eine
+  Breite und mittig (die `.tf`-Ziffern von Mona Sans sind nicht ganz gleich breit, 576–590). Name **„Commitr
+  Figures“**, denn Mona Sans hat den reservierten Namen „Mona“, den eine veränderte Fassung nach OFL nicht tragen
+  darf. Copyright und Lizenz in der Datei bleiben unverändert.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.12 Paket Channelr (erinnert an Slack)
+- [x] erledigt (2026-10-13: Lato unverändert, nur Regular und Bold – Hervorhebungen fett wie bei Slack; gewählter
+  Kanal blau auf Aubergine; Akzent ist das Grün des Senden-Knopfs, eine Spur heller, damit es auch auf der Leiste
+  trägt; die vier Markenfarben als Kalenderfarben, in der Helligkeit angepasst)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/channelr/`, `crates/torroworkplace/src/designs.rs`
+- Lato (OFL), Aubergine-Seitenleiste in beiden Modi (L.6), rundere Ecken, fette Titel. Kein Slack-Name, kein Logo.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.13 Paket Guildr (erinnert an Discord)
+- [x] erledigt (2026-10-13: Figtree als feste Schnitte aus der variablen Schrift, Ziffern in
+  „Figtree Tabular“; dunkles Fehlerrot heller, im hellen Modus Kalenderfarben und Fokus dunkler)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/guildr/`, `crates/torroworkplace/src/designs.rs`
+- Figtree (OFL) statt der unfreien „gg sans“, Blurple `#5865F2` auf Dunkelgrau, Hell abgeleitet. Kein
+  Discord-Name, kein Logo.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.14 Paket Quattro (erinnert an Google Workspace)
+- [x] erledigt (2026-10-13: Roboto Flex als feste Schnitte, alle übrigen Achsen auf ihrem Standard;
+  Radien 6/10/14/16; Kalenderfarben die vier Google-Farben plus Violett, Gelb als dunkles Ocker)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/quattro/`, `crates/torroworkplace/src/designs.rs`
+- Roboto Flex (OFL), Pastellflächen nach Material 3, große Radien, die vier Farben als Kalenderfarben. Kein
+  Google-Name, kein Logo.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.15 Farbschemata Nord, Solarized, Catppuccin, Gruvbox
+- [x] erledigt (2026-10-13: vier Pakete ohne eigene Schriften; wo die Originalfarben die
+  Kontrastregeln nicht schaffen, sind sie in der Helligkeit verschoben – vor allem dritte Textfarbe, Fehler- und
+  Achtungsfarbe; die Abweichungen stehen je Paket als Kommentar in `design.toml`)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/{nord,solarized,catppuccin,gruvbox}/`,
+  `crates/torroworkplace/src/designs.rs`
+- Je ein Paket nach dem offenen Schema (MIT), hell und dunkel, Inter wie Torro; Autor und Lizenz in `[about]`.
+  Nord hell aus „Snow Storm“, Catppuccin Latte/Mocha, Solarized und Gruvbox in beiden Originalfassungen.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.

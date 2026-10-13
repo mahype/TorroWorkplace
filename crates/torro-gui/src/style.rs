@@ -387,8 +387,14 @@ pub mod container {
         surface(palette(theme).panel)
     }
 
-    /// The sidebar: the window background `bg`, no lines.
+    /// The sidebar and the frame around the content panel: `sidebar` (the window background
+    /// unless the design gives the sidebar a colour of its own), no lines.
     pub fn sidebar(theme: &Theme) -> Style {
+        surface(palette(theme).sidebar)
+    }
+
+    /// The window background `bg`, for states that lie on the window itself (signing in, loading).
+    pub fn window(theme: &Theme) -> Style {
         surface(palette(theme).bg)
     }
 
@@ -955,7 +961,8 @@ mod tests {
             assert!(same(bg(&button::secondary(&theme, Status::Active)), p.raised), "{mode}");
             assert_eq!(button::ghost(&theme, Status::Active).text_color, p.text_2, "{mode}");
             assert_eq!(container::panel(&theme).background, Some(Background::Color(p.panel)), "{mode}");
-            assert_eq!(container::sidebar(&theme).background, Some(Background::Color(p.bg)), "{mode}");
+            assert_eq!(container::sidebar(&theme).background, Some(Background::Color(p.sidebar)), "{mode}");
+            assert_eq!(container::window(&theme).background, Some(Background::Color(p.bg)), "{mode}");
             assert_eq!(text_input(&theme, widget::text_input::Status::Active).placeholder, p.text_3, "{mode}");
             assert_eq!(rule(&theme).color, p.line, "{mode}");
         }

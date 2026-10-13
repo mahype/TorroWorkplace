@@ -70,6 +70,57 @@ fn colours(mode: Mode, p: &Palette, problems: &mut Vec<DesignError>) {
     if !(0.0..=1.0).contains(&p.tint) {
         problems.push(DesignError::OutOfRange { key: key("tint"), value: p.tint, min: 0.0, max: 1.0 });
     }
+
+    sidebar(mode, p, problems);
+}
+
+/// The rule "Seitenleiste": the sidebar's three text colours on its three surfaces, and – when the
+/// sidebar has a surface of its own ([`Palette::own_sidebar`]) – what is drawn there as a graphic
+/// (focus ring, accent, merged, calendar colours, in dark mode the status colours) on `sidebar`.
+/// Checked on the merged values, so a key that fell back counts with the value it fell back to.
+///
+/// The derived attention and error text are not held to the sidebar: it shows status as dots and
+/// icons, and one red that reads as text on white and on a dark sidebar barely exists.
+fn sidebar(mode: Mode, p: &Palette, problems: &mut Vec<DesignError>) {
+    let key = |name: &str| format!("colors.{mode}.{name}");
+    let s = p.in_sidebar();
+    let surfaces = [("sidebar", s.bg), ("sidebar_hover", s.hover), ("sidebar_selected", s.selected)];
+    // Each sidebar colour with the main one it stands in for: a pair the main rule has already
+    // checked (a fallback on a surface the content has too) is not reported twice.
+    let text = [
+        ("sidebar_text", s.text, p.text),
+        ("sidebar_text_2", s.text_2, p.text_2),
+        ("sidebar_text_3", s.text_3, p.text_3),
+    ];
+    let checked = |fg: Rgba, main: Rgba, bg: Rgba| fg == main && p.surfaces().iter().any(|(_, surface)| *surface == bg);
+    for (name, fg, main) in text {
+        for (surface, bg) in surfaces {
+            let ratio = fg.contrast(bg);
+            if ratio < TEXT_MIN && !checked(fg, main, bg) {
+                problems.push(DesignError::TextContrast { fg: key(name), on: key(surface), ratio });
+            }
+        }
+    }
+
+    // Graphics only where the sidebar has a surface of its own: on `bg` they never had a rule, and
+    // packs made before sidebar keys must stay valid.
+    if !p.own_sidebar() {
+        return;
+    }
+    let mut controls = vec![("focus_ring", s.focus_ring), ("accent", s.accent), ("merged", s.merged)];
+    if mode == Mode::Dark {
+        controls.extend([("ok", s.ok), ("attention", s.attention), ("error", s.error), ("inactive", s.inactive)]);
+    }
+    let calendar = ["calendar[1]", "calendar[2]", "calendar[3]", "calendar[4]", "calendar[5]"];
+    controls.extend(calendar.into_iter().zip(s.calendar));
+    for (name, fg) in controls {
+        let ratio = fg.contrast(s.bg);
+        // Too faint on `panel` already: `colours` named it; the accent is held to `sidebar` only.
+        let named = name != "accent" && fg.contrast(p.panel) < CONTROL_MIN;
+        if ratio < CONTROL_MIN && !named {
+            problems.push(DesignError::ControlContrast { fg: key(name), on: key("sidebar"), ratio });
+        }
+    }
 }
 
 /// The edge of a chosen chip (on `selected`, `panel` or `menu`) stands out at least three times as
@@ -193,6 +244,37 @@ mod tests {
         assert!(
             problems.iter().all(|p| matches!(p, DesignError::TextContrast { fg, .. } if fg == "colors.dark.text_3"))
         );
+    }
+
+    #[test]
+    fn a_sidebar_of_its_own_holds_text_and_graphics_to_it() {
+        let mut d = Design::standard();
+        let p = &mut d.colors.light;
+        (p.sidebar, p.sidebar_hover, p.sidebar_selected) =
+            (Rgba::hex(0x24292F), Rgba::hex(0x2F353C), Rgba::hex(0x3A4149));
+        let found = check(&d);
+        let on_sidebar = |fg: &str| {
+            found.iter().any(|problem| match problem {
+                DesignError::TextContrast { fg: f, on, .. } | DesignError::ControlContrast { fg: f, on, .. } => {
+                    f == &format!("colors.light.{fg}") && on.starts_with("colors.light.sidebar")
+                }
+                _ => false,
+            })
+        };
+        // The dark text of the light content, the translucent black focus ring, Torro red.
+        for fg in ["sidebar_text", "sidebar_text_2", "sidebar_text_3", "focus_ring", "accent"] {
+            assert!(on_sidebar(fg), "{fg}: {found:?}");
+        }
+        assert!(!on_sidebar("ok"), "light-mode status colours are not held to 3:1, as on panel");
+    }
+
+    #[test]
+    fn without_a_sidebar_of_its_own_only_its_text_is_checked() {
+        let mut d = Design::standard();
+        d.colors.dark.sidebar_text_3 = Rgba::hex(0x3A3A3A);
+        assert!(matches!(&check(&d)[..], [DesignError::TextContrast { fg, on, .. }, ..]
+            if fg == "colors.dark.sidebar_text_3" && on == "colors.dark.sidebar"));
+        assert!(check(&d).iter().all(|p| matches!(p, DesignError::TextContrast { .. })));
     }
 
     #[test]

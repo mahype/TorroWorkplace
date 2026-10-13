@@ -1,0 +1,14 @@
+# A dark sidebar that keeps the light mode's dark text and red accent (task L.6): refused.
+format = 1
+
+[about]
+name = "Faint sidebar"
+version = "1.0.0"
+
+[colors.light]
+sidebar = "#24292F"
+sidebar_hover = "#2F353C"
+sidebar_selected = "#3A4149"
+sidebar_text_2 = "#D0D7DE"
+sidebar_text_3 = "#AEB7C1"
+focus_ring = "#1F6FEB"
