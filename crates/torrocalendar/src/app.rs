@@ -43,7 +43,7 @@ use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -452,7 +452,7 @@ pub enum Message {
     /// The ‹ › of the radar's "Coming days": browse its mini radars by this many weeks, the radar
     /// staying on its day.
     ComingPage(i64),
-    /// "Settings" in the sidebar: open the control centre.
+    /// "Settings" in the band or the sidebar: open the control centre.
     OpenSettings,
     /// The core answered `Request::OpenApp`.
     AppOpened(Result<(), String>),
@@ -605,7 +605,11 @@ impl App {
             night_saving: false,
             night_card: None,
         };
-        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The size, and the traffic lights onto the title band's line (U.11).
+        let size = Task::batch([
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ]);
         let task = Task::batch([
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
             app.fetch_account(),
@@ -989,8 +993,19 @@ impl App {
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        let (surface, cover) = (self.surface(), self.cover());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+        let (surface, cover, buttons) = (self.surface(), self.cover(), self.title_buttons());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
+    }
+
+    /// The panel button and "Settings" in the band above the window (U.10). Signing in and the
+    /// glance have no sidebar to toggle, nor room for the buttons.
+    fn title_buttons(&self) -> TitleButtons<Message> {
+        let class = self.class();
+        if !self.connected() || is_glance(class) {
+            return TitleButtons::none();
+        }
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings)
     }
 
     /// What lies over the top of the window, which the title band repeats: the editor's panel over
@@ -1159,13 +1174,15 @@ impl App {
                 .spacing(space::s())
                 .align_y(Alignment::Center);
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
-            shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
+            // Where the band has the panel button (macOS), the header leaves it out.
+            let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ToggleDrawer));
+            shell::header_bar(toggle, title, [select(), refresh, primary])
         }
     }
 
     /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
     /// keys, the calendars with their colour, visibility and number of loaded events, and at the
-    /// bottom "Open Tasks ↗" and "Settings".
+    /// bottom "Open Tasks ↗" and "Settings" (the latter in the band on macOS).
     ///
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
     /// menu, and without them the drawer still fits a window 600 high. As the rail (`mode`, U.2) it
@@ -1230,17 +1247,25 @@ impl App {
                 }
             }
         }
-        let footer = vec![
-            widgets::sidebar_item_in(
+        let mut footer = vec![widgets::sidebar_item_in(
+            mode,
+            Icon::SquareCheck,
+            tr("Open Tasks"),
+            Trail::Icon(Icon::ArrowUpRight),
+            false,
+            Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
+        )];
+        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
+        if !shell::has_band() {
+            footer.push(widgets::sidebar_item_in(
                 mode,
-                Icon::SquareCheck,
-                tr("Open Tasks"),
-                Trail::Icon(Icon::ArrowUpRight),
+                Icon::Settings,
+                tr("Settings"),
+                Trail::None,
                 false,
-                Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
-            ),
-            widgets::sidebar_item_in(mode, Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
-        ];
+                Message::OpenSettings,
+            ));
+        }
         let head = shell::sidebar_head(mode, AppId::CALENDAR, switcher, Message::Switcher, Message::ToggleSidebar);
         shell::sidebar(head, items, footer)
     }

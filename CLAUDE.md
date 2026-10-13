@@ -43,6 +43,9 @@ Alle drei müssen ohne Fehler durchlaufen. Melde ehrlich, was nicht geht.
 ## Code
 
 - Rust 2024, Workspace-Lints: kein `unsafe`, kein `unwrap()`, kein `todo!()`, kein `dbg!()`.
+  Einzige Ausnahme: `crates/torro-appkit` (nur macOS, verschiebt die Ampel der Fenster) mit
+  `unsafe_code = "deny"` statt `forbid` und wenigen markierten AppKit-Aufrufen. Kein `unsafe` an anderer
+  Stelle; wer nativen Plattformcode braucht, legt ihn dort ab und fragt vorher nach.
   Fehler als `Result` mit eigenem Fehler-Enum zurückgeben; `expect` nur in Tests.
 - Abhängigkeiten nur über `[workspace.dependencies]` in der Wurzel-`Cargo.toml` hinzufügen und im
   Crate mit `name.workspace = true` einbinden.

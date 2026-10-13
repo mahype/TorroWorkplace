@@ -46,7 +46,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Cover, Surface};
+use torro_gui::shell::{self, Cover, Surface, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement};
@@ -966,7 +966,11 @@ impl<S: ComposeSource + 'static> Window<S> {
             #[cfg(test)]
             calls: Vec::new(),
         };
-        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The size, and the traffic lights onto the title band's line (U.11).
+        let size = Task::batch([
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ]);
         let mut tasks = vec![
             window.fetch_appearance(),
             window.zoom.fetch().map(Message::Zoom),
@@ -1538,6 +1542,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             self.zoom.factor(),
             Surface::Panel,
             cover,
+            TitleButtons::none(),
             Message::DragWindow,
         ))
     }

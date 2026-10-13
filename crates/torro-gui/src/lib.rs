@@ -124,6 +124,30 @@ pub fn drag_window<T: Send + 'static>() -> iced::Task<T> {
     iced::window::latest().and_then(iced::window::drag)
 }
 
+/// The task that moves the window's traffic lights onto the line of the title band's buttons, with
+/// room around them (macOS, U.11; see `shell::LIGHTS`). Apps run it once at start, beside their first
+/// tasks; it keeps the lights there after resizes itself. Other systems have no traffic lights and
+/// get a task that does nothing.
+pub fn place_traffic_lights<T: Send + 'static>() -> iced::Task<T> {
+    #[cfg(target_os = "macos")]
+    {
+        let at = torro_appkit::Position { x: f64::from(shell::LIGHTS), y: f64::from(shell::LIGHTS) };
+        iced::window::latest()
+            .and_then(move |id| {
+                iced::window::run(id, move |window| {
+                    if let Err(err) = torro_appkit::place_traffic_lights(window, at) {
+                        eprintln!("cannot move the traffic lights: {err}");
+                    }
+                })
+            })
+            .discard()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        iced::Task::none()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

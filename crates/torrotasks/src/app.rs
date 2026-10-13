@@ -101,7 +101,7 @@ use torro_gui::connect::{self, Connect};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -888,7 +888,11 @@ impl App {
             moving: None,
             drag: None,
         };
-        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The size, and the traffic lights onto the title band's line (U.11).
+        let size = Task::batch([
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ]);
         // The demo stores nothing and reads no repository of the user's: its pictures stay the same.
         let last_repo = if app.source.is_demo() {
             Task::none()
@@ -1520,8 +1524,18 @@ impl App {
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        let (surface, cover) = (self.surface(), self.cover());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+        let (surface, cover, buttons) = (self.surface(), self.cover(), self.title_buttons());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
+    }
+
+    /// The panel button and "Settings" in the band above the window (U.10). Signing in and the
+    /// glance have no sidebar to toggle, nor room for the buttons.
+    fn title_buttons(&self) -> TitleButtons<Message> {
+        if !self.connected() || self.is_glance() {
+            return TitleButtons::none();
+        }
+        let label = shell::sidebar_button_label(self.class(), self.sidebar, self.drawer);
+        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings)
     }
 
     /// What lies over the top of the window, which the title band repeats: a filter list dialog,
@@ -1713,7 +1727,9 @@ impl App {
         ]
         .spacing(space::xs())
         .align_y(Alignment::Center);
-        shell::header_bar([shell::sidebar_toggle(Message::ShowDrawer)], title, trailing)
+        // Where the band has the panel button (macOS), the header leaves it out.
+        let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer));
+        shell::header_bar(toggle, title, trailing)
     }
 
     /// How the detail lays itself out in `columns`: beside the properties column, with its
@@ -2025,17 +2041,25 @@ impl App {
             false,
             Message::OpenNewList,
         ));
-        let footer = vec![
-            widgets::sidebar_item_in(
+        let mut footer = vec![widgets::sidebar_item_in(
+            mode,
+            Icon::Calendar,
+            tr("Open Calendar"),
+            Trail::Icon(Icon::ArrowUpRight),
+            false,
+            Message::OpenApp(AppId::CALENDAR.binary),
+        )];
+        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
+        if !shell::has_band() {
+            footer.push(widgets::sidebar_item_in(
                 mode,
-                Icon::Calendar,
-                tr("Open Calendar"),
-                Trail::Icon(Icon::ArrowUpRight),
+                Icon::Settings,
+                tr("Settings"),
+                Trail::None,
                 false,
-                Message::OpenApp(AppId::CALENDAR.binary),
-            ),
-            widgets::sidebar_item_in(mode, Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
-        ];
+                Message::OpenSettings,
+            ));
+        }
         let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, Message::ToggleSidebar);
         shell::sidebar(head, items, footer)
     }
