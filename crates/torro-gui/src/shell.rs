@@ -608,7 +608,8 @@ fn inset_window<'a, M: 'a>(
         .height(Fill)
         .padding(LINE)
         .style(style::container::panel);
-    let side = in_sidebar(container(sidebar).width(width).height(Fill).padding(space::s()));
+    // Only the top and bottom edge: the sidebar sets its side edges itself ([`sidebar`]).
+    let side = in_sidebar(container(sidebar).width(width).height(Fill).padding(Padding::new(0.0).vertical(space::s())));
     container(row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(layout::inset()) })])
         .width(Fill)
         .height(Fill)
@@ -623,7 +624,8 @@ fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<
     let catcher = opaque(mouse_area(container(blank().width(Fill).height(Fill)).style(scrim)).on_press(on_dismiss));
     // The edge is a rule on the drawer's own surface: Iced leaves a translucent border see-through,
     // and the content below would shine through it.
-    let side = container(sidebar).width(size::sidebar() - LINE).height(Fill).padding(space::s());
+    let side =
+        container(sidebar).width(size::sidebar() - LINE).height(Fill).padding(Padding::new(0.0).vertical(space::s()));
     let panel = container(row![side, rule::vertical(LINE).style(style::rule)]).height(Fill).style(|t| {
         let p = palette(t);
         // The menu shadow falls sideways here: the drawer's edge is vertical.
@@ -637,14 +639,43 @@ fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<
 /// panel button) with 8 below it, the `items` (navigation, [`widgets::sidebar_group`]s with their
 /// rows) from the top, and the `footer` rows ("Open Calendar ↗", "Settings") at the bottom. Rows
 /// are 2 apart. The same for both [`SidebarMode`]s: build the pieces in the mode you want.
+///
+/// Only the `items` scroll (task U.12): a design pack with taller rows or a low window has no room
+/// for all of them, and the switcher and the footer must stay in reach. The scrollbar floats in the
+/// sidebar's right edge, beside the rows, so it never covers their counters.
 pub fn sidebar<'a, M: 'a>(
     switcher: impl Into<Element<'a, M>>,
     items: Vec<Element<'a, M>>,
     footer: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
-    let top = column![switcher.into(), blank().height(space::s())].extend(items).spacing(SIDEBAR_GAP);
-    let bottom = column(footer).spacing(SIDEBAR_GAP);
-    column![top, blank::vertical(), bottom].height(Fill).into()
+    sidebar_parts(switcher.into(), items, footer)
+}
+
+/// [`sidebar`] for any renderer, so the tests can lay it out with Iced's null renderer.
+fn sidebar_parts<'a, M: 'a, R: iced::advanced::text::Renderer + 'a>(
+    switcher: Element<'a, M, iced::Theme, R>,
+    items: Vec<Element<'a, M, iced::Theme, R>>,
+    footer: Vec<Element<'a, M, iced::Theme, R>>,
+) -> Element<'a, M, iced::Theme, R> {
+    // The sidebar sets its side edges itself, the shell around it only the top and bottom: the
+    // scrollbar then lies in the right edge instead of over the rows.
+    let edge = Padding::new(0.0).horizontal(space::s());
+    let middle = scrollable(container(column(items).spacing(SIDEBAR_GAP)).width(Fill).padding(edge))
+        .direction(scrollable::Direction::Vertical(style::scrollbar()))
+        .style(style::scrollable)
+        .width(Fill)
+        .height(Fill);
+    column![
+        container(switcher).width(Fill).padding(edge),
+        // 8 below the switcher and the row gap at both sides, as when the rows followed it directly.
+        blank().height(space::s() + 2.0 * SIDEBAR_GAP),
+        middle,
+        // Scrolled rows end here, not flush against the footer.
+        blank().height(space::s()),
+        container(column(footer).spacing(SIDEBAR_GAP)).width(Fill).padding(edge),
+    ]
+    .height(Fill)
+    .into()
 }
 
 /// A sidebar row ([`widgets::sidebar_item_in`], either mode) that takes what is being dragged –
@@ -941,6 +972,46 @@ mod tests {
             assert!(!has_sidebar(class) && !has_props(class), "{class:?}");
         }
         assert!(has_sidebar(SizeClass::Wide) && has_props(SizeClass::Wide));
+    }
+
+    /// A sidebar part for Iced's null renderer `()`, which lays out without a window.
+    type Part = Element<'static, (), iced::Theme, ()>;
+
+    /// A row of the sidebar at the height of the active design.
+    fn sidebar_row() -> Part {
+        blank().width(Fill).height(size::row_sidebar()).into()
+    }
+
+    /// Lays out a sidebar with `items` rows and two footer rows in `height`: the bounds of the
+    /// switcher, the scrolling middle and the footer.
+    fn lay_out_sidebar(items: usize, height: f32) -> [iced::Rectangle; 3] {
+        use iced::advanced::{layout, widget::Tree};
+        let switcher: Part = blank().width(Fill).height(size::control()).into();
+        let mut sidebar =
+            sidebar_parts(switcher, (0..items).map(|_| sidebar_row()).collect(), vec![sidebar_row(), sidebar_row()]);
+        let mut tree = Tree::new(&sidebar);
+        let limits = layout::Limits::new(Size::ZERO, Size::new(size::sidebar(), height));
+        let node = sidebar.as_widget_mut().layout(&mut tree, &(), &limits);
+        let parts: Vec<_> = node.children().iter().map(layout::Node::bounds).collect();
+        [parts[0], parts[2], parts[4]]
+    }
+
+    #[test]
+    fn a_long_sidebar_scrolls_in_the_middle_and_keeps_its_footer_in_the_window() {
+        let height = 400.0;
+        let [switcher, middle, footer] = lay_out_sidebar(60, height);
+        assert_eq!(switcher.y, 0.0, "the switcher stays at the top");
+        assert_eq!(footer.y + footer.height, height, "the footer stays at the bottom, inside the window");
+        assert!(middle.y >= switcher.y + switcher.height && middle.y + middle.height <= footer.y);
+        assert!(middle.height < 60.0 * size::row_sidebar(), "the middle takes only the rest and scrolls");
+    }
+
+    #[test]
+    fn a_short_sidebar_keeps_its_footer_at_the_bottom() {
+        let height = 900.0;
+        let [switcher, middle, footer] = lay_out_sidebar(3, height);
+        assert_eq!(footer.y + footer.height, height);
+        assert_eq!(middle.y, switcher.height + space::s() + 2.0 * SIDEBAR_GAP, "rows start below the switcher");
     }
 
     #[test]

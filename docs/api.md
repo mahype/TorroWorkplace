@@ -398,6 +398,10 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    in einer Freigabe (`approvals.json`), und das Passwort erscheint in keiner Antwort, keiner
    Fehlermeldung, keinem `Debug` und keinem Protokoll (Typ `Secret`, im Schema `writeOnly`).
 
+6. **Mikrofon einschalten** (Weckwort und Sprache des Assistenten, [assistent.md](assistent.md)): nur
+   mit dem App-Schlüssel, also nur durch einen Menschen in der Steuerzentrale oder im Tray. Kein
+   Agent und kein Modell kann das Lauschen einschalten; ausschalten darf jeder.
+
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
 

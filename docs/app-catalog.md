@@ -25,6 +25,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 
 | App | Frage | Datenquelle | Status |
 |---|---|---|---|
+| **Assistent** (`torroassistant`) | Kannst du das für mich erledigen? | Chat (später per Weckwort) mit einem KI-Konto (Open First: Ollama, OpenRouter) oder einem verbundenen Agenten, Werkzeuge aus dem Befehlskatalog, Rechte je Bereich. Konzept: [assistent.md](assistent.md) | **Entwurf** ([tasks/assistent.md](tasks/assistent.md)) |
 | **Agenten-Übersicht** | Welche Agenten laufen, wo, und wer wartet auf mich? | Claude-Code-/Codex-Sitzungen (`~/.claude/projects/*.jsonl`, Hooks), tmux | **nächste** |
 | Verbrauch & Kosten | Wie viel habe ich heute und diesen Monat verbraucht, wie nah bin ich am Limit? | lokale JSONL-Logs (Prinzip von ccusage) | Idee |
 | ~~Freigaben-Eingang~~ | Welche Berechtigungsanfragen von Agenten sind offen? | Claude-Code-Hooks / MCP | aufgegangen in **Inbox** |
