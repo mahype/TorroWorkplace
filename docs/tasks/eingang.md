@@ -1029,10 +1029,22 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Sichtprüfung Mail, Aufgaben-Detail und Zentrale; „Open mail“ öffnet das Mail-Fenster mit der Mail.
 
 ### E8.8a Insights: Zählen
-- [ ] erledigt
+- [x] erledigt (eine Tabelle `stats` in `inbox.sqlite`, Schema 6: Tagessummen je lokalem Tag, Quelle, Merkmal und
+  Kennzahl, dazu Meldungen je Stunde und Zeit bis erledigt in Stufen, aus denen der Median kommt; Merkmale, die die
+  Quelle selbst sind (Konto, Agent, Client), zählen nicht eigens; `muted_mail` zählt eine ferngehaltene Mail nur
+  einmal, auch nach einem Abgleich; Antwort `stats` mit `days`, `hours`, `totals`, `median_done_minutes`,
+  `suggestions` (ab 10 Meldungen, höchstens jede fünfte geöffnet, je Art summiert, höchstens 5); `inbox.list_rules`
+  bekommt `hits` (`rule`, `hits`, `since`, je Quelle gezählt, Spalte `rules.counted_since`), ältere Regeln zählen ab
+  dem Update; zur Aufgabe zählt nicht als erledigt (`Inbox::done_as_task`); Popups über `Popups::arrivals`, ohne die
+  Tray zu wecken; Löschen beim Entfernen in `core.rs` (`remove_client`, `remove_mail_account`), darum
+  `account.rs`/`clients.rs` unberührt, die Quelle eines Agenten erst, wenn kein anderer Client mehr für ihn meldet;
+  das Stummschalten der Suite zählt nicht (der Abgleich läuft jede Minute); vom Compiler erzwungen:
+  `torroworkplace/src/{audit,daemon,pim}.rs`, `torroworkplace/src/ui/mod.rs` (`..` im Muster);
+  `docs/api-reference.md` gibt es nicht)
 - **Modell:** Opus · **Braucht:** E8.6a · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
   `crates/torroworkplace/src/{core,inbox,inbox_notify,mcp,account,clients}.rs`, `docs/api-reference.md`; Doku:
-  `docs/{api,eingang}.md`
+  `docs/{api,eingang}.md`; zusätzlich, nur so weit der Compiler es erzwingt: `crates/torroworkplace/src/{audit,daemon,pim}.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`
 - **Zählen** in `inbox.sqlite`, Tagessummen je Quelle und Merkmal: neu, geöffnet, verworfen (`dismissed` aus
   E8.6a), erledigt, vertagt, zur Aufgabe, stummgeschaltet, Popups (davon in Ruhe), Zeit bis erledigt (Median). Keine
   Titel, keine Texte, nichts ins Protokoll.

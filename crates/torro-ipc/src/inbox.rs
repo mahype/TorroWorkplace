@@ -35,7 +35,7 @@ use torro_mail::{Flag, Folder, Message, MessageSummary};
 use torro_pim::EventTime;
 
 use crate::mail::MoveTarget;
-use crate::{IpcError, Request, Response};
+use crate::{InboxStats, IpcError, Request, Response, StatsRange};
 
 /// Talks to the core at its socket.
 #[derive(Debug, Clone)]
@@ -143,6 +143,17 @@ impl InboxClient {
     /// (moving them back).
     pub async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         self.ask_ok(Request::DeleteMail { ids, permanent: false }).await
+    }
+
+    /// `inbox.get_stats` (task E8.8a): what the core counted over `range` up to the local day
+    /// `until` (`None`: today), for "Insights". The app shows it as it comes; suggestions carry
+    /// the entry and the [`MuteOption`] to pass to [`InboxSource::mute_item`]. Their values are
+    /// foreign text where `untrusted`. Errors as for the other calls.
+    pub async fn get_stats(&self, range: StatsRange, until: Option<NaiveDate>) -> Result<InboxStats, InboxError> {
+        match self.ask(Request::GetStats { range, until }).await? {
+            Response::Stats(stats) => Ok(stats),
+            other => Err(unexpected(other)),
+        }
     }
 }
 
@@ -398,6 +409,17 @@ mod tests {
                 done: vec![id],
             }),
             Request::RemoveRule { id } if id == "r1" => Response::Ok,
+            // The span names what arrived.
+            Request::GetStats { range, until } => Response::Stats(crate::InboxStats {
+                range,
+                from: until.unwrap_or_default(),
+                until: until.unwrap_or_default(),
+                days: Vec::new(),
+                hours: vec![0; 24],
+                totals: crate::StatsCounts { new: range.days(), ..crate::StatsCounts::default() },
+                median_done_minutes: None,
+                suggestions: Vec::new(),
+            }),
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
             Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
@@ -531,6 +553,17 @@ mod tests {
         let sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
         let muted = client.mute_item("m1".into(), sender, Some(at(12)), MuteEffect::Info).await.expect("muted");
         assert_eq!(muted.moved, ["m1|Facet { key: Sender }|true|Info"]);
+    }
+
+    /// Task E8.8a: the statistics are one request with the span.
+    #[tokio::test]
+    async fn stats_send_their_span() {
+        let core = start(|request| async move { answer(request) }).await;
+        let day = NaiveDate::from_ymd_opt(2026, 10, 13).expect("valid date");
+        let stats = core.client().get_stats(StatsRange::Month, Some(day)).await.expect("stats");
+        assert_eq!((stats.range, stats.until, stats.totals.new), (StatsRange::Month, day, 30));
+        let today = core.client().get_stats(StatsRange::Week, None).await.expect("stats");
+        assert_eq!((today.until, today.totals.new), (NaiveDate::default(), 7));
     }
 
     #[tokio::test]

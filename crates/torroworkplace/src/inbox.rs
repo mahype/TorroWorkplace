@@ -101,6 +101,19 @@
 //! the conversation hidden or moved for good keeps no rule. Approvals and the suite's entries have
 //! no traits and are never muted (security rule 1). Dismissing (`inbox.set_item_done` with
 //! `dismissed`) is kept beside the entry in the column `dismissed`, for the statistics.
+//!
+//! **Statistics** (task E8.8a, `inbox.get_stats`, [`get_stats`]): every write path counts what
+//! happened ([`count`]) in day sums of the table `stats`, per local day, source and counted trait
+//! ([`counted_trait`]): reports that came, entries opened, dismissed, done, snoozed, made a task,
+//! muted, and the popups (`crate::inbox_notify` through [`Inbox::count_popups`], which tells nobody
+//! of the change). Reports also count per hour, entries done per step of the time they took
+//! ([`WAIT_STEPS`]). Rules count what they caught per source ([`hit`]), so `inbox.list_rules` gives
+//! a key only the catches in the sources it sees ([`rule_hits`]). Only counts and the traits'
+//! values are kept, never a title or a text, and nothing of it reaches the audit log. Clean-up
+//! ([`Inbox::tend`]) keeps source sums [`KEEP_STATS_MONTHS`], rows by trait [`KEEP_TRAIT_DAYS`]; a
+//! removed mail account or client takes its rows along ([`Inbox::forget_source`]). Reading follows
+//! [`Scope::of`] like `inbox.list_rules`; suggestions name the newest entry the core still holds
+//! with the trait and the option of [`rules::mute_options`] for it ([`suggestions`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -110,7 +123,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use chrono::{DateTime, Days, Local, Months, NaiveDate, SecondsFormat, TimeDelta, Timelike, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use torro_core::AppId;
@@ -123,7 +136,10 @@ use torro_inbox::{
     SourceKind, SourceRef, State, StateFilter,
 };
 use torro_ipc::api::{self, Access, Area, HOOK_CLIENT, InboxForbidden, Rights, Selection};
-use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
+use torro_ipc::{
+    ApprovalInfo, ClientInfo, InboxStats, Request, Response, RuleHits, SourceStats, StatsCounts, StatsDay, StatsRange,
+    StatsSuggestion,
+};
 use torro_mail::{ACCOUNT_PREFIX, Notify};
 
 use crate::account::github::GithubAccounts;
@@ -137,7 +153,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -294,6 +310,69 @@ CREATE TABLE task_notes (
     at TEXT NOT NULL
 );
 ";
+
+/// From schema version 5 to 6 (task E8.8a, the statistics of "Insights"):
+///
+/// - `stats`: day sums, one row per local day (`2026-10-13`), source ([`SourceRef::key`]), trait
+///   (`facet`, empty for the source's own sum, else [`facet_column`]) and `metric`: one of the
+///   events of [`Count`], `hour:<00–23>` (reports per local hour, source sums only) or `wait:<step>`
+///   (entries done after a time of [`WAIT_STEPS`], source sums only). Rows with `day` empty hold
+///   what a rule caught per source, `metric` `rule:<id>` ([`hit`]). Only counts and traits, never a
+///   title or a text; source sums stay [`KEEP_STATS_MONTHS`], rows by trait [`KEEP_TRAIT_DAYS`].
+/// - `muted_mail`: the mails a rule kept from the inbox (account, message id, when), so a mail the
+///   feed offers again after a missed change is counted once ([`file_mail`]); kept as long as rows
+///   by trait.
+/// - `rules` gets `counted_since`: since when a rule's catches are counted, its `created` for new
+///   rules, the update for rules made before.
+const SCHEMA_V6: &str = "
+CREATE TABLE stats (
+    day TEXT NOT NULL,
+    source TEXT NOT NULL,
+    facet TEXT NOT NULL DEFAULT '',
+    metric TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, source, facet, metric)
+);
+CREATE INDEX stats_by_source ON stats (source);
+CREATE TABLE muted_mail (
+    account TEXT NOT NULL,
+    message TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (account, message)
+);
+ALTER TABLE rules ADD COLUMN counted_since TEXT;
+UPDATE rules SET counted_since = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+";
+
+/// How many months the statistics keep the day sums of a source (task E8.8a).
+pub const KEEP_STATS_MONTHS: u32 = 13;
+
+/// How many days the statistics keep sums by trait – sender, domain, list, project –, which name
+/// who writes to the person (task E8.8a): as long as the longest span, a quarter.
+pub const KEEP_TRAIT_DAYS: u64 = 90;
+
+/// A trait is suggested for muting from this many reports in the span on (task E8.8a) …
+pub const SUGGEST_FROM: u32 = 10;
+
+/// … when at most one in this many of them was opened.
+pub const SUGGEST_OPENED_ONE_IN: u32 = 5;
+
+/// The most suggestions `inbox.get_stats` makes.
+pub const SUGGESTIONS_MAX: usize = 5;
+
+/// The steps the time from the first report until done is counted in (task E8.8a), the upper end
+/// of each in minutes: 1, 5, 15, 30 minutes, 1, 2, 4, 8 hours, 1, 2, 7 days; one more step holds
+/// everything longer. Steps rather than each time, so the file holds day sums only.
+const WAIT_STEPS: [u32; 11] = [1, 5, 15, 30, 60, 120, 240, 480, 1440, 2880, 10080];
+
+/// The `metric` of reports per local hour (`hour:09`).
+const HOUR_METRIC: &str = "hour:";
+
+/// The `metric` of entries done after a time of [`WAIT_STEPS`] (`wait:3`).
+const WAIT_METRIC: &str = "wait:";
+
+/// The `metric` of what a rule caught (`rule:<id>`), in rows without a day.
+const RULE_METRIC: &str = "rule:";
 
 /// The start of the thread keys of the suite's entries about finished tasks, `task-done:<mail entry id>`.
 const TASK_DONE_THREADS: &str = "task-done:";
@@ -519,6 +598,7 @@ impl Inbox {
                 let mut item = stored.item;
                 item.state = State::Seen;
                 update_item(db, &item)?;
+                count(db, &item, Count::Opened, now)?;
             }
             Ok(())
         });
@@ -528,14 +608,63 @@ impl Inbox {
     }
 
     /// The daemon's routine at `now`: wakes snoozed entries that are due, removes rules that ended
-    /// (task E8.6a) and, with `clean_up`, removes entries done [`KEEP_DONE_DAYS`] or more ago.
+    /// (task E8.6a) and, with `clean_up`, removes entries done [`KEEP_DONE_DAYS`] or more ago and the
+    /// statistics older than they are kept (task E8.8a, [`KEEP_STATS_MONTHS`], [`KEEP_TRAIT_DAYS`]).
     /// Returns how many woke and how many entries were removed; `Err` holds the message for the log.
     pub fn tend(&self, now: DateTime<Utc>, clean_up: bool) -> Result<(usize, usize), String> {
         self.with(|db| {
             let woken = wake_due(db, now)?;
             remove_ended_rules(db, now)?;
             let removed = if clean_up { remove_expired(db, now)? } else { 0 };
+            if clean_up {
+                remove_old_stats(db, now)?;
+            }
             Ok((woken, removed))
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// `inbox.set_item_done` for the entry `id` that was just made a task (task E3.5): done like
+    /// [`Inbox::handle`] marks it, with the same checks and answer, but counted as made a task
+    /// rather than done (task E8.8a). The core calls it once the task was saved.
+    pub fn done_as_task(&self, id: &str, client: Option<&ClientInfo>, now: DateTime<Utc>) -> Response {
+        self.with(|db| Ok(Response::Item { item: set_done(db, id, true, Count::Task, client, now)? }))
+            .unwrap_or_else(Failure::response)
+    }
+
+    /// Counts the entries in `arrived` that came for a popup at `now` (task E8.8a), with `quiet`
+    /// when a busy event held back those that are not urgent. For the popups
+    /// (`crate::inbox_notify`). Counting is no change of the inbox: the tray and the popups are not
+    /// told. A failure is only logged.
+    pub fn count_popups(&self, arrived: &[&Item], quiet: bool, now: DateTime<Utc>) {
+        if arrived.is_empty() {
+            return;
+        }
+        let counted = self.work(false, |db| {
+            let tx = db.transaction()?;
+            for item in arrived {
+                count(&tx, item, Count::Popup, now)?;
+                if quiet && !item.urgent {
+                    count(&tx, item, Count::Quiet, now)?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        });
+        if let Err(failure) = counted {
+            eprintln!("torroworkplace: inbox: cannot count popups: {failure}");
+        }
+    }
+
+    /// Removes the statistics of the source `source` (task E8.8a), a [`SourceRef::key`]: its day
+    /// sums, its rows by trait, what rules caught in it and its counted mail. The core calls it when
+    /// a mail account (`mail:<address>`) or a client whose source no other client shares is
+    /// removed. `Err` holds the message for the log.
+    pub fn forget_source(&self, source: &str) -> Result<(), String> {
+        self.work(false, |db| {
+            db.execute("DELETE FROM stats WHERE source = ?1", params![source])?;
+            db.execute("DELETE FROM muted_mail WHERE account = ?1", params![source])?;
+            Ok(())
         })
         .map_err(|failure| failure.to_string())
     }
@@ -653,6 +782,8 @@ impl Inbox {
                     if !matches!(item.state, State::Done { .. }) {
                         rules::set_done(&mut item, true, now);
                         update_item(&tx, &item)?;
+                        // Read or moved elsewhere: the person dealt with it (task E8.8a).
+                        count(&tx, &item, Count::Done, now)?;
                     }
                 }
             }
@@ -741,6 +872,7 @@ impl Inbox {
                 (true, Some(thread_key)) if read_owned(&tx, CORE_OWNER, &thread_key)?.is_none() => {
                     let item = finished_task_entry(new_id()?, thread_key, task, sender, now);
                     insert_item(&tx, CORE_OWNER, &item)?;
+                    count(&tx, &item, Count::New, now)?;
                     Some(item.id)
                 }
                 _ => None,
@@ -756,6 +888,12 @@ impl Inbox {
     /// on the connection, so each write path is covered without marking it by hand; work that
     /// failed and rolled back may mark it too, which costs only a needless refresh.
     fn with<T>(&self, work: impl FnOnce(&mut Connection) -> Result<T, Failure>) -> Result<T, Failure> {
+        self.work(true, work)
+    }
+
+    /// [`Inbox::with`], marking [`Inbox::changes`] only with `mark`: work that writes nothing but
+    /// statistics (task E8.8a) changes nothing the tray or the popups show.
+    fn work<T>(&self, mark: bool, work: impl FnOnce(&mut Connection) -> Result<T, Failure>) -> Result<T, Failure> {
         let mut db = self.lock();
         if db.is_none() {
             let file = self.file.as_deref().ok_or(StoreError::NoHome)?;
@@ -766,7 +904,7 @@ impl Inbox {
         };
         let before = connection.total_changes();
         let result = work(connection);
-        let wrote = connection.total_changes() != before;
+        let wrote = mark && connection.total_changes() != before;
         drop(db);
         if wrote {
             self.changed.send_replace(());
@@ -942,18 +1080,16 @@ fn answer(
             Ok(Response::Ok)
         }
         Request::SetItemDone { id, done, dismissed } => {
-            if done {
-                check_mail_done(&changeable(db, &id, client)?.item, client)?;
-            }
-            let tx = db.transaction()?;
-            let stored = change(&tx, &id, client, |item| rules::set_done(item, done, now))?;
-            // Kept beside the entry for the statistics (task E8.8): dismissed, or done for real.
-            tx.execute("UPDATE items SET dismissed = ?2 WHERE id = ?1", params![id, done && dismissed])?;
-            tx.commit()?;
-            Ok(Response::Item { item: stored.shown_to(client) })
+            let closed = if dismissed { Count::Dismissed } else { Count::Done };
+            Ok(Response::Item { item: set_done(db, &id, done, closed, client, now)? })
         }
         Request::SnoozeItem { id, until } => {
-            let stored = change(db, &id, client, |item| rules::snooze(item, until))?;
+            let tx = db.transaction()?;
+            let stored = change(&tx, &id, client, |item| rules::snooze(item, until))?;
+            if until.is_some() {
+                count(&tx, &stored.item, Count::Snoozed, now)?;
+            }
+            tx.commit()?;
             Ok(Response::Item { item: stored.shown_to(client) })
         }
         Request::SetItemLane { id, lane, remember } => {
@@ -994,7 +1130,12 @@ fn answer(
         Request::CreateTaskFromItem { .. } => {
             Err(Failure::Invalid("inbox.create_task_from_item is answered by the core".into()))
         }
-        Request::ListRules => Ok(Response::Rules { rules: list_rules(db, client, now)? }),
+        Request::ListRules => {
+            let rules = list_rules(db, client, now)?;
+            let hits = rule_hits(db, &Scope::of(client), &rules)?;
+            Ok(Response::Rules { rules, hits })
+        }
+        Request::GetStats { range, until } => Ok(Response::Stats(get_stats(db, range, until, client, now)?)),
         Request::RemoveRule { id } => {
             removable_rule(db, &id, client)?;
             db.execute("DELETE FROM rules WHERE id = ?1", params![id])?;
@@ -1360,12 +1501,9 @@ fn post(
     // The source's own rules, and the traits muted in any source of its kind (task E8.6a).
     let condition = "source = ? OR (facet <> '' AND instr(source, ?) = 1)";
     let rules = read_rules(db, &Scope::All, condition, vec![text(source.key()), text(kind_prefix(&source))])?;
-    // A report has no sender's address: only a mute of the whole source drops it.
-    if rules.iter().any(|rule| rules::drops(rule, None)) {
-        return Ok(None);
-    }
     // A lane the person remembered for the source beats the one the poster asks for.
-    let remembered = rules.iter().filter(|rule| rule.sender.is_none()).find_map(remembered_lane);
+    let remembering = rules.iter().filter(|rule| rule.sender.is_none()).find(|rule| remembered_lane(rule).is_some());
+    let remembered = remembering.and_then(remembered_lane);
     let (lane, urgent) = rules::placement(kind, remembered.or(post.lane));
     let title = agent_title(kind, own_agent).unwrap_or_else(|| given.to_string());
     let body = post.body.as_deref().map(str::trim).filter(|body| !body.is_empty()).map(|body| cap(body, BODY_MAX));
@@ -1409,22 +1547,53 @@ fn post(
     }
     // The traits are the core's, from the client and the hook's session, never the poster's word.
     incoming.facets = rules::facets(&incoming, None, false);
-    match rules::muting(&rules, &incoming, now) {
-        // Dropped before anything is written; the transaction is rolled back.
-        Some(MuteEffect::Hide) => return Ok(None),
-        Some(MuteEffect::Info) => rules::set_lane(&mut incoming, Lane::Info),
-        // No popup is the popups' to heed (`Inbox::no_popup`).
-        Some(MuteEffect::NoPopup) | None => {}
+    // A report has no sender's address: only a mute of the whole source drops it, else a muted trait.
+    let dropping = rules.iter().find(|rule| rules::drops(rule, None));
+    let muting = deciding_mute(&rules, &incoming, now);
+    if let Some(rule) = dropping.or(muting.and_then(|(rule, effect)| (effect == MuteEffect::Hide).then_some(rule))) {
+        // Nothing of the report is kept, only that a rule caught it (task E8.8a).
+        count(&tx, &incoming, Count::Muted, now)?;
+        hit(&tx, rule, &incoming.source)?;
+        tx.commit()?;
+        return Ok(None);
+    }
+    // "Info" moves it there; no popup is the popups' to heed (`Inbox::no_popup`).
+    if let Some((_, MuteEffect::Info)) = muting {
+        rules::set_lane(&mut incoming, Lane::Info);
     }
     match existing {
-        Some(existing) => update_item(&tx, &rules::merge(existing, incoming))?,
+        Some(existing) => update_item(&tx, &rules::merge(existing, incoming.clone()))?,
         None => {
             throttle(&tx, owner, poster, now)?;
             insert_item(&tx, owner, &incoming)?;
         }
     }
+    // A kind with a lane of its own keeps it: the remembered lane caught nothing then.
+    let remembering = remembering.filter(|rule| remembered_lane(rule) == Some(lane));
+    count_report(&tx, &incoming, remembering, muting.map(|(rule, _)| rule), now)?;
     tx.commit()?;
     Ok(Some(id))
+}
+
+/// Counts the report `incoming` that was filed at `now` (task E8.8a): one more report, and when
+/// `muting` kept it without a popup or moved it to "Info", muted and a catch of that rule; a lane
+/// `remembering` placed it in is a catch of that rule too.
+fn count_report(
+    db: &Connection,
+    incoming: &Item,
+    remembering: Option<&Rule>,
+    muting: Option<&Rule>,
+    now: DateTime<Utc>,
+) -> Result<(), Failure> {
+    count(db, incoming, Count::New, now)?;
+    if let Some(rule) = muting {
+        count(db, incoming, Count::Muted, now)?;
+        hit(db, rule, &incoming.source)?;
+    }
+    if let Some(rule) = remembering {
+        hit(db, rule, &incoming.source)?;
+    }
+    Ok(())
 }
 
 /// The `thread_key` of a post: `None` when left out or empty, `error` when longer than
@@ -1569,6 +1738,8 @@ fn resolve(
     {
         rules::set_done(&mut item, true, now);
         update_item(&tx, &item)?;
+        // The matter went away: the agent went on, the person dealt with it (task E8.8a).
+        count(&tx, &item, Count::Done, now)?;
     }
     tx.commit()?;
     Ok(())
@@ -1585,6 +1756,37 @@ fn change(
     apply(&mut stored.item);
     update_item(db, &stored.item)?;
     Ok(stored)
+}
+
+/// `inbox.set_item_done` for `client` at `now`: the entry `id` done, or open again with `done:
+/// false` ([`rules::set_done`]); returns it as `client` may see it. A mail entry needs write access
+/// to mail to be done ([`check_mail_done`]). `closed` is how the statistics count it (task E8.8a):
+/// [`Count::Done`], [`Count::Dismissed`] ("✕", also kept in the column `dismissed`, task E8.6a) or
+/// [`Count::Task`] (made a task); only when it was not done before.
+fn set_done(
+    db: &mut Connection,
+    id: &str,
+    done: bool,
+    closed: Count,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<Item, Failure> {
+    if done {
+        check_mail_done(&changeable(db, id, client)?.item, client)?;
+    }
+    let tx = db.transaction()?;
+    let mut was_done = false;
+    let stored = change(&tx, id, client, |item| {
+        was_done = matches!(item.state, State::Done { .. });
+        rules::set_done(item, done, now);
+    })?;
+    // Kept beside the entry: dismissed, or done for real.
+    tx.execute("UPDATE items SET dismissed = ?2 WHERE id = ?1", params![id, done && closed == Count::Dismissed])?;
+    if done {
+        count_closed(&tx, &stored.item, was_done, closed, now)?;
+    }
+    tx.commit()?;
+    Ok(stored.shown_to(client))
 }
 
 /// Keeps `lane` for later reports like `item`, replacing a lane remembered before: for later
@@ -1716,6 +1918,10 @@ fn hide_sender(
         if hidden {
             rules::set_done(&mut entry, true, now);
             update_item(db, &entry)?;
+            count(db, &entry, Count::Muted, now)?;
+            if let Some(rule) = &rule {
+                hit(db, rule, &entry.source)?;
+            }
             if scope_of_client.sees(&entry.source) {
                 done.push(entry.id);
             }
@@ -1831,6 +2037,10 @@ fn mute_item(
         }
         let Some(change) = rules::mute_entry(&mut entry, effect, now) else { continue };
         update_item(db, &entry)?;
+        count(db, &entry, Count::Muted, now)?;
+        if let Some(rule) = &rule {
+            hit(db, rule, &entry.source)?;
+        }
         if seen_by_client.sees(&entry.source) {
             match change {
                 MutedEntry::Done => muted.done.push(entry.id),
@@ -1912,7 +2122,8 @@ fn rule_key(rule: &Rule) -> String {
 /// stays as it is.
 fn insert_rule(db: &Connection, rule: Rule) -> Result<(), Failure> {
     db.execute(
-        "INSERT INTO rules (id, source, effect, sender, facet, until, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO rules (id, source, effect, sender, facet, until, data, counted_since)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT (source, effect, sender, facet) DO NOTHING",
         params![
             rule.id,
@@ -1921,7 +2132,8 @@ fn insert_rule(db: &Connection, rule: Rule) -> Result<(), Failure> {
             rule_key(&rule),
             rule.facet.as_ref().map(facet_column).unwrap_or_default(),
             rule.until.map(stamp),
-            serde_json::to_string(&rule)?
+            serde_json::to_string(&rule)?,
+            stamp(rule.created)
         ],
     )?;
     Ok(())
@@ -2097,6 +2309,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 5 {
         tx.execute_batch(SCHEMA_V5)?;
+    }
+    if version < 6 {
+        tx.execute_batch(SCHEMA_V6)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -2474,10 +2689,15 @@ fn reconcile(
     for matter in matters {
         match entries.remove(&matter.thread_key) {
             None if muted => {}
-            None => insert_item(&tx, CORE_OWNER, &matter.into_item(new_id()?, now))?,
+            None => {
+                let item = matter.into_item(new_id()?, now);
+                insert_item(&tx, CORE_OWNER, &item)?;
+                count(&tx, &item, Count::New, now)?;
+            }
             Some(entry) => match entry.state {
                 State::Done { at } if at < matter.since && !muted => {
                     let incoming = matter.into_item(entry.id.clone(), now);
+                    count(&tx, &incoming, Count::New, now)?;
                     update_item(&tx, &rules::merge(entry, incoming))?;
                 }
                 State::Done { .. } => {}
@@ -2501,6 +2721,8 @@ fn reconcile(
         if !matches!(entry.state, State::Done { .. }) && fixed(&thread_key) {
             rules::set_done(&mut entry, true, now);
             update_item(&tx, &entry)?;
+            // Decided, expired or fixed: its matter went away (task E8.8a).
+            count(&tx, &entry, Count::Done, now)?;
         }
     }
     tx.commit()?;
@@ -2567,16 +2789,12 @@ fn file_mail(
         .filter(|rule| rules::reaches(rule, &source))
         .collect();
     let sender = rules::sender_key(mail.from.as_ref());
-    // A muted account, or a sender or domain hidden (task E3.10): not filed. The message is not
-    // kept as filed either, so lifting the rule lets a catch-up file it while it is still unread.
-    if rules.iter().any(|rule| rules::drops(rule, sender.as_deref())) {
-        return Ok(None);
-    }
     // Only the account's own lanes: a remembered lane stays per account.
-    let remembered = rules
+    let remembering = rules
         .iter()
         .filter(|rule| rule.source == source && rule.sender.is_some() && rule.sender == sender)
-        .find_map(remembered_lane);
+        .find(|rule| remembered_lane(rule).is_some());
+    let remembered = remembering.and_then(remembered_lane);
     let lane = rules::mail_lane(mail.bulk, remembered);
     let (lane, urgent) = rules::placement(Kind::Message, Some(lane));
     let existing = read_owned(&tx, &mail.account, &mail.thread)?;
@@ -2613,14 +2831,32 @@ fn file_mail(
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
     incoming.facets = rules::facets(&incoming, mail.list.as_deref(), mail.bulk);
-    match rules::muting(&rules, &incoming, now) {
-        Some(MuteEffect::Hide) => return Ok(None),
-        Some(MuteEffect::Info) => rules::set_lane(&mut incoming, Lane::Info),
-        Some(MuteEffect::NoPopup) | None => {}
+    // A muted account, or a sender or domain hidden (task E3.10), or a trait hidden: not filed. The
+    // message is not kept as filed either, so lifting the rule lets a catch-up file it while it is
+    // still unread.
+    let dropping = rules.iter().find(|rule| rules::drops(rule, sender.as_deref()));
+    let muting = deciding_mute(&rules, &incoming, now);
+    if let Some(rule) = dropping.or(muting.and_then(|(rule, effect)| (effect == MuteEffect::Hide).then_some(rule))) {
+        // Counted once per mail (task E8.8a), however often a catch-up offers it again.
+        let first = tx.execute(
+            "INSERT OR IGNORE INTO muted_mail (account, message, at) VALUES (?1, ?2, ?3)",
+            params![mail.account, mail.message, stamp(now)],
+        )? > 0;
+        if first {
+            count(&tx, &incoming, Count::Muted, now)?;
+            hit(&tx, rule, &incoming.source)?;
+        }
+        tx.commit()?;
+        return Ok(None);
+    }
+    if let Some((_, MuteEffect::Info)) = muting {
+        rules::set_lane(&mut incoming, Lane::Info);
     }
     if notify == Notify::ForMeOnly && incoming.lane != Lane::ForMe {
         return Ok(None);
     }
+    // Counted with this mail's own traits, also when an older one is filed late.
+    let counted = incoming.clone();
     match existing {
         Some(existing) => {
             // An older mail of the conversation, filed late, does not take the place of the newest.
@@ -2643,8 +2879,371 @@ fn file_mail(
         "INSERT INTO mail_messages (account, message, item) VALUES (?1, ?2, ?3)",
         params![mail.account, mail.message, id],
     )?;
+    // Filed once per message (above), so counted once (task E8.8a).
+    let remembering = remembering.filter(|rule| remembered_lane(rule) == Some(lane));
+    count_report(&tx, &counted, remembering, muting.map(|(rule, _)| rule), now)?;
     tx.commit()?;
     Ok(Some(id))
+}
+
+/// One event the statistics count (task E8.8a, [`count`]); its `metric` in the table `stats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Count {
+    /// A report reached the inbox: a new entry or one merged into an entry.
+    New,
+    /// An entry was opened while it was new (`inbox.open_item`).
+    Opened,
+    /// An entry was dismissed ("✕").
+    Dismissed,
+    /// An entry was done, by hand or because its matter went away.
+    Done,
+    /// An entry was put off.
+    Snoozed,
+    /// An entry was made a task.
+    Task,
+    /// A rule dropped a report, moved it to "Info" or kept it without a popup, or hiding and
+    /// muting closed or moved an entry.
+    Muted,
+    /// An entry came for a popup.
+    Popup,
+    /// An entry that came for a popup was held back by quiet.
+    Quiet,
+}
+
+impl Count {
+    const ALL: [Count; 9] = [
+        Count::New,
+        Count::Opened,
+        Count::Dismissed,
+        Count::Done,
+        Count::Snoozed,
+        Count::Task,
+        Count::Muted,
+        Count::Popup,
+        Count::Quiet,
+    ];
+
+    /// The `metric` column, the name of its field in [`StatsCounts`].
+    fn metric(self) -> &'static str {
+        match self {
+            Count::New => "new",
+            Count::Opened => "opened",
+            Count::Dismissed => "dismissed",
+            Count::Done => "done",
+            Count::Snoozed => "snoozed",
+            Count::Task => "tasks",
+            Count::Muted => "muted",
+            Count::Popup => "popups",
+            Count::Quiet => "quiet",
+        }
+    }
+
+    /// Counted by trait too, for the suggestions: everything but popups, which are the source's.
+    fn by_trait(self) -> bool {
+        !matches!(self, Count::Popup | Count::Quiet)
+    }
+
+    /// Its field in `counts`.
+    fn field(self, counts: &mut StatsCounts) -> &mut u32 {
+        match self {
+            Count::New => &mut counts.new,
+            Count::Opened => &mut counts.opened,
+            Count::Dismissed => &mut counts.dismissed,
+            Count::Done => &mut counts.done,
+            Count::Snoozed => &mut counts.snoozed,
+            Count::Task => &mut counts.tasks,
+            Count::Muted => &mut counts.muted,
+            Count::Popup => &mut counts.popups,
+            Count::Quiet => &mut counts.quiet,
+        }
+    }
+}
+
+/// The local calendar day of `now`: statistics are read by day, and the person's day is local.
+fn local_day(now: DateTime<Utc>) -> NaiveDate {
+    now.with_timezone(&Local).date_naive()
+}
+
+/// The traits counted apart (task E8.8a): all but those that name the source itself (the account of
+/// a mail, the agent, a script's client), whose sums the source has already, and the conversation,
+/// which is no trait of an entry.
+fn counted_trait(key: FacetKey) -> bool {
+    !matches!(key, FacetKey::Account | FacetKey::Agent | FacetKey::Client | FacetKey::Conversation)
+}
+
+/// Counts `what` for `item` at `now` (task E8.8a): one more in the day sum of its source and, unless
+/// [`Count::by_trait`] says no, of each of its counted traits ([`counted_trait`]); a report also
+/// counts in its local hour, an entry done also in the step of the time since its first report
+/// ([`WAIT_STEPS`]). Only counts and the traits' values are written, never a title or a text.
+fn count(db: &Connection, item: &Item, what: Count, now: DateTime<Utc>) -> Result<(), Failure> {
+    let local = now.with_timezone(&Local);
+    let day = local.date_naive().to_string();
+    let source = item.source.key();
+    add(db, &day, &source, "", what.metric())?;
+    if what.by_trait() {
+        for facet in item.facets.iter().filter(|facet| counted_trait(facet.key)) {
+            add(db, &day, &source, &facet_column(facet), what.metric())?;
+        }
+    }
+    match what {
+        Count::New => add(db, &day, &source, "", &format!("{HOUR_METRIC}{:02}", local.hour())),
+        Count::Done => add(db, &day, &source, "", &format!("{WAIT_METRIC}{}", wait_step(now - item.received))),
+        _ => Ok(()),
+    }
+}
+
+/// [`count`]s `what` for `item` at `now` unless the entry was done before (`was_done`): closing an
+/// entry twice counts once.
+fn count_closed(db: &Connection, item: &Item, was_done: bool, what: Count, now: DateTime<Utc>) -> Result<(), Failure> {
+    if was_done { Ok(()) } else { count(db, item, what, now) }
+}
+
+/// One more in the row `day`, `source`, `facet`, `metric` of `stats`.
+fn add(db: &Connection, day: &str, source: &str, facet: &str, metric: &str) -> Result<(), Failure> {
+    db.execute(
+        "INSERT INTO stats (day, source, facet, metric, count) VALUES (?1, ?2, ?3, ?4, 1)
+         ON CONFLICT (day, source, facet, metric) DO UPDATE SET count = count + 1",
+        params![day, source, facet, metric],
+    )?;
+    Ok(())
+}
+
+/// `rule` caught one more report or entry of `source` (task E8.8a): counted per source, so a key
+/// learns only of the catches in sources it may see ([`rule_hits`]).
+fn hit(db: &Connection, rule: &Rule, source: &SourceRef) -> Result<(), Failure> {
+    add(db, "", &source.key(), "", &format!("{RULE_METRIC}{}", rule.id))
+}
+
+/// The step of [`WAIT_STEPS`] `waited` falls in; one past the last for more than a week.
+fn wait_step(waited: TimeDelta) -> usize {
+    let minutes = u32::try_from(u64::try_from(waited.num_seconds()).unwrap_or(0).div_ceil(60)).unwrap_or(u32::MAX);
+    WAIT_STEPS.iter().position(|&step| minutes <= step).unwrap_or(WAIT_STEPS.len())
+}
+
+/// The median of the times counted in `steps` (one count per step of [`WAIT_STEPS`] and one more
+/// for longer), as the upper end of its step in minutes; a week for the last. `None` for none.
+fn median_minutes(steps: &[u32]) -> Option<u32> {
+    let total: u64 = steps.iter().map(|&n| u64::from(n)).sum();
+    if total == 0 {
+        return None;
+    }
+    let half = total.div_ceil(2);
+    let mut seen = 0;
+    let step = steps.iter().position(|&n| {
+        seen += u64::from(n);
+        seen >= half
+    })?;
+    WAIT_STEPS.get(step).or(WAIT_STEPS.last()).copied()
+}
+
+/// Removes the `stats` rows and the counted mail older than they are kept at `now` (task E8.8a):
+/// source sums after [`KEEP_STATS_MONTHS`], rows by trait after [`KEEP_TRAIT_DAYS`], and the
+/// catches of rules that are gone.
+fn remove_old_stats(db: &Connection, now: DateTime<Utc>) -> Result<(), Failure> {
+    let today = local_day(now);
+    let sums = today.checked_sub_months(Months::new(KEEP_STATS_MONTHS)).unwrap_or(today);
+    // A quarter ends today and starts 89 days before: what is older goes.
+    let traits = today.checked_sub_days(Days::new(KEEP_TRAIT_DAYS - 1)).unwrap_or(today);
+    db.execute("DELETE FROM stats WHERE day <> '' AND day < ?1", params![sums.to_string()])?;
+    db.execute("DELETE FROM stats WHERE day <> '' AND facet <> '' AND day < ?1", params![traits.to_string()])?;
+    let mail = now - TimeDelta::days(i64::try_from(KEEP_TRAIT_DAYS).unwrap_or(i64::MAX));
+    db.execute("DELETE FROM muted_mail WHERE at < ?1", params![stamp(mail)])?;
+    db.execute(
+        "DELETE FROM stats WHERE day = '' AND instr(metric, ?1) = 1
+         AND substr(metric, length(?1) + 1) NOT IN (SELECT id FROM rules)",
+        params![RULE_METRIC],
+    )?;
+    Ok(())
+}
+
+/// The rule among `rules` that decides the muting of `item` at `now`, with its effect: one of the
+/// rules holding for it ([`rules::mutes`]) whose effect is the strongest ([`rules::muting`]).
+fn deciding_mute<'a>(rules: &'a [Rule], item: &Item, now: DateTime<Utc>) -> Option<(&'a Rule, MuteEffect)> {
+    let effect = rules::muting(rules, item, now)?;
+    let rule =
+        rules.iter().find(|rule| rules::mutes(rule, item, now) && MuteEffect::of(rule.effect) == Some(effect))?;
+    Some((rule, effect))
+}
+
+/// How much each of `rules` caught in the sources of `scope` (task E8.8a), one [`RuleHits`] per
+/// rule in their order. `since` is the later of the rule's `created` and `counted_since`.
+fn rule_hits(db: &Connection, scope: &Scope, rules: &[Rule]) -> Result<Vec<RuleHits>, Failure> {
+    let caught = read(
+        db,
+        "stats",
+        "metric, SUM(count)",
+        scope,
+        ("day = '' AND instr(metric, ?) = 1", vec![text(RULE_METRIC)]),
+        " GROUP BY metric",
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+    )?;
+    let caught: BTreeMap<String, u32> = caught
+        .into_iter()
+        .filter_map(|(metric, n)| Some((metric.strip_prefix(RULE_METRIC)?.to_string(), saturated(n))))
+        .collect();
+    let mut statement = db.prepare("SELECT id, counted_since FROM rules")?;
+    let since: BTreeMap<String, DateTime<Utc>> = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter_map(|(id, at)| Some((id, DateTime::parse_from_rfc3339(&at?).ok()?.with_timezone(&Utc))))
+        .collect();
+    Ok(rules
+        .iter()
+        .map(|rule| RuleHits {
+            rule: rule.id.clone(),
+            hits: caught.get(&rule.id).copied().unwrap_or(0),
+            since: since.get(&rule.id).map_or(rule.created, |&since| since.max(rule.created)),
+        })
+        .collect())
+}
+
+/// A count read from the file as `u32`; negative ones (none are written) are 0.
+fn saturated(n: i64) -> u32 {
+    u32::try_from(n.max(0)).unwrap_or(u32::MAX)
+}
+
+/// The trait of a `facet` column ([`facet_column`]); `None` for a key no version writes.
+fn parse_facet_column(column: &str) -> Option<Facet> {
+    let (key, value) = column.split_once('=')?;
+    let key = serde_json::from_value(serde_json::Value::String(key.to_string())).ok()?;
+    Some(Facet { key, value: value.to_string() })
+}
+
+/// `inbox.get_stats` (task E8.8a) for `client` at `now`: the span of `range` ending with `until`
+/// (today when `None`), only of the sources `client` sees ([`Scope::of`]), as [`InboxStats`]
+/// describes it.
+fn get_stats(
+    db: &Connection,
+    range: StatsRange,
+    until: Option<NaiveDate>,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<InboxStats, Failure> {
+    let until = until.unwrap_or_else(|| local_day(now));
+    let from = until
+        .checked_sub_days(Days::new(u64::from(range.days() - 1)))
+        .ok_or_else(|| Failure::Invalid("the span starts before the calendar does".into()))?;
+    let scope = Scope::of(client);
+    let span = vec![text(from.to_string()), text(until.to_string())];
+    let rows = read(
+        db,
+        "stats",
+        "day, source, metric, count",
+        &scope,
+        ("facet = '' AND day >= ? AND day <= ?", span.clone()),
+        "",
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?)),
+    )?;
+    let mut by_day: BTreeMap<NaiveDate, BTreeMap<SourceRef, StatsCounts>> = BTreeMap::new();
+    let mut hours = vec![0u32; 24];
+    let mut waits = vec![0u32; WAIT_STEPS.len() + 1];
+    for (day, source, metric, n) in rows {
+        // Rows no version writes are skipped, not shown half.
+        let (Ok(day), Ok(source)) = (day.parse::<NaiveDate>(), source.parse::<SourceRef>()) else { continue };
+        let slot = if let Some(hour) = metric.strip_prefix(HOUR_METRIC) {
+            hour.parse::<usize>().ok().and_then(|hour| hours.get_mut(hour))
+        } else if let Some(step) = metric.strip_prefix(WAIT_METRIC) {
+            step.parse::<usize>().ok().and_then(|step| waits.get_mut(step))
+        } else {
+            Count::ALL
+                .into_iter()
+                .find(|what| what.metric() == metric)
+                .map(|what| what.field(by_day.entry(day).or_default().entry(source).or_default()))
+        };
+        if let Some(slot) = slot {
+            *slot = slot.saturating_add(saturated(n));
+        }
+    }
+    let mut totals = StatsCounts::default();
+    let days = from
+        .iter_days()
+        .take_while(|day| *day <= until)
+        .map(|day| {
+            let sources = by_day.remove(&day).unwrap_or_default();
+            let sources = sources
+                .into_iter()
+                .map(|(source, counts)| {
+                    totals.add(&counts);
+                    SourceStats { source, counts }
+                })
+                .collect();
+            StatsDay { day, sources }
+        })
+        .collect();
+    Ok(InboxStats {
+        range,
+        from,
+        until,
+        days,
+        hours,
+        totals,
+        median_done_minutes: median_minutes(&waits),
+        suggestions: suggestions(db, &scope, span, now)?,
+    })
+}
+
+/// What could be muted in the span `span` (first and last day) for a caller seeing `scope` (task
+/// E8.8a): the counted traits with at least [`SUGGEST_FROM`] reports of which at most one in
+/// [`SUGGEST_OPENED_ONE_IN`] was opened, summed over the sources of a kind (a muted trait holds for
+/// all of them), the most reports first. A trait a rule mutes already is left out, and so is one
+/// without an entry the core still holds: the suggestion names the newest of them and the way to
+/// mute it from [`rules::mute_options`], so its button runs `inbox.mute_item`.
+fn suggestions(
+    db: &Connection,
+    scope: &Scope,
+    span: Vec<Value>,
+    now: DateTime<Utc>,
+) -> Result<Vec<StatsSuggestion>, Failure> {
+    let condition = "facet <> '' AND day >= ? AND day <= ? AND metric IN ('new', 'opened')";
+    let rows = read(db, "stats", "source, facet, metric, count", scope, (condition, span), "", |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+    })?;
+    let mut traits: BTreeMap<(String, String), (u32, u32)> = BTreeMap::new();
+    for (source, facet, metric, n) in rows {
+        let Ok(source) = source.parse::<SourceRef>() else { continue };
+        let (new, opened) = traits.entry((kind_prefix(&source), facet)).or_default();
+        let slot = if metric == Count::New.metric() { new } else { opened };
+        *slot = slot.saturating_add(saturated(n));
+    }
+    let mut worth: Vec<((String, String), (u32, u32))> = traits
+        .into_iter()
+        .filter(|(_, (new, opened))| *new >= SUGGEST_FROM && opened.saturating_mul(SUGGEST_OPENED_ONE_IN) <= *new)
+        .collect();
+    worth.sort_by(|(a, (a_new, _)), (b, (b_new, _))| b_new.cmp(a_new).then_with(|| a.cmp(b)));
+    // Only rules the caller may see, as `inbox.list_rules` lists them: a missing suggestion must not
+    // tell of a rule kept in a source it may not see.
+    let muted: Vec<Rule> = read_rules(db, scope, "facet <> ''", Vec::new())?
+        .into_iter()
+        .filter(|rule| rules::is_active(rule, now))
+        .collect();
+    let mut suggestions = Vec::new();
+    for ((prefix, column), (new, opened)) in worth {
+        if suggestions.len() == SUGGESTIONS_MAX {
+            break;
+        }
+        let Some(facet) = parse_facet_column(&column) else { continue };
+        if muted.iter().any(|rule| rule.facet.as_ref() == Some(&facet) && kind_prefix(&rule.source) == prefix) {
+            continue;
+        }
+        let Some(item) = newest_with(db, scope, &prefix, &facet)? else { continue };
+        let wanted = MuteScope::Facet { key: facet.key };
+        let Some(option) = rules::mute_options(&item).into_iter().find(|option| option.scope == wanted) else {
+            continue;
+        };
+        suggestions.push(StatsSuggestion { item: item.id, source: item.source, option, new, opened });
+    }
+    Ok(suggestions)
+}
+
+/// The most recently updated entry in `scope` of a source starting with `prefix` that has `facet`,
+/// in any state; `None` when the core holds none any more.
+fn newest_with(db: &Connection, scope: &Scope, prefix: &str, facet: &Facet) -> Result<Option<Item>, Failure> {
+    // The value as it stands in the entry's JSON narrows the rows; the traits themselves decide.
+    let value = serde_json::to_string(&facet.value)?;
+    let condition = "instr(source, ?) = 1 AND instr(data, ?) > 0";
+    let found = read_items(db, scope, condition, vec![text(prefix), text(value)], " ORDER BY updated DESC, id")?;
+    Ok(found.into_iter().map(|stored| stored.item).find(|item| item.facets.contains(facet)))
 }
 
 #[cfg(test)]
@@ -2918,7 +3517,7 @@ pub(crate) mod tests {
         let inbox = inbox_in(dir.path());
         let kept = item(inbox.handle(Request::GetItem { id: id.clone() }, None, at(9, 0)));
         assert_eq!((kept.title.as_str(), kept.lane), ("Keep me", Lane::ForMe));
-        let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(9, 0)) else {
+        let Response::Rules { rules, .. } = inbox.handle(Request::ListRules, None, at(9, 0)) else {
             panic!("rules answer with Rules");
         };
         assert_eq!(rules.len(), 2);
@@ -3223,7 +3822,10 @@ pub(crate) mod tests {
                 inbox.handle(Request::ListSources, Some(&client), at(8, 1)),
                 Response::Sources { sources: vec![] }
             );
-            assert_eq!(inbox.handle(Request::ListRules, Some(&client), at(8, 1)), Response::Rules { rules: vec![] });
+            assert_eq!(
+                inbox.handle(Request::ListRules, Some(&client), at(8, 1)),
+                Response::Rules { rules: vec![], hits: vec![] }
+            );
             for request in [
                 Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
                 Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) },
@@ -3249,7 +3851,7 @@ pub(crate) mod tests {
             item(inbox.handle(Request::SetItemDone { id, done: true, dismissed: false }, None, at(8, 4))).state,
             State::Done { at: at(8, 4) }
         );
-        let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(8, 6)) else {
+        let Response::Rules { rules, .. } = inbox.handle(Request::ListRules, None, at(8, 6)) else {
             panic!("rules answer with Rules");
         };
         let remove = Request::RemoveRule { id: rules[0].id.clone() };
@@ -3339,7 +3941,7 @@ pub(crate) mod tests {
 
         // Remembering another lane replaces the rule.
         inbox.handle(Request::SetItemLane { id: next, lane: Lane::Info, remember: true }, None, at(8, 4));
-        let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(8, 5)) else {
+        let Response::Rules { rules, .. } = inbox.handle(Request::ListRules, None, at(8, 5)) else {
             panic!("rules answer with Rules");
         };
         assert_eq!(rules.iter().map(|rule| rule.effect).collect::<Vec<_>>(), [RuleEffect::Lane { lane: Lane::Info }]);
@@ -3364,7 +3966,7 @@ pub(crate) mod tests {
             inbox.handle(Request::RemoveRule { id: rules[0].id.clone() }, Some(&script), at(8, 8)),
             Response::Ok
         );
-        assert_eq!(inbox.handle(Request::ListRules, None, at(8, 9)), Response::Rules { rules: vec![] });
+        assert_eq!(inbox.handle(Request::ListRules, None, at(8, 9)), Response::Rules { rules: vec![], hits: vec![] });
     }
 
     #[test]
@@ -3685,7 +4287,10 @@ pub(crate) mod tests {
         posted(inbox.handle(agent_post(Kind::AgentWaiting, "s1", AgentKind::ClaudeCode), Some(&hook), at(8, 0)));
         let mute = Request::MuteSource { source: SourceRef::agent("claude-code"), muted: true };
         assert_eq!(inbox.handle(mute, None, at(8, 1)), Response::Ok);
-        assert_eq!(inbox.handle(Request::ListRules, Some(&hook), at(8, 2)), Response::Rules { rules: vec![] });
+        assert_eq!(
+            inbox.handle(Request::ListRules, Some(&hook), at(8, 2)),
+            Response::Rules { rules: vec![], hits: vec![] }
+        );
         assert_eq!(inbox.handle(Request::ListSources, Some(&hook), at(8, 2)), Response::Sources { sources: vec![] });
     }
 
@@ -3698,7 +4303,7 @@ pub(crate) mod tests {
         let facts = inbox.facts(&lane);
         assert_eq!(facts.item.map(|item| (item.id, item.title)), Some((id.clone(), "CI red".to_string())));
         inbox.handle(lane, None, at(8, 1));
-        let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(8, 2)) else {
+        let Response::Rules { rules, .. } = inbox.handle(Request::ListRules, None, at(8, 2)) else {
             panic!("rules answer with Rules");
         };
         let remove = Request::RemoveRule { id: rules[0].id.clone() };
@@ -4133,7 +4738,7 @@ pub(crate) mod tests {
 
     fn rules_of(inbox: &Inbox) -> Vec<Rule> {
         match inbox.handle(Request::ListRules, None, at(12, 0)) {
-            Response::Rules { rules } => rules,
+            Response::Rules { rules, .. } => rules,
             other => panic!("expected rules, got {other:?}"),
         }
     }
@@ -4613,7 +5218,7 @@ pub(crate) mod tests {
         assert_ne!(own.id, theirs.id, "never the other account's rule");
         assert_eq!((own.source.key().as_str(), answer.new_rule), (ANNA, true), "one of its own");
         let listed = match inbox.handle(Request::ListRules, Some(&reader), at(9, 5)) {
-            Response::Rules { rules } => rules,
+            Response::Rules { rules, .. } => rules,
             other => panic!("expected rules, got {other:?}"),
         };
         assert_eq!(listed, std::slice::from_ref(&own), "the client lists only its account's rule");
@@ -4868,7 +5473,7 @@ pub(crate) mod tests {
         let other = inbox.handle(notice("Disk full", Some("disk")), Some(&script()), at(9, 1));
         assert!(matches!(other, Response::Posted { id: Some(_) }), "another conversation of the client");
         let listed_at = |now| match inbox.handle(Request::ListRules, None, now) {
-            Response::Rules { rules } => rules.len(),
+            Response::Rules { rules, .. } => rules.len(),
             other => panic!("rules: {other:?}"),
         };
         assert_eq!(listed_at(at(9, 30)), 1);
@@ -4899,7 +5504,7 @@ pub(crate) mod tests {
         let value = |rule: Option<Rule>| rule.and_then(|rule| rule.facet).map(|facet| facet.value);
         assert_eq!(value(answer.rule), Some(String::new()), "not in the answer");
         let listed = match inbox.handle(Request::ListRules, Some(&other), at(8, 2)) {
-            Response::Rules { rules } => rules,
+            Response::Rules { rules, .. } => rules,
             other => panic!("rules: {other:?}"),
         };
         assert_eq!(value(listed.into_iter().next()), Some(String::new()), "nor in the list");
@@ -4988,5 +5593,330 @@ pub(crate) mod tests {
         assert_eq!(dismissed(&inbox), 0, "done for real");
         inbox.handle(set(false, true), None, at(8, 4));
         assert_eq!(dismissed(&inbox), 0, "only with done");
+    }
+
+    // ----- statistics (task E8.8a) -----
+
+    fn stats_until(
+        inbox: &Inbox,
+        range: StatsRange,
+        until: Option<NaiveDate>,
+        client: Option<&ClientInfo>,
+        now: DateTime<Utc>,
+    ) -> InboxStats {
+        match inbox.handle(Request::GetStats { range, until }, client, now) {
+            Response::Stats(stats) => stats,
+            other => panic!("expected statistics, got {other:?}"),
+        }
+    }
+
+    fn stats(inbox: &Inbox, client: Option<&ClientInfo>, now: DateTime<Utc>) -> InboxStats {
+        stats_until(inbox, StatsRange::Week, None, client, now)
+    }
+
+    /// What `stats` counted for `source` over its whole span.
+    fn of(stats: &InboxStats, source: &SourceRef) -> StatsCounts {
+        let mut sum = StatsCounts::default();
+        stats.days.iter().flat_map(|day| &day.sources).filter(|s| s.source == *source).for_each(|s| sum.add(&s.counts));
+        sum
+    }
+
+    /// The rows of `stats` that meet `condition`.
+    fn stats_rows(inbox: &Inbox, condition: &str) -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM stats WHERE {condition}");
+        inbox.with(|db| Ok(db.query_row(&sql, [], |row| row.get(0))?)).expect("read")
+    }
+
+    fn done(id: &str, dismissed: bool) -> Request {
+        Request::SetItemDone { id: id.into(), done: true, dismissed }
+    }
+
+    #[test]
+    fn every_event_counts_once_in_its_source_and_the_hour() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let source = api::post_source(Some(&script()), None).expect("a source");
+        let now = at(10, 0);
+        let post = |title: &str, key: Option<&str>| posted(inbox.handle(notice(title, key), Some(&script()), now));
+        let a = post("Build red", Some("build"));
+        post("Build red again", Some("build"));
+        let (b, c, d, e) = (post("B", None), post("C", None), post("D", None), post("E", None));
+
+        inbox.opened(&a, None, now);
+        inbox.opened(&a, None, now);
+        inbox.handle(Request::SnoozeItem { id: b, until: Some(at(20, 0)) }, None, now);
+        inbox.handle(done(&c, false), None, at(10, 20));
+        inbox.handle(done(&c, false), None, at(10, 21));
+        inbox.handle(done(&d, true), None, now);
+        assert!(matches!(inbox.done_as_task(&e, None, now), Response::Item { .. }));
+        let entry = item(get(&inbox, &a, None));
+        inbox.count_popups(&[&entry], true, now);
+        inbox.count_popups(&[&Item { urgent: true, ..entry.clone() }], true, now);
+
+        let stats = stats(&inbox, None, now);
+        let expected = StatsCounts {
+            new: 6,
+            opened: 1,
+            dismissed: 1,
+            done: 1,
+            snoozed: 1,
+            tasks: 1,
+            muted: 0,
+            popups: 2,
+            quiet: 1,
+        };
+        assert_eq!(of(&stats, &source), expected, "opened once, done once, urgent breaks through quiet");
+        assert_eq!(stats.totals, expected);
+        let hour = usize::try_from(now.with_timezone(&Local).hour()).expect("an hour");
+        assert_eq!((stats.hours.len(), stats.hours[hour], stats.hours.iter().sum::<u32>()), (24, 6, 6));
+        assert_eq!(stats.median_done_minutes, Some(30), "20 minutes fall in the step up to 30");
+        assert_eq!((stats.days.len(), stats.until, stats.days[6].day), (7, local_day(now), local_day(now)));
+        // Nothing of the reports themselves is kept.
+        let kept: String = inbox
+            .with(|db| Ok(db.query_row("SELECT group_concat(facet || metric, ' ') FROM stats", [], |row| row.get(0))?))
+            .expect("read");
+        assert!(!kept.contains("Build") && !kept.contains("red"), "{kept}");
+    }
+
+    #[test]
+    fn dismissing_counts_apart_from_done_and_opening_again_lets_done_count() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = posted(inbox.handle(notice("Backup ok", None), Some(&script()), at(8, 0)));
+        inbox.handle(done(&id, true), Some(&script()), at(8, 1));
+        let counts = stats(&inbox, None, at(8, 2)).totals;
+        assert_eq!((counts.dismissed, counts.done), (1, 0));
+        assert_eq!(stats(&inbox, None, at(8, 2)).median_done_minutes, None, "dismissing takes no time to do");
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: false, dismissed: false }, None, at(8, 3));
+        inbox.handle(done(&id, false), None, at(8, 4));
+        let counts = stats(&inbox, None, at(8, 5)).totals;
+        assert_eq!((counts.dismissed, counts.done), (1, 1));
+    }
+
+    #[test]
+    fn a_span_holds_its_days_and_ends_with_until() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let now = at(12, 0);
+        for days in [0, 10, 30, 100] {
+            inbox.handle(notice("Nightly", None), Some(&script()), now - TimeDelta::days(days));
+        }
+        let new = |range, until| stats_until(&inbox, range, until, None, now).totals.new;
+        assert_eq!(
+            (new(StatsRange::Week, None), new(StatsRange::Month, None), new(StatsRange::Quarter, None)),
+            (1, 2, 3)
+        );
+        let earlier = Some(local_day(now - TimeDelta::days(10)));
+        assert_eq!(new(StatsRange::Week, earlier), 1, "the week up to ten days ago");
+        let month = stats_until(&inbox, StatsRange::Month, earlier, None, now);
+        assert_eq!((month.days.len(), month.from, month.totals.new), (30, local_day(now - TimeDelta::days(39)), 2));
+        assert!(month.days.windows(2).all(|pair| pair[0].day.succ_opt() == Some(pair[1].day)), "every day in order");
+    }
+
+    #[test]
+    fn traits_go_after_90_days_sums_after_13_months_and_a_removed_account_takes_its_rows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let now = at(12, 0);
+        filed(&inbox, &from("m:1", "news@shop.example"), now);
+        let traits = "day <> '' AND facet <> ''";
+        let sums = "day <> '' AND facet = ''";
+        assert!(stats_rows(&inbox, traits) > 0 && stats_rows(&inbox, sums) > 0);
+
+        inbox.tend(now + TimeDelta::days(80), true).expect("tended");
+        assert!(stats_rows(&inbox, traits) > 0, "a quarter keeps its senders");
+        inbox.tend(now + TimeDelta::days(91), true).expect("tended");
+        assert_eq!(stats_rows(&inbox, traits), 0, "senders and domains go after 90 days");
+        assert!(stats_rows(&inbox, sums) > 0, "the account's sums stay");
+        inbox.tend(now + TimeDelta::days(13 * 31 + 1), true).expect("tended");
+        assert_eq!(stats_rows(&inbox, sums), 0, "and go after 13 months");
+
+        filed(&inbox, &from("m:2", "news@shop.example"), now);
+        inbox.handle(notice("Kept", None), Some(&script()), now);
+        inbox.forget_source(ANNA).expect("forgotten");
+        assert_eq!(stats_rows(&inbox, &format!("source = '{ANNA}'")), 0, "the account's rows went");
+        assert!(stats_rows(&inbox, "1") > 0, "others stay");
+    }
+
+    #[test]
+    fn a_client_counts_only_the_sources_it_sees_and_never_the_suite() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let now = at(10, 0);
+        let script_source = api::post_source(Some(&script()), None).expect("a source");
+        inbox.handle(notice("Backup ok", None), Some(&script()), now);
+        filed(&inbox, &personal("m:1", "t:1", now), now);
+        inbox.file_account_problems(&[check("anna", problem(Trouble::SignInRefused, now))], true, now).expect("filed");
+        let anna = SourceRef::mail("anna@example.org");
+
+        let person = stats(&inbox, None, now);
+        assert_eq!(
+            (of(&person, &script_source).new, of(&person, &anna).new, of(&person, &SourceRef::suite()).new),
+            (1, 1, 1)
+        );
+        let everything = stats(&inbox, Some(&script()), now);
+        assert_eq!((of(&everything, &script_source).new, of(&everything, &anna).new), (1, 1));
+        assert_eq!(of(&everything, &SourceRef::suite()), StatsCounts::default(), "the suite is the person's");
+        let other_account = with_mail(Some(Level::Read), Selection::Only(vec![WORK.into()]));
+        let partial = stats(&inbox, Some(&other_account), now);
+        assert_eq!(
+            (of(&partial, &script_source).new, partial.totals.new),
+            (1, 1),
+            "the account it may not read is missing"
+        );
+        let no_mail = with_mail(None, Selection::All);
+        assert_eq!(stats(&inbox, Some(&no_mail), now).totals.new, 1, "no mail without read access to mail");
+        assert_eq!(stats(&inbox, Some(&blind()), now).totals, StatsCounts::default());
+        assert_eq!(stats(&inbox, Some(&hook()), now).totals, StatsCounts::default(), "a hook sees nothing");
+    }
+
+    /// Ten bulk mails from `news@shop.example`, a minute apart; returns their entries' ids.
+    fn newsletters(inbox: &Inbox, count: u32) -> Vec<String> {
+        (0..count)
+            .map(|n| {
+                let mail = mail(&format!("m:{n}"), &format!("t:{n}"), "News", "news@shop.example", true, at(8, n));
+                filed(inbox, &mail, at(9, 0))
+            })
+            .collect()
+    }
+
+    fn sender_suggestion(stats: &InboxStats) -> Option<&StatsSuggestion> {
+        stats.suggestions.iter().find(|s| s.option.scope == MuteScope::Facet { key: FacetKey::Sender })
+    }
+
+    #[test]
+    fn a_trait_of_many_unopened_entries_is_suggested_with_its_newest_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let now = at(10, 0);
+        let mut ids = newsletters(&inbox, SUGGEST_FROM - 1);
+        assert!(stats(&inbox, None, now).suggestions.is_empty(), "below the threshold");
+
+        let tenth = mail("m:9", "t:9", "News", "news@shop.example", true, at(8, 9));
+        ids.push(filed(&inbox, &tenth, at(9, 0)));
+        let stats_now = stats(&inbox, None, now);
+        let suggested = sender_suggestion(&stats_now).expect("the sender is suggested");
+        assert_eq!((suggested.item.as_str(), suggested.new, suggested.opened), (ids[9].as_str(), 10, 0), "the newest");
+        assert_eq!(suggested.source, SourceRef::mail("anna@example.org"));
+        assert_eq!(suggested.option.value.as_deref(), Some("news@shop.example"));
+        assert!(suggested.option.untrusted && suggested.option.admin, "foreign text, and a rule");
+        let options = match inbox.handle(Request::ListMuteOptions { id: ids[9].clone() }, None, now) {
+            Response::MuteOptions { options } => options,
+            other => panic!("expected options, got {other:?}"),
+        };
+        assert!(options.contains(&suggested.option), "the option list_mute_options offers");
+        let keys: Vec<MuteScope> = stats_now.suggestions.iter().map(|s| s.option.scope).collect();
+        assert!(keys.contains(&by(FacetKey::Domain)) && keys.contains(&by(FacetKey::Bulk)));
+        assert!(!keys.contains(&by(FacetKey::Account)), "the account is the source itself");
+
+        for id in &ids[..2] {
+            inbox.opened(id, None, now);
+        }
+        assert!(sender_suggestion(&stats(&inbox, None, now)).is_some(), "one in five opened is still few");
+        inbox.opened(&ids[2], None, now);
+        assert!(sender_suggestion(&stats(&inbox, None, now)).is_none(), "three in ten were read");
+    }
+
+    #[test]
+    fn nothing_is_suggested_once_it_is_muted_or_no_entry_is_known() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let now = at(10, 0);
+        let ids = newsletters(&inbox, SUGGEST_FROM);
+        inbox.handle(mute(&ids[0], by(FacetKey::Sender), None, MuteEffect::Hide), None, now);
+        let left = stats(&inbox, None, now);
+        assert!(sender_suggestion(&left).is_none(), "muted already");
+        assert!(!left.suggestions.is_empty(), "the domain is still worth it");
+        inbox.with(|db| Ok(db.execute("DELETE FROM items", [])?)).expect("cleaned up");
+        assert!(stats(&inbox, None, now).suggestions.is_empty(), "no entry to mute it by");
+    }
+
+    #[test]
+    fn a_rule_counts_what_it_caught_in_the_sources_a_key_sees() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let news = filed(&inbox, &from("m:1", "news@shop.example"), at(9, 0));
+        let hidden = rule(inbox.handle(hide(&news, HideScope::Sender), None, at(9, 5)));
+        assert_eq!(inbox.file_mail(&from("m:2", "news@shop.example"), Notify::All, at(9, 6)), Ok(None));
+        assert_eq!(inbox.file_mail(&from("m:2", "news@shop.example"), Notify::All, at(9, 7)), Ok(None), "again");
+        let work = NewMail { account: WORK.into(), ..from("m:3", "news@shop.example") };
+        assert_eq!(inbox.file_mail(&work, Notify::All, at(9, 8)), Ok(None));
+
+        let hits = |client: Option<&ClientInfo>| match inbox.handle(Request::ListRules, client, at(10, 0)) {
+            Response::Rules { hits, .. } => hits,
+            other => panic!("expected rules, got {other:?}"),
+        };
+        assert_eq!(hits(None), [RuleHits { rule: hidden.id.clone(), hits: 3, since: at(9, 5) }]);
+        let anna_only = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        assert_eq!(hits(Some(&anna_only))[0].hits, 2, "not what it caught in the other account");
+        let counts = stats(&inbox, None, at(10, 0));
+        assert_eq!(of(&counts, &SourceRef::mail("anna@example.org")).muted, 2, "closed once, dropped once");
+
+        // A rule older than the counting counts since the update.
+        let update = stamp(at(9, 30));
+        inbox.with(|db| Ok(db.execute("UPDATE rules SET counted_since = ?1", [&update])?)).expect("set");
+        assert_eq!(hits(None)[0].since, at(9, 30));
+    }
+
+    #[test]
+    fn a_muted_report_and_a_trait_moved_to_info_count_as_muted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let source = api::post_source(Some(&script()), None).expect("a source");
+        inbox.handle(Request::MuteSource { source: source.clone(), muted: true }, None, at(8, 0));
+        assert_eq!(inbox.handle(notice("Dropped", None), Some(&script()), at(8, 1)), Response::Posted { id: None });
+        let counts = of(&stats(&inbox, None, at(8, 2)), &source);
+        assert_eq!((counts.new, counts.muted), (0, 1), "a dropped report is no report but a catch");
+
+        let news = mail("m:1", "t:1", "News", "news@shop.example", false, at(8, 0));
+        let first = filed(&inbox, &news, at(8, 3));
+        inbox.handle(mute(&first, by(FacetKey::Sender), None, MuteEffect::Info), None, at(8, 4));
+        filed(&inbox, &mail("m:2", "t:2", "News", "news@shop.example", false, at(8, 5)), at(8, 6));
+        let counts = of(&stats(&inbox, None, at(8, 7)), &SourceRef::mail("anna@example.org"));
+        assert_eq!((counts.new, counts.muted), (2, 2), "moved once by muting, once on arrival");
+    }
+
+    #[test]
+    fn the_median_falls_in_the_step_of_the_middle_entry() {
+        assert_eq!(median_minutes(&[0; 12]), None);
+        assert_eq!(median_minutes(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), Some(1));
+        assert_eq!(median_minutes(&[1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]), Some(10080), "beyond a week");
+        assert_eq!(median_minutes(&[2, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0]), Some(60));
+        assert_eq!(wait_step(TimeDelta::seconds(-5)), 0, "a clock that went back");
+        assert_eq!((wait_step(TimeDelta::minutes(16)), wait_step(TimeDelta::days(8))), (3, 11));
+    }
+
+    #[test]
+    fn a_file_of_schema_5_learns_to_count() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = posted(inbox.handle(notice("Old", None), Some(&script()), at(8, 0)));
+        inbox.handle(Request::MuteSource { source: SourceRef::script("x"), muted: true }, None, at(8, 0));
+        // Back to schema 5: no statistics, no `counted_since`.
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DROP TABLE stats; DROP TABLE muted_mail; ALTER TABLE rules DROP COLUMN counted_since;
+                     PRAGMA user_version = 5;",
+                )?;
+                Ok(())
+            })
+            .expect("downgraded");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        inbox.handle(done(&id, false), None, at(9, 0));
+        assert_eq!(stats(&inbox, None, at(9, 0)).totals.done, 1);
+        let counted: i64 = inbox
+            .with(
+                |db| Ok(db.query_row("SELECT COUNT(*) FROM rules WHERE counted_since IS NOT NULL", [], |r| r.get(0))?),
+            )
+            .expect("read");
+        assert_eq!(counted, 1, "the rule counts from the update on");
+        let hits = match inbox.handle(Request::ListRules, None, at(9, 0)) {
+            Response::Rules { hits, .. } => hits,
+            other => panic!("expected rules, got {other:?}"),
+        };
+        assert_eq!((hits.len(), hits[0].hits), (1, 0));
+        assert!(hits[0].since >= at(8, 0), "never before the rule was made");
     }
 }

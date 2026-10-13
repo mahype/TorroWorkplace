@@ -1090,7 +1090,8 @@ impl PimService {
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::ListRules
-            | Request::RemoveRule { .. } => return None,
+            | Request::RemoveRule { .. }
+            | Request::GetStats { .. } => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }

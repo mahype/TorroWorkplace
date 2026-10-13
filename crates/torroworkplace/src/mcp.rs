@@ -1732,6 +1732,22 @@ mod tests {
         assert!(menu.description.as_deref().is_some_and(|text| text.contains("untrusted")));
     }
 
+    /// Task E8.8a: the statistics are one request with the span; an unknown span is an input error.
+    #[test]
+    fn inbox_get_stats_takes_a_span_and_a_last_day() {
+        let week = request_for("inbox_get_stats", args(json!({"range": "week"})), &Utc);
+        assert_eq!(week, Ok(Request::GetStats { range: torro_ipc::StatsRange::Week, until: None }));
+        let day = NaiveDate::from_ymd_opt(2026, 10, 13);
+        let quarter = request_for("inbox_get_stats", args(json!({"range": "quarter", "until": "2026-10-13"})), &Utc);
+        assert_eq!(quarter, Ok(Request::GetStats { range: torro_ipc::StatsRange::Quarter, until: day }));
+        let year = request_for("inbox_get_stats", args(json!({"range": "year"})), &Utc);
+        assert!(matches!(year, Err(ToolError::Input(_))), "{year:?}");
+        let tool = tools().iter().find(|tool| tool.name == "inbox_get_stats").expect("tool");
+        assert!(tool.description.as_deref().is_some_and(|text| text.contains("untrusted")));
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(hints.read_only_hint, Some(true));
+    }
+
     #[test]
     fn inbox_answers_carry_untrusted_per_entry() {
         let at = utc("2026-10-12T08:00:00Z");

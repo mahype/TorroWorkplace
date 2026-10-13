@@ -212,7 +212,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ListSources
         | Request::PostItem { .. }
         | Request::ResolveItems { .. }
-        | Request::ListRules => Vec::new(),
+        | Request::ListRules
+        // The span only, never what was counted (task E8.8a).
+        | Request::GetStats { .. } => Vec::new(),
         Request::UpdateTemplate { id: template }
         | Request::DeleteTemplate { id: template }
         | Request::LoadTemplate { id: template, .. }
@@ -559,6 +561,9 @@ pub(crate) mod tests {
         let options = Request::ListMuteOptions { id: "news@shop.example".into() };
         let logged = super::ids(&options).join(" ");
         assert!(logged.starts_with("inbox:hash:") && !logged.contains("shop"), "{logged}");
+        // The statistics name nothing (task E8.8a): no source, no trait, no span.
+        let stats = Request::GetStats { range: torro_ipc::StatsRange::Quarter, until: None };
+        assert!(super::ids(&stats).is_empty());
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they

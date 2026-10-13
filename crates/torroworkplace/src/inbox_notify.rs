@@ -37,6 +37,8 @@
 //!
 //! - **No popup by choice** (task E8.6a): an entry a muted trait with "no popup" holds for comes
 //!   without one ([`crate::inbox::Inbox::no_popup`], [`Popups::step_except`]), and not later either.
+//! - **Counted** (task E8.8a): each entry that arrives for a popup counts once for the statistics,
+//!   with those quiet holds back apart ([`Popups::arrivals`], `Inbox::count_popups`).
 //! - **Agents name their session** (task E2.6): an entry of a hook whose session has a name pops
 //!   up with that name as summary and the core's own words below it ("Claude Code is waiting for
 //!   you · TorroWorkplace"), so the person knows which job it is ([`session_line`]).
@@ -322,6 +324,14 @@ impl Popups {
         self.step_except(now, open, busy, &BTreeSet::new())
     }
 
+    /// The entries of `open` that [`Popups::step_except`] would take as arriving for a popup now,
+    /// those of `no_popup` aside: for the statistics (task E8.8a), asked just before the step.
+    /// Empty before the first look, which only learns what is open.
+    pub fn arrivals<'a>(&self, open: &'a [Item], no_popup: &BTreeSet<String>) -> Vec<&'a Item> {
+        let Some(known) = &self.known else { return Vec::new() };
+        open.iter().filter(|item| arrived(known, item) && !no_popup.contains(&item.id)).collect()
+    }
+
     /// [`Popups::step`], but the entries `no_popup` names (task E8.6a: a muted trait with "no
     /// popup" holds for them, `Inbox::no_popup`) arrive without a popup: they are known from now on,
     /// so they do not pop up later either, when the rule ends.
@@ -333,9 +343,10 @@ impl Popups {
         no_popup: &BTreeSet<String>,
     ) -> Vec<Popup> {
         let current = open.iter().map(|item| (item.id.clone(), item.updated)).collect();
-        let Some(known) = self.known.replace(current) else { return Vec::new() };
-        let arrivals: Vec<&Item> =
-            open.iter().filter(|item| arrived(&known, item) && !no_popup.contains(&item.id)).collect();
+        let arrivals = self.arrivals(open, no_popup);
+        if self.known.replace(current).is_none() {
+            return Vec::new();
+        }
         let mut popups = Vec::new();
         match busy {
             Some(event) => {
@@ -613,6 +624,8 @@ pub async fn run(core: Arc<Core>, desktop: Arc<dyn Desktop>) {
                 failing = false;
                 let busy = if popups.needs_calendar(&for_me.newest) { busy_title(&core, now).await } else { None };
                 let quiet = core.inbox().no_popup(&for_me.newest, now);
+                // Counted before the step, which learns them (task E8.8a); quiet holds back the calm ones.
+                core.inbox().count_popups(&popups.arrivals(&for_me.newest, &quiet), busy.is_some(), now);
                 let mut shown = popups.step_except(now, &for_me.newest, busy.as_deref(), &quiet);
                 shown.iter_mut().for_each(|popup| whole_conversation(core.inbox(), popup));
                 show_all(shown, desktop.as_ref(), &send);
@@ -810,6 +823,20 @@ mod tests {
         let shown = popups.step_except(at(1, 1), &open, None, &quiet);
         assert_eq!(shown, [popup_of(&open[1])], "only b pops up");
         assert_eq!(popups.step_except(at(1, 2), &open, None, &BTreeSet::new()), [], "a stays quiet when the rule ends");
+    }
+
+    /// Task E8.8a: what is counted as a popup is what the step takes as arriving, once.
+    #[test]
+    fn arrivals_are_what_the_next_step_takes_for_a_popup() {
+        let mut popups = Popups::new();
+        let open = [item("a", at(1, 0)), item("b", at(1, 0)), Item { lane: Lane::Info, ..item("c", at(1, 0)) }];
+        assert!(popups.arrivals(&open, &BTreeSet::new()).is_empty(), "the first look counts nothing");
+        popups.step(at(1, 0), &[], None);
+        let quiet = BTreeSet::from(["a".to_string()]);
+        let ids: Vec<&str> = popups.arrivals(&open, &quiet).iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["b"], "not the quiet one, not Info");
+        popups.step_except(at(1, 1), &open, None, &quiet);
+        assert!(popups.arrivals(&open, &quiet).is_empty(), "known from now on");
     }
 
     #[test]
