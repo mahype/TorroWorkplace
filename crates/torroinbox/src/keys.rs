@@ -19,7 +19,11 @@
 //!
 //! The overview (task E3.9, [`Focus::Overview`]) takes the keys of the list, and `h`/`l` and ←/→
 //! change the column. There `l` changes the column instead of moving the entry to the other lane:
-//! the overview shows both lanes, and "Move to …" stays in the panel.
+//! the overview shows both lanes, and "Move to …" stays in the panel. In the notifications window
+//! (task E8.4) the same keys go from app column to app column.
+//!
+//! `x` dismisses a notification (task E8.4, the card's ✕): done, counted apart. The app decides
+//! where it works – never for mail and approvals.
 
 use iced::keyboard::{self, Key as Name, key::Named};
 use torro_gui::shell;
@@ -51,6 +55,8 @@ pub enum Key {
     H,
     /// `m`.
     M,
+    /// `x`.
+    X,
     /// `t`.
     T,
     /// `r`.
@@ -102,6 +108,8 @@ pub enum Command {
     Open,
     /// Mark the entry done, or open it again when it is done.
     Done,
+    /// Dismiss the notification (task E8.4, the ✕): done without doing anything, counted apart.
+    Dismiss,
     /// Undo the last change while its hint shows.
     Undo,
     /// Open the snooze menu.
@@ -168,6 +176,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("l") => Key::L,
         Name::Character("h") => Key::H,
         Name::Character("m") => Key::M,
+        Name::Character("x") => Key::X,
         Name::Character("t") => Key::T,
         Name::Character("r") => Key::R,
         Name::Character("a") => Key::A,
@@ -197,6 +206,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::S) => Some(Command::Snooze),
         (Focus::List, Key::L) => Some(Command::Lane),
         (Focus::List, Key::M) => Some(Command::Hide),
+        (Focus::List, Key::X) => Some(Command::Dismiss),
         (Focus::List, Key::T) => Some(Command::MakeTask),
         (Focus::List, Key::R) => Some(Command::Reply),
         (Focus::List, Key::A) => Some(Command::ReplyAll),
@@ -263,6 +273,7 @@ mod tests {
             (char("s"), Command::Snooze),
             (char("l"), Command::Lane),
             (char("m"), Command::Hide),
+            (char("x"), Command::Dismiss),
             (char("t"), Command::MakeTask),
             (char("r"), Command::Reply),
             (char("a"), Command::ReplyAll),
@@ -290,6 +301,7 @@ mod tests {
             (char("e"), Command::Done),
             (char("s"), Command::Snooze),
             (char("m"), Command::Hide),
+            (char("x"), Command::Dismiss),
             (char("t"), Command::MakeTask),
             (char("["), Command::Sidebar),
         ] {
@@ -307,7 +319,7 @@ mod tests {
         for modifiers in [Modifiers::CTRL, Modifiers::ALT, Modifiers::LOGO] {
             assert_eq!(heard(char("e"), modifiers, Status::Ignored), None, "{modifiers:?}");
         }
-        assert_eq!(heard(char("x"), Modifiers::empty(), Status::Ignored), None, "not a key of the inbox");
+        assert_eq!(heard(char("q"), Modifiers::empty(), Status::Ignored), None, "not a key of the inbox");
         assert_eq!(heard(char("0"), Modifiers::empty(), Status::Ignored), None, "choices count from 1");
         assert_eq!(heard(char("E"), Modifiers::SHIFT, Status::Ignored), None, "Shift + e is not e");
     }
@@ -317,7 +329,7 @@ mod tests {
         assert_eq!(heard(char("2"), Modifiers::empty(), Status::Ignored), Some(Key::Digit(2)));
         assert_eq!(command(Focus::Choices, Key::Digit(2)), Some(Command::Choose(2)));
         assert_eq!(command(Focus::List, Key::Digit(2)), None, "digits only pick menu entries");
-        for key in [Key::Down, Key::E, Key::S, Key::M, Key::Enter, Key::Sidebar] {
+        for key in [Key::Down, Key::E, Key::S, Key::M, Key::X, Key::Enter, Key::Sidebar] {
             assert_eq!(command(Focus::Choices, key), None, "{key:?} stays out of the open menu");
         }
     }

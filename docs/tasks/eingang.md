@@ -823,7 +823,14 @@ E8.9   unabhängig (torro-wm, core.rs)
   Sichtprüfung Karte und Leser.
 
 ### E8.4 Benachrichtigungen-Fenster
-- [ ] erledigt
+- [x] erledigt (Board in `notifications.rs`, im Modul `app` deklariert, weil `main.rs` parallel geändert wurde –
+  die Zeile `mod notifications;` gehört bei Gelegenheit nach `main.rs`; ohne `--source` zeigt das Fenster die
+  Apps, Agenten und Suite lassen sich zuschalten; Spalten je App ab Platz für zwei Spalten (mind. `size::props()`),
+  sonst eine Spalte „For me“/„Info“, auch in Mittel mit Chips; Compact auch dort mit „For me“/„Info“ statt Tagen;
+  ✕ und `x` über `dismiss_item`, „Dismiss all“ ohne Freigaben und Suite; `m` und Glocke schalten im Fenster die
+  Quelle stumm; **offen:** die Auswahl der Quellen zur Laufzeit landet nicht in der Vorlage (die speichert die
+  Startzeile), Reply fehlt (keine Quelle kann antworten), „In 5 min“ fehlt (keine Erinnerungen im Eingang);
+  Sichtprüfung am Mac über AeroSpace: sechs Größen, beide Dichten, hell, dunkel, Plex, „By time“, mit Agenten)
 - **Modell:** Opus · **Braucht:** E8.2 · **Dateien:** `crates/torroinbox/src/{app,list,overview,keys,glance}.rs`, neu
   `crates/torroinbox/src/notifications.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Breit:** Spalten je App (Kopf: Icon, Name, Zahl) oder „By time“ (ein Kartenraster nach Zeit), umschaltbar.

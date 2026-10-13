@@ -234,7 +234,7 @@ fn calm_height() -> f32 {
 
 /// The height of the caption over a group of cards ([`caption`]): its line with [`space::m()`]
 /// above and [`space::s()`] below.
-fn caption_height() -> f32 {
+pub(crate) fn caption_height() -> f32 {
     space::m() + typo::line_height(typo::caption()) + space::s()
 }
 
@@ -476,7 +476,7 @@ fn content_cards<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> 
 
 /// The caption over a group of cards: "Today · 4" in `CAPTION` and `text_3` (sentence case, as the
 /// design's groups), [`space::m()`] above and [`space::s()`] below it.
-fn caption<'a>(label: &str, count: usize) -> Element<'a, Message> {
+pub(crate) fn caption<'a>(label: &str, count: usize) -> Element<'a, Message> {
     let words = typo::text(typo::caption(), format!("{label} · {count}")).style(theme::text_3).wrapping(Wrapping::None);
     container(words).padding(Padding::new(0.0).top(space::m()).bottom(space::s()).left(space::xs())).into()
 }

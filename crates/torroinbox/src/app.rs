@@ -25,6 +25,15 @@
 //! for the user ([`App::lead`]). Nothing is dismissed in the mail window: mail is done, snoozed or
 //! hidden.
 //!
+//! The notifications window (task E8.4, `notifications.rs`) shows what the apps report: its sidebar
+//! lists New (its overview, both lanes), Later and Done, and under "This window shows" the sources
+//! to switch on and off ([`App::shown`]: `--source`, repeated, at start; chips over the board where
+//! the sidebar is folded away). Its views are a board ([`App::is_board`]): a column per app or a grid
+//! "By time" in the wide layout ([`Arrange`]), one column with "For me" and "Info" in narrow ones;
+//! cards in the comfortable density, rows with their action bar in the compact one. Every
+//! notification has the ✕ (`x`, [`Edit::Dismiss`]: done, sent as dismissing) but approvals, and the
+//! header bar "Dismiss all" with an undo ([`Undo::Dismissed`]); `m` and the bell mute the source.
+//!
 //! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
 //! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
 //! header bar or with `h`/`l` – in the medium and narrow ones. The app keeps which column has the
@@ -116,6 +125,7 @@ use torro_inbox::{
 use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 
+use self::notifications::{Arrange, Board, Shown};
 use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
@@ -123,6 +133,12 @@ use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
 use crate::overview::{self, Column, Sections};
 use crate::{detail, list};
+
+// The board of the notifications window (task E8.4). Declared here, not in `main.rs` beside the
+// other modules, because another task changes `main.rs` at the same time; the file lives beside them
+// all the same, and the declaration can move there with the next change of `main.rs`.
+#[path = "notifications.rs"]
+pub(crate) mod notifications;
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
 pub const INBOX: AppId = AppId::INBOX;
@@ -213,13 +229,17 @@ pub enum Edit {
     Snooze { id: String, until: Option<DateTime<Utc>> },
     /// Move to `lane`; with `remember` also later entries of the same source (a rule in the core).
     Lane { id: String, lane: Lane, remember: bool },
+    /// Dismiss a notification (task E8.4, the ✕, `x`): done like [`Edit::Done`], but sent as
+    /// `inbox.set_item_done` with `dismissed: true` ([`InboxSource::dismiss_item`]), so the
+    /// statistics tell it apart. Undone by opening the entry again.
+    Dismiss { id: String },
 }
 
 impl Edit {
     /// The entry the edit changes.
     pub fn id(&self) -> &str {
         match self {
-            Edit::Done { id, .. } | Edit::Snooze { id, .. } | Edit::Lane { id, .. } => id,
+            Edit::Done { id, .. } | Edit::Snooze { id, .. } | Edit::Lane { id, .. } | Edit::Dismiss { id } => id,
         }
     }
 
@@ -231,6 +251,7 @@ impl Edit {
         let id = self.id().to_owned();
         match self {
             Edit::Done { done, .. } => Edit::Done { id, done: !done },
+            Edit::Dismiss { .. } => Edit::Done { id, done: false },
             Edit::Snooze { .. } => {
                 let until = match before.state {
                     State::Snoozed { until } => Some(until),
@@ -248,6 +269,7 @@ impl Edit {
         let text = match self {
             Edit::Done { done: true, .. } => tr("Marked as done").to_owned(),
             Edit::Done { done: false, .. } => tr("Reopened").to_owned(),
+            Edit::Dismiss { .. } => tr("Dismissed").to_owned(),
             Edit::Snooze { until: Some(until), .. } => {
                 trf("Snoozed until {time}", &[("time", &list::wake_text(*until, now))])
             }
@@ -268,6 +290,7 @@ impl Edit {
             Edit::Done { id, done } => inbox.set_item_done(id, done).await,
             Edit::Snooze { id, until } => inbox.snooze_item(id, until).await,
             Edit::Lane { id, lane, remember } => inbox.set_item_lane(id, lane, remember).await,
+            Edit::Dismiss { id } => inbox.dismiss_item(id).await,
         };
         result.map_err(|err| err.to_string())
     }
@@ -294,6 +317,9 @@ pub enum Undo {
     /// that was there before (`inbox.remove_rule`) –, then opens the entries `reopen` again
     /// (`inbox.set_item_done` with `false`), those the hiding closed ([`Hidden::done`]).
     Hidden { rule: Option<String>, reopen: Vec<String> },
+    /// Takes "Dismiss all" back (task E8.4): opens the entries it dismissed again
+    /// (`inbox.set_item_done` with `false`, one by one).
+    Dismissed(Vec<String>),
 }
 
 impl Undo {
@@ -479,6 +505,10 @@ pub enum Sent {
     Attachment(String, String),
     /// The next page of the folder, from this cursor.
     More(String),
+    /// "Dismiss all" (task E8.4): `inbox.set_item_done` with `dismissed: true` for these entries.
+    DismissAll(Vec<String>),
+    /// Its undo: these entries opened again.
+    Reopen(Vec<String>),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -660,10 +690,12 @@ pub enum Open {
     OverviewNotices,
     /// The smart view "With attachments" of the mail window (task E8.3).
     Attachments,
+    /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
+    ByTime,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 27] = [
+    const ALL: [(&'static str, Open); 28] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -691,6 +723,7 @@ impl Open {
         ("overview-info", Open::OverviewInfo),
         ("overview-notices", Open::OverviewNotices),
         ("attachments", Open::Attachments),
+        ("by-time", Open::ByTime),
     ];
 }
 
@@ -716,7 +749,9 @@ impl Open {
 ///   kind. Works without `--demo`;
 ///   a workspace template stores the window's command line, so the slice comes back with it.
 ///   `--source mail` is a window of mail only (task E4.2): the folders of the mail accounts, starting
-///   on the first account's inbox ([`View::Mail`]).
+///   on the first account's inbox ([`View::Mail`]). In the notifications window (task E8.4)
+///   `--source` instead chooses the sources the window shows ([`Launch::shown`]), and may be given
+///   more than once (`--source script:ci --source script:deploy`); mail is refused there.
 /// - `--compose` (with `--reply <id>`, `--reply-all <id>` or `--forward <id>`, and `--account <id>`)
 ///   is the compose window of task E4.3 ([`compose`]), which the panel's Reply, Reply all and
 ///   Forward start ([`mail::compose_command`]) and the "New" button starts without an id. It is a
@@ -736,6 +771,9 @@ pub struct Launch {
     pub density: Option<Density>,
     /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
+    /// The sources the window shows (task E8.4): in the notifications window those of `--source`
+    /// ([`Shown::from_args`]: the apps without one), everything in the others.
+    pub shown: Shown,
     /// `--compose`: the window writes a message instead of showing the inbox.
     pub compose: Option<compose::Start>,
 }
@@ -745,9 +783,9 @@ pub struct Launch {
 /// window class, title and entry in the app switcher, so tiling rules and workspace templates tell
 /// them apart. All three show the same entries of the core – what one marks done is done in all.
 ///
-/// Only the frame so far: the mail window shows the overview's "Mail" column, the notifications
-/// window its "Notifications" column, the hub today's overview with both ([`Kind::columns`]). Their
-/// own looks come with E8.3 to E8.5.
+/// The mail window shows the overview's "Mail" column (task E8.3), the notifications window the
+/// other entries on its board (task E8.4, `notifications.rs`), the hub today's overview with both
+/// ([`Kind::columns`]) until its own look comes with E8.5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Kind {
     /// `--view mail`: what came in by mail.
@@ -805,20 +843,24 @@ impl Kind {
     }
 
     /// The name of `view` in this window: in the mail window (task E8.3) the overview is "For me" –
-    /// its one column is the mail for the user – and "Snoozed" is "Later", as the buttons say;
-    /// elsewhere the view's own name ([`View::name`]).
+    /// its one column is the mail for the user – and in the notifications window (task E8.4) "New";
+    /// in both "Snoozed" is "Later", as the buttons say; elsewhere the view's own name
+    /// ([`View::name`]).
     pub fn view_name(self, view: &View) -> String {
         match (self, view) {
             (Kind::Mail, View::Overview) => tr("For me").into(),
-            (Kind::Mail, View::Snoozed) => tr("Later").into(),
+            (Kind::Notifications, View::Overview) => tr("New").into(),
+            (Kind::Mail | Kind::Notifications, View::Snoozed) => tr("Later").into(),
             _ => view.name(),
         }
     }
 
-    /// The icon of `view` in this window: "For me" of the mail window has the inbox's.
+    /// The icon of `view` in this window: "For me" of the mail window has the inbox's, "New" of the
+    /// notifications window the bell.
     pub fn view_icon(self, view: &View) -> Icon {
         match (self, view) {
             (Kind::Mail, View::Overview) => Icon::Inbox,
+            (Kind::Notifications, View::Overview) => Icon::Bell,
             _ => view.icon(),
         }
     }
@@ -884,6 +926,20 @@ impl fmt::Display for LaunchError {
 }
 
 impl std::error::Error for LaunchError {}
+
+/// Every value of `--flag value` or `--flag=value`, in order; empty when the flag is not there.
+fn flag_values<'a>(args: &'a [String], flag: &'static str) -> Result<Vec<&'a str>, LaunchError> {
+    let mut values = Vec::new();
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        if word == flag {
+            values.push(words.next().map(String::as_str).ok_or(LaunchError::MissingValue(flag))?);
+        } else if let Some(value) = word.strip_prefix(flag).and_then(|rest| rest.strip_prefix('=')) {
+            values.push(value);
+        }
+    }
+    Ok(values)
+}
 
 /// The value of `--flag value` or `--flag=value`; `None` when the flag is not there.
 pub(crate) fn flag_value<'a>(args: &'a [String], flag: &'static str) -> Result<Option<&'a str>, LaunchError> {
@@ -951,25 +1007,29 @@ impl Launch {
                 None => return Err(unknown("--density", word, Density::ALL.map(|(name, _)| name).to_vec())),
             },
         };
-        let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, design, kind, density, view, compose })
+        let (view, shown) = start_view(args, kind)?;
+        Ok(Launch { demo, open, appearance, now, design, kind, density, view, shown, compose })
     }
 
     /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
     /// kind's word of `--view`, and after a "/" the slice of `--lane` or `--source` – `mail`,
     /// `hub/lane:info`, `notifications/source:agent:claude-code`. So every window kind and every
     /// window per slice keeps a density of its own, though all of them share one state directory.
+    ///
+    /// The notifications window names the sources it was started with (task E8.4,
+    /// [`Shown::slice`]): `notifications/source:script:ci+script:deploy`.
     pub fn density_key(&self) -> String {
         let kind = self.kind.word();
-        let slice = match &self.view {
-            Some(View::ForMe) => "lane:for-me".to_owned(),
-            Some(View::Info) => "lane:info".to_owned(),
-            Some(View::Mail) => "source:mail".to_owned(),
-            Some(View::Source(source)) => format!("source:{source}"),
+        let lane = match &self.view {
+            Some(View::ForMe) => Some("lane:for-me".to_owned()),
+            Some(View::Info) => Some("lane:info".to_owned()),
+            Some(View::Mail) => Some("source:mail".to_owned()),
+            Some(View::Source(source)) => Some(format!("source:{source}")),
             // No slice; `--lane` and `--source` start on no other view.
-            _ => return kind.to_owned(),
+            _ => None,
         };
-        format!("{kind}/{slice}")
+        let parts: Vec<String> = std::iter::once(kind.to_owned()).chain(lane).chain(self.shown.slice()).collect();
+        parts.join("/")
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -980,19 +1040,25 @@ impl Launch {
 
 /// The view chosen by `--lane for-me|info` or `--source <key>`; `None` when neither is given.
 /// Both at once are refused: no view shows one lane of one source.
-fn start_view(args: &[String]) -> Result<Option<View>, LaunchError> {
-    let lane = match flag_value(args, "--lane")? {
-        None => None,
-        Some("for-me") => Some(View::ForMe),
-        Some("info") => Some(View::Info),
-        Some(other) => {
-            return Err(LaunchError::UnknownValue {
-                flag: "--lane",
-                value: other.to_owned(),
-                valid: "for-me, info".to_owned(),
-            });
-        }
-    };
+///
+/// In the notifications window (task E8.4) `--source` is no view but the window's sources, given
+/// as often as needed and together with `--lane` if wanted; mail is no source of this window.
+fn start_view(args: &[String], kind: Kind) -> Result<(Option<View>, Shown), LaunchError> {
+    if kind == Kind::Notifications {
+        let sources = flag_values(args, "--source")?
+            .into_iter()
+            .map(|key| match key.parse::<SourceRef>() {
+                Ok(source) if source.kind != SourceKind::Mail => Ok(source),
+                _ => Err(LaunchError::UnknownValue {
+                    flag: "--source",
+                    value: key.to_owned(),
+                    valid: "suite, agent:<name>, script:<name>".to_owned(),
+                }),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok((lane_view(args)?, Shown::from_args(sources)));
+    }
+    let lane = lane_view(args)?;
     let source = match flag_value(args, "--source")? {
         None => None,
         Some("mail") => Some(View::Mail),
@@ -1009,7 +1075,19 @@ fn start_view(args: &[String]) -> Result<Option<View>, LaunchError> {
     };
     match (lane, source) {
         (Some(_), Some(_)) => Err(LaunchError::Conflict("--lane", "--source")),
-        (lane, source) => Ok(lane.or(source)),
+        (lane, source) => Ok((lane.or(source), Shown::Everything)),
+    }
+}
+
+/// The view of `--lane for-me|info`; `None` without it.
+fn lane_view(args: &[String]) -> Result<Option<View>, LaunchError> {
+    match flag_value(args, "--lane")? {
+        None => Ok(None),
+        Some("for-me") => Ok(Some(View::ForMe)),
+        Some("info") => Ok(Some(View::Info)),
+        Some(other) => {
+            Err(LaunchError::UnknownValue { flag: "--lane", value: other.to_owned(), valid: "for-me, info".to_owned() })
+        }
     }
 }
 
@@ -1134,6 +1212,11 @@ pub struct App<S> {
     folds: Vec<(String, bool)>,
     /// A window of mail only (`--source mail`): the sidebar lists the folders alone.
     mail_only: bool,
+    /// The sources the window shows (task E8.4): `--source` at start, then the sidebar's checks and
+    /// the chips. Window state, kept while it runs.
+    shown: Shown,
+    /// "By app | By time" of the notifications window (task E8.4).
+    arrange: Arrange,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -1320,6 +1403,14 @@ pub enum Message {
     ToggleAccount(String),
     /// The compose window could not be started.
     ComposeStarted(Result<(), String>),
+    /// "This window shows" in the sidebar, or a chip (task E8.4): switch this source on or off.
+    ToggleSource(SourceRef),
+    /// "By app | By time" in the header bar of the notifications window.
+    Arrange(Arrange),
+    /// "Dismiss all" in the header bar: every notification shown, but approvals and the suite's.
+    DismissAll,
+    /// The answer to "Dismiss all": the entries dismissed, and why the rest was not, if it stopped.
+    DismissedAll(Vec<String>, Option<String>),
 }
 
 /// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
@@ -1332,12 +1423,17 @@ pub enum Message {
 /// Only the entries the window of `kind` shows ([`Kind::keeps`], task E8.3): the mail window counts
 /// and lists mail alone. The smart view "With attachments" asks for the first `limit` messages of
 /// every inbox and keeps those with attachments (`mail::attachments`).
+///
+/// And only those of the sources `shown` (task E8.4, the notifications window's choice): with one
+/// source the requests ask for it alone (the API's `source`), with more the entries of the others
+/// are left out here.
 pub async fn fetch<S: InboxSource + MailSource>(
     inbox: Arc<S>,
     view: View,
     empty: bool,
     limit: u32,
     kind: Kind,
+    shown: Shown,
 ) -> Result<Loaded, String> {
     if empty {
         let none = Loaded {
@@ -1351,10 +1447,17 @@ pub async fn fetch<S: InboxSource + MailSource>(
         return Ok(none);
     }
     let failed = |err: torro_inbox::InboxError| err.to_string();
-    let keep = |items: Vec<Item>| items.into_iter().filter(|item| kind.keeps(item)).collect::<Vec<_>>();
-    let for_me_filter = || View::ForMe.filter().unwrap_or_default();
+    let keep = |items: Vec<Item>| {
+        items.into_iter().filter(|item| kind.keeps(item) && shown.shows(&item.source)).collect::<Vec<_>>()
+    };
+    // One source shown: ask for it alone, unless the view names a source of its own.
+    let narrow = |filter: ItemFilter| match (shown.single(), &filter.source) {
+        (Some(source), None) => ItemFilter { source: Some(source.clone()), ..filter },
+        _ => filter,
+    };
+    let for_me_filter = || narrow(View::ForMe.filter().unwrap_or_default());
     let items = match view.filter() {
-        Some(filter) => keep(inbox.list_items(filter).await.map_err(failed)?),
+        Some(filter) => keep(inbox.list_items(narrow(filter)).await.map_err(failed)?),
         None => Vec::new(),
     };
     // The overview lists both lanes: its entries hold "For me" and "Info" already.
@@ -1366,7 +1469,7 @@ pub async fn fetch<S: InboxSource + MailSource>(
     let info = match view {
         View::Info => items.len(),
         View::Overview => items.iter().filter(|item| item.lane == Lane::Info).count(),
-        _ => keep(inbox.list_items(View::Info.filter().unwrap_or_default()).await.map_err(failed)?).len(),
+        _ => keep(inbox.list_items(narrow(View::Info.filter().unwrap_or_default())).await.map_err(failed)?).len(),
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
     let folders = inbox.mail_folders().await.unwrap_or_default();
@@ -1442,6 +1545,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             search: String::new(),
             folds: Vec::new(),
             mail_only: launch.view == Some(View::Mail),
+            shown: launch.shown.clone(),
+            arrange: if open == Some(Open::ByTime) { Arrange::ByTime } else { Arrange::default() },
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -1835,8 +1940,108 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::ComposeStarted(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
             }
+            Message::ToggleSource(source) => return self.toggle_source(&source),
+            Message::Arrange(arrange) => self.arrange = arrange,
+            Message::DismissAll => return self.dismiss_all(),
+            Message::DismissedAll(done, failed) => return self.dismissed_all(done, failed),
         }
         Task::none()
+    }
+
+    /// Whether the content is the board of the notifications window (task E8.4,
+    /// `notifications.rs`): its views New, Later and Done. A `--lane` slice keeps the list.
+    fn is_board(&self) -> bool {
+        self.launch.kind == Kind::Notifications && matches!(self.view, View::Overview | View::Snoozed | View::Done)
+    }
+
+    /// The width the board's entries get (task E8.4): the window less the sidebar or rail with the
+    /// inset beside the content, the panel beside the board in the wide layout and the board's own
+    /// inset. An estimate from the window's size, because the keys need the columns as well as the
+    /// drawing; a few points off only move a column's edge.
+    fn board_width(&self) -> f32 {
+        let class = self.class();
+        let chrome = match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+            Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
+            None => 0.0,
+        };
+        let panel = if class == SizeClass::Wide && self.panel_open() { size::panel() } else { 0.0 };
+        (self.size.width - chrome - panel - list::cards_side()).max(0.0)
+    }
+
+    /// How the board lays out the view now ([`notifications::board`]).
+    fn board(&self) -> Board {
+        notifications::board(self.board_width(), self.class(), self.arrange, self.density())
+    }
+
+    /// The sources "This window shows" lists ([`notifications::listed`]).
+    fn listed_sources(&self) -> Vec<SourceRef> {
+        notifications::listed(&self.sources, &self.shown)
+    }
+
+    /// A click in "This window shows" or on a chip (task E8.4): `source` on or off for this window,
+    /// then its entries anew. The last shown source stays ([`Shown::toggled`]).
+    fn toggle_source(&mut self, source: &SourceRef) -> Task<Message> {
+        let shown = self.shown.toggled(source, &self.listed_sources());
+        if shown == self.shown {
+            return Task::none();
+        }
+        self.shown = shown;
+        self.load()
+    }
+
+    /// "Dismiss all" (task E8.4): every notification of "New" with the ✕, but those of the suite
+    /// ([`notifications::dismiss_all`]), one `inbox.set_item_done` with `dismissed: true` each. The
+    /// answer comes as [`Message::DismissedAll`], whose toast takes them back.
+    fn dismiss_all(&mut self) -> Task<Message> {
+        if !self.is_board() || self.view != View::Overview {
+            return Task::none();
+        }
+        let ids = notifications::dismiss_all(&self.items);
+        if ids.is_empty() {
+            return Task::none();
+        }
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::DismissAll(ids.clone()));
+        let inbox = self.inbox.clone();
+        let dismissed = async move {
+            let mut done = Vec::new();
+            for id in ids {
+                if let Err(err) = inbox.dismiss_item(id.clone()).await {
+                    return (done, Some(err.to_string()));
+                }
+                done.push(id);
+            }
+            (done, None)
+        };
+        Task::perform(dismissed, |(done, failed)| Message::DismissedAll(done, failed))
+    }
+
+    /// The answer to "Dismiss all": the toast "n dismissed" with its undo for those that went
+    /// ([`Undo::Dismissed`]), the error line when one did not, then the view anew.
+    fn dismissed_all(&mut self, done: Vec<String>, failed: Option<String>) -> Task<Message> {
+        if let Some(err) = failed {
+            self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
+        }
+        if !done.is_empty() {
+            let text = trf("{n} dismissed", &[("n", &done.len())]);
+            self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now() });
+        }
+        self.load()
+    }
+
+    /// `h`/`l` on the board "By app" (task E8.4): the cursor – and an open panel – to the same place
+    /// in the column beside ([`notifications::beside`]).
+    fn step_beside(&mut self, right: bool) -> Task<Message> {
+        let Some(id) = self.cursor_item().map(|item| item.id.clone()) else { return Task::none() };
+        let Some(to) = notifications::beside(&self.items, self.board(), &id, right) else { return Task::none() };
+        if self.detail.is_some() {
+            self.detail = self.items.iter().find(|item| item.id == to).cloned();
+        }
+        let index = self.rows().iter().position(|item| item.id == to);
+        self.cursor = Some(to);
+        index.map_or_else(Task::none, |index| self.reveal(index))
     }
 
     /// Whether the panel is open: an entry's, or a folder's message.
@@ -2222,6 +2427,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// The entries the keys walk, top to bottom: in the overview the column with the cursor
     /// ([`Sections::order`], "Info" only while unfolded), else the view's list.
     fn rows(&self) -> Vec<&Item> {
+        // The notifications window walks its board (task E8.4).
+        if self.is_board() {
+            return notifications::order(&self.items, self.board(), &self.view);
+        }
         if self.view == View::Overview {
             Sections::of(&self.items, self.column, self.now).order(self.info_open[self.column.index()])
         } else {
@@ -2310,6 +2519,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         match command {
             Command::Next => self.step(true),
             Command::Previous => self.step(false),
+            Command::ColumnLeft if self.is_board() => self.step_beside(false),
+            Command::ColumnRight if self.is_board() => self.step_beside(true),
             Command::ColumnLeft => self.switch_column(Column::Mail),
             Command::ColumnRight => self.switch_column(Column::Notices),
             Command::Open => self.open_cursor(),
@@ -2331,6 +2542,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 }
                 None => Task::none(),
             },
+            // The ✕ (task E8.4): notifications only – the mail window dismisses nothing.
+            Command::Dismiss => match self.cursor_item().cloned() {
+                Some(item) if self.launch.kind != Kind::Mail && notifications::dismissable(&item) => {
+                    self.edit(Edit::Dismiss { id: item.id })
+                }
+                _ => Task::none(),
+            },
             Command::Undo => self.undo(),
             Command::Snooze => {
                 if let Some(id) = cursor {
@@ -2339,6 +2557,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Task::none()
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
+            // In the notifications window `m` is the bell (task E8.4): it mutes the source at once
+            // (the bell's menu comes with E8.6b); "This entry" of the hide menu is the ✕ there.
+            Command::Hide if self.launch.kind == Kind::Notifications => {
+                cursor.map_or_else(Task::none, |id| self.ask_mute(&id))
+            }
             Command::Hide => {
                 if let Some(id) = cursor {
                     self.ask_hide(&id);
@@ -2387,8 +2610,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Scrolls the list the least that shows row `index` completely – with its group head, when
     /// it is the first of its group ([`list::row_span`]).
     fn reveal(&mut self, index: usize) -> Task<Message> {
-        let overview = self.view == View::Overview;
-        let (scroll, span, id) = if overview {
+        let overview = self.view == View::Overview && !self.is_board();
+        let (scroll, span, id) = if self.is_board() {
+            // The board scrolls as one; "By app" has its heads above the scrolling part.
+            let (board, density) = (self.board(), self.density());
+            let span = self
+                .rows()
+                .get(index)
+                .and_then(|item| notifications::span(&self.items, board, &self.view, density, &item.id));
+            (self.scroll, span, list::SCROLL)
+        } else if overview {
             // The overview: the column with the cursor, which scrolls on its own.
             let column = self.column;
             let sections = Sections::of(&self.items, column, self.now);
@@ -2722,6 +2953,19 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 };
                 Task::perform(undone, move |result| Message::Undone(result, back.clone()))
             }
+            Undo::Dismissed(reopen) => {
+                #[cfg(test)]
+                self.sent.push(Sent::Reopen(reopen.clone()));
+                let back = reopen.first().cloned();
+                let inbox = self.inbox.clone();
+                let undone = async move {
+                    for id in reopen {
+                        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                };
+                Task::perform(undone, move |result| Message::Undone(result, back.clone()))
+            }
         }
     }
 
@@ -2831,7 +3075,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
 
     /// How the lists draw mail (task E8.3): cards in the comfortable density of the mail window –
     /// with their buttons' words in the narrow layout, where a card has the window's width –, rows
-    /// otherwise. The other windows keep their rows until their own cards come (E8.4, E8.5).
+    /// otherwise. The notifications window draws its own cards (task E8.4, `notifications.rs`); the
+    /// hub keeps its rows until E8.5.
     pub fn look(&self) -> Look {
         if self.launch.kind != Kind::Mail || self.density() != Density::Comfortable {
             return Look::Rows;
@@ -2940,7 +3185,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             // Only an entry open in the panel: a keyboard cursor left over from a larger window is no
             // reason to single out a row of a display.
             selected: self.detail.as_ref().map(|item| item.id.as_str()),
-            folders: &self.folders,
+            // The notifications window shows no mail (task E8.4), so its glance has no mail block.
+            folders: if self.launch.kind == Kind::Notifications { &[] } else { &self.folders },
             now: self.now,
             error: self.error.as_ref().map(|failure| failure.what),
         };
@@ -3058,10 +3304,31 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             let columns = columns.iter().map(|&column| (column.name(), Message::ShowColumn(column)));
             trailing.push(widgets::segmented(columns, chosen));
         }
+        // "By app | By time" (task E8.4) where the notifications window's board has room for columns.
+        let arrange =
+            self.is_board() && !self.items.is_empty() && notifications::has_arrange(self.board_width(), class);
+        if arrange {
+            let chosen = Arrange::ALL.iter().position(|&arrange| arrange == self.arrange).unwrap_or_default();
+            trailing.push(widgets::segmented(
+                Arrange::ALL.map(|arrange| (arrange.name(), Message::Arrange(arrange))),
+                chosen,
+            ));
+        }
         // "Compact | Comfortable" in every window kind (task E8.2), with its words where there is
-        // room: wide, and medium unless "Mail | Notifications" takes the room; narrow icons only.
-        let words = class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column);
+        // room: wide, and medium unless "Mail | Notifications" or "By app | By time" takes the room;
+        // narrow icons only.
+        let words = class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange);
         trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
+        // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
+        // layout; off while nothing can be dismissed.
+        if self.is_board() && self.view == View::Overview {
+            let dismiss = (!notifications::dismiss_all(&self.items).is_empty()).then_some(Message::DismissAll);
+            trailing.push(if class == SizeClass::Wide {
+                widgets::text_button(Some(Icon::X), tr("Dismiss all"), style::button::ghost, dismiss)
+            } else {
+                widgets::icon_button(Icon::X, tr("Dismiss all"), dismiss)
+            });
+        }
         trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
         // as in the medium layout, and every view stays one click away.
@@ -3102,8 +3369,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(_) => self.messages.len().to_string(),
             None if self.view == View::Attachments => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
-            // As in the sidebar: what is for the user; "Info" lies folded.
-            None if self.view == View::Overview => self.for_me.len().to_string(),
+            // As in the sidebar: what is for the user; "Info" lies folded. The notifications window
+            // counts all it shows in "New" (task E8.4): its cards show both lanes.
+            None if self.view == View::Overview && self.launch.kind != Kind::Notifications => {
+                self.for_me.len().to_string()
+            }
             None => self.items.len().to_string(),
         }
     }
@@ -3178,6 +3448,23 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     look: self.look(),
                 })
             }
+        } else if self.is_board() {
+            // The notifications window (task E8.4): the sources as chips where the sidebar is folded
+            // away, then the board, which caps its own width.
+            if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
+                content = content.push(notifications::source_chips(&self.listed_sources(), &self.shown));
+            }
+            let board = notifications::view(notifications::BoardData {
+                items: &self.items,
+                board: self.board(),
+                density: self.density(),
+                rows: self.rows_data(row_anchor),
+                deciding: self.deciding.is_some(),
+                muted: self.sources.iter().filter(|info| info.muted).map(|info| info.source.clone()).collect(),
+                single_source: self.shown.single().is_some(),
+                icon: self.launch.kind.view_icon(&self.view),
+            });
+            return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
         } else if self.view == View::Overview {
             // Its columns cap their own width; the cap below would squeeze two into one.
             let columns = self.overview(class, row_anchor, attention);
@@ -3269,7 +3556,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 entry(View::Snoozed, None),
                 entry(View::Done, None),
             ],
-            Kind::Notifications | Kind::Hub => vec![
+            // New, Later, Done (task E8.4); "New" counts all it shows, both lanes. The sources are
+            // the window's choice, not views ([`App::sidebar`]).
+            Kind::Notifications => {
+                let new = Some(self.for_me.len() + self.info).filter(|&n| n > 0);
+                return (
+                    vec![entry(View::Overview, new), entry(View::Snoozed, None), entry(View::Done, None)],
+                    Vec::new(),
+                );
+            }
+            Kind::Hub => vec![
                 entry(View::Overview, for_me),
                 entry(View::ForMe, for_me),
                 entry(View::Info, info),
@@ -3379,7 +3675,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             items.push(widgets::sidebar_group_in(mode, tr("Smart views"), None));
             items.extend(smart.into_iter().map(row));
         }
-        if mode == SidebarMode::Expanded || self.mail_only {
+        // The notifications window lists no mail (task E8.4), but "This window shows": its sources
+        // to switch on and off, expanded only (the rail has no room for names; the chips stand in).
+        if self.launch.kind == Kind::Notifications {
+            let listed = self.listed_sources();
+            if mode == SidebarMode::Expanded && !listed.is_empty() {
+                let colour = palette(&self.theme()).text_2;
+                items.push(widgets::sidebar_group_in(mode, tr("This window shows"), None));
+                items.extend(notifications::source_rows(mode, &listed, &self.shown, &self.sources, colour));
+            }
+        } else if mode == SidebarMode::Expanded || self.mail_only {
             let groups = self.mail_groups();
             let single = groups.len() == 1;
             for group in groups {
@@ -3438,7 +3743,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         // drawer unfolds the rest. So the menu fits a window of ordinary height. The narrow mail
         // window lists no folders (task E8.3): there it is about what is new; the drawer has them.
         let narrow_mail = self.launch.kind == Kind::Mail && self.class() == SizeClass::Narrow && !self.mail_only;
-        let groups = if narrow_mail { Vec::new() } else { self.mail_groups() };
+        // The notifications window has no mail at all (task E8.4); its sources are the chips.
+        let no_mail = narrow_mail || self.launch.kind == Kind::Notifications;
+        let groups = if no_mail { Vec::new() } else { self.mail_groups() };
         let single = groups.len() == 1;
         for group in groups {
             let open = single || self.view.folder().is_some_and(|folder| folder.account == group.account);
@@ -3662,8 +3969,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let empty = self.launch.open == Some(Open::Empty);
         let inbox = self.inbox.clone();
         let limit = self.page_limit();
-        let kind = self.launch.kind;
-        Task::perform(fetch(inbox, view.clone(), empty, limit, kind), move |result| {
+        let (kind, shown) = (self.launch.kind, self.shown.clone());
+        Task::perform(fetch(inbox, view.clone(), empty, limit, kind, shown), move |result| {
             Message::Loaded(view.clone(), result)
         })
     }
@@ -3875,7 +4182,8 @@ mod tests {
     /// What the source answers for the app's view, handed to `update` as the task would.
     fn load<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
-        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit(), app.launch.kind));
+        let (kind, shown) = (app.launch.kind, app.shown.clone());
+        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit(), kind, shown));
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
@@ -4241,7 +4549,8 @@ mod tests {
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
         let mut app = loaded(&[]);
-        let for_me = block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE, app.launch.kind));
+        let for_me =
+            block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE, app.launch.kind, Shown::Everything));
         let _ = app.update(Message::Show(View::Done));
         let _ = app.update(Message::Loaded(View::ForMe, for_me));
         assert_eq!(ids(&app).len(), FOR_ME.len(), "still the old list, not taken for Done");
@@ -4527,6 +4836,19 @@ mod tests {
                     }
                     Ok(())
                 })();
+                let _ = app.update(Message::Undone(result, back));
+            }
+            Some(Sent::DismissAll(ids)) => {
+                for id in &ids {
+                    block_on(app.inbox.dismiss_item(id.clone())).expect("the demo dismisses");
+                }
+                let _ = app.update(Message::DismissedAll(ids, None));
+            }
+            Some(Sent::Reopen(ids)) => {
+                let back = ids.first().cloned();
+                let result = ids.into_iter().try_for_each(|id| {
+                    block_on(app.inbox.set_item_done(id, false)).map(|_| ()).map_err(|err| err.to_string())
+                });
                 let _ = app.update(Message::Undone(result, back));
             }
             other => panic!("no call to deliver: {other:?}"),
@@ -5682,14 +6004,16 @@ mod tests {
     /// the mail column; `h`/`l` and "Mail | Notifications" cannot leave it. The hub keeps both.
     #[test]
     fn each_window_kind_shows_its_columns_of_the_overview() {
+        // The notifications window shows what the apps report (task E8.4): the scripts of the demo,
+        // its "New" starting with the deploy notice.
         let mut notices = overview_at(&["--view", "notifications"]);
         assert_eq!((notices.view.clone(), notices.column), (View::Overview, Column::Notices));
-        assert_eq!(rows_of(&notices).first(), Some(&"demo-1"), "the keys start on its first card");
+        assert_eq!(rows_of(&notices).first(), Some(&"demo-6"), "the keys start on its first card");
         assert!(rows_of(&notices).iter().all(|id| !id.starts_with("demo-mail")), "no mail");
         let _ = press(&mut notices, Key::H);
         let _ = notices.update(Message::ShowColumn(Column::Mail));
         assert_eq!(notices.column, Column::Notices, "there is no mail column to go to");
-        assert_eq!(notices.title(), trf("Notifications · {view}", &[("view", &tr("Overview"))]));
+        assert_eq!(notices.title(), trf("Notifications · {view}", &[("view", &tr("New"))]));
 
         let mail = overview_at(&["--view", "mail"]);
         assert_eq!(mail.column, Column::Mail);
@@ -5991,5 +6315,253 @@ mod tests {
         let _ = press(&mut app, Key::Down);
         let _ = press(&mut app, Key::Enter);
         assert!(app.panel_open(), "Enter reads the message");
+    }
+
+    // ----- Notifications window (E8.4) ------------------------------------------------------
+
+    /// The notifications window at the demo's fixed time, loaded on "New"; `more` add to its
+    /// parameters.
+    fn notifications_window(more: &[&str]) -> App<DemoSource> {
+        let mut words = vec!["--view", "notifications"];
+        words.extend_from_slice(more);
+        overview_at(&words)
+    }
+
+    /// What the demo source holds for `id`, whatever the window shows.
+    fn stored(app: &App<DemoSource>, id: &str) -> Item {
+        let all = block_on(app.inbox.list_items(ItemFilter::default())).expect("the demo answers");
+        all.into_iter().find(|item| item.id == id).expect("in the demo")
+    }
+
+    /// Task E8.4: `--source` chooses the sources of the notifications window, as often as given;
+    /// mail is no source of it. The other windows keep `--source` as their start view.
+    #[test]
+    fn source_chooses_the_sources_of_the_notifications_window() {
+        let shown = |words: &[&str]| Launch::parse(&args(words)).map(|launch| (launch.view, launch.shown));
+        assert_eq!(shown(&["--view", "notifications"]), Ok((None, Shown::Apps)));
+        let two = shown(&["--view", "notifications", "--source", "script:ci", "--source=agent:codex"]);
+        assert_eq!(two, Ok((None, Shown::Only(vec![SourceRef::script("ci"), SourceRef::agent("codex")]))));
+        let lane = shown(&["--view", "notifications", "--lane", "info", "--source", "script:ci"]);
+        assert_eq!(lane, Ok((Some(View::Info), Shown::Only(vec![SourceRef::script("ci")]))), "with a lane");
+        for mail in ["mail", "mail:anna@example.org"] {
+            assert!(matches!(
+                shown(&["--view", "notifications", "--source", mail]),
+                Err(LaunchError::UnknownValue { flag: "--source", .. })
+            ));
+        }
+        assert_eq!(
+            shown(&["--source", "script:ci"]),
+            Ok((Some(View::Source(SourceRef::script("ci"))), Shown::Everything))
+        );
+        let key =
+            Launch::parse(&args(&["--view", "notifications", "--source", "script:ci", "--source", "script:deploy"]))
+                .expect("valid")
+                .density_key();
+        assert_eq!(key, "notifications/source:script:ci+script:deploy", "each window its own density");
+    }
+
+    /// Task E8.4: two notifications windows with different sources show only theirs – in the list,
+    /// the counts and the glance.
+    #[test]
+    fn two_windows_with_different_sources_show_only_theirs() {
+        let ci = notifications_window(&["--source", "script:ci"]);
+        let theirs = notifications_window(&["--source", "script:deploy", "--source", "agent:claude-code"]);
+        assert_eq!(ids(&ci), ["demo-8"]);
+        let mut both = ids(&theirs);
+        both.sort_unstable();
+        assert_eq!(both, ["demo-1", "demo-4", "demo-6"]);
+        assert_eq!((ci.for_me.len(), ci.info), (0, 1));
+        assert!(theirs.for_me.iter().all(|item| theirs.shown.shows(&item.source)), "the glance too");
+        // Without `--source`: what the apps report – no agents, no approvals, no mail.
+        let apps = notifications_window(&[]);
+        assert!(!apps.items.is_empty());
+        assert!(apps.items.iter().all(|item| item.source.kind == SourceKind::Script), "{:?}", ids(&apps));
+        assert_eq!(apps.count_note(), apps.items.len().to_string(), "New counts both lanes");
+        assert_eq!(apps.nav_entries().0.len(), 3, "New, Later, Done");
+    }
+
+    /// Task E8.4: the sidebar's checks and the chips switch a source on and off; the last one stays.
+    #[test]
+    fn a_source_switches_on_and_off_and_the_last_one_stays() {
+        let mut app = notifications_window(&["--source", "script:ci"]);
+        let _ = app.update(Message::ToggleSource(SourceRef::script("deploy")));
+        load(&mut app);
+        let mut shown = ids(&app);
+        shown.sort_unstable();
+        assert_eq!(shown, ["demo-6", "demo-8"]);
+        let _ = app.update(Message::ToggleSource(SourceRef::script("ci")));
+        load(&mut app);
+        assert_eq!(ids(&app), ["demo-6"]);
+        let _ = app.update(Message::ToggleSource(SourceRef::script("deploy")));
+        assert_eq!(app.shown, Shown::Only(vec![SourceRef::script("deploy")]), "a window always shows a source");
+        let agents = app.listed_sources();
+        assert!(agents.contains(&SourceRef::agent("claude-code")), "agents can be switched on");
+    }
+
+    /// Task E8.4: the ✕ dismisses – done, sent as dismissing –, and undo opens the entry again, as
+    /// after done. `x` does the same; approvals and the mail window have no ✕.
+    #[test]
+    fn dismissing_marks_the_entry_done_and_undo_opens_it_again() {
+        let mut app = notifications_window(&[]);
+        let _ = app.update(Message::Act("demo-6".into(), Command::Dismiss));
+        let dismiss = Edit::Dismiss { id: "demo-6".into() };
+        let reopen = Edit::Done { id: "demo-6".into(), done: false };
+        let after = After { text: tr("Dismissed").into(), undo: Some(reopen.clone()) };
+        assert_eq!(app.sent.last(), Some(&Sent::Edit(dismiss, Some(after))));
+        deliver(&mut app);
+        assert!(!ids(&app).contains(&"demo-6"), "gone from New");
+        assert!(matches!(stored(&app, "demo-6").state, State::Done { .. }), "done in the source, as after Done");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Dismissed")));
+        let _ = press(&mut app, Key::U);
+        assert_eq!(app.sent.last(), Some(&Sent::Edit(reopen, None)));
+        deliver(&mut app);
+        assert!(ids(&app).contains(&"demo-6"), "back");
+        assert!(stored(&app, "demo-6").state.is_open());
+
+        // `x` on the cursor's row.
+        let _ = press(&mut app, Key::X);
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Dismiss { id }, _)) if id == "demo-6"));
+        // An approval is never dismissed, nor is mail in the mail window.
+        let mut suite = notifications_window(&["--source", "suite"]);
+        let _ = suite.update(Message::Act("demo-3".into(), Command::Dismiss));
+        assert!(suite.sent.is_empty(), "an approval waits for yes or no");
+        let mut mail = mail_window("comfortable", &[]);
+        let _ = press(&mut mail, Key::Down);
+        let _ = press(&mut mail, Key::X);
+        assert!(mail.sent.is_empty(), "the mail window dismisses nothing");
+    }
+
+    /// Task E8.4: "Dismiss all" dismisses what "New" shows, but approvals and the suite's entries,
+    /// and its undo opens them all again.
+    #[test]
+    fn dismiss_all_dismisses_what_new_shows_and_undoes_it() {
+        let mut app =
+            notifications_window(&["--source", "suite", "--source", "script:deploy", "--source", "script:ci"]);
+        let _ = app.update(Message::DismissAll);
+        let Some(Sent::DismissAll(ids)) = app.sent.last().cloned() else { panic!("no Dismiss all: {:?}", app.sent) };
+        assert_eq!(ids, ["demo-6", "demo-8"], "the approval and the account problem stay");
+        deliver(&mut app);
+        let text = trf("{n} dismissed", &[("n", &2)]);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(text.as_str()));
+        let mut left = self::ids(&app);
+        left.sort_unstable();
+        assert_eq!(left, ["demo-3", "demo-5"]);
+        let _ = press(&mut app, Key::U);
+        assert_eq!(app.sent.last(), Some(&Sent::Reopen(ids)));
+        deliver(&mut app);
+        assert_eq!(app.items.len(), 4, "all back");
+        // Nothing to dismiss in Later.
+        let _ = app.update(Message::Show(View::Snoozed));
+        load(&mut app);
+        let sent = app.sent.len();
+        let _ = app.update(Message::DismissAll);
+        assert_eq!(app.sent.len(), sent);
+    }
+
+    /// Task E8.4: `m` (and the bell) mutes the source at once in the notifications window; the
+    /// suite is never muted.
+    #[test]
+    fn the_bell_mutes_the_source_at_once() {
+        let mut app = notifications_window(&[]);
+        let _ = app.update(Message::Act("demo-6".into(), Command::Hide));
+        assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
+        assert_eq!(app.menu, None, "no menu until E8.6b");
+        let mut suite = notifications_window(&["--source", "suite"]);
+        let _ = suite.update(Message::Act("demo-5".into(), Command::Hide));
+        assert!(suite.sent.is_empty());
+    }
+
+    /// Task E8.4: the wide window shows a column per app; `j`/`k` walk it column after column, `h`/`l`
+    /// go across; "By time" walks newest first, the narrow window "For me", then "Info".
+    #[test]
+    fn the_keys_walk_the_board_as_it_is_drawn() {
+        let mut app = notifications_window(&[
+            "--source",
+            "script:deploy",
+            "--source",
+            "agent:claude-code",
+            "--density",
+            "comfortable",
+        ]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert!(matches!(app.board(), Board::Columns(_)), "{:?}", app.board());
+        let columns = notifications::app_columns(&app.items, 3);
+        let (first, second) = (columns[0].items[0].id.clone(), columns[1].items[0].id.clone());
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some(first.as_str()));
+        let _ = press(&mut app, Key::L);
+        assert_eq!(cursor(&app), Some(second.as_str()), "l: the next column");
+        let _ = press(&mut app, Key::H);
+        assert_eq!(cursor(&app), Some(first.as_str()), "h: back");
+        assert_eq!(app.menu, None, "l asks no lane question here");
+
+        let _ = app.update(Message::Arrange(Arrange::ByTime));
+        assert!(matches!(app.board(), Board::Grid(_)));
+        let newest = notifications::by_time(&app.items).into_iter().map(|item| item.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(rows_of(&app), newest);
+
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!(app.board(), Board::Single, "narrow: one column");
+        let lanes: Vec<Lane> = app.rows().iter().map(|item| item.lane).collect();
+        assert!(lanes.windows(2).all(|pair| pair[0] == pair[1] || pair[0] == Lane::ForMe), "For me, then Info");
+    }
+
+    /// Task E8.4: moving the cursor scrolls the board, which scrolls as one.
+    #[test]
+    fn moving_on_the_board_scrolls_it() {
+        let mut app = notifications_window(&["--density", "comfortable"]);
+        let _ = app.update(Message::Resized(NARROW));
+        let first = app.rows()[0].id.clone();
+        let (_, bottom) =
+            notifications::span(&app.items, app.board(), &app.view, app.density(), &first).expect("shown");
+        let _ = app.update(Message::Scrolled(0.0, bottom));
+        assert_eq!(press(&mut app, Key::Down).units(), 0, "the first card is in view");
+        assert!(press(&mut app, Key::Down).units() > 0, "the second needs a scroll");
+        assert!(app.scroll.is_some_and(|(offset, _)| offset > 0.0));
+    }
+
+    /// Task E8.4: the notifications window draws in every size and both densities, by app and by
+    /// time, with the panel, the menus, the drawer and the toast, in every view of its sidebar.
+    #[test]
+    fn the_notifications_window_builds_in_every_size() {
+        for density in ["compact", "comfortable"] {
+            for open in [
+                &[][..],
+                &["--open", "by-time"],
+                &["--open", "empty"],
+                &["--source", "suite", "--source", "agent:claude-code"],
+            ] {
+                let mut words = vec!["--density", density];
+                words.extend_from_slice(open);
+                let mut app = notifications_window(&words);
+                for view in [View::Overview, View::Snoozed, View::Done] {
+                    let _ = app.update(Message::Show(view));
+                    load(&mut app);
+                    for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+                        let _ = app.update(Message::UiState(UiState { sidebar }));
+                        for size in SIZES {
+                            let _ = app.update(Message::Resized(size));
+                            let _ = app.view();
+                            let _ = press(&mut app, Key::Down);
+                            let _ = app.view();
+                            let _ = press(&mut app, Key::S);
+                            let _ = app.view();
+                            let _ = app.update(Message::CloseMenu);
+                            let _ = app.update(Message::ShowDrawer);
+                            let _ = app.view();
+                            let _ = app.update(Message::CloseMenu);
+                            if let Some(id) = app.cursor.clone() {
+                                let _ = app.update(Message::Select(id));
+                                let _ = app.view();
+                                let _ = app.update(Message::CloseDetail);
+                            }
+                            app.note("A hint".into());
+                            let _ = app.view();
+                            app.hint = None;
+                        }
+                    }
+                }
+            }
+        }
     }
 }

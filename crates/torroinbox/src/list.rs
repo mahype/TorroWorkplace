@@ -98,8 +98,8 @@ pub struct Rows<'a> {
 /// How a list draws mail (task E8.3): one row per mail, or a card per mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Look {
-    /// Rows, the action bar under the pointer or the cursor (the compact density, and every window
-    /// but the mail window until E8.4 and E8.5 bring their own cards).
+    /// Rows, the action bar under the pointer or the cursor (the compact density, and the hub until
+    /// E8.5 brings its own cards; the notifications window draws its board, `notifications.rs`).
     #[default]
     Rows,
     /// Cards with their buttons always shown (the comfortable density of the mail window). With
@@ -722,7 +722,7 @@ pub(crate) fn first_line_middle(height: f32, lines: usize) -> f32 {
 }
 
 /// How many lines of text `item`'s row has: three for mail, two for a notice with a text, else one.
-fn line_count(item: &Item) -> usize {
+pub(crate) fn line_count(item: &Item) -> usize {
     if item.source.kind == SourceKind::Mail {
         3
     } else if words(item).1.is_some_and(|text| !text.is_empty()) {
@@ -734,7 +734,7 @@ fn line_count(item: &Item) -> usize {
 
 /// The content of any other entry's row: the source's tile, then title (· count) · time, and the
 /// text below.
-fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+pub(crate) fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let room = words_room(width);
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
     let time = time_text(item, rows.view, rows.now);
