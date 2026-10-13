@@ -71,6 +71,13 @@ pub(crate) struct Tokens {
     /// The Iced themes built from [`Tokens::dark`] and [`Tokens::light`].
     pub dark_theme: Theme,
     pub light_theme: Theme,
+    /// The colours the sidebar draws with in each mode (`Palette::of_sidebar`).
+    pub sidebar_dark: Palette,
+    pub sidebar_light: Palette,
+    /// The Iced themes the sidebar's content is drawn in (`theme::sidebar_theme`), told apart from
+    /// the window's by identity: [`Tokens::sidebar_mode`].
+    pub sidebar_dark_theme: Theme,
+    pub sidebar_light_theme: Theme,
 }
 
 impl Tokens {
@@ -87,7 +94,38 @@ impl Tokens {
         };
         let dark_theme = theme::iced_theme(name("Dark"), &dark);
         let light_theme = theme::iced_theme(name("Light"), &light);
-        Tokens { design: Arc::new(design), dark, light, dark_theme, light_theme }
+        let sidebar_dark = Palette::of_sidebar(&design, Mode::Dark);
+        let sidebar_light = Palette::of_sidebar(&design, Mode::Light);
+        let sidebar_dark_theme = theme::iced_theme(name("Dark sidebar"), &sidebar_dark);
+        let sidebar_light_theme = theme::iced_theme(name("Light sidebar"), &sidebar_light);
+        Tokens {
+            design: Arc::new(design),
+            dark,
+            light,
+            dark_theme,
+            light_theme,
+            sidebar_dark,
+            sidebar_light,
+            sidebar_dark_theme,
+            sidebar_light_theme,
+        }
+    }
+
+    /// The mode of `theme` if it is one of the sidebar themes of these tokens, else `None`. By
+    /// identity of the theme's palette (an `Arc` the clones share), not by name: cheap enough for
+    /// every style call, and a sidebar theme's own brightness says nothing about the window's mode.
+    pub fn sidebar_mode(&self, theme: &Theme) -> Option<Mode> {
+        let same = |sidebar: &Theme| match (theme, sidebar) {
+            (Theme::Custom(a), Theme::Custom(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        if same(&self.sidebar_dark_theme) {
+            Some(Mode::Dark)
+        } else if same(&self.sidebar_light_theme) {
+            Some(Mode::Light)
+        } else {
+            None
+        }
     }
 }
 
@@ -577,6 +615,35 @@ mod tests {
         // Derived colours are computed from the design, not taken from the old constants.
         assert_ne!(tokens.light.attention_text, legacy::LIGHT.attention_text);
         assert_eq!(tokens.dark_theme.to_string(), "Torro Dark");
+    }
+
+    #[test]
+    fn a_sidebar_of_its_own_gets_its_own_theme() {
+        use torro_core::design::Rgba;
+        let mut design = Design::standard();
+        let light = &mut design.colors.light;
+        (light.sidebar, light.sidebar_hover, light.sidebar_selected) =
+            (Rgba::hex(0x24292F), Rgba::hex(0x2F353C), Rgba::hex(0x3A4149));
+        (light.sidebar_text, light.sidebar_text_2, light.sidebar_text_3) =
+            (Rgba::hex(0xF6F8FA), Rgba::hex(0xD0D7DE), Rgba::hex(0xAEB7C1));
+        let tokens = Tokens::new(design);
+        let side = tokens.sidebar_light;
+        assert_eq!(
+            (side.bg.into_rgba8(), side.text.into_rgba8()),
+            ([0x24, 0x29, 0x2F, 0xFF], [0xF6, 0xF8, 0xFA, 0xFF])
+        );
+        assert_eq!(side.panel, side.bg, "surfaces made for the light content take the sidebar's");
+        assert_eq!(side.error_text, tokens.light.error, "a dark sidebar derives as dark mode does");
+        assert_eq!(tokens.light.bg, legacy::LIGHT.bg, "the content keeps its colours");
+        assert_eq!(tokens.sidebar_dark, tokens.dark, "dark mode has no sidebar keys: as before");
+
+        assert_eq!(tokens.sidebar_mode(&tokens.sidebar_light_theme.clone()), Some(Mode::Light));
+        assert_eq!(tokens.sidebar_mode(&tokens.sidebar_dark_theme), Some(Mode::Dark));
+        assert_eq!(tokens.sidebar_mode(&tokens.light_theme), None);
+        assert_eq!(tokens.sidebar_mode(&Theme::Light), None);
+        // A theme with the same name and colours is not the sidebar's: identity counts.
+        let lookalike = theme::iced_theme(tokens.sidebar_light_theme.to_string().into(), &side);
+        assert_eq!(tokens.sidebar_mode(&lookalike), None);
     }
 
     /// Held by the tests that switch the process's design, so they do not see each other's.
