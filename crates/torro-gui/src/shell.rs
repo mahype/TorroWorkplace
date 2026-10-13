@@ -112,6 +112,9 @@ use crate::theme::{self, palette, radius, size, space};
 use crate::typo;
 use crate::widgets::{self, Anchor, MenuItem, MenuSection, Tone, Trail};
 
+mod in_sidebar;
+use in_sidebar::in_sidebar;
+
 /// The one-pixel lines of the design.
 const LINE: f32 = 1.0;
 /// Height of the app switcher row (`torro.css`: `.switcher{height:32px}`).
@@ -302,19 +305,22 @@ pub(crate) const LIGHTS: f32 = 20.0;
 /// colour, so the top of every window reads as one piece.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
-    /// The window background `bg`: the sidebar or the rail (wide, medium), and the states that lie
-    /// on the window itself (signing in, loading or failing before a layout exists).
+    /// The window background `bg`: the states that lie on the window itself (signing in, loading
+    /// or failing before a layout exists).
     Window,
+    /// The frame `sidebar` (the window background unless the design gives the sidebar a colour of
+    /// its own): where the sidebar or the rail runs up to the top (wide, medium).
+    Sidebar,
     /// The content panel `panel`: the flush narrow window and the glance of mini and strip.
     Panel,
 }
 
 impl Surface {
     /// The surface at the top of the window [`shell`] lays out in `class`, or of the glance in mini
-    /// and strip: the window background where a sidebar or rail runs up to the top, else the panel.
+    /// and strip: the sidebar's frame where a sidebar or rail runs up to the top, else the panel.
     pub fn of(class: SizeClass) -> Surface {
         match sidebar_mode(class, SidebarMode::Expanded) {
-            Some(_) => Surface::Window,
+            Some(_) => Surface::Sidebar,
             None => Surface::Panel,
         }
     }
@@ -450,7 +456,10 @@ pub fn titlebar<'a, M: Clone + 'a>(
     #[cfg(target_os = "macos")]
     {
         // The band is in layout units, which `scale_factor` multiplies; dividing keeps it in points.
-        let band = stack![band(surface, cover), band_buttons(buttons, cover, zoom)];
+        let on_sidebar = matches!((surface, cover), (Surface::Sidebar, Cover::Nothing) | (_, Cover::Drawer));
+        let buttons = band_buttons(buttons, cover, zoom);
+        let buttons = if on_sidebar { in_sidebar(buttons) } else { buttons };
+        let band = stack![band(surface, cover), buttons];
         let band = container(band).width(Fill).height(TITLEBAR / zoom);
         // The buttons capture their presses, so only the free band drags the window.
         column![mouse_area(band).on_press(on_drag), container(content).width(Fill).height(Fill)].into()
@@ -511,7 +520,8 @@ fn band_buttons<'a, M: Clone + 'a>(buttons: TitleButtons<M>, cover: Cover, zoom:
 fn band<'a, M: 'a>(surface: Surface, cover: Cover) -> Element<'a, M> {
     let style_of = |surface| -> fn(&iced::Theme) -> container::Style {
         match surface {
-            Surface::Window => style::container::sidebar,
+            Surface::Window => style::container::window,
+            Surface::Sidebar => style::container::sidebar,
             Surface::Panel => style::container::panel_flush,
         }
     };
@@ -528,7 +538,7 @@ fn band<'a, M: 'a>(surface: Surface, cover: Cover) -> Element<'a, M> {
             let drawer = container(row![side, rule::vertical(LINE).style(style::rule)])
                 .height(Fill)
                 .style(style::container::sidebar);
-            row![drawer, dimmed()].into()
+            row![in_sidebar(drawer), dimmed()].into()
         }
         Cover::Panel => {
             let panel = container(blank()).width(size::panel()).height(Fill).style(style::container::panel_flush);
@@ -598,7 +608,7 @@ fn inset_window<'a, M: 'a>(
         .height(Fill)
         .padding(LINE)
         .style(style::container::panel);
-    let side = container(sidebar).width(width).height(Fill).padding(space::s());
+    let side = in_sidebar(container(sidebar).width(width).height(Fill).padding(space::s()));
     container(row![side, container(panel).padding(Padding { left: 0.0, ..Padding::new(layout::inset()) })])
         .width(Fill)
         .height(Fill)
@@ -618,9 +628,9 @@ fn drawer<'a, M: Clone + 'a>(sidebar: Element<'a, M>, on_dismiss: M) -> Element<
         let p = palette(t);
         // The menu shadow falls sideways here: the drawer's edge is vertical.
         let shadow = Shadow { offset: Vector::new(space::m(), 0.0), ..p.shadow };
-        container::Style { background: Some(Background::Color(p.bg)), shadow, ..container::Style::default() }
+        container::Style { background: Some(Background::Color(p.sidebar)), shadow, ..container::Style::default() }
     });
-    stack![catcher, opaque(panel)].into()
+    stack![catcher, opaque(in_sidebar(panel))].into()
 }
 
 /// The content of the sidebar: the `switcher` row ([`app_switcher`], or [`sidebar_head`] with the
@@ -1025,7 +1035,7 @@ mod tests {
 
     #[test]
     fn titlebar_wraps_any_content() {
-        for surface in [Surface::Window, Surface::Panel] {
+        for surface in [Surface::Window, Surface::Sidebar, Surface::Panel] {
             let filled = Cover::Filled(Surface::Panel);
             for cover in [Cover::Nothing, Cover::Dialog, Cover::Drawer, Cover::Panel, filled] {
                 let buttons = || TitleButtons::none().sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
@@ -1108,8 +1118,8 @@ mod tests {
     #[test]
     fn the_band_takes_the_surface_at_the_top_of_each_class() {
         // Sidebar or rail run up to the top on the window background; elsewhere the panel does.
-        assert_eq!(Surface::of(SizeClass::Wide), Surface::Window);
-        assert_eq!(Surface::of(SizeClass::Medium), Surface::Window);
+        assert_eq!(Surface::of(SizeClass::Wide), Surface::Sidebar);
+        assert_eq!(Surface::of(SizeClass::Medium), Surface::Sidebar);
         assert_eq!(Surface::of(SizeClass::Narrow), Surface::Panel);
         assert_eq!(Surface::of(SizeClass::Mini), Surface::Panel);
         assert_eq!(Surface::of(SizeClass::Strip), Surface::Panel);

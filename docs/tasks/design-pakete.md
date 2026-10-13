@@ -138,7 +138,10 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   „nicht möglich“); `torro-design-review` mit beiden Paketen.
 
 ### L.6 Seitenleiste mit eigenen Farben
-- [ ] erledigt
+- [x] erledigt (2026-10-13: `Surface` hat dazu die Variante `Sidebar` bekommen, weil Seitenleiste und Fensterzustände
+  verschiedene Flächen brauchen; Grafikregeln nur bei eigener Fläche, sonst wäre Plex ungültig geworden; Achtungs- und
+  Fehlertext in der Leiste nicht geprüft, aber nach ihrer Helligkeit abgeleitet; Sichtprüfung nur breit, die
+  Fenstergröße ließ sich auf macOS nicht setzen)
 - **Modell:** Opus · **Braucht:** L.5 · **Dateien:** `crates/torro-core/src/design.rs`,
   `crates/torro-core/src/design/**` (Format, Zusammenführen, Prüfen, Fehler), `crates/torro-core/tests/fixtures/designs/`,
   `crates/torro-core/src/i18n/de.rs` (neue Fehlertexte), `crates/torro-gui/src/**` (vor allem `theme.rs`, `style.rs`,
