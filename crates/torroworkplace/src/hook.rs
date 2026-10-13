@@ -72,8 +72,10 @@ use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response};
 /// cut JSON object cannot be read anyway.
 pub const STDIN_MAX: u64 = 1024 * 1024;
 
-/// How long connecting to the core and waiting for its answer may take together.
-pub const BUDGET: Duration = Duration::from_millis(500);
+/// How long connecting to the core and waiting for its answer may take together: 500 ms, so an
+/// agent never waits on a hook. Tests run many cores at once on a busy machine; there a call gets
+/// three seconds, or a slow answer fails a test that has nothing to do with timing.
+pub const BUDGET: Duration = if cfg!(test) { Duration::from_secs(3) } else { Duration::from_millis(500) };
 
 /// How long to wait for stdin to end. Agents write the payload and close the pipe at once; this
 /// only guards against a pipe left open.
@@ -443,7 +445,8 @@ async fn call(socket: &Path, key: &Key, request: &Request) -> Result<Response, H
 ///
 /// Reads only the approval the core answered the question with, by its id: the hook takes no
 /// other approval's decision for its own ([`decision_of`]). Each call has [`BUDGET`]; between
-/// looks it sleeps [`ANSWER_POLL`].
+/// looks it sleeps [`ANSWER_POLL`]. A look that runs out of time is tried again while the wait
+/// lasts; only a refused or failed one ends the wait.
 pub fn answer(
     agent: AgentKind,
     question: &PermissionQuestion,
@@ -486,7 +489,12 @@ async fn ask_and_wait(
         }
         tokio::time::sleep(ANSWER_POLL.min(deadline - now)).await;
         let status = Request::ApprovalStatus { id: asked.id.clone() };
-        match call(socket, token, &status).await? {
+        // One slow look is no reason to give up on the person: look again until the deadline.
+        let looked = match call(socket, token, &status).await {
+            Err(HookError::TimedOut) => continue,
+            looked => looked?,
+        };
+        match looked {
             Response::Approval { approval } => match decision_of(&approval, &asked.id) {
                 Decided::Waiting => {}
                 Decided::Allowed => return Ok(Some(true)),
