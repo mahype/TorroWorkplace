@@ -651,6 +651,7 @@ mod tests {
     /// How long a test waits for what a core does on its own (starting, showing a question)
     /// before it fails: far more than a loaded machine needs, and a passing test never waits it
     /// out, because it stops looking as soon as it sees what it waits for.
+    #[cfg(unix)]
     const SETTLE: Duration = Duration::from_secs(30);
 
     /// The hook payloads of E2.2a, shared with `torro-inbox`.
