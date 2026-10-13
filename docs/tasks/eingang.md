@@ -739,10 +739,11 @@ E8.9   unabhängig (torro-wm, core.rs)
   `AppId::ALL` enthält die drei Einträge; eine Vorlage mit Mail-Fenster stellt es als Mail-Fenster wieder her.
   Sichtprüfung je Fensterart in Breit und Schmal.
 
-### E8.1b Nacharbeit: Fensterarten überall erkennen
+### E8.1b Nacharbeit: Fensterarten überall erkennen, Reste aus E8.5 und E8.7b
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** E8.1, E8.9, E8.5 · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
-  `crates/torroinbox/src/{detail,list,app}.rs`, `crates/torroworkplace/src/ui/apps.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Modell:** Opus · **Braucht:** E8.1, E8.9, E8.5, E8.7b · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
+  `crates/torroinbox/src/{detail,list,app,mail,notifications}.rs`, `crates/torro-ipc/src/inbox.rs`,
+  `crates/torroworkplace/src/ui/apps.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Verweise auf Apps:** Ein Eintrag mit `Link::App` wird heute nur über den Programmnamen erkannt
   (`inbox.rs`, Prüfung beim Melden und Öffnen; `detail.rs`, Knopf und Wort). Ein Verweis auf eine Fensterklasse
   (`torro-inbox-mail`) wird darum abgelehnt. Beide Stellen nutzen `AppId::find`; Unbekanntes bleibt abgelehnt
@@ -754,10 +755,17 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Aus E8.5:** In Listen-Ansichten (`list::actions`) zeigt die Aktionsleiste einer Freigabe noch „Later“; Freigaben
   haben kein Later. Toasts und das Menü sagen noch „Marked as done“, „Snoozed until …“ und „Snooze until“; einheitlich
   „Done“ und „Later“ wie Karten und Paneel („Done“, „Later until …“, „Later until“).
-- **API:** vorhandene `inbox.post_item`, `inbox.open_item`, `apps.list_apps`. **MCP:** vorhandene Tools.
+- **Aus E8.7b:** „Task“ an Ordner-Mails fragt nach einer Fälligkeit wie der Dialog aus E3.5: dafür
+  `InboxClient::create_todo_from_mail` in `torro-ipc/src/inbox.rs` (statt den Request in `mail.rs` selbst zu bauen).
+  Die Karte „You finished a task from a mail“ zeigt auch im Benachrichtigungen-Fenster Reply · Mark mail done · Not
+  now. Sichtprüfung nachholen, die in E8.7b am gesperrten Bildschirm scheiterte: `torroinbox --view mail|hub --demo
+  --now 2026-10-13T10:30`, `torrotasks --demo --task=quarterly-report@torro-demo`, breit und schmal, hell und dunkel.
+- **API:** vorhandene `inbox.post_item`, `inbox.open_item`, `apps.list_apps`, `tasks.create_todo_from_mail`. **MCP:**
+  vorhandene Tools.
 - **Abnahme:** Tests: Verweis auf `torro-inbox-mail` wird angenommen und geöffnet, unbekannte Fensterklasse →
   abgelehnt; Steuerzentrale zeigt drei verschiedene Namen und Beschreibungen; Freigabe-Zeile ohne Later; Toasts mit
-  `tr()`-Vergleich. Übersetzungen im Bericht.
+  `tr()`-Vergleich; Aufgabe aus Ordner-Mail mit Fälligkeit; Rückfrage-Karte im Benachrichtigungen-Fenster.
+  Übersetzungen im Bericht.
 
 ### E8.2 Zwei Dichten und Bausteine für Karten
 - [x] erledigt (zusätzlich `torro-core/src/design/pack.rs`: Schlüssel `type.read` im Paket-Format; Tokens
