@@ -3730,6 +3730,9 @@ mod tests {
         let core = core(dir.path());
         let mut changes = core.approval_changes();
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        // How long a wake-up may take before the test fails: far more than a loaded machine needs,
+        // and a passing test never waits it out, because the wait ends with the wake-up.
+        let settle = Duration::from_secs(30);
 
         // Nothing open, nothing changed: it keeps waiting.
         let quiet = tokio::time::timeout(Duration::from_millis(50), core.approvals_changed(&mut changes)).await;
@@ -3737,20 +3740,21 @@ mod tests {
 
         let now = Utc::now();
         let opened = core.approvals.open("c1", "One", delete("a"), None, "a".into(), now).await.expect("opened");
-        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        let woke = tokio::time::timeout(settle, core.approvals_changed(&mut changes)).await;
         assert_eq!(woke.ok(), Some(true), "an opened approval wakes the tray");
 
         core.approvals.decide(&opened.id, true, now).await.expect("allowed");
-        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        let woke = tokio::time::timeout(settle, core.approvals_changed(&mut changes)).await;
         assert_eq!(woke.ok(), Some(true), "a decision wakes the tray");
 
         // One that expires in a moment wakes it without any change, and is no longer counted then.
-        // Two seconds left, so the count before the expiry holds even under a loaded parallel test run.
         let soon = Utc::now() - crate::approvals::LIFETIME + chrono::TimeDelta::seconds(2);
         core.approvals.open("c1", "One", delete("b"), None, "b".into(), soon).await.expect("opened");
         changes.mark_unchanged();
-        assert_eq!(core.snapshot().await.approvals_waiting, 1);
-        let woke = tokio::time::timeout(Duration::from_secs(5), core.approvals_changed(&mut changes)).await;
+        // Counted while it has time left: asked as of its opening, not of the wall clock, which a
+        // loaded machine may have carried past the two seconds already.
+        assert_eq!(core.open_approvals(soon).await.len(), 1);
+        let woke = tokio::time::timeout(settle, core.approvals_changed(&mut changes)).await;
         assert_eq!(woke.ok(), Some(true), "the expiry wakes the tray");
         assert_eq!(core.snapshot().await.approvals_waiting, 0);
     }
