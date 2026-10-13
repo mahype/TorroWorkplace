@@ -965,13 +965,15 @@ E8.9   unabhängig (torro-wm, core.rs)
 
 ### E8.6b Stummschalten: Menü und Regeln
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** E8.6a, E8.3, E8.4 · **Dateien:** `crates/torroinbox/src/{app,notifications,list,keys}.rs`,
+- **Modell:** Opus · **Braucht:** E8.6a, E8.3, E8.4 · **Dateien:** `crates/torroinbox/src/{app,notifications,list,keys,detail,mail,empty}.rs`,
   `crates/torroworkplace/src/ui/inbox.rs`, `crates/torro-gui/src/widgets.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Verwerfen** (✕, „Dismiss all“) schickt ab jetzt `set_item_done` mit `dismissed: true`.
 - **Menü der Glocke** (und Taste `m`): Abschnitt „Mute“ mit den Möglichkeiten aus `list_mute_options`, „For“ (1 hour ·
   Until tomorrow · Always), „What happens“ (No popup · Only Info · Hide), unten der Weg zu den Regeln. Nach dem
   Stummschalten der Toast mit Undo (E3.11). Im Mail-Fenster bleibt „Hide from inbox“ (E3.10), es nutzt dieselben
   Regeln.
+- **Aus E8.1b:** „No longer snoozed“, „Unsnooze“, „Nothing snoozed.“ und „Snoozed entries wait here …“ sagen noch
+  „snooze“; einheitlich „Later“ wie überall sonst (neue Schlüssel, Übersetzungen im Bericht).
 - **Aus E8.3:** „Move to Info“ trägt im Leser bisher das Glocken-Icon. Die Glocke ist ab hier das Stummschalten;
   „Move to Info“ bekommt ein eigenes Icon.
 - **Steuerzentrale › Inbox › Rules:** alle Regeln mit Wort („Muted until tomorrow: #general in Slack“), Ablauf und

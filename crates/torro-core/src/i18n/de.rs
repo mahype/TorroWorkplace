@@ -556,6 +556,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Window kinds everywhere, one word for later (E8.1b)
+    ("Later until {time}", "Später bis {time}"),
+    ("Later until", "Später bis"),
+    ("Your mail, from a quick look to a full client", "Deine Mail, vom schnellen Blick bis zum vollen Programm"),
+    ("What your apps report, one column per app", "Was deine Apps melden, eine Spalte je App"),
+    ("Decide, hand on and see where it all comes from", "Entscheiden, weitergeben und sehen, woher alles kommt"),
     // Tasks that keep their mail, in the windows (E8.7b)
     ("Open task", "Aufgabe öffnen"),
     ("Open mail", "Mail öffnen"),
