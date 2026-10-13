@@ -756,7 +756,12 @@ E8.9   unabhängig (torro-wm, core.rs)
   abgelehnt; Steuerzentrale zeigt drei verschiedene Namen und Beschreibungen. Übersetzungen im Bericht.
 
 ### E8.2 Zwei Dichten und Bausteine für Karten
-- [ ] erledigt
+- [x] erledigt (zusätzlich `torro-core/src/design/pack.rs`: Schlüssel `type.read` im Paket-Format; Tokens
+  `typo::read()` 14/22, `size::card_gap()` 12, `avatar()`/`avatar_lg()` 36/40, `tile_sm()`/`tile()`/`tile_lg()`
+  20/28/36; `ui_state::Density`, `widgets::density_switch`, `card`, `card_head`, `source_tile`; `chip_row` gab es
+  schon, Karten nutzen ihn mit `state_pill`; `typo::all()` bleibt bei acht Stufen; Galerie `-- --cards`, auch
+  `--design <id>`; Sichtprüfung am Mac: Galerie dunkel, hell, Plex; Inbox nur Breit, Mittel/Schmal ließ sich ohne
+  Hyprland nicht einstellen)
 - **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{design.rs,design/rules.rs}`,
   `crates/torro-gui/src/{typo,theme,widgets,ui_state}.rs`, `crates/torro-gui/examples/gallery.rs`,
   `crates/torroinbox/src/{main,app}.rs`, `.claude/skills/torro-design/SKILL.md`, `docs/design-pakete.md`

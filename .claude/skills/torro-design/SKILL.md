@@ -144,6 +144,9 @@ aus einem Guss wirkt:
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
 | `size::row_message()` | 88 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau (E3.9) |
 | `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
+| `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
+| `size::avatar()` / `size::avatar_lg()` | 36 / 40 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die kompakte Mail-Zeile bleibt bei 32 |
+| `size::tile_sm()` / `size::tile()` / `size::tile_lg()` | 20 / 28 / 36 | Quellen-Kachel (`widgets::source_tile`, E8.2): neben Wörtern / Hinweiszeile, Spaltenkopf / Anhang, Kopf einer App-Karte |
 | `size::row_sidebar()` | 28 | Seitenleisten- und Menüzeile (Menü 30) |
 | `size::row_group()` | 32 | Gruppenkopf in Listen („Overdue 2“) |
 | `size::header()` | 44 | Kopfleiste |
@@ -183,6 +186,7 @@ aus einem Guss wirkt:
 | `typo::meta()` | 12 / 16 | 400 | Metadaten, Zähler, Fälligkeit |
 | `typo::body()` | 13 / 20 | 400 | Standard: Listen, Seitenleiste, Eingaben, Fließtext |
 | `typo::body_strong()` | 13 / 20 | 500 | Kopfleisten-Titel, Zeilentitel, Termintitel |
+| `typo::read()` | 14 / 22 | 400 | Lesetext: die ganze Mail im Leser des Eingangs (E8.2); nie für Zeilen, Labels, Eingaben |
 | `typo::title()` | 16 / 22 | 600 | Karten- und Dialogtitel |
 | `typo::headline()` | 22 / 28 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
 | `typo::display()` | 28 / 32 | 600 | Kopfzahl in Mini (Uhrzeit, Zahl offener Aufgaben) |
@@ -231,6 +235,26 @@ aus einem Guss wirkt:
   tut, was seine Taste an der Zeile tut. Zeilen mit mehreren Zeilen Text (Mail-Zeile, Hinweis mit
   Text) setzen die Leiste auf die erste Zeile, über die Zeit (`widgets::row_actions_at`, E3.11), damit
   Vorschau und Konto darunter frei bleiben.
+- **Zwei Dichten im Eingang** (E8.2, `ui_state::Density`): **Compact** (eine Zeile je Eintrag, Aktionsleiste
+  beim Überfahren) und **Comfortable** (Karten). Umschalter `widgets::density_switch(dichte, wörter, nachricht)` in
+  der Kopfleiste jeder Fensterart, Icons `List` / `LayoutGrid`, in Schmal nur Icons mit Tooltip. Gemerkt je
+  Fensterart und Ausschnitt in `ui.json` (`ui_state::save_density_task`, Schlüssel wie `mail`, `hub/lane:info`);
+  `--density compact|comfortable` beim Start hat Vorrang. Ohne Wahl: Comfortable, in Schmal Compact
+  (`Density::default_for`). Mini und Leiste bleiben Anzeigen.
+- **Karte** (E8.2, `widgets::card(teile, gewählt, on_press)`): Fläche `RAISED`, Rand `LINE_STRONG`, Radius
+  `radius::lg()`, Innenrand `layout::panel_padding()` (16), Teile mit `size::card_gap()` (12) untereinander, Karten
+  mit demselben Abstand. Gewählt (Cursor, im Leser) `SELECTED` mit Kante `LINE_SELECTED`; mit `on_press` ist die
+  ganze Karte ein Knopf (Hover: Kante `LINE_SELECTED`), Knöpfe darin nehmen ihren Klick selbst. **Knöpfe der Karte
+  sind immer sichtbar**: eine Reihe `text_button`/`icon_button` mit `space::s()`, nicht die Hover-Leiste.
+  `widgets::card_head(lead, titel, meta, verwerfen)`: Kachel oder Avatar links, Titel `typo::body_strong()`, darunter
+  Meta `typo::meta()` in `TEXT_3`, beide einzeilig mit „…“ und Tooltip; ✕ („Dismiss“) oben rechts nur, wo der
+  Eintrag verschwinden darf (nicht bei Mail im Mail-Fenster, nicht bei Freigaben). Chips der Karte (Anhang,
+  „Answer by Fri“): `widgets::state_pill` in `widgets::chip_row`, Farbe nur im Icon.
+- **Quellen-Kachel** (E8.2, `widgets::source_tile(gesicht, größe, tönung)`): `TileFace::Icon(…)` oder
+  `TileFace::letter(name)`, `TileSize::Small | Medium | Large` (20 / 28 / 36, Radius xs / sm / md). Neutral
+  `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
+  `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
+  `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
 - **Hinweis mit „Undo“** (E3.11, `widgets::toast`): nach einer Änderung, die sich zurücknehmen lässt
   (Done, Later, Hide …), unten mittig `space::xl()` über dem Fensterrand; Fläche `MENU`, Rand
   `LINE_STRONG`, Radius `radius::md()`, Schatten (`style::container::menu`), Text `typo::body()` in

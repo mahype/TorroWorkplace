@@ -501,6 +501,35 @@ pub mod size {
     pub fn form_max() -> f32 {
         design::with(|t| t.design.size.form_max)
     }
+    /// 12: the gap between two cards and between the parts of one card (task E8.2,
+    /// `widgets::card`) – the comfortable density of the inbox, where entries get room instead of
+    /// lines between them.
+    pub fn card_gap() -> f32 {
+        design::with(|t| t.design.size.card_gap)
+    }
+    /// 36: the avatar of a card (task E8.2): a sender's initials, round, beside a mail card's
+    /// lines. A compact mail row keeps its 32 ([`control`]).
+    pub fn avatar() -> f32 {
+        design::with(|t| t.design.size.avatar)
+    }
+    /// 40: the large avatar (task E8.2): the sender at the head of the mail reader.
+    pub fn avatar_lg() -> f32 {
+        design::with(|t| t.design.size.avatar_lg)
+    }
+    /// 20: the small source tile (task E8.2, `widgets::source_tile`): beside a word, in a compact
+    /// row or a menu.
+    pub fn tile_sm() -> f32 {
+        design::with(|t| t.design.size.tile_sm)
+    }
+    /// 28: the source tile of a notice row and of a column head ("Slack 5") (task E8.2).
+    pub fn tile() -> f32 {
+        design::with(|t| t.design.size.tile)
+    }
+    /// 36: the large source tile (task E8.2): an attachment in the reader, the head of a card that
+    /// stands for an app.
+    pub fn tile_lg() -> f32 {
+        design::with(|t| t.design.size.tile_lg)
+    }
     /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
     /// above the columns of a grid). Always one logical pixel, also on HiDPI screens; not part of a
     /// design pack, so it stays a constant.

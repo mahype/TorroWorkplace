@@ -54,7 +54,7 @@ pub struct Design {
     pub about: About,
     /// The (up to) three font families.
     pub fonts: Fonts,
-    /// The eight text levels (`torro_gui::typo`).
+    /// The nine text levels (`torro_gui::typo`).
     pub typo: TypeScale,
     /// The spacing scale (`torro_gui::theme::space`).
     pub space: Space,
@@ -200,7 +200,7 @@ pub struct Level {
     pub line: f32,
 }
 
-/// The eight text levels, named as in `torro_gui::typo` (lowercase).
+/// The nine text levels, named as in `torro_gui::typo` (lowercase).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TypeScale {
     /// Time axis, times in events, weekday letters. Uses `numbers` in the standard.
@@ -213,6 +213,9 @@ pub struct TypeScale {
     pub body: Level,
     /// Header and row titles, event titles.
     pub body_strong: Level,
+    /// Reading text: the whole of a mail in the inbox's reader (task E8.2), a little larger and with
+    /// more line height than [`TypeScale::body`], because it is read for longer than a list.
+    pub read: Level,
     /// Card and dialog titles.
     pub title: Level,
     /// Detail titles, view titles without a header bar.
@@ -223,13 +226,14 @@ pub struct TypeScale {
 
 impl TypeScale {
     /// Every level with its key (`"body"`), smallest first.
-    pub fn levels(&self) -> [(&'static str, Level); 8] {
+    pub fn levels(&self) -> [(&'static str, Level); 9] {
         [
             ("micro", self.micro),
             ("caption", self.caption),
             ("meta", self.meta),
             ("body", self.body),
             ("body_strong", self.body_strong),
+            ("read", self.read),
             ("title", self.title),
             ("headline", self.headline),
             ("display", self.display),
@@ -246,6 +250,7 @@ impl TypeScale {
             "meta" => &mut self.meta,
             "body" => &mut self.body,
             "body_strong" => &mut self.body_strong,
+            "read" => &mut self.read,
             "title" => &mut self.title,
             "headline" => &mut self.headline,
             "display" => &mut self.display,
@@ -332,11 +337,25 @@ pub struct Size {
     pub axis_narrow: f32,
     pub content_max: f32,
     pub form_max: f32,
+    /// The gap between two cards and between the parts of one card (task E8.2,
+    /// `torro_gui::widgets::card`): the comfortable density of the inbox.
+    pub card_gap: f32,
+    /// The avatar of a card (task E8.2): a sender's initials beside a mail card.
+    pub avatar: f32,
+    /// The large avatar (task E8.2): the sender at the head of the mail reader.
+    pub avatar_lg: f32,
+    /// The small source tile (task E8.2, `torro_gui::widgets::source_tile`): beside a word, in a
+    /// compact row or a menu.
+    pub tile_sm: f32,
+    /// The source tile of a notice row and of a column head (task E8.2).
+    pub tile: f32,
+    /// The large source tile (task E8.2): an attachment, the head of a card that stands for an app.
+    pub tile_lg: f32,
 }
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 20] {
+    pub fn entries(&self) -> [(&'static str, f32); 26] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
@@ -358,6 +377,12 @@ impl Size {
             ("axis_narrow", self.axis_narrow),
             ("content_max", self.content_max),
             ("form_max", self.form_max),
+            ("card_gap", self.card_gap),
+            ("avatar", self.avatar),
+            ("avatar_lg", self.avatar_lg),
+            ("tile_sm", self.tile_sm),
+            ("tile", self.tile),
+            ("tile_lg", self.tile_lg),
         ]
     }
 
@@ -383,6 +408,12 @@ impl Size {
             "axis_narrow" => &mut self.axis_narrow,
             "content_max" => &mut self.content_max,
             "form_max" => &mut self.form_max,
+            "card_gap" => &mut self.card_gap,
+            "avatar" => &mut self.avatar,
+            "avatar_lg" => &mut self.avatar_lg,
+            "tile_sm" => &mut self.tile_sm,
+            "tile" => &mut self.tile,
+            "tile_lg" => &mut self.tile_lg,
             _ => return None,
         })
     }
@@ -634,6 +665,7 @@ impl Design {
                 meta: level(FontRole::Text, Weight::Regular, 12.0, 16.0),
                 body: level(FontRole::Text, Weight::Regular, 13.0, 20.0),
                 body_strong: level(FontRole::Text, Weight::Medium, 13.0, 20.0),
+                read: level(FontRole::Text, Weight::Regular, 14.0, 22.0),
                 title: level(FontRole::Heading, Weight::Semibold, 16.0, 22.0),
                 headline: level(FontRole::Heading, Weight::Semibold, 22.0, 28.0),
                 display: level(FontRole::Text, Weight::Semibold, 28.0, 32.0),
@@ -684,6 +716,12 @@ pub(crate) const STANDARD_SIZE: Size = Size {
     axis_narrow: 44.0,
     content_max: 720.0,
     form_max: 640.0,
+    card_gap: 12.0,
+    avatar: 36.0,
+    avatar_lg: 40.0,
+    tile_sm: 20.0,
+    tile: 28.0,
+    tile_lg: 36.0,
 };
 
 const STANDARD_DARK: Palette = Palette {
@@ -811,6 +849,10 @@ mod tests {
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
         assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
         assert_eq!([d.size.row_message, d.size.row_notice], [88.0, 64.0], "the inbox's rows (task E3.9)");
+        // The comfortable density of the inbox (task E8.2).
+        assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
+        assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 36.0, 40.0]);
+        assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
         assert_eq!(d.logo, Logo::default());
     }
 

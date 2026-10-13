@@ -9,7 +9,10 @@
 //! Three windows (task E8.1, [`Kind`], `--view mail|notifications|hub`): each with its own window
 //! class, title and entry in the app switcher. So far they differ in the overview's columns – the
 //! mail window shows "Mail", the notifications window "Notifications", the hub both
-//! ([`Kind::columns`]); the rest is the same window.
+//! ([`Kind::columns`]); the rest is the same window. Each has "Compact | Comfortable" in its header
+//! bar (task E8.2, [`App::density`]), remembered per window and slice in `ui.json`
+//! ([`Launch::density_key`]), `--density` winning; the cards of the comfortable density come with
+//! E8.3 to E8.5.
 //!
 //! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
 //! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
@@ -89,7 +92,7 @@ use torro_gui::panel;
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
-use torro_gui::ui_state::{self, UiState};
+use torro_gui::ui_state::{self, Density, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
@@ -673,6 +676,10 @@ impl Open {
 /// - `--view mail|notifications|hub`: which of the three windows this is (task E8.1, [`Kind`]);
 ///   without it the hub. Works without `--demo`; the core starts each kind with it
 ///   ([`torro_core::AppId::args`]) and a workspace template stores it with the command line.
+/// - `--density compact|comfortable`: the density the window starts in (task E8.2, [`Density`]).
+///   It wins over the density remembered for the window in `ui.json`, so a workspace template that
+///   stores it brings the window back as it was; a switch in the header bar changes it (and is
+///   remembered) as usual. Works without `--demo`.
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
 ///   on that lane or source, for one window per slice of the inbox (E3.6), inside the window's
 ///   kind. Works without `--demo`;
@@ -694,6 +701,8 @@ pub struct Launch {
     pub design: Option<String>,
     /// The window of `--view`; the hub without it.
     pub kind: Kind,
+    /// The density of `--density`; `None` takes the one remembered for the window (task E8.2).
+    pub density: Option<Density>,
     /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
     /// `--compose`: the window writes a message instead of showing the inbox.
@@ -723,6 +732,15 @@ impl Kind {
     /// The values of `--view`, in the order the error message lists them.
     pub const ALL: [(&'static str, Kind); 3] =
         [("mail", Kind::Mail), ("notifications", Kind::Notifications), ("hub", Kind::Hub)];
+
+    /// The word of `--view` for this kind (`mail`, `notifications`, `hub`).
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Mail => "mail",
+            Kind::Notifications => "notifications",
+            Kind::Hub => "hub",
+        }
+    }
 
     /// The app entry of this kind: its window class, name and start arguments.
     pub fn app(self) -> AppId {
@@ -869,8 +887,32 @@ impl Launch {
             }
         };
         let kind = Kind::parse(args)?;
+        let density = match flag_value(args, "--density")? {
+            None => None,
+            Some(word) => match Density::parse(word) {
+                Some(density) => Some(density),
+                None => return Err(unknown("--density", word, Density::ALL.map(|(name, _)| name).to_vec())),
+            },
+        };
         let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, design, kind, view, compose })
+        Ok(Launch { demo, open, appearance, now, design, kind, density, view, compose })
+    }
+
+    /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
+    /// kind's word of `--view`, and after a "/" the slice of `--lane` or `--source` – `mail`,
+    /// `hub/lane:info`, `notifications/source:agent:claude-code`. So every window kind and every
+    /// window per slice keeps a density of its own, though all of them share one state directory.
+    pub fn density_key(&self) -> String {
+        let kind = self.kind.word();
+        let slice = match &self.view {
+            Some(View::ForMe) => "lane:for-me".to_owned(),
+            Some(View::Info) => "lane:info".to_owned(),
+            Some(View::Mail) => "source:mail".to_owned(),
+            Some(View::Source(source)) => format!("source:{source}"),
+            // No slice; `--lane` and `--source` start on no other view.
+            _ => return kind.to_owned(),
+        };
+        format!("{kind}/{slice}")
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -1045,6 +1087,9 @@ pub struct App<S> {
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
     sidebar: SidebarMode,
+    /// The density chosen for this window (task E8.2): `--density`, else the one remembered in
+    /// `ui.json`, else `None` – then the layout decides ([`App::density`]).
+    density: Option<Density>,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -1176,6 +1221,10 @@ pub enum Message {
     ToggleSidebar,
     /// The view state stored in `ui.json`, loaded at start.
     UiState(UiState),
+    /// "Compact | Comfortable" in the header bar (task E8.2): show the entries so, and remember it.
+    SetDensity(Density),
+    /// The density remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
+    StoredDensity(Option<Density>),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, then the panel.
@@ -1331,6 +1380,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
+            density: launch.density,
             launch,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -1338,9 +1388,15 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
+        // `--density` wins over what `ui.json` remembers, so with it nothing is asked.
+        let density = match app.launch.density {
+            Some(_) => Task::none(),
+            None => ui_state::load_density_task(INBOX, app.launch.density_key()).map(Message::StoredDensity),
+        };
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
+            density,
             app.load(),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
@@ -1606,6 +1662,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Message::ToggleSidebar => return self.toggle_sidebar(),
             Message::UiState(state) => self.sidebar = state.sidebar,
+            Message::SetDensity(density) => return self.set_density(density),
+            Message::StoredDensity(stored) => {
+                // `--density` wins; a choice made before the file answered as well.
+                if self.density.is_none() {
+                    self.density = stored;
+                }
+            }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
@@ -2660,6 +2723,24 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         ui_state::save_task(INBOX, UiState { sidebar: self.sidebar })
     }
 
+    /// "Compact | Comfortable" (task E8.2): the window shows its entries in `density` from now on,
+    /// and remembers it for its key ([`Launch::density_key`]) for the next start – not in the
+    /// demo, which stores nothing.
+    fn set_density(&mut self, density: Density) -> Task<Message> {
+        self.density = Some(density);
+        if self.launch.demo {
+            return Task::none();
+        }
+        ui_state::save_density_task(INBOX, self.launch.density_key(), density)
+    }
+
+    /// The density the window shows its entries in (task E8.2): the one chosen (`--density`, the
+    /// switch, `ui.json`), else the layout's ([`Density::default_for`]: compact when narrow).
+    /// Mini and strip are glances and ignore it.
+    pub fn density(&self) -> Density {
+        self.density.unwrap_or_else(|| Density::default_for(self.class()))
+    }
+
     /// The layout class of the window.
     fn class(&self) -> SizeClass {
         layout::of(self.size)
@@ -2830,11 +2911,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         // The overview shows one column below the wide layout: "Mail | Notifications" chooses it –
         // in the hub; the mail and the notifications window have one column only.
         let columns = self.launch.kind.columns();
-        if self.view == View::Overview && class != SizeClass::Wide && columns.len() > 1 {
+        let choose_column = self.view == View::Overview && class != SizeClass::Wide && columns.len() > 1;
+        if choose_column {
             let chosen = columns.iter().position(|&column| column == self.column).unwrap_or_default();
             let columns = columns.iter().map(|&column| (column.name(), Message::ShowColumn(column)));
             trailing.push(widgets::segmented(columns, chosen));
         }
+        // "Compact | Comfortable" in every window kind (task E8.2), with its words where there is
+        // room: wide, and medium unless "Mail | Notifications" takes the room; narrow icons only.
+        let words = class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column);
+        trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
         trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
         // as in the medium layout, and every view stays one click away.
@@ -3720,6 +3806,75 @@ mod tests {
         );
         let launch = Launch::parse(&args(&["--view", "mail", "--lane", "info"])).expect("valid");
         assert_eq!((launch.kind, launch.view), (Kind::Mail, Some(View::Info)));
+    }
+
+    /// Task E8.2: `--density` is read, an unknown one refused with the valid ones (exit 64).
+    #[test]
+    fn density_is_read_from_the_command_line() {
+        let density = |words: &[&str]| Launch::parse(&args(words)).map(|launch| launch.density);
+        assert_eq!(density(&[]), Ok(None), "without it the window takes what it remembers");
+        assert_eq!(density(&["--density", "compact"]), Ok(Some(Density::Compact)));
+        assert_eq!(density(&["--view", "mail", "--density=comfortable"]), Ok(Some(Density::Comfortable)));
+        assert_eq!(density(&["--density"]), Err(LaunchError::MissingValue("--density")));
+        let refused = density(&["--density", "cozy"]).expect_err("not a density");
+        assert_eq!(
+            refused,
+            LaunchError::UnknownValue { flag: "--density", value: "cozy".into(), valid: "compact, comfortable".into() }
+        );
+    }
+
+    /// Task E8.2: every window kind and every window per slice has a key of its own in `ui.json`.
+    #[test]
+    fn every_window_remembers_its_density_under_its_own_key() {
+        let key = |words: &[&str]| Launch::parse(&args(words)).expect("valid").density_key();
+        assert_eq!(key(&[]), "hub");
+        assert_eq!(key(&["--view", "mail"]), "mail");
+        assert_eq!(key(&["--view", "notifications"]), "notifications");
+        assert_eq!(key(&["--lane", "info"]), "hub/lane:info");
+        assert_eq!(key(&["--view", "mail", "--lane", "for-me"]), "mail/lane:for-me");
+        assert_eq!(key(&["--source", "mail"]), "hub/source:mail");
+        assert_eq!(
+            key(&["--view", "notifications", "--source", "agent:claude-code"]),
+            "notifications/source:agent:claude-code"
+        );
+        assert_eq!(key(&["--density", "compact", "--view", "mail"]), "mail", "the density is no part of its key");
+    }
+
+    /// Task E8.2: `--density` wins over `ui.json`, which wins over the layout's default; the switch
+    /// changes it in any case.
+    #[test]
+    fn density_follows_the_command_line_then_ui_json_then_the_layout() {
+        let mut app = demo(&["--demo", "--view", "mail", "--density", "compact"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
+        assert_eq!(app.density(), Density::Compact, "the command line wins over ui.json");
+        let _ = app.update(Message::SetDensity(Density::Comfortable));
+        assert_eq!(app.density(), Density::Comfortable, "the switch changes it");
+
+        let mut app = demo(&["--demo", "--view", "mail"]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.density(), Density::Comfortable, "nothing chosen: comfortable in the wide layout");
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!(app.density(), Density::Compact, "nothing chosen: compact in the narrow one");
+        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
+        assert_eq!(app.density(), Density::Comfortable, "what ui.json remembers wins over the layout");
+        let _ = app.update(Message::SetDensity(Density::Compact));
+        let _ = app.update(Message::StoredDensity(Some(Density::Comfortable)));
+        assert_eq!(app.density(), Density::Compact, "a late answer of ui.json does not undo a choice");
+    }
+
+    /// Task E8.2: the switch is in the header bar of every window kind, in every size with a header.
+    #[test]
+    fn every_window_kind_draws_the_density_switch() {
+        for kind in ["mail", "notifications", "hub"] {
+            for density in ["compact", "comfortable"] {
+                let mut app = demo(&["--demo", "--view", kind, "--density", density]);
+                for size in SIZES {
+                    let _ = app.update(Message::Resized(size));
+                    let _: Element<'_, Message> = app.view();
+                }
+            }
+        }
     }
 
     /// Every kind is an entry of the suite's apps, and the arguments the core starts it with

@@ -238,7 +238,8 @@ const PALETTE_KEYS: [&str; 25] = [
     "scrim",
     "night",
 ];
-const LEVEL_KEYS: [&str; 8] = ["micro", "caption", "meta", "body", "body_strong", "title", "headline", "display"];
+const LEVEL_KEYS: [&str; 9] =
+    ["micro", "caption", "meta", "body", "body_strong", "read", "title", "headline", "display"];
 const LAYOUT_KEYS: [&str; 7] =
     ["inset", "page_padding", "panel_padding", "row_padding", "control_padding", "section_gap", "item_gap"];
 
@@ -571,6 +572,24 @@ mod tests {
         expected.about = About { name: "Teal".into(), version: "1.0.0".into(), ..About::default() };
         expected.colors.dark.accent = Rgba::hex(0x0E7C7B);
         assert_eq!(design, expected);
+    }
+
+    /// Task E8.2: the reading level and the sizes of the comfortable density are keys of the format.
+    #[test]
+    fn the_comfortable_tokens_are_read_from_a_pack() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(tmp.path().join("roomy")).expect("pack folder");
+        let toml = "format = 1\n[about]\nname = \"Roomy\"\nversion = \"1.0.0\"\n\
+                    [type.read]\nsize = 15\nline = 24\n\
+                    [size]\ncard_gap = 16\navatar = 40\navatar_lg = 44\ntile_sm = 22\ntile = 30\ntile_lg = 40\n";
+        write(tmp.path().join("roomy").join("design.toml"), toml);
+        let design = load(tmp.path(), "roomy").expect("valid");
+        assert_eq!(design.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 15.0, line: 24.0 });
+        let s = design.size;
+        assert_eq!(
+            [s.card_gap, s.avatar, s.avatar_lg, s.tile_sm, s.tile, s.tile_lg],
+            [16.0, 40.0, 44.0, 22.0, 30.0, 40.0]
+        );
     }
 
     #[test]

@@ -11,6 +11,10 @@
 //! - Status colours are held to 3:1 on `panel` in dark mode only. In light mode the standard's
 //!   `ok` (2.1) and `attention` (2.2) are lower; there the derived text colours carry the
 //!   meaning: `attention_text` and `error_text` must reach 4.5:1 on every surface.
+//!
+//! The tokens of the inbox's comfortable density (task E8.2) have rules of their own: `read` is
+//! never smaller than `body` (it is the text read longest), and the avatars and source tiles grow
+//! from small to large, so "large" always means larger.
 
 use super::{Design, DesignError, Mode, Palette, Rgba};
 
@@ -85,7 +89,16 @@ fn chosen_edge_stands_out(p: &Palette) -> bool {
 fn typo(design: &Design, problems: &mut Vec<DesignError>) {
     for (name, level) in design.typo.levels() {
         let key = format!("type.{name}");
-        let (min, max) = if name == "body" { (12.0, 18.0) } else { (11.0, 40.0) };
+        let (min, max) = match name {
+            "body" => (12.0, 18.0),
+            // Reading text: at least `body` (a `body` out of its range is its own problem), and no
+            // headline.
+            "read" => {
+                let body = design.typo.body.size;
+                (if (12.0..=18.0).contains(&body) { body } else { 12.0 }, 20.0)
+            }
+            _ => (11.0, 40.0),
+        };
         range(&format!("{key}.size"), level.size, min, max, problems);
         if !(level.size..=2.0 * level.size).contains(&level.line) {
             problems.push(DesignError::LineHeight { key: key.clone(), line: level.line, size: level.size });
@@ -143,6 +156,13 @@ fn size_range(key: &str) -> (f32, f32) {
         "sidebar" => (180.0, 320.0),
         "props" | "panel" | "list" | "list_medium" => (280.0, 520.0),
         "content_max" | "form_max" => (560.0, 1200.0),
+        // The comfortable density of the inbox (task E8.2): a gap that still groups, avatars and
+        // tiles that fit beside two or three lines of text.
+        "card_gap" => (4.0, 32.0),
+        "avatar" | "avatar_lg" => (24.0, 64.0),
+        "tile_sm" => (16.0, 32.0),
+        "tile" => (20.0, 48.0),
+        "tile_lg" => (24.0, 64.0),
         // Calendar grid: an hour and the time axis stay readable and fit a tile.
         _ => (24.0, 120.0),
     }
@@ -152,6 +172,15 @@ fn sizes(design: &Design, problems: &mut Vec<DesignError>) {
     for (name, value) in design.size.entries() {
         let (min, max) = size_range(name);
         range(&format!("size.{name}"), value, min, max, problems);
+    }
+    let s = design.size;
+    for (key, values) in [
+        ("size.avatar, size.avatar_lg", &[s.avatar, s.avatar_lg][..]),
+        ("size.tile_sm, size.tile, size.tile_lg", &[s.tile_sm, s.tile, s.tile_lg][..]),
+    ] {
+        if !values.windows(2).all(|pair| pair[0] < pair[1]) {
+            problems.push(DesignError::NotAscending { key: key.to_string() });
+        }
     }
 }
 
@@ -281,5 +310,33 @@ mod tests {
             })
             .collect();
         assert_eq!(keys, ["layout.inset", "layout.item_gap", "size.control_sm", "size.row", "size.sidebar"]);
+    }
+
+    /// Task E8.2: the reading level stays at least `body`, the card tokens stay in their ranges and
+    /// the avatars and tiles grow from small to large.
+    #[test]
+    fn comfortable_tokens_keep_their_rules() {
+        let mut d = Design::standard();
+        d.typo.read.size = 12.0;
+        d.typo.read.line = 20.0;
+        d.size.card_gap = 2.0;
+        d.size.tile = 40.0;
+        d.size.avatar_lg = 30.0;
+        let problems = check(&d);
+        assert!(problems.contains(&DesignError::OutOfRange {
+            key: "type.read.size".into(),
+            value: 12.0,
+            min: 13.0,
+            max: 20.0
+        }));
+        assert!(problems.contains(&DesignError::OutOfRange {
+            key: "size.card_gap".into(),
+            value: 2.0,
+            min: 4.0,
+            max: 32.0
+        }));
+        assert!(problems.contains(&DesignError::NotAscending { key: "size.avatar, size.avatar_lg".into() }));
+        assert!(problems.contains(&DesignError::NotAscending { key: "size.tile_sm, size.tile, size.tile_lg".into() }));
+        assert_eq!(problems.len(), 4, "{problems:?}");
     }
 }

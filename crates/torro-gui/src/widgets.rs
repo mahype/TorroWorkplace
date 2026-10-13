@@ -1,7 +1,9 @@
 //! Building blocks of a Linear-style window: buttons (also busy), sidebar rows, list rows, group
 //! heads, the action bar of a row ([`row_actions`]), the toast with "Undo" ([`toast`]), menus, floating cards, chips (also to choose), property rows (also with the name in
 //! front), label chips, state pills, progress bars, settings groups and the empty, loading and
-//! error states.
+//! error states. For the comfortable density of the inbox (task E8.2): cards ([`card`],
+//! [`card_head`]), source tiles ([`source_tile`]) and the switch between the densities
+//! ([`density_switch`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -62,6 +64,7 @@ use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
 use crate::theme::{self, Palette, palette, radius, size, space};
 use crate::typo;
+use crate::ui_state::Density;
 
 /// A button style from [`crate::style::button`] (`style::button::primary`, `ghost` …).
 pub type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
@@ -419,6 +422,59 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
             .style(style::button::segment(i == active))
             .on_press(message)
             .into()
+    });
+    container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
+}
+
+/// The switch "Compact | Comfortable" in the header bar of every inbox window (task E8.2): a
+/// [`segmented`] control whose segments carry an icon ([`Icon::List`] for rows, [`Icon::LayoutGrid`]
+/// for cards) and, with `words`, the word after it. Without `words` (the narrow layout) the
+/// segments are square icons with the word as tooltip. The segment of `density` is chosen; a press
+/// sends `on_press` with the density of the segment.
+///
+/// The app keeps the density (`Option<Density>`, `None` until the person picks one, then
+/// [`Density::default_for`] the layout), shows it and remembers a choice in `ui.json`
+/// (`ui_state::save_density_task`); see [`Density`].
+///
+/// ```ignore
+/// let words = class != SizeClass::Narrow;
+/// trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
+/// ```
+pub fn density_switch<'a, M: Clone + 'a>(
+    density: Density,
+    words: bool,
+    on_press: impl Fn(Density) -> M,
+) -> Element<'a, M> {
+    let inner = size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
+    let options =
+        [(Density::Compact, Icon::List, tr("Compact")), (Density::Comfortable, Icon::LayoutGrid, tr("Comfortable"))];
+    let segments = options.into_iter().map(|(choice, which, label)| {
+        let active = choice == density;
+        let style = style::button::segment(active);
+        let mark: Element<'a, M> = icon(which, icon::SIZE_SM)
+            .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+            .into();
+        let segment: Element<'a, M> = if words {
+            let content = row![mark, typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+                .spacing(ICON_GAP)
+                .align_y(Alignment::Center);
+            button(container(content).center_y(Fill))
+                .height(inner)
+                .padding(style::button_padding())
+                .style(style)
+                .on_press(on_press(choice))
+                .into()
+        } else {
+            let square: Element<'a, M> = button(center(mark))
+                .width(inner)
+                .height(inner)
+                .padding(0)
+                .style(style)
+                .on_press(on_press(choice))
+                .into();
+            with_tooltip(square, label)
+        };
+        segment
     });
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
 }
@@ -1282,6 +1338,242 @@ pub fn popover<'a, M: 'a>(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Cards and source tiles (task E8.2, the comfortable density of the inbox)
+// ---------------------------------------------------------------------------------------------
+
+/// A card: one entry in the comfortable density of the inbox (task E8.2, `docs/eingang.md` "Zwei
+/// Dichten"; Canary Mail for mail, the columns of the notifications window for the rest). Surface
+/// `raised`, frame `line_strong`, radius [`radius::lg()`], padding [`layout::panel_padding()`] (16),
+/// its `parts` stacked with [`size::card_gap()`] (12) between them, as wide as its column. Lay
+/// several out with the same gap: `column(cards).spacing(size::card_gap())`.
+///
+/// `parts` from top to bottom, typically [`card_head`] (or a row with an avatar), the text, a
+/// [`chip_row`] of [`state_pill`]s (attachment, "Answer by Fri") and **the card's buttons, always
+/// shown** – a row of [`text_button`]s and [`icon_button`]s with [`space::s()`] between them, not the
+/// hover bar of [`row_actions`]. Nothing in the card is red but a primary button, and that only
+/// where the window has no other.
+///
+/// `selected` (the card under the keyboard cursor, the one in the reader) gives it the `selected`
+/// surface with the `line_selected` edge, as a chosen chip. With `on_press` the whole card is a
+/// button (it opens the entry): hover and press draw the `line_selected` edge, press also the
+/// `selected` surface. Buttons inside take their own clicks first, so a click on "Done" does not
+/// open the card as well. Text in the card is `text` unless a part sets its own colour.
+///
+/// ```ignore
+/// let head = widgets::card_head(Some(widgets::source_tile(TileFace::letter("Slack"), TileSize::Medium, None)),
+///     "#dev-torro · Thread", "3 new · 10:12", Some(Message::Dismiss(id.clone())));
+/// let text = typo::text(typo::body(), preview).style(theme::text_2);
+/// let chips = widgets::chip_row(vec![widgets::state_pill(Icon::Paperclip, "Angebot_v2.pdf")]);
+/// let buttons = row![
+///     widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, Some(Message::Reply(id.clone()))),
+///     widgets::text_button(Some(Icon::Clock), tr("Later"), style::button::ghost, Some(Message::Later(id.clone()))),
+/// ]
+/// .spacing(space::s());
+/// widgets::card(vec![head, text.into(), chips, buttons.into()], selected, Some(Message::Select(id)))
+/// ```
+pub fn card<'a, M: Clone + 'a>(parts: Vec<Element<'a, M>>, selected: bool, on_press: Option<M>) -> Element<'a, M> {
+    let content = column(parts).spacing(size::card_gap()).width(Fill);
+    match on_press {
+        Some(message) => button(content)
+            .width(Fill)
+            .padding(layout::panel_padding())
+            .style(card_style(selected))
+            .on_press(message)
+            .into(),
+        None => container(content)
+            .width(Fill)
+            .padding(layout::panel_padding())
+            .style(move |t| {
+                let style = card_style(selected)(t, button::Status::Active);
+                container::Style {
+                    background: style.background,
+                    text_color: Some(style.text_color),
+                    border: style.border,
+                    ..container::Style::default()
+                }
+            })
+            .into(),
+    }
+}
+
+/// The look of a [`card`]: `raised` with a `line_strong` frame at rest, `line_selected` on hover,
+/// `selected` with `line_selected` when pressed or `selected` – the states of a framed button
+/// (`style::button::secondary`), with the card's radius.
+fn card_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+    move |t, status| {
+        let p = palette(t);
+        let (surface, edge) = match status {
+            _ if selected => (p.selected, p.line_selected),
+            button::Status::Pressed => (p.selected, p.line_selected),
+            button::Status::Hovered => (p.raised, p.line_selected),
+            button::Status::Active | button::Status::Disabled => (p.raised, p.line_strong),
+        };
+        button::Style {
+            background: Some(Background::Color(surface)),
+            text_color: p.text,
+            border: border::rounded(radius::lg()).color(edge).width(LINE),
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The head of a [`card`] (task E8.2): `lead` (a [`source_tile`], an avatar, an icon) at the left,
+/// then the `title` in `BODY_STRONG` and `text` with `meta` below it in `META` and `text_3` ("3 new
+/// · 10:12", "Direct message · 09:58"); an empty `meta` leaves its line out. Both stay on one line
+/// each and are cut with "…" to the room they get, the whole text as tooltip ([`typo::ellipsize`]).
+///
+/// `dismiss` puts the ✕ ([`icon_button`], tooltip "Dismiss") at the top right: "gone, without doing
+/// anything" (`docs/eingang.md`, "Knöpfe je Eintrag"). Leave it out where an entry must not vanish
+/// by accident – mail in the mail window, approvals.
+///
+/// ```ignore
+/// widgets::card_head(None, "Jonas Brandt", "Direct message · 09:58", Some(Message::Dismiss(id)))
+/// ```
+pub fn card_head<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    dismiss: Option<M>,
+) -> Element<'a, M> {
+    let mut words = column![one_line(typo::body_strong(), title, theme::text)];
+    let meta = meta.into_fragment();
+    if !meta.is_empty() {
+        words = words.push(one_line(typo::meta(), meta, theme::text_3));
+    }
+    let mut head = row![].spacing(space::m()).align_y(Alignment::Center);
+    if let Some(lead) = lead {
+        head = head.push(lead);
+    }
+    head = head.push(container(words).width(Fill));
+    if let Some(message) = dismiss {
+        head = head.push(icon_button(Icon::X, tr("Dismiss"), Some(message)));
+    }
+    head.into()
+}
+
+/// What a [`source_tile`] shows: the app's icon, or – for a source without one – a letter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileFace {
+    /// An icon of [`crate::icon`] (GitHub, the calendar, the suite's grid …).
+    Icon(Icon),
+    /// One letter, upper case; build it with [`TileFace::letter`].
+    Letter(char),
+}
+
+impl TileFace {
+    /// The first letter or digit of `name`, upper case ("slack" → "S", "#dev" → "D"); "?" when
+    /// `name` has none.
+    pub fn letter(name: &str) -> TileFace {
+        let first = name.chars().find(|c| c.is_alphanumeric()).and_then(|c| c.to_uppercase().next());
+        TileFace::Letter(first.unwrap_or('?'))
+    }
+}
+
+/// The three sizes of a [`source_tile`] (task E8.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileSize {
+    /// [`size::tile_sm()`] (20), radius [`radius::xs()`]: beside a word, in a compact row or a menu.
+    Small,
+    /// [`size::tile()`] (28), radius [`radius::sm()`]: a notice row, a column head ("Slack 5").
+    Medium,
+    /// [`size::tile_lg()`] (36), radius [`radius::md()`]: an attachment, the head of an app's card.
+    Large,
+}
+
+impl TileSize {
+    /// The edge of the tile.
+    pub fn edge(self) -> f32 {
+        match self {
+            TileSize::Small => size::tile_sm(),
+            TileSize::Medium => size::tile(),
+            TileSize::Large => size::tile_lg(),
+        }
+    }
+
+    /// The corner radius: a quarter of the edge or so, from the radius scale.
+    fn radius(self) -> f32 {
+        match self {
+            TileSize::Small => radius::xs(),
+            TileSize::Medium => radius::sm(),
+            TileSize::Large => radius::md(),
+        }
+    }
+
+    /// The edge of the icon on the tile: 12 on the small one (as in an [`icon_pill`]), 16 else.
+    fn icon(self) -> f32 {
+        match self {
+            TileSize::Small => pill_icon(),
+            TileSize::Medium | TileSize::Large => icon::SIZE,
+        }
+    }
+
+    /// The level of the letter on the tile.
+    fn level(self) -> typo::Level {
+        match self {
+            TileSize::Small | TileSize::Medium => typo::caption(),
+            TileSize::Large => typo::body_strong(),
+        }
+    }
+}
+
+/// A source tile (task E8.2): which app an entry comes from, as a small square with its icon or,
+/// for a source without one, its letter ([`TileFace`]) in `text`. Three sizes ([`TileSize`]).
+///
+/// Without `tint` the tile is neutral: `selected` with a `line_strong` frame. With a colour (the
+/// source's or account's colour the person chose, `collection_color(…)`) it is that colour as a
+/// tinted surface ([`Palette::tinted`] over `panel`, as an event block) without a frame – never the
+/// full colour: colours belong to the person and are no large saturated surfaces (design skill,
+/// section 1). The tile is no button; the row or card around it takes the click.
+///
+/// ```ignore
+/// widgets::source_tile(TileFace::Icon(Icon::Github), TileSize::Medium, None)
+/// widgets::source_tile(TileFace::letter(&source.name), TileSize::Small, Some(widgets::collection_color(source.color.as_deref())))
+/// ```
+pub fn source_tile<'a, M: 'a>(face: TileFace, size: TileSize, tint: Option<Color>) -> Element<'a, M> {
+    let glyph: Element<'a, M> = match face {
+        TileFace::Icon(which) => toned(which, size.icon(), Tone::Text),
+        TileFace::Letter(letter) => {
+            typo::text(size.level(), letter.to_string()).style(theme::text).wrapping(Wrapping::None).into()
+        }
+    };
+    let edge = size.edge();
+    let corner = size.radius();
+    container(glyph)
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            let (surface, frame) = match tint {
+                Some(colour) => (theme::over(p.tinted(colour), p.panel), Color::TRANSPARENT),
+                None => (p.selected, p.line_strong),
+            };
+            container::Style {
+                background: Some(Background::Color(surface)),
+                border: border::rounded(corner).color(frame).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// `text` in `level` and the colour `colour` picks, on one line cut with "…" to the room it gets
+/// ([`typo::ellipsize`]); a cut text shows the whole of it as tooltip.
+fn one_line<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    let full = text.into_fragment().into_owned();
+    responsive(move |room| {
+        let shown = typo::ellipsize(&full, level, room.width);
+        let cut = shown != full;
+        let line = container(typo::text(level, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        if cut { with_tooltip(line, full.clone()) } else { line.into() }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+// ---------------------------------------------------------------------------------------------
 // Chips, pills, key hints, properties
 // ---------------------------------------------------------------------------------------------
 
@@ -1343,6 +1635,16 @@ fn chip_with<'a, M: Clone + 'a>(
 }
 
 /// Chips side by side with 6 between them, wrapping onto more lines when they do not fit.
+///
+/// Also the chips of a [`card`] (task E8.2): [`state_pill`]s for an attachment and a due date the
+/// mail asks for, the colour only in the icon:
+///
+/// ```ignore
+/// widgets::chip_row(vec![
+///     widgets::state_pill(Icon::Paperclip, "Angebot_v2.pdf"),
+///     widgets::state_pill(Mark::Tinted(Icon::Clock, theme::attention()), tr("Answer by Fri")),
+/// ])
+/// ```
 pub fn chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
     row(chips).spacing(ICON_GAP).wrap().vertical_spacing(ICON_GAP).into()
 }
@@ -2324,5 +2626,26 @@ mod tests {
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::SHIFT), "redo");
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::ALT), "AltGr");
         assert!(!z("x", Code::KeyX, command));
+    }
+
+    /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take
+    /// their sizes and letters from the tokens.
+    #[test]
+    fn cards_tiles_and_the_density_switch_build() {
+        let tile = source_tile(TileFace::letter("slack"), TileSize::Medium, None);
+        let head = card_head(Some(tile), "#dev", "10:12", Some(Msg::Close));
+        let chips = chip_row(vec![state_pill(Icon::Paperclip, "Angebot_v2.pdf")]);
+        let _: Element<'_, Msg> = card(vec![head, chips], true, Some(Msg::Go));
+        let _: Element<'_, Msg> = card(vec![card_head(None, "Jonas Brandt", "", None)], false, None);
+        let _: Element<'_, Msg> = source_tile(TileFace::Icon(Icon::Github), TileSize::Large, Some(Color::WHITE));
+        for words in [true, false] {
+            let _: Element<'_, Msg> = density_switch(Density::Compact, words, |_| Msg::Go);
+        }
+        assert_eq!(TileFace::letter("slack"), TileFace::Letter('S'));
+        assert_eq!(TileFace::letter("#dev-torro"), TileFace::Letter('D'), "the first letter, not the #");
+        assert_eq!(TileFace::letter("#!"), TileFace::Letter('?'));
+        let edges = [TileSize::Small, TileSize::Medium, TileSize::Large].map(TileSize::edge);
+        assert_eq!(edges, [size::tile_sm(), size::tile(), size::tile_lg()]);
+        assert_eq!(edges, [20.0, 28.0, 36.0], "the standard's tiles");
     }
 }
