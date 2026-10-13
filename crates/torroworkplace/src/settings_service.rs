@@ -7,7 +7,8 @@
 //! (`~/Library/LaunchAgents/io.github.mahype.torro-workplace.plist`) and the value
 //! `TorroWorkplace` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` on Windows.
 //! Hidden collections are applied by `pim.rs`, which reads [`SettingsStore::current`] on every
-//! request.
+//! request. A design pack (task L.3) is checked against the rules of `torro_core::design` before it
+//! is stored; the apps follow the setting themselves.
 //!
 //! The file is not looked up here but handed in ([`SettingsStore`]): the daemon uses the user's
 //! `settings.json`, tests a file in a temp directory, so no test reads or writes the real one
@@ -24,6 +25,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
+use torro_core::design;
 use torro_core::settings::{self, Language, ListOrderEntry, Night, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -38,6 +40,9 @@ static WRITING: Mutex<()> = Mutex::new(());
 pub struct SettingsStore {
     /// `None` without a home directory: reads give the defaults, changes fail.
     file: Option<PathBuf>,
+    /// The folder of the design packs (`torro_core::design::dir`), where a chosen design must be
+    /// found and valid; `None` without a home directory, then only the standard can be chosen.
+    designs: Option<PathBuf>,
     /// Whether a change of `start_at_login` is applied to the system's login item. Only the
     /// daemon's store does: the entry points at the running program, and from a test that is the
     /// test binary, which the next login would start instead of the daemon (task X.12).
@@ -48,21 +53,29 @@ impl SettingsStore {
     /// The user's `settings.json` (`torro_core::settings::settings_file`), as the daemon uses it.
     /// Changing `start_at_login` here writes or removes the system's login item.
     pub fn system() -> SettingsStore {
-        SettingsStore { file: settings::settings_file(), applies_login_item: true }
+        SettingsStore { file: settings::settings_file(), designs: design::dir(), applies_login_item: true }
     }
 
     /// The settings in `file`, for tests. `start_at_login` is only stored in `file`; the
-    /// system's login item is never touched, so tests may switch it freely.
+    /// system's login item is never touched, so tests may switch it freely. The design packs are
+    /// the folder `designs` next to `file`.
     #[cfg(test)]
     pub fn at(file: PathBuf) -> SettingsStore {
-        SettingsStore { file: Some(file), applies_login_item: false }
+        let designs = file.parent().map(|dir| dir.join("designs"));
+        SettingsStore { file: Some(file), designs, applies_login_item: false }
     }
 
     /// No file at all, for tests that do not look at the settings: reads give the defaults,
     /// changes fail. Like [`SettingsStore::at`], it never touches the system's login item.
     #[cfg(test)]
     pub fn without_file() -> SettingsStore {
-        SettingsStore { file: None, applies_login_item: false }
+        SettingsStore { file: None, designs: None, applies_login_item: false }
+    }
+
+    /// The folder of the design packs, for `settings.list_designs`; `None` without a home
+    /// directory (only the standard exists then).
+    pub fn designs(&self) -> Option<&Path> {
+        self.designs.as_deref()
     }
 
     /// The settings as stored now; the defaults when there is no file or it cannot be read.
@@ -182,12 +195,32 @@ impl SettingsStore {
         if new == old {
             return Ok(());
         }
+        // Checked on every way in (set_setting, update_settings), but only when it changes: a pack
+        // that broke after it was chosen must not block changing anything else.
+        if new.design != old.design {
+            self.check_design(&new.design)?;
+        }
         let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
         save_to(file, &new)?;
         if let Some(enabled) = self.login_item_change(&old, &new) {
             apply_start_at_login(enabled)?;
         }
         Ok(())
+    }
+
+    /// Whether the design `id` can be chosen: the standard, or a pack in [`SettingsStore::designs`]
+    /// that passes every rule. Otherwise every reason, for the person or agent who chose it.
+    fn check_design(&self, id: &str) -> Result<(), String> {
+        let refused = |reasons: String| format!("the design {id:?} can't be used: {reasons}");
+        let Some(dir) = self.designs.as_deref() else {
+            return match id == design::STANDARD_ID {
+                true => Ok(()),
+                false => Err(refused("there is no designs folder without a home directory".into())),
+            };
+        };
+        design::load(dir, id)
+            .map(|_| ())
+            .map_err(|problems| refused(problems.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ")))
     }
 
     /// The state the system's login item must be switched to after `old` became `new`, or
@@ -210,6 +243,8 @@ enum Change {
     /// Whether the list is known is the caller's check (`Core`), like for hidden collections.
     ListOrder(ListOrderEntry),
     QuietWhenBusy(bool),
+    /// Whether the pack exists and is valid is [`SettingsStore::check_design`]'s check.
+    Design(String),
 }
 
 impl Change {
@@ -232,6 +267,7 @@ impl Change {
             SettingKey::Night => Change::Night(Night::from_value(value)?),
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::Design => Change::Design(serde_json::from_value(value.clone()).map_err(invalid)?),
         })
     }
 
@@ -245,6 +281,7 @@ impl Change {
             Change::Night(night) => settings.night = night,
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
+            Change::Design(id) => settings.design = id,
         }
     }
 }
@@ -785,6 +822,59 @@ mod tests {
         store.file.as_deref().expect("a test store has a file").exists()
     }
 
+    /// Writes a design pack `id` with `toml` as its `design.toml` into the store's designs folder.
+    fn pack(store: &SettingsStore, id: &str, toml: &str) {
+        let folder = store.designs().expect("a test store has a designs folder").join(id);
+        fs::create_dir_all(&folder).expect("pack folder");
+        fs::write(folder.join("design.toml"), toml).expect("design.toml");
+    }
+
+    #[test]
+    fn a_valid_design_is_stored_and_read_back() {
+        let (_dir, store) = store();
+        pack(
+            &store,
+            "teal",
+            "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[colors.dark]\naccent = \"#0E7C7B\"\n",
+        );
+        assert_eq!(store.current().design, "torro", "the standard until one is chosen");
+        store.set(SettingKey::Design, &json!("teal")).expect("a valid pack");
+        assert_eq!(store.current().design, "teal");
+        store.set(SettingKey::Design, &json!("torro")).expect("the standard is always there");
+        assert_eq!(store.current().design, "torro");
+    }
+
+    #[test]
+    fn a_missing_or_broken_design_is_refused_with_its_reasons() {
+        let (_dir, store) = store();
+        pack(
+            &store,
+            "pale",
+            "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n",
+        );
+        let broken = store.set(SettingKey::Design, &json!("pale")).expect_err("too little contrast");
+        assert!(broken.contains("\"pale\" can't be used"), "{broken}");
+        assert!(broken.contains("colors.dark.text"), "names the broken key: {broken}");
+        let missing = store.set(SettingKey::Design, &json!("plex")).expect_err("no such pack");
+        assert!(missing.contains("\"plex\""), "{missing}");
+        assert!(store.set(SettingKey::Design, &json!(7)).is_err(), "an id is a string");
+        assert!(!file_exists(&store), "nothing was written");
+        // update_settings takes the same check.
+        let all = Settings { design: "plex".into(), ..Settings::default() };
+        assert!(store.update(all).is_err());
+        assert_eq!(store.current().design, "torro");
+    }
+
+    #[test]
+    fn a_design_that_broke_later_does_not_block_other_changes() {
+        let (_dir, store) = store();
+        pack(&store, "teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n");
+        store.set(SettingKey::Design, &json!("teal")).expect("valid");
+        fs::remove_dir_all(store.designs().expect("folder").join("teal")).expect("remove the pack");
+        store.set(SettingKey::Appearance, &json!("dark")).expect("the design is not checked again");
+        assert_eq!(store.current().design, "teal", "kept as chosen; the apps fall back to the standard");
+    }
+
     #[test]
     fn set_changes_only_the_named_setting() {
         let mut settings = Settings { hidden_collections: vec!["work".into()], ..Settings::default() };
@@ -795,6 +885,7 @@ mod tests {
         let night = json!({"from": "23:30", "to": "07:00"});
         Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
+        Change::parse(SettingKey::Design, &json!("plex")).expect("an id").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -806,6 +897,7 @@ mod tests {
                 night: Night::from_value(&night).expect("valid night"),
                 list_orders: Default::default(),
                 quiet_when_busy: false,
+                design: "plex".into(),
             }
         );
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
@@ -956,7 +1048,8 @@ mod tests {
     fn the_daemons_store_applies_only_a_changed_start_at_login() {
         // Built like `system()` but on a temp file, so the decision is checked without a call.
         let dir = tempfile::tempdir().expect("temp dir");
-        let store = SettingsStore { file: Some(dir.path().join("settings.json")), applies_login_item: true };
+        let store =
+            SettingsStore { file: Some(dir.path().join("settings.json")), designs: None, applies_login_item: true };
         assert!(SettingsStore::system().applies_login_item);
         let (off, on) = (Settings::default(), Settings { start_at_login: true, ..Settings::default() });
         assert_eq!(store.login_item_change(&off, &on), Some(true));

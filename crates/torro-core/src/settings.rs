@@ -63,6 +63,17 @@ pub struct Settings {
     /// message when it ends. On unless turned off.
     #[serde(default = "on")]
     pub quiet_when_busy: bool,
+    /// The design pack every window draws with (task L.3, `docs/design-pakete.md`): its id, the
+    /// folder name under `<data>/designs/`, or `"torro"` ([`crate::design::STANDARD_ID`]) for the
+    /// standard. Kept as written even when the pack is gone or broken: the apps then draw with
+    /// the standard, and the control centre shows why.
+    #[serde(default = "standard_design")]
+    pub design: String,
+}
+
+/// The id of the standard design, for settings from before design packs.
+fn standard_design() -> String {
+    crate::design::STANDARD_ID.to_string()
 }
 
 /// `true`, for settings that are on unless the file says otherwise.
@@ -81,6 +92,7 @@ impl Default for Settings {
             night: Night::default(),
             list_orders: BTreeMap::new(),
             quiet_when_busy: on(),
+            design: standard_design(),
         }
     }
 }
@@ -499,6 +511,7 @@ mod tests {
             night: Night::DEFAULT,
             list_orders: BTreeMap::new(),
             quiet_when_busy: true,
+            design: "torro".into(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -512,6 +525,17 @@ mod tests {
         assert!(load_from(&path).quiet_when_busy, "a file from before the setting keeps quiet on");
         fs::write(&path, r#"{"quietWhenBusy":false}"#).expect("write");
         assert!(!load_from(&path).quiet_when_busy);
+    }
+
+    #[test]
+    fn the_design_is_the_standard_unless_one_is_chosen() {
+        let dir = TempDir::new("design");
+        let path = dir.file("settings.json");
+        assert_eq!(Settings::default().design, crate::design::STANDARD_ID);
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert_eq!(load_from(&path).design, "torro", "a file from before design packs");
+        fs::write(&path, r#"{"design":"plex"}"#).expect("write");
+        assert_eq!(load_from(&path).design, "plex", "kept as written, whether the pack exists or not");
     }
 
     #[test]
@@ -557,6 +581,7 @@ mod tests {
             night: Night { from: q(23, 30), to: q(7, 0) },
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             quiet_when_busy: false,
+            design: "plex".into(),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

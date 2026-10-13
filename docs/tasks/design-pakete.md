@@ -80,7 +80,7 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Sichtprüfung nach Möglichkeit (`torro-design-review`); ohne Hyprland ehrlich als „nicht möglich“ melden.
 
 ### L.3 Einstellung, API, MCP und Wechsel in offenen Fenstern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** L.2 · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,settings_service,mcp}.rs`,
   `crates/torroworkplace/src/tray/**`, `crates/torro-gui/src/{theme,design,lib}.rs`, die Stellen der Apps, an denen

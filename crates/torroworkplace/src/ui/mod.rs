@@ -59,6 +59,7 @@ use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::Settings;
+use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
@@ -274,6 +275,9 @@ pub struct Ui {
     /// window. `data.settings.zoom` follows it, so the General page shows the level the window
     /// uses, also while a change is being saved.
     zoom: Zoom,
+    /// Follows the design pack of `data.settings` (task L.3): the page reloads the settings, so
+    /// the design comes with them instead of a request of its own.
+    design: Follow,
     data: Data,
     /// The last failed request, kept across reloads until the next success or section change.
     notice: Option<String>,
@@ -319,6 +323,8 @@ pub enum Message {
     Tick,
     /// The zoom keys, the stored zoom and its badge.
     Zoom(zoom::Message),
+    /// The fonts of a new design pack are loaded.
+    Design(design::Message),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
     Escape,
     Overview(overview::Message),
@@ -334,9 +340,12 @@ pub enum Message {
 /// Runs the control centre with the start parameters of `torroworkplace ui` ([`Launch::parse`]).
 /// Demo mode does not start the core either.
 pub fn run(launch: Launch) -> iced::Result {
-    if let Some(socket) = torro_ipc::socket_path().filter(|_| !launch.demo) {
-        torro_gui::source::ensure_core(&socket);
+    let socket = torro_ipc::socket_path().filter(|_| !launch.demo);
+    if let Some(socket) = &socket {
+        torro_gui::source::ensure_core(socket);
     }
+    // Before the settings load the fonts: the first frame is drawn with the chosen design.
+    design::start(socket.as_deref(), launch.design.as_deref());
     iced::application(move || Ui::new(launch.clone()), Ui::update, Ui::view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| format!("Torro Workplace · {}", ui.section.label()))
@@ -362,6 +371,8 @@ impl Ui {
             appearance: Appearance::System,
             // The demo keeps the zoom in the process, like everything else it changes.
             zoom: Zoom::new(torro_ipc::socket_path().filter(|_| !demo)),
+            // Fed by the reloads, so it asks the core nothing itself.
+            design: Follow::new(None),
             data: Data::default(),
             notice: None,
             overview: overview::State::default(),
@@ -624,12 +635,22 @@ impl Ui {
                     self.appearance = self.data.settings.appearance;
                 }
                 self.data.settings.zoom = self.zoom.level();
+                // `--design` of the demo wins over the stored one, like `--appearance`.
+                let design = match self.data.error.is_none() && self.launch.design.is_none() {
+                    true => self.design.apply(&self.data.settings.design),
+                    false => None,
+                };
                 agents::loaded(&mut self.agents);
                 // A mail account's page follows changes from outside while nothing is typed.
                 accounts::loaded(&mut self.accounts, &self.data);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
                 if let Some(wizard) = self.accounts.wizard.as_mut() {
                     wizard::observe(wizard, &self.data);
+                }
+                // No canvas keeps a cache: the next frame draws with the new design, the task
+                // loads its fonts.
+                if let Some(task) = design {
+                    return task.map(Message::Design);
                 }
                 Action::None
             }
@@ -652,6 +673,9 @@ impl Ui {
             // not bring back the old level (`zoom::Message::Stored`).
             Message::Tick => return Task::batch([self.reload(), self.zoom.fetch().map(Message::Zoom)]),
             Message::Zoom(message) => return self.zoom(message),
+            Message::Design(message) => {
+                return self.design.update(message).unwrap_or_else(Task::none).map(Message::Design);
+            }
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
@@ -1258,6 +1282,39 @@ mod tests {
         let _ = ui.update(loaded(Appearance::Light, None));
         let _ = ui.update(Message::SystemMode(Mode::Dark));
         assert_eq!(ui.theme(), theme::light(), "an explicit choice ignores the desktop");
+    }
+
+    /// The design pack comes with the settings (task L.3): the window draws with it from the next
+    /// frame, a broken one gives the standard, an unreachable core changes nothing, and `--design`
+    /// of the demo wins.
+    #[test]
+    fn the_stored_design_is_drawn_and_the_demo_parameter_wins() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The standard's values under another id, so the tests beside this one see the same tokens.
+        for (id, toml) in [
+            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(dir.path().join(id)).expect("pack folder");
+            std::fs::write(dir.path().join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        let with_design = |id: &str, error: Option<&str>| {
+            let settings = Settings { design: id.into(), ..Settings::default() };
+            Message::Loaded(Box::new(Data { settings, error: error.map(String::from), ..Data::default() }))
+        };
+        let mut ui = ui(Section::General);
+        ui.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        assert!(ui.update(with_design("twin", None)).units() > 0, "the new design's fonts are loaded");
+        assert_eq!(design::active().id, "twin");
+        let _ = ui.update(with_design("torro", Some("core is not running")));
+        assert_eq!(design::active().id, "twin", "an empty answer keeps the design");
+        let _ = ui.update(with_design("pale", None));
+        assert!(design::active().is_standard(), "a broken pack is never drawn");
+
+        let mut demo = started(&["--demo", "--design", "torro"]);
+        demo.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        let _ = demo.update(with_design("twin", None));
+        assert!(design::active().is_standard(), "the parameter beats the stored design");
     }
 
     #[test]

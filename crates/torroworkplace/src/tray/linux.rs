@@ -1,7 +1,7 @@
 //! Tray icon for Linux, built on ksni (StatusNotifierItem over D-Bus; Omarchy's bar,
 //! Waybar and KDE show it). It only draws the shared menu from `menu.rs`, built from a
 //! [`Snapshot`] of the core; clicks run the entries' actions on the [`Daemon`]. The icon comes
-//! from `icon.rs`.
+//! from `icon.rs` and follows the chosen design pack (task L.3).
 //!
 //! What waits for the person ([`Waiting`], task E3.3b) shows in two ksni-only places: the
 //! tooltip says how many ("3 for you", [`menu::waiting_line`]), never a title, since bars may
@@ -13,7 +13,7 @@
 //! so the digits would have to be rasterised here, and many bars ignore it.
 
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ksni::TrayMethods; // provides `spawn`
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
@@ -47,12 +47,15 @@ pub type TrayHandle = ksni::Handle<Tray>;
 pub struct Tray {
     pub snapshot: Snapshot,
     daemon: Arc<Daemon>,
+    /// The pixmaps for the design they were drawn for (`Snapshot::design`). ksni asks for them on
+    /// every update to see whether the icon changed; they are drawn again only when the design did.
+    icon: Mutex<Option<(String, Vec<ksni::Icon>)>>,
 }
 
 /// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot, and with
 /// it the count of what waits.
 pub async fn spawn(daemon: Arc<Daemon>, snapshot: Snapshot) -> Result<TrayHandle, TrayError> {
-    Tray { snapshot, daemon }.spawn().await.map_err(TrayError::Spawn)
+    Tray { snapshot, daemon, icon: Mutex::new(None) }.spawn().await.map_err(TrayError::Spawn)
 }
 
 impl ksni::Tray for Tray {
@@ -82,16 +85,31 @@ impl ksni::Tray for Tray {
         }
     }
 
+    /// The symbol of the chosen design pack, or the grid in its accent (task L.3).
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        icon::SIZES
-            .iter()
-            .map(|&size| ksni::Icon { width: size as i32, height: size as i32, data: icon::argb32(size) })
-            .collect()
+        let design = &self.snapshot.design;
+        let mut cached = self.icon.lock().unwrap_or_else(PoisonError::into_inner);
+        match cached.as_ref() {
+            Some((drawn_for, drawn)) if drawn_for == design => drawn.clone(),
+            _ => {
+                let drawn = pixmaps(&icon::Look::for_design(design));
+                *cached = Some((design.clone(), drawn.clone()));
+                drawn
+            }
+        }
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
         build_menu(&self.snapshot)
     }
+}
+
+/// The icon in every size of [`icon::SIZES`].
+fn pixmaps(look: &icon::Look) -> Vec<ksni::Icon> {
+    icon::SIZES
+        .iter()
+        .map(|&size| ksni::Icon { width: size as i32, height: size as i32, data: look.argb32(size) })
+        .collect()
 }
 
 /// `NeedsAttention` while something urgent waits (an approval, an agent waiting), else `Active`.
@@ -290,7 +308,7 @@ mod tests {
 
     #[test]
     fn icon_comes_as_pixmaps() {
-        let sizes: Vec<usize> = icon::SIZES.iter().map(|&s| icon::argb32(s).len()).collect();
+        let sizes: Vec<usize> = pixmaps(&icon::Look::standard()).iter().map(|icon| icon.data.len()).collect();
         assert_eq!(sizes, icon::SIZES.iter().map(|&s| (s * s * 4) as usize).collect::<Vec<_>>());
     }
 }

@@ -1074,6 +1074,17 @@ mod tests {
     }
 
     #[test]
+    fn designs_are_listed_read_only_and_chosen_with_set_setting() {
+        assert_eq!(request_for("settings_list_designs", JsonObject::new(), &Utc), Ok(Request::ListDesigns));
+        let hints = tools().iter().find(|t| t.name == "settings_list_designs").and_then(|t| t.annotations.clone());
+        assert_eq!(hints.and_then(|h| h.read_only_hint), Some(true));
+        let chosen = request_for("settings_set_setting", args(json!({"key": "design", "value": "plex"})), &Utc);
+        assert_eq!(chosen, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Design, value: json!("plex") }));
+        let set = tools().iter().find(|t| t.name == "settings_set_setting").and_then(|t| t.description.clone());
+        assert!(set.is_some_and(|text| text.contains("`design`")), "set_setting names the design");
+    }
+
+    #[test]
     fn the_night_is_set_with_an_object() {
         let night = json!({"from": "23:30", "to": "07:00"});
         let request = request_for("settings_set_setting", args(json!({"key": "night", "value": night})), &Utc);

@@ -43,6 +43,7 @@ use iced::widget::{Space, column, container, row, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, Cover, Surface};
@@ -827,6 +828,8 @@ pub enum Message {
     Resized(Size),
     SystemMode(Mode),
     Appearance(Result<Appearance, String>),
+    /// The design pack stored in the suite settings, and its fonts loaded.
+    Design(design::Message),
     /// The clock of the autosave.
     Tick(Instant),
     /// The accounts and the message to answer, or why not.
@@ -880,6 +883,8 @@ pub struct Window<S> {
     forced_appearance: Option<Appearance>,
     system_mode: Mode,
     zoom: Zoom,
+    /// Follows the design pack the suite settings name (task L.3).
+    design: Follow,
     size: Size,
     phase: Phase,
     senders: Vec<Sender>,
@@ -928,6 +933,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         let window = Window {
             source,
             zoom: Zoom::for_source(&suite),
+            design: Follow::for_source(&suite),
             suite,
             appearance: Appearance::System,
             forced_appearance: launch.appearance,
@@ -964,6 +970,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         let mut tasks = vec![
             window.fetch_appearance(),
             window.zoom.fetch().map(Message::Zoom),
+            window.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
             size,
         ];
@@ -1052,6 +1059,11 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            Message::Design(message) => {
+                if let Some(task) = self.design.update(message) {
+                    return task.map(Message::Design);
+                }
+            }
             Message::Tick(now) => return self.tick(now),
             Message::Loaded(result) => return self.loaded(result),
             Message::Retry => {

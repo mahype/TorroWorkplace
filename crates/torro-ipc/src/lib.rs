@@ -717,6 +717,12 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
+    /// Every design pack: the standard first, then each folder under `<data>/designs/`, valid
+    /// or with the reasons it can't be used, and which one the settings name
+    /// ([`Response::Designs`]). One is chosen with [`Request::SetSetting`] and
+    /// [`SettingKey::Design`]. Reads only; never fails.
+    #[serde(rename = "settings.list_designs")]
+    ListDesigns,
     /// All accounts with their state and collections ([`Response::Accounts`]), in the order they
     /// were added; a sign-in that runs is listed last with an empty id.
     #[serde(rename = "accounts.list_accounts")]
@@ -1221,6 +1227,10 @@ pub enum SettingKey {
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.
     QuietWhenBusy,
+    /// The design pack every window draws with: its id from `settings.list_designs`, `"torro"`
+    /// for the standard. A pack that is not there or breaks a rule is refused with `error` and
+    /// its reasons, and nothing changes. Open windows follow.
+    Design,
 }
 
 /// The core's answer to one [`Request`].
@@ -1273,6 +1283,10 @@ pub enum Response {
     },
     Apps {
         apps: Vec<AppInfo>,
+    },
+    /// The design packs ([`Request::ListDesigns`]), the standard first.
+    Designs {
+        designs: Vec<DesignInfo>,
     },
     Clients {
         clients: Vec<ClientInfo>,
@@ -1658,6 +1672,33 @@ pub struct AppInfo {
     pub window_class: String,
     /// The binary was found next to the core or on `PATH`, so `OpenApp` can start it.
     pub installed: bool,
+}
+
+/// One design pack as [`Request::ListDesigns`] reports it. Name, version, author and
+/// description are the pack's own words, shown as written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignInfo {
+    /// The pack's folder name, what [`SettingKey::Design`] takes; `torro` for the standard.
+    pub id: String,
+    /// `Plex`; the id when the pack's `design.toml` cannot be read.
+    pub name: String,
+    /// `1.0.0`; empty when the pack does not say.
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The standard design the suite ships (always first, always valid).
+    pub standard: bool,
+    /// Whether the pack can be used; a pack that breaks a rule is refused as a whole.
+    pub valid: bool,
+    /// Why it can't be used, one sentence per broken rule, for people; empty when valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
+    /// The settings name this pack (`Settings::design`). When the active one is not valid, the
+    /// windows draw with the standard.
+    pub active: bool,
 }
 
 /// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash

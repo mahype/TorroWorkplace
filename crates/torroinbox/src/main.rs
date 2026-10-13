@@ -9,7 +9,8 @@
 //! socket ([`InboxClient`], task E1.3); [`Source::from_args`] starts the core first when it is not
 //! running, and until it answers the app shows "isn't responding" and asks again on its timer.
 //! With `--demo`, `--open <state>` starts in a given state and `--now <YYYY-MM-DDTHH:MM>` fixes
-//! "now"; `--appearance light|dark|system` overrides the stored appearance (see [`app::Launch`]).
+//! "now"; `--appearance light|dark|system` overrides the stored appearance and `--design <id>` the
+//! design pack (see [`app::Launch`]).
 //!
 //! One window per slice (E3.6): `--lane for-me|info` or `--source <key>` (`suite`,
 //! `agent:claude-code`, `script:backup`) starts on that view. The core opens the app without
@@ -59,6 +60,8 @@ fn main() -> ExitCode {
     // The suite's settings (appearance, zoom) and "open another app" come from the core; with
     // `--demo` there is none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
+    // Before the settings load the fonts: the first frame is drawn with the chosen design.
+    torro_gui::design::start_for(&suite, launch.design.as_deref());
     let result = match (launch.compose.is_some(), launch.demo) {
         (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch),
         (true, false) => compose(Arc::new(InboxClient::default()), suite, launch),

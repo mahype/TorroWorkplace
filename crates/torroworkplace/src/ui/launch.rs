@@ -155,17 +155,20 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
+/// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
+///   `--demo`. An id that is not a valid pack is refused with the valid ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
     pub demo: bool,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
+    pub design: Option<String>,
 }
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { section: Section::Overview, demo: false, open: None, appearance: None }
+        Launch { section: Section::Overview, demo: false, open: None, appearance: None, design: None }
     }
 }
 
@@ -237,7 +240,16 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
-        Ok(Launch { section, demo, open, appearance })
+        let design = match flag_value(args, "--design")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
+            Some(id) if torro_gui::design::is_choice(id) => Some(id.to_owned()),
+            Some(id) => {
+                let valid = torro_gui::design::choices();
+                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+            }
+        };
+        Ok(Launch { section, demo, open, appearance, design })
     }
 }
 
@@ -942,6 +954,10 @@ mod tests {
         assert!(err.to_string().ends_with("valid values: light, dark, system"), "{err}");
         assert_eq!(Launch::parse(&args(&["--demo", "--open"])), Err(LaunchError::MissingValue("--open")));
         assert_eq!(Launch::parse(&args(&["--open", "wizard"])), Err(LaunchError::NeedsDemo("--open")));
+        assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+        assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
+        let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
+        assert_eq!(launch.design.as_deref(), Some("torro"));
     }
 
     #[test]

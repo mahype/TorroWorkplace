@@ -76,10 +76,13 @@ pub fn fonts() -> [&'static [u8]; 5] {
 ///
 /// Use as `iced::application(…).settings(torro_gui::settings())`. It replaces all settings, so it
 /// goes before any builder call that changes settings (`.font`, `.default_font`, `.antialiasing`).
-/// Set the design first ([`design::set`]) if the app starts with another one than the standard.
+/// Set the design first ([`design::start`]) if the app starts with another one than the standard.
 pub fn settings() -> iced::Settings {
+    let active = design::active();
+    // A later switch back to this design need not load its fonts again.
+    design::mark_fonts_loaded(&active.id);
     iced::Settings {
-        fonts: design::font_files(&design::active()),
+        fonts: design::font_files(&active),
         default_font: theme::font(),
         default_text_size: typo::body().size,
         ..iced::Settings::default()

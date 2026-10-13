@@ -204,6 +204,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::UpdateSettings { .. }
         | Request::Accounts
         | Request::ListApps
+        | Request::ListDesigns
         | Request::ListClients
         | Request::CreateClient { .. }
         | Request::ListApprovals

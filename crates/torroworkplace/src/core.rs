@@ -352,6 +352,9 @@ pub struct Snapshot {
     /// The most recently updated of [`Snapshot::inbox_for_me`], newest first, at most
     /// [`TRAY_NEWEST`].
     pub inbox_newest: Vec<InboxLine>,
+    /// The design pack the settings name (task L.3), so the tray icon follows it: its symbol
+    /// (`logo.tray`) or the grid in its accent colour. Empty counts as the standard.
+    pub design: String,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -1184,6 +1187,7 @@ impl Core {
                 Err(message) => Response::Error { code: "error".into(), message },
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
+            Request::ListDesigns => Response::Designs { designs: self.list_designs() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
             Request::RemoveAccount { id } => self.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
@@ -2066,6 +2070,32 @@ impl Core {
         self.backend.events().await
     }
 
+    /// `settings.list_designs` (task L.3): every design pack with what the control centre and
+    /// agents need to choose one. Packs hold no secrets, so every reader sees all of them.
+    fn list_designs(&self) -> Vec<torro_ipc::DesignInfo> {
+        let chosen = self.settings.current().design;
+        let listed = match self.settings.designs() {
+            Some(dir) => torro_core::design::list(dir),
+            // Without a home directory only the standard exists; a folder that is not there
+            // lists just that.
+            None => torro_core::design::list(std::path::Path::new("")),
+        };
+        listed
+            .into_iter()
+            .map(|pack| torro_ipc::DesignInfo {
+                valid: pack.valid(),
+                problems: pack.problems().iter().map(ToString::to_string).collect(),
+                active: pack.id == chosen,
+                id: pack.id,
+                name: pack.about.name,
+                version: pack.about.version,
+                author: pack.about.author,
+                description: pack.about.description,
+                standard: pack.standard,
+            })
+            .collect()
+    }
+
     /// The current state for the tray menu. Never fails; problems end up in `problem`.
     pub async fn snapshot(&self) -> Snapshot {
         let mut snapshot = Snapshot {
@@ -2092,6 +2122,7 @@ impl Core {
             Err(err) => snapshot.problem = Some(err.to_string()),
         }
         snapshot.account = Some(self.pim.account_state().await);
+        snapshot.design = self.settings.current().design;
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -2538,6 +2569,48 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), Request::SaveTemplate { name: None }).await), "forbidden");
         core.clients.remove(&id).await.expect("removed");
         assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "unauthorized");
+    }
+
+    /// `settings.list_designs` (task L.3): the standard first, then the packs of the designs
+    /// folder, valid or with their reasons, the chosen one marked; reading is enough to list,
+    /// choosing takes `Admin`.
+    #[tokio::test]
+    async fn designs_are_listed_with_their_problems_and_chosen_by_admins_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let designs = settings_file(dir.path()).with_file_name("designs");
+        for (id, toml) in [
+            ("teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.2.0\"\nauthor = \"Anna\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(designs.join(id)).expect("pack folder");
+            std::fs::write(designs.join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        let list = |answer: Response| match answer {
+            Response::Designs { designs } => designs,
+            other => panic!("list_designs answers with Designs, got {other:?}"),
+        };
+
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let listed = list(ask(&core, Some(&reader), Request::ListDesigns).await);
+        let ids: Vec<&str> = listed.iter().map(|design| design.id.as_str()).collect();
+        assert_eq!(ids, ["torro", "pale", "teal"], "the standard first, then by folder name");
+        assert!(listed[0].standard && listed[0].valid && listed[0].active);
+        assert!(!listed[1].valid && !listed[1].problems.is_empty(), "{:?}", listed[1]);
+        assert!(listed[1].problems.iter().any(|problem| problem.contains("colors.dark.text")));
+        assert_eq!((listed[2].name.as_str(), listed[2].version.as_str()), ("Teal", "1.2.0"));
+        assert_eq!(listed[2].author.as_deref(), Some("Anna"));
+        assert!(listed[2].valid && listed[2].problems.is_empty() && !listed[2].standard);
+
+        let choose = |id: &str| Request::SetSetting { key: SettingKey::Design, value: serde_json::json!(id) };
+        assert_eq!(code(&ask(&core, Some(&reader), choose("teal")).await), "forbidden", "choosing is Admin");
+        assert_eq!(code(&core.handle(choose("pale")).await), "error", "a broken pack is refused");
+        assert_eq!(core.handle(choose("teal")).await, Response::Ok);
+        assert_eq!(settings(&core).await.design, "teal");
+        let active: Vec<String> =
+            list(core.handle(Request::ListDesigns).await).into_iter().filter(|d| d.active).map(|d| d.id).collect();
+        assert_eq!(active, ["teal"]);
+        assert_eq!(core.snapshot().await.design, "teal", "the tray icon follows");
     }
 
     #[tokio::test]

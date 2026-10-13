@@ -239,6 +239,7 @@ mod tests {
                 night: Night::none_at(Quarter::new(6, 0).expect("quarter")),
                 list_orders: Default::default(),
                 quiet_when_busy: false,
+                design: "plex".into(),
             },
             ..Data::default()
         };

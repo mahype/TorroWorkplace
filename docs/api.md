@@ -82,7 +82,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
-| `settings` | `get_settings` | | | `set_setting`, `set_collection_shown`, `update_settings` |
+| `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
@@ -285,6 +285,14 @@ ermittelt künftig der Dienst, nicht mehr die Steuerzentrale.
 **eigenen** Freigaben (ein Agent muss erfahren können, wie sein Befehl ausging) und darf eine
 Rückfrage stellen (`ask_permission`), der App-Schlüssel liest alle. Entscheiden kann nur der
 App-Schlüssel.
+
+⁹ `list_designs` (L.3) nennt die Design-Pakete ([design-pakete.md](design-pakete.md)): das Standardpaket
+`torro` zuerst, dann jeden Ordner unter `<data>/designs/` mit `id`, `name`, `version`, `author`,
+`description`, `standard`, `valid`, `problems` (lesbare Gründe, warum ein Paket nicht geht) und
+`active` (das in den Einstellungen gewählte). Gewählt wird mit `set_setting { key: "design", value:
+"<id>" }` (`Admin`); ein fehlendes oder ungültiges Paket lehnt der Dienst mit `error` und allen
+Gründen ab. Pakete enthalten keine Geheimnisse, darum genügt `Read` zum Auflisten. Die Apps folgen
+der Einstellung wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem Takt.
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine

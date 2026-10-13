@@ -1041,6 +1041,7 @@ impl PimService {
             | Request::RenameTemplate { .. }
             | Request::OpenApp { .. }
             | Request::ListApps
+            | Request::ListDesigns
             | Request::ListClients
             | Request::CreateClient { .. }
             | Request::UpdateClient { .. }

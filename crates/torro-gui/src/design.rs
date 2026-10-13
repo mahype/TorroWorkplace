@@ -4,26 +4,46 @@
 //! [`crate::typo`], [`crate::theme::space`], [`crate::theme::radius`], [`crate::theme::size`], the
 //! layout gaps of [`crate::layout`] and the fonts – is read from the **active design**, a
 //! [`Design`] from `torro_core::design`. There is one per process: [`active`] reads it, [`set`]
-//! replaces it. Until the setting exists (task L.3) it is always [`Design::standard`], which gives
-//! exactly the values the suite had as constants (the test "same picture" below holds it to that).
+//! replaces it. [`Design::standard`] gives exactly the values the suite had as constants (the test
+//! "same picture" below holds it to that).
 //!
 //! Views never cache a token across frames: a switch takes effect on the next `view`/`draw`.
 //!
+//! # Following the setting (task L.3)
+//!
+//! The suite settings name one design (`Settings::design`); every window draws with it and follows
+//! a change at once, on the way the appearance and the zoom take. A pack that is gone or breaks a
+//! rule gives the standard, never a crash. An app wires it up in four places:
+//!
 //! ```ignore
-//! use torro_gui::design;
-//! let pack = torro_core::design::load(&dir, "plex")?;
-//! let fonts = design::font_files(&pack);   // load them with `iced::font::load` (task L.3)
-//! design::set(pack);                       // the next frame draws with the new design
+//! use torro_gui::design::{self, Follow};
+//!
+//! // main, before `torro_gui::settings()`: the first frame already has the right design and fonts.
+//! design::start_for(&source, launch.design.as_deref()); // `--design <id>` of `--demo` wins
+//! // new: no socket with `--demo`, so the design stays as it started.
+//! let design = Follow::for_source(&source);
+//! let task = Task::batch([design.fetch().map(Message::Design), …]);
+//! // Tick: `self.design.fetch().map(Message::Design)`, so a change in the control centre arrives.
+//! // update: a switch loads the new fonts; canvas caches (`canvas::Cache`) would be cleared here.
+//! Message::Design(message) => {
+//!     if let Some(task) = self.design.update(message) {
+//!         return task.map(Message::Design);
+//!     }
+//! }
 //! ```
 
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError, RwLock};
+use std::time::Duration;
 
-use iced::{Font, Theme};
-use torro_core::design::{Face, FontRole, Mode, Weight};
+use iced::{Font, Task, Theme};
+use torro_core::design::{Face, FontRole, Mode, STANDARD_ID, Weight};
+use torro_ipc::{Request, Response};
 
 pub use torro_core::design::Design;
 
+use crate::source::Source;
 use crate::theme::{self, Palette};
 
 #[cfg(test)]
@@ -80,11 +100,218 @@ pub fn active() -> Arc<Design> {
 /// checked); nothing is checked here.
 ///
 /// Fonts are not loaded here: at start [`crate::settings`] loads the active design's fonts; on a
-/// switch the app loads [`font_files`] with `iced::font::load` before or with this call (task L.3).
-/// Canvas caches keep what they drew; apps clear them after a switch.
+/// switch [`Follow::apply`] loads them with `iced::font::load`. Apps rarely call this themselves:
+/// [`start`] and [`Follow`] do. Canvas caches keep what they drew; apps clear them after a switch.
 pub fn set(design: Design) {
     let tokens = Arc::new(Tokens::new(design));
     *ACTIVE.write().unwrap_or_else(PoisonError::into_inner) = tokens;
+}
+
+/// How long [`start`] waits for the core's answer before the window opens with the standard. A
+/// core that is just starting answers with "not running" at once; this only bounds a core that
+/// hangs. The first [`Follow::fetch`] brings the stored design later.
+const START_WAIT: Duration = Duration::from_secs(1);
+
+/// [`start`] for an app on `source`: the core's socket, none for demo data.
+pub fn start_for(source: &Source, forced: Option<&str>) {
+    let socket = match source {
+        Source::Core(client) => Some(client.socket.as_path()),
+        Source::Demo(_) => None,
+    };
+    start(socket, forced);
+}
+
+/// Sets the design a process starts with. Call in `main` before [`crate::settings`], which loads
+/// the fonts of the active design, so the first frame is already drawn right.
+///
+/// `forced` is `--design <id>` (only with `--demo`, checked by [`is_choice`] when the parameters
+/// are read) and wins. Otherwise the design the suite settings name, asked from the core on
+/// `socket` (waiting at most a second); without a socket (`--demo`), without an answer, or when
+/// the pack is gone or broken, the standard stays. Never fails: a window always opens.
+pub fn start(socket: Option<&Path>, forced: Option<&str>) {
+    let id = match (forced, socket) {
+        (Some(id), _) => id.to_string(),
+        (None, Some(socket)) => match stored_now(socket) {
+            Some(id) => id,
+            None => return,
+        },
+        (None, None) => return,
+    };
+    let design = load_or_standard(torro_core::design::dir().as_deref(), &id);
+    if !design.is_standard() {
+        set(design);
+    }
+}
+
+/// The design the settings name, asked from the core on `socket` and waited for at most
+/// [`START_WAIT`]; `None` when the core does not answer in time.
+fn stored_now(socket: &Path) -> Option<String> {
+    let socket = socket.to_path_buf();
+    let (answer, answered) = std::sync::mpsc::channel();
+    // On a thread of its own, so a hanging core is left behind after START_WAIT instead of
+    // keeping the window from opening.
+    std::thread::spawn(move || {
+        let Ok(runtime) = iced::executor::Default::new() else { return };
+        let response = runtime.block_on(torro_ipc::client::call(&socket, &Request::Settings));
+        let _ = answer.send(response);
+    });
+    match answered.recv_timeout(START_WAIT) {
+        Ok(Ok(Response::Settings { settings })) => Some(settings.design),
+        _ => None,
+    }
+}
+
+/// The design `id` from the designs folder `dir`, or the standard when it is gone or breaks a rule
+/// (said once on stderr, with every reason: the control centre shows them too).
+fn load_or_standard(dir: Option<&Path>, id: &str) -> Design {
+    // The standard needs no folder; `load` answers it without touching the disk.
+    let loaded = match dir {
+        Some(dir) => torro_core::design::load(dir, id),
+        None => torro_core::design::load(Path::new(""), id),
+    };
+    loaded.unwrap_or_else(|problems| {
+        let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        eprintln!("the design {id:?} can't be used, drawing with the standard: {}", reasons.join(" "));
+        Design::standard()
+    })
+}
+
+/// Whether `--design <id>` names a design this process can draw with: the standard, or a pack in
+/// the designs folder that passes every rule. [`choices`] lists the valid ones for the error.
+pub fn is_choice(id: &str) -> bool {
+    is_choice_in(torro_core::design::dir().as_deref(), id)
+}
+
+/// [`is_choice`] for the designs folder `dir`.
+pub fn is_choice_in(dir: Option<&Path>, id: &str) -> bool {
+    id == STANDARD_ID || dir.is_some_and(|dir| torro_core::design::load(dir, id).is_ok())
+}
+
+/// The ids `--design` takes, the standard first: what the error for an unknown one lists.
+pub fn choices() -> Vec<String> {
+    choices_in(torro_core::design::dir().as_deref())
+}
+
+/// [`choices`] for the designs folder `dir`.
+pub fn choices_in(dir: Option<&Path>) -> Vec<String> {
+    match dir {
+        Some(dir) => {
+            torro_core::design::list(dir).into_iter().filter(|pack| pack.valid()).map(|pack| pack.id).collect()
+        }
+        None => vec![STANDARD_ID.to_string()],
+    }
+}
+
+/// What reaches a window about the design. The app wraps it in one variant of its own message
+/// (`Message::Design(design::Message)`) and hands it to [`Follow::update`].
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// The design the suite settings name, as [`Follow::fetch`] asked; `Err` when the core did not
+    /// answer, and the window keeps the design it has.
+    Stored(Result<String, String>),
+    /// A font of the new design is loaded. Nothing to do: the message alone makes Iced build the
+    /// view again, so text laid out before the font was there is laid out anew.
+    FontLoaded,
+}
+
+/// How one window follows the design the suite settings name, like [`crate::zoom::Zoom`] follows
+/// the zoom. The design itself is the process's ([`active`]); this keeps where to ask and what was
+/// asked for last.
+#[derive(Debug, Clone)]
+pub struct Follow {
+    /// The core's socket; `None` with `--demo`, where the design stays as it started.
+    socket: Option<PathBuf>,
+    /// The designs folder (`torro_core::design::dir`); `None` without a home directory, then only
+    /// the standard can be drawn.
+    dir: Option<PathBuf>,
+    /// The id asked for last, so an unchanged setting costs nothing and a broken pack is read
+    /// once, not on every tick.
+    chosen: String,
+}
+
+impl Follow {
+    /// Follows the setting through the core on `socket` (`torro_ipc::socket_path()`); `None` keeps
+    /// the design the process started with (`--demo`). Starts from the active design, so the
+    /// first answer changes nothing when [`start`] already set it.
+    pub fn new(socket: Option<PathBuf>) -> Follow {
+        Follow { socket, dir: torro_core::design::dir(), chosen: active().id.clone() }
+    }
+
+    /// [`Follow::new`] for an app on `source`: the core's socket, or none for demo data.
+    pub fn for_source(source: &Source) -> Follow {
+        match source {
+            Source::Core(client) => Follow::new(Some(client.socket.clone())),
+            Source::Demo(_) => Follow::new(None),
+        }
+    }
+
+    /// The same, with the packs read from `dir` instead of the user's designs folder: for tests,
+    /// which never touch the user's data.
+    pub fn in_dir(self, dir: PathBuf) -> Follow {
+        Follow { dir: Some(dir), ..self }
+    }
+
+    /// Asks the core for the design the settings name (`Request::Settings`). Call at start and on
+    /// every tick, like the appearance. Without a socket (`--demo`) it does nothing.
+    pub fn fetch(&self) -> Task<Message> {
+        let Some(socket) = self.socket.clone() else { return Task::none() };
+        Task::perform(
+            async move {
+                match torro_ipc::client::call(&socket, &Request::Settings).await {
+                    Ok(Response::Settings { settings }) => Ok(settings.design),
+                    Ok(other) => Err(format!("unexpected answer: {other:?}")),
+                    Err(err) => Err(err.to_string()),
+                }
+            },
+            Message::Stored,
+        )
+    }
+
+    /// Handles `message`. `Some` when the active design changed: the window draws with it from the
+    /// next frame; the app clears its canvas caches, if it keeps any, and returns the task, which
+    /// loads the new fonts. `None` when nothing changed.
+    pub fn update(&mut self, message: Message) -> Option<Task<Message>> {
+        match message {
+            Message::Stored(Ok(id)) => self.apply(&id),
+            // The core is not answering: keep what we have.
+            Message::Stored(Err(_)) | Message::FontLoaded => None,
+        }
+    }
+
+    /// Switches the process to the design `id` (the setting as the window learnt it, from
+    /// [`Follow::fetch`] or with other settings, as in the control centre). `id` asked for last
+    /// time does nothing. A pack that is gone or breaks a rule gives the standard. Returns what
+    /// [`Follow::update`] returns.
+    pub fn apply(&mut self, id: &str) -> Option<Task<Message>> {
+        if id == self.chosen {
+            return None;
+        }
+        self.chosen = id.to_string();
+        let design = load_or_standard(self.dir.as_deref(), id);
+        if design == *active() {
+            return None;
+        }
+        let fonts = fonts_once(&design);
+        set(design);
+        Some(Task::batch(fonts.into_iter().map(|font| iced::font::load(font).map(|_| Message::FontLoaded))))
+    }
+}
+
+/// The font files of `design` the first time it is drawn in this process, nothing afterwards: Iced
+/// keeps every font it loaded, so switching back and forth loads each design's fonts once.
+fn fonts_once(design: &Design) -> Vec<Cow<'static, [u8]>> {
+    if mark_fonts_loaded(&design.id) { font_files(design) } else { Vec::new() }
+}
+
+/// Notes that the fonts of the design `id` are loaded; `false` when they already were.
+pub(crate) fn mark_fonts_loaded(id: &str) -> bool {
+    static LOADED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let mut loaded = LOADED.lock().unwrap_or_else(PoisonError::into_inner);
+    if loaded.iter().any(|known| known == id) {
+        return false;
+    }
+    loaded.push(id.to_string());
+    true
 }
 
 /// The font files of `design` in the form `iced::Settings::fonts` and `iced::font::load` take:
@@ -292,8 +519,79 @@ mod tests {
         assert_eq!(tokens.dark_theme.to_string(), "Torro Dark");
     }
 
+    /// Held by the tests that switch the process's design, so they do not see each other's.
+    static SWITCHING: Mutex<()> = Mutex::new(());
+
+    /// A designs folder in a temp dir with the packs `twin` (the standard's values under its own
+    /// id and the standard's name, so tests running beside see the same tokens) and `pale`
+    /// (dark text on dark surfaces: refused).
+    fn designs() -> std::path::PathBuf {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("torro-gui-designs-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for (id, toml) in [
+            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(dir.join(id)).expect("pack folder");
+            std::fs::write(dir.join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        dir
+    }
+
+    #[test]
+    fn follow_switches_to_the_chosen_design_and_falls_back_to_the_standard() {
+        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let dir = designs();
+        let mut follow = Follow::new(None).in_dir(dir.clone());
+        assert!(follow.fetch().units() == 0, "without a socket nothing is asked");
+
+        let switched = follow.update(Message::Stored(Ok("twin".into()))).expect("the design changed");
+        assert_eq!(active().id, "twin");
+        assert!(switched.units() > 0, "the first switch loads the design's fonts");
+        assert!(follow.update(Message::Stored(Ok("twin".into()))).is_none(), "the same setting again");
+        assert!(follow.update(Message::Stored(Err("core is not running".into()))).is_none());
+        assert_eq!(active().id, "twin", "a core that does not answer changes nothing");
+
+        assert!(follow.update(Message::Stored(Ok("pale".into()))).is_some(), "back to the standard");
+        assert!(active().is_standard(), "a broken pack is never drawn");
+        assert!(follow.update(Message::Stored(Ok("gone".into()))).is_none(), "already the standard");
+        assert!(active().is_standard(), "a missing pack neither");
+
+        assert!(follow.apply("twin").is_some());
+        assert!(follow.apply("torro").is_some());
+        assert!(active().is_standard());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_valid_designs_are_choices() {
+        let dir = designs();
+        assert_eq!(choices_in(Some(&dir)), ["torro", "twin"], "the standard first, never a broken pack");
+        assert_eq!(choices_in(None), ["torro"]);
+        assert!(is_choice_in(Some(&dir), "twin"));
+        assert!(is_choice_in(None, "torro"), "the standard needs no folder");
+        for id in ["pale", "gone", "../twin"] {
+            assert!(!is_choice_in(Some(&dir), id), "{id}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn without_a_core_the_start_keeps_the_standard() {
+        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let nowhere = std::env::temp_dir().join(format!("torro-gui-no-core-{}", std::process::id()));
+        start(Some(&nowhere), None);
+        start(None, None);
+        assert!(active().is_standard());
+        start(None, Some("torro"));
+        assert!(active().is_standard());
+    }
+
     #[test]
     fn set_replaces_the_active_design() {
+        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
         // Same values as the standard under another id: tests running beside this one keep reading
         // the standard tokens.
         let mut twin = Design::standard();

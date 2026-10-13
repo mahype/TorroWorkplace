@@ -61,6 +61,7 @@ use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect;
+use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
@@ -570,6 +571,8 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
+/// - `--design <id>`: draw with this design pack instead of the standard (task L.3); needs `--demo`.
+///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>` (local time): a fixed "now" and demo data around it, for pictures
 ///   that can be made again; needs `--demo`.
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
@@ -589,6 +592,7 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
+    pub design: Option<String>,
     /// The view of `--lane` or `--source`; `None` starts on "For me".
     pub view: Option<View>,
     /// `--compose`: the window writes a message instead of showing the inbox.
@@ -680,8 +684,17 @@ impl Launch {
                 NaiveDateTime::parse_from_str(word, "%Y-%m-%dT%H:%M").map_err(|_| LaunchError::BadNow(word.into()))?,
             ),
         };
+        let design = match flag_value(args, "--design")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
+            Some(id) if design::is_choice(id) => Some(id.to_owned()),
+            Some(id) => {
+                let valid = design::choices();
+                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+            }
+        };
         let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, view, compose })
+        Ok(Launch { demo, open, appearance, now, design, view, compose })
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -851,6 +864,8 @@ pub struct App<S> {
     sidebar: SidebarMode,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
+    /// Follows the design pack the suite settings name (task L.3).
+    design: Follow,
 }
 
 #[derive(Debug, Clone)]
@@ -942,6 +957,8 @@ pub enum Message {
     Appearance(Result<Appearance, String>),
     /// The zoom keys, the stored zoom and its badge.
     Zoom(zoom::Message),
+    /// The design pack stored in the suite settings, and its fonts loaded.
+    Design(design::Message),
     /// From the app switcher at the top of the sidebar.
     Switcher(Switcher),
     /// Open or close the navigation menu ("For me ▾").
@@ -1048,6 +1065,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let app = App {
             inbox,
             zoom: Zoom::for_source(&suite),
+            design: Follow::for_source(&suite),
             suite,
             opened: false,
             offset,
@@ -1108,6 +1126,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             app.load(),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
+            app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
@@ -1277,12 +1296,24 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
-                return Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom), self.load()]);
+                return Task::batch([
+                    self.fetch_appearance(),
+                    self.zoom.fetch().map(Message::Zoom),
+                    self.design.fetch().map(Message::Design),
+                    self.load(),
+                ]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            // No canvas keeps a cache: the next frame draws with the new design, the task loads its
+            // fonts.
+            Message::Design(message) => {
+                if let Some(task) = self.design.update(message) {
+                    return task.map(Message::Design);
+                }
+            }
             Message::Zoom(message) => {
                 let before = self.zoom.factor();
                 let task = self.zoom.update(message).map(Message::Zoom);
@@ -2992,6 +3023,33 @@ mod tests {
             (true, Some(Open::Approval), Some(Appearance::Light))
         );
         assert!(!Launch::parse(&args(&[])).expect("valid").demo);
+        let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
+        assert_eq!(launch.design.as_deref(), Some("torro"));
+        assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+        assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
+    }
+
+    /// The message "design changed" (task L.3): the stored setting arrives and the window draws
+    /// with that pack from the next frame; a broken one gives the standard.
+    #[test]
+    fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The standard's values under another id, so the tests beside this one see the same tokens.
+        for (id, toml) in [
+            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(dir.path().join(id)).expect("pack folder");
+            std::fs::write(dir.path().join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        let mut app = loaded(&[]);
+        app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        let switched = app.update(Message::Design(design::Message::Stored(Ok("twin".into()))));
+        assert_eq!(design::active().id, "twin");
+        assert!(switched.units() > 0, "the fonts of the new design are loaded");
+        let _ = app.view();
+        let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
+        assert!(design::active().is_standard(), "a broken pack is never drawn");
     }
 
     #[test]

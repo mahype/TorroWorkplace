@@ -89,6 +89,9 @@ tempfile = "3.27.0"
 # family names of a pack's fonts, the version Iced's font stack already brings.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
+# The tray symbol of a design pack (torroworkplace, L.3): an SVG rastered for each tray size. The version Iced 0.14
+# already brings for its SVG widget; no text, system fonts or raster images: a tray symbol needs none of them.
+resvg = { version = "0.45.1", default-features = false }
 # GlazeWM's IPC (torro-wm): plain ws:// on 127.0.0.1, so no TLS features.
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }

@@ -35,6 +35,7 @@ torro-wm.workspace = true
 torro-setups.workspace = true
 torro-gui.workspace = true
 iced.workspace = true
+resvg.workspace = true
 chrono.workspace = true
 getrandom.workspace = true
 keyring.workspace = true
