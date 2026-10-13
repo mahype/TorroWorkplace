@@ -5,6 +5,7 @@
 //! password from Login Flow v2, for GitHub the token, for a CalDAV account of a mail provider its
 //! password or app password, for a mail account the password of its IMAP and SMTP servers) lives in
 //! the system keychain: Secret Service on Linux, Keychain on macOS, Credential Manager on Windows.
+//! On macOS all of them share one entry, and every process reads the keychain once ([`vault`]).
 //! A mail account keeps its servers and settings next to it in `accounts.json` (types from
 //! `torro-mail`, task M2.1).
 //!
@@ -15,6 +16,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex, PoisonError};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
@@ -23,8 +25,24 @@ use torro_mail::{InvalidAddress, MailAccountConfig, MailSettings, Security};
 use crate::AppId;
 use crate::paths::AppPaths;
 
+pub mod vault;
+
 /// Keychain service name all suite secrets are filed under.
 const KEYCHAIN_SERVICE: &str = "torroworkplace";
+
+/// The account secrets of this process ([`vault`]): bundled in one keychain entry on macOS, one
+/// entry per account elsewhere; read once per process either way.
+static SECRETS: LazyLock<Mutex<vault::Vault<vault::SystemKeychain>>> = LazyLock::new(|| {
+    Mutex::new(vault::Vault::new(vault::SystemKeychain { service: KEYCHAIN_SERVICE }, cfg!(target_os = "macos")))
+});
+
+/// Runs `f` on [`SECRETS`]; a keychain error becomes [`AccountError::Keychain`].
+fn with_secrets<T>(
+    f: impl FnOnce(&mut vault::Vault<vault::SystemKeychain>) -> Result<T, String>,
+) -> Result<T, AccountError> {
+    let mut secrets = SECRETS.lock().unwrap_or_else(PoisonError::into_inner);
+    f(&mut secrets).map_err(AccountError::Keychain)
+}
 
 /// The file name of the account list in the core's config directory.
 pub const ACCOUNTS_FILE: &str = "accounts.json";
@@ -34,9 +52,10 @@ pub const ACCOUNTS_FILE: &str = "accounts.json";
 /// or delete a client's key.
 pub const RESERVED_ID_PREFIX: &str = "client-";
 
-/// `id` is reserved for client keys ([`RESERVED_ID_PREFIX`]) and never names an account.
+/// `id` is reserved for client keys ([`RESERVED_ID_PREFIX`]) or the keychain vault
+/// ([`vault::VAULT_ENTRY`]) and never names an account.
 pub fn is_reserved_id(id: &str) -> bool {
-    id.starts_with(RESERVED_ID_PREFIX)
+    id.starts_with(RESERVED_ID_PREFIX) || id == vault::VAULT_ENTRY
 }
 
 /// What kind of server an account talks to.
@@ -242,32 +261,30 @@ impl Account {
         }
     }
 
-    /// The secret from the keychain, `None` when there is none.
+    /// The secret from the keychain, `None` when there is none. Read once per process
+    /// ([`vault`]), so the keychain asks at most once.
     pub fn secret(&self) -> Result<Option<String>, AccountError> {
-        match self.keychain_entry()?.get_password() {
-            Ok(secret) => Ok(Some(secret)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => Err(AccountError::Keychain(err.to_string())),
-        }
+        self.check_id()?;
+        with_secrets(|secrets| secrets.get(&self.id))
     }
 
     pub fn set_secret(&self, secret: &str) -> Result<(), AccountError> {
-        self.keychain_entry()?.set_password(secret).map_err(|err| AccountError::Keychain(err.to_string()))
+        self.check_id()?;
+        with_secrets(|secrets| secrets.set(&self.id, secret))
     }
 
     pub fn delete_secret(&self) -> Result<(), AccountError> {
-        match self.keychain_entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(AccountError::Keychain(err.to_string())),
-        }
+        self.check_id()?;
+        with_secrets(|secrets| secrets.delete(&self.id))
     }
 
-    /// The keychain entry of this account; never one of a client key ([`is_reserved_id`]).
-    fn keychain_entry(&self) -> Result<keyring::Entry, AccountError> {
-        if is_reserved_id(&self.id) {
-            return Err(AccountError::ReservedId(self.id.clone()));
+    /// The account's id may hold a secret: never that of a client key or the vault
+    /// ([`is_reserved_id`]).
+    fn check_id(&self) -> Result<(), AccountError> {
+        match is_reserved_id(&self.id) {
+            true => Err(AccountError::ReservedId(self.id.clone())),
+            false => Ok(()),
         }
-        keyring::Entry::new(KEYCHAIN_SERVICE, &self.id).map_err(|err| AccountError::Keychain(err.to_string()))
     }
 }
 
@@ -303,7 +320,7 @@ impl fmt::Display for AccountError {
             AccountError::Io(err) => write!(f, "accounts file: {err}"),
             AccountError::Format(err) => write!(f, "accounts file is damaged: {err}"),
             AccountError::Keychain(err) => write!(f, "keychain: {err}"),
-            AccountError::ReservedId(id) => write!(f, "account id {id:?} is reserved for client keys"),
+            AccountError::ReservedId(id) => write!(f, "account id {id:?} is reserved for the keychain"),
         }
     }
 }
