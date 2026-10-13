@@ -27,7 +27,7 @@ use torro_setups::launch::{Launcher, SystemLauncher, command_for};
 use torro_setups::restore::{RestoreOptions, restore};
 use torro_setups::storage::Store;
 use torro_setups::{SetupsError, TemplateSummary};
-use torro_wm::{Backend, Events, WindowManager, WmError};
+use torro_wm::{Backend, Events, NoWindow, WindowManager, WmError};
 
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::account::torromail::TorroMail;
@@ -224,28 +224,42 @@ fn login_name(address: &str, hint: LoginHint) -> Option<String> {
     }
 }
 
-/// Brings the window of a coding agent to the front (task E2.4): of `pids`, the hook's parent
-/// processes nearest first, the first that owns a window is the agent's terminal.
+/// Brings the window of a coding agent to the front (tasks E2.4, E8.9): of `pids`, the hook's
+/// parent processes nearest first, the first that owns a window is the agent's terminal
+/// ([`torro_wm::focus_process_window`]). When that terminal has several windows (one process for
+/// all of them, as Terminal, iTerm2 and Ghostty on macOS), `agent`'s session name and then its
+/// project choose by the window titles ([`window_hints`]); on macOS Terminal and iTerm2 are also
+/// asked which window holds the agent's tty. Without a window manager macOS brings the terminal
+/// app forward itself.
 ///
-/// `Err` holds the answer: `unsupported` when the window manager cannot list windows (none
-/// supported, macOS, Windows), when none of the processes has a window (closed, or the agent runs
-/// under a tmux server) or when that process has several, since a terminal that serves all its
-/// windows from one process does not say which one shows the agent; `error` when focusing fails.
-async fn focus_agent_window(wm: &impl WindowManager, pids: &[u32]) -> Result<(), Box<Response>> {
+/// `Err` holds the answer: `unsupported` with the reason when there is no window manager to ask
+/// (Linux, Windows), when none of the processes has a window (closed, or the agent runs under a
+/// tmux server), when several windows remain or when the window closed meanwhile; `error` when
+/// focusing fails otherwise.
+async fn focus_agent_window(
+    wm: &impl WindowManager,
+    pids: &[u32],
+    agent: Option<&torro_inbox::AgentInfo>,
+) -> Result<(), Box<Response>> {
+    let hints = window_hints(agent);
+    let hints: Vec<&str> = hints.iter().map(String::as_str).collect();
     let unsupported = |message: String| Box::new(Response::Error { code: "unsupported".into(), message });
-    let windows = wm.windows(None).await.map_err(|err| unsupported(format!("cannot list windows: {err}")))?;
-    let owned = |pid: u32| windows.iter().filter(move |window| window.pid == Some(pid));
-    let Some(pid) = pids.iter().copied().find(|pid| owned(*pid).next().is_some()) else {
-        return Err(unsupported("no window of the agent's processes is open".into()));
+    torro_wm::focus_process_window(wm, pids, &hints).await.map_err(|no| match no {
+        NoWindow::Failed(WmError::NotFound(_)) => unsupported("the agent's window closed meanwhile".into()),
+        NoWindow::Failed(err) => Box::new(Response::Error { code: "error".into(), message: err.to_string() }),
+        other => unsupported(other.to_string()),
+    })
+}
+
+/// What the title of an agent's window may hold, the most telling first (task E8.9): the
+/// session's name (Claude Code puts it into the terminal's title, `✳ <name>`), then the project
+/// folder (Terminal.app shows it). Foreign text from the hook: only ever compared with window
+/// titles ([`torro_wm::pick_window`]), never part of a command.
+fn window_hints(agent: Option<&torro_inbox::AgentInfo>) -> Vec<String> {
+    let Some(agent) = agent else {
+        return Vec::new();
     };
-    let mut candidates = owned(pid);
-    match (candidates.next(), candidates.next()) {
-        (Some(window), None) => wm.focus_window(&window.id).await.map_err(|err| match err {
-            WmError::NotFound(_) => unsupported("the agent's window closed meanwhile".into()),
-            err => Box::new(Response::Error { code: "error".into(), message: err.to_string() }),
-        }),
-        _ => Err(unsupported("the agent's terminal has several windows; which one shows it is unknown".into())),
-    }
+    [agent.title.clone(), agent.project.clone()].into_iter().flatten().collect()
 }
 
 /// The start of the link id that leads from a task back to the inbox entry it was made of
@@ -1463,7 +1477,15 @@ impl Core {
         }
         let failed = |message: String| Box::new(Response::Error { code: "error".into(), message });
         let opened = match opening {
-            Opening::Window { pids } => focus_agent_window(&self.backend, &pids).await,
+            Opening::Window { pids } => {
+                // The session's name and project choose among a terminal's windows (task E8.9),
+                // read as the caller may see the entry (`opening` let it see this one).
+                let agent = match self.inbox.handle(Request::GetItem { id: id.to_string() }, client, Utc::now()) {
+                    Response::Item { item } => item.agent,
+                    _ => None,
+                };
+                focus_agent_window(&self.backend, &pids, agent.as_ref()).await
+            }
             Opening::Url(url) => (self.open_url)(&url).map_err(|err| failed(format!("cannot start a browser: {err}"))),
             Opening::App(app) => self.open_app(app).await.map_err(failed),
         };
@@ -4887,9 +4909,9 @@ mod tests {
         let launcher = wm.open_window("launcher", Some(AGENT_PIDS[2]));
         let terminal = wm.open_window("Alacritty", Some(AGENT_PIDS[1]));
 
-        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS).await, Ok(()));
+        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS, None).await, Ok(()));
         assert_eq!(wm.calls(), vec![Call::Focus(terminal.clone())], "the nearest, not the launcher");
-        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS[2..]).await, Ok(()));
+        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS[2..], None).await, Ok(()));
         assert_eq!(wm.calls().last(), Some(&Call::Focus(launcher)));
     }
 
@@ -4900,14 +4922,65 @@ mod tests {
         let wm = FakeWm::new("1");
         let terminal = wm.open_window("Alacritty", Some(AGENT_PIDS[1]));
         wm.close_window(&terminal).await.expect("closed");
-        assert_eq!(unsupported(focus_agent_window(&wm, &AGENT_PIDS).await), "unsupported", "the window is gone");
-        // A terminal that serves several windows from one process does not say which one it is.
+        assert_eq!(unsupported(focus_agent_window(&wm, &AGENT_PIDS, None).await), "unsupported", "the window is gone");
+        // A terminal that serves several windows from one process, and no title names the session.
         wm.open_window("ghostty", Some(AGENT_PIDS[0]));
         wm.open_window("ghostty", Some(AGENT_PIDS[0]));
-        assert_eq!(unsupported(focus_agent_window(&wm, &AGENT_PIDS).await), "unsupported", "several windows");
-        // No window manager to ask (macOS, Windows, none supported).
+        assert_eq!(unsupported(focus_agent_window(&wm, &AGENT_PIDS, None).await), "unsupported", "several windows");
+        // No window manager to ask (Linux, Windows; on macOS none of these processes is an app).
         let none = Backend::Unsupported { name: "test".into() };
-        assert_eq!(unsupported(focus_agent_window(&none, &AGENT_PIDS).await), "unsupported");
+        assert_eq!(unsupported(focus_agent_window(&none, &AGENT_PIDS, None).await), "unsupported");
+    }
+
+    /// An agent like the hook reports it, with its session's name and project (task E8.9).
+    fn agent_named(title: Option<&str>, project: Option<&str>) -> torro_inbox::AgentInfo {
+        torro_inbox::AgentInfo {
+            agent: AgentKind::ClaudeCode,
+            session: "s1".into(),
+            project: project.map(str::to_string),
+            branch: Some("main".into()),
+            pids: AGENT_PIDS.to_vec(),
+            title: title.map(str::to_string),
+        }
+    }
+
+    /// Task E8.9: of several windows of one terminal process, the title that holds the session's
+    /// name (then the project) is the agent's; no title that does gives `unsupported` with why.
+    #[tokio::test]
+    async fn among_a_terminals_windows_the_title_finds_the_agent() {
+        use torro_wm::fake::{Call, FakeWm, window};
+        let wm = FakeWm::new("1");
+        for (id, title) in [
+            ("13726", "proj-alpha — ✳ Alpha job — claude — 80×24"),
+            ("13732", "proj-beta — ✳ Reply with ok — claude — 80×24"),
+            ("13733", "proj-beta — ✳ Release notes — claude — 80×24"),
+        ] {
+            let mut terminal = window(id, "com.apple.Terminal", "2", torro_wm::Rect::default());
+            terminal.pid = Some(AGENT_PIDS[2]);
+            terminal.title = title.into();
+            wm.add_window(terminal);
+        }
+        let named = agent_named(Some("Reply with ok"), Some("proj-beta"));
+        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS, Some(&named)).await, Ok(()));
+        let unnamed = agent_named(None, Some("proj-alpha"));
+        assert_eq!(focus_agent_window(&wm, &AGENT_PIDS, Some(&unnamed)).await, Ok(()), "by the project");
+        let id = |id: &str| torro_wm::WindowId(id.into());
+        assert_eq!(wm.calls(), vec![Call::Focus(id("13732")), Call::Focus(id("13726"))]);
+
+        // Two sessions in one project without a name in the title: no guess.
+        let undecided = agent_named(Some("Not in any title"), Some("proj-beta"));
+        let refused = focus_agent_window(&wm, &AGENT_PIDS, Some(&undecided)).await.expect_err("no jump");
+        let Response::Error { code, message } = *refused else { panic!("an error") };
+        assert_eq!(code, "unsupported");
+        assert!(message.contains("2 windows"), "{message}");
+        assert_eq!(wm.calls().len(), 2, "nothing more focused");
+    }
+
+    #[test]
+    fn the_window_is_looked_for_by_name_then_project() {
+        assert_eq!(window_hints(Some(&agent_named(Some("Release notes"), Some("Torro")))), ["Release notes", "Torro"]);
+        assert_eq!(window_hints(Some(&agent_named(None, Some("Torro")))), ["Torro"]);
+        assert!(window_hints(None).is_empty());
     }
 
     /// The pages a test core opened instead of starting a browser.

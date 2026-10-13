@@ -53,7 +53,12 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 5. **Titel und Texte fremder Quellen sind `untrusted`**, auch die von Agenten und die Zusammenfassung
    einer Freigabe. Selbst formuliert (mit `tr()`) sind nur Titel von Suite- und Hook-Einträgen.
 6. **Öffnen nur, was sicher ist:** Links `http`/`https`; `app` nur für Apps aus `apps.list_apps`;
-   `window` nur bei Hook-Einträgen.
+   `window` nur bei Hook-Einträgen. Bei App-Quellen (später Slack, WhatsApp) darf „Open“ das Fenster der App
+   aktivieren (E8.9, Schnittstelle 5). Welche App und welches Fenster, bestimmt nur der Kern: aus der Quelle, bei
+   Agenten aus ihren Prozessen und dem, was das System dazu sagt (Fensterliste, `ps`, Bundle-Kennung), nie aus einem
+   Text des Eintrags. Sitzungsname und Projekt eines Agenten werden nur mit Fenstertiteln verglichen. Programme
+   startet der Kern mit Argumentliste, nie über eine Shell-Zeile; Skripte (macOS `osascript`) bekommen alles
+   Veränderliche als Argument, nie in ihren Text.
 7. **Protokoll ohne Inhalte:** `title`, `body`, `thread_key` landen nie in `audit.jsonl`.
 
 ## Offene Punkte (vor der jeweiligen Aufgabe klären)
@@ -936,7 +941,8 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Sichtprüfung in Breit, Mittel, Schmal; Tabelle zeigt dieselben Zahlen wie die Diagramme.
 
 ### E8.9 Ins richtige Fenster springen, auch am Mac
-- [ ] erledigt
+- [x] erledigt (`torro_wm::focus_process_window`: Titel wählt, am Mac zusätzlich das tty bei Terminal und iTerm2,
+  ohne AeroSpace hebt macOS die App selbst; der Hook schickt am Mac Prozesse. Windows ohne Prozesskette offen)
 - **Modell:** Opus · **Braucht:** E2.4 · **Dateien:** `crates/torro-wm/src/{lib,types}.rs`,
   `crates/torro-wm/src/{aerospace,glazewm,hyprland}/`, `crates/torroworkplace/src/{core,hook}.rs`,
   `crates/torro-inbox/src/{item,hook}.rs`

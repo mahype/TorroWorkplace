@@ -248,8 +248,8 @@ pub struct AgentInfo {
     /// Git branch checked out in the working directory. `None` outside a repository.
     #[serde(default)]
     pub branch: Option<String>,
-    /// The hook's parent processes, nearest first, to find the agent's window (E2.4). Empty on
-    /// macOS and Windows.
+    /// The hook's parent processes, nearest first, to find the agent's window (E2.4; on macOS
+    /// too since E8.9). Empty on Windows.
     #[serde(default)]
     pub pids: Vec<u32>,
     /// The session's name as the agent shows it (task E2.6): Claude Code's title of the
@@ -307,7 +307,9 @@ pub enum Link {
     /// `torroworkplace` for the control centre.
     App { app: String },
     /// The window of the agent behind the entry, looked up from [`AgentInfo::pids`] when it is
-    /// opened (E2.4), because window ids change. Only on entries a hook reported.
+    /// opened (E2.4), because window ids change; among several windows of one terminal the
+    /// session's name and project choose by the window title (E8.9). Only on entries a hook
+    /// reported.
     Window,
     /// The newest message (`m:…`, as `mail.get_message` takes it) of a mail entry's conversation
     /// (task E4.1). Only on entries of a mail source, which only the core files; opening it opens
