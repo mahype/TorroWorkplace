@@ -168,7 +168,10 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Kalender, Aufgaben, Inbox und Steuerzentrale, breit und mittel (Rail), hell und dunkel, auch Schublade im Schmalen.
 
 ### L.7 Paket Commitr (erinnert an GitHub)
-- [ ] erledigt
+- [x] erledigt (2026-10-13: Mona Sans 2.0.27 für Text, Ziffern in Inter Tabular, weil die Ziffern von Mona Sans
+  verschieden breit sind und `fonttools` zum Einfrieren fehlte; Akzent ist das Grün des Primärknopfs, Fokus blau;
+  dunkle Seitenleiste nur im hellen Modus; Kalenderfarben und „Merged“ etwas heller als Primer, Fehlerrot dunkel
+  `#FF7B72`)
 - **Modell:** Opus · **Braucht:** L.6 · **Dateien:** `designs/commitr/`, `crates/torroworkplace/src/designs.rs`
 - Erst durchdesignen, dann bauen (wie L.5). Richtung: Mona Sans (OFL), neutrales Grau, Blau `#0969DA` als Akzent,
   feine Linien, Radius 6, eher dicht, dunkle Seitenleiste. Kein GitHub-Name und kein Octocat; „inspired by GitHub“
