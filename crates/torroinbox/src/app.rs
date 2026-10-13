@@ -14,6 +14,17 @@
 //! ([`Launch::density_key`]), `--density` winning; the cards of the comfortable density come with
 //! E8.3 to E8.5.
 //!
+//! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
+//! Its sidebar lists For me (the overview's one column: the mail for the user by day, "Info"
+//! folded at the end), Info, Later and Done ([`Kind::view_name`]), the group "Smart views" with
+//! "With attachments" ([`View::Attachments`]) and the folders of every account; no sources. In the
+//! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
+//! `list::Look`); in the wide layout an open mail stands in the reader beside the list
+//! ([`App::wide_reader`], `mail::reader`) instead of in the panel. The narrow layout's menu lists no
+//! folders (the drawer still does), and its comfortable "For me" starts with how many mails are new
+//! for the user ([`App::lead`]). Nothing is dismissed in the mail window: mail is done, snoozed or
+//! hidden.
+//!
 //! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
 //! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
 //! header bar or with `h`/`l` – in the medium and narrow ones. The app keeps which column has the
@@ -108,6 +119,7 @@ use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
+use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
 use crate::overview::{self, Column, Sections};
 use crate::{detail, list};
@@ -490,6 +502,9 @@ pub enum View {
     /// A window of mail only (`--source mail`) before its folders are in: it becomes the first
     /// account's inbox, or says that there is no mail account.
     Mail,
+    /// The smart view "With attachments" of the mail window (task E8.3): the messages with
+    /// attachments of every account's inbox (`mail::attachments`), `mail.*` only.
+    Attachments,
 }
 
 impl View {
@@ -503,7 +518,7 @@ impl View {
             View::Snoozed => (None, None, StateFilter::Snoozed),
             View::Done => (None, None, StateFilter::Done),
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
-            View::Folder(_) | View::Mail => return None,
+            View::Folder(_) | View::Mail | View::Attachments => return None,
         };
         Some(ItemFilter { lane, source, state: Some(state), ..ItemFilter::default() })
     }
@@ -519,6 +534,7 @@ impl View {
             View::Source(source) => source.label(),
             View::Folder(folder) => folder.name.clone(),
             View::Mail => tr("Mail").into(),
+            View::Attachments => tr("With attachments").into(),
         }
     }
 
@@ -532,6 +548,7 @@ impl View {
             View::Source(source) => list::source_icon(source),
             View::Folder(folder) => mail::folder_icon(folder.role),
             View::Mail => Icon::Mail,
+            View::Attachments => Icon::Paperclip,
         }
     }
 
@@ -543,9 +560,20 @@ impl View {
         }
     }
 
-    /// A view of mail: a folder, or a window of mail waiting for its folders.
+    /// A view of mail: a folder, the smart view of attachments, or a window of mail waiting for its
+    /// folders.
     pub fn is_mail(&self) -> bool {
-        matches!(self, View::Folder(_) | View::Mail)
+        matches!(self, View::Folder(_) | View::Mail | View::Attachments)
+    }
+
+    /// What the messages held belong to, for a view that lists messages: the folder's id, or
+    /// "attachments" for the smart view. Another view's messages are not shown as this one's.
+    pub fn listing(&self) -> Option<String> {
+        match self {
+            View::Folder(folder) => Some(folder.id.clone()),
+            View::Attachments => Some("attachments".to_owned()),
+            _ => None,
+        }
     }
 }
 
@@ -630,10 +658,12 @@ pub enum Open {
     /// The overview with the cursor on the first card of "Notifications": the column the medium
     /// and narrow layouts show then.
     OverviewNotices,
+    /// The smart view "With attachments" of the mail window (task E8.3).
+    Attachments,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 26] = [
+    const ALL: [(&'static str, Open); 27] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -660,6 +690,7 @@ impl Open {
         ("overview", Open::Overview),
         ("overview-info", Open::OverviewInfo),
         ("overview-notices", Open::OverviewNotices),
+        ("attachments", Open::Attachments),
     ];
 }
 
@@ -767,9 +798,35 @@ impl Kind {
         if columns.contains(&column) { column } else { columns.first().copied().unwrap_or_default() }
     }
 
-    /// The window title for `view`: the kind's name, then the view's ("Mail · Overview").
+    /// Whether this window shows `item` (task E8.3): the entry stands in one of its columns – the
+    /// mail window shows mail only, the notifications window everything else, the hub all.
+    pub fn keeps(self, item: &Item) -> bool {
+        self.columns().contains(&Column::of(item))
+    }
+
+    /// The name of `view` in this window: in the mail window (task E8.3) the overview is "For me" –
+    /// its one column is the mail for the user – and "Snoozed" is "Later", as the buttons say;
+    /// elsewhere the view's own name ([`View::name`]).
+    pub fn view_name(self, view: &View) -> String {
+        match (self, view) {
+            (Kind::Mail, View::Overview) => tr("For me").into(),
+            (Kind::Mail, View::Snoozed) => tr("Later").into(),
+            _ => view.name(),
+        }
+    }
+
+    /// The icon of `view` in this window: "For me" of the mail window has the inbox's.
+    pub fn view_icon(self, view: &View) -> Icon {
+        match (self, view) {
+            (Kind::Mail, View::Overview) => Icon::Inbox,
+            _ => view.icon(),
+        }
+    }
+
+    /// The window title for `view`: the kind's name, then the view's ("Mail · For me",
+    /// [`Kind::view_name`]).
     pub fn title(self, view: &View) -> String {
-        let name = view.name();
+        let name = self.view_name(view);
         let pairs: [(&str, &dyn fmt::Display); 1] = [("view", &name)];
         match self {
             Kind::Mail => trf("Mail · {view}", &pairs),
@@ -1271,11 +1328,16 @@ pub enum Message {
 /// Also the folders of the mail accounts, and for a folder's view its first `limit` messages
 /// (task E4.2). Folders that cannot be read leave the sidebar without mail rather than the inbox
 /// without entries; a folder's messages that cannot be read are the view's error.
+///
+/// Only the entries the window of `kind` shows ([`Kind::keeps`], task E8.3): the mail window counts
+/// and lists mail alone. The smart view "With attachments" asks for the first `limit` messages of
+/// every inbox and keeps those with attachments (`mail::attachments`).
 pub async fn fetch<S: InboxSource + MailSource>(
     inbox: Arc<S>,
     view: View,
     empty: bool,
     limit: u32,
+    kind: Kind,
 ) -> Result<Loaded, String> {
     if empty {
         let none = Loaded {
@@ -1284,34 +1346,43 @@ pub async fn fetch<S: InboxSource + MailSource>(
             info: 0,
             sources: Vec::new(),
             folders: Vec::new(),
-            mail: view.folder().map(|_| MailPage { messages: Vec::new(), next: None }),
+            mail: view.listing().map(|_| MailPage { messages: Vec::new(), next: None }),
         };
         return Ok(none);
     }
     let failed = |err: torro_inbox::InboxError| err.to_string();
+    let keep = |items: Vec<Item>| items.into_iter().filter(|item| kind.keeps(item)).collect::<Vec<_>>();
     let for_me_filter = || View::ForMe.filter().unwrap_or_default();
     let items = match view.filter() {
-        Some(filter) => inbox.list_items(filter).await.map_err(failed)?,
+        Some(filter) => keep(inbox.list_items(filter).await.map_err(failed)?),
         None => Vec::new(),
     };
     // The overview lists both lanes: its entries hold "For me" and "Info" already.
     let for_me = match view {
         View::ForMe => items.clone(),
         View::Overview => items.iter().filter(|item| item.lane == Lane::ForMe).cloned().collect(),
-        _ => inbox.list_items(for_me_filter()).await.map_err(failed)?,
+        _ => keep(inbox.list_items(for_me_filter()).await.map_err(failed)?),
     };
     let info = match view {
         View::Info => items.len(),
         View::Overview => items.iter().filter(|item| item.lane == Lane::Info).count(),
-        _ => inbox.list_items(View::Info.filter().unwrap_or_default()).await.map_err(failed)?.len(),
+        _ => keep(inbox.list_items(View::Info.filter().unwrap_or_default()).await.map_err(failed)?).len(),
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
     let folders = inbox.mail_folders().await.unwrap_or_default();
-    let mail = match view.folder() {
-        Some(folder) => {
+    let mail = match &view {
+        View::Folder(folder) => {
             Some(inbox.search_mail(folder.id.clone(), folder.query.clone(), limit, None).await.map_err(failed)?)
         }
-        None => None,
+        View::Attachments => {
+            let mut pages = Vec::new();
+            for inbox_folder in folders.iter().filter(|folder| folder.role == Some(Role::Inbox)) {
+                let page = inbox.search_mail(inbox_folder.id.clone(), None, limit, None).await.map_err(failed)?;
+                pages.push(page.messages);
+            }
+            Some(MailPage { messages: mail::attachments(pages), next: None })
+        }
+        _ => None,
     };
     Ok(Loaded { items, for_me, info, sources, folders, mail })
 }
@@ -1336,7 +1407,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Some(Open::Done) => View::Done,
                 // The first inbox, once the folders are in.
                 Some(Open::Folder | Open::Mail) => View::Mail,
+                // The mail window's "For me" is its overview (task E8.3).
+                Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
+                Some(Open::Attachments) => View::Attachments,
                 Some(Open::Overview | Open::OverviewInfo | Open::OverviewNotices) => View::Overview,
                 _ => launch.view.clone().unwrap_or(View::Overview),
             },
@@ -2079,7 +2153,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let page = loaded.mail.unwrap_or(MailPage { messages: Vec::new(), next: None });
         self.messages = page.messages;
         self.more = page.next;
-        self.listed = self.view.folder().map(|folder| folder.id.clone());
+        self.listed = self.view.listing();
         self.loaded = true;
         // The forced error line stays over every load, so it can be photographed.
         self.error = (self.launch.open == Some(Open::Failed))
@@ -2319,15 +2393,29 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             let column = self.column;
             let sections = Sections::of(&self.items, column, self.now);
             let open = self.info_open[column.index()];
-            let span = sections.order(open).get(index).and_then(|item| overview::row_span(&sections, open, &item.id));
+            let (look, lead) = (self.look(), self.lead().is_some());
+            let span = sections
+                .order(open)
+                .get(index)
+                .and_then(|item| overview::row_span(&sections, open, &item.id, look, lead));
             (self.column_scroll[column.index()], span, column.scroll_id())
         } else if self.view.is_mail() {
-            // A folder's messages have no group heads: every row is as high as the next.
-            let row = list::message_height();
-            let top = index as f32 * row;
-            (self.scroll, (index < self.messages.len()).then_some((top, top + row)), list::SCROLL)
+            // A folder's messages have no group heads: every row is as high as the next; a card is
+            // as high as what it shows.
+            let span = self.messages.get(index).map(|message| match self.look() {
+                Look::Cards { words } => {
+                    let above = self.messages[..index].iter().map(|message| mail::message_card_height(message, words));
+                    list::card_span(above, mail::message_card_height(message, words))
+                }
+                Look::Rows => {
+                    let row = list::message_height();
+                    let top = index as f32 * row;
+                    (top, top + row)
+                }
+            });
+            (self.scroll, span, list::SCROLL)
         } else {
-            (self.scroll, list::row_span(&self.items, index), list::SCROLL)
+            (self.scroll, list::row_span(&self.items, index, self.look()), list::SCROLL)
         };
         let (Some((offset, height)), Some((top, bottom))) = (scroll, span) else { return Task::none() };
         let target = if top < offset {
@@ -2741,6 +2829,47 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.density.unwrap_or_else(|| Density::default_for(self.class()))
     }
 
+    /// How the lists draw mail (task E8.3): cards in the comfortable density of the mail window –
+    /// with their buttons' words in the narrow layout, where a card has the window's width –, rows
+    /// otherwise. The other windows keep their rows until their own cards come (E8.4, E8.5).
+    pub fn look(&self) -> Look {
+        if self.launch.kind != Kind::Mail || self.density() != Density::Comfortable {
+            return Look::Rows;
+        }
+        Look::Cards { words: self.class() == SizeClass::Narrow }
+    }
+
+    /// What the narrow mail window's comfortable "For me" leads with (task E8.3, "N new for you"):
+    /// the number of mails for the user and their newest senders ("From Anna, Ben, Chris"). `None`
+    /// elsewhere, and while nothing is for the user (the calm line says so).
+    fn lead(&self) -> Option<(usize, String)> {
+        if self.look() != (Look::Cards { words: true }) || self.view != View::Overview {
+            return None;
+        }
+        let count = Sections::of(&self.items, Column::Mail, self.now).for_me();
+        let senders = glance::latest_senders(&self.for_me);
+        let senders = if senders.is_empty() { String::new() } else { glance::senders_text(&senders) };
+        (count > 0).then_some((count, senders))
+    }
+
+    /// The reader beside the list (task E8.3): in the wide mail window, for the mail open in the
+    /// panel – a folder's message, or the mail of an entry, whose Done, Later and Task it carries.
+    /// `None` elsewhere, and for an entry without a mail: the panel shows those.
+    fn wide_reader<'a>(&'a self, class: SizeClass, anchors: &detail::Anchors) -> Option<Element<'a, Message>> {
+        if self.launch.kind != Kind::Mail || class != SizeClass::Wide || !self.panel_open() {
+            return None;
+        }
+        let reading = self.reading()?;
+        let entry = match self.view.is_mail() {
+            true => None,
+            false => {
+                let item = self.detail.as_ref()?;
+                Some(mail::ReaderEntry { item, hide: !self.hide_choices(item).is_empty() })
+            }
+        };
+        Some(mail::reader(reading, entry, anchors.clone(), self.density() == Density::Comfortable))
+    }
+
     /// The layout class of the window.
     fn class(&self) -> SizeClass {
         layout::of(self.size)
@@ -2875,6 +3004,17 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
             }
         };
+        // The wide mail window reads beside the list (task E8.3), without the panel.
+        if let Some(reader) = self.wide_reader(class, &anchors) {
+            let list = container(self.body(class, &anchors.row)).width(size::list()).height(Fill);
+            let body = row![list, rule::vertical(size::HAIRLINE).style(style::rule), reader];
+            let placed = panel::place(class, body, None, layer);
+            return shell::shell(class, sidebar, header, placed.body, None)
+                .rail(rail)
+                .drawer(self.drawer, Message::CloseMenu)
+                .overlay(placed.overlay)
+                .into();
+        }
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
             self.reading().filter(|_| self.reading).map(|reading| mail::panel(&reading, self.view.folder()))
@@ -2889,7 +3029,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
                 let letter = self.reading().map(|reading| mail::body(&reading));
-                detail::panel(item, self.view.name(), self.now, footer, letter)
+                detail::panel(item, self.launch.kind.view_name(&self.view), self.now, footer, letter)
             })
         };
         let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
@@ -2904,7 +3044,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// rail, medium, narrow), its count, and
     /// "Refresh". The inbox creates nothing, so there is no primary button.
     fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
-        let (name, icon) = (self.view.name(), self.view.icon());
+        let kind = self.launch.kind;
+        let (name, icon) = (kind.view_name(&self.view), kind.view_icon(&self.view));
         // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
         let note = (self.loaded && !self.lists_nothing()).then(|| self.count_note());
         let mut trailing = Vec::new();
@@ -2959,6 +3100,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 all.unwrap_or(self.messages.len()).to_string()
             }
             Some(_) => self.messages.len().to_string(),
+            None if self.view == View::Attachments => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
             // As in the sidebar: what is for the user; "Info" lies folded.
             None if self.view == View::Overview => self.for_me.len().to_string(),
@@ -2976,15 +3118,23 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     fn reading(&self) -> Option<Reading<'_>> {
         let letter = self.letter.as_ref()?;
         let colours = palette(&self.theme());
+        let summary = self.messages.iter().find(|message| message.id == letter.id);
+        let account = match &letter.loaded {
+            Some(Ok(mail)) => Some(mail.summary.account.as_str()),
+            _ => summary.map(|summary| summary.account.as_str()),
+        };
+        let accounts = mail::by_account(&self.folders);
         Some(Reading {
             id: &letter.id,
-            summary: self.messages.iter().find(|message| message.id == letter.id),
+            summary,
             loaded: letter.loaded.as_ref(),
             now: self.now,
             link: colours.text,
             attention: colours.attention_text,
             in_trash: self.in_trash(&letter.id),
             dated: self.view.is_mail(),
+            read: self.look().cards(),
+            account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
         })
     }
 
@@ -3007,14 +3157,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
         }
         let rows = if self.view.is_mail() {
-            let folder = self.view.folder();
             // Another folder's messages are still held until this one's come: show loading.
-            if folder.is_some_and(|folder| self.listed.as_ref() != Some(&folder.id)) {
+            let listing = self.view.listing();
+            if listing.is_some() && self.listed != listing {
                 widgets::loading()
             } else {
                 mail::list(mail::MailList {
                     messages: &self.messages,
-                    folder,
+                    view: &self.view,
                     no_accounts: self.folders.is_empty(),
                     selected: self.cursor.as_deref(),
                     now: self.now,
@@ -3025,6 +3175,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                         .collect(),
                     more: self.more.is_some(),
                     attention,
+                    look: self.look(),
                 })
             }
         } else if self.view == View::Overview {
@@ -3059,6 +3210,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 .filter(|item| !self.hide_choices(item).is_empty())
                 .map(|item| item.id.as_str())
                 .collect(),
+            look: self.look(),
         }
     }
 
@@ -3081,7 +3233,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 rows: self.rows_data(anchor),
                 deciding: self.deciding.is_some(),
                 attention,
-                head: wide,
+                // The mail window has one column, which its header bar names already ("For me").
+                head: wide && self.launch.kind != Kind::Mail,
+                lead: self.lead(),
             }));
         }
         // Each column at most `CONTENT_MAX`, as the list of a view.
@@ -3093,22 +3247,39 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Every number is what the view behind it lists: open entries. "For me" and "Info" count
     /// their lane, a source its open entries in both lanes – so the sources add up to "For me"
     /// plus "Info". "Snoozed" and "Done" are put away and have no number. No "0" anywhere.
+    ///
+    /// The mail window (task E8.3) lists For me (its overview), Info, Later and Done, and no
+    /// sources: they are all mail accounts, whose folders follow.
     fn nav_entries(&self) -> (Vec<NavEntry>, Vec<NavEntry>) {
+        let kind = self.launch.kind;
         let entry = |view: View, count: Option<usize>| NavEntry {
-            mark: Mark::Icon(view.icon()),
-            label: view.name(),
+            mark: Mark::Icon(kind.view_icon(&view)),
+            label: kind.view_name(&view),
             count,
             active: view == self.view,
             view,
         };
-        let views = vec![
-            // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
-            entry(View::Overview, Some(self.for_me.len()).filter(|&n| n > 0)),
-            entry(View::ForMe, Some(self.for_me.len()).filter(|&n| n > 0)),
-            entry(View::Info, Some(self.info).filter(|&n| n > 0)),
-            entry(View::Snoozed, None),
-            entry(View::Done, None),
-        ];
+        // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
+        let for_me = Some(self.for_me.len()).filter(|&n| n > 0);
+        let info = Some(self.info).filter(|&n| n > 0);
+        let views = match kind {
+            Kind::Mail => vec![
+                entry(View::Overview, for_me),
+                entry(View::Info, info),
+                entry(View::Snoozed, None),
+                entry(View::Done, None),
+            ],
+            Kind::Notifications | Kind::Hub => vec![
+                entry(View::Overview, for_me),
+                entry(View::ForMe, for_me),
+                entry(View::Info, info),
+                entry(View::Snoozed, None),
+                entry(View::Done, None),
+            ],
+        };
+        if kind == Kind::Mail {
+            return (views, Vec::new());
+        }
         let sources = self
             .sources
             .iter()
@@ -3124,6 +3295,22 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             })
             .collect();
         (views, sources)
+    }
+
+    /// The smart views of the mail window (task E8.3), under "Smart views": "With attachments", while
+    /// there is a mail account. None in the other windows.
+    fn smart_entries(&self) -> Vec<NavEntry> {
+        if self.launch.kind != Kind::Mail || self.folders.is_empty() {
+            return Vec::new();
+        }
+        let view = View::Attachments;
+        vec![NavEntry {
+            mark: Mark::Icon(view.icon()),
+            label: view.name(),
+            count: None,
+            active: view == self.view,
+            view,
+        }]
     }
 
     /// The folders of the mail accounts by account (task E4.2), for the sidebar and the menu: one
@@ -3187,6 +3374,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         };
         let mut items: Vec<Element<'a, Message>> =
             if self.mail_only { Vec::new() } else { views.into_iter().map(row).collect() };
+        let smart = self.smart_entries();
+        if !smart.is_empty() {
+            items.push(widgets::sidebar_group_in(mode, tr("Smart views"), None));
+            items.extend(smart.into_iter().map(row));
+        }
         if mode == SidebarMode::Expanded || self.mail_only {
             let groups = self.mail_groups();
             let single = groups.len() == 1;
@@ -3237,10 +3429,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         if !self.mail_only {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
+        let smart = self.smart_entries();
+        if !smart.is_empty() {
+            sections.push(MenuSection::titled(tr("Smart views"), smart.into_iter().map(item).collect()));
+        }
         // A menu has no folding: every account is a section named after it, with all its folders
         // only while one of them is shown (or for a single account), else its inbox alone – the
-        // drawer unfolds the rest. So the menu fits a window of ordinary height.
-        let groups = self.mail_groups();
+        // drawer unfolds the rest. So the menu fits a window of ordinary height. The narrow mail
+        // window lists no folders (task E8.3): there it is about what is new; the drawer has them.
+        let narrow_mail = self.launch.kind == Kind::Mail && self.class() == SizeClass::Narrow && !self.mail_only;
+        let groups = if narrow_mail { Vec::new() } else { self.mail_groups() };
         let single = groups.len() == 1;
         for group in groups {
             let open = single || self.view.folder().is_some_and(|folder| folder.account == group.account);
@@ -3464,7 +3662,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let empty = self.launch.open == Some(Open::Empty);
         let inbox = self.inbox.clone();
         let limit = self.page_limit();
-        Task::perform(fetch(inbox, view.clone(), empty, limit), move |result| Message::Loaded(view.clone(), result))
+        let kind = self.launch.kind;
+        Task::perform(fetch(inbox, view.clone(), empty, limit, kind), move |result| {
+            Message::Loaded(view.clone(), result)
+        })
     }
 
     /// How many messages a load of the view asks for: a page, or as many as "Load more" brought
@@ -3674,7 +3875,7 @@ mod tests {
     /// What the source answers for the app's view, handed to `update` as the task would.
     fn load<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
-        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit()));
+        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit(), app.launch.kind));
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
@@ -3901,7 +4102,7 @@ mod tests {
         let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
         assert_eq!(app.launch.kind.app().window_class, "torro-inbox-mail");
         assert_eq!((app.view.clone(), app.column), (View::Overview, Column::Mail));
-        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Overview"))]));
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("For me"))]), "its overview is \"For me\"");
     }
 
     /// A workspace template stores the window's command line (`/proc/<pid>/cmdline`) and starts it
@@ -4040,7 +4241,7 @@ mod tests {
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
         let mut app = loaded(&[]);
-        let for_me = block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE));
+        let for_me = block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE, app.launch.kind));
         let _ = app.update(Message::Show(View::Done));
         let _ = app.update(Message::Loaded(View::ForMe, for_me));
         assert_eq!(ids(&app).len(), FOR_ME.len(), "still the old list, not taken for Done");
@@ -4373,12 +4574,12 @@ mod tests {
     fn moving_scrolls_the_cursor_into_view() {
         let mut app = loaded(&[]);
         // The group head and two rows fit.
-        let (_, second) = list::row_span(&app.items, 1).expect("a second row");
+        let (_, second) = list::row_span(&app.items, 1, Look::Rows).expect("a second row");
         let _ = app.update(Message::Scrolled(0.0, second));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first row is in view");
         let _ = press(&mut app, Key::Down);
         assert!(press(&mut app, Key::Down).units() > 0, "the third row needs a scroll");
-        let (_, third) = list::row_span(&app.items, 2).expect("a third row");
+        let (_, third) = list::row_span(&app.items, 2, Look::Rows).expect("a third row");
         assert_eq!(app.scroll, Some((third - second, second)));
         // Back up to the first row: the list scrolls to its group head at the top.
         let _ = press(&mut app, Key::Up);
@@ -5493,7 +5694,7 @@ mod tests {
         let mail = overview_at(&["--view", "mail"]);
         assert_eq!(mail.column, Column::Mail);
         assert!(rows_of(&mail).iter().all(|id| id.starts_with("demo-mail")), "only mail");
-        assert_eq!(mail.title(), trf("Mail · {view}", &[("view", &tr("Overview"))]));
+        assert_eq!(mail.title(), trf("Mail · {view}", &[("view", &tr("For me"))]));
 
         assert_eq!(overview_at(&["--view", "hub"]).launch.kind.columns(), Column::ALL);
         for size in SIZES {
@@ -5530,7 +5731,7 @@ mod tests {
         let mut app = overview_at(&[]);
         let _ = press(&mut app, Key::L);
         let sections = Sections::of(&app.items, Column::Notices, app.now);
-        let (_, first) = overview::row_span(&sections, false, "demo-1").expect("the first card");
+        let (_, first) = overview::row_span(&sections, false, "demo-1", Look::Rows, false).expect("the first card");
         let _ = app.update(Message::ColumnScrolled(Column::Notices, 0.0, first));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first card is in view");
         assert!(press(&mut app, Key::Down).units() > 0, "the second needs a scroll");
@@ -5654,5 +5855,141 @@ mod tests {
                 let _ = app.update(Message::CloseDetail);
             }
         }
+    }
+
+    /// The mail window at the demo's fixed time in `density`, loaded on its start view ("For me").
+    fn mail_window(density: &str, more: &[&str]) -> App<DemoSource> {
+        let mut words = vec!["--view", "mail", "--density", density];
+        words.extend_from_slice(more);
+        overview_at(&words)
+    }
+
+    /// Task E8.3: the mail window lists, counts and walks mail alone, in every view of its sidebar.
+    #[test]
+    fn the_mail_window_shows_mail_only() {
+        let mut app = mail_window("comfortable", &[]);
+        assert!(!app.items.is_empty());
+        for view in [View::Overview, View::Info, View::Snoozed, View::Done] {
+            let _ = app.update(Message::Show(view.clone()));
+            load(&mut app);
+            assert!(app.items.iter().all(|item| item.source.kind == SourceKind::Mail), "{view:?}");
+        }
+        assert!(app.for_me.iter().all(|item| item.source.kind == SourceKind::Mail), "the count is of mail");
+        let hub = overview_at(&["--view", "hub"]);
+        assert!(hub.items.iter().any(|item| item.source.kind != SourceKind::Mail), "the hub keeps everything");
+        assert!(app.for_me.len() < hub.for_me.len());
+    }
+
+    /// Task E8.3: For me, Info, Later, Done, then "Smart views" and the folders; no sources, and
+    /// "For me" is the window's overview.
+    #[test]
+    fn the_mail_windows_sidebar_lists_its_views_smart_views_and_folders() {
+        let app = mail_window("comfortable", &[]);
+        let (views, sources) = app.nav_entries();
+        let labels: Vec<String> = views.iter().map(|entry| entry.label.clone()).collect();
+        assert_eq!(labels, [tr("For me"), tr("Info"), tr("Later"), tr("Done")]);
+        assert_eq!(views[0].view, View::Overview);
+        assert!(sources.is_empty(), "every source is a mail account, listed by its folders");
+        let smart: Vec<String> = app.smart_entries().into_iter().map(|entry| entry.label).collect();
+        assert_eq!(smart, [tr("With attachments")]);
+        assert!(!app.mail_groups().is_empty(), "the folders of every account");
+        assert!(overview_at(&["--view", "hub"]).smart_entries().is_empty(), "smart views are the mail window's");
+        for size in SIZES {
+            let mut app = mail_window("comfortable", &["--open", "menu"]);
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+    }
+
+    /// Task E8.3: cards in the comfortable mail window – with words when narrow –, rows elsewhere.
+    #[test]
+    fn comfortable_mail_is_cards_and_everything_else_rows() {
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.look(), Look::Cards { words: false });
+        let _ = app.update(Message::Resized(NARROW));
+        assert_eq!(app.look(), Look::Cards { words: true });
+        let compact = mail_window("compact", &[]);
+        assert_eq!(compact.look(), Look::Rows);
+        let hub = overview_at(&["--view", "hub", "--density", "comfortable"]);
+        assert_eq!(hub.look(), Look::Rows, "the hub's cards come with E8.5");
+    }
+
+    /// Task E8.3: the narrow comfortable "For me" leads with how many mails are new for the user.
+    #[test]
+    fn the_narrow_mail_window_says_how_many_are_new_for_you() {
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert_eq!(app.lead(), None, "only narrow");
+        let _ = app.update(Message::Resized(NARROW));
+        let (count, senders) = app.lead().expect("a lead in narrow");
+        assert_eq!(count, app.for_me.len());
+        assert!(senders.starts_with(tr("From {senders}").trim_end_matches("{senders}")), "{senders}");
+    }
+
+    /// Task E8.3: in the wide mail window an open mail stands in the reader beside the list; the
+    /// other layouts and windows keep the panel.
+    #[test]
+    fn the_wide_mail_window_reads_beside_the_list() {
+        let mut app = mail_window("comfortable", &["--open", "mail-entry"]);
+        let id = app.detail.as_ref().map(|item| item.id.clone()).expect("a mail entry in the panel");
+        let _ = app.update(Message::Resized(WIDE));
+        let anchors = detail::Anchors::default();
+        assert!(app.wide_reader(SizeClass::Wide, &anchors).is_some(), "the entry's mail is held");
+        assert!(app.wide_reader(SizeClass::Medium, &anchors).is_none(), "medium: the panel");
+        let _ = app.update(Message::CloseDetail);
+        assert!(app.wide_reader(SizeClass::Wide, &anchors).is_none(), "nothing open, nothing to read");
+        let _ = app.update(Message::Select(id));
+        let mut hub = overview_at(&["--view", "hub", "--open", "mail-entry"]);
+        let _ = hub.update(Message::Resized(WIDE));
+        assert!(hub.wide_reader(SizeClass::Wide, &anchors).is_none(), "the hub keeps its panel");
+        for density in ["comfortable", "compact"] {
+            for open in ["mail-entry", "mail", "attachments", "overview"] {
+                let mut app = mail_window(density, &["--open", open]);
+                for size in SIZES {
+                    let _ = app.update(Message::Resized(size));
+                    let _ = app.view();
+                }
+            }
+        }
+    }
+
+    /// Task E8.3: the keys work in the mail window as before – on cards as on rows.
+    #[test]
+    fn the_keys_of_the_list_work_on_the_mail_windows_cards() {
+        let mut app = mail_window("comfortable", &["--open", "overview"]);
+        let first = cursor(&app).map(str::to_owned).expect("the cursor on the first mail");
+        let _ = press(&mut app, Key::R);
+        assert!(matches!(app.sent.last(), Some(Sent::Compose(args)) if args.contains(&"--reply".to_owned())), "r");
+        let _ = press(&mut app, Key::S);
+        assert_eq!(app.menu, Some(Menu::Snooze), "s");
+        let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::M);
+        assert_eq!(app.menu, Some(Menu::Hide), "m");
+        let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::T);
+        assert_eq!(app.menu, Some(Menu::Task), "t");
+        let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::E);
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { id, done: true }, _)) if *id == first), "e");
+        // The card's buttons send what the keys do.
+        let _ = app.update(Message::Act(first.clone(), Command::Snooze));
+        assert_eq!((app.menu, cursor(&app)), (Some(Menu::Snooze), Some(first.as_str())));
+    }
+
+    /// Task E8.3: the smart view lists the messages with attachments of every account.
+    #[test]
+    fn with_attachments_lists_the_mail_with_attachments_of_every_account() {
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::Show(View::Attachments));
+        load(&mut app);
+        assert!(!app.messages.is_empty());
+        assert!(app.messages.iter().all(|message| message.has_attachments));
+        let accounts: Vec<&str> = app.messages.iter().map(|message| message.account.as_str()).collect();
+        assert!(accounts.iter().any(|account| *account != accounts[0]), "both accounts: {accounts:?}");
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("With attachments"))]));
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::Enter);
+        assert!(app.panel_open(), "Enter reads the message");
     }
 }
