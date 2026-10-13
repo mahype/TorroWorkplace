@@ -1012,7 +1012,12 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             trf("Hide \"{collection}\" in the suite", &[("collection", &named(collection))])
         }
         Request::UpdateSettings { .. } => tr("Replace all settings").to_string(),
-        Request::OpenApp { app } => trf("Open {app}", &[("app", &quote(app))]),
+        // The suite's name of the app (a window class like `torro-inbox-mail` says little); a name
+        // of no app stays as sent – the core refuses it with `not-found`.
+        Request::OpenApp { app } => {
+            let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
+            trf("Open {app}", &[("app", &quote(name))])
+        }
         // The account by the label the core knows; the name is what the list will be called.
         Request::CreateTaskList { account, name, .. } => {
             trf("Create task list \"{name}\" in {account}", &[("name", &quote(name)), ("account", &named(account))])
@@ -1147,7 +1152,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 &[("host", &quote(&web_host(url).unwrap_or_default())), ("entry", &entry())],
             ),
             Some(Link::App { app }) => {
-                let name = AppId::ALL.iter().find(|known| known.binary == app).map_or(app.as_str(), |a| a.display_name);
+                let name = AppId::find(app).map_or(app.as_str(), |a| a.display_name);
                 trf("Open {app} from {entry}", &[("app", &quote(name)), ("entry", &entry())])
             }
             Some(Link::Window) => trf("Bring the agent window of {entry} to the front", &[("entry", &entry())]),
@@ -2000,6 +2005,14 @@ pub(crate) mod tests {
             trf("Reorder task \"{title}\" in \"{list}\"", &[("title", &"File taxes"), ("list", &"Home")])
         );
         assert_eq!(summary(&reorder, &Facts::default()), tr("Reorder an unknown task"));
+    }
+
+    /// `apps.open_app` by window class (task E8.1): the summary names the window as the suite does.
+    #[test]
+    fn opening_an_app_names_it_as_the_suite_does() {
+        let open = |app: &str| summary(&Request::OpenApp { app: app.into() }, &Facts::default());
+        assert_eq!(open("torro-inbox-mail"), trf("Open {app}", &[("app", &quote("Torro Inbox Mail"))]));
+        assert_eq!(open("torrocalendar"), trf("Open {app}", &[("app", &quote("Torro Calendar"))]));
     }
 
     #[test]

@@ -1502,8 +1502,11 @@ static OPEN_APP: Command = Command {
     area: Area::Apps,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Opens an app of the suite by binary name (from list_apps), or brings its window to the front \
-                  when it already runs. `torroworkplace` opens the control centre, which list_apps does not list.",
+    description: "Opens an app of the suite by binary name or window class (from list_apps), or brings its window \
+                  to the front when it already runs. Apps with several windows share a binary: open the inbox's \
+                  windows by class (`torro-inbox-mail`, `torro-inbox-notifications`, `torro-inbox`); the binary \
+                  `torroinbox` opens the hub. `torroworkplace` opens the control centre, which list_apps does not \
+                  list.",
 };
 
 // The `clients` commands are never MCP tools, and only the app key may use them (`docs/api.md`,
@@ -1654,8 +1657,9 @@ static OPEN_ITEM: Command = Command {
                   and reads or runs nothing else. Opening a web link always waits for the person's approval \
                   (`pending`, the summary names the host), whatever the key's rights; `conflict` when the entry \
                   changed before the person allowed it. `unsupported` when there is nothing safe to open or the \
-                  agent's window is not found (closed, inside tmux, not on Linux); `not-found` for entries of \
-                  sources this key may not see.",
+                  agent's window is not found (closed, inside tmux, several windows the title cannot tell apart, \
+                  on Linux without a supported window manager, on Windows); on macOS it also works without a \
+                  window manager. `not-found` for entries of sources this key may not see.",
 };
 
 static CREATE_TASK_FROM_ITEM: Command = Command {

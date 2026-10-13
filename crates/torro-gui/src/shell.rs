@@ -712,8 +712,10 @@ pub fn sidebar_toggle<'a, M: Clone + 'a>(on_press: M) -> Element<'a, M> {
 pub enum Switcher {
     /// Open or close the switcher menu ([`switcher_menu`]).
     Toggle,
-    /// Start or raise another app of the suite: send `Request::OpenApp { app: binary }` to the
-    /// core, then close the menu. Carries [`AppId::binary`].
+    /// Start or raise another app of the suite: send `Request::OpenApp { app }` to the core, then
+    /// close the menu. Carries [`AppId::open_name`]: the binary for an app with one window (as
+    /// [`AppId::binary`]), the window class for a further window of a shared binary
+    /// (`torro-inbox-mail`, task E8.1).
     OpenApp(&'static str),
     /// The search button next to the switcher.
     Search,
@@ -721,23 +723,35 @@ pub enum Switcher {
     New,
 }
 
-/// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace").
+/// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace"); the inbox's three
+/// windows by their kind ("Mail", "Notifications", "Inbox"), since they share one binary.
 fn app_name(app: AppId) -> &'static str {
-    match app.binary {
-        "torroinbox" => tr("Inbox"),
-        "torrotasks" => tr("Tasks"),
-        "torrocalendar" => tr("Calendar"),
+    match app.window_class {
+        "torro-inbox" => tr("Inbox"),
+        "torro-inbox-mail" => tr("Mail"),
+        "torro-inbox-notifications" => tr("Notifications"),
+        "torro-tasks" => tr("Tasks"),
+        "torro-calendar" => tr("Calendar"),
         _ => tr("Workplace"),
     }
 }
 
 fn app_icon(app: AppId) -> Icon {
-    match app.binary {
-        "torroinbox" => Icon::Inbox,
-        "torrotasks" => Icon::ListTodo,
-        "torrocalendar" => Icon::Calendar,
+    match app.window_class {
+        "torro-inbox" => Icon::Inbox,
+        "torro-inbox-mail" => Icon::Mail,
+        "torro-inbox-notifications" => Icon::Bell,
+        "torro-tasks" => Icon::ListTodo,
+        "torro-calendar" => Icon::Calendar,
         _ => Icon::LayoutGrid,
     }
+}
+
+/// What a click on `app` in the menu of a window of `current` sends: [`Switcher::Toggle`] (closes)
+/// for the window's own entry, else [`Switcher::OpenApp`] with its [`AppId::open_name`]. Entries
+/// are told apart by window class, so the inbox's mail window can open its hub and the other way.
+fn switcher_message(app: AppId, current: AppId) -> Switcher {
+    if app.window_class == current.window_class { Switcher::Toggle } else { Switcher::OpenApp(app.open_name()) }
 }
 
 /// The top row of the sidebar, like Linear's workspace menu: the logo, the name of `current`
@@ -853,8 +867,8 @@ pub fn switcher_menu<'a, M: Clone + 'a>(current: AppId, on: fn(Switcher) -> M) -
     let items = AppId::ALL
         .iter()
         .map(|&app| {
-            let is_current = app.binary == current.binary;
-            let message = if is_current { Switcher::Toggle } else { Switcher::OpenApp(app.binary) };
+            let message = switcher_message(app, current);
+            let is_current = message == Switcher::Toggle;
             let trail = if is_current { Trail::None } else { Trail::Icon(Icon::ArrowUpRight) };
             MenuItem::new(app_icon(app), app_name(app), on(message)).trail(trail).current(is_current)
         })
@@ -1121,12 +1135,34 @@ mod tests {
         assert_eq!(app_name(AppId::CALENDAR), tr("Calendar"));
         assert_eq!(app_name(AppId::WORKPLACE), tr("Workplace"));
         assert_ne!(app_icon(AppId::TASKS), app_icon(AppId::CALENDAR));
+        assert_eq!(app_name(AppId::INBOX), tr("Inbox"));
+        assert_eq!(app_name(AppId::INBOX_MAIL), tr("Mail"));
+        assert_eq!(app_name(AppId::INBOX_NOTIFICATIONS), tr("Notifications"));
+        let [hub, mail, notices] = [AppId::INBOX, AppId::INBOX_MAIL, AppId::INBOX_NOTIFICATIONS].map(app_icon);
+        assert!(hub != mail && mail != notices && hub != notices, "each window kind its own icon");
     }
 
     #[test]
     fn switcher_messages_name_the_binary_to_open() {
         let wrap: fn(Switcher) -> Msg = Msg::Switcher;
         assert_eq!(wrap(Switcher::OpenApp(AppId::CALENDAR.binary)), Msg::Switcher(Switcher::OpenApp("torrocalendar")));
+        assert_eq!(switcher_message(AppId::CALENDAR, AppId::TASKS), Switcher::OpenApp("torrocalendar"));
+        assert_eq!(switcher_message(AppId::TASKS, AppId::TASKS), Switcher::Toggle);
+    }
+
+    /// The inbox's three windows share a binary (task E8.1): each is an entry of its own, only the
+    /// window's own is current, the others open by the name that names them.
+    #[test]
+    fn the_inbox_windows_are_three_entries_of_the_switcher() {
+        let current = AppId::INBOX_MAIL;
+        assert_eq!(switcher_message(AppId::INBOX_MAIL, current), Switcher::Toggle);
+        assert_eq!(switcher_message(AppId::INBOX, current), Switcher::OpenApp("torroinbox"));
+        assert_eq!(
+            switcher_message(AppId::INBOX_NOTIFICATIONS, current),
+            Switcher::OpenApp("torro-inbox-notifications")
+        );
+        let toggles = AppId::ALL.iter().filter(|&&app| switcher_message(app, current) == Switcher::Toggle).count();
+        assert_eq!(toggles, 1, "one current entry");
     }
 
     #[test]

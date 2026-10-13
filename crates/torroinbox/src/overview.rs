@@ -276,13 +276,14 @@ pub fn has_buttons(item: &Item) -> bool {
     detail::is_approval(item) || detail::openable(item) == Some(Link::Window)
 }
 
-/// The columns a window of `class` shows, left to right: both in the wide layout – only the column
-/// of the entry in the panel while one is open (`detail`), the panel takes the other's place –,
-/// else the one with the cursor (`column`).
-pub fn shown(class: SizeClass, detail: Option<&Item>, column: Column) -> Vec<Column> {
+/// The columns a window of `class` shows, left to right, of the `columns` its kind has (both in the
+/// hub, one in the mail and the notifications window, task E8.1): all of them in the wide layout –
+/// only the column of the entry in the panel while one is open (`detail`), the panel takes the
+/// other's place –, else the one with the cursor (`column`).
+pub fn shown(class: SizeClass, detail: Option<&Item>, column: Column, columns: &[Column]) -> Vec<Column> {
     match (class, detail) {
-        (SizeClass::Wide, None) => Column::ALL.to_vec(),
-        (SizeClass::Wide, Some(item)) => vec![Column::of(item)],
+        (SizeClass::Wide, Some(item)) if columns.contains(&Column::of(item)) => vec![Column::of(item)],
+        (SizeClass::Wide, _) => columns.to_vec(),
         _ => vec![column],
     }
 }
@@ -605,12 +606,29 @@ mod tests {
     fn wide_shows_both_columns_and_the_panel_replaces_one() {
         let items = open();
         let mail = items.iter().find(|item| Column::of(item) == Column::Mail).expect("a mail entry");
-        assert_eq!(shown(SizeClass::Wide, None, Column::Notices), Column::ALL);
-        assert_eq!(shown(SizeClass::Wide, Some(mail), Column::Notices), [Column::Mail], "the panel beside its column");
+        let all = &Column::ALL;
+        assert_eq!(shown(SizeClass::Wide, None, Column::Notices, all), Column::ALL);
+        assert_eq!(shown(SizeClass::Wide, Some(mail), Column::Notices, all), [Column::Mail], "the panel beside it");
         for class in [SizeClass::Medium, SizeClass::Narrow] {
-            assert_eq!(shown(class, None, Column::Notices), [Column::Notices], "{class:?}: one column");
-            assert_eq!(shown(class, Some(mail), Column::Mail), [Column::Mail], "{class:?}: the panel lies over it");
+            assert_eq!(shown(class, None, Column::Notices, all), [Column::Notices], "{class:?}: one column");
+            assert_eq!(
+                shown(class, Some(mail), Column::Mail, all),
+                [Column::Mail],
+                "{class:?}: the panel lies over it"
+            );
         }
+    }
+
+    /// The mail and the notifications window (task E8.1) have one column each; the wide layout shows
+    /// it alone, also beside a panel whose entry stands in the other one.
+    #[test]
+    fn a_window_of_one_kind_shows_its_own_column() {
+        let items = open();
+        let mail = items.iter().find(|item| Column::of(item) == Column::Mail).expect("a mail entry");
+        let notices = &[Column::Notices];
+        assert_eq!(shown(SizeClass::Wide, None, Column::Notices, notices), [Column::Notices]);
+        assert_eq!(shown(SizeClass::Wide, Some(mail), Column::Notices, notices), [Column::Notices]);
+        assert_eq!(shown(SizeClass::Wide, Some(mail), Column::Mail, &[Column::Mail]), [Column::Mail]);
     }
 
     #[test]

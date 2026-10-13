@@ -246,7 +246,8 @@ pub fn ids(request: &Request) -> Vec<String> {
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
         }
         Request::RemoveAccount { id: name } => vec![account(name)],
-        Request::OpenApp { app } => match AppId::ALL.iter().any(|known| known.binary == app) {
+        // Only names of the suite (a binary or a window class) are logged, never a free text.
+        Request::OpenApp { app } => match AppId::find(app).is_some() {
             true => vec![id("app", app)],
             false => Vec::new(),
         },
@@ -535,6 +536,8 @@ pub(crate) mod tests {
         assert_eq!(describe(" Anna/Salary-Talks"), described);
         let open = Request::OpenApp { app: "Dinner with Anna".into() };
         assert_eq!(super::ids(&open), Vec::<String>::new());
+        let mail = Request::OpenApp { app: "torro-inbox-mail".into() };
+        assert_eq!(super::ids(&mail), vec!["app:torro-inbox-mail".to_string()], "a window class of the suite");
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
     }

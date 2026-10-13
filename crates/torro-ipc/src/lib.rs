@@ -737,7 +737,12 @@ pub enum Request {
     /// Renames a template; its id stays.
     #[serde(rename = "workspaces.rename_template")]
     RenameTemplate { id: String, name: String },
-    /// Opens or focuses one of the suite's apps by binary name (`torrocalendar`, `torrotasks`).
+    /// Opens or focuses one of the suite's apps by binary name (`torrocalendar`, `torrotasks`) or
+    /// window class (`torro-inbox-mail`, from [`AppInfo::window_class`]). Apps with several windows
+    /// share a binary: the inbox's mail, notifications and hub windows (task E8.1) are opened by
+    /// their class, its binary `torroinbox` opens the hub. A missing window starts with the
+    /// arguments of its kind (`torroinbox --view mail`). Answered with [`Response::Ok`]; `not-found`
+    /// for a name of no app, `error` when the app does not start.
     #[serde(rename = "apps.open_app")]
     OpenApp { app: String },
     /// The suite's apps, the core itself excepted, and whether each is installed
@@ -899,19 +904,22 @@ pub enum Request {
         id: String,
     },
     /// Opens the entry on the person's screen, as "Go to window" and `Enter` in the inbox app do
-    /// (task E2.4): a `window` link brings the window of the coding agent behind a hook's entry to
-    /// the front, found anew from its `agent.pids` (nearest process first, because window ids
-    /// change); a `url` opens in the system browser; an `app` link starts or raises that app of the
-    /// suite. Only what security rule 6 allows is opened: `http`/`https` pages, apps of
-    /// `apps.list_apps`, windows only on entries of hooks (`agent_waiting`, `agent_done`).
+    /// (tasks E2.4, E8.9): a `window` link brings the window of the coding agent behind a hook's
+    /// entry to the front, found anew from its `agent.pids` (nearest process first, because window
+    /// ids change); when that terminal has several windows, the session's name and project choose
+    /// by window title, on macOS Terminal and iTerm2 also by the agent's tty, and without a window
+    /// manager macOS brings the terminal app forward itself. A `url` opens in the system browser;
+    /// an `app` link starts or raises that app of the suite. Only what security rule 6 allows is
+    /// opened: `http`/`https` pages, apps of `apps.list_apps`, windows only on entries of hooks
+    /// (`agent_waiting`, `agent_done`).
     ///
     /// A new entry is seen afterwards, when the caller may change it (rule 1); nothing else
     /// changes. Answered with [`Response::Ok`]. Errors: `not-found` for an unknown id or an entry
     /// of a source the client may not see (hook clients see none, rule 4); `unsupported` when
     /// there is nothing safe to open, no window of the agent's processes is found (closed, the
-    /// agent runs in tmux, several windows share its process) or the window manager cannot list
-    /// windows (macOS, Windows, no supported one); `error` when the browser or the app does not
-    /// start.
+    /// agent runs in tmux), several windows remain that the title cannot tell apart, or there is no
+    /// window manager to ask (Linux without a supported one, Windows); `error` when the browser or
+    /// the app does not start.
     #[serde(rename = "inbox.open_item")]
     OpenItem {
         /// The entry's id from `inbox.list_items`.
@@ -1701,11 +1709,13 @@ pub struct ServiceState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
-    /// Binary name, also what [`Request::OpenApp`] takes: `torrocalendar`.
+    /// Binary name: `torrocalendar`. [`Request::OpenApp`] takes it or the window class; several
+    /// entries may share one (`torroinbox` for the inbox's three windows), so the window class is
+    /// the name that always opens this entry.
     pub binary: String,
     /// English product name: `Torro Calendar`. Front ends may show a translated name.
     pub name: String,
-    /// Window class, for window rules: `torro-calendar`.
+    /// Window class, for window rules and [`Request::OpenApp`]: `torro-calendar`. Unique per entry.
     pub window_class: String,
     /// The binary was found next to the core or on `PATH`, so `OpenApp` can start it.
     pub installed: bool,

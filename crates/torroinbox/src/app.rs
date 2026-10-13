@@ -6,6 +6,11 @@
 //! narrow ones. The list (`list.rs`), the overview (`overview.rs`) and the panel (`detail.rs`) only
 //! render and report clicks as [`Message`]s.
 //!
+//! Three windows (task E8.1, [`Kind`], `--view mail|notifications|hub`): each with its own window
+//! class, title and entry in the app switcher. So far they differ in the overview's columns – the
+//! mail window shows "Mail", the notifications window "Notifications", the hub both
+//! ([`Kind::columns`]); the rest is the same window.
+//!
 //! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
 //! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
 //! header bar or with `h`/`l` – in the medium and narrow ones. The app keeps which column has the
@@ -665,8 +670,12 @@ impl Open {
 ///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>` (local time): a fixed "now" and demo data around it, for pictures
 ///   that can be made again; needs `--demo`.
+/// - `--view mail|notifications|hub`: which of the three windows this is (task E8.1, [`Kind`]);
+///   without it the hub. Works without `--demo`; the core starts each kind with it
+///   ([`torro_core::AppId::args`]) and a workspace template stores it with the command line.
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
-///   on that lane or source, for one window per slice of the inbox (E3.6). Works without `--demo`;
+///   on that lane or source, for one window per slice of the inbox (E3.6), inside the window's
+///   kind. Works without `--demo`;
 ///   a workspace template stores the window's command line, so the slice comes back with it.
 ///   `--source mail` is a window of mail only (task E4.2): the folders of the mail accounts, starting
 ///   on the first account's inbox ([`View::Mail`]).
@@ -683,10 +692,86 @@ pub struct Launch {
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
     pub design: Option<String>,
+    /// The window of `--view`; the hub without it.
+    pub kind: Kind,
     /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
     /// `--compose`: the window writes a message instead of showing the inbox.
     pub compose: Option<compose::Start>,
+}
+
+/// Which of the inbox's three windows this process is (task E8.1, `--view`; `docs/eingang.md`,
+/// "Drei Fenster"). One program, three entries of [`torro_core::AppId::ALL`]: each kind has its own
+/// window class, title and entry in the app switcher, so tiling rules and workspace templates tell
+/// them apart. All three show the same entries of the core – what one marks done is done in all.
+///
+/// Only the frame so far: the mail window shows the overview's "Mail" column, the notifications
+/// window its "Notifications" column, the hub today's overview with both ([`Kind::columns`]). Their
+/// own looks come with E8.3 to E8.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Kind {
+    /// `--view mail`: what came in by mail.
+    Mail,
+    /// `--view notifications`: what the apps report, everything but mail.
+    Notifications,
+    /// `--view hub`, or no `--view`: what to decide or hand on.
+    #[default]
+    Hub,
+}
+
+impl Kind {
+    /// The values of `--view`, in the order the error message lists them.
+    pub const ALL: [(&'static str, Kind); 3] =
+        [("mail", Kind::Mail), ("notifications", Kind::Notifications), ("hub", Kind::Hub)];
+
+    /// The app entry of this kind: its window class, name and start arguments.
+    pub fn app(self) -> AppId {
+        match self {
+            Kind::Mail => AppId::INBOX_MAIL,
+            Kind::Notifications => AppId::INBOX_NOTIFICATIONS,
+            Kind::Hub => AppId::INBOX,
+        }
+    }
+
+    /// The overview's columns this window shows, left to right; never empty.
+    pub fn columns(self) -> &'static [Column] {
+        match self {
+            Kind::Mail => &[Column::Mail],
+            Kind::Notifications => &[Column::Notices],
+            Kind::Hub => &Column::ALL,
+        }
+    }
+
+    /// `column` when this window shows it, else the window's first: where the overview's cursor may
+    /// stand. An entry of the other column (opened from "For me", say) never moves it off the window.
+    pub fn column_or_first(self, column: Column) -> Column {
+        let columns = self.columns();
+        if columns.contains(&column) { column } else { columns.first().copied().unwrap_or_default() }
+    }
+
+    /// The window title for `view`: the kind's name, then the view's ("Mail · Overview").
+    pub fn title(self, view: &View) -> String {
+        let name = view.name();
+        let pairs: [(&str, &dyn fmt::Display); 1] = [("view", &name)];
+        match self {
+            Kind::Mail => trf("Mail · {view}", &pairs),
+            Kind::Notifications => trf("Notifications · {view}", &pairs),
+            Kind::Hub => trf("Inbox · {view}", &pairs),
+        }
+    }
+
+    /// The kind of `--view`; the hub without it.
+    fn parse(args: &[String]) -> Result<Kind, LaunchError> {
+        let Some(word) = flag_value(args, "--view")? else { return Ok(Kind::Hub) };
+        match Kind::ALL.iter().find(|(name, _)| *name == word) {
+            Some(&(_, kind)) => Ok(kind),
+            None => Err(LaunchError::UnknownValue {
+                flag: "--view",
+                value: word.to_owned(),
+                valid: Kind::ALL.map(|(name, _)| name).join(", "),
+            }),
+        }
+    }
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, like the other apps.
@@ -783,8 +868,9 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
+        let kind = Kind::parse(args)?;
         let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, design, view, compose })
+        Ok(Launch { demo, open, appearance, now, design, kind, view, compose })
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -1214,7 +1300,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             detail: None,
             cursor: None,
             scroll: None,
-            column: Column::default(),
+            column: launch.kind.column_or_first(Column::default()),
             info_open: [open == Some(Open::OverviewInfo); 2],
             column_scroll: [None; 2],
             subject: None,
@@ -1265,8 +1351,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         (app, task)
     }
 
+    /// The window title: the window's kind and its view ("Mail · Overview", [`Kind::title`]).
     pub fn title(&self) -> String {
-        trf("Inbox · {view}", &[("view", &self.view.name())])
+        self.launch.kind.title(&self.view)
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -1349,7 +1436,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.close_menus();
                 self.detail = self.items.iter().find(|item| item.id == id).cloned();
                 if let Some(item) = &self.detail {
-                    self.column = Column::of(item);
+                    self.column = self.launch.kind.column_or_first(Column::of(item));
                     self.cursor = Some(id);
                 }
             }
@@ -2010,7 +2097,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     fn act(&mut self, id: &str, command: Command) -> Task<Message> {
         let Some(item) = self.items.iter().find(|item| item.id == id).cloned() else { return Task::none() };
         self.close_menus();
-        self.column = Column::of(&item);
+        self.column = self.launch.kind.column_or_first(Column::of(&item));
         self.cursor = Some(item.id.clone());
         if self.detail.is_some() {
             self.detail = Some(item);
@@ -2040,9 +2127,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
 
     /// The overview: the cursor to the column `to`, on the row at the same place (or the column's
     /// last), the open panel along with it. Without a cursor only the column changes (medium and
-    /// narrow show it). Nothing in the other views.
+    /// narrow show it). Nothing in the other views, nor to a column this window's kind does not
+    /// show (the mail window has no "Notifications", [`Kind::columns`]).
     fn switch_column(&mut self, to: Column) -> Task<Message> {
-        if self.view != View::Overview || to == self.column {
+        if self.view != View::Overview || to == self.column || !self.launch.kind.columns().contains(&to) {
             return Task::none();
         }
         let place = self.cursor_place();
@@ -2685,7 +2773,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Menu::Switcher) => Some(widgets::floating(
                 &switcher,
                 Placement::Below(Align::Start),
-                shell::switcher_menu(INBOX, Message::Switcher),
+                shell::switcher_menu(self.launch.kind.app(), Message::Switcher),
                 Message::CloseMenu,
             )),
             Some(Menu::Nav) => {
@@ -2739,10 +2827,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
         let note = (self.loaded && !self.lists_nothing()).then(|| self.count_note());
         let mut trailing = Vec::new();
-        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it.
-        if self.view == View::Overview && class != SizeClass::Wide {
-            let columns = Column::ALL.map(|column| (column.name(), Message::ShowColumn(column)));
-            trailing.push(widgets::segmented(columns, self.column.index()));
+        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it –
+        // in the hub; the mail and the notifications window have one column only.
+        let columns = self.launch.kind.columns();
+        if self.view == View::Overview && class != SizeClass::Wide && columns.len() > 1 {
+            let chosen = columns.iter().position(|&column| column == self.column).unwrap_or_default();
+            let columns = columns.iter().map(|&column| (column.name(), Message::ShowColumn(column)));
+            trailing.push(widgets::segmented(columns, chosen));
         }
         trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
@@ -2890,7 +2981,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// column, [`App::column`], in the medium and narrow ones.
     fn overview<'a>(&'a self, class: SizeClass, anchor: &Anchor, attention: iced::Color) -> Element<'a, Message> {
         let wide = class == SizeClass::Wide;
-        let shown = overview::shown(class, self.detail.as_ref(), self.column);
+        let shown = overview::shown(class, self.detail.as_ref(), self.column, self.launch.kind.columns());
         let cap = overview::width(shown.len());
         let mut columns = row![].width(Fill).height(Fill);
         for (i, column) in shown.into_iter().enumerate() {
@@ -3044,7 +3135,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             })
             .into_iter()
             .collect();
-        let head = shell::sidebar_head(mode, INBOX, switcher, Message::Switcher, Message::ToggleSidebar);
+        let head =
+            shell::sidebar_head(mode, self.launch.kind.app(), switcher, Message::Switcher, Message::ToggleSidebar);
         shell::sidebar(head, items, footer)
     }
 
@@ -3253,7 +3345,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
             }
             Some(open @ (Open::Overview | Open::OverviewNotices)) => {
-                self.column = if open == Open::Overview { Column::Mail } else { Column::Notices };
+                let column = if open == Open::Overview { Column::Mail } else { Column::Notices };
+                self.column = self.launch.kind.column_or_first(column);
                 self.cursor = self.rows().first().map(|item| item.id.clone());
             }
             Some(open @ (Open::Hide | Open::HidePanel)) => {
@@ -3269,7 +3362,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         }
         if let Some(detail) = &self.detail {
             self.cursor = Some(detail.id.clone());
-            self.column = Column::of(detail);
+            self.column = self.launch.kind.column_or_first(Column::of(detail));
         }
         Task::none()
     }
@@ -3599,6 +3692,61 @@ mod tests {
         assert!(matches!(view(&["--source", "mailbox"]), Err(LaunchError::UnknownValue { flag: "--source", .. })));
         assert_eq!(view(&["--lane"]), Err(LaunchError::MissingValue("--lane")));
         assert_eq!(view(&["--lane", "info", "--source", "suite"]), Err(LaunchError::Conflict("--lane", "--source")));
+    }
+
+    /// Task E8.1: `--view` chooses one of the three windows, the hub without it; `--lane` and
+    /// `--source` still choose the start view inside it.
+    #[test]
+    fn view_chooses_the_window_kind() {
+        let kind = |words: &[&str]| Launch::parse(&args(words)).map(|launch| launch.kind);
+        assert_eq!(kind(&[]), Ok(Kind::Hub));
+        assert_eq!(kind(&["--view", "hub"]), Ok(Kind::Hub));
+        assert_eq!(kind(&["--view", "mail"]), Ok(Kind::Mail));
+        assert_eq!(kind(&["--view=notifications"]), Ok(Kind::Notifications));
+        assert_eq!(kind(&["--view"]), Err(LaunchError::MissingValue("--view")));
+        let refused = kind(&["--view", "inbox"]).expect_err("not a kind");
+        assert_eq!(
+            refused,
+            LaunchError::UnknownValue {
+                flag: "--view",
+                value: "inbox".into(),
+                valid: "mail, notifications, hub".into()
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            "unknown value \"inbox\" for --view; valid values: mail, notifications, hub",
+            "main prints this and exits with 64"
+        );
+        let launch = Launch::parse(&args(&["--view", "mail", "--lane", "info"])).expect("valid");
+        assert_eq!((launch.kind, launch.view), (Kind::Mail, Some(View::Info)));
+    }
+
+    /// Every kind is an entry of the suite's apps, and the arguments the core starts it with
+    /// (`AppId::args`) start that kind again – with its own window class.
+    #[test]
+    fn every_kind_starts_from_the_arguments_of_its_app_entry() {
+        for (_, kind) in Kind::ALL {
+            let app = kind.app();
+            assert!(AppId::ALL.contains(&app), "{} is a suite app", app.window_class);
+            assert_eq!(app.binary, INBOX.binary);
+            let launch = Launch::parse(&app.command("torroinbox")[1..]).expect("valid parameters");
+            assert_eq!(launch.kind, kind, "{}", app.window_class);
+        }
+        let classes = Kind::ALL.map(|(_, kind)| kind.app().window_class);
+        assert_eq!(classes, ["torro-inbox-mail", "torro-inbox-notifications", "torro-inbox"]);
+    }
+
+    /// A workspace template stores the mail window's command line and starts it again on load: it
+    /// comes back as the mail window, with its window class and title.
+    #[test]
+    fn a_restored_mail_window_is_a_mail_window_again() {
+        let stored = AppId::INBOX_MAIL.command("/usr/bin/torroinbox");
+        let launch = Launch::parse(&stored[1..]).expect("valid parameters");
+        let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
+        assert_eq!(app.launch.kind.app().window_class, "torro-inbox-mail");
+        assert_eq!((app.view.clone(), app.column), (View::Overview, Column::Mail));
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Overview"))]));
     }
 
     /// A workspace template stores the window's command line (`/proc/<pid>/cmdline`) and starts it
@@ -5172,6 +5320,32 @@ mod tests {
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Overview"))]));
         let mail = ["demo-mail-1", "demo-mail-4", "demo-mail-2", "demo-mail-6", "demo-mail-8"];
         assert_eq!(rows_of(&app), mail, "the keys start in Mail: today, yesterday, earlier");
+    }
+
+    /// Task E8.1: the notifications window shows the overview's other column alone, the mail window
+    /// the mail column; `h`/`l` and "Mail | Notifications" cannot leave it. The hub keeps both.
+    #[test]
+    fn each_window_kind_shows_its_columns_of_the_overview() {
+        let mut notices = overview_at(&["--view", "notifications"]);
+        assert_eq!((notices.view.clone(), notices.column), (View::Overview, Column::Notices));
+        assert_eq!(rows_of(&notices).first(), Some(&"demo-1"), "the keys start on its first card");
+        assert!(rows_of(&notices).iter().all(|id| !id.starts_with("demo-mail")), "no mail");
+        let _ = press(&mut notices, Key::H);
+        let _ = notices.update(Message::ShowColumn(Column::Mail));
+        assert_eq!(notices.column, Column::Notices, "there is no mail column to go to");
+        assert_eq!(notices.title(), trf("Notifications · {view}", &[("view", &tr("Overview"))]));
+
+        let mail = overview_at(&["--view", "mail"]);
+        assert_eq!(mail.column, Column::Mail);
+        assert!(rows_of(&mail).iter().all(|id| id.starts_with("demo-mail")), "only mail");
+        assert_eq!(mail.title(), trf("Mail · {view}", &[("view", &tr("Overview"))]));
+
+        assert_eq!(overview_at(&["--view", "hub"]).launch.kind.columns(), Column::ALL);
+        for size in SIZES {
+            let mut app = overview_at(&["--view", "mail"]);
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
     }
 
     #[test]

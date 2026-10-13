@@ -50,16 +50,10 @@ fn sibling(name: &str) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(name))
 }
 
-/// The command line that starts `app`. The control centre is this same program with `ui`, the
-/// other apps start without arguments.
-fn launch_command(app: AppId, program: String) -> Vec<String> {
-    if app == AppId::WORKPLACE { vec![program, "ui".into()] } else { vec![program] }
-}
-
 /// The command line that starts the control centre at `program` on `section`
 /// (`torroworkplace ui --section approvals`).
 fn control_centre_command(program: String, section: Section) -> Vec<String> {
-    let mut command = launch_command(AppId::WORKPLACE, program);
+    let mut command = AppId::WORKPLACE.command(program);
     command.extend(["--section".to_string(), section.arg().to_string()]);
     command
 }
@@ -1212,8 +1206,9 @@ impl Core {
                 Ok(template) => Response::Saved { template },
                 Err(err) => error(&err),
             },
-            Request::OpenApp { app } => match AppId::ALL.iter().find(|a| a.binary == app) {
-                Some(app) => match self.open_app(*app).await {
+            // A binary or a window class: the inbox's mail window is `torro-inbox-mail` (task E8.1).
+            Request::OpenApp { app } => match AppId::find(&app) {
+                Some(app) => match self.open_app(app).await {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
                 },
@@ -2196,7 +2191,8 @@ impl Core {
         }
     }
 
-    /// Brings the app's window to the front, or starts the app when it has none.
+    /// Brings the app's window to the front, or starts the app when it has none – with the
+    /// arguments of its entry (`torroinbox --view mail`, [`AppId::command`]).
     pub async fn open_app(&self, app: AppId) -> Result<(), String> {
         if let Ok(windows) = self.backend.windows(None).await
             && let Some(window) = windows.iter().find(|w| w.class == app.window_class)
@@ -2204,7 +2200,7 @@ impl Core {
             return self.backend.focus_window(&window.id).await.map_err(|err| err.to_string());
         }
         let program = sibling(app.binary).to_string_lossy().into_owned();
-        SystemLauncher.spawn(&launch_command(app, program)).map(|_| ()).map_err(|err| err.to_string())
+        SystemLauncher.spawn(&app.command(program)).map(|_| ()).map_err(|err| err.to_string())
     }
 
     /// The status for `reach`. A client without read access to `workspaces` gets no workspace
@@ -3433,14 +3429,34 @@ mod tests {
         let Response::Apps { apps } = core(dir.path()).handle(Request::ListApps).await else {
             panic!("ListApps is answered with Apps");
         };
-        let binaries: Vec<_> = apps.iter().map(|app| app.binary.as_str()).collect();
-        assert_eq!(binaries, ["torroinbox", "torrotasks", "torrocalendar"]);
+        let classes: Vec<_> = apps.iter().map(|app| app.window_class.as_str()).collect();
+        // The inbox is three windows of one binary (task E8.1).
+        assert_eq!(
+            classes,
+            ["torro-inbox", "torro-inbox-mail", "torro-inbox-notifications", "torro-tasks", "torro-calendar"]
+        );
+        assert!(apps[..3].iter().all(|app| app.binary == "torroinbox"));
     }
 
     #[test]
-    fn the_control_centre_starts_with_ui_and_the_apps_without_arguments() {
-        assert_eq!(launch_command(AppId::WORKPLACE, "/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui"]);
-        assert_eq!(launch_command(AppId::TASKS, "/bin/torrotasks".into()), ["/bin/torrotasks"]);
+    fn the_control_centre_starts_with_ui_and_the_apps_with_their_arguments() {
+        assert_eq!(AppId::WORKPLACE.command("/bin/torroworkplace"), ["/bin/torroworkplace", "ui"]);
+        assert_eq!(AppId::TASKS.command("/bin/torrotasks"), ["/bin/torrotasks"]);
+        assert_eq!(AppId::INBOX.command("/bin/torroinbox"), ["/bin/torroinbox"], "the hub");
+        assert_eq!(AppId::INBOX_MAIL.command("/bin/torroinbox"), ["/bin/torroinbox", "--view", "mail"]);
+        assert_eq!(
+            control_centre_command("/bin/torroworkplace".into(), Section::Accounts),
+            ["/bin/torroworkplace", "ui", "--section", Section::Accounts.arg()]
+        );
+    }
+
+    /// `apps.open_app` takes a binary or a window class (task E8.1): an unknown name is `not-found`
+    /// before anything is started.
+    #[tokio::test]
+    async fn open_app_refuses_an_unknown_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let response = core(dir.path()).handle(Request::OpenApp { app: "torro-compose".into() }).await;
+        assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
     }
 
     #[tokio::test]

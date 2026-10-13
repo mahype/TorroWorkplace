@@ -2,7 +2,7 @@
 //! row per app the core reports with `Request::ListApps`. A row shows the name with the window
 //! class (for window rules) quietly behind it, below it a one-line description, at the right
 //! whether the app is installed (dot and word) and its one action, an "Open" button that sends
-//! `Request::OpenApp`. Not installed means the button is disabled. Everything in a row stays on
+//! `Request::OpenApp` with the app's window class. Not installed means the button is disabled. Everything in a row stays on
 //! its line and is cut off at the end when the window is narrow.
 //!
 //! The page does not look for the apps itself: the core knows where its apps are, so the control
@@ -25,7 +25,8 @@ pub struct State {}
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// "Open" was pressed for the app with this binary name.
+    /// "Open" was pressed for the app with this window class. The class, not the binary: the
+    /// inbox's three windows share the binary `torroinbox` (task E8.1).
     Open(String),
 }
 
@@ -86,7 +87,7 @@ fn app_class(app: &AppInfo) -> String {
 
 /// The message "Open" sends for `app`, or `None` for an app that is not installed.
 fn open_message(app: &AppInfo) -> Option<Message> {
-    app.installed.then(|| Message::Open(app.binary.clone()))
+    app.installed.then(|| Message::Open(app.window_class.clone()))
 }
 
 /// The name shown for `app`: translated for the apps the suite ships, else the name the core reports.
@@ -119,15 +120,27 @@ mod tests {
     fn open_is_offered_only_for_installed_apps() {
         let installed = app("torrocalendar", "Torro Calendar", true);
         let missing = app("torrotasks", "Torro Tasks", false);
-        assert!(matches!(open_message(&installed), Some(Message::Open(binary)) if binary == "torrocalendar"));
+        assert!(matches!(open_message(&installed), Some(Message::Open(class)) if class == installed.window_class));
         assert!(open_message(&missing).is_none());
+    }
+
+    /// The inbox's windows share a binary (task E8.1): each row opens its own window by class.
+    #[test]
+    fn open_names_the_window_class() {
+        let mail = AppInfo {
+            binary: "torroinbox".into(),
+            name: "Torro Inbox Mail".into(),
+            window_class: "torro-inbox-mail".into(),
+            installed: true,
+        };
+        assert!(matches!(open_message(&mail), Some(Message::Open(class)) if class == "torro-inbox-mail"));
     }
 
     #[test]
     fn open_asks_the_daemon_to_open_the_app() {
-        let message = Message::Open("torrocalendar".into());
+        let message = Message::Open("torro-calendar".into());
         let action = update(&mut State::default(), message, &Data::default());
-        assert!(matches!(action, Action::Send(Request::OpenApp { app }) if app == "torrocalendar"));
+        assert!(matches!(action, Action::Send(Request::OpenApp { app }) if app == "torro-calendar"));
     }
 
     #[test]

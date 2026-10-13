@@ -715,11 +715,16 @@ E8.9   unabhängig (torro-wm, core.rs)
    gestartet, nie über eine Shell-Zeile.
 
 ### E8.1 Drei Fensterarten
-- [ ] erledigt
+- [x] erledigt (zusätzlich freigegeben: `torroworkplace/src/{core,audit,approvals}.rs`, `ui/apps.rs`,
+  `torro-ipc/src/{lib,api}.rs`, dazu `torroinbox/src/compose.rs` für das neue Feld `args`; `apps.open_app` nimmt
+  Binary oder Fensterklasse (`AppId::find`), Start mit `AppId::command`; Namen „Torro Inbox Mail“, „Torro Inbox
+  Notifications“, „Torro Inbox“; Sichtprüfung nicht möglich, kein Hyprland; `docs/api-reference.md` gibt es noch
+  nicht, nichts zu erzeugen)
 - **Modell:** Opus · **Braucht:** E3.11 · **Dateien:** `crates/torro-core/src/app.rs`,
   `crates/torroinbox/src/{main,app,overview,glance}.rs`, `crates/torroworkplace/src/apps.rs`,
-  `crates/torro-setups/src/storage.rs`, `crates/torro-gui/src/shell.rs`, `crates/torro-core/src/i18n/de.rs`;
-  Doku: `docs/eingang.md`
+  `crates/torro-setups/src/storage.rs`, `crates/torro-gui/src/shell.rs`, `crates/torro-core/src/i18n/de.rs`,
+  `crates/torroworkplace/src/{core,audit,approvals}.rs`, `crates/torroworkplace/src/ui/apps.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `docs/api-reference.md`; Doku: `docs/eingang.md`
 - `torroinbox --view mail|notifications|hub` startet eine der drei Fensterarten (ohne Angabe: `hub`). Jede hat eigene
   Fensterklasse, eigenen Titel und eigenen Eintrag im App-Umschalter, in `apps.list_apps` und in den
   Workspace-Vorlagen; eine gespeicherte Vorlage stellt die Fensterart wieder her. `--source` und `--lane` bleiben

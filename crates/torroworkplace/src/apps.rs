@@ -3,6 +3,9 @@
 //!
 //! "Installed" means the binary was found next to the core's executable or on `PATH`, the same
 //! places `Request::OpenApp` starts apps from, so a listed app that is installed can be opened.
+//!
+//! The inbox is three entries (task E8.1): its mail window, its notifications window and its hub,
+//! one binary `torroinbox` with three window classes. All three are installed or none.
 
 use std::path::{Path, PathBuf};
 
@@ -92,5 +95,25 @@ mod tests {
         );
         let calendar = apps.iter().find(|app| app.binary == "torrocalendar").expect("calendar listed");
         assert!(!calendar.installed);
+    }
+
+    #[test]
+    fn the_inbox_is_listed_as_three_windows() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        fs::write(dir.path().join(binary("torroinbox")), b"").expect("write binary");
+        let apps = list_in(&[dir.path().to_path_buf()]);
+        let inbox: Vec<(&str, &str, bool)> = apps
+            .iter()
+            .filter(|app| app.binary == "torroinbox")
+            .map(|app| (app.window_class.as_str(), app.name.as_str(), app.installed))
+            .collect();
+        assert_eq!(
+            inbox,
+            [
+                ("torro-inbox", AppId::INBOX.display_name, true),
+                ("torro-inbox-mail", AppId::INBOX_MAIL.display_name, true),
+                ("torro-inbox-notifications", AppId::INBOX_NOTIFICATIONS.display_name, true),
+            ]
+        );
     }
 }

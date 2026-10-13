@@ -412,4 +412,22 @@ mod tests {
             assert_eq!(store.delete(id), Err(SetupsError::NotFound(id.to_string())), "delete {id:?}");
         }
     }
+
+    /// The inbox's mail window (task E8.1) is saved with its window class and the command line it
+    /// runs with, `torroinbox --view mail`, and loads with both: loading the template starts the mail
+    /// window again, not the hub, and finds it by its class.
+    #[test]
+    fn a_mail_window_of_the_inbox_comes_back_as_a_mail_window() {
+        let (_dir, store) = store();
+        let mut template = sample("inbox", "Inbox");
+        let mail = &mut template.windows[0];
+        mail.class = AppId::INBOX_MAIL.window_class.to_string();
+        mail.command = AppId::INBOX_MAIL.command("/usr/bin/torroinbox");
+        store.save(&template).unwrap();
+
+        let loaded = store.load("inbox").unwrap();
+        let window = &loaded.windows[0];
+        assert_eq!(window.command, ["/usr/bin/torroinbox", "--view", "mail"]);
+        assert_eq!(AppId::find(&window.class), Some(AppId::INBOX_MAIL), "the class names the mail window");
+    }
 }

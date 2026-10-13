@@ -1,6 +1,11 @@
 //! `torroinbox` — the inbox for the tiled desktop (`docs/eingang.md`).
 //!
-//! An Iced window with the fixed app id `torro-inbox`: everything that wants the user's attention
+//! Three windows from one program (task E8.1, [`app::Kind`]): `--view mail` (app id
+//! `torro-inbox-mail`), `--view notifications` (`torro-inbox-notifications`) and `--view hub` or no
+//! `--view` (`torro-inbox`), each its own entry of `torro_core::AppId::ALL`; an unknown `--view` is
+//! refused with the valid ones (exit 64).
+//!
+//! An Iced window with a fixed app id per kind: everything that wants the user's attention
 //! in one place – waiting coding agents, approvals, account problems, notices from scripts – in
 //! the lanes "For me" and "Info". The app reads and changes entries only through
 //! [`torro_inbox::InboxSource`]; the core checks rights and the security rules.
@@ -78,15 +83,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// The window on `inbox`: the core's client or the demo source.
+/// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
+/// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart.
 fn run<S: InboxSource + MailSource + 'static>(inbox: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
+    let window = torro_gui::window(launch.kind.app());
     iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), App::update, App::view)
         .settings(torro_gui::settings())
         .title(App::title)
         .theme(App::theme)
         .scale_factor(App::scale_factor)
         .subscription(App::subscription)
-        .window(torro_gui::window(INBOX))
+        .window(window)
         .run()
 }
 
