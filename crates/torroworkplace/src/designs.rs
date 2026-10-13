@@ -1,11 +1,14 @@
-//! The example design packs the suite ships (tasks L.5, L.7, L.9): `designs/` in the repository, built into
-//! this binary and written to the designs folder the first time the suite starts.
+//! The example design packs the suite ships (tasks L.5, L.7, L.9): `designs/` in the repository,
+//! built into this binary and written to the designs folder when the suite starts.
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
 //! centre write the designs folder; in `torro-core` every app would carry the fonts (about 1 MB)
-//! without ever using the copy. They are written only when the designs folder does not exist yet:
-//! a pack the user deleted or changed stays deleted or changed, and an update of the suite never
-//! overwrites anything in the folder.
+//! without ever using the copy.
+//!
+//! Each example is offered once (task L.10): the folder keeps the ids it was offered in a hidden
+//! list, and a newer suite adds only the examples that are not on it. A pack the user deleted or
+//! changed stays deleted or changed, a folder of their own with an example's name stays theirs, and
+//! an update of the suite never overwrites anything in the folder.
 
 use std::fs;
 use std::io;
@@ -19,6 +22,13 @@ struct Example {
     id: &'static str,
     files: &'static [File],
 }
+
+/// The hidden file in the designs folder that lists the examples the suite has offered, one id per
+/// line. `torro_core::design::list` reads only folders, so it never shows up as a pack.
+const OFFERED: &str = ".torro-examples";
+
+/// The examples a designs folder from before the list (task L.10) was offered: only Plex existed.
+const BEFORE_THE_LIST: &[&str] = &["plex"];
 
 /// Builds the `(path, bytes)` pair of `designs/<pack>/<path>` in the repository.
 macro_rules! pack_file {
@@ -96,26 +106,97 @@ pub fn install_if_missing(dir: &Path) -> io::Result<bool> {
     Ok(true)
 }
 
-/// Writes every example pack into the new folder `to`.
+/// Writes every example pack into the new folder `to`, with the list that says they were offered.
 fn write_examples(to: &Path) -> io::Result<()> {
     for example in EXAMPLES {
-        for (path, bytes) in example.files {
-            let target = to.join(example.id).join(path);
-            if let Some(folder) = target.parent() {
-                fs::create_dir_all(folder)?;
-            }
-            fs::write(target, bytes)?;
+        write_pack(&to.join(example.id), example)?;
+    }
+    let ids: Vec<String> = EXAMPLES.iter().map(|example| example.id.to_string()).collect();
+    fs::write(to.join(OFFERED), list_text(&ids))
+}
+
+/// Writes the files of `example` into the folder `to`.
+fn write_pack(to: &Path, example: &Example) -> io::Result<()> {
+    for (path, bytes) in example.files {
+        let target = to.join(path);
+        if let Some(folder) = target.parent() {
+            fs::create_dir_all(folder)?;
+        }
+        fs::write(target, bytes)?;
+    }
+    Ok(())
+}
+
+/// Brings the designs folder `dir` up to the examples of this suite: a missing folder is created
+/// with all of them ([`install_if_missing`]); an existing one gets each example it was not offered
+/// yet, unless a folder of that name is already there. Returns the ids it wrote.
+///
+/// Every pack is written to a hidden folder in `dir` and moved into place in one step, the list
+/// too, so a start that is cut short leaves nothing half done; a pack another process put there in
+/// the meantime counts as written.
+pub fn install_new(dir: &Path) -> io::Result<Vec<&'static str>> {
+    if install_if_missing(dir)? {
+        return Ok(EXAMPLES.iter().map(|example| example.id).collect());
+    }
+    let (mut offered, known) = match fs::read_to_string(dir.join(OFFERED)) {
+        Ok(text) => (text.lines().map(str::trim).filter(|id| !id.is_empty()).map(String::from).collect(), true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => (offered_before_the_list(dir), false),
+        Err(err) => return Err(err),
+    };
+    let mut added = Vec::new();
+    let mut changed = !known;
+    for example in EXAMPLES {
+        if offered.iter().any(|id| id == example.id) {
+            continue;
+        }
+        let target = dir.join(example.id);
+        if fs::symlink_metadata(&target).is_err() {
+            add_pack(dir, &target, example)?;
+            added.push(example.id);
+        }
+        offered.push(example.id.to_string());
+        changed = true;
+    }
+    if changed {
+        let staging = dir.join(format!("{OFFERED}.{}", std::process::id()));
+        fs::write(&staging, list_text(&offered))?;
+        fs::rename(&staging, dir.join(OFFERED))?;
+    }
+    Ok(added)
+}
+
+/// What a folder without the list was offered: the examples of before the list, and every example
+/// whose folder is there (an older suite or the user put it there).
+fn offered_before_the_list(dir: &Path) -> Vec<String> {
+    let present = EXAMPLES.iter().map(|example| example.id).filter(|id| dir.join(id).exists());
+    let present = present.filter(|id| !BEFORE_THE_LIST.contains(id));
+    BEFORE_THE_LIST.iter().copied().chain(present).map(String::from).collect()
+}
+
+/// Writes `example` as the pack folder `target` in `dir`, through a hidden folder beside it.
+fn add_pack(dir: &Path, target: &Path, example: &Example) -> io::Result<()> {
+    let staging = dir.join(format!(".example-{}-{}", example.id, std::process::id()));
+    if let Err(err) = write_pack(&staging, example).and_then(|()| fs::rename(&staging, target)) {
+        let _ = fs::remove_dir_all(&staging);
+        // Another process put the pack there in the meantime.
+        if !target.is_dir() {
+            return Err(err);
         }
     }
     Ok(())
 }
 
-/// [`install_if_missing`] for the user's designs folder (`torro_core::design::dir`), where errors
-/// are only reported: the suite works without the examples. Called when the core starts and
-/// before the control centre opens the folder.
+/// The list file's text: one id per line.
+fn list_text(ids: &[String]) -> String {
+    ids.iter().map(|id| format!("{id}\n")).collect()
+}
+
+/// [`install_new`] for the user's designs folder (`torro_core::design::dir`), where errors are
+/// only reported: the suite works without the examples. Called when the core starts and before the
+/// control centre opens the folder.
 pub fn install_examples() {
     let Some(dir) = torro_core::design::dir() else { return };
-    if let Err(err) = install_if_missing(&dir) {
+    if let Err(err) = install_new(&dir) {
         eprintln!("torroworkplace: cannot write the example designs to {}: {err}", dir.display());
     }
 }
@@ -222,6 +303,80 @@ mod tests {
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();
         assert_eq!(left.len(), 1, "no staging folder stays behind");
+    }
+
+    /// The ids in the list of `dir`.
+    fn offered(dir: &Path) -> Vec<String> {
+        fs::read_to_string(dir.join(OFFERED)).expect("list").lines().map(String::from).collect()
+    }
+
+    fn all_ids() -> Vec<String> {
+        EXAMPLES.iter().map(|example| example.id.to_string()).collect()
+    }
+
+    /// Every entry of `dir`, sorted.
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> =
+            fs::read_dir(dir).expect("read").flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_new_folder_gets_every_example_and_the_list() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let dir = home.path().join("designs");
+        assert_eq!(install_new(&dir).expect("install").len(), EXAMPLES.len());
+        assert_eq!(offered(&dir), all_ids());
+        assert!(install_new(&dir).expect("again").is_empty(), "nothing twice");
+        assert!(torro_core::design::list(&dir).iter().all(|pack| pack.valid()), "the list is no pack");
+    }
+
+    #[test]
+    fn an_old_folder_with_plex_gets_the_others_and_keeps_plex() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let dir = home.path().join("designs");
+        fs::create_dir_all(dir.join("plex")).expect("plex");
+        fs::write(dir.join("plex").join("design.toml"), "format = 1\n").expect("changed plex");
+        let added = install_new(&dir).expect("install");
+        assert_eq!(added, all_ids().iter().filter(|id| *id != "plex").map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(fs::read_to_string(dir.join("plex").join("design.toml")).expect("read"), "format = 1\n");
+        assert_eq!(offered(&dir).len(), EXAMPLES.len());
+        let mut expected = all_ids();
+        expected.push(OFFERED.to_string());
+        expected.sort();
+        assert_eq!(entries(&dir), expected, "no hidden work folder stays behind");
+    }
+
+    #[test]
+    fn a_deleted_example_stays_deleted() {
+        let home = tempfile::tempdir().expect("temp dir");
+        // An old folder whose Plex the user deleted: Plex does not come back, the others do.
+        let old = home.path().join("old");
+        fs::create_dir(&old).expect("empty designs folder");
+        assert!(!install_new(&old).expect("install").contains(&"plex"));
+        assert!(!old.join("plex").exists());
+
+        // Deleted after it was offered: it stays deleted.
+        let dir = home.path().join("designs");
+        install_new(&dir).expect("install");
+        let gone = EXAMPLES[EXAMPLES.len() - 1].id;
+        fs::remove_dir_all(dir.join(gone)).expect("delete");
+        assert!(install_new(&dir).expect("again").is_empty());
+        assert!(!dir.join(gone).exists());
+    }
+
+    #[test]
+    fn a_folder_of_the_users_own_with_an_examples_name_stays_theirs() {
+        let home = tempfile::tempdir().expect("temp dir");
+        let dir = home.path().join("designs");
+        let own = EXAMPLES[EXAMPLES.len() - 1].id;
+        fs::create_dir_all(dir.join(own)).expect("own");
+        fs::write(dir.join(OFFERED), "plex\n").expect("an older list");
+        fs::write(dir.join(own).join("notes.txt"), "mine").expect("own file");
+        assert!(!install_new(&dir).expect("install").contains(&own));
+        assert_eq!(entries(&dir.join(own)), ["notes.txt"]);
+        assert!(offered(&dir).iter().any(|id| id == own), "offered, so it is not tried again");
     }
 
     #[test]
