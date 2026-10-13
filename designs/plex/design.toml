@@ -28,6 +28,9 @@ line = 22
 [type.body_strong]
 size = 14
 line = 22
+[type.read]
+size = 15
+line = 24
 [type.title]
 size = 17
 line = 24
