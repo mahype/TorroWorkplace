@@ -1,4 +1,4 @@
-# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.9)
+# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.10)
 
 Konzept und Regeln für Pakete: [design-pakete.md](../design-pakete.md). Issue #72. Regeln für die Arbeit:
 [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen
@@ -11,7 +11,7 @@ Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review
 ```
 L.1 ── L.2 ── L.3 ── L.4 ── L.5 ── L.6 ─┬─ L.7 Commitr
                                         ├─ L.8 Dracula
-                                        └─ L.9 Ribbon
+                                        └─ L.9 Ribbon ── L.10 neue Beispiele nachlegen
 ```
 
 L.1–L.6 nacheinander: L.2 ändert jede App, L.3 den Katalog, L.6 das Format. L.7–L.9 (Issue #80) sind unabhängig
@@ -194,3 +194,26 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Flächen, Radius 4, ruhig; Seitenleiste ggf. in Blau. Kein Office-Name und kein Office-Logo; „inspired by Microsoft
   Office“ in der Beschreibung, eigenes Logo.
 - **Abnahme:** wie L.5.
+
+### L.10 Neue Beispielpakete auch in bestehende Design-Ordner
+- [x] erledigt (2026-10-13: `install_new` neben `install_if_missing`, das unverändert bleibt und die Liste jetzt
+  mitschreibt; Dracula kommt nach dem Merge von L.8 in die Liste der Beispiele)
+- **Modell:** Opus · **Braucht:** L.9 · **Dateien:** `crates/torroworkplace/src/designs.rs`,
+  `docs/design-pakete.md` (Abschnitt „Ein Paket bauen“)
+- Bisher kommen Beispielpakete nur in einen **neu angelegten** Design-Ordner. Wer Plex schon hat, bekommt Dracula,
+  Commitr und Ribbon nie zu sehen.
+- **Neu:** Der Ordner merkt sich in einer versteckten Datei `.torro-examples` (eine id je Zeile), welche Beispiele die
+  Suite schon angeboten hat. Beim Start (Dienst) und bei „Open designs folder“ (Steuerzentrale) legt sie jedes
+  Beispiel, das dort noch nicht steht, in den Ordner – nur wenn es dort keinen Ordner dieses Namens gibt – und trägt es
+  ein. Ein gelöschtes Beispiel steht in der Liste und bleibt gelöscht; ein eigener Ordner gleichen Namens bleibt
+  unberührt; vorhandene Beispiele werden nie überschrieben (auch nicht bei einer neuen Fassung).
+- **Ordner ohne Liste** (von vor L.10): Als angeboten gelten Plex (das einzige Beispiel bis dahin, damit ein
+  gelöschtes Plex gelöscht bleibt) und jedes Beispiel, dessen Ordner schon da ist.
+- Jedes Paket wird erst in einem versteckten Ordner daneben geschrieben und dann in einem Schritt umbenannt, die
+  Liste ebenso; ein abgebrochener Start hinterlässt nichts Halbes.
+- **Oberfläche/API/MCP:** keine neue Funktion – das Nachlegen passiert beim Start und hinter „Open designs folder“;
+  Pakete auflisten und wählen gibt es schon (`settings.list_designs`, `settings.set_setting`).
+- **Abnahme:** Tests: neuer Ordner bekommt alle Beispiele und die Liste; alter Ordner mit Plex bekommt die übrigen,
+  Plex bleibt unverändert; alter Ordner ohne Plex bekommt Plex nicht zurück; ein nach dem Eintragen gelöschtes
+  Beispiel kommt nicht wieder; ein eigener Ordner gleichen Namens bleibt unberührt; kein versteckter Arbeitsordner
+  bleibt zurück.

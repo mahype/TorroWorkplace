@@ -218,9 +218,11 @@ Tastenbelegung, Anordnung (Stufe 2).
 ## Ein Paket bauen
 
 Am Beispiel **Plex** (`designs/plex/` im Repository, Aufgabe L.5): IBM Plex Sans, mehr Luft, ein ruhiger
-Petrol-Akzent. Die Suite legt es beim ersten Start in den Design-Ordner, zusammen mit dem Ordner selbst (der Dienst
-beim Start, die Steuerzentrale bei „Open designs folder“). Gibt es den Ordner schon, schreibt sie nichts hinein: Ein
-gelöschtes oder geändertes Beispiel bleibt gelöscht oder geändert. Die Dateien stecken in `torroworkplace`
+Petrol-Akzent. Die Suite legt ihre Beispiele (Plex, Dracula, Commitr, Ribbon) in den Design-Ordner, der Dienst beim
+Start, die Steuerzentrale bei „Open designs folder“. Jedes Beispiel wird **einmal angeboten** (L.10): Die versteckte
+Datei `.torro-examples` im Ordner hält fest, welche schon da waren, und eine neue Fassung der Suite legt nur Beispiele
+nach, die dort noch nicht stehen und für die es keinen Ordner gleichen Namens gibt. Ein gelöschtes oder geändertes
+Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dateien stecken in `torroworkplace`
 (`src/designs.rs`), nicht im Kern, damit nicht jede App die Schriften mitschleppt.
 
 ### Schritte
