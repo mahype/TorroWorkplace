@@ -512,6 +512,18 @@ fn describe(request: &Request) -> String {
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
         Request::SendDraft { .. } => "send draft".into(),
+        // Ids only, never a message or a title (task C.1).
+        Request::ListEngines => "assistant engines".into(),
+        Request::ListConversations => "assistant conversations".into(),
+        Request::GetConversation { id, .. } => format!("conversation {id}"),
+        Request::SendMessage { .. } => "message to the assistant".into(),
+        Request::CancelAnswer { conversation } => format!("stop the answer in conversation {conversation}"),
+        Request::RenameConversation { id, .. } => format!("rename conversation {id}"),
+        Request::DeleteConversation { id } => format!("delete conversation {id}"),
+        Request::PinConversation { id, pinned } => {
+            format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })
+        }
+        Request::OpenChatWindow { .. } => "open an assistant window".into(),
     }
 }
 
