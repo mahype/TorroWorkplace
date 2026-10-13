@@ -83,6 +83,18 @@ const EXAMPLES: &[Example] = &[
             pack_file!("ribbon", "fonts/Selawik-Bold.ttf"),
         ],
     },
+    Example {
+        id: "channelr",
+        files: &[
+            pack_file!("channelr", "design.toml"),
+            pack_file!("channelr", "logo.svg"),
+            pack_file!("channelr", "tray.svg"),
+            pack_file!("channelr", "preview.png"),
+            pack_file!("channelr", "fonts/LICENSE.txt"),
+            pack_file!("channelr", "fonts/Lato-Bold.ttf"),
+            pack_file!("channelr", "fonts/Lato-Regular.ttf"),
+        ],
+    },
 ];
 
 /// Creates the designs folder `dir` with the example packs in it, if `dir` does not exist yet.
@@ -271,6 +283,24 @@ mod tests {
     }
 
     #[test]
+    fn the_further_packs_pass_every_rule() {
+        // id, name, text font, figures font
+        let packs: &[(&str, &str, &str, &str)] = &[
+            ("channelr", "Channelr", "Lato", "Lato"),
+            // further packs
+        ];
+        for (id, name, text, numbers) in packs {
+            let design = torro_core::design::load(&repo_designs(), id).unwrap_or_else(|problems| {
+                let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+                panic!("designs/{id} must be valid: {reasons:#?}")
+            });
+            assert_eq!(design.about.name, *name);
+            assert_eq!((design.fonts.text.family.as_str(), design.fonts.numbers.family.as_str()), (*text, *numbers));
+            assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some(), "{id}");
+        }
+    }
+
+    #[test]
     fn the_embedded_files_are_the_whole_pack() {
         let designs = repo_designs();
         let mut folders: Vec<String> = fs::read_dir(&designs)
@@ -298,7 +328,7 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in ["plex", "commitr", "ribbon"] {
+        for id in ["plex", "commitr", "ribbon", "channelr"] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();

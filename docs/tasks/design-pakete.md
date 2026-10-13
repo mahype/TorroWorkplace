@@ -232,7 +232,9 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
 
 ### L.12 Paket Channelr (erinnert an Slack)
-- [ ] erledigt
+- [x] erledigt (2026-10-13: Lato unverändert, nur Regular und Bold – Hervorhebungen fett wie bei Slack; gewählter
+  Kanal blau auf Aubergine; Akzent ist das Grün des Senden-Knopfs, eine Spur heller, damit es auch auf der Leiste
+  trägt; die vier Markenfarben als Kalenderfarben, in der Helligkeit angepasst)
 - **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/channelr/`, `crates/torroworkplace/src/designs.rs`
 - Lato (OFL), Aubergine-Seitenleiste in beiden Modi (L.6), rundere Ecken, fette Titel. Kein Slack-Name, kein Logo.
 - **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
