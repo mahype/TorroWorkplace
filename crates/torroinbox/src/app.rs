@@ -125,20 +125,14 @@ use torro_inbox::{
 use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 
-use self::notifications::{Arrange, Board, Shown};
 use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
 use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
+use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
 use crate::{detail, list};
-
-// The board of the notifications window (task E8.4). Declared here, not in `main.rs` beside the
-// other modules, because another task changes `main.rs` at the same time; the file lives beside them
-// all the same, and the declaration can move there with the next change of `main.rs`.
-#[path = "notifications.rs"]
-pub(crate) mod notifications;
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
 pub const INBOX: AppId = AppId::INBOX;

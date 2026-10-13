@@ -556,6 +556,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Tasks that keep their mail (E8.7a)
+    ("unknown sender", "unbekannter Absender"),
+    ("From mail: {sender}, “{subject}”, {day}", "Aus Mail: {sender}, „{subject}“, {day}"),
+    ("You finished a task from a mail", "Du hast eine Aufgabe aus einer Mail erledigt"),
+    ("{task} is done. {sender} is waiting for an answer.", "{task} ist erledigt. {sender} wartet auf eine Antwort."),
+    ("{task} is done. Its mail is still open.", "{task} ist erledigt. Die Mail ist noch offen."),
+    ("an unknown mail", "einer unbekannten Mail"),
+    (
+        "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
+        "Aufgabe „{title}“ in „{list}“ aus der Mail {subject} anlegen",
+    ),
+    (
+        "Make a task \"{title}\" in \"{list}\" due {when} from the mail {subject}",
+        "Aufgabe „{title}“ in „{list}“ fällig {when} aus der Mail {subject} anlegen",
+    ),
+    ("Open \"{title}\" in {app}", "„{title}“ in {app} öffnen"),
     // Notifications window (E8.4)
     ("Dismiss notification", "Verwerfen"),
     ("Dismiss all", "Alle verwerfen"),

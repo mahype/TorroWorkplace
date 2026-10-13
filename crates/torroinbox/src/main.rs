@@ -42,6 +42,7 @@ mod glance;
 mod keys;
 mod list;
 mod mail;
+mod notifications;
 mod overview;
 
 use std::process::ExitCode;
