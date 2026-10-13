@@ -743,7 +743,7 @@ R.1 ─┬─ R.2 ─┐
 ### U.12 Seitenleiste rollt in der Mitte, Kopf und Fuß bleiben stehen
 - [x] erledigt (Sichtprüfung auf macOS mit `--design plex`: Kalender `--open week` bei 1100×760 hell – „Settings“ sichtbar; bei 1100×520 hell und dunkel Kalender, Aufgaben, Inbox, Steuerzentrale ausgeklappt sowie Kalender und Aufgaben als Leiste – Mitte rollt, Kopf und Fuß fest, Scrollleiste im Rand neben den Zählern; Schublade nicht eigens angesehen, sie nutzt denselben Baustein)
 - **Modell:** Opus · **Braucht:** U.2, L.2 · **Dateien:** `crates/torro-gui/src/shell.rs`,
-  `docs/tasks/design.md`
+  `crates/torrocalendar/src/app.rs` (nur Doc-Kommentar), `docs/tasks/design.md`
 - Befund: Die ausgeklappte Seitenleiste (und die Leiste, die Schublade) rollt nicht. Mit einem
   Design-Paket mit höheren Zeilen (`designs/plex`: `row_sidebar` 30, `control` 34) oder in einem
   niedrigen Fenster reicht die Höhe nicht, und der untere Teil wird abgeschnitten. Im Kalender
@@ -755,8 +755,9 @@ R.1 ─┬─ R.2 ─┐
   über Zählern und Tasten-Hinweisen; dafür setzt `shell::sidebar` den waagerechten Rand selbst und
   die Shell (`inset_window`, Schublade) nur noch den senkrechten.
 - Gilt für alle drei Formen (ausgeklappt, Leiste, Schublade) und alle Apps, die `shell::sidebar`
-  nutzen: Kalender, Aufgaben, Inbox, Steuerzentrale. Die Apps bleiben unverändert; ihre Seitenleisten
-  bauen schon Kopf, Mitte und Fuß getrennt. Keine Zahlen in Apps, nur Tokens
+  nutzen: Kalender, Aufgaben, Inbox, Steuerzentrale. Die Apps bleiben unverändert (im Kalender nur der
+  Doc-Kommentar der Seitenleiste, der die Schublade noch mit der Fensterhöhe begründete); ihre
+  Seitenleisten bauen schon Kopf, Mitte und Fuß getrennt. Keine Zahlen in Apps, nur Tokens
   (`scripts/design-check.sh`).
 - **Oberfläche:** ja (alle Apps). **API/MCP:** nicht betroffen – reine Darstellung, kein neuer
   Zustand und keine neue Funktion; was die Seitenleiste zeigt, kommt schon über bestehende Requests.
