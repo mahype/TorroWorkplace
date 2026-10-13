@@ -423,6 +423,14 @@ Welche Merkmale eine Quelle mitbringt, und damit, wonach sich verlässlich stumm
 Freigaben und Einträge der Suite lassen sich nie stummschalten (Sicherheitsregel 1). Alle Regeln stehen in der
 Steuerzentrale › Inbox › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab.
 
+**Kern (E8.6a, umgesetzt):** Der Dienst setzt die Merkmale beim Melden (`Item.facets`, nie vom Absender): Mail
+Konto, Absender, Domain, Liste (`List-Id`), Massenmail; Agenten Agent, Projekt (nur von Hooks), Art; Skripte der
+Client. Das **Thema** von Skripten fehlt noch: `inbox.post_item` hat kein Feld dafür. Die Unterhaltung ist kein
+Merkmal am Eintrag, sondern der eigene Umfang `conversation`. Eine Regel mit Merkmal gilt für alle Quellen derselben
+Art (ein Absender in allen Mail-Konten, ein Projekt für alle Agenten), eine für die Unterhaltung nur in ihrer
+Quelle. „Hide“ und „Only Info“ für die Unterhaltung ohne Ablauf legen keine Regel an, sondern erledigen bzw.
+verschieben nur diesen Eintrag. Befehle: [api.md](api.md), Fußnote 11.
+
 ### Aufgabe mit Rückbezug
 
 Eine Aufgabe aus einer Nachricht behält ihre Herkunft, auch in Nextcloud. Gespeichert wird in der Eigenschaft

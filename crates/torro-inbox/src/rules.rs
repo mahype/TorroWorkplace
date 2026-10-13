@@ -4,12 +4,20 @@
 //! The security rules of `docs/tasks/eingang.md` that depend only on an entry live here too
 //! ([`admitted_kind`], [`human_only`], [`may_open`]); the core enforces them (E1.2, E2.4).
 //! Nothing here reads a clock: whoever calls passes `now`, so tests can fix it.
+//!
+//! Muting by traits (task E8.6a) lives here too: which traits an entry has ([`facets`]), what the
+//! bell's menu offers ([`mute_options`]), the value a call mutes ([`mute_target`], always from the
+//! stored entry) and which rules hold for an entry ([`muting`]).
 
 use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeDelta, Utc};
+use torro_core::i18n::{tr, trf};
 
-use crate::item::{HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceKind, SourceRef, State};
+use crate::item::{
+    AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption, MuteScope, Rule, RuleEffect,
+    Sender, SourceKind, SourceRef, State,
+};
 
 /// Days a done entry is kept before [`expired`] says it goes.
 pub const KEEP_DONE_DAYS: i64 = 30;
@@ -104,6 +112,7 @@ pub fn may_hide(item: &Item, scope: HideScope) -> bool {
 /// made in (task E3.11, [`reaches`]).
 pub fn is_hiding(rule: &Rule) -> bool {
     rule.effect == RuleEffect::Muted
+        && rule.facet.is_none()
         && rule.source.kind == SourceKind::Mail
         && (rule.sender.is_some() || rule.domain.is_some())
 }
@@ -112,17 +121,26 @@ pub fn is_hiding(rule: &Rule) -> bool {
 /// hiding rule ([`is_hiding`]) about any mail account when `source` is a mail account – a hidden
 /// sender or domain is hidden in every account (task E3.11). Rules kept per account before E3.11
 /// are read the same way, so they hold for every account from now on.
+///
+/// A rule with a trait (task E8.6a, [`Rule::facet`]) is asked about every source of its source's
+/// kind – a sender muted from one mail account is muted in all, a project of one agent for every
+/// agent –, one for a conversation only about its own source, where its thread key lives.
 pub fn reaches(rule: &Rule, source: &SourceRef) -> bool {
-    rule.source == *source || (is_hiding(rule) && source.kind == SourceKind::Mail)
+    match &rule.facet {
+        Some(facet) if facet.key == FacetKey::Conversation => rule.source == *source,
+        Some(_) => rule.source.kind == source.kind,
+        None => rule.source == *source || (is_hiding(rule) && source.kind == SourceKind::Mail),
+    }
 }
 
 /// Whether `rule` drops a new report from `sender` (its [`sender_key`], `None` without one) of a
 /// source it [`reaches`]; the caller passes only such rules. Only muting rules drop: one without
 /// `sender` and `domain` everything, one with `sender` only that address, one with `domain` only
 /// addresses of exactly that domain (task E3.10). A report without a sender's address is dropped
-/// only by a rule for the whole source.
+/// only by a rule for the whole source. A rule with a trait (task E8.6a) drops nothing here: it is
+/// asked with the whole entry ([`muting`]).
 pub fn drops(rule: &Rule, sender: Option<&str>) -> bool {
-    if rule.effect != RuleEffect::Muted {
+    if rule.effect != RuleEffect::Muted || rule.facet.is_some() {
         return false;
     }
     match (&rule.sender, &rule.domain) {
@@ -138,6 +156,204 @@ pub fn drops(rule: &Rule, sender: Option<&str>) -> bool {
 /// there.
 pub fn hides(rule: &Rule, item: &Item) -> bool {
     is_hiding(rule) && reaches(rule, &item.source) && drops(rule, mail_sender(item).as_deref())
+}
+
+/// The longest value of a trait, in bytes; longer ones are cut at a character boundary, so the same
+/// text always gives the same value.
+pub const FACET_MAX: usize = 200;
+
+/// The traits of `item` its source reports reliably (task E8.6a, table in `docs/eingang.md`), in
+/// the order of [`FacetKey`], for [`Item::facets`]. The core calls it when a report arrives; `list`
+/// (`List-Id`) and `bulk` come from a mail's headers and count only for mail.
+///
+/// - Mail: the account, the sender's address and its domain (when there is an address), the list
+///   (in small letters) and whether it is bulk mail.
+/// - Agents: the agent, the project a hook reported, and whether it waits or finished.
+/// - Scripts: the client. (A topic would need a field in `inbox.post_item` first.)
+/// - The person's own entries ([`human_only`]) have none: no rule may touch them.
+///
+/// Values are trimmed and cut to [`FACET_MAX`] bytes; empty ones are left out.
+pub fn facets(item: &Item, list: Option<&str>, bulk: bool) -> Vec<Facet> {
+    let mut facets = Vec::new();
+    if human_only(item) {
+        return facets;
+    }
+    let mut add = |key: FacetKey, value: &str| {
+        let value = cut(value.trim(), FACET_MAX);
+        if !value.is_empty() {
+            facets.push(Facet { key, value });
+        }
+    };
+    match item.source.kind {
+        SourceKind::Suite => {}
+        SourceKind::Mail => {
+            add(FacetKey::Account, &item.source.name);
+            if let Some(sender) = mail_sender(item).filter(|sender| !sender.starts_with('@')) {
+                add(FacetKey::Sender, &sender);
+                if let Some(domain) = domain_of(&sender) {
+                    add(FacetKey::Domain, &domain);
+                }
+            }
+            if let Some(list) = list {
+                add(FacetKey::List, &list.to_lowercase());
+            }
+            if bulk {
+                add(FacetKey::Bulk, "bulk");
+            }
+        }
+        SourceKind::Agent => {
+            add(FacetKey::Agent, &item.source.name);
+            if let Some(project) = item.agent.as_ref().and_then(|agent| agent.project.as_deref()) {
+                add(FacetKey::Project, project);
+            }
+            match item.kind {
+                Kind::AgentWaiting => add(FacetKey::Kind, "agent_waiting"),
+                Kind::AgentDone => add(FacetKey::Kind, "agent_done"),
+                Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message => {}
+            }
+        }
+        SourceKind::Script => add(FacetKey::Client, &item.source.name),
+    }
+    facets
+}
+
+/// `text` cut to at most `max` bytes at a character boundary.
+fn cut(text: &str, max: usize) -> String {
+    let mut end = max.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// The trait `inbox.mute_item` with `scope` mutes of `item`: for the conversation its thread key,
+/// for a trait the value **the stored entry** has – never one from the request, so nobody can mute
+/// what the entry does not say. `None` when the entry has no such trait (also for `facet` with
+/// [`FacetKey::Conversation`], which is never among [`Item::facets`]) and for the person's own
+/// entries ([`human_only`]).
+pub fn mute_target(item: &Item, scope: MuteScope) -> Option<Facet> {
+    if human_only(item) {
+        return None;
+    }
+    match scope {
+        MuteScope::Conversation => Some(Facet { key: FacetKey::Conversation, value: item.thread_key.clone() }),
+        MuteScope::Facet { key } => item.facets.iter().find(|facet| facet.key == key).cloned(),
+    }
+}
+
+/// The words for muting `facet`, in the user's language: "Mail from news@shop.example", "This
+/// conversation". For the bell's menu, the rules page and the summary of an approval. The value is
+/// shown as it is: foreign text for [`FacetKey::is_foreign`] keys, which the caller marks as such.
+pub fn facet_label(facet: &Facet) -> String {
+    let value = facet.value.as_str();
+    match facet.key {
+        FacetKey::Account => trf("All mail to {account}", &[("account", &value)]),
+        FacetKey::Sender => trf("Mail from {sender}", &[("sender", &value)]),
+        FacetKey::Domain => trf("Everything from {domain}", &[("domain", &value)]),
+        FacetKey::List => trf("The list {list}", &[("list", &value)]),
+        FacetKey::Bulk => tr("Newsletters and automatic mail").into(),
+        FacetKey::Agent => {
+            let name: &str = match AgentKind::from_id(value) {
+                Some(agent) => agent.label(),
+                None => value,
+            };
+            trf("Everything from {source}", &[("source", &name)])
+        }
+        FacetKey::Project => trf("The project {project}", &[("project", &value)]),
+        FacetKey::Kind if value == "agent_waiting" => tr("Agents waiting for you").into(),
+        FacetKey::Kind if value == "agent_done" => tr("Agents that finished").into(),
+        FacetKey::Kind => value.to_string(),
+        FacetKey::Client => trf("Everything from {source}", &[("source", &value)]),
+        FacetKey::Conversation => tr("This conversation").into(),
+    }
+}
+
+/// The ways to mute `item` for the bell's menu (`inbox.list_mute_options`, task E8.6a): its
+/// conversation first, then each of its traits in the order of [`FacetKey`], each with its words
+/// ([`facet_label`]), whether they hold foreign text and whether every choice needs admin access.
+/// Empty for the person's own entries ([`human_only`], security rule 1).
+pub fn mute_options(item: &Item) -> Vec<MuteOption> {
+    if human_only(item) {
+        return Vec::new();
+    }
+    let conversation = MuteOption {
+        scope: MuteScope::Conversation,
+        value: None,
+        label: tr("This conversation").into(),
+        untrusted: false,
+        admin: false,
+    };
+    let traits = item.facets.iter().filter(|facet| facet.key != FacetKey::Conversation).map(|facet| MuteOption {
+        scope: MuteScope::Facet { key: facet.key },
+        value: Some(facet.value.clone()),
+        label: facet_label(facet),
+        untrusted: facet.key.is_foreign(),
+        admin: true,
+    });
+    std::iter::once(conversation).chain(traits).collect()
+}
+
+/// `rule` still holds at `now`: it has no end, or its end ([`Rule::until`]) lies after `now`.
+/// Rules that ended hold no more and are not listed.
+pub fn is_active(rule: &Rule, now: DateTime<Utc>) -> bool {
+    rule.until.is_none_or(|until| until > now)
+}
+
+/// What muting did to an entry that was there already ([`mute_entry`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutedEntry {
+    /// Marked done (hide): goes into [`crate::Muted::done`].
+    Done,
+    /// Moved from "for me" to "Info": goes into [`crate::Muted::moved`].
+    Moved,
+}
+
+/// Muting with `effect` at `now` for an entry that is there already and that the muting holds for
+/// (task E8.6a): hide marks it done when it was open or snoozed (snoozed too, or it would come back
+/// with what the person muted); "Info" moves it there from "for me" unless it is done, which ends
+/// its urgency ([`set_lane`]); no popup changes nothing. Returns what changed, `None` for nothing.
+/// Like hiding, nothing reaches the mail of a mail entry.
+pub fn mute_entry(item: &mut Item, effect: MuteEffect, now: DateTime<Utc>) -> Option<MutedEntry> {
+    let done = matches!(item.state, State::Done { .. });
+    match effect {
+        MuteEffect::Hide if !done => {
+            set_done(item, true, now);
+            Some(MutedEntry::Done)
+        }
+        MuteEffect::Info if !done && item.lane == Lane::ForMe => {
+            set_lane(item, Lane::Info);
+            Some(MutedEntry::Moved)
+        }
+        MuteEffect::Hide | MuteEffect::Info | MuteEffect::NoPopup => None,
+    }
+}
+
+/// The later of two ends of a rule, `None` (for good) being the latest: muting the same trait again
+/// keeps one rule that lasts as long as the longer of both asked for.
+pub fn later_end(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    a.zip(b).map(|(a, b)| a.max(b))
+}
+
+/// Whether the rule with a trait `rule` (task E8.6a) holds for `item` at `now`: it is active
+/// ([`is_active`]), [`reaches`] the entry's source and the entry has the rule's trait – for the
+/// conversation its thread key. Never for the person's own entries ([`human_only`], security rule
+/// 1), never for rules without a trait (those ask [`drops`] and [`hides`]).
+pub fn mutes(rule: &Rule, item: &Item, now: DateTime<Utc>) -> bool {
+    let Some(facet) = &rule.facet else { return false };
+    if !is_active(rule, now) || human_only(item) || !reaches(rule, &item.source) {
+        return false;
+    }
+    match facet.key {
+        FacetKey::Conversation => item.thread_key == facet.value,
+        _ => item.facets.contains(facet),
+    }
+}
+
+/// The strongest muting among the rules in `rules` that hold for `item` at `now` ([`mutes`]): hide
+/// before "Info" before no popup; `None` when none holds. The core asks it for every report (hide
+/// drops it, "Info" moves it there) and before every popup (no popup).
+pub fn muting(rules: &[Rule], item: &Item, now: DateTime<Utc>) -> Option<MuteEffect> {
+    rules.iter().filter(|rule| mutes(rule, item, now)).filter_map(|rule| MuteEffect::of(rule.effect)).max()
 }
 
 /// The kind an entry posted as `kind` by `poster` gets; `None` when the post is refused
@@ -298,6 +514,7 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         }
     }
 
@@ -355,7 +572,180 @@ mod tests {
             domain: domain.map(String::from),
             effect: RuleEffect::Muted,
             created: at(8),
+            facet: None,
+            until: None,
         }
+    }
+
+    fn facet(key: FacetKey, value: &str) -> Facet {
+        Facet { key, value: value.into() }
+    }
+
+    /// A rule of `inbox.mute_item` about `source`, muting `facet` with `effect` until `until`.
+    fn muting_rule(source: SourceRef, facet: Facet, effect: MuteEffect, until: Option<DateTime<Utc>>) -> Rule {
+        Rule {
+            id: "f".into(),
+            source,
+            sender: None,
+            domain: None,
+            effect: effect.rule_effect(),
+            created: at(8),
+            facet: Some(facet),
+            until,
+        }
+    }
+
+    /// A newsletter of the list `<news.shop.example>` in `account`, with its traits.
+    fn newsletter(account: &str) -> Item {
+        let mail = Item { source: SourceRef::mail(account), ..mail_from(Some("News@Shop.Example")) };
+        Item { facets: facets(&mail, Some(" <News.Shop.Example> "), true), ..mail }
+    }
+
+    /// A hook's entry of Claude Code waiting in the project `project`, with its traits.
+    fn waiting_agent(project: &str) -> Item {
+        let agent = AgentInfo {
+            agent: AgentKind::ClaudeCode,
+            session: "s1".into(),
+            project: Some(project.into()),
+            branch: None,
+            pids: Vec::new(),
+            title: None,
+        };
+        let entry =
+            Item { source: SourceRef::agent("claude-code"), agent: Some(agent), ..item("a", Kind::AgentWaiting) };
+        Item { facets: facets(&entry, None, false), ..entry }
+    }
+
+    #[test]
+    fn each_source_brings_the_traits_it_reports_reliably() {
+        let keys = |item: &Item| item.facets.iter().map(|facet| (facet.key, facet.value.clone())).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&newsletter("anna@example.org")),
+            [
+                (FacetKey::Account, "anna@example.org".into()),
+                (FacetKey::Sender, "news@shop.example".into()),
+                (FacetKey::Domain, "shop.example".into()),
+                (FacetKey::List, "<news.shop.example>".into()),
+                (FacetKey::Bulk, "bulk".into()),
+            ]
+        );
+        assert_eq!(
+            keys(&waiting_agent("TorroWorkplace")),
+            [
+                (FacetKey::Agent, "claude-code".into()),
+                (FacetKey::Project, "TorroWorkplace".into()),
+                (FacetKey::Kind, "agent_waiting".into()),
+            ]
+        );
+        assert_eq!(facets(&item("s", Kind::Notice), None, true), [facet(FacetKey::Client, "backup")], "no mail");
+        let without_address = mail_from(None);
+        assert_eq!(keys(&Item { facets: facets(&without_address, None, false), ..without_address }).len(), 1);
+        let approval = Item { source: SourceRef::suite(), ..item("p", Kind::Approval) };
+        assert!(facets(&approval, None, false).is_empty(), "the person's own entries have none");
+        let long = "x".repeat(300);
+        assert_eq!(facets(&item("l", Kind::Notice), Some(&long), true).len(), 1);
+        let listed = facets(&mail_from(Some("a@b.example")), Some(&long), false);
+        assert_eq!(listed.last().map(|facet| facet.value.len()), Some(FACET_MAX), "cut to {FACET_MAX} bytes");
+    }
+
+    #[test]
+    fn the_value_to_mute_comes_from_the_stored_entry() {
+        let mail = newsletter("anna@example.org");
+        assert_eq!(
+            mute_target(&mail, MuteScope::Facet { key: FacetKey::Sender }),
+            Some(facet(FacetKey::Sender, "news@shop.example"))
+        );
+        assert_eq!(mute_target(&mail, MuteScope::Facet { key: FacetKey::Project }), None, "a trait it lacks");
+        assert_eq!(mute_target(&mail, MuteScope::Facet { key: FacetKey::Conversation }), None);
+        assert_eq!(mute_target(&mail, MuteScope::Conversation), Some(facet(FacetKey::Conversation, "thread-m")));
+        let approval = Item { source: SourceRef::suite(), ..item("p", Kind::Approval) };
+        assert_eq!(mute_target(&approval, MuteScope::Conversation), None, "never the person's own");
+    }
+
+    #[test]
+    fn the_menu_offers_the_conversation_and_each_trait() {
+        let options = mute_options(&newsletter("anna@example.org"));
+        let scopes: Vec<MuteScope> = options.iter().map(|option| option.scope).collect();
+        assert_eq!(scopes[0], MuteScope::Conversation);
+        assert_eq!(scopes.len(), 6);
+        assert_eq!(options[0].label, tr("This conversation"));
+        assert!(!options[0].admin && options[1..].iter().all(|option| option.admin), "only traits are always rules");
+        let sender = &options[2];
+        assert_eq!(sender.label, trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        assert!(sender.untrusted, "a sender is foreign text");
+        assert!(!options[1].untrusted && !options[5].untrusted, "the account and bulk are not");
+        let agent = mute_options(&waiting_agent("TorroWorkplace"));
+        assert_eq!(agent[1].label, trf("Everything from {source}", &[("source", &"Claude Code")]));
+        assert_eq!(agent[3].label, tr("Agents waiting for you"));
+        let approval = Item { source: SourceRef::suite(), ..item("p", Kind::Approval) };
+        assert!(mute_options(&approval).is_empty(), "approvals are never muted");
+    }
+
+    #[test]
+    fn a_trait_holds_for_every_source_of_its_kind_until_it_ends() {
+        let sender = facet(FacetKey::Sender, "news@shop.example");
+        let rule = muting_rule(SourceRef::mail("anna@example.org"), sender, MuteEffect::Hide, Some(at(12)));
+        let work = newsletter("anna@work.example.org");
+        assert!(mutes(&rule, &work, at(11)), "every mail account");
+        assert!(!mutes(&rule, &work, at(12)), "ended");
+        let other = Item { facets: facets(&mail_from(Some("b@shop.example")), None, false), ..mail_from(None) };
+        assert!(!mutes(&rule, &other, at(9)), "another sender");
+        let project = facet(FacetKey::Project, "TorroWorkplace");
+        let agents = muting_rule(SourceRef::agent("codex"), project, MuteEffect::Info, None);
+        assert!(mutes(&agents, &waiting_agent("TorroWorkplace"), at(9)), "every agent");
+        assert!(!mutes(&agents, &waiting_agent("website"), at(9)));
+        assert!(!mutes(&agents, &newsletter("anna@example.org"), at(9)), "no other kind of source");
+        // Never the person's own, whatever the rule says.
+        let suite = Item {
+            source: SourceRef::suite(),
+            facets: vec![facet(FacetKey::Client, "backup")],
+            ..item("p", Kind::Approval)
+        };
+        let client = muting_rule(SourceRef::suite(), facet(FacetKey::Client, "backup"), MuteEffect::Hide, None);
+        assert!(!mutes(&client, &suite, at(9)));
+    }
+
+    #[test]
+    fn muting_hides_or_moves_what_is_there_already() {
+        let mut waiting = waiting_agent("TorroWorkplace");
+        assert_eq!(mute_entry(&mut waiting, MuteEffect::NoPopup, at(9)), None);
+        assert_eq!(mute_entry(&mut waiting, MuteEffect::Info, at(9)), Some(MutedEntry::Moved));
+        assert_eq!((waiting.lane, waiting.urgent), (Lane::Info, false), "no longer urgent");
+        assert_eq!(mute_entry(&mut waiting, MuteEffect::Info, at(9)), None, "in Info already");
+        let mut snoozed = Item { state: State::Snoozed { until: at(20) }, ..item("s", Kind::Notice) };
+        assert_eq!(mute_entry(&mut snoozed, MuteEffect::Hide, at(9)), Some(MutedEntry::Done));
+        assert_eq!(snoozed.state, State::Done { at: at(9) });
+        assert_eq!(mute_entry(&mut snoozed, MuteEffect::Hide, at(10)), None, "done already");
+        assert_eq!(later_end(Some(at(9)), Some(at(10))), Some(at(10)));
+        assert_eq!(later_end(Some(at(9)), None), None, "for good lasts longest");
+    }
+
+    #[test]
+    fn a_conversation_holds_only_in_its_own_source() {
+        let thread = facet(FacetKey::Conversation, "thread-m");
+        let rule = muting_rule(SourceRef::mail("anna@example.org"), thread, MuteEffect::NoPopup, None);
+        assert!(mutes(&rule, &newsletter("anna@example.org"), at(9)));
+        assert!(!mutes(&rule, &newsletter("anna@work.example.org"), at(9)), "a thread key lives in its source");
+        assert!(!mutes(&rule, &Item { thread_key: "other".into(), ..newsletter("anna@example.org") }, at(9)));
+    }
+
+    #[test]
+    fn the_strongest_muting_wins_and_rules_with_traits_drop_nothing_by_sender() {
+        let mail = newsletter("anna@example.org");
+        let source = || SourceRef::mail("anna@example.org");
+        let quiet = muting_rule(source(), facet(FacetKey::Bulk, "bulk"), MuteEffect::NoPopup, None);
+        let info = muting_rule(source(), facet(FacetKey::List, "<news.shop.example>"), MuteEffect::Info, None);
+        let hide = muting_rule(source(), facet(FacetKey::Domain, "shop.example"), MuteEffect::Hide, Some(at(10)));
+        assert_eq!(muting(std::slice::from_ref(&quiet), &mail, at(9)), Some(MuteEffect::NoPopup));
+        assert_eq!(muting(&[quiet.clone(), info.clone()], &mail, at(9)), Some(MuteEffect::Info));
+        let all = [quiet, info, hide.clone()];
+        assert_eq!(muting(&all, &mail, at(9)), Some(MuteEffect::Hide));
+        assert_eq!(muting(&all, &mail, at(10)), Some(MuteEffect::Info), "the ended one holds no more");
+        assert_eq!(muting(&all, &item("n", Kind::Notice), at(9)), None);
+        // A muting rule with a trait is no rule for the whole source or a hidden sender.
+        assert!(!drops(&hide, Some("news@shop.example")) && !drops(&hide, None));
+        assert!(!is_hiding(&hide) && !hides(&hide, &mail));
+        assert!(is_active(&hide, at(9)) && !is_active(&hide, at(10)));
     }
 
     #[test]

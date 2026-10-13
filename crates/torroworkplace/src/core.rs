@@ -1253,6 +1253,8 @@ impl Core {
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
             | Request::HideSender { .. }
+            | Request::ListMuteOptions { .. }
+            | Request::MuteItem { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -1422,7 +1424,7 @@ impl Core {
             Response::Todo { todo } => todo,
             failed => return failed,
         };
-        let done = Request::SetItemDone { id: id.to_string(), done: true };
+        let done = Request::SetItemDone { id: id.to_string(), done: true, dismissed: false };
         match self.inbox.handle(done, client, Utc::now()) {
             Response::Error { message, .. } => {
                 eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
@@ -5327,6 +5329,7 @@ mod tests {
             link: Some(torro_inbox::Link::Url { url: "https://ci.example.org/run/7".into() }),
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
         let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due);
@@ -5652,6 +5655,7 @@ mod tests {
             snippet: "Autumn sale".into(),
             from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
             bulk: true,
+            list: None,
             date: Utc::now(),
         };
         let id =
@@ -5706,6 +5710,7 @@ mod tests {
             snippet: "Tuesday?".into(),
             from: Some(torro_inbox::Sender { name: "Bernd".into(), address: Some("bernd@example.com".into()) }),
             bulk: false,
+            list: None,
             date: Utc::now(),
         };
         let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -5718,6 +5723,67 @@ mod tests {
         let answer = ask(&core, Some(&writer), conversation).await;
         let Response::Hidden(hidden) = answer else { panic!("write rights hide a conversation: {answer:?}") };
         assert_eq!((hidden.rule, hidden.done), (None, vec![id]));
+    }
+
+    /// Task E8.6a: muting by a trait is a rule – admin switch and the person, with the trait named
+    /// from the inbox and the approval pinned to the entry; the conversation hidden for good is not.
+    #[tokio::test]
+    async fn muting_by_a_trait_needs_the_admin_switch_and_the_person() {
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mail = |message: &str| crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: message.into(),
+            thread: "t:1".into(),
+            subject: "Weekly news".into(),
+            snippet: "Autumn sale".into(),
+            from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
+            bulk: true,
+            list: None,
+            date: Utc::now(),
+        };
+        let id =
+            core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let reading_mail = |admin| {
+            let mut rights = RightsTemplate::FullAccess.rights();
+            rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin });
+            rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            rights.mail_accounts = Selection::All;
+            rights
+        };
+        let sender = MuteScope::Facet { key: FacetKey::Sender };
+        let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
+        let (_, writer) = client(&core, reading_mail(false)).await;
+        assert_eq!(code(&ask(&core, Some(&writer), by_sender()).await), "forbidden", "write rights are not enough");
+        let only_this =
+            Request::MuteItem { id: id.clone(), scope: MuteScope::Conversation, until: None, effect: MuteEffect::Hide };
+        let answer = ask(&core, Some(&writer), only_this).await;
+        let Response::Muted(hidden) = answer else { panic!("write rights hide one conversation: {answer:?}") };
+        assert_eq!((hidden.rule, hidden.done), (None, vec![id.clone()]));
+
+        let (_, admin) = client(&core, reading_mail(true)).await;
+        let asked = waits(ask(&core, Some(&admin), by_sender()).await);
+        assert_eq!(asked.command, "inbox.mute_item");
+        let what = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        let what = trf("{what} in every mail account", &[("what", &what)]);
+        let effect = tr("hidden");
+        assert_eq!(asked.summary, trf("Mute {what} for good ({effect})", &[("what", &what), ("effect", &effect)]));
+        // A new mail came in while the person looked: what they allowed is not what would run.
+        core.inbox.file_mail(&mail("m:2"), torro_mail::Notify::All, Utc::now()).expect("filed");
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+
+        let asked = waits(ask(&core, Some(&admin), by_sender()).await);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        let Response::Muted(muted) = *response else { panic!("muting answers what it changed") };
+        let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
+        assert_eq!(facet.value, "news@shop.example", "the entry's value");
+        assert_eq!(muted.done, [id]);
     }
 
     #[tokio::test]

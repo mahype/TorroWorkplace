@@ -13,7 +13,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::tr;
 
-use crate::item::{Hidden, HideScope, Item, Lane, SourceInfo, SourceRef, State};
+use crate::item::{
+    Hidden, HideScope, Item, Lane, MuteEffect, MuteOption, MuteScope, Muted, SourceInfo, SourceRef, State,
+};
 use crate::rules;
 
 /// What the app can do with the inbox. Every method is one `inbox.*` request; the core checks
@@ -31,6 +33,38 @@ pub trait InboxSource: Send + Sync {
     /// stored. [`InboxError::NotFound`] for an unknown id, [`InboxError::Forbidden`] when the
     /// client may not change it ([`rules::human_only`]).
     fn set_item_done(&self, id: String, done: bool) -> impl Future<Output = Result<Item, InboxError>> + Send;
+
+    /// Dismisses the entry ("✕", task E8.6a): done like [`InboxSource::set_item_done`] with `true`
+    /// (`inbox.set_item_done` with `dismissed: true`), so the statistics (E8.8) tell dismissing
+    /// apart from done. Undo is [`InboxSource::set_item_done`] with `false`. Returns the entry as
+    /// stored; errors as [`InboxSource::set_item_done`].
+    fn dismiss_item(&self, id: String) -> impl Future<Output = Result<Item, InboxError>> + Send;
+
+    /// The ways to mute the entry `id` for the bell's menu (`inbox.list_mute_options`, task E8.6a),
+    /// built by the core from the stored entry ([`rules::mute_options`]): the conversation first,
+    /// then its traits, each with its words. Values and words marked `untrusted` are foreign text.
+    /// Empty for the person's own entries. [`InboxError::NotFound`] for an unknown id.
+    fn list_mute_options(&self, id: String) -> impl Future<Output = Result<Vec<MuteOption>, InboxError>> + Send;
+
+    /// Mutes by the entry `id` (`inbox.mute_item`, task E8.6a): its conversation or one of its
+    /// traits (`scope`, the value always from the stored entry), until `until` or for good (`None`),
+    /// with `effect` – no popup, only "Info", or hidden. Except for the conversation hidden or moved
+    /// for good ([`MuteScope::keeps_rule`]) a rule is kept (admin level); the open entries it holds
+    /// for are done (`hide`) or moved to "Info" (`info`) at once. Returns what changed ([`Muted`]),
+    /// so the app can take it back exactly: [`InboxSource::remove_rule`] for a new rule,
+    /// [`InboxSource::set_item_done`] with `false` for each id in [`Muted::done`] and
+    /// [`InboxSource::set_item_lane`] to "for me" for each in [`Muted::moved`].
+    ///
+    /// [`InboxError::NotFound`] for an unknown entry, [`InboxError::Forbidden`] for one the client
+    /// may not change ([`rules::human_only`]), [`InboxError::Other`] for a trait the entry does not
+    /// have or an `until` that has passed.
+    fn mute_item(
+        &self,
+        id: String,
+        scope: MuteScope,
+        until: Option<DateTime<Utc>>,
+        effect: MuteEffect,
+    ) -> impl Future<Output = Result<Muted, InboxError>> + Send;
 
     /// Puts the entry off until `until`, or takes it back with `None` ([`rules::snooze`]).
     /// Returns it as stored; errors as [`InboxSource::set_item_done`].
@@ -260,6 +294,7 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         }
     }
 

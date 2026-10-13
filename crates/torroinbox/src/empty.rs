@@ -4,14 +4,15 @@
 //! tests use this one to see the empty state and views that start without any data.
 
 use chrono::{DateTime, NaiveDate, Utc};
-use torro_inbox::item::HideScope;
+use torro_inbox::item::{HideScope, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 
 /// An inbox without entries and without sources. Listing gives nothing (no task lists either);
 /// changing or opening an entry, making a task of it or deciding an approval gives
 /// [`InboxError::NotFound`] (there is none), muting [`InboxError::Offline`] (nothing would keep it);
-/// hiding a sender and removing a rule [`InboxError::NotFound`] (no entry to hide it by, no rule).
+/// hiding a sender and removing a rule [`InboxError::NotFound`] (no entry to hide it by, no rule);
+/// dismissing, listing the ways to mute and muting [`InboxError::NotFound`] too (no entry).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptySource;
 
@@ -25,6 +26,24 @@ impl InboxSource for EmptySource {
     }
 
     async fn set_item_done(&self, _id: String, _done: bool) -> Result<Item, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn dismiss_item(&self, _id: String) -> Result<Item, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn list_mute_options(&self, _id: String) -> Result<Vec<MuteOption>, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn mute_item(
+        &self,
+        _id: String,
+        _scope: MuteScope,
+        _until: Option<DateTime<Utc>>,
+        _effect: MuteEffect,
+    ) -> Result<Muted, InboxError> {
         Err(InboxError::NotFound)
     }
 

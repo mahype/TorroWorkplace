@@ -134,6 +134,8 @@ fn ordered(rules: &[Rule]) -> Vec<&Rule> {
         RuleEffect::Lane { .. } => 0,
         RuleEffect::Muted if is_hidden(rule) => 2,
         RuleEffect::Muted => 1,
+        // Muted traits (task E8.6a) get their own words with task E8.6b.
+        RuleEffect::NoPopup => 3,
     });
     ordered
 }
@@ -158,6 +160,8 @@ fn sentence(rule: &Rule) -> String {
         (RuleEffect::Muted, Some(sender), _) => trf("Hidden: {sender}", &[("sender", sender)]),
         (RuleEffect::Muted, None, Some(domain)) => trf("Hidden: everything from {domain}", &[("domain", domain)]),
         (RuleEffect::Muted, None, None) => trf("{source} is muted", &[("source", &source)]),
+        // Words that name the trait come with task E8.6b.
+        (RuleEffect::NoPopup, _, _) => trf("{source}: no popups", &[("source", &source)]),
     }
 }
 
@@ -235,7 +239,7 @@ mod tests {
 
     fn rule(id: &str, source: SourceRef, effect: RuleEffect) -> Rule {
         let created = DateTime::parse_from_rfc3339("2026-10-12T08:00:00Z").expect("time").with_timezone(&Utc);
-        Rule { id: id.into(), source, sender: None, domain: None, effect, created }
+        Rule { id: id.into(), source, sender: None, domain: None, effect, created, facet: None, until: None }
     }
 
     fn inbox_app(installed: bool) -> AppInfo {

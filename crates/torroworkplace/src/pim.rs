@@ -1067,6 +1067,8 @@ impl PimService {
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
             | Request::HideSender { .. }
+            | Request::ListMuteOptions { .. }
+            | Request::MuteItem { .. }
             | Request::ListRules
             | Request::RemoveRule { .. } => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,

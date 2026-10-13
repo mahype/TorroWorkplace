@@ -829,10 +829,18 @@ E8.9   unabhängig (torro-wm, core.rs)
   Vertagen (Test auf die Knopfliste je Eintragsart).
 
 ### E8.6a Stummschalten nach Merkmalen: Kern
-- [ ] erledigt
+- [x] erledigt (zusätzlich freigegeben, nur so weit der Compiler es erzwingt: `torroworkplace/src/{daemon,pim}.rs`
+  (je zwei Zweige für die neuen Requests), `torroworkplace/src/ui/{inbox,launch}.rs` (neue Felder an `Rule`, Zweig für
+  `NoPopup` mit vorläufigem Satz), `torroinbox/src/empty.rs` (drei Trait-Methoden mit `NotFound`); Wirkung in
+  Requests `MuteEffect`, an der Regel `Info` = Spur Info, `Hide` = `Muted`, neu nur `RuleEffect::NoPopup`; eine Regel
+  mit Merkmal gilt für alle Quellen derselben Art, die Unterhaltung nur in ihrer Quelle; Antwort `muted` mit `done`
+  und `moved`; Merkmal „Thema“ der Skripte fehlt, weil `inbox.post_item` kein Feld dafür hat; `docs/api-reference.md`
+  gibt es nicht und nichts erzeugt sie, `TORRO_BLESS` wertet kein Test aus)
 - **Modell:** Opus · **Braucht:** E3.11 · **Dateien:** `crates/torro-inbox/src/{item,rules,source,demo}.rs`,
   `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,inbox_notify,mcp,approvals,audit}.rs`,
-  `crates/torroworkplace/src/mail/inbox_feed.rs`, `docs/api-reference.md`; Doku: `docs/{api,eingang}.md`
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `docs/api-reference.md`; Doku: `docs/{api,eingang}.md`; zusätzlich
+  `crates/torroworkplace/src/{daemon,pim}.rs`, `crates/torroworkplace/src/ui/{inbox,launch}.rs`,
+  `crates/torroinbox/src/empty.rs`
 - **Merkmale am Eintrag** (`facets`): je Quelle, was sie verlässlich liefert (Tabelle in `eingang.md`). Heute: Mail
   (Konto, Absender, Domain, `List-Id`, Massenmail, Unterhaltung), Agenten (Agent, Projekt, Art), Skripte (Client,
   Thema). Weitere Quellen tragen ihre mit E5/E7 nach.

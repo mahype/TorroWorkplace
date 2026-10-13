@@ -266,7 +266,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. }
-        | Request::HideSender { id: entry, .. } => vec![random("inbox", entry)],
+        | Request::HideSender { id: entry, .. }
+        // The entry only, never the trait muted or its value (task E8.6a).
+        | Request::ListMuteOptions { id: entry }
+        | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
         }
@@ -540,6 +543,18 @@ pub(crate) mod tests {
         assert_eq!(super::ids(&mail), vec!["app:torro-inbox-mail".to_string()], "a window class of the suite");
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
+        // Muting (task E8.6a): the entry only, never the trait or a value of it.
+        let sender = torro_inbox::item::MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
+        let mute = Request::MuteItem {
+            id: "3d29c13547a49e39".into(),
+            scope: sender,
+            until: None,
+            effect: torro_inbox::item::MuteEffect::Hide,
+        };
+        assert_eq!(super::ids(&mute), vec!["inbox:3d29c13547a49e39".to_string()]);
+        let options = Request::ListMuteOptions { id: "news@shop.example".into() };
+        let logged = super::ids(&options).join(" ");
+        assert!(logged.starts_with("inbox:hash:") && !logged.contains("shop"), "{logged}");
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they

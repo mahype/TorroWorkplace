@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules`, `list_mute_options` ¹¹ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -318,6 +318,37 @@ Schlüsseln, die dieses Konto lesen dürfen, obwohl sie in allen Konten wirkt. E
 Konto, das der Schlüssel nicht lesen darf, gibt `hide_sender` nie heraus (auch nicht als
 „gibt es schon“): Der Schlüssel bekommt dann eine eigene Regel in seinem Konto. `not-found` für Einträge, die der Schlüssel nicht sieht, `error` für
 Einträge, die keine Mail sind, und bei `sender`/`domain` für Mail ohne Absender.
+
+¹¹ Stummschalten nach Merkmalen (E8.6a, Konzept [eingang.md](eingang.md#stummschalten-nach-merkmalen)).
+Jeder Eintrag trägt `facets`: die Merkmale, die seine Quelle verlässlich liefert (Mail: Konto,
+Absender, Domain, Liste, Massenmail; Agenten: Agent, Projekt, Art; Skripte: Client), vom Dienst
+beim Melden gesetzt, nie vom Absender. `list_mute_options { id }` (`Read`) nennt die Möglichkeiten
+für das Menü der Glocke: zuerst die Unterhaltung, dann jedes Merkmal mit Umfang, Wert aus dem
+gespeicherten Eintrag, Wort für das Menü, `untrusted` (alles außer Konto, Massenmail und Art ist
+Fremdtext) und `admin` (jede Wahl braucht `Admin`). `mute_item { id, scope: conversation | facet {
+key }, until?, effect: no_popup | info | hide }` nimmt den Wert **immer aus dem gespeicherten
+Eintrag**, nie aus dem Request – so kann kein Agent beliebige Absender stummschalten, und die Freigabe
+zeigt keinen Text des Clients. Stufe in `Request::operation`: `Write` nur für `conversation` mit
+`hide` oder `info` ohne `until` (erledigt bzw. verschiebt nur diesen Eintrag, keine Regel, wie
+`hide_sender` mit `conversation`), alles andere ist eine Regel und `Admin`; der Katalog nennt
+`Write`. Eine Regel (`Rule` mit `facet` und `until`) gilt für alle Quellen derselben Art (ein
+Absender in allen Mail-Konten, ein Projekt für alle Agenten), die Unterhaltung nur in ihrer Quelle;
+sie wird bei der Quelle des Eintrags gespeichert und nur Schlüsseln gezeigt, die diese sehen. Die
+offenen und vertagten Einträge, für die sie gilt, werden sofort erledigt (`hide`) bzw. nach „Info“
+verschoben (`info`); neue Meldungen kommen ohne Popup (`no_popup`), unter „Info“ oder gar nicht.
+Abgelaufene Regeln wirken nicht mehr, fehlen in `list_rules` und werden vom Dienst gelöscht. Dasselbe
+Merkmal noch einmal ergibt die vorhandene Regel (`new_rule: false`), die so lange gilt wie die
+längere der beiden. Antwort `muted`: `rule`, `new_rule`, `done` und `moved` (nur Ids, die der
+Schlüssel sieht). Undo: `remove_rule` bei `new_rule`, `set_item_done` mit `done: false` für `done`,
+`set_item_lane` nach `for_me` für `moved`. Wie `hide_sender` wirkt nichts in die Mail zurück.
+Freigaben und Einträge der Suite trifft keine Regel: `not-found` für Client-Schlüssel, `forbidden`
+für den App-Schlüssel; `error` für ein Merkmal, das der Eintrag nicht hat, oder ein `until` in der
+Vergangenheit; `conflict`, wenn sich der Eintrag während der Freigabe geändert hat. Die Freigabe
+nennt Merkmal und Wert aus dem Eintrag, die Reichweite, Dauer und Wirkung in Worten („Mute “Mail from
+news@shop.example” in every mail account for good (hidden)“). Ins Protokoll kommt nur die Kennung des
+Eintrags. Den Wert einer Regel für die Unterhaltung (den `thread_key`) sieht nur der App-Schlüssel.
+`set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
+Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine

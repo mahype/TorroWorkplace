@@ -83,8 +83,20 @@
 //! (`crate::mail::inbox_feed::mark_read`), and the mail feed settles only open entries, so a hidden
 //! mail stays unread and where it is. The answer names what changed ([`torro_inbox::Hidden`]), so
 //! the app can take it back exactly.
+//!
+//! **Muting by traits** (task E8.6a, `inbox.list_mute_options`, `inbox.mute_item`, [`mute_item`]):
+//! every report gets the traits of its source from the core ([`rules::facets`]: account, sender,
+//! domain, list and bulk of mail, agent, project and kind of a hook's entry, the client of a
+//! script), never from the poster, and a muting call takes the value from the stored entry, never
+//! from the request. A rule with a trait holds for every source of the kind, one for a conversation
+//! in its source ([`rules::reaches`]); it is kept with the entry's source, which decides who sees
+//! it. New reports it holds for are dropped (hide), filed in "Info" or filed without a popup
+//! ([`Inbox::no_popup`]); rules that ended hold no more and are removed by [`Inbox::tend`]. Only
+//! the conversation hidden or moved for good keeps no rule. Approvals and the suite's entries have
+//! no traits and are never muted (security rule 1). Dismissing (`inbox.set_item_done` with
+//! `dismissed`) is kept beside the entry in the column `dismissed`, for the statistics.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -98,8 +110,8 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
-use torro_inbox::item::HideScope;
-use torro_inbox::rules::{self, KEEP_DONE_DAYS, Poster};
+use torro_inbox::item::{Facet, FacetKey, HideScope, MuteEffect, MuteScope, Muted};
+use torro_inbox::rules::{self, KEEP_DONE_DAYS, MutedEntry, Poster};
 use torro_inbox::{
     Action, AgentInfo, AgentKind, Hidden, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
     SourceKind, SourceRef, State, StateFilter,
@@ -119,7 +131,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -242,6 +254,30 @@ DROP TABLE rules;
 ALTER TABLE rules_v3 RENAME TO rules;
 ";
 
+/// From schema version 3 to 4 (task E8.6a):
+///
+/// - `items` gets `dismissed`, 1 for an entry done with `dismissed: true` ("✕"), so the statistics
+///   (task E8.8) can tell dismissing apart from done; opening the entry again clears it.
+/// - `rules` gets `facet` (empty for rules without a trait, else `<key>=<value>`, [`facet_column`])
+///   and `until` (when a rule ends, a time like the others; `NULL` for good). The table is built
+///   anew once more, now with one rule per source, effect, sender and trait.
+const SCHEMA_V4: &str = "
+ALTER TABLE items ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE rules_v4 (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    effect TEXT NOT NULL,
+    sender TEXT NOT NULL DEFAULT '',
+    facet TEXT NOT NULL DEFAULT '',
+    until TEXT,
+    data TEXT NOT NULL,
+    UNIQUE (source, effect, sender, facet)
+);
+INSERT INTO rules_v4 (id, source, effect, sender, data) SELECT id, source, effect, sender, data FROM rules;
+DROP TABLE rules;
+ALTER TABLE rules_v4 RENAME TO rules;
+";
+
 /// The inbox: `inbox.sqlite`, opened on first use.
 pub struct Inbox {
     /// `None` without a home directory (and in tests that forget their own file): every request
@@ -341,7 +377,7 @@ impl Inbox {
                 .map(drop)
                 .map_err(Failure::Forbidden),
             // Done marks a mail entry's mail read on the server (task E4.1); a task marks it done.
-            Request::SetItemDone { id, done: true } | Request::CreateTaskFromItem { id, .. } => {
+            Request::SetItemDone { id, done: true, .. } | Request::CreateTaskFromItem { id, .. } => {
                 check_mail_done(&changeable(db, id, Some(client))?.item, Some(client))
             }
             // Nobody is asked to approve remembering a mail's lane when there is no sender to keep it for.
@@ -354,6 +390,10 @@ impl Inbox {
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
             // Nobody is asked to approve hiding an entry that names no mail sender.
             Request::HideSender { id, scope } => check_hide(&changeable(db, id, Some(client))?.item, *scope),
+            // Nobody is asked to approve muting by a trait the entry lacks, or until a time gone by.
+            Request::MuteItem { id, scope, until, .. } => {
+                check_mute(&changeable(db, id, Some(client))?.item, *scope, *until, Utc::now()).map(drop)
+            }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
             _ => Ok(()),
@@ -374,6 +414,7 @@ impl Inbox {
                 | Request::SnoozeItem { id, .. }
                 | Request::SetItemLane { id, .. }
                 | Request::HideSender { id, .. }
+                | Request::MuteItem { id, .. }
                 | Request::CreateTaskFromItem { id, .. } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, ..InboxFacts::default() }
@@ -389,6 +430,23 @@ impl Inbox {
             eprintln!("torroworkplace: inbox: cannot look up an approval's entry: {failure}");
             InboxFacts::default()
         })
+    }
+
+    /// The ids of the entries among `items` that come without a popup at `now` (task E8.6a): a
+    /// muted trait with "no popup" holds for them ([`rules::mutes`]). For the popups
+    /// (`crate::inbox_notify`), which pass the entries [`Inbox::for_me`] listed. Empty when the file
+    /// cannot be read (logged): better a popup too many than none at all.
+    pub fn no_popup(&self, items: &[Item], now: DateTime<Utc>) -> BTreeSet<String> {
+        let quiet = self.with(|db| read_rules(db, &Scope::All, "facet <> '' AND effect = 'no_popup'", Vec::new()));
+        let quiet = quiet.unwrap_or_else(|failure| {
+            eprintln!("torroworkplace: inbox: cannot read the rules for popups: {failure}");
+            Vec::new()
+        });
+        items
+            .iter()
+            .filter(|item| quiet.iter().any(|rule| rules::mutes(rule, item, now)))
+            .map(|item| item.id.clone())
+            .collect()
     }
 
     /// How to open the entry `id` for `client` (`None` for the app key), for `inbox.open_item`:
@@ -449,12 +507,13 @@ impl Inbox {
         }
     }
 
-    /// The daemon's routine at `now`: wakes snoozed entries that are due and, with `clean_up`,
-    /// removes entries done [`KEEP_DONE_DAYS`] or more ago. Returns how many woke and how many
-    /// were removed; `Err` holds the message for the log.
+    /// The daemon's routine at `now`: wakes snoozed entries that are due, removes rules that ended
+    /// (task E8.6a) and, with `clean_up`, removes entries done [`KEEP_DONE_DAYS`] or more ago.
+    /// Returns how many woke and how many entries were removed; `Err` holds the message for the log.
     pub fn tend(&self, now: DateTime<Utc>, clean_up: bool) -> Result<(usize, usize), String> {
         self.with(|db| {
             let woken = wake_due(db, now)?;
+            remove_ended_rules(db, now)?;
             let removed = if clean_up { remove_expired(db, now)? } else { 0 };
             Ok((woken, removed))
         })
@@ -809,11 +868,15 @@ fn answer(
             resolve(db, &thread_key, client, now)?;
             Ok(Response::Ok)
         }
-        Request::SetItemDone { id, done } => {
+        Request::SetItemDone { id, done, dismissed } => {
             if done {
                 check_mail_done(&changeable(db, &id, client)?.item, client)?;
             }
-            let stored = change(db, &id, client, |item| rules::set_done(item, done, now))?;
+            let tx = db.transaction()?;
+            let stored = change(&tx, &id, client, |item| rules::set_done(item, done, now))?;
+            // Kept beside the entry for the statistics (task E8.8): dismissed, or done for real.
+            tx.execute("UPDATE items SET dismissed = ?2 WHERE id = ?1", params![id, done && dismissed])?;
+            tx.commit()?;
             Ok(Response::Item { item: stored.shown_to(client) })
         }
         Request::SnoozeItem { id, until } => {
@@ -840,6 +903,16 @@ fn answer(
             tx.commit()?;
             Ok(Response::Hidden(hidden))
         }
+        Request::ListMuteOptions { id } => {
+            wake_due(db, now)?;
+            Ok(Response::MuteOptions { options: rules::mute_options(&visible_item(db, &id, client)?.item) })
+        }
+        Request::MuteItem { id, scope, until, effect } => {
+            let tx = db.transaction()?;
+            let muted = mute_item(&tx, &id, Muting { scope, until, effect }, client, now)?;
+            tx.commit()?;
+            Ok(Response::Muted(muted))
+        }
         // Opening needs the window manager, the browser or the apps: the core answers it with
         // `Inbox::opening` and `Inbox::opened`.
         Request::OpenItem { .. } => Err(Failure::Invalid("inbox.open_item is answered by the core".into())),
@@ -848,7 +921,7 @@ fn answer(
         Request::CreateTaskFromItem { .. } => {
             Err(Failure::Invalid("inbox.create_task_from_item is answered by the core".into()))
         }
-        Request::ListRules => Ok(Response::Rules { rules: list_rules(db, client)? }),
+        Request::ListRules => Ok(Response::Rules { rules: list_rules(db, client, now)? }),
         Request::RemoveRule { id } => {
             removable_rule(db, &id, client)?;
             db.execute("DELETE FROM rules WHERE id = ?1", params![id])?;
@@ -1137,19 +1210,35 @@ fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Sour
             sources.insert(source.clone(), SourceInfo { source, open, muted: false });
         }
     }
-    // A hidden sender or domain (task E3.10) mutes only its mail, not the source.
-    for rule in read_rules(db, &scope, "effect = 'muted' AND sender = ''", Vec::new())? {
+    // A hidden sender or domain (task E3.10) or a muted trait (task E8.6a) mutes only some of its
+    // reports, not the source.
+    for rule in read_rules(db, &scope, "effect = 'muted' AND sender = '' AND facet = ''", Vec::new())? {
         let source = rule.source.clone();
         sources.entry(source.clone()).or_insert(SourceInfo { source, open: 0, muted: false }).muted = true;
     }
     Ok(sources.into_values().collect())
 }
 
-/// The rules about sources `client` sees, oldest first.
-fn list_rules(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Rule>, Failure> {
+/// The rules about sources `client` sees that have not ended at `now` ([`rules::is_active`]),
+/// oldest first.
+fn list_rules(db: &Connection, client: Option<&ClientInfo>, now: DateTime<Utc>) -> Result<Vec<Rule>, Failure> {
     let mut rules = read_rules(db, &Scope::of(client), "1", Vec::new())?;
+    rules.retain(|rule| rules::is_active(rule, now));
     rules.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
-    Ok(rules)
+    Ok(rules.into_iter().map(|rule| rule_shown_to(rule, client)).collect())
+}
+
+/// `rule` as `client` may see it (task E8.6a): a rule for a conversation holds that entry's thread
+/// key, which only its poster and the app key ever see ([`Stored::shown_to`]), so for every client
+/// key its value is empty. The app key (`None`) sees it all.
+fn rule_shown_to(mut rule: Rule, client: Option<&ClientInfo>) -> Rule {
+    if client.is_some()
+        && let Some(facet) = rule.facet.as_mut()
+        && facet.key == FacetKey::Conversation
+    {
+        facet.value.clear();
+    }
+    rule
 }
 
 /// The fields of `inbox.post_item`.
@@ -1164,8 +1253,9 @@ struct Post {
 }
 
 /// Files the report of `client`: merged into its own entry with the same `thread_key`, or a new
-/// entry, which the throttle counts. Returns the entry's id; `None` when the source is muted and
-/// the report was dropped.
+/// entry, which the throttle counts. Returns the entry's id; `None` when the source is muted or a
+/// muted trait hides it (task E8.6a) and the report was dropped; a trait muted to "Info" files it
+/// there.
 fn post(
     db: &mut Connection,
     post: Post,
@@ -1194,7 +1284,9 @@ fn post(
         None | Some(Link::Window) => window_link(kind, agent.as_ref()),
         link => link,
     };
-    let rules = read_rules(db, &Scope::All, "source = ?", vec![text(source.key())])?;
+    // The source's own rules, and the traits muted in any source of its kind (task E8.6a).
+    let condition = "source = ? OR (facet <> '' AND instr(source, ?) = 1)";
+    let rules = read_rules(db, &Scope::All, condition, vec![text(source.key()), text(kind_prefix(&source))])?;
     // A report has no sender's address: only a mute of the whole source drops it.
     if rules.iter().any(|rule| rules::drops(rule, None)) {
         return Ok(None);
@@ -1234,11 +1326,21 @@ fn post(
         actions: Vec::new(),
         // Requests never come from the core: whatever they carry is foreign text (rule 5).
         untrusted: true,
+        facets: Vec::new(),
     };
     // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
     // window of a hook's agent); anything else is dropped, not refused.
     if !rules::may_open(&incoming, is_app_of_the_suite) {
         incoming.link = None;
+    }
+    // The traits are the core's, from the client and the hook's session, never the poster's word.
+    incoming.facets = rules::facets(&incoming, None, false);
+    match rules::muting(&rules, &incoming, now) {
+        // Dropped before anything is written; the transaction is rolled back.
+        Some(MuteEffect::Hide) => return Ok(None),
+        Some(MuteEffect::Info) => rules::set_lane(&mut incoming, Lane::Info),
+        // No popup is the popups' to heed (`Inbox::no_popup`).
+        Some(MuteEffect::NoPopup) | None => {}
     }
     match existing {
         Some(existing) => update_item(&tx, &rules::merge(existing, incoming))?,
@@ -1418,7 +1520,7 @@ fn change(
 fn remember_lane(db: &Connection, item: &Item, lane: Lane, now: DateTime<Utc>) -> Result<(), Failure> {
     let sender = remembered_sender(item)?;
     db.execute(
-        "DELETE FROM rules WHERE source = ?1 AND effect = 'lane' AND sender = ?2",
+        "DELETE FROM rules WHERE source = ?1 AND effect = 'lane' AND sender = ?2 AND facet = ''",
         params![item.source.key(), sender.as_deref().unwrap_or_default()],
     )?;
     let rule = Rule {
@@ -1428,15 +1530,18 @@ fn remember_lane(db: &Connection, item: &Item, lane: Lane, now: DateTime<Utc>) -
         domain: None,
         effect: RuleEffect::Lane { lane },
         created: now,
+        facet: None,
+        until: None,
     };
     insert_rule(db, rule)
 }
 
-/// The lane `rule` keeps, if it keeps one.
+/// The lane `rule` keeps for a whole source or sender, if it keeps one; a muted trait (task E8.6a)
+/// keeps none here, it is asked with the whole entry ([`rules::muting`]).
 fn remembered_lane(rule: &Rule) -> Option<Lane> {
     match rule.effect {
-        RuleEffect::Lane { lane } => Some(lane),
-        RuleEffect::Muted => None,
+        RuleEffect::Lane { lane } if rule.facet.is_none() => Some(lane),
+        RuleEffect::Lane { .. } | RuleEffect::Muted | RuleEffect::NoPopup => None,
     }
 }
 
@@ -1454,7 +1559,8 @@ fn remembered_sender(item: &Item) -> Result<Option<String>, Failure> {
 /// senders and domains hidden in it (task E3.10): those are rules of their own.
 fn set_muted(db: &Connection, source: &SourceRef, muted: bool, now: DateTime<Utc>) -> Result<(), Failure> {
     if !muted {
-        db.execute("DELETE FROM rules WHERE source = ?1 AND effect = 'muted' AND sender = ''", params![source.key()])?;
+        let unmute = "DELETE FROM rules WHERE source = ?1 AND effect = 'muted' AND sender = '' AND facet = ''";
+        db.execute(unmute, params![source.key()])?;
         return Ok(());
     }
     let rule = Rule {
@@ -1464,6 +1570,8 @@ fn set_muted(db: &Connection, source: &SourceRef, muted: bool, now: DateTime<Utc
         domain: None,
         effect: RuleEffect::Muted,
         created: now,
+        facet: None,
+        until: None,
     };
     insert_rule(db, rule)
 }
@@ -1514,6 +1622,8 @@ fn hide_sender(
             domain,
             effect: RuleEffect::Muted,
             created: now,
+            facet: None,
+            until: None,
         };
         let (rule, new_rule) = hiding_rule(db, candidate, client)?;
         (Some(rule), new_rule)
@@ -1550,7 +1660,7 @@ fn hide_sender(
 /// own beside it; the person (the app key) sees every account and never makes a second one.
 fn hiding_rule(db: &Connection, candidate: Rule, client: Option<&ClientInfo>) -> Result<(Rule, bool), Failure> {
     let key = text(rule_key(&candidate));
-    let condition = "instr(source, ?) = 1 AND effect = 'muted' AND sender = ?";
+    let condition = "instr(source, ?) = 1 AND effect = 'muted' AND sender = ? AND facet = ''";
     let mut kept = read_rules(db, &Scope::of(client), condition, vec![text(ACCOUNT_PREFIX), key.clone()])?;
     kept.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
     if let Some(rule) = kept.into_iter().next() {
@@ -1558,11 +1668,159 @@ fn hiding_rule(db: &Connection, candidate: Rule, client: Option<&ClientInfo>) ->
     }
     let source = text(candidate.source.key());
     insert_rule(db, candidate)?;
-    let own = "source = ? AND effect = 'muted' AND sender = ?";
+    let own = "source = ? AND effect = 'muted' AND sender = ? AND facet = ''";
     let rule = read_rules(db, &Scope::All, own, vec![source, key])?
         .pop()
         .ok_or_else(|| Failure::Invalid("the rule could not be kept".into()))?;
     Ok((rule, true))
+}
+
+/// What `inbox.mute_item` asks for besides the entry (task E8.6a).
+struct Muting {
+    scope: MuteScope,
+    until: Option<DateTime<Utc>>,
+    effect: MuteEffect,
+}
+
+/// The start of the keys of every source of `source`'s kind (`agent:`, `script:`, `mail:`), which a
+/// muted trait holds for ([`rules::reaches`]); `suite` for the suite, which no rule touches.
+fn kind_prefix(source: &SourceRef) -> String {
+    match source.kind {
+        SourceKind::Suite => SourceRef::suite().key(),
+        SourceKind::Agent => "agent:".into(),
+        SourceKind::Script => "script:".into(),
+        SourceKind::Mail => ACCOUNT_PREFIX.into(),
+    }
+}
+
+/// The trait `inbox.mute_item` with `scope` mutes of `item` ([`rules::mute_target`], from the
+/// stored entry), if muting until `until` may be asked for at `now`. `forbidden` for an approval or
+/// another entry of the suite, which nobody mutes, not even the person (security rule 1; a client
+/// never sees them and got `not-found` before); `error` for an end that has passed or a trait the
+/// entry does not have. The messages name no value: they reach the log.
+fn check_mute(
+    item: &Item,
+    scope: MuteScope,
+    until: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> Result<Facet, Failure> {
+    if rules::human_only(item) {
+        return Err(Failure::Forbidden(InboxForbidden("approvals and the suite's own entries are never muted")));
+    }
+    if until.is_some_and(|until| until <= now) {
+        return Err(Failure::Invalid("the end of muting has passed; give a time in the future or none".into()));
+    }
+    rules::mute_target(item, scope).ok_or_else(|| {
+        Failure::Invalid("this entry has no such trait to mute it by; inbox.list_mute_options lists its own".into())
+    })
+}
+
+/// `inbox.mute_item` (task E8.6a) for `client` on `db`, a transaction: the entry `id` the client may
+/// change ([`changeable`]) and the trait it mutes by ([`check_mute`]), then
+///
+/// - the conversation hidden or moved for good ([`MuteScope::keeps_rule`] says no): only this
+///   entry done or moved to "Info", no rule;
+/// - anything else: the rule ([`muting_rule`]), then every open or snoozed entry of the sources it
+///   reaches that it holds for ([`rules::mutes`]) done (`hide`) or moved (`info`), at `now`.
+///
+/// Like hiding, no mail is read or moved. Returns the rule, whether it is new, and the ids done and
+/// moved that `client` sees ([`Scope::sees`]): a trait holds for every source of the kind, also
+/// those the client may not see, which it must not learn of.
+fn mute_item(
+    db: &Connection,
+    id: &str,
+    muting: Muting,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<Muted, Failure> {
+    let Muting { scope, until, effect } = muting;
+    let item = changeable(db, id, client)?.item;
+    let target = check_mute(&item, scope, until, now)?;
+    let (rule, new_rule) = if scope.keeps_rule(effect, until.is_some()) {
+        let (rule, new_rule) = muting_rule(db, &item.source, target, effect.rule_effect(), until, client, now)?;
+        (Some(rule), new_rule)
+    } else {
+        (None, false)
+    };
+    let candidates = match &rule {
+        Some(_) => {
+            let waiting = "instr(source, ?) = 1 AND state IN ('new', 'seen', 'snoozed')";
+            read_items(db, &Scope::All, waiting, vec![text(kind_prefix(&item.source))], "")?
+        }
+        None => read_items(db, &Scope::All, "id = ?", vec![text(id)], "")?,
+    };
+    let seen_by_client = Scope::of(client);
+    let mut muted = Muted { rule: rule.clone().map(|rule| rule_shown_to(rule, client)), new_rule, ..Muted::default() };
+    for Stored { item: mut entry, .. } in candidates {
+        if rule.as_ref().is_some_and(|rule| !rules::mutes(rule, &entry, now)) {
+            continue;
+        }
+        let Some(change) = rules::mute_entry(&mut entry, effect, now) else { continue };
+        update_item(db, &entry)?;
+        if seen_by_client.sees(&entry.source) {
+            match change {
+                MutedEntry::Done => muted.done.push(entry.id),
+                MutedEntry::Moved => muted.moved.push(entry.id),
+            }
+        }
+    }
+    Ok(muted)
+}
+
+/// The rule muting `facet` with `effect` until `until`, made from an entry of `source` (task
+/// E8.6a): the same rule already kept – same trait and effect, in a source of the kind the client
+/// sees, not ended – with its end now the later of both ([`rules::later_end`]), else a new one about
+/// `source`. With whether it is new. Ended rules are removed first, so one of them never stands in
+/// the way of a new one. A rule in a source the client may not see is never handed out, as for
+/// hiding ([`hiding_rule`]).
+fn muting_rule(
+    db: &Connection,
+    source: &SourceRef,
+    facet: Facet,
+    effect: RuleEffect,
+    until: Option<DateTime<Utc>>,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<(Rule, bool), Failure> {
+    remove_ended_rules(db, now)?;
+    let column = facet_column(&facet);
+    let condition = "effect = ? AND facet = ? AND instr(source, ?) = 1";
+    let values = vec![text(effect_column(effect)), text(column.as_str()), text(kind_prefix(source))];
+    let mut kept = read_rules(db, &Scope::of(client), condition, values)?;
+    kept.retain(|rule| rules::reaches(rule, source));
+    kept.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    if let Some(mut rule) = kept.into_iter().next() {
+        let longer = rules::later_end(rule.until, until);
+        if longer != rule.until {
+            rule.until = longer;
+            db.execute(
+                "UPDATE rules SET until = ?2, data = ?3 WHERE id = ?1",
+                params![rule.id, rule.until.map(stamp), serde_json::to_string(&rule)?],
+            )?;
+        }
+        return Ok((rule, false));
+    }
+    let id = new_id()?;
+    let candidate = Rule {
+        id: id.clone(),
+        source: source.clone(),
+        sender: None,
+        domain: None,
+        effect,
+        created: now,
+        facet: Some(facet),
+        until,
+    };
+    insert_rule(db, candidate)?;
+    let rule = read_rules(db, &Scope::All, "id = ?", vec![text(id)])?
+        .pop()
+        .ok_or_else(|| Failure::Invalid("the rule could not be kept".into()))?;
+    Ok((rule, true))
+}
+
+/// Removes the rules that ended at `now` or before ([`Rule::until`]); returns how many.
+fn remove_ended_rules(db: &Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
+    Ok(db.execute("DELETE FROM rules WHERE until IS NOT NULL AND until <= ?1", params![stamp(now)])?)
 }
 
 /// The column `sender` of `rule` ([`SCHEMA_V3`]): its sender's address, `@<domain>` for a hidden
@@ -1576,19 +1834,39 @@ fn rule_key(rule: &Rule) -> String {
     }
 }
 
-/// Stores `rule`; a rule of the same effect for the same source and sender (or domain) stays as
-/// it is.
+/// Stores `rule`; a rule of the same effect for the same source, sender (or domain) and trait
+/// stays as it is.
 fn insert_rule(db: &Connection, rule: Rule) -> Result<(), Failure> {
-    let effect = match rule.effect {
-        RuleEffect::Lane { .. } => "lane",
-        RuleEffect::Muted => "muted",
-    };
     db.execute(
-        "INSERT INTO rules (id, source, effect, sender, data) VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT (source, effect, sender) DO NOTHING",
-        params![rule.id, rule.source.key(), effect, rule_key(&rule), serde_json::to_string(&rule)?],
+        "INSERT INTO rules (id, source, effect, sender, facet, until, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT (source, effect, sender, facet) DO NOTHING",
+        params![
+            rule.id,
+            rule.source.key(),
+            effect_column(rule.effect),
+            rule_key(&rule),
+            rule.facet.as_ref().map(facet_column).unwrap_or_default(),
+            rule.until.map(stamp),
+            serde_json::to_string(&rule)?
+        ],
     )?;
     Ok(())
+}
+
+/// The column `effect` of a rule: `lane`, `muted` or `no_popup` (task E8.6a).
+fn effect_column(effect: RuleEffect) -> &'static str {
+    match effect {
+        RuleEffect::Lane { .. } => "lane",
+        RuleEffect::Muted => "muted",
+        RuleEffect::NoPopup => "no_popup",
+    }
+}
+
+/// The column `facet` of a rule with a trait ([`SCHEMA_V4`]): `<key>=<value>`, the key as the wire
+/// names it (`sender=news@shop.example`). Keys have no `=`, so the first one parts them.
+fn facet_column(facet: &Facet) -> String {
+    let key = serde_json::to_value(facet.key).ok().and_then(|key| key.as_str().map(str::to_string));
+    format!("{}={}", key.unwrap_or_default(), facet.value)
 }
 
 /// `owner`'s entry with `thread_key`, whatever its state.
@@ -1739,6 +2017,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 3 {
         tx.execute_batch(SCHEMA_V3)?;
+    }
+    if version < 4 {
+        tx.execute_batch(SCHEMA_V4)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -1898,6 +2179,8 @@ impl Matter {
             link: self.link,
             actions: self.actions,
             untrusted: self.untrusted,
+            // The person's own: no rule may touch them (security rule 1).
+            facets: Vec::new(),
         }
     }
 }
@@ -2042,6 +2325,9 @@ pub struct NewMail {
     /// Sent by a machine or to a list (`List-Id`, `List-Unsubscribe`, `Precedence: bulk`,
     /// `Auto-Submitted`): "Info", unless the person keeps the sender elsewhere.
     pub bulk: bool,
+    /// The mailing list it came through (`List-Id`), a trait to mute it by (task E8.6a); `None`
+    /// without one.
+    pub list: Option<String>,
     /// When it was sent: where its entry stands in the list.
     pub date: DateTime<Utc>,
 }
@@ -2072,8 +2358,9 @@ fn file_mail(
     if filed {
         return Ok(None);
     }
-    // The account's own rules, and the senders and domains hidden in any account (task E3.11).
-    let condition = "source = ? OR (instr(source, ?) = 1 AND effect = 'muted' AND sender <> '')";
+    // The account's own rules, the senders and domains hidden in any account (task E3.11) and the
+    // traits muted in any account (task E8.6a).
+    let condition = "source = ? OR (instr(source, ?) = 1 AND ((effect = 'muted' AND sender <> '') OR facet <> ''))";
     let rules: Vec<Rule> = read_rules(&tx, &Scope::All, condition, vec![text(source.key()), text(ACCOUNT_PREFIX)])?
         .into_iter()
         .filter(|rule| rules::reaches(rule, &source))
@@ -2090,9 +2377,6 @@ fn file_mail(
         .filter(|rule| rule.source == source && rule.sender.is_some() && rule.sender == sender)
         .find_map(remembered_lane);
     let lane = rules::mail_lane(mail.bulk, remembered);
-    if notify == Notify::ForMeOnly && lane != Lane::ForMe {
-        return Ok(None);
-    }
     let (lane, urgent) = rules::placement(Kind::Message, Some(lane));
     let existing = read_owned(&tx, &mail.account, &mail.thread)?;
     let id = match &existing {
@@ -2122,7 +2406,19 @@ fn file_mail(
         actions: Vec::new(),
         // Mail is data from outside, never instructions.
         untrusted: true,
+        facets: Vec::new(),
     };
+    // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
+    // and not kept as filed, like a hidden sender; "Info" files it there.
+    incoming.facets = rules::facets(&incoming, mail.list.as_deref(), mail.bulk);
+    match rules::muting(&rules, &incoming, now) {
+        Some(MuteEffect::Hide) => return Ok(None),
+        Some(MuteEffect::Info) => rules::set_lane(&mut incoming, Lane::Info),
+        Some(MuteEffect::NoPopup) | None => {}
+    }
+    if notify == Notify::ForMeOnly && incoming.lane != Lane::ForMe {
+        return Ok(None);
+    }
     match existing {
         Some(existing) => {
             // An older mail of the conversation, filed late, does not take the place of the newest.
@@ -2132,6 +2428,10 @@ fn file_mail(
                 incoming.body = existing.body.clone();
                 incoming.from = existing.from.clone();
                 incoming.link = existing.link.clone();
+                // The traits of the mail it shows; an entry from before task E8.6a takes this one's.
+                if !existing.facets.is_empty() {
+                    incoming.facets = existing.facets.clone();
+                }
             }
             update_item(&tx, &rules::merge(existing, incoming))?;
         }
@@ -2293,6 +2593,7 @@ pub(crate) mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         }
     }
 
@@ -2343,7 +2644,11 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let id = posted(inbox.handle(notice("Deploy failed", Some("deploy")), Some(&script()), at(8, 0)));
-        let done = item(inbox.handle(Request::SetItemDone { id: id.clone(), done: true }, Some(&script()), at(8, 5)));
+        let done = item(inbox.handle(
+            Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
+            Some(&script()),
+            at(8, 5),
+        ));
         assert_eq!(done.state, State::Done { at: at(8, 5) });
         let listed = |now| {
             let open = Some(StateFilter::Open);
@@ -2352,9 +2657,10 @@ pub(crate) mod tests {
         };
         assert!(listed(at(8, 6)).is_empty());
 
-        let again = item(inbox.handle(Request::SetItemDone { id: id.clone(), done: false }, None, at(8, 7)));
+        let again =
+            item(inbox.handle(Request::SetItemDone { id: id.clone(), done: false, dismissed: false }, None, at(8, 7)));
         assert_eq!(again.state, State::Seen);
-        inbox.handle(Request::SetItemDone { id: id.clone(), done: true }, None, at(8, 8));
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: true, dismissed: false }, None, at(8, 8));
         posted(inbox.handle(notice("Deploy failed again", Some("deploy")), Some(&script()), at(9, 0)));
         assert_eq!(listed(at(9, 1)).iter().map(|i| (i.id.clone(), i.state)).collect::<Vec<_>>(), [(id, State::New)]);
     }
@@ -2388,7 +2694,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let id = posted(inbox.handle(notice("Old", None), None, at(8, 0)));
-        inbox.handle(Request::SetItemDone { id: id.clone(), done: true }, None, at(8, 0));
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: true, dismissed: false }, None, at(8, 0));
         let later = at(8, 0) + TimeDelta::days(KEEP_DONE_DAYS);
         assert_eq!(inbox.tend(later, false), Ok((0, 0)), "only when asked to clean up");
         assert_eq!(inbox.tend(later - TimeDelta::seconds(1), true), Ok((0, 0)));
@@ -2492,7 +2798,7 @@ pub(crate) mod tests {
         assert_eq!(inbox.handle(Request::ListSources, Some(&blind), at(8, 1)), Response::Sources { sources: vec![] });
         for request in [
             Request::GetItem { id: id.clone() },
-            Request::SetItemDone { id: id.clone(), done: true },
+            Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
             Request::SnoozeItem { id: id.clone(), until: None },
             Request::SetItemLane { id: id.clone(), lane: Lane::ForMe, remember: false },
             Request::MuteSource { source: source.clone(), muted: true },
@@ -2533,7 +2839,11 @@ pub(crate) mod tests {
         assert_eq!(code(&inbox.handle(Request::GetItem { id: id.clone() }, Some(&hook), at(8, 1))), "not-found");
         assert_eq!(inbox.handle(Request::ListSources, Some(&hook), at(8, 1)), Response::Sources { sources: vec![] });
         assert_eq!(
-            code(&inbox.handle(Request::SetItemDone { id: id.clone(), done: true }, Some(&hook), at(8, 1))),
+            code(&inbox.handle(
+                Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
+                Some(&hook),
+                at(8, 1)
+            )),
             "not-found"
         );
 
@@ -2712,7 +3022,7 @@ pub(crate) mod tests {
             );
             assert_eq!(inbox.handle(Request::ListRules, Some(&client), at(8, 1)), Response::Rules { rules: vec![] });
             for request in [
-                Request::SetItemDone { id: id.clone(), done: true },
+                Request::SetItemDone { id: id.clone(), done: true, dismissed: false },
                 Request::SnoozeItem { id: id.clone(), until: Some(at(9, 0)) },
                 Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false },
                 mute.clone(),
@@ -2733,7 +3043,7 @@ pub(crate) mod tests {
 
         // The person changes them.
         assert_eq!(
-            item(inbox.handle(Request::SetItemDone { id, done: true }, None, at(8, 4))).state,
+            item(inbox.handle(Request::SetItemDone { id, done: true, dismissed: false }, None, at(8, 4))).state,
             State::Done { at: at(8, 4) }
         );
         let Response::Rules { rules } = inbox.handle(Request::ListRules, None, at(8, 6)) else {
@@ -3129,7 +3439,7 @@ pub(crate) mod tests {
         inbox.opened("approval-1", None, at(9, 4));
         assert_eq!(get("approval-1").state, State::Seen);
         // A done entry stays done; an unknown or hidden one is only logged.
-        inbox.handle(Request::SetItemDone { id: waiting.clone(), done: true }, None, at(9, 5));
+        inbox.handle(Request::SetItemDone { id: waiting.clone(), done: true, dismissed: false }, None, at(9, 5));
         inbox.opened(&waiting, None, at(9, 6));
         assert!(matches!(get(&waiting).state, State::Done { .. }));
         inbox.opened("nope", Some(&blind()), at(9, 6));
@@ -3158,7 +3468,7 @@ pub(crate) mod tests {
         assert_eq!(item(inbox.handle(get(), None, at(8, 1))).thread_key, "build:secret-branch");
         assert_eq!(item(inbox.handle(get(), Some(&reader), at(8, 1))).thread_key, "");
         assert_eq!(items(inbox.handle(all(), Some(&reader), at(8, 1)))[0].thread_key, "");
-        let done = Request::SetItemDone { id: id.clone(), done: true };
+        let done = Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
         assert_eq!(item(inbox.handle(done, Some(&reader), at(8, 2))).thread_key, "");
         // Hiding it never touches what is stored.
         assert_eq!(item(inbox.handle(get(), Some(&poster), at(8, 3))).thread_key, "build:secret-branch");
@@ -3328,7 +3638,7 @@ pub(crate) mod tests {
         inbox.file_account_problems(&back, true, at(9, 0)).expect("filed");
         let entry = account_entry(&suite(&inbox, at(9, 0)), "anna").clone();
         assert_eq!((entry.state, entry.count), (State::New, 2));
-        inbox.handle(Request::SetItemDone { id: entry.id.clone(), done: true }, None, at(9, 5));
+        inbox.handle(Request::SetItemDone { id: entry.id.clone(), done: true, dismissed: false }, None, at(9, 5));
         inbox.file_account_problems(&back, true, at(9, 6)).expect("filed");
         assert_eq!(account_entry(&suite(&inbox, at(9, 6)), "anna").state, State::Done { at: at(9, 5) });
     }
@@ -3369,7 +3679,7 @@ pub(crate) mod tests {
         // A client finds them nowhere (task E1.2c), changes nothing and resolves none of their threads.
         let script = script();
         for entry in &items {
-            let done = Request::SetItemDone { id: entry.id.clone(), done: true };
+            let done = Request::SetItemDone { id: entry.id.clone(), done: true, dismissed: false };
             assert_eq!(code(&inbox.handle(done.clone(), Some(&script), at(8, 1))), "not-found");
             assert_eq!(inbox.refusal(&done, Some(&script)).as_ref().map(code), Some("not-found"));
             // Were it ever seen, rule 1 still refuses.
@@ -3440,7 +3750,7 @@ pub(crate) mod tests {
         assert!(wrote(), "the tray's own read woke the entry");
         inbox.handle(Request::SetItemLane { id: id.clone(), lane: Lane::Info, remember: false }, None, at(9, 2));
         assert!(wrote(), "a lane");
-        inbox.handle(Request::SetItemDone { id: id.clone(), done: true }, None, at(9, 3));
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: true, dismissed: false }, None, at(9, 3));
         assert!(wrote(), "done");
 
         for_me_notice(&inbox, "Deploy waits", "deploy", at(9, 4));
@@ -3453,7 +3763,7 @@ pub(crate) mod tests {
 
         file_from_core(&inbox, &approval(at(9, 7)));
         wrote();
-        let done = Request::SetItemDone { id: "approval-1".into(), done: true };
+        let done = Request::SetItemDone { id: "approval-1".into(), done: true, dismissed: false };
         assert_eq!(code(&inbox.handle(done, Some(&script()), at(9, 8))), "not-found", "no client sees the suite");
         assert!(!wrote(), "a refused change");
 
@@ -3497,7 +3807,7 @@ pub(crate) mod tests {
         let snoozed = for_me_notice(&inbox, "Later", "later", at(8, 11));
         inbox.handle(Request::SnoozeItem { id: snoozed, until: Some(at(12, 0)) }, None, at(8, 11));
         let done = for_me_notice(&inbox, "Done", "done", at(8, 12));
-        inbox.handle(Request::SetItemDone { id: done, done: true }, None, at(8, 12));
+        inbox.handle(Request::SetItemDone { id: done, done: true, dismissed: false }, None, at(8, 12));
 
         let for_me = inbox.for_me(at(8, 20), 5).expect("read");
         assert_eq!((for_me.open, for_me.urgent), (7, 1), "six notices and the approval");
@@ -3550,6 +3860,7 @@ pub(crate) mod tests {
             snippet: format!("Text of {subject}"),
             from: Some(Sender { name: "Bernd".into(), address: Some(from.into()) }),
             bulk,
+            list: None,
             date,
         }
     }
@@ -3614,7 +3925,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let first = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
-        let done = Request::SetItemDone { id: first.clone(), done: true };
+        let done = Request::SetItemDone { id: first.clone(), done: true, dismissed: false };
         assert!(matches!(item(inbox.handle(done, None, at(8, 30))).state, State::Done { .. }));
 
         let reply = NewMail { subject: "Re: Offer by Friday".into(), ..personal("m:2", "t:1", at(9, 0)) };
@@ -3707,7 +4018,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(titles(&blind), ["Backup done"], "{:?}", blind.rights);
             assert_eq!(code(&get(&inbox, &id, Some(&blind))), "not-found");
-            let done = Request::SetItemDone { id: id.clone(), done: true };
+            let done = Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
             assert_eq!(code(&inbox.handle(done, Some(&blind), at(9, 2))), "not-found");
             let sources = match inbox.handle(Request::ListSources, Some(&blind), at(9, 2)) {
                 Response::Sources { sources } => sources,
@@ -3729,7 +4040,7 @@ pub(crate) mod tests {
         let inbox = inbox_in(dir.path());
         let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(9, 0));
         let reader = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
-        let done = || Request::SetItemDone { id: id.clone(), done: true };
+        let done = || Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
         assert_eq!(inbox.refusal(&done(), Some(&reader)).as_ref().map(code), Some("forbidden"), "before an approval");
         assert_eq!(code(&inbox.handle(done(), Some(&reader), at(9, 1))), "forbidden", "when it runs");
         let task = Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None };
@@ -3743,7 +4054,7 @@ pub(crate) mod tests {
         let writer = with_mail(Some(Level::Write), Selection::Only(vec![ANNA.into()]));
         assert!(inbox.refusal(&done(), Some(&writer)).is_none());
         assert!(matches!(item(inbox.handle(done(), Some(&writer), at(9, 2))).state, State::Done { .. }));
-        let again = Request::SetItemDone { id: id.clone(), done: false };
+        let again = Request::SetItemDone { id: id.clone(), done: false, dismissed: false };
         assert_eq!(
             item(inbox.handle(again, Some(&reader), at(9, 3))).state,
             State::Seen,
@@ -3931,6 +4242,8 @@ pub(crate) mod tests {
             domain: None,
             effect: RuleEffect::Muted,
             created: at(7, 0),
+            facet: None,
+            until: None,
         };
         inbox.with(|db| insert_rule(db, kept)).expect("a rule as E3.10 kept it");
         let work = NewMail { account: WORK.into(), ..from("m:1", "news@shop.example") };
@@ -3962,7 +4275,8 @@ pub(crate) mod tests {
         assert_eq!(reply, first);
         assert_eq!(item(get(&inbox, &first, None)).state, State::New);
         // Undo as the app sends it.
-        let reopened = inbox.handle(Request::SetItemDone { id: second.clone(), done: false }, None, at(9, 40));
+        let reopened =
+            inbox.handle(Request::SetItemDone { id: second.clone(), done: false, dismissed: false }, None, at(9, 40));
         assert!(matches!(reopened, Response::Item { .. }));
     }
 
@@ -4068,6 +4382,8 @@ pub(crate) mod tests {
             domain: None,
             effect: RuleEffect::Lane { lane: Lane::ForMe },
             created: at(7, 0),
+            facet: None,
+            until: None,
         };
         {
             let db = Connection::open(&file).expect("opens");
@@ -4088,5 +4404,336 @@ pub(crate) mod tests {
         let db = Connection::open(&file).expect("opens");
         let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    // ----- muting by traits (task E8.6a) -----
+
+    fn mute(id: &str, scope: MuteScope, until: Option<DateTime<Utc>>, effect: MuteEffect) -> Request {
+        Request::MuteItem { id: id.into(), scope, until, effect }
+    }
+
+    fn by(key: FacetKey) -> MuteScope {
+        MuteScope::Facet { key }
+    }
+
+    fn muted(response: Response) -> Muted {
+        match response {
+            Response::Muted(muted) => muted,
+            other => panic!("expected what muting changed, got {other:?}"),
+        }
+    }
+
+    fn options(response: Response) -> Vec<torro_inbox::item::MuteOption> {
+        match response {
+            Response::MuteOptions { options } => options,
+            other => panic!("expected mute options, got {other:?}"),
+        }
+    }
+
+    /// A newsletter of the list `<news.shop.example>` from `from` in `account`.
+    fn listed(message: &str, thread: &str, from: &str, account: &str, date: DateTime<Utc>) -> NewMail {
+        NewMail {
+            account: account.into(),
+            list: Some("<News.Shop.Example>".into()),
+            ..mail(message, thread, "Weekly news", from, true, date)
+        }
+    }
+
+    fn entry(inbox: &Inbox, id: &str) -> Item {
+        item(get(inbox, id, None))
+    }
+
+    #[test]
+    fn every_report_gets_the_traits_of_its_source_from_the_core() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let keys = |item: &Item| item.facets.iter().map(|f| (f.key, f.value.clone())).collect::<Vec<_>>();
+        let news = filed(&inbox, &listed("m:1", "t:1", "News@Shop.Example", ANNA, at(8, 0)), at(8, 1));
+        assert_eq!(
+            keys(&entry(&inbox, &news)),
+            [
+                (FacetKey::Account, "anna@example.org".into()),
+                (FacetKey::Sender, "news@shop.example".into()),
+                (FacetKey::Domain, "shop.example".into()),
+                (FacetKey::List, "<news.shop.example>".into()),
+                (FacetKey::Bulk, "bulk".into()),
+            ]
+        );
+        let waiting = posted(inbox.handle(
+            agent_post(Kind::AgentWaiting, "claude-code:s1", AgentKind::ClaudeCode),
+            Some(&hook()),
+            at(8, 2),
+        ));
+        assert_eq!(
+            keys(&entry(&inbox, &waiting)),
+            [
+                (FacetKey::Agent, "claude-code".into()),
+                (FacetKey::Project, "TorroWorkplace".into()),
+                (FacetKey::Kind, "agent_waiting".into()),
+            ]
+        );
+        let backup = posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 3)));
+        assert_eq!(keys(&entry(&inbox, &backup)), [(FacetKey::Client, "script aa01".into())]);
+        let approval = approval(at(8, 4));
+        file_from_core(&inbox, &approval);
+        assert!(entry(&inbox, &approval.id).facets.is_empty(), "the person's own have none");
+    }
+
+    #[test]
+    fn the_menu_lists_the_stored_traits_for_whoever_sees_the_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let news = filed(&inbox, &listed("m:1", "t:1", "news@shop.example", ANNA, at(8, 0)), at(8, 1));
+        let menu = options(inbox.handle(Request::ListMuteOptions { id: news.clone() }, None, at(8, 2)));
+        assert_eq!(menu.len(), 6, "the conversation and five traits");
+        assert_eq!((menu[0].scope, menu[0].admin), (MuteScope::Conversation, false));
+        assert_eq!(menu[2].value.as_deref(), Some("news@shop.example"));
+        assert!(menu[2].untrusted && menu[3].untrusted && menu[4].untrusted, "sender, domain and list are foreign");
+        let reader = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        let seen = options(inbox.handle(Request::ListMuteOptions { id: news.clone() }, Some(&reader), at(8, 3)));
+        assert_eq!(seen, menu, "with read access to the account");
+        let elsewhere = with_mail(Some(Level::Read), Selection::Only(vec![WORK.into()]));
+        let other = inbox.handle(Request::ListMuteOptions { id: news.clone() }, Some(&elsewhere), at(8, 3));
+        assert_eq!(code(&other), "not-found", "no mail traits without the account");
+        let hooked = inbox.handle(Request::ListMuteOptions { id: news }, Some(&hook()), at(8, 3));
+        assert_eq!(code(&hooked), "not-found", "a hook sees nothing");
+        let approval = approval(at(8, 4));
+        file_from_core(&inbox, &approval);
+        let own = options(inbox.handle(Request::ListMuteOptions { id: approval.id.clone() }, None, at(8, 5)));
+        assert!(own.is_empty(), "approvals are never muted");
+        let asked = inbox.handle(Request::ListMuteOptions { id: approval.id }, Some(&script()), at(8, 5));
+        assert_eq!(code(&asked), "not-found", "nor seen by a client");
+    }
+
+    #[test]
+    fn hiding_a_trait_drops_its_later_reports_in_every_source_of_the_kind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let first = filed(&inbox, &listed("m:1", "t:1", "news@shop.example", ANNA, at(8, 0)), at(8, 1));
+        let work = filed(&inbox, &listed("m:2", "t:2", "news@shop.example", WORK, at(8, 2)), at(8, 3));
+        let person = filed(&inbox, &personal("m:3", "t:3", at(8, 4)), at(8, 5));
+        let reader = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        let answer =
+            muted(inbox.handle(mute(&first, by(FacetKey::Sender), None, MuteEffect::Hide), Some(&reader), at(9, 0)));
+        let rule = answer.rule.clone().expect("a rule");
+        assert!(answer.new_rule);
+        assert_eq!(rule.facet, Some(Facet { key: FacetKey::Sender, value: "news@shop.example".into() }));
+        assert_eq!((rule.effect, rule.source.key()), (RuleEffect::Muted, ANNA.to_string()));
+        assert_eq!(
+            answer.done,
+            std::slice::from_ref(&first),
+            "the other account's entry is done but not named to this key"
+        );
+        assert!(matches!(entry(&inbox, &work).state, State::Done { .. }));
+        assert!(entry(&inbox, &person).state.is_open(), "another sender");
+        let later = listed("m:4", "t:4", "news@shop.example", WORK, at(9, 10));
+        assert_eq!(inbox.file_mail(&later, Notify::All, at(9, 11)).expect("filed"), None, "dropped");
+        assert!(inbox.file_mail(&personal("m:5", "t:5", at(9, 12)), Notify::All, at(9, 13)).expect("filed").is_some());
+        // Undo: the rule removed, the entry opened again; then the sender's mail comes in again.
+        assert_eq!(inbox.handle(Request::RemoveRule { id: rule.id }, None, at(9, 20)), Response::Ok);
+        let again = Request::SetItemDone { id: first.clone(), done: false, dismissed: false };
+        assert!(item(inbox.handle(again, None, at(9, 21))).state.is_open());
+        assert!(inbox.file_mail(&later, Notify::All, at(9, 22)).expect("filed").is_some(), "filed again");
+    }
+
+    #[test]
+    fn each_trait_and_effect_does_what_it_says() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let person = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        // "Info" for the domain: new mail from it lands in Info, the entry there already moves.
+        let info = muted(inbox.handle(mute(&person, by(FacetKey::Domain), None, MuteEffect::Info), None, at(8, 2)));
+        assert_eq!(info.moved, std::slice::from_ref(&person));
+        assert_eq!(entry(&inbox, &person).lane, Lane::Info);
+        let colleague = mail("m:2", "t:2", "Lunch?", "carla@example.com", false, at(8, 3));
+        assert_eq!(entry(&inbox, &filed(&inbox, &colleague, at(8, 4))).lane, Lane::Info, "same domain");
+        // "Info" files nothing when the account wants only mail for the person.
+        let only_for_me = mail("m:3", "t:3", "Dinner?", "dora@example.com", false, at(8, 5));
+        assert_eq!(inbox.file_mail(&only_for_me, Notify::ForMeOnly, at(8, 6)).expect("filed"), None);
+        // No popup for the account: filed "for me", but quiet.
+        let other = mail("m:4", "t:4", "Hello", "eve@elsewhere.example", false, at(8, 7));
+        let other = filed(&inbox, &other, at(8, 8));
+        let quiet = muted(inbox.handle(mute(&other, by(FacetKey::Account), None, MuteEffect::NoPopup), None, at(8, 9)));
+        assert!(quiet.done.is_empty() && quiet.moved.is_empty(), "nothing changes now");
+        let next = filed(&inbox, &mail("m:5", "t:5", "Hi", "frank@third.example", false, at(8, 10)), at(8, 11));
+        let next = entry(&inbox, &next);
+        assert_eq!(next.lane, Lane::ForMe);
+        let for_me = inbox.for_me(at(8, 12), usize::MAX).expect("listed").newest;
+        let silent = inbox.no_popup(&for_me, at(8, 12));
+        assert!(silent.contains(&next.id) && silent.contains(&other), "{silent:?}");
+        // Agents: "Info" for waiting ones of every agent, hidden for a project.
+        let claude = posted(inbox.handle(
+            agent_post(Kind::AgentWaiting, "claude-code:s1", AgentKind::ClaudeCode),
+            Some(&hook()),
+            at(9, 0),
+        ));
+        let waiting = muted(inbox.handle(mute(&claude, by(FacetKey::Kind), None, MuteEffect::Info), None, at(9, 1)));
+        assert_eq!(waiting.moved, std::slice::from_ref(&claude));
+        let codex = hook_for(AgentKind::Codex);
+        let codex_waits = agent_post(Kind::AgentWaiting, "codex:s2", AgentKind::Codex);
+        let moved = entry(&inbox, &posted(inbox.handle(codex_waits, Some(&codex), at(9, 2))));
+        assert_eq!((moved.lane, moved.urgent), (Lane::Info, false), "never urgent in Info");
+        inbox.handle(mute(&claude, by(FacetKey::Project), None, MuteEffect::Hide), None, at(9, 3));
+        let done = agent_post(Kind::AgentDone, "codex:s3", AgentKind::Codex);
+        assert_eq!(inbox.handle(done, Some(&codex), at(9, 4)), Response::Posted { id: None }, "same project");
+        // Scripts: hidden by their client.
+        let backup = posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(9, 5)));
+        inbox.handle(mute(&backup, by(FacetKey::Client), None, MuteEffect::Hide), None, at(9, 6));
+        let again = inbox.handle(notice("Backup finished", None), Some(&script()), at(9, 7));
+        assert_eq!(again, Response::Posted { id: None });
+        assert!(matches!(entry(&inbox, &backup).state, State::Done { .. }));
+        // Bulk and list hide newsletters, but not the person's mail.
+        let news = filed(&inbox, &listed("m:6", "t:6", "news@shop.example", ANNA, at(9, 8)), at(9, 9));
+        inbox.handle(mute(&news, by(FacetKey::List), None, MuteEffect::Hide), None, at(9, 10));
+        let other_sender = listed("m:7", "t:7", "deals@shop.example", ANNA, at(9, 11));
+        assert_eq!(inbox.file_mail(&other_sender, Notify::All, at(9, 12)).expect("filed"), None, "same list");
+        let bulk = NewMail { list: None, ..mail("m:8", "t:8", "Receipt", "shop@store.example", true, at(9, 13)) };
+        let bulk = filed(&inbox, &bulk, at(9, 14));
+        inbox.handle(mute(&bulk, by(FacetKey::Bulk), None, MuteEffect::Hide), None, at(9, 15));
+        let receipt = NewMail { list: None, ..mail("m:9", "t:9", "Receipt", "billing@else.example", true, at(9, 16)) };
+        assert_eq!(inbox.file_mail(&receipt, Notify::All, at(9, 17)).expect("filed"), None, "all bulk mail");
+    }
+
+    #[test]
+    fn a_rule_with_an_end_holds_until_then_and_goes_from_the_list() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let backup = posted(inbox.handle(notice("Backup finished", Some("backup")), Some(&script()), at(8, 0)));
+        let past =
+            inbox.handle(mute(&backup, MuteScope::Conversation, Some(at(8, 0)), MuteEffect::Hide), None, at(8, 1));
+        assert_eq!(code(&past), "error", "an end that has passed");
+        let answer = muted(inbox.handle(
+            mute(&backup, MuteScope::Conversation, Some(at(10, 0)), MuteEffect::Hide),
+            None,
+            at(8, 2),
+        ));
+        let rule = answer.rule.expect("an end makes it a rule");
+        assert_eq!((rule.until, rule.facet.map(|f| f.key)), (Some(at(10, 0)), Some(FacetKey::Conversation)));
+        assert_eq!(answer.done, std::slice::from_ref(&backup));
+        let during = inbox.handle(notice("Backup finished", Some("backup")), Some(&script()), at(9, 0));
+        assert_eq!(during, Response::Posted { id: None }, "the conversation stays quiet");
+        let other = inbox.handle(notice("Disk full", Some("disk")), Some(&script()), at(9, 1));
+        assert!(matches!(other, Response::Posted { id: Some(_) }), "another conversation of the client");
+        let listed_at = |now| match inbox.handle(Request::ListRules, None, now) {
+            Response::Rules { rules } => rules.len(),
+            other => panic!("rules: {other:?}"),
+        };
+        assert_eq!(listed_at(at(9, 30)), 1);
+        assert_eq!(listed_at(at(10, 0)), 0, "ended rules are not listed");
+        let after = inbox.handle(notice("Backup finished", Some("backup")), Some(&script()), at(10, 1));
+        assert_eq!(after, Response::Posted { id: Some(backup.clone()) }, "back after the end");
+        inbox.tend(at(10, 2), false).expect("tended");
+        let kept: i64 =
+            inbox.with(|db| Ok(db.query_row("SELECT COUNT(*) FROM rules", [], |row| row.get(0))?)).expect("count");
+        assert_eq!(kept, 0, "the daemon removes ended rules");
+        // Muting the same trait again keeps one rule, lasting the longer of both.
+        let later = |until| mute(&backup, MuteScope::Conversation, until, MuteEffect::NoPopup);
+        let first = muted(inbox.handle(later(Some(at(11, 0))), None, at(10, 3)));
+        let second = muted(inbox.handle(later(None), None, at(10, 4)));
+        assert!(first.new_rule && !second.new_rule);
+        assert_eq!(second.rule.map(|rule| rule.until), Some(None), "for good is the longer");
+    }
+
+    /// The thread key a conversation's rule holds stays the poster's, as on the entry itself.
+    #[test]
+    fn a_conversations_rule_shows_its_thread_key_to_the_person_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = posted(inbox.handle(notice("Build red", Some("build:secret-branch")), Some(&script()), at(8, 0)));
+        let other = client("dd04", "codex", RightsTemplate::FullAccess.rights());
+        let quiet = mute(&id, MuteScope::Conversation, None, MuteEffect::NoPopup);
+        let answer = muted(inbox.handle(quiet, Some(&other), at(8, 1)));
+        let value = |rule: Option<Rule>| rule.and_then(|rule| rule.facet).map(|facet| facet.value);
+        assert_eq!(value(answer.rule), Some(String::new()), "not in the answer");
+        let listed = match inbox.handle(Request::ListRules, Some(&other), at(8, 2)) {
+            Response::Rules { rules } => rules,
+            other => panic!("rules: {other:?}"),
+        };
+        assert_eq!(value(listed.into_iter().next()), Some(String::new()), "nor in the list");
+        assert_eq!(value(rules_of(&inbox).pop()), Some("build:secret-branch".into()), "the person sees it");
+        let later = inbox.handle(notice("Build red", Some("build:secret-branch")), Some(&script()), at(8, 3));
+        assert_eq!(later, Response::Posted { id: Some(id.clone()) }, "the rule still holds by the stored key");
+        assert!(inbox.no_popup(&[entry(&inbox, &id)], at(8, 4)).contains(&id));
+    }
+
+    #[test]
+    fn the_value_is_the_entrys_and_a_missing_trait_is_an_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let backup = posted(inbox.handle(notice("Backup finished", None), Some(&script()), at(8, 0)));
+        for scope in [by(FacetKey::Sender), by(FacetKey::Conversation), by(FacetKey::Project)] {
+            let answer = inbox.handle(mute(&backup, scope, None, MuteEffect::Hide), None, at(8, 1));
+            assert_eq!(code(&answer), "error", "{scope:?}");
+            assert!(inbox.refusal(&mute(&backup, scope, None, MuteEffect::Hide), Some(&script())).is_some());
+        }
+        // Nothing in the request names a value: its input has no field for one.
+        let schema = mute(&backup, MuteScope::Conversation, None, MuteEffect::Hide).operation().command.input_schema();
+        let schema = serde_json::to_value(schema.expect("schema")).expect("json");
+        let fields: Vec<&String> = schema["properties"].as_object().expect("properties").keys().collect();
+        assert_eq!(fields, ["effect", "id", "scope", "until"], "no value to pass");
+        assert!(rules_of(&inbox).is_empty());
+    }
+
+    #[test]
+    fn the_conversation_hidden_or_moved_for_good_keeps_no_rule_and_undoes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let person = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let writer = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        let hidden = muted(inbox.handle(
+            mute(&person, MuteScope::Conversation, None, MuteEffect::Hide),
+            Some(&writer),
+            at(8, 2),
+        ));
+        assert_eq!(hidden, Muted { done: vec![person.clone()], ..Muted::default() });
+        let again = Request::SetItemDone { id: person.clone(), done: false, dismissed: false };
+        assert!(item(inbox.handle(again, None, at(8, 3))).state.is_open(), "undo opens it again");
+        let moved = muted(inbox.handle(mute(&person, MuteScope::Conversation, None, MuteEffect::Info), None, at(8, 4)));
+        assert_eq!(moved, Muted { moved: vec![person.clone()], ..Muted::default() });
+        let back = Request::SetItemLane { id: person.clone(), lane: Lane::ForMe, remember: false };
+        assert_eq!(item(inbox.handle(back, None, at(8, 5))).lane, Lane::ForMe, "undo moves it back");
+        assert!(rules_of(&inbox).is_empty(), "no rule either way");
+        let reply = personal("m:2", "t:1", at(8, 6));
+        inbox.handle(mute(&person, MuteScope::Conversation, None, MuteEffect::Hide), None, at(8, 7));
+        filed(&inbox, &reply, at(8, 8));
+        assert!(entry(&inbox, &person).state.is_open(), "a new reply brings it back, as after done");
+    }
+
+    #[test]
+    fn approvals_and_the_suite_are_never_muted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let approval = approval(at(8, 0));
+        file_from_core(&inbox, &approval);
+        for scope in [MuteScope::Conversation, by(FacetKey::Client)] {
+            let by_person = inbox.handle(mute(&approval.id, scope, None, MuteEffect::Hide), None, at(8, 1));
+            assert_eq!(code(&by_person), "forbidden", "{scope:?}");
+            let by_client = inbox.handle(mute(&approval.id, scope, None, MuteEffect::Hide), Some(&script()), at(8, 1));
+            assert_eq!(code(&by_client), "not-found", "{scope:?}");
+        }
+        assert!(entry(&inbox, &approval.id).state.is_open());
+        assert!(rules_of(&inbox).is_empty());
+    }
+
+    #[test]
+    fn dismissing_is_kept_beside_the_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = posted(inbox.handle(notice("Build red", None), Some(&script()), at(8, 0)));
+        let dismissed = |inbox: &Inbox| -> i64 {
+            inbox
+                .with(|db| Ok(db.query_row("SELECT dismissed FROM items WHERE id = ?1", [&id], |row| row.get(0))?))
+                .expect("read")
+        };
+        let set = |done, dismissed| Request::SetItemDone { id: id.clone(), done, dismissed };
+        let answer = item(inbox.handle(set(true, true), Some(&script()), at(8, 1)));
+        assert!(matches!(answer.state, State::Done { .. }), "dismissed is done");
+        assert_eq!(dismissed(&inbox), 1);
+        inbox.handle(set(false, false), None, at(8, 2));
+        assert_eq!(dismissed(&inbox), 0, "opened again");
+        inbox.handle(set(true, false), None, at(8, 3));
+        assert_eq!(dismissed(&inbox), 0, "done for real");
+        inbox.handle(set(false, true), None, at(8, 4));
+        assert_eq!(dismissed(&inbox), 0, "only with done");
     }
 }

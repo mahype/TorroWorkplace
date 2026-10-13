@@ -368,7 +368,8 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   `mail.move_messages` (into the trash), `mail.save_draft` (replacing a draft) and
 ///   `mail.send_draft` (it removes the draft and cannot be taken back), and
 ///   `inbox.hide_sender`, whose scopes `sender` and `domain` keep a rule for every mail account
-///   and close entries in all of them (admin then, task E3.11).
+///   and close entries in all of them (admin then, task E3.11), and `inbox.mute_item`, whose
+///   traits keep a rule for every source of the kind and close or move entries there (task E8.6a).
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
@@ -385,6 +386,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 | "mail.save_draft"
                 | "mail.send_draft"
                 | "inbox.hide_sender"
+                | "inbox.mute_item"
         );
     let hints = ToolAnnotations::new()
         .read_only(read_only)
@@ -427,6 +429,8 @@ const IDEMPOTENT: &[&str] = &[
     // Hiding the same sender or domain again answers the rule already there (task E3.10), a
     // hidden conversation again closes nothing more.
     "inbox.hide_sender",
+    // Muting the same trait again answers the rule already there (task E8.6a).
+    "inbox.mute_item",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
@@ -1655,6 +1659,40 @@ mod tests {
         }
     }
 
+    /// Task E8.6a: one entry, the scope, the end and the effect; never a value to mute.
+    #[test]
+    fn inbox_mute_item_mutes_by_the_entry_and_never_by_a_value() {
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+        let arguments = json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}, "effect": "no_popup"});
+        let request = request_for("inbox_mute_item", args(arguments), &Utc);
+        let sender = MuteScope::Facet { key: FacetKey::Sender };
+        assert_eq!(
+            request,
+            Ok(Request::MuteItem { id: "i1".into(), scope: sender, until: None, effect: MuteEffect::NoPopup })
+        );
+        let until =
+            json!({"id": "i1", "scope": {"kind": "conversation"}, "until": "2026-10-14T08:00:00Z", "effect": "hide"});
+        assert!(matches!(
+            request_for("inbox_mute_item", args(until), &Utc),
+            Ok(Request::MuteItem { until: Some(_), .. })
+        ));
+        for wrong in [
+            json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}}),
+            json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}, "effect": "hide", "value": "a@b.example"}),
+            json!({"id": "i1", "scope": {"kind": "facet", "key": "channel"}, "effect": "hide"}),
+        ] {
+            let refused = request_for("inbox_mute_item", args(wrong.clone()), &Utc);
+            assert!(matches!(refused, Err(ToolError::Input(_))), "{wrong}: {refused:?}");
+        }
+        let options = request_for("inbox_list_mute_options", args(json!({"id": "i1"})), &Utc);
+        assert_eq!(options, Ok(Request::ListMuteOptions { id: "i1".into() }));
+        let tool = tools().iter().find(|tool| tool.name == "inbox_mute_item").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!((hints.destructive_hint, hints.idempotent_hint), (Some(true), Some(true)));
+        let menu = tools().iter().find(|tool| tool.name == "inbox_list_mute_options").expect("tool");
+        assert!(menu.description.as_deref().is_some_and(|text| text.contains("untrusted")));
+    }
+
     #[test]
     fn inbox_answers_carry_untrusted_per_entry() {
         let at = utc("2026-10-12T08:00:00Z");
@@ -1676,6 +1714,7 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted,
+            facets: Vec::new(),
         };
         let listed = result_of(Response::Items { items: vec![entry("a", true), entry("b", false)] });
         let items = &listed.structured_content.expect("structured")["items"];

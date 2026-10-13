@@ -35,6 +35,8 @@
 //!   and `docs/eingang.md` asks for exactly that ("While you were in …"). Its title is shown as
 //!   plain text like every other text here.
 //!
+//! - **No popup by choice** (task E8.6a): an entry a muted trait with "no popup" holds for comes
+//!   without one ([`crate::inbox::Inbox::no_popup`], [`Popups::step_except`]), and not later either.
 //! - **Agents name their session** (task E2.6): an entry of a hook whose session has a name pops
 //!   up with that name as summary and the core's own words below it ("Claude Code is waiting for
 //!   you · TorroWorkplace"), so the person knows which job it is ([`session_line`]).
@@ -224,7 +226,7 @@ pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Requ
     match answer {
         Answer::Archive => Some(Request::MoveMail { ids: messages()?, to: MoveTarget::Role(MoveRole::Archive) }),
         Answer::MarkRead => Some(Request::SetMailFlags { ids: messages()?, add: vec![Flag::Seen], remove: Vec::new() }),
-        Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true }),
+        Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true, dismissed: false }),
         Answer::Snooze => Some(Request::SnoozeItem { id: popup.entry()?.to_string(), until: Some(now + SNOOZE_FOR) }),
         Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string() }),
     }
@@ -312,10 +314,28 @@ impl Popups {
     /// The first look only learns what is open and shows nothing. After it, an entry arrives
     /// when it is new (state [`State::New`]), in "for me", not [`asks_elsewhere`], and was not
     /// open at the last look or has a different `updated` (merged, woken).
+    ///
+    /// Every entry may pop up here; the core asks [`Popups::step_except`] with the entries a muted
+    /// trait keeps quiet.
+    #[cfg(test)]
     pub fn step(&mut self, now: DateTime<Utc>, open: &[Item], busy: Option<&str>) -> Vec<Popup> {
+        self.step_except(now, open, busy, &BTreeSet::new())
+    }
+
+    /// [`Popups::step`], but the entries `no_popup` names (task E8.6a: a muted trait with "no
+    /// popup" holds for them, `Inbox::no_popup`) arrive without a popup: they are known from now on,
+    /// so they do not pop up later either, when the rule ends.
+    pub fn step_except(
+        &mut self,
+        now: DateTime<Utc>,
+        open: &[Item],
+        busy: Option<&str>,
+        no_popup: &BTreeSet<String>,
+    ) -> Vec<Popup> {
         let current = open.iter().map(|item| (item.id.clone(), item.updated)).collect();
         let Some(known) = self.known.replace(current) else { return Vec::new() };
-        let arrivals: Vec<&Item> = open.iter().filter(|item| arrived(&known, item)).collect();
+        let arrivals: Vec<&Item> =
+            open.iter().filter(|item| arrived(&known, item) && !no_popup.contains(&item.id)).collect();
         let mut popups = Vec::new();
         match busy {
             Some(event) => {
@@ -592,7 +612,8 @@ pub async fn run(core: Arc<Core>, desktop: Arc<dyn Desktop>) {
             Ok(for_me) => {
                 failing = false;
                 let busy = if popups.needs_calendar(&for_me.newest) { busy_title(&core, now).await } else { None };
-                let mut shown = popups.step(now, &for_me.newest, busy.as_deref());
+                let quiet = core.inbox().no_popup(&for_me.newest, now);
+                let mut shown = popups.step_except(now, &for_me.newest, busy.as_deref(), &quiet);
                 shown.iter_mut().for_each(|popup| whole_conversation(core.inbox(), popup));
                 show_all(shown, desktop.as_ref(), &send);
             }
@@ -751,6 +772,7 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         }
     }
 
@@ -776,6 +798,17 @@ mod tests {
         assert!(!popups.needs_calendar(&open), "nothing arrived before the first look");
         assert_eq!(popups.step(at(0, 1), &open, None), [], "a restart does not repeat the day");
         assert_eq!(popups.step(at(0, 2), &open, None), []);
+    }
+
+    /// Task E8.6a: entries a "no popup" rule holds for come quietly, and not later either.
+    #[test]
+    fn entries_without_a_popup_arrive_quietly() {
+        let mut popups = started();
+        let open = [item("a", at(1, 0)), item("b", at(1, 0))];
+        let quiet = BTreeSet::from(["a".to_string()]);
+        let shown = popups.step_except(at(1, 1), &open, None, &quiet);
+        assert_eq!(shown, [popup_of(&open[1])], "only b pops up");
+        assert_eq!(popups.step_except(at(1, 2), &open, None, &BTreeSet::new()), [], "a stays quiet when the rule ends");
     }
 
     #[test]
@@ -977,7 +1010,8 @@ mod tests {
     fn answers_become_requests() {
         let popup = popup_of(&item("a", at(0, 0)));
         let now = at(10, 0);
-        assert_eq!(request(Answer::Done, &popup, now), Some(Request::SetItemDone { id: "a".into(), done: true }));
+        let done = Request::SetItemDone { id: "a".into(), done: true, dismissed: false };
+        assert_eq!(request(Answer::Done, &popup, now), Some(done));
         assert_eq!(
             request(Answer::Snooze, &popup, now),
             Some(Request::SnoozeItem { id: "a".into(), until: Some(now + TimeDelta::hours(1)) })
