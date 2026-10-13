@@ -1017,7 +1017,16 @@ E8.9   unabhängig (torro-wm, core.rs)
   `torro-api-review`.
 
 ### E8.7b Aufgabe mit Rückbezug: Oberfläche
-- [ ] erledigt
+- [x] erledigt (Mail-Fenster: Karte der Aufgabe über dem Text in Leser und Paneel (`mail::task_card`, „Open
+  task“), „Task“ auch an Ordner-Mails (Karte, Leser, Paneel, `t`) über `tasks.create_todo_from_mail` – **ohne
+  Fälligkeit**, weil `torroinbox` `torro_pim::EventTime` nicht kennt (Rückfrage: `torro-pim` als Abhängigkeit oder
+  Methode im `InboxClient`); der Request geht vorerst direkt aus `mail.rs`. `--message` öffnet den Eintrag der Mail
+  bzw. die Mail in ihrem Ordner. Aufgaben-App: „From“ (Avatar, Betreff, „Mail · Absender · Konto · Datum“, „Open
+  mail“, neue Antworten), „Activity“ mit „Made from a mail“ (der Zeitpunkt des Anlegens fehlt im Modell),
+  Mail-Hinweis in der Zeile, `--task` öffnet die Aufgabe in ihrer Liste. Zentrale: Abschnitt „Follow up“ für „You
+  finished a task from a mail“ (Reply · Mark mail done · Not now, auch im Paneel), rechts „Handed off“ über „Coming
+  back“; Demo-Daten in `app.rs` (`demo_task`, `demo_mail_link`). „Open mail“/„Open task“ über `apps.open_app` mit
+  `target`, im Demo starten sie die andere App mit `--demo`. **Sichtprüfung nicht möglich:** Bildschirm gesperrt)
 - **Modell:** Opus · **Braucht:** E8.7a, E8.3, E8.5 · **Dateien:** `crates/torroinbox/src/{app,mail,detail,hub}.rs`,
   `crates/torrotasks/src/{detail,list}.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Mail:** über dem Text die Aufgabe als Karte (Kreis, Titel, „Task · Liste · due … · open“, „Open task“); „Task“

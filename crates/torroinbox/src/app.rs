@@ -39,6 +39,15 @@
 //! Act now, To sort (the section alone, [`App::sorting`]), Later, Done today and the sources. An
 //! approval has neither ✕ nor Later anywhere: `s` on it only says that it waits for a decision.
 //!
+//! Task with a way back (task E8.7b, `docs/eingang.md` "Aufgabe mit Rückbezug"): a mail shows the
+//! task made of it as a card over its text ([`App::task_of`]: its entry's [`Item::task`], or the one
+//! "Task" made of a folder's message, `tasks.create_todo_from_mail`, [`App::ask_mail_task`]); "Open
+//! task" opens it in the tasks app through the core ([`open_target`]). The hub asks after a finished
+//! task (`hub::Section::FollowUp`: Reply, "Mark mail done" – [`App::mark_mail_done`] – and "Not
+//! now") and lists the open tasks made of entries under "Handed off" ([`Loaded::done`]).
+//! `--message=m:…` starts the mail window on that mail ([`App::open_start_mail`]). With `--demo`
+//! the entries get the demo's tasks ([`demo_task`]).
+//!
 //! The mail window starts on the overview (task E3.9, [`View::Overview`]): its open mail in the
 //! column "Mail" (the overview's other column, "Notifications", was the hub's until E8.5). The app
 //! keeps which column has the
@@ -317,8 +326,8 @@ pub enum Undo {
     /// that was there before (`inbox.remove_rule`) –, then opens the entries `reopen` again
     /// (`inbox.set_item_done` with `false`), those the hiding closed ([`Hidden::done`]).
     Hidden { rule: Option<String>, reopen: Vec<String> },
-    /// Takes "Dismiss all" back (task E8.4): opens the entries it dismissed again
-    /// (`inbox.set_item_done` with `false`, one by one).
+    /// Takes "Dismiss all" back (task E8.4), and "Mark mail done" (task E8.7b): opens the entries it
+    /// closed again (`inbox.set_item_done` with `false`, one by one).
     Dismissed(Vec<String>),
 }
 
@@ -509,6 +518,19 @@ pub enum Sent {
     DismissAll(Vec<String>),
     /// Its undo: these entries opened again.
     Reopen(Vec<String>),
+    /// `tasks.create_todo_from_mail` (task E8.7b): account, message, list, title (`None`: the
+    /// subject).
+    MailTask {
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+    },
+    /// `apps.open_app` with a target (task E8.7b): the app and `task:<uid>` or `mail:<…>`.
+    Target(String, String),
+    /// "Mark mail done" (task E8.7b): `inbox.set_item_done` for these entries – the mail's, then the
+    /// question's.
+    MailDone(Vec<String>),
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -782,6 +804,10 @@ pub struct Launch {
     pub shown: Shown,
     /// `--compose`: the window writes a message instead of showing the inbox.
     pub compose: Option<compose::Start>,
+    /// The mail the window starts on (task E8.7b): `--message=m:…`, read and checked by `main`
+    /// (`start_message`), as the core passes it for `apps.open_app` with a `mail:` target. The
+    /// window shows it once its first entries are in ([`App::open_start_mail`]).
+    pub message: Option<String>,
 }
 
 /// Which of the inbox's three windows this process is (task E8.1, `--view`; `docs/eingang.md`,
@@ -1018,7 +1044,7 @@ impl Launch {
             },
         };
         let (view, shown) = start_view(args, kind)?;
-        Ok(Launch { demo, open, appearance, now, design, kind, density, view, shown, compose })
+        Ok(Launch { demo, open, appearance, now, design, kind, density, view, shown, compose, message: None })
     }
 
     /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
@@ -1125,6 +1151,9 @@ pub struct Loaded {
     /// The snoozed entries, for "Coming back" beside the hub's "Act now" (task E8.5); empty in every
     /// other window and view.
     pub snoozed: Vec<Item>,
+    /// The done entries, for "Handed off" beside the hub's "Act now" (task E8.7b: an entry made into
+    /// a task is done, its [`Item::task`] still open); empty in every other window and view.
+    pub done: Vec<Item>,
 }
 
 /// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
@@ -1232,6 +1261,21 @@ pub struct App<S> {
     arrange: Arrange,
     /// The snoozed entries beside the hub's "Act now" ("Coming back", task E8.5), as last loaded.
     snoozed: Vec<Item>,
+    /// The done entries beside the hub's "Act now", for "Handed off" (task E8.7b), as last loaded.
+    done: Vec<Item>,
+    /// The folder's message the dialog of "Make task" is for (task E8.7b, `t` or "Task" in a
+    /// folder): `tasks.create_todo_from_mail` instead of `inbox.create_task_from_item` for
+    /// [`App::subject`].
+    task_mail: Option<MessageSummary>,
+    /// The tasks "Task" made of folder messages while the window runs (task E8.7b), by message id:
+    /// a message is no entry, so nothing else tells the reader its task.
+    made: Vec<(String, torro_inbox::item::ItemTask)>,
+    /// The mail of `--message` still to show ([`Launch::message`]); taken once the first entries are
+    /// in ([`App::open_start_mail`]).
+    start_mail: Option<String>,
+    /// The mail of `--message` shown in its folder: it stays readable there though it may not be on
+    /// the folder's first page ([`App::wanted_letter`]).
+    pinned_mail: Option<String>,
     /// The tile of "Act now" clicked (task E8.5): its origin's entries alone show. Window state.
     filter: Option<Origin>,
     /// The hub shows To sort alone (its sidebar entry "To sort"), on the entries of its overview.
@@ -1435,6 +1479,21 @@ pub enum Message {
     Filter(Origin),
     /// "To sort" in the hub's sidebar: the section To sort alone, on the overview's entries.
     ShowToSort,
+    /// "Task" on a folder's message, or `t` in a folder (task E8.7b): the dialog of "Make task" for
+    /// the message with this id, sent as `tasks.create_todo_from_mail`.
+    AskMailTask(String),
+    /// The answer to `tasks.create_todo_from_mail`: the task made of the message with this id.
+    MailTaskCreated(String, Result<torro_inbox::item::ItemTask, String>),
+    /// "Open task" (the card of a mail, "Handed off", task E8.7b): the task with this uid in the
+    /// tasks app, through the core (`apps.open_app` with `task:<uid>`).
+    OpenTask(String),
+    /// "Mark mail done" on the suite's "You finished a task from a mail" with this id (task E8.7b):
+    /// its mail entry done, then the question.
+    MarkMailDone(String),
+    /// The answer to "Mark mail done": the entries closed, and why the rest was not, if it stopped.
+    MailDone(Vec<String>, Option<String>),
+    /// The mail of `--message` that has no entry, loaded to find its folder (task E8.7b).
+    StartMail(String, Result<Box<Mail>, String>),
 }
 
 /// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
@@ -1452,14 +1511,18 @@ pub enum Message {
 /// source the requests ask for it alone (the API's `source`), with more the entries of the others
 /// are left out here.
 ///
-/// The hub's overview (task E8.5) also asks for the snoozed entries, for "Coming back".
+/// The hub's overview (task E8.5) also asks for the snoozed entries, for "Coming back", and the done
+/// ones, for "Handed off" (task E8.7b).
+///
+/// `demo` is the demo's "now" with `--demo` (else `None`): the entries get the demo's tasks
+/// ([`demo_task`]) before they are sorted into the window, as the core's would come.
 pub async fn fetch<S: InboxSource + MailSource>(
     inbox: Arc<S>,
     view: View,
     empty: bool,
     limit: u32,
-    kind: Kind,
-    shown: Shown,
+    (kind, shown): (Kind, Shown),
+    demo: Option<DateTime<Utc>>,
 ) -> Result<Loaded, String> {
     if empty {
         let none = Loaded {
@@ -1470,12 +1533,22 @@ pub async fn fetch<S: InboxSource + MailSource>(
             folders: Vec::new(),
             mail: view.listing().map(|_| MailPage { messages: Vec::new(), next: None }),
             snoozed: Vec::new(),
+            done: Vec::new(),
         };
         return Ok(none);
     }
     let failed = |err: torro_inbox::InboxError| err.to_string();
     let keep = |items: Vec<Item>| {
-        items.into_iter().filter(|item| kind.keeps(item) && shown.shows(&item.source)).collect::<Vec<_>>()
+        items
+            .into_iter()
+            .map(|mut item| {
+                if let Some(now) = demo {
+                    demo_task(&mut item, now);
+                }
+                item
+            })
+            .filter(|item| kind.keeps(item) && shown.shows(&item.source))
+            .collect::<Vec<_>>()
     };
     // One source shown: ask for it alone, unless the view names a source of its own.
     let narrow = |filter: ItemFilter| match (shown.single(), &filter.source) {
@@ -1514,14 +1587,15 @@ pub async fn fetch<S: InboxSource + MailSource>(
         }
         _ => None,
     };
-    // "Coming back" beside the hub's "Act now" (task E8.5).
-    let snoozed = match (kind, &view) {
-        (Kind::Hub, View::Overview) => {
-            keep(inbox.list_items(View::Snoozed.filter().unwrap_or_default()).await.map_err(failed)?)
-        }
-        _ => Vec::new(),
+    // "Coming back" (task E8.5) and "Handed off" (task E8.7b) beside the hub's "Act now".
+    let (snoozed, done) = match (kind, &view) {
+        (Kind::Hub, View::Overview) => (
+            keep(inbox.list_items(View::Snoozed.filter().unwrap_or_default()).await.map_err(failed)?),
+            keep(inbox.list_items(View::Done.filter().unwrap_or_default()).await.map_err(failed)?),
+        ),
+        _ => (Vec::new(), Vec::new()),
     };
-    Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed })
+    Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed, done })
 }
 
 impl<S: InboxSource + MailSource + 'static> App<S> {
@@ -1584,6 +1658,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             shown: launch.shown.clone(),
             arrange: if open == Some(Open::ByTime) { Arrange::ByTime } else { Arrange::default() },
             snoozed: Vec::new(),
+            done: Vec::new(),
+            task_mail: None,
+            made: Vec::new(),
+            start_mail: launch.message.clone(),
+            pinned_mail: None,
             filter: None,
             sorting: open == Some(Open::ToSort),
             #[cfg(test)]
@@ -1703,6 +1782,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.detail = None;
                 self.reading = false;
                 self.cursor = None;
+                self.pinned_mail = None;
                 // "Act now" again, all of it (task E8.5).
                 self.sorting = false;
                 self.filter = None;
@@ -1813,8 +1893,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::LinkOpened(Ok(())) => {}
             Message::LinkOpened(Err(err)) => eprintln!("cannot open the link in a browser: {err}"),
             Message::Changed(Ok(item)) => {
+                let mut item = *item;
+                if self.launch.demo {
+                    demo_task(&mut item, self.now);
+                }
                 if let Some(detail) = self.detail.as_mut().filter(|detail| detail.id == item.id) {
-                    *detail = *item;
+                    *detail = item;
                 }
                 return self.load();
             }
@@ -1993,6 +2077,28 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::DismissedAll(done, failed) => return self.dismissed_all(done, failed),
             Message::Filter(origin) => self.toggle_filter(origin),
             Message::ShowToSort => return self.show_to_sort(),
+            Message::AskMailTask(id) => return self.ask_mail_task(&id),
+            Message::MailTaskCreated(id, Ok(task)) => {
+                self.note(trf("Task created in {list}", &[("list", &task.list)]));
+                self.made.retain(|(message, _)| *message != id);
+                self.made.push((id, task));
+            }
+            Message::MailTaskCreated(_, Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't create the task."), err));
+            }
+            Message::OpenTask(uid) => return self.open_task(&uid),
+            Message::MarkMailDone(id) => return self.mark_mail_done(&id),
+            Message::MailDone(done, failed) => {
+                if let Some(err) = failed {
+                    self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
+                }
+                if !done.is_empty() {
+                    let text = tr("Mail marked as done").to_owned();
+                    self.hint = Some(Hint { text, undo: Some(Undo::Dismissed(done)), shown: Instant::now() });
+                }
+                return self.load();
+            }
+            Message::StartMail(id, result) => return self.show_start_mail(id, result),
         }
         Task::none()
     }
@@ -2169,7 +2275,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     fn wanted_letter(&self) -> Option<String> {
         if self.view.is_mail() {
             let id = self.cursor.as_ref().filter(|_| self.reading)?;
-            return self.messages.iter().any(|message| message.id == *id).then(|| id.clone());
+            let listed = self.messages.iter().any(|message| message.id == *id);
+            return (listed || self.pinned_mail.as_ref() == Some(id)).then(|| id.clone());
         }
         match self.detail.as_ref()?.link.as_ref()? {
             Link::Mail { message } => Some(message.clone()),
@@ -2457,6 +2564,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     fn take(&mut self, loaded: Loaded) -> Task<Message> {
         let place = self.cursor_place();
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
+        self.done = loaded.done;
         self.items = loaded.items;
         self.items.sort_by_key(|item| !list::is_waiting(item));
         // The hub's "Done today" (task E8.5): what was done today, local time.
@@ -2486,7 +2594,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             return self.load();
         }
         if self.view.is_mail() {
-            if self.cursor.as_ref().is_none_or(|id| !self.messages.iter().any(|message| message.id == *id)) {
+            // The mail of `--message` keeps the cursor, listed or not (task E8.7b).
+            let pinned = self.pinned_mail.is_some() && self.cursor == self.pinned_mail;
+            if !pinned && self.cursor.as_ref().is_none_or(|id| !self.messages.iter().any(|message| message.id == *id)) {
                 let last = self.messages.len().checked_sub(1);
                 let row = place.zip(last).and_then(|(place, last)| self.messages.get(place.min(last)));
                 self.cursor = row.map(|message| message.id.clone());
@@ -2507,7 +2617,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 None => {}
             }
         }
-        self.open_launched()
+        let start = self.open_start_mail();
+        Task::batch([start, self.open_launched()])
     }
 
     /// From the glance: the entry `id` of "For me" under the cursor and in the panel, with "For me"
@@ -2649,6 +2760,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Command::Open => self.open_cursor(),
             // In a folder `e` archives: a message has no "done" of its own.
             Command::Done if self.view.is_mail() => self.key_mail(MailAction::Archive),
+            // The question after a finished task answers the mail it waits for (task E8.7b).
+            Command::Reply if self.cursor_item().is_some_and(hub::is_follow_up) => self.reply_follow_up(),
             Command::Reply => self.key_mail(MailAction::Reply),
             Command::ReplyAll => self.key_mail(MailAction::ReplyAll),
             Command::Forward => self.key_mail(MailAction::Forward),
@@ -2690,6 +2803,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     self.ask_hide(&id);
                 }
                 Task::none()
+            }
+            // In a folder the message under the cursor becomes a task (task E8.7b).
+            Command::MakeTask if self.view.is_mail() => {
+                self.cursor.clone().map_or_else(Task::none, |id| self.ask_mail_task(&id))
             }
             Command::MakeTask => cursor.map_or_else(Task::none, |id| self.ask_task(&id)),
             Command::Choose(n) => match self.choices().into_iter().nth(n.wrapping_sub(1)) {
@@ -2976,6 +3093,35 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.drawer = false;
         self.task = TaskDraft { title: list::one_line(&item.title), list: None, due: Due::None };
         self.subject = Some(item);
+        self.task_mail = None;
+        self.open_task_dialog()
+    }
+
+    /// Opens the dialog that makes a task of the folder's message `id` (task E8.7b): its subject as
+    /// title, the lists asked for anew, no due day ([`MailSource::create_todo_from_mail`] takes none).
+    /// A message with an entry goes through the entry, as `t` on it in "For me" does.
+    fn ask_mail_task(&mut self, id: &str) -> Task<Message> {
+        if let Some(entry) = self.entry_of(id) {
+            return self.ask_task(&entry);
+        }
+        let loaded = || match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => Some(mail.summary.clone()),
+            _ => None,
+        };
+        let Some(summary) = self.messages.iter().find(|message| message.id == id).cloned().or_else(loaded) else {
+            return Task::none();
+        };
+        self.close_menus();
+        // The dialog opens at the cursor's row, as for entries.
+        self.cursor = Some(summary.id.clone());
+        self.task = TaskDraft { title: mail::subject(&summary), list: None, due: Due::None };
+        self.subject = None;
+        self.task_mail = Some(summary);
+        self.open_task_dialog()
+    }
+
+    /// Shows the dialog of "Make task" and asks for the lists, the title field focused.
+    fn open_task_dialog(&mut self) -> Task<Message> {
         self.menu = Some(Menu::Task);
         self.lists = None;
         #[cfg(test)]
@@ -3001,6 +3147,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// (none when blank: the core takes the entry's) and due day, and closes the dialog. Nothing
     /// without a list.
     fn create_task(&mut self) -> Task<Message> {
+        if let Some(message) = self.task_mail.clone() {
+            return self.create_mail_task(message);
+        }
         let (Some(item), Some(list)) = (self.subject.clone(), self.task.list.clone()) else { return Task::none() };
         let title = Some(self.task.title.trim().to_owned()).filter(|title| !title.is_empty());
         let due = self.task.due.day(self.now);
@@ -3014,6 +3163,164 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             async move { inbox.create_task_from_item(item.id, list_id, title, due).await.map_err(|err| err.to_string()) },
             move |result| Message::TaskCreated(result, name.clone()),
         )
+    }
+
+    /// "Create task" for a folder's message (task E8.7b): sends `tasks.create_todo_from_mail` with
+    /// the dialog's list and title (none when blank: the core takes the subject) and closes the
+    /// dialog. The mail stays as it is; the reader shows the task's card once the answer is in.
+    fn create_mail_task(&mut self, message: MessageSummary) -> Task<Message> {
+        let Some(list) = self.task.list.clone() else { return Task::none() };
+        let title = Some(self.task.title.trim().to_owned()).filter(|title| !title.is_empty());
+        self.last_list = Some(list.id.clone());
+        self.close_menus();
+        self.task_mail = None;
+        let MessageSummary { id, account, .. } = message;
+        #[cfg(test)]
+        self.sent.push(Sent::MailTask {
+            account: account.clone(),
+            id: id.clone(),
+            list: list.clone(),
+            title: title.clone(),
+        });
+        let inbox = self.inbox.clone();
+        let asked = id.clone();
+        Task::perform(
+            async move { inbox.create_todo_from_mail(account, asked, list, title).await.map_err(|err| err.to_string()) },
+            move |result| Message::MailTaskCreated(id.clone(), result),
+        )
+    }
+
+    /// The task made of the message `id` (task E8.7b), for the card over its text: the one the entry
+    /// in the panel carries when this is its mail, else the one of the entry holding the mail, else
+    /// the one "Task" made of it in this window.
+    fn task_of(&self, id: &str) -> Option<&torro_inbox::item::ItemTask> {
+        let holds = |item: &&Item| matches!(&item.link, Some(Link::Mail { message }) if message == id);
+        self.detail
+            .iter()
+            .chain(&self.items)
+            .filter(holds)
+            .find_map(|item| item.task.as_ref())
+            .or_else(|| self.made.iter().find(|(message, _)| message == id).map(|(_, task)| task))
+    }
+
+    /// Opens the task `uid` in the tasks app (task E8.7b, "Open task"): through the core
+    /// (`apps.open_app` with `task:<uid>`), which checks it and starts the app with it. The demo has
+    /// no core: it starts the tasks app's demo on the task itself.
+    fn open_task(&mut self, uid: &str) -> Task<Message> {
+        self.close_menus();
+        let target = format!("task:{uid}");
+        #[cfg(test)]
+        self.sent.push(Sent::Target(AppId::TASKS.binary.to_owned(), target.clone()));
+        if self.launch.demo {
+            let mut command = std::process::Command::new(torro_gui::source::sibling(AppId::TASKS.binary));
+            command.arg("--demo").arg(format!("--task={uid}"));
+            if let Some(now) = self.launch.now {
+                command.arg("--now").arg(now.format("%Y-%m-%dT%H:%M").to_string());
+            }
+            return Task::perform(async move { mail::start(command) }, Message::AppOpened);
+        }
+        let suite = self.suite.clone();
+        Task::perform(open_target(suite, AppId::TASKS.binary, target), Message::AppOpened)
+    }
+
+    /// Reply on the suite's "You finished a task from a mail" under the cursor (task E8.7b): the
+    /// compose window for the mail of its waiting entry ([`ItemTask::mail_entry`]) when the window
+    /// holds that entry, else the mail window on the task's mail (`apps.open_app` with the task's
+    /// `mail:` link), where it can be answered.
+    ///
+    /// [`ItemTask::mail_entry`]: torro_inbox::item::ItemTask::mail_entry
+    fn reply_follow_up(&mut self) -> Task<Message> {
+        let Some(task) = self.cursor_item().and_then(|item| item.task.clone()) else { return Task::none() };
+        let message = task.mail_entry.as_deref().and_then(|entry| self.items.iter().find(|item| item.id == entry));
+        if let Some(Link::Mail { message }) = message.and_then(|item| item.link.clone()) {
+            return self.mail_action(MailAction::Reply, message);
+        }
+        if task.link.is_empty() || self.launch.demo {
+            self.note(tr("The mail is no longer in the inbox.").to_owned());
+            return Task::none();
+        }
+        #[cfg(test)]
+        self.sent.push(Sent::Target(AppId::INBOX_MAIL.window_class.to_owned(), task.link.clone()));
+        let suite = self.suite.clone();
+        Task::perform(open_target(suite, AppId::INBOX_MAIL.window_class, task.link), Message::AppOpened)
+    }
+
+    /// "Mark mail done" on the suite's "You finished a task from a mail" `id` (task E8.7b): its mail
+    /// entry done, then the question itself, one `inbox.set_item_done` each; the toast takes both
+    /// back ([`Undo::Dismissed`]). Nothing for another entry.
+    fn mark_mail_done(&mut self, id: &str) -> Task<Message> {
+        let Some(item) = self.find(id).filter(|item| hub::is_follow_up(item)).cloned() else { return Task::none() };
+        let mail = item.task.and_then(|task| task.mail_entry);
+        let ids: Vec<String> = mail.into_iter().chain([item.id]).collect();
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::MailDone(ids.clone()));
+        let inbox = self.inbox.clone();
+        let closed = async move {
+            let mut done = Vec::new();
+            for id in ids {
+                if let Err(err) = inbox.set_item_done(id.clone(), true).await {
+                    return (done, Some(err.to_string()));
+                }
+                done.push(id);
+            }
+            (done, None)
+        };
+        Task::perform(closed, |(done, failed)| Message::MailDone(done, failed))
+    }
+
+    /// The mail of `--message` (task E8.7b), once the first entries are in: its entry in the panel
+    /// when the window holds one (in the mail window's "For me"), else the mail is loaded to find
+    /// its folder ([`App::show_start_mail`]). Only the mail window shows mail; the others ignore it.
+    fn open_start_mail(&mut self) -> Task<Message> {
+        if self.launch.kind != Kind::Mail {
+            self.start_mail = None;
+            return Task::none();
+        }
+        let Some(id) = self.start_mail.take() else { return Task::none() };
+        let entry = self
+            .items
+            .iter()
+            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if *message == id))
+            .cloned();
+        if let Some(entry) = entry {
+            self.cursor = Some(entry.id.clone());
+            self.column = self.launch.kind.column_or_first(Column::of(&entry));
+            self.detail = Some(entry);
+            return Task::none();
+        }
+        #[cfg(test)]
+        self.sent.push(Sent::Letter(id.clone()));
+        let inbox = self.inbox.clone();
+        let asked = id.clone();
+        Task::perform(
+            async move { inbox.get_mail(asked).await.map(Box::new).map_err(|err| err.to_string()) },
+            move |result| Message::StartMail(id.clone(), result),
+        )
+    }
+
+    /// The mail of `--message` without an entry, loaded: its folder becomes the view, with the mail
+    /// under the cursor and in the reader – kept there ([`App::pinned_mail`]) though it may lie
+    /// beyond the folder's first page. A mail that cannot be read says so.
+    fn show_start_mail(&mut self, id: String, result: Result<Box<Mail>, String>) -> Task<Message> {
+        let mail = match result {
+            Ok(mail) => *mail,
+            Err(err) => {
+                self.error = Some(Failure::new(tr("Couldn't open the mail."), err));
+                return Task::none();
+            }
+        };
+        let Some(folder) = self.folders.iter().find(|folder| folder.id == mail.summary.folder) else {
+            self.error = Some(Failure::new(tr("Couldn't open the mail."), tr("Its folder is not listed.")));
+            return Task::none();
+        };
+        self.view = View::Folder(FolderView::of(folder));
+        self.detail = None;
+        self.cursor = Some(id.clone());
+        self.reading = true;
+        self.pinned_mail = Some(id.clone());
+        self.letter = Some(Letter { id, loaded: Some(Ok(mail)) });
+        self.load()
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -3417,7 +3724,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
-        let side = self.hub_side().then(|| hub::side(&self.snoozed, self.now, self.cursor.as_deref()));
+        let side = self.hub_side().then(|| {
+            hub::side(&self.snoozed, hub::handed_off(&self.items, &self.done), self.now, self.cursor.as_deref())
+        });
         shell::shell(class, sidebar, header, placed.body, side)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
@@ -3561,6 +3870,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             dated: self.view.is_mail(),
             read: self.look().cards(),
             account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
+            task: self.task_of(&letter.id),
         })
     }
 
@@ -4023,11 +4333,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Ok(lists)) if lists.is_empty() => widgets::prop_placeholder(tr("No task lists yet")),
             Some(Ok(lists)) => choice(lists.clone(), self.task.list.clone(), Message::TaskList),
         };
-        let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
-        let rows = column![
-            widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None),
-            widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None),
-        ];
+        let mut rows = column![widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None)];
+        // A folder's message (task E8.7b) gets no due day: its request cannot carry one from here.
+        if self.task_mail.is_none() {
+            let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
+            rows = rows.push(widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None));
+        }
         let create = self.task.list.is_some().then_some(Message::TaskConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -4156,8 +4467,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let empty = self.launch.open == Some(Open::Empty);
         let inbox = self.inbox.clone();
         let limit = self.page_limit();
-        let (kind, shown) = (self.launch.kind, self.shown.clone());
-        Task::perform(fetch(inbox, view.clone(), empty, limit, kind, shown), move |result| {
+        let window = (self.launch.kind, self.shown.clone());
+        let demo = self.launch.demo.then_some(self.now);
+        Task::perform(fetch(inbox, view.clone(), empty, limit, window, demo), move |result| {
             Message::Loaded(view.clone(), result)
         })
     }
@@ -4308,6 +4620,82 @@ where
 
 /// The failure when the entries could not be loaded; the error state's "Retry" is what the user
 /// can do about it.
+/// Asks the core to open `app` on `target` (task E8.7b, `apps.open_app` with `target`): `task:<uid>`
+/// in the tasks app, `mail:<address>:<Message-ID>` in the mail window. The core checks the target
+/// and starts the app with it; nothing reaches a shell. With `--demo` there is no core: nothing
+/// opens and the answer is `Ok(())` (as `Source::open_app`). An `Err` carries the core's message.
+pub async fn open_target(suite: Source, app: &'static str, target: String) -> Result<(), String> {
+    let Source::Core(client) = suite else { return Ok(()) };
+    let request = torro_ipc::Request::OpenApp { app: app.to_owned(), target: Some(target) };
+    match torro_ipc::client::call(&client.socket, &request).await {
+        Ok(torro_ipc::Response::Ok) => Ok(()),
+        Ok(torro_ipc::Response::Error { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// The demo's way back between mail and tasks (task E8.7b), laid over its entries so every state of
+/// the design can be seen without a core (the inbox's demo data know no tasks):
+///
+/// - `demo-mail-1` (Jonas's "Budget review for Q4") was made into the task "Write quarterly report"
+///   – the uid of that task in the tasks app's demo, so "Open task" opens it there –, still open;
+/// - `demo-11` (Codex's finished refactoring, done) into "Review the settings refactor", open;
+/// - `demo-9` becomes the suite's "You finished a task from a mail": "Bring the sidebar drafts" is
+///   done, and Lena's mail (`demo-mail-2`) waits for an answer.
+///
+/// Every other entry stays as the demo source answers it.
+pub fn demo_task(item: &mut Item, now: DateTime<Utc>) {
+    let today = local_today(now);
+    let task = |uid: &str, title: &str, due: Option<NaiveDate>, link: &str| torro_inbox::item::ItemTask {
+        uid: uid.to_owned(),
+        collection: torro_inbox::demo::DEMO_LISTS[1].to_owned(),
+        list: tr("Work").to_owned(),
+        title: title.to_owned(),
+        due: due.map(torro_inbox::item::TaskDue::Date),
+        completed: false,
+        link: link.to_owned(),
+        mail_entry: None,
+    };
+    match item.id.as_str() {
+        "demo-mail-1" => {
+            let link = "mail:anna@work.example.org:budget-q4@work.example.org";
+            item.task =
+                Some(task("quarterly-report@torro-demo", "Write quarterly report", Some(today + Days::new(9)), link));
+        }
+        "demo-11" => {
+            let link = "inbox:demo-11";
+            item.task =
+                Some(task("demo-review-settings", "Review the settings refactor", Some(today + Days::new(1)), link));
+        }
+        "demo-9" => {
+            let done = torro_inbox::item::ItemTask {
+                completed: true,
+                mail_entry: Some("demo-mail-2".to_owned()),
+                ..task(
+                    "sidebar-drafts@torro-demo",
+                    "Bring the sidebar drafts",
+                    None,
+                    "mail:anna@work.example.org:design@work.example.org",
+                )
+            };
+            let title = format!("\u{201c}{}\u{201d}", done.title);
+            item.source = SourceRef::suite();
+            item.kind = torro_inbox::Kind::Notice;
+            item.lane = Lane::Info;
+            item.title = tr("You finished a task from a mail").to_owned();
+            item.body = Some(trf(
+                "{task} is done. {sender} is waiting for an answer.",
+                &[("task", &title), ("sender", &"Lena Hoffmann")],
+            ));
+            item.link = None;
+            item.facets = Vec::new();
+            item.task = Some(done);
+        }
+        _ => {}
+    }
+}
+
 fn load_failed(err: &str) -> Failure {
     Failure::new(tr("Couldn't load the inbox."), err)
 }
@@ -4376,8 +4764,9 @@ mod tests {
     /// What the source answers for the app's view, handed to `update` as the task would.
     fn load<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
-        let (kind, shown) = (app.launch.kind, app.shown.clone());
-        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit(), kind, shown));
+        let window = (app.launch.kind, app.shown.clone());
+        let demo = app.launch.demo.then_some(app.now);
+        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit(), window, demo));
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
@@ -4753,8 +5142,14 @@ mod tests {
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
         let mut app = loaded_late(&[]);
-        let for_me =
-            block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE, app.launch.kind, Shown::Everything));
+        let for_me = block_on(fetch(
+            app.inbox.clone(),
+            View::ForMe,
+            false,
+            mail::PAGE,
+            (app.launch.kind, Shown::Everything),
+            None,
+        ));
         let _ = app.update(Message::Show(View::Done));
         let _ = app.update(Message::Loaded(View::ForMe, for_me));
         assert_eq!(ids(&app).len(), FOR_ME.len(), "still the old list, not taken for Done");
@@ -6202,8 +6597,9 @@ mod tests {
         assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Act now"))]));
         let rows = rows_of(&app);
-        assert_eq!(rows[..4], ["demo-3", "demo-1", "demo-2", "demo-4"], "Decide, then Agents, then To sort");
-        assert_eq!(rows.len(), FOR_ME.len(), "everything for the user, no Info");
+        assert_eq!(rows[..4], ["demo-3", "demo-9", "demo-1", "demo-2"], "Decide, Follow up, then Agents …");
+        // Everything for the user, and of Info only the question after a finished task (task E8.7b).
+        assert_eq!(rows.len(), FOR_ME.len() + 1);
         assert_eq!(app.snoozed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["demo-10"], "Coming back");
     }
 
@@ -6242,14 +6638,16 @@ mod tests {
         assert_eq!(app.focus(), Focus::List, "no columns to change");
         let _ = press(&mut app, Key::Down);
         let _ = press(&mut app, Key::Down);
-        assert_eq!(cursor(&app), Some("demo-1"), "from Decide into Agents");
+        assert_eq!(cursor(&app), Some("demo-9"), "from Decide into Follow up (task E8.7b)");
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("demo-1"), "then into Agents");
         let _ = press(&mut app, Key::H);
         assert_eq!(cursor(&app), Some("demo-1"), "h does nothing");
         let _ = app.update(Message::Filter(Origin::Mail));
         assert!(rows_of(&app).iter().all(|id| id.starts_with("demo-mail")), "the mail tile: mail alone");
         assert_eq!(cursor(&app), None, "the cursor's entry is filtered away");
         let _ = app.update(Message::Filter(Origin::Mail));
-        assert_eq!(rows_of(&app).len(), FOR_ME.len(), "a second click shows everything");
+        assert_eq!(rows_of(&app).len(), FOR_ME.len() + 1, "a second click shows everything, Follow up too");
         let _ = app.update(Message::Filter(Origin::Agents));
         let _ = app.update(Message::Show(View::Overview));
         assert_eq!(app.filter, None, "Act now from the sidebar shows everything");
@@ -6696,11 +7094,12 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(text.as_str()));
         let mut left = self::ids(&app);
         left.sort_unstable();
-        assert_eq!(left, ["demo-3", "demo-5"]);
+        // The suite's entries stay, its "You finished a task from a mail" of the demo too (E8.7b).
+        assert_eq!(left, ["demo-3", "demo-5", "demo-9"]);
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Reopen(ids)));
         deliver(&mut app);
-        assert_eq!(app.items.len(), 4, "all back");
+        assert_eq!(app.items.len(), 5, "all back");
         // Nothing to dismiss in Later.
         let _ = app.update(Message::Show(View::Snoozed));
         load(&mut app);
@@ -6814,5 +7213,115 @@ mod tests {
                 }
             }
         }
+    }
+
+    // Task with a way back (task E8.7b).
+
+    /// The open mail window of the demo started with `--message=<message>`, loaded.
+    fn mail_window_on(message: &str) -> App<DemoSource> {
+        let mut launch =
+            Launch::parse(&args(&["--demo", "--now", "2026-10-13T10:30", "--view", "mail"])).expect("valid parameters");
+        launch.message = Some(message.into());
+        let inbox = Arc::new(DemoSource::new(launch.start()));
+        let mut app = App::new(inbox, Source::from_args(args(&["--demo"])), launch).0;
+        load(&mut app);
+        app
+    }
+
+    #[test]
+    fn the_hub_asks_after_a_finished_task_and_marks_its_mail_done() {
+        let mut app = overview_at(&[]);
+        let question = app.find("demo-9").cloned().expect("the demo's question");
+        assert!(hub::is_follow_up(&question));
+        assert_eq!(hub::Section::of(&question), Some(hub::Section::FollowUp), "from Info into Act now");
+        assert_eq!(hub::acts(&question), [hub::Act::Reply, hub::Act::MarkMailDone, hub::Act::NotNow]);
+        // Reply answers the mail it waits in: Lena's, of the entry `demo-mail-2`.
+        let _ = app.update(Message::Act("demo-9".into(), Command::Reply));
+        assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(Compose::Reply, "m:w2", true))));
+        // "Mark mail done": the mail's entry, then the question; the toast opens both again.
+        let _ = app.update(Message::MarkMailDone("demo-9".into()));
+        let ids = vec!["demo-mail-2".to_owned(), "demo-9".to_owned()];
+        assert_eq!(app.sent.last(), Some(&Sent::MailDone(ids.clone())));
+        for id in &ids {
+            block_on(app.inbox.set_item_done(id.clone(), true)).expect("the demo closes it");
+        }
+        let _ = app.update(Message::MailDone(ids.clone(), None));
+        load(&mut app);
+        assert_eq!(app.hint.as_ref().and_then(|hint| hint.undo.clone()), Some(Undo::Dismissed(ids.clone())));
+        assert!(app.find("demo-mail-2").is_none() && app.find("demo-9").is_none(), "both done");
+        let _ = press(&mut app, Key::U);
+        assert_eq!(app.sent.last(), Some(&Sent::Reopen(ids)));
+        // Another entry has no "Mark mail done".
+        let before = app.sent.len();
+        let _ = app.update(Message::MarkMailDone("demo-1".into()));
+        assert_eq!(app.sent.len(), before);
+    }
+
+    #[test]
+    fn handed_off_lists_the_open_tasks_made_of_entries() {
+        let app = overview_at(&[]);
+        let handed: Vec<&str> =
+            hub::handed_off(&app.items, &app.done).into_iter().map(|task| task.uid.as_str()).collect();
+        assert_eq!(handed, ["quarterly-report@torro-demo", "demo-review-settings"], "an open entry's, a done one's");
+        assert!(!handed.contains(&"sidebar-drafts@torro-demo"), "a finished task is not handed off");
+        let mut app = app;
+        let _ = app.update(Message::OpenTask("quarterly-report@torro-demo".into()));
+        assert_eq!(
+            app.sent.last(),
+            Some(&Sent::Target("torrotasks".into(), "task:quarterly-report@torro-demo".into())),
+            "the tasks app on the task, through the core"
+        );
+        draw_everywhere(&mut app);
+    }
+
+    #[test]
+    fn a_mail_shows_its_task_and_a_folder_message_becomes_one() {
+        // A mail entry's mail carries the entry's task.
+        let mut app = overview_at(&["--view", "mail"]);
+        let _ = app.update(Message::Select("demo-mail-1".into()));
+        let _ = app.update(Message::Resized(WIDE));
+        deliver_letter(&mut app, "m:w1");
+        let task = app.reading().and_then(|reading| reading.task).map(|task| task.uid.clone());
+        assert_eq!(task.as_deref(), Some("quarterly-report@torro-demo"));
+        draw_everywhere(&mut app);
+        // A folder's message: `t` opens the dialog without a due day, "Create task" sends
+        // `tasks.create_todo_from_mail`, and the reader shows the task.
+        let mut app = in_folder("f:work-archive");
+        let _ = press(&mut app, Key::Down);
+        let id = cursor(&app).map(str::to_owned).expect("a message");
+        let _ = press(&mut app, Key::T);
+        assert_eq!((app.menu, app.task_mail.as_ref().map(|m| m.id.clone())), (Some(Menu::Task), Some(id.clone())));
+        deliver_lists(&mut app);
+        let _ = app.view();
+        let _ = app.update(Message::TaskConfirm);
+        let Some(Sent::MailTask { account, id: sent, list, title }) = app.sent.pop() else { panic!("no mail task") };
+        assert_eq!((account.as_str(), sent.as_str()), (torro_inbox::demo::MAIL_ACCOUNTS[0], id.as_str()));
+        let made = block_on(app.inbox.create_todo_from_mail(account, sent, list, title)).map_err(|e| e.to_string());
+        let _ = app.update(Message::MailTaskCreated(id.clone(), made));
+        assert!(app.task_of(&id).is_some(), "the reader shows the task made");
+        let _ = app.update(Message::Mail(MailAction::Read(true), id));
+        draw_everywhere(&mut app);
+    }
+
+    #[test]
+    fn the_mail_window_starts_on_the_mail_of_message() {
+        // A mail with an entry: the entry in the panel.
+        let app = mail_window_on("m:w2");
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-mail-2"));
+        // A mail without one: loaded, then its folder with the mail in the reader.
+        let mut app = mail_window_on("m:w9");
+        assert_eq!(app.sent.last(), Some(&Sent::Letter("m:w9".into())));
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), "m:w9".into())).map(Box::new);
+        let _ = app.update(Message::StartMail("m:w9".into(), mail.map_err(|err| err.to_string())));
+        load(&mut app);
+        assert_eq!(app.view.folder().map(|folder| folder.id.as_str()), Some("f:work-archive"));
+        assert_eq!((cursor(&app), app.reading, app.wanted_letter()), (Some("m:w9"), true, Some("m:w9".into())));
+        // Any other window ignores it.
+        let mut launch = Launch::parse(&args(&["--demo", "--view", "hub"])).expect("valid");
+        launch.message = Some("m:w9".into());
+        let mut hub =
+            App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0;
+        load(&mut hub);
+        assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
     }
 }

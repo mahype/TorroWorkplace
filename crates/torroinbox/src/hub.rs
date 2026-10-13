@@ -1,7 +1,8 @@
 //! The hub (task E8.5 in `docs/tasks/eingang.md`; `docs/eingang.md`, "Drei Fenster"): the inbox
 //! window that is about acting, not reading – "Act now".
 //!
-//! - **Sections** ([`Section`], [`Sections`]): the open entries of "For me" in three, top to bottom:
+//! - **Sections** ([`Section`], [`Sections`]): the open entries of "For me" in three (four with
+//!   Follow up, below), top to bottom:
 //!   **Decide** (approvals: Allow · Deny · Go to window), **Agents** (coding agents waiting or done:
 //!   Go to window · Later · Done) and **To sort** (everything else, each with its targets: Task ·
 //!   Later · Done for mail, Open · Task · Later · ✕ for the rest). "Info" is not here: it is for
@@ -13,8 +14,12 @@
 //!   script) with its number in `DISPLAY` and one line; a click filters the sections to it
 //!   (`Message::Filter`), a second click shows everything again. As many as fit in one row
 //!   ([`tile_columns`]), the busiest first.
-//! - **Coming back** ([`side`]): in the wide layout a column at the right with the snoozed entries
-//!   and when they wake, the soonest first.
+//! - **Follow up** (task E8.7b, [`Section::FollowUp`]): between Decide and Agents the suite's
+//!   question after a task made of a mail was finished ("You finished a task from a mail", which the
+//!   core files in "Info"): Reply · Mark mail done · Not now, built from the task it carries.
+//! - **Handed off** and **Coming back** ([`side`]): in the wide layout a column at the right with the
+//!   open tasks made of entries (task E8.7b, [`handed_off`]; a click opens the task in the tasks app),
+//!   then the snoozed entries and when they wake, the soonest first.
 //! - **Sizes** ([`layout`]): wide and medium lay Decide and Agents out as a grid of cards, To sort
 //!   as one card per line with its buttons at the right; narrow shows the numbers instead of the
 //!   tiles, one card per line, big Allow and Deny, and To sort as cards with their buttons below.
@@ -36,6 +41,7 @@ use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::Density;
 use torro_gui::widgets::{self, ButtonStyle, Mark, RowAction, TileFace, TileSize};
 use torro_gui::{style, typo};
+use torro_inbox::item::ItemTask;
 use torro_inbox::{Action, Item, Kind, Lane, Link, SourceKind, State};
 
 use crate::app::Message;
@@ -46,11 +52,14 @@ use crate::{detail, glance, notifications};
 /// How many lines of its text a card of Decide or Agents shows, as the notifications window's cards.
 const TEXT_LINES: usize = 2;
 
-/// The three sections of "Act now", top to bottom.
+/// The sections of "Act now", top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
     /// Approvals: the suite asks before an agent may do something.
     Decide,
+    /// The suite's question after a task made of a mail was finished (task E8.7b, [`is_follow_up`]):
+    /// answer the mail or mark it done.
+    FollowUp,
     /// Coding agents waiting for the user or done with their turn.
     Agents,
     /// Every other entry for the user: to hand on (task, later) or to let go (done, ✕).
@@ -59,11 +68,16 @@ pub enum Section {
 
 impl Section {
     /// Top to bottom.
-    pub const ALL: [Section; 3] = [Section::Decide, Section::Agents, Section::ToSort];
+    pub const ALL: [Section; 4] = [Section::Decide, Section::FollowUp, Section::Agents, Section::ToSort];
 
-    /// The section `item` stands in: approvals in Decide, coding agents in Agents, every other open
-    /// entry of "For me" in To sort. `None` for entries that are not open or in "Info".
+    /// The section `item` stands in: approvals in Decide, the suite's "You finished a task from a
+    /// mail" in Follow up (from "Info", where the core files it so that it never pops up), coding
+    /// agents in Agents, every other open entry of "For me" in To sort. `None` for entries that are
+    /// not open or in "Info".
     pub fn of(item: &Item) -> Option<Section> {
+        if item.state.is_open() && is_follow_up(item) {
+            return Some(Section::FollowUp);
+        }
         if !item.state.is_open() || item.lane != Lane::ForMe {
             return None;
         }
@@ -78,6 +92,7 @@ impl Section {
     pub fn title(self) -> &'static str {
         match self {
             Section::Decide => tr("Decide"),
+            Section::FollowUp => tr("Follow up"),
             Section::Agents => tr("Agents"),
             Section::ToSort => tr("To sort"),
         }
@@ -88,10 +103,33 @@ impl Section {
     pub fn word(self) -> &'static str {
         match self {
             Section::Decide => tr("to decide"),
+            Section::FollowUp => tr("to follow up"),
             Section::Agents => tr("agents"),
             Section::ToSort => tr("to sort"),
         }
     }
+}
+
+/// Whether `item` is the suite's entry "You finished a task from a mail" (task E8.7a): the suite's
+/// own, carrying the finished task with the open mail entry its mail waits in
+/// ([`torro_inbox::item::ItemTask::mail_entry`]). Its buttons are Reply and "Mark mail done" (task
+/// E8.7b), built from that task – the entry has no actions of its own.
+pub fn is_follow_up(item: &Item) -> bool {
+    item.source.kind == SourceKind::Suite && item.task.as_ref().is_some_and(|task| task.mail_entry.is_some())
+}
+
+/// The tasks handed off from entries that are still open (task E8.7b, "Handed off" beside "Act
+/// now"): the [`Item::task`] of `items` and `done` (entries made into a task are done), not
+/// finished, each task once (several mails of one conversation share it), in the order given. The
+/// suite's [`is_follow_up`] entries carry finished tasks and never count.
+pub fn handed_off<'a>(items: &'a [Item], done: &'a [Item]) -> Vec<&'a ItemTask> {
+    let mut tasks: Vec<&ItemTask> = Vec::new();
+    for task in items.iter().chain(done).filter(|item| !is_follow_up(item)).filter_map(|item| item.task.as_ref()) {
+        if !task.completed && !tasks.iter().any(|known| known.uid == task.uid) {
+            tasks.push(task);
+        }
+    }
+    tasks
 }
 
 /// Where an entry comes from, as the tiles count it: all mail accounts together, all coding agents
@@ -142,6 +180,7 @@ impl Origin {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Sections<'a> {
     pub decide: Vec<&'a Item>,
+    pub follow_up: Vec<&'a Item>,
     pub agents: Vec<&'a Item>,
     pub to_sort: Vec<&'a Item>,
 }
@@ -154,6 +193,7 @@ impl<'a> Sections<'a> {
         for item in items.iter().filter(|item| filter.is_none_or(|origin| Origin::of(item) == *origin)) {
             match Section::of(item) {
                 Some(Section::Decide) => sections.decide.push(item),
+                Some(Section::FollowUp) => sections.follow_up.push(item),
                 Some(Section::Agents) => sections.agents.push(item),
                 Some(Section::ToSort) => sections.to_sort.push(item),
                 None => {}
@@ -166,6 +206,7 @@ impl<'a> Sections<'a> {
     pub fn get(&self, section: Section) -> &[&'a Item] {
         match section {
             Section::Decide => &self.decide,
+            Section::FollowUp => &self.follow_up,
             Section::Agents => &self.agents,
             Section::ToSort => &self.to_sort,
         }
@@ -189,7 +230,7 @@ impl<'a> Sections<'a> {
 
     /// Nothing to act on.
     pub fn is_empty(&self) -> bool {
-        self.decide.is_empty() && self.agents.is_empty() && self.to_sort.is_empty()
+        self.decide.is_empty() && self.follow_up.is_empty() && self.agents.is_empty() && self.to_sort.is_empty()
     }
 }
 
@@ -298,6 +339,14 @@ pub enum Act {
     Dismiss,
     /// Open a done entry again (`e`).
     Reopen,
+    /// Answer the mail a finished task was made of (`r`, task E8.7b): the compose window for the mail
+    /// of [`torro_inbox::item::ItemTask::mail_entry`], else the mail window with it.
+    Reply,
+    /// Mark the mail of a finished task done, and the question with it (`inbox.set_item_done` for
+    /// both, task E8.7b).
+    MarkMailDone,
+    /// Close the question without touching the mail (`e` on it).
+    NotNow,
 }
 
 /// Whether `item` is a coding agent's: waiting, or done with its turn.
@@ -312,9 +361,14 @@ fn is_agent(item: &Item) -> bool {
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
 /// - mail: Task · Later · Done – mail is done or hidden, never dismissed;
+/// - the suite's "You finished a task from a mail" ([`is_follow_up`], task E8.7b): Reply · Mark mail
+///   done · Not now;
 /// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Later ·
 ///   ✕ ([`notifications::dismissable`], else Done).
 pub fn acts(item: &Item) -> Vec<Act> {
+    if is_follow_up(item) && item.state.is_open() {
+        return vec![Act::Reply, Act::MarkMailDone, Act::NotNow];
+    }
     let window = detail::openable(item) == Some(Link::Window);
     if detail::is_approval(item) {
         let mut acts: Vec<Act> = item
@@ -355,13 +409,14 @@ impl Act {
     /// The button's icon.
     pub fn icon(&self) -> Icon {
         match self {
-            Act::Allow(_) | Act::Done => Icon::Check,
-            Act::Deny(_) | Act::Dismiss => Icon::X,
+            Act::Allow(_) | Act::Done | Act::MarkMailDone => Icon::Check,
+            Act::Deny(_) | Act::Dismiss | Act::NotNow => Icon::X,
             Act::GoToWindow => Icon::AppWindow,
             Act::Open => Icon::ArrowUpRight,
             Act::Task => Icon::ListTodo,
             Act::Later => Icon::Clock,
             Act::Reopen => Icon::Inbox,
+            Act::Reply => Icon::Reply,
         }
     }
 
@@ -377,6 +432,9 @@ impl Act {
             Act::Done => tr("Done"),
             Act::Dismiss => tr("Dismiss"),
             Act::Reopen => tr("Reopen"),
+            Act::Reply => tr("Reply"),
+            Act::MarkMailDone => tr("Mark mail done"),
+            Act::NotNow => tr("Not now"),
         }
     }
 
@@ -384,12 +442,13 @@ impl Act {
     /// none (they stand on cards, never in an action bar).
     fn key(&self) -> &'static str {
         match self {
-            Act::Allow(_) | Act::Deny(_) => "",
+            Act::Allow(_) | Act::Deny(_) | Act::MarkMailDone => "",
             Act::GoToWindow | Act::Open => "Enter",
             Act::Task => "T",
             Act::Later => "S",
-            Act::Done | Act::Reopen => "E",
+            Act::Done | Act::Reopen | Act::NotNow => "E",
             Act::Dismiss => "X",
+            Act::Reply => "R",
         }
     }
 
@@ -406,8 +465,10 @@ impl Act {
             Act::GoToWindow | Act::Open => Some(Message::OpenRow(item.id.clone())),
             Act::Task => act(Command::MakeTask),
             Act::Later => act(Command::Snooze),
-            Act::Done | Act::Reopen => act(Command::Done),
+            Act::Done | Act::Reopen | Act::NotNow => act(Command::Done),
             Act::Dismiss => act(Command::Dismiss),
+            Act::Reply => act(Command::Reply),
+            Act::MarkMailDone => Some(Message::MarkMailDone(item.id.clone())),
         }
     }
 
@@ -416,10 +477,10 @@ impl Act {
     /// the rest, as the design's cards.
     fn style(&self, section: Section) -> ButtonStyle {
         let quiet = match self {
-            Act::Done | Act::Dismiss | Act::Reopen => true,
+            Act::Done | Act::Dismiss | Act::Reopen | Act::NotNow => true,
             Act::Later => section == Section::Agents,
             Act::GoToWindow => section == Section::Decide,
-            Act::Allow(_) | Act::Deny(_) | Act::Open | Act::Task => false,
+            Act::Allow(_) | Act::Deny(_) | Act::Open | Act::Task | Act::Reply | Act::MarkMailDone => false,
         };
         if quiet { style::button::ghost } else { style::button::secondary }
     }
@@ -475,17 +536,19 @@ pub fn sides(narrow: bool) -> f32 {
     inset.left + inset.right
 }
 
-/// The cards of `section` per line: the layout's columns, at most two for Decide – an approval's
-/// title and what it is about need the room, and a decision should not look like one of many.
+/// The cards of `section` per line: the layout's columns, at most two for Decide and Follow up – a
+/// question's title and what it is about need the room, and a decision should not look like one of
+/// many.
 fn per_line(section: Section, layout: Layout) -> usize {
     let columns = layout.columns.max(1);
-    if section == Section::Decide { columns.min(2) } else { columns }
+    if matches!(section, Section::Decide | Section::FollowUp) { columns.min(2) } else { columns }
 }
 
 /// Whether `section` shows its entries as rows with the action bar: in the compact density, all but
-/// Decide – an approval keeps its card, so Allow and Deny are always there.
+/// Decide and Follow up – an approval and the question after a finished task keep their cards, so
+/// their buttons are always there.
 fn as_rows(section: Section, layout: Layout) -> bool {
-    !layout.cards && section != Section::Decide
+    !layout.cards && !matches!(section, Section::Decide | Section::FollowUp)
 }
 
 /// The gap between the blocks of "Act now" (tiles, sections).
@@ -963,43 +1026,82 @@ fn side_room() -> f32 {
     size::props() - 2.0 * space::s() - 2.0 * space::s() - icon::SIZE - space::m()
 }
 
-/// "Coming back" (the wide layout's column at the right): the snoozed entries, the soonest first,
-/// each with its title and its origin and when it wakes; a click opens it in the panel. Without any,
-/// a quiet line says what comes here.
-pub fn side<'a>(snoozed: &'a [Item], now: DateTime<Utc>, selected: Option<&'a str>) -> Element<'a, Message> {
-    let back = coming_back(snoozed);
+/// The line under a handed-off task in "Handed off": its list and when it is due ("Work · due Fri,
+/// 17 Oct"), "Task" for a list the core cannot name.
+pub fn handed_meta(task: &ItemTask, now: DateTime<Utc>) -> String {
+    let list = list::one_line(&task.list);
+    let mut parts = vec![if list.is_empty() { tr("Task").to_owned() } else { list }];
+    if let Some(due) = task.due {
+        let today = now.with_timezone(&chrono::Local).date_naive();
+        let day = torro_gui::datetime::format_short_date(crate::mail::due_day(due), today);
+        parts.push(trf("due {day}", &[("day", &day)]));
+    }
+    parts.join(" · ")
+}
+
+/// One row of the column at the right: `mark`, the `title` over the `meta` line, cut to the column;
+/// a click sends `on_press`, `chosen` draws it selected.
+fn side_row<'a>(mark: Icon, title: &str, meta: &str, chosen: bool, on_press: Message) -> Element<'a, Message> {
+    let title = typo::ellipsize(title, typo::body(), side_room());
+    let meta = typo::ellipsize(meta, typo::meta(), side_room());
+    let mark =
+        icon::icon(mark, icon::SIZE).style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) });
+    let words = column![
+        typo::text(typo::body(), title).style(theme::text).wrapping(Wrapping::None),
+        typo::text(typo::meta().tabular(), meta).style(theme::text_3).wrapping(Wrapping::None),
+    ];
+    let line = row![mark, words].spacing(space::m()).align_y(Alignment::Center);
+    button(line)
+        .width(Fill)
+        .padding(Padding::new(space::xs()).left(space::s()).right(space::s()))
+        .style(style::button::list_row(chosen))
+        .on_press(on_press)
+        .into()
+}
+
+/// A quiet line under an empty block of the column at the right: what comes here.
+fn side_hint<'a>(text: &'a str) -> Element<'a, Message> {
+    let hint = typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+    container(hint).padding(Padding::new(0.0).left(space::s()).right(space::s())).into()
+}
+
+/// The column at the right of "Act now" (the wide layout): **Handed off** (task E8.7b) – the open
+/// tasks made of entries ([`handed_off`]), each with its title, list and due day, a click opens it in
+/// the tasks app (`apps.open_app` with `task:<uid>`) – then, under a line, **Coming back**: the
+/// snoozed entries, the soonest first, each with its title and its origin and when it wakes; a click
+/// opens it in the panel. An empty block says in a quiet line what comes there.
+pub fn side<'a>(
+    snoozed: &'a [Item],
+    handed: Vec<&'a ItemTask>,
+    now: DateTime<Utc>,
+    selected: Option<&'a str>,
+) -> Element<'a, Message> {
+    let inset = Padding::new(0.0).left(space::s());
     let mut content =
-        column![container(caption(tr("Coming back"), back.len())).padding(Padding::new(0.0).left(space::s()))]
-            .spacing(space::xs())
-            .width(Fill);
+        column![container(caption(tr("Handed off"), handed.len())).padding(inset)].spacing(space::xs()).width(Fill);
+    if handed.is_empty() {
+        content = content.push(side_hint(tr("Tasks you make of entries show up here until they are done.")));
+    }
+    for task in handed {
+        let open = Message::OpenTask(task.uid.clone());
+        content =
+            content.push(side_row(Icon::ListTodo, &list::one_line(&task.title), &handed_meta(task, now), false, open));
+    }
+    let back = coming_back(snoozed);
+    content = content.push(container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::m(), 0.0]));
+    content = content.push(container(caption(tr("Coming back"), back.len())).padding(inset));
     if back.is_empty() {
-        let hint = typo::text(typo::meta(), tr("What you put off comes back here."))
-            .style(theme::text_3)
-            .wrapping(Wrapping::WordOrGlyph);
-        content = content.push(container(hint).padding(Padding::new(0.0).left(space::s()).right(space::s())));
+        content = content.push(side_hint(tr("What you put off comes back here.")));
     }
     for item in back {
         let until = match item.state {
             State::Snoozed { until } => list::wake_text(until, now),
             State::New | State::Seen | State::Done { .. } => String::new(),
         };
-        let title = typo::ellipsize(&list::words(item).0, typo::body(), side_room());
-        let meta = typo::ellipsize(&format!("{} · {until}", Origin::of(item).name()), typo::meta(), side_room());
-        let mark = icon::icon(Icon::Clock, icon::SIZE)
-            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) });
-        let words = column![
-            typo::text(typo::body(), title).style(theme::text).wrapping(Wrapping::None),
-            typo::text(typo::meta().tabular(), meta).style(theme::text_3).wrapping(Wrapping::None),
-        ];
-        let line = row![mark, words].spacing(space::m()).align_y(Alignment::Center);
+        let meta = format!("{} · {until}", Origin::of(item).name());
         let chosen = selected == Some(item.id.as_str());
-        content = content.push(
-            button(line)
-                .width(Fill)
-                .padding(Padding::new(space::xs()).left(space::s()).right(space::s()))
-                .style(style::button::list_row(chosen))
-                .on_press(Message::Select(item.id.clone())),
-        );
+        let open = Message::Select(item.id.clone());
+        content = content.push(side_row(Icon::Clock, &list::words(item).0, &meta, chosen, open));
     }
     content.into()
 }

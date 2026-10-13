@@ -10,7 +10,7 @@
 //!
 //! `--task=<uid>` names the task the app starts on (task E8.7a): the core passes it when
 //! `apps.open_app` opens a task (`task:<uid>`); an empty uid is refused (exit 64). The app shows it
-//! from task E8.7b on.
+//! in the detail, on its list (task E8.7b).
 //!
 //! On Windows the app is a GUI program without a console window; a failed start is written to
 //! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]).
@@ -43,16 +43,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Refuse bad parameters before anything starts (the core, a window).
-    let launch = match app::Launch::parse(&args) {
+    let mut launch = match app::Launch::parse(&args) {
         Ok(launch) => launch,
         Err(err) => {
             report_start_error(&err.to_string());
             return ExitCode::from(64);
         }
     };
-    // The task to show (task E8.7a): read and checked now, so the core's command line never fails;
-    // the app opens on it from task E8.7b on, until then it starts as without.
-    let _start_task = match start_task(&args) {
+    // The task to show (tasks E8.7a, E8.7b): read and checked now, so the core's command line never
+    // fails; the app opens it in the detail once the tasks are in.
+    launch.task = match start_task(&args) {
         Ok(task) => task,
         Err(err) => {
             report_start_error(&err);
