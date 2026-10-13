@@ -390,7 +390,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 4. **Den Dienst beenden** (`system.quit`): nur mit dem App-Schlüssel (Tray „Quit“, `ctl quit`).
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
-   Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, Import aus einem fremden
+   Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, API-Schlüssel eines
+   KI-Kontos `accounts.connect_ai`, Import aus einem fremden
    Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten

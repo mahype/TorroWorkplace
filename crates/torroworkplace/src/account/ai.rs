@@ -864,7 +864,7 @@ pub(crate) mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(problem(0), None, "a local server needs no key");
-        assert!(problem(1).is_some_and(|p| p.starts_with(tr("Connect again"))));
+        assert_eq!(problem(1).as_deref(), Some(tr("Connect again: no API key is stored on this device")));
         assert_eq!(ai.models(&openrouter.id, false).await, Err(AiError::NoKey));
         assert!(matches!(ai.models("ai:nobody@nowhere", false).await, Err(AiError::NotFound(_))));
 
